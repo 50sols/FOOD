@@ -159,22 +159,28 @@ final class V2ArAgingFullLedgerPaginationTest extends TestCase
 
         foreach (['en' => 'ltr', 'ar' => 'rtl'] as $locale => $direction) {
             $actor->forceFill(['locale' => $locale])->save();
-            $this->actingAs($actor->fresh())
+            $response = $this->actingAs($actor->fresh())
                 ->get(route('admin.erp.finance.index', [
                     'store_id' => $store->id,
                     'tab' => 'receivables',
                     'aging_page' => 6,
                 ]))
                 ->assertOk()
-                ->assertSee('dir="'.$direction.'"', false)
-                ->assertViewHas('data', fn (array $data): bool => $data['aging']->total() === 126
-                    && $data['aging']->currentPage() === 6
-                    && $data['aging']->count() === 1
-                    && $data['documents']->total() === 126
-                    && $data['documents']->getCollection()->every(
-                        fn ($document): bool => $document->store_id === $store->id,
-                    )
-                    && $data['agingTotals']->count() === 2);
+                ->assertSee('dir="'.$direction.'"', false);
+
+            $data = $response->viewData('data');
+            $this->assertIsArray($data);
+            $this->assertSame(126, $data['aging']->total());
+            $this->assertSame(6, $data['aging']->currentPage());
+            $this->assertSame(1, $data['aging']->count());
+
+            // The document list intentionally includes the cancelled row,
+            // while the outstanding aging report includes only posted rows.
+            $this->assertSame(127, $data['documents']->total());
+            $this->assertTrue($data['documents']->getCollection()->every(
+                fn ($document): bool => (int) $document->store_id === (int) $store->id,
+            ));
+            $this->assertSame(2, $data['agingTotals']->count());
         }
 
         $this->actingAs($actor->fresh())
