@@ -182,6 +182,50 @@ class V2SetupStagingVerifierTest(unittest.TestCase):
                 with self.assertRaisesRegex(SetupZipError, "Unsupported Setup ZIP compression"):
                     self.verify()
 
+    def test_crc_valid_conflicting_local_header_method_or_flags_fail_closed(self) -> None:
+        # Python zipfile trusts central method/flags while reading payloads,
+        # but a shared-host extractor may interpret the LOCAL header instead.
+        for offset, forged, reason in (
+            (8, zipfile.ZIP_BZIP2, "compression"),
+            (6, 2, "flags"),
+        ):
+            with self.subTest(reason=reason):
+                self.pack()
+                payload = bytearray(self.archive.read_bytes())
+                local = payload.index(b"PK\x03\x04")
+                payload[local + offset:local + offset + 2] = forged.to_bytes(2, "little")
+                self.archive.write_bytes(payload)
+                with zipfile.ZipFile(self.archive) as archive:
+                    self.assertIsNone(archive.testzip())
+                with self.assertRaisesRegex(SetupZipError, "Conflicting local/central Setup ZIP " + reason):
+                    self.verify()
+
+    def test_unicode_path_alias_in_only_local_zip_header_is_rejected(self) -> None:
+        # Central extra metadata is harmless after rewriting its field ID,
+        # but the *local* entry retains a Unicode Path override that another
+        # extractor may use as backend/.env.local; Python CRC still passes.
+        alias = b"\x01" + (0).to_bytes(4, "little") + b"backend/.env.local"
+        extra = (0x7075).to_bytes(2, "little") + len(alias).to_bytes(2, "little") + alias
+        member = zipfile.ZipInfo("backend/public/safe-extra.php")
+        member.external_attr = (stat.S_IFREG | 0o644) << 16
+        member.extra = extra
+        with zipfile.ZipFile(self.archive, "a") as archive:
+            archive.writestr(member, b"<?php // safe")
+        payload = bytearray(self.archive.read_bytes())
+        central = payload.rfind(b"PK\x01\x02")
+        self.assertGreaterEqual(central, 0)
+        filename_size = int.from_bytes(payload[central + 28:central + 30], "little")
+        central_extra = central + 46 + filename_size
+        self.assertEqual(0x7075, int.from_bytes(payload[central_extra:central_extra + 2], "little"))
+        payload[central_extra:central_extra + 2] = (0x5455).to_bytes(2, "little")
+        self.archive.write_bytes(payload)
+        with zipfile.ZipFile(self.archive) as archive:
+            self.assertEqual(0x5455, int.from_bytes(
+                archive.getinfo(member.filename).extra[:2], "little"))
+            self.assertIsNone(archive.testzip())
+        with self.assertRaisesRegex(SetupZipError, "Ambiguous Unicode Path"):
+            self.verify()
+
     def test_safe_extra_timestamp_metadata_does_not_block_staging_zip(self) -> None:
         member = zipfile.ZipInfo("backend/public/normal.php")
         member.external_attr = (stat.S_IFREG | 0o644) << 16
