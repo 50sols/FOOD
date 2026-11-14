@@ -31,6 +31,7 @@ use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Validation\ValidationException;
+use Symfony\Component\HttpKernel\Exception\HttpException;
 use Tests\Support\ProcurementSecondApprover;
 use Tests\TestCase;
 
@@ -117,7 +118,7 @@ final class EnterpriseProcurementCompletionTest extends TestCase
         try {
             $completion->paginateRfqs($roleless, $rolelessContext, ['q' => '%']);
             $this->fail('A role without RFQ read permission must be denied at the service boundary.');
-        } catch (\Symfony\Component\HttpKernel\Exception\HttpException $exception) {
+        } catch (HttpException $exception) {
             $this->assertSame(403, $exception->getStatusCode());
         }
 
