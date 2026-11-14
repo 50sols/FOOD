@@ -43,9 +43,12 @@ final class V2WhatsAppCampaignReportLiteralSearchTest extends TestCase
         $lookalike = $this->customer($store, 'b2c', 'عميلXYZمميز', 'reportXYZ@example.test', '+96550001302');
         $slash = $this->customer($store, 'b2c', 'Report\Slash', 'slash-report@example.test', '+96550001303');
         $foreign = $this->customer($foreignStore, 'b2c', 'عميل%_!مميز', 'other%_!@example.test', '+96550001304');
+        $legacyPhone = $this->customer($store, 'b2c', 'Legacy Phone Contact', 'legacy@example.test', '+96550001305');
 
-        foreach ([$literal, $lookalike, $slash, $foreign] as $id) {
-            $phone = (string) DB::table('platform_customers')->where('id', $id)->value('phone');
+        foreach ([$literal, $lookalike, $slash, $foreign, $legacyPhone] as $id) {
+            $phone = $id === $legacyPhone
+                ? '+96550%_!15' // Historic recipient snapshot: literal symbols in r.phone.
+                : (string) DB::table('platform_customers')->where('id', $id)->value('phone');
             DB::table('whats_app_campaign_recipients')->insert([
                 'campaign_id' => $campaign,
                 'platform_customer_id' => $id,
@@ -66,6 +69,7 @@ final class V2WhatsAppCampaignReportLiteralSearchTest extends TestCase
         foreach ([
             ['q' => 'عميل%_!', 'expected' => 'عميل%_!مميز'],
             ['q' => 'report%_!', 'expected' => 'عميل%_!مميز'],
+            ['q' => '50%_!15', 'expected' => 'Legacy Phone Contact'],
             ['q' => 'Report\Slash', 'expected' => 'Report\Slash'],
             ['q' => 'Report\\', 'expected' => 'Report\Slash'],
             ['q' => 'عميلXYZ', 'expected' => 'عميلXYZمميز'],
