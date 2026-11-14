@@ -153,6 +153,35 @@ class V2SetupStagingVerifierTest(unittest.TestCase):
         with self.assertRaisesRegex(SetupZipError, "Ambiguous Unicode Path"):
             self.verify()
 
+    def test_stored_and_deflated_zip_members_are_portable(self) -> None:
+        for method in (zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED):
+            with self.subTest(method=method):
+                self.pack()
+                member = zipfile.ZipInfo("backend/public/portable-asset.js")
+                member.external_attr = (stat.S_IFREG | 0o644) << 16
+                with zipfile.ZipFile(self.archive, "a") as archive:
+                    archive.writestr(member, b"const valid = true;", compress_type=method)
+                with zipfile.ZipFile(self.archive) as archive:
+                    self.assertIsNone(archive.testzip())
+                    self.assertEqual(method, archive.getinfo(member.filename).compress_type)
+                self.assertEqual("UNTRUSTED_CI_STAGING_ONLY", self.verify()["status"])
+
+    def test_bzip2_and_lzma_members_fail_even_when_python_can_extract_them(self) -> None:
+        # Python's ZIP reader supports these, but cPanel/shared-host unzip
+        # implementations are not guaranteed to: staging must fail closed.
+        for method in (zipfile.ZIP_BZIP2, zipfile.ZIP_LZMA):
+            with self.subTest(method=method):
+                self.pack()
+                member = zipfile.ZipInfo("backend/public/nonportable-asset.js")
+                member.external_attr = (stat.S_IFREG | 0o644) << 16
+                with zipfile.ZipFile(self.archive, "a") as archive:
+                    archive.writestr(member, b"const nonportable = true;", compress_type=method)
+                with zipfile.ZipFile(self.archive) as archive:
+                    self.assertIsNone(archive.testzip())
+                    self.assertEqual(method, archive.getinfo(member.filename).compress_type)
+                with self.assertRaisesRegex(SetupZipError, "Unsupported Setup ZIP compression"):
+                    self.verify()
+
     def test_safe_extra_timestamp_metadata_does_not_block_staging_zip(self) -> None:
         member = zipfile.ZipInfo("backend/public/normal.php")
         member.external_attr = (stat.S_IFREG | 0o644) << 16
