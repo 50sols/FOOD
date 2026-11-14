@@ -42,6 +42,55 @@ def _require(condition: bool, message: str) -> None:
         raise SetupZipError(message)
 
 
+def _reject_ambiguous_extra_fields(extra: bytes, member_name: str) -> None:
+    """Reject alternate extraction names in either ZIP header."""
+    offset = 0
+    while offset < len(extra):
+        _require(offset + 4 <= len(extra),
+                 f"Malformed Setup ZIP extra field: {member_name!r}")
+        field_id = int.from_bytes(extra[offset:offset + 2], "little")
+        field_length = int.from_bytes(extra[offset + 2:offset + 4], "little")
+        offset += 4
+        _require(field_length <= len(extra) - offset,
+                 f"Malformed Setup ZIP extra field: {member_name!r}")
+        _require(field_id != 0x7075,
+                 f"Ambiguous Unicode Path Setup ZIP extra field: {member_name!r}")
+        offset += field_length
+
+
+def _verify_local_header(archive: zipfile.ZipFile, member: zipfile.ZipInfo) -> None:
+    """Match the local extraction header to the attested central directory."""
+    source = archive.fp
+    _require(source is not None and member.header_offset >= 0,
+             f"Invalid Setup ZIP local header offset: {member.filename!r}")
+    source.seek(member.header_offset)
+    header = source.read(30)
+    _require(len(header) == 30 and header[:4] == b"PK\x03\x04",
+             f"Invalid Setup ZIP local header: {member.filename!r}")
+    flags = int.from_bytes(header[6:8], "little")
+    method = int.from_bytes(header[8:10], "little")
+    _require(flags == member.flag_bits,
+             f"Conflicting local/central Setup ZIP flags: {member.filename!r}")
+    _require(method == member.compress_type,
+             f"Conflicting local/central Setup ZIP compression: {member.filename!r}")
+
+    filename_size = int.from_bytes(header[26:28], "little")
+    extra_size = int.from_bytes(header[28:30], "little")
+    filename = source.read(filename_size)
+    _require(len(filename) == filename_size,
+             f"Truncated Setup ZIP local filename: {member.filename!r}")
+    try:
+        decoded_name = filename.decode("utf-8" if flags & 0x800 else "cp437")
+    except UnicodeDecodeError as exc:
+        raise SetupZipError("Invalid Setup ZIP local filename encoding.") from exc
+    _require(decoded_name == member.filename,
+             f"Conflicting local/central Setup ZIP filename: {member.filename!r}")
+    extra = source.read(extra_size)
+    _require(len(extra) == extra_size,
+             f"Truncated Setup ZIP local extra field: {member.filename!r}")
+    _reject_ambiguous_extra_fields(extra, member.filename + " (local)")
+
+
 def _member_target(member: zipfile.ZipInfo) -> tuple[str, str, bool]:
     name = member.filename
     _require(bool(name) and "\\" not in name and not name.startswith("/"),
@@ -100,28 +149,8 @@ def _member_target(member: zipfile.ZipInfo) -> tuple[str, str, bool]:
         f"Runtime session/cache/config file in Setup ZIP: {name!r}",
     )
 
-    # Info-ZIP Unicode Path (0x7075) is an alternate destination filename
-    # that different ZIP extractors can interpret differently. A CRC-invalid
-    # extra name may be silently ignored by Python while another installer
-    # trusts it. Attest exactly one extraction path per archive member.
-    offset = 0
-    while offset < len(member.extra):
-        _require(
-            offset + 4 <= len(member.extra),
-            f"Malformed Setup ZIP extra field: {name!r}",
-        )
-        field_id = int.from_bytes(member.extra[offset:offset + 2], "little")
-        field_length = int.from_bytes(member.extra[offset + 2:offset + 4], "little")
-        offset += 4
-        _require(
-            field_length <= len(member.extra) - offset,
-            f"Malformed Setup ZIP extra field: {name!r}",
-        )
-        _require(
-            field_id != 0x7075,
-            f"Ambiguous Unicode Path Setup ZIP extra field: {name!r}",
-        )
-        offset += field_length
+    # Both central and local ZIP metadata must attest to one path only.
+    _reject_ambiguous_extra_fields(member.extra, name)
 
     mode = (member.external_attr >> 16) & 0xFFFF
     _require(not stat.S_ISLNK(mode), f"Symlink in Setup ZIP: {name!r}")
@@ -157,6 +186,7 @@ def verify_setup_zip(zip_path: Path, version_path: Path, source_sha: str) -> dic
             _require(len(infos) <= MAX_ENTRIES, "Setup ZIP member count exceeds budget.")
             for member in infos:
                 name, portable, is_directory = _member_target(member)
+                _verify_local_header(archive, member)
                 _require(portable not in aliases, f"Duplicate/Unicode/case alias: {name!r}")
                 aliases.add(portable)
                 size += member.file_size
