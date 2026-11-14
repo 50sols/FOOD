@@ -1095,7 +1095,7 @@ final class OrderOperationsController extends Controller
     ): array {
         $limit = 20;
         $offset = ($page - 1) * $limit;
-        $needle = '%'.str_replace(['%', '_'], ['\\%', '\\_'], $query).'%';
+        $needle = '%'.str_replace(['!', '%', '_'], ['!!', '!%', '!_'], $query).'%';
 
         if ($channel === 'b2b') {
             $builder = DB::table('b2b_customers')
@@ -1116,11 +1116,11 @@ final class OrderOperationsController extends Controller
                 })
                 ->when($query !== '', function ($scope) use ($needle): void {
                     $scope->where(function ($search) use ($needle): void {
-                        $search->where('b2b_customers.name', 'like', $needle)
-                            ->orWhere('b2b_customers.phone', 'like', $needle)
-                            ->orWhere('b2b_customers.email', 'like', $needle)
-                            ->orWhere('b2b_accounts.company_name', 'like', $needle)
-                            ->orWhere('b2b_accounts.tax_number', 'like', $needle);
+                        $search->whereRaw("b2b_customers.name LIKE ? ESCAPE '!'", [$needle])
+                            ->orWhereRaw("b2b_customers.phone LIKE ? ESCAPE '!'", [$needle])
+                            ->orWhereRaw("b2b_customers.email LIKE ? ESCAPE '!'", [$needle])
+                            ->orWhereRaw("b2b_accounts.company_name LIKE ? ESCAPE '!'", [$needle])
+                            ->orWhereRaw("b2b_accounts.tax_number LIKE ? ESCAPE '!'", [$needle]);
                     });
                 })
                 ->when($selectedId !== null, fn ($scope) => $scope->orderByRaw('b2b_customers.id = ? desc', [$selectedId]))
@@ -1146,9 +1146,9 @@ final class OrderOperationsController extends Controller
                 ->where('store_id', $storeId)
                 ->when($query !== '', function ($scope) use ($needle): void {
                     $scope->where(function ($search) use ($needle): void {
-                        $search->where('name', 'like', $needle)
-                            ->orWhere('phone', 'like', $needle)
-                            ->orWhere('email', 'like', $needle);
+                        $search->whereRaw("name LIKE ? ESCAPE '!'", [$needle])
+                            ->orWhereRaw("phone LIKE ? ESCAPE '!'", [$needle])
+                            ->orWhereRaw("email LIKE ? ESCAPE '!'", [$needle]);
                     });
                 })
                 ->when($selectedId !== null, fn ($scope) => $scope->orderByRaw('id = ? desc', [$selectedId]))
@@ -1196,7 +1196,7 @@ final class OrderOperationsController extends Controller
     ): array {
         $limit = 20;
         $offset = ($page - 1) * $limit;
-        $needle = '%'.str_replace(['%', '_'], ['\\%', '\\_'], $query).'%';
+        $needle = '%'.str_replace(['!', '%', '_'], ['!!', '!%', '!_'], $query).'%';
 
         $availableStock = DB::table('inventories')
             ->join('warehouses', 'warehouses.id', '=', 'inventories.warehouse_id')
@@ -1236,9 +1236,9 @@ final class OrderOperationsController extends Controller
             ->when($channel === 'b2c', fn ($scope) => $scope->whereNotNull('store_products.price'))
             ->when($query !== '', function ($scope) use ($needle): void {
                 $scope->where(function ($search) use ($needle): void {
-                    $search->where('products.name', 'like', $needle)
-                        ->orWhere('products.sku', 'like', $needle)
-                        ->orWhere('products.barcode', 'like', $needle);
+                    $search->whereRaw("products.name LIKE ? ESCAPE '!'", [$needle])
+                        ->orWhereRaw("products.sku LIKE ? ESCAPE '!'", [$needle])
+                        ->orWhereRaw("products.barcode LIKE ? ESCAPE '!'", [$needle]);
                 });
             })
             ->when($selectedId !== null, fn ($scope) => $scope->orderByRaw('products.id = ? desc', [$selectedId]))
