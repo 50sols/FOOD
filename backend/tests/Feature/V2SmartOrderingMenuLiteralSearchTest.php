@@ -32,7 +32,7 @@ final class V2SmartOrderingMenuLiteralSearchTest extends TestCase
         $sku = $this->product($own, 'SKU_!SPECIAL', 'English Regular', 'BAR-A-2');
         $barcode = $this->product($own, 'LIT-A-3', 'Barcoded Item', 'BAR%!SPECIAL');
         $slash = $this->product($own, 'LIT-A-4', 'Slash \ product', 'BAR-A-4');
-        $this->product($own, 'LIT-A-5', 'اسم XYZ عربي', 'BAR-A-5');
+        $lookalike = $this->product($own, 'LIT-A-5', 'اسم XYZ عربي', 'BAR-A-5');
         $this->product($foreign, 'LIT-B-1', 'اسم %_! عربي', 'BAR-B-1');
 
         $initial = [
@@ -46,7 +46,7 @@ final class V2SmartOrderingMenuLiteralSearchTest extends TestCase
             ['locale' => 'en', 'q' => 'SKU_!', 'expected' => [$sku]],
             ['locale' => 'en', 'q' => 'BAR%!', 'expected' => [$barcode]],
             ['locale' => 'en', 'q' => chr(92), 'expected' => [$slash]],
-            ['locale' => 'ar', 'q' => 'عربي', 'expected' => [$symbol]],
+            ['locale' => 'ar', 'q' => 'عربي', 'expected' => [$symbol, $lookalike]],
             ['locale' => 'en', 'q' => 'English', 'expected' => [$sku]],
             ['locale' => 'en', 'q' => 'missing%_!', 'expected' => []],
         ] as $case) {
@@ -104,7 +104,7 @@ final class V2SmartOrderingMenuLiteralSearchTest extends TestCase
             'is_visible' => true,
             'sort_order' => 0,
         ]);
-        $writer->createMenu($own['admin'], $own['site'], $draft, [
+        $lookalikeMenu = $writer->createMenu($own['admin'], $own['site'], $draft, [
             'name_ar' => 'قائمة XYZ عربية',
             'name_en' => 'Menu XYZ English',
             'is_default' => false,
@@ -136,7 +136,7 @@ final class V2SmartOrderingMenuLiteralSearchTest extends TestCase
             ['locale' => 'ar', 'q' => '%_!', 'type' => 'menu', 'expected' => [$match->id]],
             ['locale' => 'en', 'q' => '%_!', 'type' => 'menu', 'expected' => [$match->id]],
             ['locale' => 'en', 'q' => '!_'.chr(92), 'type' => 'category', 'expected' => [$category->id]],
-            ['locale' => 'ar', 'q' => 'عربية', 'type' => 'menu', 'expected' => [$match->id]],
+            ['locale' => 'ar', 'q' => 'عربية', 'type' => 'menu', 'expected' => [$match->id, $lookalikeMenu->id]],
             ['locale' => 'en', 'q' => 'missing%_!', 'type' => 'menu', 'expected' => []],
         ] as $case) {
             $own['admin']->forceFill(['locale' => $case['locale']])->save();
