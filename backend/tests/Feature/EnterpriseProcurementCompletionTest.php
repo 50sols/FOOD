@@ -31,12 +31,104 @@ use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Validation\ValidationException;
+use Symfony\Component\HttpKernel\Exception\HttpException;
 use Tests\Support\ProcurementSecondApprover;
 use Tests\TestCase;
 
 final class EnterpriseProcurementCompletionTest extends TestCase
 {
     use RefreshDatabase;
+
+    public function test_scoped_rfq_search_preserves_literal_prefix_and_title_punctuation_without_mutation(): void
+    {
+        $this->enableProcurement();
+        [$actor, , $context] = $this->scopedUser($this->allPermissions(), 'PROC-RFQ-LITERAL');
+        [$otherActor, , $otherContext] = $this->scopedUser($this->allPermissions(), 'PROC-RFQ-FOREIGN');
+        [$roleless, , $rolelessContext] = $this->scopedUser([], 'PROC-RFQ-ROLELESS');
+
+        $requests = app(PurchaseRequestManager::class);
+        $completion = app(ProcurementCompletionManager::class);
+
+        // Build genuine submitted Purchase Requests and their canonical RFQs.
+        // Only the generated external numbers are replaced with synthetic
+        // punctuation fixtures; production identities and write paths are not used.
+        $make = function (
+            User $owner,
+            ResolvedTenantContext $ownerContext,
+            string $rfqNumber,
+            string $requestNumber,
+            string $title
+        ) use ($requests, $completion): int {
+            $request = $requests->create($owner, $ownerContext, [
+                'currency_code' => 'KWD',
+                'reason' => 'V2 RFQ literal search regression',
+                'lines' => [[
+                    'item_code' => 'RFQ-LITERAL-ITEM',
+                    'description' => 'Scoped RFQ search',
+                    'quantity' => 1,
+                    'unit' => 'each',
+                    'estimated_unit_cost' => 2.000,
+                ]],
+            ]);
+            $requests->submit($owner, $ownerContext, $request->id);
+            $rfq = $completion->createRfq($owner, $ownerContext, $request->id, [
+                'title' => $title,
+            ]);
+            DB::table('enterprise_purchase_requests')->where('id', $request->id)
+                ->update(['request_number' => $requestNumber]);
+            DB::table('enterprise_procurement_rfqs')->where('id', $rfq->id)
+                ->update(['rfq_number' => $rfqNumber]);
+
+            return (int) $rfq->id;
+        };
+
+        $numberId = $make($actor, $context, '%!_RFQ-01', 'REQ-LIT-01', 'Ordinary quotation');
+        $titleId = $make($actor, $context, 'RFQ-TITLE-02', 'REQ-LIT-02', 'Vendor Ops_%!\\-Tier');
+        $requestId = $make($actor, $context, 'RFQ-REQUEST-03', '_!%REQ-03', 'Source pricing');
+        $decoyId = $make($actor, $context, 'RFQ-NORMAL-04', 'REQ-NORMAL-04', 'Vendor OpsABCD-Tier');
+        $make($otherActor, $otherContext, '%!_RFQ-FOREIGN', '_!%REQ-FOREIGN', 'Vendor Ops_%!\\-Foreign');
+
+        DB::table('enterprise_procurement_rfqs')->where('id', $titleId)->update(['status' => 'cancelled']);
+        $before = [
+            'rfqs' => DB::table('enterprise_procurement_rfqs')->count(),
+            'requests' => DB::table('enterprise_purchase_requests')->count(),
+            'quotes' => DB::table('enterprise_procurement_quotes')->count(),
+            'audit' => DB::table('audit_logs')->count(),
+        ];
+
+        $matching = fn (string $q, array $other = []): array => $completion
+            ->paginateRfqs($actor, $context, ['q' => $q] + $other)
+            ->getCollection()->pluck('id')->map(fn ($id): int => (int) $id)->all();
+
+        $this->assertSame([$numberId], $matching('%!_'));
+        $this->assertSame([$titleId], $matching('Ops_%!\\'));
+        $this->assertSame([$requestId], $matching('_!%REQ'));
+        $this->assertEqualsCanonicalizing([$numberId, $titleId], $matching('%'));
+        $this->assertEqualsCanonicalizing([$titleId, $requestId], $matching('_'));
+        $this->assertSame([$titleId], $matching('!'));
+        $this->assertSame([$titleId], $matching('\\'));
+        $this->assertSame([], $matching('OpsAB%D'));
+        $this->assertSame([$decoyId], $matching('RFQ-NORMAL'));
+        $this->assertSame([], $matching('Ops_%!\\', ['status' => 'draft']));
+        $this->assertSame([$titleId], $matching('Ops_%!\\', ['status' => 'cancelled']));
+        $this->assertCount(4, $matching(''));
+        $this->assertSame(10, $completion->paginateRfqs($actor, $context, [], 1)->perPage());
+        $this->assertSame(100, $completion->paginateRfqs($actor, $context, [], 1000)->perPage());
+
+        try {
+            $completion->paginateRfqs($roleless, $rolelessContext, ['q' => '%']);
+            $this->fail('A role without RFQ read permission must be denied at the service boundary.');
+        } catch (HttpException $exception) {
+            $this->assertSame(403, $exception->getStatusCode());
+        }
+
+        $this->assertSame($before, [
+            'rfqs' => DB::table('enterprise_procurement_rfqs')->count(),
+            'requests' => DB::table('enterprise_purchase_requests')->count(),
+            'quotes' => DB::table('enterprise_procurement_quotes')->count(),
+            'audit' => DB::table('audit_logs')->count(),
+        ]);
+    }
 
     public function test_rfq_portal_quote_award_and_savings_preserve_canonical_procurement_chain(): void
     {
