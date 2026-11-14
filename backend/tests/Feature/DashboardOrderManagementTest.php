@@ -972,6 +972,137 @@ class DashboardOrderManagementTest extends TestCase
         }
     }
 
+    public function test_new_order_wizard_b2c_lookups_use_literal_symbols_without_cross_store_results(): void
+    {
+        $store = $this->store('B2C', 'LITERAL-WIZARD-A');
+        $foreignStore = $this->store('B2C', 'LITERAL-WIZARD-B');
+        [$exactProduct, $exactInventory] = $this->product($store, 'b2c', 'SKU%_!', 5, 10);
+        [$lookalikeProduct] = $this->product($store, 'b2c', 'SKUabc!', 6, 10);
+        [$slashProduct] = $this->product($store, 'b2c', 'BACK'.chr(92).'SLASH', 7, 10);
+        [$foreignProduct] = $this->product($foreignStore, 'b2c', 'FOREIGN%_!', 8, 10);
+        DB::table('products')->where('id', $exactProduct)->update(['barcode' => 'BAR%_!']);
+        DB::table('products')->where('id', $lookalikeProduct)->update(['barcode' => 'BARabc!']);
+
+        $exactCustomer = app(B2cCustomerService::class)->create($store, [
+            'name' => 'عربي %_! Buyer',
+            'email' => 'literal-exact@example.test',
+        ]);
+        $lookalikeCustomer = app(B2cCustomerService::class)->create($store, [
+            'name' => 'عربي abc! Buyer',
+            'email' => 'literal-lookalike@example.test',
+        ]);
+        $slashCustomer = app(B2cCustomerService::class)->create($store, [
+            'name' => 'Slash '.chr(92).' Customer',
+            'email' => 'literal-backslash@example.test',
+        ]);
+        $foreignCustomer = app(B2cCustomerService::class)->create($foreignStore, [
+            'name' => 'عربي %_! Foreign',
+            'email' => 'literal-foreign@example.test',
+        ]);
+        $admin = $this->storeAdmin($store, 'literal-wizard-admin@example.test');
+
+        $before = [
+            'orders' => DB::table('orders')->count(),
+            'audits' => DB::table('audit_logs')->count(),
+            'inventories' => DB::table('inventories')->count(),
+            'reserved' => DB::table('inventories')->where('id', $exactInventory)->value('reserved_quantity'),
+        ];
+
+        foreach ([
+            ['type' => 'customer', 'query' => '%_!', 'ids' => [$exactCustomer->id]],
+            ['type' => 'customer', 'query' => 'عربي', 'ids' => [$exactCustomer->id, $lookalikeCustomer->id]],
+            ['type' => 'customer', 'query' => chr(92), 'ids' => [$slashCustomer->id]],
+            ['type' => 'customer', 'query' => "' OR 1=1 --", 'ids' => []],
+            ['type' => 'product', 'query' => 'SKU%_!', 'ids' => [$exactProduct]],
+            ['type' => 'product', 'query' => 'BAR%_!', 'ids' => [$exactProduct]],
+            ['type' => 'product', 'query' => chr(92), 'ids' => [$slashProduct]],
+            ['type' => 'product', 'query' => 'SKU', 'ids' => [$exactProduct, $lookalikeProduct]],
+            ['type' => 'product', 'query' => 'missing%_!', 'ids' => []],
+        ] as $case) {
+            $url = '/admin/operations/orders/lookups/'.$case['type'].'?'.http_build_query([
+                'channel' => 'b2c',
+                'store_id' => $store,
+                'q' => $case['query'],
+            ], '', '&', PHP_QUERY_RFC3986);
+            $response = $this->actingAs($admin)->getJson($url)
+                ->assertOk()
+                ->assertJsonPath('data.page', 1)
+                ->assertJsonPath('data.has_more', false);
+
+            $actual = array_map('intval', array_column((array) $response->json('data.items'), 'id'));
+            $expected = array_map('intval', $case['ids']);
+            sort($actual);
+            sort($expected);
+            $this->assertSame($expected, $actual, 'Wizard '. $case['type'].' search must be literal and store-scoped.');
+            $this->assertNotContains((int) $foreignCustomer->id, $case['type'] === 'customer' ? $actual : []);
+            $this->assertNotContains($foreignProduct, $case['type'] === 'product' ? $actual : []);
+        }
+
+        $this->actingAs($admin)
+            ->getJson('/admin/operations/orders/lookups/customer?channel=b2c&store_id='.$foreignStore.'&q=Foreign')
+            ->assertNotFound();
+        $this->actingAs($admin)
+            ->getJson('/admin/operations/orders/lookups/product?channel=b2b&store_id='.$store.'&q=SKU')
+            ->assertNotFound();
+
+        $this->assertSame($before['orders'], DB::table('orders')->count());
+        $this->assertSame($before['audits'], DB::table('audit_logs')->count());
+        $this->assertSame($before['inventories'], DB::table('inventories')->count());
+        $this->assertSame($before['reserved'], DB::table('inventories')->where('id', $exactInventory)->value('reserved_quantity'));
+    }
+
+    public function test_new_order_wizard_b2b_lookup_preserves_approved_account_scope_with_literal_query(): void
+    {
+        $store = app(WholesalePrincipal::class)->storeId();
+        [$exactProduct] = $this->product($store, 'b2b', 'B2B%_!', 10, 12);
+        [$lookalikeProduct] = $this->product($store, 'b2b', 'B2Babc!', 10, 12);
+        $tier = (int) DB::table('b2b_price_tiers')->insertGetId([
+            'code' => 'WIZARD-LITERAL-TIER',
+            'name' => 'Wizard literal test tier',
+            'priority' => 1,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        $exact = app(B2bCustomerService::class)->create([
+            'name' => 'Wholesale %_! Buyer',
+            'email' => 'b2b-literal-exact@example.test',
+        ]);
+        $lookalike = app(B2bCustomerService::class)->create([
+            'name' => 'Wholesale abc! Buyer',
+            'email' => 'b2b-literal-lookalike@example.test',
+        ]);
+        foreach ([$exact, $lookalike] as $customer) {
+            B2bAccount::query()->create([
+                'customer_id' => $customer->legacy_customer_id,
+                'b2b_customer_id' => $customer->id,
+                'price_tier_id' => $tier,
+                'company_name' => $customer->name,
+                'status' => 'active',
+            ]);
+        }
+        $admin = $this->globalAdmin('B2B_ADMIN', 'literal-wizard-wholesale@example.test');
+
+        foreach ([
+            ['type' => 'customer', 'q' => '%_!', 'ids' => [$exact->id]],
+            ['type' => 'customer', 'q' => 'Wholesale', 'ids' => [$exact->id, $lookalike->id]],
+            ['type' => 'product', 'q' => 'B2B%_!', 'ids' => [$exactProduct]],
+            ['type' => 'product', 'q' => 'B2Babc!', 'ids' => [$lookalikeProduct]],
+        ] as $case) {
+            $url = '/admin/operations/orders/lookups/'.$case['type'].'?'.http_build_query([
+                'channel' => 'b2b',
+                'store_id' => $store,
+                'q' => $case['q'],
+            ], '', '&', PHP_QUERY_RFC3986);
+            $response = $this->actingAs($admin)->getJson($url)->assertOk();
+            $actual = array_map('intval', array_column((array) $response->json('data.items'), 'id'));
+            $expected = array_map('intval', $case['ids']);
+            sort($actual);
+            sort($expected);
+            $this->assertSame($expected, $actual, 'B2B wizard must preserve eligible account/product scope.');
+        }
+        $this->assertDatabaseCount('orders', 0);
+    }
+
     public function test_order_create_lookups_are_bounded_scoped_and_not_eagerly_embedded(): void
     {
         $store = $this->store('B2C', 'ORDER-LOOKUP');
