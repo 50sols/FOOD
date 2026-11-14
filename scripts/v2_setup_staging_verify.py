@@ -129,6 +129,11 @@ def _member_target(member: zipfile.ZipInfo) -> tuple[str, str, bool]:
     _require(file_type in ((0, stat.S_IFDIR) if is_directory else (0, stat.S_IFREG)),
              f"Non-regular Setup ZIP member: {name!r}")
     _require(member.flag_bits & 0x1 == 0, f"Encrypted Setup ZIP entry: {name!r}")
+    # The web installer must be extractable by ordinary cPanel/shared-host ZIP
+    # handlers. Python can read BZIP2/LZMA entries that typical hosting unzip
+    # tools may reject, so do not certify a nonportable one-ZIP installer.
+    _require(member.compress_type in (zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED),
+             f"Unsupported Setup ZIP compression method: {name!r}")
     _require(member.file_size <= MAX_ENTRY_SIZE, f"Oversize Setup ZIP entry: {name!r}")
     portable = unicodedata.normalize("NFC", normalized).casefold()
     return normalized, portable, is_directory
