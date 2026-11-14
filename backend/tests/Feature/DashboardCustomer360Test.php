@@ -788,7 +788,7 @@ class DashboardCustomer360Test extends TestCase
             $otherOwner,
         );
         $otherPlatform = PlatformCustomer::query()->where('user_id', $otherOwner->id)->firstOrFail();
-        $invoice($otherPlatform->id, $otherPlatform->legacy_customer_id, $otherDomain->id, $invoiceNumber);
+        $invoice($otherPlatform->id, $otherPlatform->legacy_customer_id, $otherDomain->id, 'FIN_%!\\-B');
 
         $before = DB::table('invoices')->count();
         $ledgerBefore = DB::table('customer_account_ledger_entries')->count();
