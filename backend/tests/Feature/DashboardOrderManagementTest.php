@@ -1062,7 +1062,7 @@ class DashboardOrderManagementTest extends TestCase
             ->assertNotFound();
         $this->actingAs($unprivileged)
             ->getJson('/admin/operations/orders/lookups/customer?channel=b2c&store_id='.$store.'&q=%25')
-            ->assertNotFound();
+            ->assertForbidden();
     }
 
     public function test_new_order_wizard_b2b_lookup_preserves_approved_account_scope_with_literal_query(): void
