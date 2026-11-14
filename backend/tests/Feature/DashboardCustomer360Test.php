@@ -752,7 +752,7 @@ class DashboardCustomer360Test extends TestCase
         $wholesaleStoreId = app(WholesalePrincipal::class)->storeId();
 
         $invoiceNumber = 'FIN_%!\-A';
-        $invoice = function (int $customerId, int $legacyId, int $b2bId, string $number, string $currency = 'EGP') use ($wholesaleStoreId): int {
+        $invoice = function (int $customerId, int $legacyId, int $b2bId, string $number, string $currency = 'EGP', string $status = 'issued') use ($wholesaleStoreId): int {
             return (int) DB::table('invoices')->insertGetId([
                 'store_id' => $wholesaleStoreId,
                 'customer_id' => $legacyId,
@@ -760,7 +760,7 @@ class DashboardCustomer360Test extends TestCase
                 'b2b_customer_id' => $b2bId,
                 'b2c_customer_id' => null,
                 'invoice_number' => $number,
-                'status' => 'issued',
+                'status' => $status,
                 'channel' => 'b2b',
                 'currency' => $currency,
                 'total' => 25,
@@ -772,7 +772,9 @@ class DashboardCustomer360Test extends TestCase
 
         $targetId = $invoice($platform->id, $platform->legacy_customer_id, $domain->id, $invoiceNumber);
         $decoyId = $invoice($platform->id, $platform->legacy_customer_id, $domain->id, 'FINX-OTHER');
-        $invoice($platform->id, $platform->legacy_customer_id, $domain->id, 'FIN_%!-FOREIGN-CURRENCY', 'KWD');
+        // A cancelled currency-mismatched invoice must remain outside the picker, without
+        // corrupting the active EGP account ledger into a mixed-currency 409.
+        $invoice($platform->id, $platform->legacy_customer_id, $domain->id, 'FIN_%!-FOREIGN-CURRENCY', 'KWD', 'cancelled');
 
         $otherStoreId = $this->store('B2C', 'PICKER-LITERAL-FOREIGN', 'Literal Foreign');
         $otherOwner = User::query()->create([
