@@ -16,6 +16,7 @@ use Illuminate\Database\Eloquent\ModelNotFoundException;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
+use Symfony\Component\HttpKernel\Exception\HttpException;
 use Tests\Support\ProcurementSecondApprover;
 use Tests\TestCase;
 
@@ -212,7 +213,7 @@ final class EnterprisePurchaseOrderFoundationTest extends TestCase
         try {
             $orders->paginate($deniedUser, $deniedContext, ['q' => 'PO_%!']);
             $this->fail('A user without procurement.purchase_orders.view must not access the PO list.');
-        } catch (\Symfony\Component\HttpKernel\Exception\HttpException $exception) {
+        } catch (HttpException $exception) {
             $this->assertSame(403, $exception->getStatusCode());
         }
 
