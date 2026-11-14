@@ -385,6 +385,147 @@ final class EnterpriseFinanceFoundationTest extends TestCase
         }
     }
 
+    public function test_four_finance_foundation_prefix_lists_match_literal_symbols_and_scope(): void
+    {
+        [$actor, , $context] = $this->scopedUser(
+            ['finance.view', 'finance.manage'], 'FIN-LIT-A',
+        );
+        [$foreignActor, , $foreignContext] = $this->scopedUserInNewOrganization(
+            ['finance.view', 'finance.manage'], 'FIN-LIT-B',
+        );
+        $this->enableFinance($actor, $context);
+        $this->enableFinance($foreignActor, $foreignContext);
+        $finance = app(FinanceFoundationService::class);
+
+        $newAccount = fn (string $code, string $name) => $finance->createAccount(
+            $actor, $context, [
+                'code' => $code, 'name' => $name,
+                'type' => 'asset', 'normal_balance' => 'debit', 'allow_posting' => true,
+            ],
+        );
+        $account = $newAccount('1000', 'ACC_%!\\-A');
+        $accountDecoy = $newAccount('1100', 'ACCX-OTHER');
+        $accountLeading = [];
+        $counter = 0;
+        foreach ([
+            '%' => '%PREFIX',
+            '_' => '_PREFIX',
+            '!' => '!PREFIX',
+            '\\' => '\\PREFIX',
+        ] as $symbol => $name) {
+            $counter++;
+            $accountLeading[$symbol] = $newAccount('12'.$counter.'0', $name)->id;
+        }
+        $cost = $finance->createCostCenter($actor, $context, [
+            'code' => 'C01', 'name' => 'COST_%!\\-A',
+        ]);
+        $costDecoy = $finance->createCostCenter($actor, $context, [
+            'code' => 'C02', 'name' => 'COSTX-OTHER',
+        ]);
+        $year = $finance->createFiscalYear($actor, $context, [
+            'code' => 'FY2029', 'name' => 'YEAR_%!\\-A',
+            'starts_on' => '2029-01-01', 'ends_on' => '2029-12-31',
+        ]);
+        $yearDecoy = $finance->createFiscalYear($actor, $context, [
+            'code' => 'FY2030', 'name' => 'YEARX-OTHER',
+            'starts_on' => '2030-01-01', 'ends_on' => '2030-12-31',
+        ]);
+        $period = $finance->createFiscalPeriod($actor, $context, $year->id, [
+            'sequence' => 1, 'code' => 'P01', 'name' => 'PERIOD_%!\\-A',
+            'starts_on' => '2029-01-01', 'ends_on' => '2029-01-31',
+        ]);
+        $periodDecoy = $finance->createFiscalPeriod($actor, $context, $year->id, [
+            'sequence' => 2, 'code' => 'P02', 'name' => 'PERIODX-OTHER',
+            'starts_on' => '2029-02-01', 'ends_on' => '2029-02-28',
+        ]);
+        $finance->createAccount($foreignActor, $foreignContext, [
+            'code' => '1000', 'name' => 'ACC_%!\\-FOREIGN',
+            'type' => 'asset', 'normal_balance' => 'debit',
+        ]);
+        $finance->createCostCenter($foreignActor, $foreignContext, [
+            'code' => 'C01', 'name' => 'COST_%!\\-FOREIGN',
+        ]);
+        $foreignYear = $finance->createFiscalYear($foreignActor, $foreignContext, [
+            'code' => 'FY2029', 'name' => 'YEAR_%!\\-FOREIGN',
+            'starts_on' => '2029-01-01', 'ends_on' => '2029-12-31',
+        ]);
+        $finance->createFiscalPeriod($foreignActor, $foreignContext, $foreignYear->id, [
+            'sequence' => 1, 'code' => 'P01', 'name' => 'PERIOD_%!\\-FOREIGN',
+            'starts_on' => '2029-01-01', 'ends_on' => '2029-01-31',
+        ]);
+
+        $counts = collect([
+            'enterprise_finance_accounts',
+            'enterprise_cost_centers',
+            'enterprise_fiscal_years',
+            'enterprise_fiscal_periods',
+            'audit_logs',
+        ])->mapWithKeys(fn (string $table): array => [$table => DB::table($table)->count()])->all();
+
+        $accountSearch = fn (string $q): array => $finance->paginateAccounts(
+            $actor, $context, ['q' => $q],
+        )->getCollection()->pluck('id')->all();
+        $costSearch = fn (string $q): array => $finance->paginateCostCenters(
+            $actor, $context, ['q' => $q],
+        )->getCollection()->pluck('id')->all();
+        $yearSearch = fn (string $q): array => $finance->paginateFiscalYears(
+            $actor, $context, ['q' => $q],
+        )->getCollection()->pluck('id')->all();
+        $periodSearch = fn (string $q): array => $finance->paginateFiscalPeriods(
+            $actor, $context, ['q' => $q],
+        )->getCollection()->pluck('id')->all();
+
+        foreach (['ACC_', 'ACC_%', 'ACC_%!', 'ACC_%!\\-'] as $q) {
+            $this->assertSame([$account->id], $accountSearch($q), 'Account prefix '.$q);
+        }
+        foreach ($accountLeading as $symbol => $id) {
+            $this->assertSame([$id], $accountSearch($symbol), 'Leading symbol '.$symbol);
+        }
+        $this->assertSame([$account->id, $accountDecoy->id], $accountSearch('ACC'));
+        $this->assertSame([], $accountSearch('ACC%'));
+
+        foreach ([
+            [$costSearch, 'COST_', $cost->id],
+            [$yearSearch, 'YEAR_', $year->id],
+            [$periodSearch, 'PERIOD_', $period->id],
+        ] as [$search, $prefix, $id]) {
+            foreach ([$prefix, $prefix.'%', $prefix.'%!', $prefix.'%!\\-'] as $query) {
+                $this->assertSame([$id], $search($query), 'Literal prefix '.$query);
+            }
+        }
+        $this->assertSame([$cost->id, $costDecoy->id], $costSearch('COST'));
+        $this->assertSame([$yearDecoy->id, $year->id], $yearSearch('YEAR'));
+        $this->assertSame([$period->id, $periodDecoy->id], $periodSearch('PERIOD'));
+        $this->assertSame(1, $finance->paginateAccounts(
+            $foreignActor, $foreignContext, ['q' => 'ACC_%!'],
+        )->total());
+        $this->assertSame(0, $finance->paginateAccounts(
+            $actor, $context, ['q' => 'ACC_', 'type' => 'liability'],
+        )->total());
+        $this->assertSame(0, $finance->paginateCostCenters(
+            $actor, $context, ['q' => 'COST_', 'status' => 'inactive'],
+        )->total());
+        $this->assertSame(0, $finance->paginateFiscalYears(
+            $actor, $context, ['q' => 'YEAR_', 'status' => 'closed'],
+        )->total());
+        $this->assertSame(0, $finance->paginateFiscalPeriods(
+            $actor, $context, ['q' => 'PERIOD_', 'fiscal_year_id' => $yearDecoy->id],
+        )->total());
+        $this->assertSame(10, $finance->paginateAccounts($actor, $context, [], 1)->perPage());
+
+        $roleless = User::factory()->create(['is_active' => true]);
+        try {
+            $finance->paginateAccounts($roleless, $context, ['q' => 'ACC_%!']);
+            $this->fail('Roleless actors cannot inspect Finance foundation lists.');
+        } catch (HttpException $exception) {
+            $this->assertSame(403, $exception->getStatusCode());
+        }
+
+        foreach ($counts as $table => $expected) {
+            $this->assertSame($expected, DB::table($table)->count(), $table.' mutated on read.');
+        }
+    }
+
     public function test_finance_requires_both_rbac_and_module_entitlement(): void
     {
         [$viewer, , $viewerContext] = $this->scopedUser(['finance.view'], 'FIN-RBAC');
