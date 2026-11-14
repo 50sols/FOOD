@@ -109,7 +109,13 @@ function harness(opts={}) {
   const issue = { number:2929, title:'V2 | AUTO-LEASE example', state:'open',
     labels: [{name:'worker:active'}, ...(opts.humanGate ? [{name:'gate:human'}] : [])] };
   const mutations=[]; let branchReads=0, commentReads=0, prReads=0;
+  const branchNames=[];
   const oldState = state(1,'2026-11-10T09:20:00Z');
+  if (opts.inlineBranchBase) {
+    oldState.body = oldState.body.replace(
+      'BRANCH: feat/2929-lease-tests',
+      'BRANCH: feat/2929-lease-tests; BASE: Foodex_V2 ONLY');
+  }
   if (opts.claimPr) {
     if (opts.originalFieldStyle) {
       oldState.body = oldState.body.replace('\nBRANCH: feat/2929-lease-tests',
@@ -141,7 +147,7 @@ function harness(opts={}) {
       createComment:async()=>{mutations.push('comment');return {data:{}};},
     },
     repos:{
-      getBranch:async()=>{branchReads++;if(opts.apiError)throw Object.assign(new Error('permission denied'),{status:403});
+      getBranch:async args=>{branchNames.push(args.branch);branchReads++;if(opts.apiError)throw Object.assign(new Error('permission denied'),{status:403});
         return {data:{commit:{sha:opts.branchMoves&&branchReads>1?'new-head':'old-head'}}};},
       getCommit:async()=>({data:{commit:{committer:{date:opts.recentCommit?
         '2026-11-10T09:50:00Z':'2026-11-10T09:20:00Z'}}}}),
@@ -164,7 +170,8 @@ function harness(opts={}) {
         [{name:'FOODEX Required CI Gate',head_sha:'old-head',status:'in_progress'}]:[]}};
     }},
   }};
-  return {github, mutations, getBranchReads:()=>branchReads};
+  return {github, mutations, getBranchReads:()=>branchReads,
+    getBranchNames:()=>branchNames};
 }
 async function sweep(opts={}) {
   const fixture=harness(opts);
@@ -297,4 +304,33 @@ test('GitHub permission errors fail closed without mutation', async () => {
   await assert.rejects(run({github:h.github,context:{repo:{owner:'example',repo:'FOOD'}},
     core:{info:()=>{}},nowMs:now}),/permission denied/);
   assert.deepEqual(h.mutations,[]);
+});
+
+test('inline BRANCH BASE metadata never changes the actual Git branch or lease origin', () => {
+  const original = state(1, '2026-11-10T09:20:00Z');
+  original.body = original.body.replace(
+    'BRANCH: feat/2929-lease-tests',
+    'BRANCH: feat/2929-lease-tests; BASE: Foodex_V2 ONLY');
+  const checkpoint = state(2, '2026-11-10T09:48:00Z', 'worker-a', 'WAITING_CI');
+  const parsed = parseClaim([original, checkpoint]);
+  assert.equal(parsed.branch, 'feat/2929-lease-tests');
+  assert.equal(parsed.createdMs, Date.parse('2026-11-10T09:20:00Z'));
+  assert.equal(parsed.claimId, 1);
+  assert.equal(claimIdentity(parsed), '1:' + Date.parse('2026-11-10T09:20:00Z'));
+
+  const alias = {...original, body:original.body.replace('BRANCH:', 'ORIGINAL_BRANCH:')};
+  assert.equal(parseClaim([alias]).branch, 'feat/2929-lease-tests');
+});
+test('inline BASE annotation probes the real branch and preserves recent-commit protection', async () => {
+  const recent = await sweep({inlineBranchBase:true, recentCommit:true});
+  assert.equal(recent.result.released, 0);
+  assert.deepEqual(recent.mutations, []);
+  assert.deepEqual(recent.getBranchNames(),
+    ['feat/2929-lease-tests']);
+  const stale = await sweep({inlineBranchBase:true});
+  assert.equal(stale.result.released, 1);
+  assert.deepEqual(stale.getBranchNames(),
+    ['feat/2929-lease-tests', 'feat/2929-lease-tests']);
+  assert.deepEqual(stale.mutations,
+    ['remove:worker:active','add:worker:handoff-ready','comment']);
 });
