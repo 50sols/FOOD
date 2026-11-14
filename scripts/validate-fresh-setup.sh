@@ -85,17 +85,14 @@ if ($mode === 'finish') {
     if ($expectedVersion === '') {
         throw new RuntimeException('CURRENT_VERSION is required for fresh-install validation.');
     }
-    $admin = $workflow->prepareSuperAdmin([
-        'name' => 'FOODEX Acceptance Owner',
-        'email' => 'acceptance-owner@example.test',
-        'password' => 'AcceptanceOnly!12345',
-        'locale' => 'en',
-    ]);
-    $version = $workflow->finish($admin);
-    if ($version !== $expectedVersion || ! $state->isInstalled()) {
-        throw new RuntimeException('Installer Finish did not lock '.$expectedVersion.'.');
-    }
+    // HTTP /install/step/15 owns final account, version and lock writes.
+    // This helper verifies the web wizard; it must never finish CLI-side.
     $db = Illuminate\Support\Facades\DB::class;
+    $version = (string) $db::table('system_versions')
+        ->where('version', $expectedVersion)->value('version');
+    if ($version !== $expectedVersion || ! $state->isInstalled()) {
+        throw new RuntimeException('HTTP Installer Finish did not lock '.$expectedVersion.'.');
+    }
     if (! $db::table('users')->where('email', 'acceptance-owner@example.test')->where('is_active', true)->exists()) {
         throw new RuntimeException('First owner was not created.');
     }
@@ -417,7 +414,8 @@ if ($mode === 'finish') {
 throw new RuntimeException('Unknown acceptance mode.');
 PHP
 
-FRESH_ROOT="$fresh" php /tmp/foodex-fresh-install.php prepare
+# The unpacked ZIP must be installed via real /install HTTP Next -> Finish.
+# The PHP CLI helper below only verifies completed state and seeds QA fixtures.
 
 stop_server() {
   local pid_file="$1"
@@ -490,6 +488,98 @@ trap 'stop_server /tmp/foodex-install-server.pid; stop_server /tmp/foodex-instal
 
 wait_for_http             "Pre-finish installer"             /tmp/foodex-install-server.pid             /tmp/foodex-install-server.log             http://127.0.0.1:8099/install             /tmp/install-before.html             200
 grep -Fq 'FOODEX' /tmp/install-before.html
+
+# Unpacked Setup ZIP must complete the *actual* web wizard. No PHP CLI
+# prepare/finish shortcut may satisfy this acceptance gate.
+installer_token="$(python3 - <<'PY'
+import re
+from pathlib import Path
+page = Path('/tmp/install-before.html').read_text(encoding='utf-8')
+match = re.search(r'name="installer_token"\s+value="([a-f0-9]{64})"', page)
+if match is None:
+    raise SystemExit('No protected installer progress token in ZIP web form')
+print(match.group(1))
+PY
+)"
+test -n "$installer_token"
+
+# A hostile/out-of-order Finish must NOT bypass the fifteen steps.
+test "$(curl -sS -o /tmp/install-order-block.html -w '%{http_code}' \
+  -X POST --data-urlencode "installer_token=$installer_token" \
+  http://127.0.0.1:8099/install/step/15)" = "409"
+test ! -e "$fresh/backend/storage/app/system/installed.lock"
+
+wizard_post() {
+  local step="$1"
+  shift
+  local status=""
+  for attempt in $(seq 1 15); do
+    status="$(curl -sS --max-time 300 -o "/tmp/install-step-$step.html" \
+      -w '%{http_code}' -X POST \
+      --data-urlencode "installer_token=$installer_token" "$@" \
+      "http://127.0.0.1:8099/install/step/$step" || true)"
+    [[ "$status" == "302" ]] && return 0
+    if [[ "$status" != "000" ]]; then
+      echo "::error::Web installer step $step returned HTTP $status, expected 302"
+      tail -n 100 "$fresh/backend/storage/logs/laravel.log" 2>/dev/null || true
+      return 1
+    fi
+    sleep 1
+  done
+  echo "::error::Web installer step $step could not complete."
+  return 1
+}
+
+for step in $(seq 1 15); do
+  case "$step" in
+    4) wizard_post "$step" \
+      --data-urlencode "db_host=127.0.0.1" --data-urlencode "db_port=3306" \
+      --data-urlencode "db_database=foodex_acceptance" \
+      --data-urlencode "db_username=root" --data-urlencode "db_password=root";;
+    6) wizard_post "$step" \
+      --data-urlencode "app_name=FOODEX" \
+      --data-urlencode "app_url=https://foodex.50sols.com" \
+      --data-urlencode "app_locale=ar";;
+    7) wizard_post "$step" \
+      --data-urlencode "admin_name=FOODEX Acceptance Owner" \
+      --data-urlencode "admin_email=acceptance-owner@example.test" \
+      --data-urlencode "admin_locale=en" \
+      --data-urlencode "admin_password=AcceptanceOnly!12345" \
+      --data-urlencode "admin_password_confirmation=AcceptanceOnly!12345";;
+    8) wizard_post "$step" --data-urlencode "filesystem_disk=local";;
+    9) wizard_post "$step" \
+      --data-urlencode "cache_store=redis" \
+      --data-urlencode "queue_connection=redis" \
+      --data-urlencode "redis_host=127.0.0.1" \
+      --data-urlencode "redis_port=6379" \
+      --data-urlencode "redis_password=null";;
+    10) wizard_post "$step" \
+      --data-urlencode "mail_mailer=log" \
+      --data-urlencode "mail_from_address=noreply@50sols.com" \
+      --data-urlencode "mail_from_name=FOODEX";;
+    *) wizard_post "$step";;
+  esac
+
+  if [[ "$step" -lt 15 ]]; then
+    next=$((step + 1))
+    next_status=""
+    # .env changes may recycle the PHP development server: poll the next GET
+    # rather than treating a transient refused connection as install success.
+    for attempt in $(seq 1 15); do
+      next_status="$(curl -sS -o "/tmp/install-next-$next.html" -w '%{http_code}' \
+        "http://127.0.0.1:8099/install?step=$next" || true)"
+      [[ "$next_status" == "200" ]] && break
+      sleep 1
+    done
+    test "$next_status" = "200"
+    grep -Fq "/install/step/$next" "/tmp/install-next-$next.html"
+    if [[ "$step" -eq 7 ]]; then
+      ! grep -Fq 'AcceptanceOnly!12345' "/tmp/install-next-$next.html"
+      ! grep -Fq 'AcceptanceOnly!12345' "$fresh/backend/storage/app/system/install-progress.json"
+    fi
+  fi
+done
+echo "PASS: fifteen real HTTP web-installer steps, ordered Next -> Finish and masked secrets"
 
 # Finish mutates installer/environment state. Do not let Artisan's development
 # server hot-reload in the middle of acceptance requests: stop it completely,
