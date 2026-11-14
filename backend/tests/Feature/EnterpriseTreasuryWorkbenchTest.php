@@ -23,8 +23,8 @@ use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Facades\Route;
-use Tests\TestCase;
 use Symfony\Component\HttpKernel\Exception\HttpException;
+use Tests\TestCase;
 
 final class EnterpriseTreasuryWorkbenchTest extends TestCase
 {
@@ -319,7 +319,7 @@ final class EnterpriseTreasuryWorkbenchTest extends TestCase
             User $user, ResolvedTenantContext $tenant, string $key, string $code, string $lender
         ) use ($planning): int {
             return $planning->createFacility($user, $tenant, [
-                'idempotency_key' => 'facility-'. $key,
+                'idempotency_key' => 'facility-'.$key,
                 'code' => $code,
                 'lender_name' => $lender,
                 'currency_code' => 'KWD',
