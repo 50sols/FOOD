@@ -51,7 +51,13 @@ function parseClaim(comments) {
     if (!kv.OWNER || !time(c.created_at)) continue;
     // A worker may claim before creating its issue branch; keep the empty
     // branch identity until a subsequent checkpoint supplies the real ref.
-    const branch = kv.BRANCH || kv.ORIGINAL_BRANCH || '';
+    // Some valid issue claims add the target as inline metadata, e.g.
+    // BRANCH: fix/123-v2-work; BASE: Foodex_V2 ONLY. The annotated text
+    // is not a Git ref: probing it returns 404 and hides newer commits.
+    // Strip only explicit trailing BASE/TARGET metadata; otherwise keep
+    // the supplied exact branch identity (never guess a replacement ref).
+    const branch = String(kv.BRANCH || kv.ORIGINAL_BRANCH || '')
+      .replace(/;\\s*(?:BASE|TARGET)\\s*:.*$/i, '').trim();
     if (!claim || claim.owner !== kv.OWNER || claim.branch !== branch) {
       claim = { owner: kv.OWNER, branch, claimId: c.id,
         createdMs: time(c.created_at) };
