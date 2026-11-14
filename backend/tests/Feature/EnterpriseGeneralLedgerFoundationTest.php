@@ -27,6 +27,7 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Validation\ValidationException;
 use LogicException;
+use Symfony\Component\HttpKernel\Exception\HttpException;
 use Tests\TestCase;
 
 final class EnterpriseGeneralLedgerFoundationTest extends TestCase
@@ -317,7 +318,7 @@ final class EnterpriseGeneralLedgerFoundationTest extends TestCase
         try {
             $ledger->paginateJournals($unprivileged, $unprivilegedContext, ['q' => 'GL_%!']);
             $this->fail('A user without finance.view may not read a journal-number search.');
-        } catch (\Symfony\Component\HttpKernel\Exception\HttpException $exception) {
+        } catch (HttpException $exception) {
             $this->assertSame(403, $exception->getStatusCode());
         }
 
