@@ -362,9 +362,11 @@ final class Customer360Controller extends Controller
 
         $query = clone $base;
         if ($search !== '') {
-            $needle = '%'.addcslashes($search, '%_\\\\').'%';
+            // Explicit, portable LIKE escaping keeps finance invoice identifiers
+            // literal on SQLite and MySQL/MariaDB, including backslashes.
+            $needle = '%'.str_replace(['!', '%', '_'], ['!!', '!%', '!_'], $search).'%';
             $query->where(function ($builder) use ($needle, $referenceId): void {
-                $builder->where('invoices.invoice_number', 'like', $needle);
+                $builder->whereRaw("invoices.invoice_number LIKE ? ESCAPE '!'", [$needle]);
                 if ($referenceId !== null) {
                     $builder->orWhere('invoices.id', $referenceId);
                 }
