@@ -57,7 +57,7 @@ function parseClaim(comments) {
     // Strip only explicit trailing BASE/TARGET metadata; otherwise keep
     // the supplied exact branch identity (never guess a replacement ref).
     const branch = String(kv.BRANCH || kv.ORIGINAL_BRANCH || '')
-      .replace(/;\\s*(?:BASE|TARGET)\\s*:.*$/i, '').trim();
+      .replace(/;\s*(?:BASE|TARGET)\s*:.*$/i, '').trim();
     if (!claim || claim.owner !== kv.OWNER || claim.branch !== branch) {
       claim = { owner: kv.OWNER, branch, claimId: c.id,
         createdMs: time(c.created_at) };
