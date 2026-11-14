@@ -66,7 +66,9 @@ final class FinanceFoundationService
             'parent_id' => ['nullable', 'integer', 'min:1'],
         ])->validate();
 
-        $term = $this->safePrefix((string) ($validated['q'] ?? ''));
+        $term = trim((string) ($validated['q'] ?? ''));
+        // Preserve operator-entered finance code/name prefixes as literal SQL text.
+        $pattern = str_replace(['!', '%', '_'], ['!!', '!%', '!_'], $term).'%';
         $perPage = max(10, min(100, $perPage));
 
         return $this->accountQuery($scope)
@@ -82,10 +84,10 @@ final class FinanceFoundationService
                 $validated['parent_id'] ?? null,
                 fn (Builder $query, int $parentId): Builder => $query->where('parent_id', $parentId),
             )
-            ->when($term !== '', function (Builder $query) use ($term): void {
-                $query->where(function (Builder $search) use ($term): void {
-                    $search->where('code', 'like', $term.'%')
-                        ->orWhere('name', 'like', $term.'%');
+            ->when($term !== '', function (Builder $query) use ($pattern): void {
+                $query->where(function (Builder $search) use ($pattern): void {
+                    $search->whereRaw("code LIKE ? ESCAPE '!'", [$pattern])
+                        ->orWhereRaw("name LIKE ? ESCAPE '!'", [$pattern]);
                 });
             })
             ->orderBy('code')
@@ -215,7 +217,9 @@ final class FinanceFoundationService
             'parent_id' => ['nullable', 'integer', 'min:1'],
         ])->validate();
 
-        $term = $this->safePrefix((string) ($validated['q'] ?? ''));
+        $term = trim((string) ($validated['q'] ?? ''));
+        // Preserve operator-entered finance code/name prefixes as literal SQL text.
+        $pattern = str_replace(['!', '%', '_'], ['!!', '!%', '!_'], $term).'%';
         $perPage = max(10, min(100, $perPage));
 
         return $this->costCenterQuery($scope)
@@ -227,10 +231,10 @@ final class FinanceFoundationService
                 $validated['parent_id'] ?? null,
                 fn (Builder $query, int $parentId): Builder => $query->where('parent_id', $parentId),
             )
-            ->when($term !== '', function (Builder $query) use ($term): void {
-                $query->where(function (Builder $search) use ($term): void {
-                    $search->where('code', 'like', $term.'%')
-                        ->orWhere('name', 'like', $term.'%');
+            ->when($term !== '', function (Builder $query) use ($pattern): void {
+                $query->where(function (Builder $search) use ($pattern): void {
+                    $search->whereRaw("code LIKE ? ESCAPE '!'", [$pattern])
+                        ->orWhereRaw("name LIKE ? ESCAPE '!'", [$pattern]);
                 });
             })
             ->orderBy('code')
@@ -348,7 +352,9 @@ final class FinanceFoundationService
             'status' => ['nullable', Rule::in(self::PERIOD_STATUSES)],
         ])->validate();
 
-        $term = $this->safePrefix((string) ($validated['q'] ?? ''));
+        $term = trim((string) ($validated['q'] ?? ''));
+        // Preserve operator-entered finance code/name prefixes as literal SQL text.
+        $pattern = str_replace(['!', '%', '_'], ['!!', '!%', '!_'], $term).'%';
         $perPage = max(10, min(100, $perPage));
 
         return $this->fiscalYearQuery($scope)
@@ -356,10 +362,10 @@ final class FinanceFoundationService
                 $validated['status'] ?? null,
                 fn (Builder $query, string $status): Builder => $query->where('status', $status),
             )
-            ->when($term !== '', function (Builder $query) use ($term): void {
-                $query->where(function (Builder $search) use ($term): void {
-                    $search->where('code', 'like', $term.'%')
-                        ->orWhere('name', 'like', $term.'%');
+            ->when($term !== '', function (Builder $query) use ($pattern): void {
+                $query->where(function (Builder $search) use ($pattern): void {
+                    $search->whereRaw("code LIKE ? ESCAPE '!'", [$pattern])
+                        ->orWhereRaw("name LIKE ? ESCAPE '!'", [$pattern]);
                 });
             })
             ->orderByDesc('starts_on')
@@ -441,7 +447,9 @@ final class FinanceFoundationService
             'fiscal_year_id' => ['nullable', 'integer', 'min:1'],
         ])->validate();
 
-        $term = $this->safePrefix((string) ($validated['q'] ?? ''));
+        $term = trim((string) ($validated['q'] ?? ''));
+        // Preserve operator-entered finance code/name prefixes as literal SQL text.
+        $pattern = str_replace(['!', '%', '_'], ['!!', '!%', '!_'], $term).'%';
         $perPage = max(10, min(100, $perPage));
 
         return $this->fiscalPeriodQuery($scope)
@@ -453,10 +461,10 @@ final class FinanceFoundationService
                 $validated['fiscal_year_id'] ?? null,
                 fn (Builder $query, int $yearId): Builder => $query->where('fiscal_year_id', $yearId),
             )
-            ->when($term !== '', function (Builder $query) use ($term): void {
-                $query->where(function (Builder $search) use ($term): void {
-                    $search->where('code', 'like', $term.'%')
-                        ->orWhere('name', 'like', $term.'%');
+            ->when($term !== '', function (Builder $query) use ($pattern): void {
+                $query->where(function (Builder $search) use ($pattern): void {
+                    $search->whereRaw("code LIKE ? ESCAPE '!'", [$pattern])
+                        ->orWhereRaw("name LIKE ? ESCAPE '!'", [$pattern]);
                 });
             })
             ->orderByDesc('starts_on')
@@ -848,11 +856,6 @@ final class FinanceFoundationService
                 'code' => ['Fiscal year code already exists in this legal entity.'],
             ]);
         }
-    }
-
-    private function safePrefix(string $term): string
-    {
-        return str_replace(['%', '_'], '', trim($term));
     }
 
     /**
