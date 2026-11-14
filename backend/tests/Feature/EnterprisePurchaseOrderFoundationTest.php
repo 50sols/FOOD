@@ -151,6 +151,75 @@ final class EnterprisePurchaseOrderFoundationTest extends TestCase
         );
     }
 
+    public function test_purchase_order_number_search_preserves_literal_symbols_and_store_scope(): void
+    {
+        [$actorA, $storeA, $contextA] = $this->scopedUser($this->allPermissions(), 'PO-LITERAL-A');
+        [$actorB, , $contextB] = $this->scopedUser($this->allPermissions(), 'PO-LITERAL-B');
+        $target = $this->approvedOrder($actorA, $contextA, 'PO-LITERAL-SUP-A');
+        $decoy = $this->approvedOrder($actorA, $contextA, 'PO-LITERAL-SUP-DEC');
+        $foreign = $this->approvedOrder($actorB, $contextB, 'PO-LITERAL-SUP-B');
+
+        DB::table('enterprise_purchase_orders')->where('id', $target->id)->update([
+            'order_number' => 'PO_%!\\-A',
+        ]);
+        DB::table('enterprise_purchase_orders')->where('id', $decoy->id)->update([
+            'order_number' => 'PO-LOOKALIKE',
+        ]);
+        DB::table('enterprise_purchase_orders')->where('id', $foreign->id)->update([
+            'order_number' => 'PO_%!\\-F',
+        ]);
+
+        $deniedRole = Role::query()->create([
+            'code' => 'ROLE_PO_LITERAL_DENIED',
+            'name' => 'PO no view',
+            'scope' => 'store',
+            'is_active' => true,
+            'is_system' => false,
+        ]);
+        $deniedUser = User::factory()->create(['is_active' => true]);
+        DB::table('user_store_roles')->insert([
+            'user_id' => $deniedUser->id,
+            'store_id' => $storeA->id,
+            'role_id' => $deniedRole->id,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        $deniedContext = app(TenantContextResolver::class)->retail($deniedUser, $storeA->id);
+
+        $orderCount = DB::table('enterprise_purchase_orders')->count();
+        $auditCount = DB::table('audit_logs')->count();
+        $orders = app(PurchaseOrderManager::class);
+        $find = static function (User $actor, ResolvedTenantContext $context, string $q, array $filters = []) use ($orders): array {
+            return array_map(
+                static fn ($order): string => (string) $order->order_number,
+                $orders->paginate($actor, $context, ['q' => $q, ...$filters])->items(),
+            );
+        };
+
+        $this->assertSame(['PO_%!\\-A'], $find($actorA, $contextA, 'PO_'));
+        $this->assertSame(['PO_%!\\-A'], $find($actorA, $contextA, 'PO_%'));
+        $this->assertSame(['PO_%!\\-A'], $find($actorA, $contextA, 'PO_%!'));
+        $this->assertSame(['PO_%!\\-A'], $find($actorA, $contextA, 'PO_%!\\'));
+        $this->assertSame(['PO_%!\\-A'], $find($actorA, $contextA, 'PO_%!\\-A'));
+        $this->assertSame(['PO-LOOKALIKE'], $find($actorA, $contextA, 'PO-'));
+        $this->assertSame([], $find($actorA, $contextA, '%'));
+        $this->assertSame([], $find($actorA, $contextA, '_'));
+        $this->assertSame([], $find($actorA, $contextA, 'PO_%!\\-F'));
+        $this->assertSame(['PO_%!\\-F'], $find($actorB, $contextB, 'PO_%!\\'));
+        $this->assertSame(['PO_%!\\-A'], $find($actorA, $contextA, 'PO_%', ['status' => 'draft']));
+        $this->assertSame([], $find($actorA, $contextA, 'PO_%', ['status' => 'issued']));
+
+        try {
+            $orders->paginate($deniedUser, $deniedContext, ['q' => 'PO_%!']);
+            $this->fail('A user without procurement.purchase_orders.view must not access the PO list.');
+        } catch (\Symfony\Component\HttpKernel\Exception\HttpException $exception) {
+            $this->assertSame(403, $exception->getStatusCode());
+        }
+
+        $this->assertSame($orderCount, DB::table('enterprise_purchase_orders')->count());
+        $this->assertSame($auditCount, DB::table('audit_logs')->count());
+    }
+
     public function test_purchase_order_reads_are_bounded_and_cross_store_isolated(): void
     {
         [$actorA, , $contextA] = $this->scopedUser($this->allPermissions(), 'PO-D-A');
