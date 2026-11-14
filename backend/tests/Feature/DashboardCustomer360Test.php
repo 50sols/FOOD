@@ -840,7 +840,8 @@ class DashboardCustomer360Test extends TestCase
                 'platformCustomer' => $platform->id,
                 'q' => '%',
             ]))
-            ->assertForbidden();
+            // Retail roles cannot see this Wholesale identity; deny without leaking its existence.
+            ->assertNotFound();
 
         $this->assertSame($before, DB::table('invoices')->count());
         $this->assertSame($ledgerBefore, DB::table('customer_account_ledger_entries')->count());
