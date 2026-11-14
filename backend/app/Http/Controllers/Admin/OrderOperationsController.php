@@ -119,14 +119,19 @@ final class OrderOperationsController extends Controller
         $perPage = (int) ($data['per_page'] ?? 25);
 
         $scopes = $this->operationalScopes($actor, $operationalChannel, 'orders.view');
-        $manageScopes = $this->operationalScopes($actor, $operationalChannel, 'orders.manage');
-        $dispatchScopes = $this->operationalScopes($actor, $operationalChannel, 'orders.dispatch');
-        $financeScopes = $this->operationalScopes($actor, $operationalChannel, 'finance.view');
+        // OperationalTenantScope returns the identical active-store set for every
+        // permission for an active SUPER_ADMIN. Reuse that read-only snapshot in
+        // this request instead of re-querying stores for each list action.
+        // All other actors retain independent permission-specific scope checks.
+        $superAdminScopes = $actor->is_active && $actor->hasRole('SUPER_ADMIN') ? $scopes : null;
+        $manageScopes = $superAdminScopes ?? $this->operationalScopes($actor, $operationalChannel, 'orders.manage');
+        $dispatchScopes = $superAdminScopes ?? $this->operationalScopes($actor, $operationalChannel, 'orders.dispatch');
+        $financeScopes = $superAdminScopes ?? $this->operationalScopes($actor, $operationalChannel, 'finance.view');
         $approvedDiscountsMode = ($data['discount_view'] ?? null) === 'approved';
         $pendingDiscountsMode = ($data['discount_view'] ?? null) === 'pending';
         $discountDecisionMode = $approvedDiscountsMode || $pendingDiscountsMode;
-        $discountRequestScopes = $this->operationalScopes($actor, $operationalChannel, 'orders.customer_service_discount');
-        $discountApprovalScopes = $this->operationalScopes($actor, $operationalChannel, 'orders.approve');
+        $discountRequestScopes = $superAdminScopes ?? $this->operationalScopes($actor, $operationalChannel, 'orders.customer_service_discount');
+        $discountApprovalScopes = $superAdminScopes ?? $this->operationalScopes($actor, $operationalChannel, 'orders.approve');
         $discountReadScopes = [];
         foreach (['b2b', 'b2c'] as $channel) {
             $discountReadScopes[$channel] = array_values(array_intersect(
@@ -180,16 +185,18 @@ final class OrderOperationsController extends Controller
                 function ($query) use ($data): void {
                     $search = trim((string) $data['order_number']);
                     $displayId = DisplayNumber::referenceId($search);
+                    // Treat typed symbols as literal order-number text, never SQL LIKE wildcards.
+                    $literalLike = '%'.str_replace(['!', '%', '_'], ['!!', '!%', '!_'], $search).'%';
 
-                    $query->where(function ($nested) use ($search, $displayId): void {
+                    $query->where(function ($nested) use ($literalLike, $displayId): void {
                         if ($displayId !== null) {
                             $nested->where('id', $displayId)
-                                ->orWhere('order_number', 'like', '%'.$search.'%');
+                                ->orWhereRaw("order_number LIKE ? ESCAPE '!'", [$literalLike]);
 
                             return;
                         }
 
-                        $nested->where('order_number', 'like', '%'.$search.'%');
+                        $nested->whereRaw("order_number LIKE ? ESCAPE '!'", [$literalLike]);
                     });
                 },
             )
@@ -1088,7 +1095,7 @@ final class OrderOperationsController extends Controller
     ): array {
         $limit = 20;
         $offset = ($page - 1) * $limit;
-        $needle = '%'.str_replace(['%', '_'], ['\\%', '\\_'], $query).'%';
+        $needle = '%'.str_replace(['!', '%', '_'], ['!!', '!%', '!_'], $query).'%';
 
         if ($channel === 'b2b') {
             $builder = DB::table('b2b_customers')
@@ -1109,11 +1116,11 @@ final class OrderOperationsController extends Controller
                 })
                 ->when($query !== '', function ($scope) use ($needle): void {
                     $scope->where(function ($search) use ($needle): void {
-                        $search->where('b2b_customers.name', 'like', $needle)
-                            ->orWhere('b2b_customers.phone', 'like', $needle)
-                            ->orWhere('b2b_customers.email', 'like', $needle)
-                            ->orWhere('b2b_accounts.company_name', 'like', $needle)
-                            ->orWhere('b2b_accounts.tax_number', 'like', $needle);
+                        $search->whereRaw("b2b_customers.name LIKE ? ESCAPE '!'", [$needle])
+                            ->orWhereRaw("b2b_customers.phone LIKE ? ESCAPE '!'", [$needle])
+                            ->orWhereRaw("b2b_customers.email LIKE ? ESCAPE '!'", [$needle])
+                            ->orWhereRaw("b2b_accounts.company_name LIKE ? ESCAPE '!'", [$needle])
+                            ->orWhereRaw("b2b_accounts.tax_number LIKE ? ESCAPE '!'", [$needle]);
                     });
                 })
                 ->when($selectedId !== null, fn ($scope) => $scope->orderByRaw('b2b_customers.id = ? desc', [$selectedId]))
@@ -1139,9 +1146,9 @@ final class OrderOperationsController extends Controller
                 ->where('store_id', $storeId)
                 ->when($query !== '', function ($scope) use ($needle): void {
                     $scope->where(function ($search) use ($needle): void {
-                        $search->where('name', 'like', $needle)
-                            ->orWhere('phone', 'like', $needle)
-                            ->orWhere('email', 'like', $needle);
+                        $search->whereRaw("name LIKE ? ESCAPE '!'", [$needle])
+                            ->orWhereRaw("phone LIKE ? ESCAPE '!'", [$needle])
+                            ->orWhereRaw("email LIKE ? ESCAPE '!'", [$needle]);
                     });
                 })
                 ->when($selectedId !== null, fn ($scope) => $scope->orderByRaw('id = ? desc', [$selectedId]))
@@ -1189,7 +1196,7 @@ final class OrderOperationsController extends Controller
     ): array {
         $limit = 20;
         $offset = ($page - 1) * $limit;
-        $needle = '%'.str_replace(['%', '_'], ['\\%', '\\_'], $query).'%';
+        $needle = '%'.str_replace(['!', '%', '_'], ['!!', '!%', '!_'], $query).'%';
 
         $availableStock = DB::table('inventories')
             ->join('warehouses', 'warehouses.id', '=', 'inventories.warehouse_id')
@@ -1229,9 +1236,9 @@ final class OrderOperationsController extends Controller
             ->when($channel === 'b2c', fn ($scope) => $scope->whereNotNull('store_products.price'))
             ->when($query !== '', function ($scope) use ($needle): void {
                 $scope->where(function ($search) use ($needle): void {
-                    $search->where('products.name', 'like', $needle)
-                        ->orWhere('products.sku', 'like', $needle)
-                        ->orWhere('products.barcode', 'like', $needle);
+                    $search->whereRaw("products.name LIKE ? ESCAPE '!'", [$needle])
+                        ->orWhereRaw("products.sku LIKE ? ESCAPE '!'", [$needle])
+                        ->orWhereRaw("products.barcode LIKE ? ESCAPE '!'", [$needle]);
                 });
             })
             ->when($selectedId !== null, fn ($scope) => $scope->orderByRaw('products.id = ? desc', [$selectedId]))

@@ -64,7 +64,7 @@ final class UpdateManager
                     'package_integrity' => 'pending',
                     'preflight' => 'pending',
                     'backup_files' => 'pending',
-                    'backup_database' => $manifest->containsMigrations ? 'pending' : 'not_required',
+                    'backup_database' => 'pending',
                     'migrations' => $manifest->containsMigrations ? 'pending' : 'not_required',
                     'health_check' => 'pending',
                     'rollback_files' => 'not_required',
@@ -99,14 +99,19 @@ final class UpdateManager
                 ]);
 
                 $stage = 'backup_database';
-                $databaseBackup = $this->runtime->backupDatabase($manifest->containsMigrations);
-                if ($databaseBackup !== null) {
-                    $stage = 'verify_database_backup';
-                    $this->runtime->verifyDatabaseBackup($databaseBackup);
+                // Cache rebuild reconciles persisted job-role grants even when
+                // this ZIP declares no migrations. Every update must therefore
+                // have a verified database snapshot before files are activated.
+                $databaseBackup = $this->runtime->backupDatabase(true);
+                if ($databaseBackup === null) {
+                    throw new RuntimeException('Database backup is required for every system update.');
                 }
+
+                $stage = 'verify_database_backup';
+                $this->runtime->verifyDatabaseBackup($databaseBackup);
                 $this->checkpoint($history, [
-                    'backup_database' => $databaseBackup !== null ? 'passed' : 'not_required',
-                    'backup_verification' => $databaseBackup !== null ? 'passed' : 'not_required',
+                    'backup_database' => 'passed',
+                    'backup_verification' => 'passed',
                     'database_backup' => $this->backupDescriptor($databaseBackup),
                 ], [
                     'database_backup_reference' => $databaseBackup,
@@ -149,11 +154,13 @@ final class UpdateManager
                 $maintenanceMode = false;
                 $this->checkpoint($history, ['maintenance_mode' => 'exited']);
 
+                $stage = 'record_version';
                 SystemVersion::query()->updateOrCreate(
                     ['version' => $manifest->targetVersion],
                     ['installed_at' => now(), 'package_hash' => strtolower($manifest->sha256)],
                 );
 
+                $stage = 'record_success';
                 $this->checkpoint($history, ['result' => 'success'], [
                     'status' => 'success',
                     'failure_reason' => null,
@@ -163,6 +170,7 @@ final class UpdateManager
                     'finished_at' => now(),
                 ]);
 
+                $stage = 'audit_completion';
                 $this->auditLogger->record(
                     'updater.completed',
                     $actor,
@@ -182,10 +190,30 @@ final class UpdateManager
                 $rollbackSucceeded = true;
                 $rollbackAttempted = false;
                 $rollbackEvidence = [];
+                $rollbackSafe = true;
+
+                // A late version/history/audit failure can occur after the site
+                // has already left maintenance mode. Never roll live files or
+                // database back while users can write new data.
+                if ($releaseMutationStarted && ! $maintenanceMode) {
+                    try {
+                        $this->runtime->enterMaintenanceMode();
+                        $maintenanceMode = true;
+                        $rollbackEvidence['maintenance_mode'] = 'reentered_for_rollback';
+                    } catch (Throwable) {
+                        $rollbackSafe = false;
+                        $rollbackSucceeded = false;
+                        $rollbackEvidence['maintenance_mode'] = 'reentry_failed';
+                        $rollbackEvidence['rollback_files'] = 'skipped_unsafe';
+                        $rollbackEvidence['rollback_database'] = $databaseMutationStarted
+                            ? 'skipped_unsafe'
+                            : 'not_required';
+                    }
+                }
 
                 // Never restore backups onto untouched live state after a
                 // failed preflight or failed backup integrity check.
-                if ($releaseMutationStarted && $fileBackup !== null) {
+                if ($rollbackSafe && $releaseMutationStarted && $fileBackup !== null) {
                     $rollbackAttempted = true;
                     try {
                         $this->runtime->rollbackFiles($fileBackup);
@@ -196,7 +224,7 @@ final class UpdateManager
                     }
                 }
 
-                if ($databaseMutationStarted && $databaseBackup !== null) {
+                if ($rollbackSafe && $databaseMutationStarted && $databaseBackup !== null) {
                     $rollbackAttempted = true;
                     try {
                         $this->runtime->rollbackDatabase($databaseBackup);
@@ -232,6 +260,10 @@ final class UpdateManager
                     $reason .= ' Rollback was attempted.';
                 }
 
+                if (! $rollbackSafe) {
+                    $reason .= ' Rollback was skipped because maintenance mode could not be re-entered.';
+                }
+
                 if (! $rollbackSucceeded) {
                     $reason .= ' Rollback is incomplete; manual recovery is required.';
                 }
@@ -263,9 +295,11 @@ final class UpdateManager
                     'status' => 'failed',
                     'backup_status' => ($fileBackup !== null || $databaseBackup !== null) ? 'available' : 'not_created',
                     'failed_stage' => $stage,
-                    'rollback_status' => $rollbackAttempted
-                        ? ($rollbackSucceeded ? 'succeeded' : 'incomplete')
-                        : 'not_required',
+                    'rollback_status' => ! $rollbackSafe
+                        ? 'incomplete'
+                        : ($rollbackAttempted
+                            ? ($rollbackSucceeded ? 'succeeded' : 'incomplete')
+                            : 'not_required'),
                     'maintenance_mode_remained' => $maintenanceMode,
                     'failure_reason' => $reason,
                     'finished_at' => now(),
@@ -397,6 +431,10 @@ final class UpdateManager
         while ($current !== null && $depth < 3) {
             $message = trim(preg_replace('/\s+/', ' ', $current->getMessage()) ?? '');
             if ($message !== '') {
+                // Exception text is persisted to UpdateHistory and audit entries.
+                // Redact credentials BEFORE retaining any diagnostic details.
+                $message = $this->redactSecrets($message);
+
                 // Do not expose absolute server paths in UI/audit-visible failure text.
                 $message = preg_replace(
                     '#(?<![A-Za-z0-9._-])/(?:[^\s:()]+/)+[^\s:()]+#',
@@ -422,6 +460,40 @@ final class UpdateManager
         return $parts !== []
             ? implode(' | Caused by: ', $parts)
             : class_basename($exception);
+    }
+
+    /**
+     * Updater failures are shown in the Admin update history and stored in
+     * execution evidence. Never persist credential values copied from an
+     * underlying SQL/HTTP/provider exception.
+     */
+    private function redactSecrets(string $message): string
+    {
+        $patterns = [
+            '#\b([a-z][a-z0-9+.-]*://)[^/\s@]+@#i' => '$1[REDACTED]@',
+            // Exception messages have already been collapsed to one line.
+            // Schemes such as Token, Digest or custom credentials can have
+            // additional space- or comma-separated fields; masking only the
+            // first token would persist the remainder to updater audit/history.
+            // Fail closed on the entire Authorization tail, regardless of scheme.
+            '/\b(Authorization\s*[:=]\s*)[^\r\n]*/i' => '$1[REDACTED]',
+            '/\b(Bearer\s+)\S+/i' => '$1[REDACTED]',
+            '/\b((?:(?:DB|MAIL|REDIS|SMTP|AWS|STRIPE|PAYMENT)_)?(?:PASSWORD|PASS|TOKEN|SECRET|API_KEY|APP_KEY|ACCESS_KEY|PRIVATE_KEY))\s*([=:])\s*(?:"[^"]*"|\x27[^\x27]*\x27|[^\s,;)\]}]+)/i' => '$1$2[REDACTED]',
+        ];
+
+        foreach ($patterns as $pattern => $replacement) {
+            $redacted = preg_replace($pattern, $replacement, $message);
+
+            if (! is_string($redacted)) {
+                // Fail closed if a regex ever fails (e.g. invalid UTF-8 or
+                // processing limit); never fall back to the original secret.
+                return '[sensitive error details redacted]';
+            }
+
+            $message = $redacted;
+        }
+
+        return $message;
     }
 
     /**
