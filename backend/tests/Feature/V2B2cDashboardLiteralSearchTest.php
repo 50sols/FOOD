@@ -35,13 +35,13 @@ class V2B2cDashboardLiteralSearchTest extends TestCase
         $this->addProduct($storeId, 'V2-SLASH', 'Slash\Retail path');
 
         $customerId = $this->addCustomer($storeId, 'Retail client Q%_!X', 'client3634@example.test');
-        $this->addCustomer($storeId, 'Wildcard decoy QABC!X', 'decoy3634@example.test');
+        $decoyCustomerId = $this->addCustomer($storeId, 'Wildcard decoy QABC!X', 'decoy3634@example.test');
         $foreignCustomerId = $this->addCustomer($foreignStoreId, 'Foreign client Q%_!X', 'foreign3634@example.test');
         $this->addCustomer($storeId, 'Email only customer', 'mail%_!3634@example.test');
         $this->addCustomer($storeId, 'Phone only customer', 'phone3634@example.test', '555%_!3634');
 
         $orderId = $this->addOrder($storeId, $customerId, 'V2-ORDER-Q%_!X');
-        $this->addOrder($storeId, $customerId, 'V2-ORDER-QABC!X');
+        $this->addOrder($storeId, $decoyCustomerId, 'V2-ORDER-QABC!X');
         $this->addOrder($foreignStoreId, $foreignCustomerId, 'FOREIGN-ORDER-Q%_!X');
 
         $before = [
