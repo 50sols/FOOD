@@ -243,6 +243,88 @@ final class EnterpriseGeneralLedgerFoundationTest extends TestCase
         );
     }
 
+    public function test_journal_number_prefix_search_treats_sql_symbols_as_literals_with_scope_and_no_writes(): void
+    {
+        $tenantA = $this->fixture('GL-LITERAL-A');
+        $tenantB = $this->fixture('GL-LITERAL-B', true);
+        $scopeA = $tenantA['maker_context']->enterpriseScope;
+        $scopeB = $tenantB['maker_context']->enterpriseScope;
+        $this->assertNotNull($scopeA);
+        $this->assertNotNull($scopeB);
+
+        $now = now();
+        $journals = [
+            [$scopeA, $tenantA, 'GL_%!\\-A', 'draft'],
+            [$scopeA, $tenantA, 'GL-LOOKALIKE', 'draft'],
+            [$scopeA, $tenantA, 'GL_%!\\-P', 'posted'],
+            [$scopeB, $tenantB, 'GL_%!\\-F', 'draft'],
+        ];
+
+        foreach ($journals as $index => [$scope, $tenant, $number, $status]) {
+            DB::table('enterprise_finance_journals')->insert([
+                'organization_id' => $scope->organizationId,
+                'company_id' => $scope->companyId,
+                'legal_entity_id' => $scope->legalEntityId,
+                'fiscal_period_id' => $tenant['period_id'],
+                'journal_number' => $number,
+                'idempotency_key' => 'literal-gl-'.$index,
+                'request_hash' => hash('sha256', $number),
+                'entry_date' => '2027-01-15',
+                'description' => 'Literal journal prefix test',
+                'status' => $status,
+                'total_debit' => 0,
+                'total_credit' => 0,
+                'requested_by' => $tenant['maker']->id,
+                'posted_at' => $status === 'posted' ? $now : null,
+                'posted_by' => $status === 'posted' ? $tenant['poster']->id : null,
+                'created_at' => $now,
+                'updated_at' => $now,
+            ]);
+        }
+
+        $journalCount = DB::table('enterprise_finance_journals')->count();
+        $auditCount = DB::table('audit_logs')->count();
+        $ledger = app(GeneralLedgerService::class);
+        $find = static function (array $tenant, string $q, array $filters = []) use ($ledger): array {
+            return array_map(
+                static fn ($journal): string => (string) $journal->journal_number,
+                $ledger->paginateJournals(
+                    $tenant['maker'],
+                    $tenant['maker_context'],
+                    ['q' => $q, ...$filters],
+                )->items(),
+            );
+        };
+
+        $this->assertEqualsCanonicalizing(['GL_%!\\-A', 'GL_%!\\-P'], $find($tenantA, 'GL_'));
+        $this->assertEqualsCanonicalizing(['GL_%!\\-A', 'GL_%!\\-P'], $find($tenantA, 'GL_%'));
+        $this->assertEqualsCanonicalizing(['GL_%!\\-A', 'GL_%!\\-P'], $find($tenantA, 'GL_%!'));
+        $this->assertEqualsCanonicalizing(['GL_%!\\-A', 'GL_%!\\-P'], $find($tenantA, 'GL_%!\\'));
+        $this->assertSame(['GL_%!\\-A'], $find($tenantA, 'GL_%!\\-A'));
+        $this->assertSame(['GL_%!\\-P'], $find($tenantA, 'GL_%', ['status' => 'posted']));
+        $this->assertSame(['GL-LOOKALIKE'], $find($tenantA, 'GL-'));
+        $this->assertSame([], $find($tenantA, '%'));
+        $this->assertSame([], $find($tenantA, '_'));
+        $this->assertSame([], $find($tenantA, 'GL_%!\\-F'));
+        $this->assertSame(['GL_%!\\-F'], $find($tenantB, 'GL_%!\\'));
+        $this->assertSame($journalCount, DB::table('enterprise_finance_journals')->count());
+        $this->assertSame($auditCount, DB::table('audit_logs')->count());
+
+        $store = Store::query()->where('code', 'GL-LITERAL-A')->firstOrFail();
+        $unprivileged = $this->userForStore($store, [], 'GL-LITERAL-DENIED');
+        $unprivilegedContext = app(TenantContextResolver::class)->retail($unprivileged, $store->id);
+
+        try {
+            $ledger->paginateJournals($unprivileged, $unprivilegedContext, ['q' => 'GL_%!']);
+            $this->fail('A user without finance.view may not read a journal-number search.');
+        } catch (\Symfony\Component\HttpKernel\Exception\HttpException $exception) {
+            $this->assertSame(403, $exception->getStatusCode());
+        }
+
+        $this->assertSame($journalCount, DB::table('enterprise_finance_journals')->count());
+        $this->assertSame($auditCount, DB::table('audit_logs')->count());
+    }
+
     public function test_journal_and_ledger_queries_are_bounded_to_one_hundred_rows(): void
     {
         $fixture = $this->fixture('GL-BOUNDED');
