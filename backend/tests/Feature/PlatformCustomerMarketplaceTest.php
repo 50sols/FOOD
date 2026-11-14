@@ -5,6 +5,7 @@ namespace Tests\Feature;
 use App\Exceptions\SelfStorePurchaseNotAllowed;
 use App\Models\User;
 use App\Services\CustomerDomainResolver;
+use App\Services\WholesalePrincipal;
 use Database\Seeders\CoreReferenceSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
@@ -434,6 +435,10 @@ class PlatformCustomerMarketplaceTest extends TestCase
     public function test_platform_wholesale_guest_search_matches_literal_name_sku_barcode_without_retail_leak(): void
     {
         [$wholesaleStore, $retailStore, $existingWholesaleProduct, $retailProduct] = $this->marketplaceFixture();
+        // The public storefront's configured principal and the inventory
+        // availability service must resolve the same canonical B2B store.
+        DB::table('stores')->where('id', $wholesaleStore)->update(['code' => WholesalePrincipal::STORE_CODE]);
+        config(['foodex.platform_wholesale_store_code' => WholesalePrincipal::STORE_CODE]);
         $original = DB::table('products')->where('id', $existingWholesaleProduct)->first();
         $this->assertNotNull($original);
         $otherCategory = (int) DB::table('categories')->insertGetId([
@@ -519,6 +524,10 @@ class PlatformCustomerMarketplaceTest extends TestCase
     public function test_platform_wholesale_literal_search_keeps_the_existing_hundred_product_cap(): void
     {
         [$wholesaleStore, , $existingProduct] = $this->marketplaceFixture();
+        // The public storefront's configured principal and the inventory
+        // availability service must resolve the same canonical B2B store.
+        DB::table('stores')->where('id', $wholesaleStore)->update(['code' => WholesalePrincipal::STORE_CODE]);
+        config(['foodex.platform_wholesale_store_code' => WholesalePrincipal::STORE_CODE]);
         $original = DB::table('products')->where('id', $existingProduct)->first();
         $this->assertNotNull($original);
 
