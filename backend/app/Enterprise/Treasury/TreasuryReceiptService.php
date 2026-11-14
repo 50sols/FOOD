@@ -111,8 +111,8 @@ final class TreasuryReceiptService
                 $term !== '',
                 fn (Builder $query): Builder => $query->where(
                     fn (Builder $nested): Builder => $nested
-                        ->where('receipt_number', 'like', $term.'%')
-                        ->orWhere('reference', 'like', $term.'%'),
+                        ->whereRaw("receipt_number LIKE ? ESCAPE '!'", [$term.'%'])
+                        ->orWhereRaw("reference LIKE ? ESCAPE '!'", [$term.'%']),
                 ),
             )
             ->orderByDesc('value_date')
@@ -502,9 +502,8 @@ final class TreasuryReceiptService
 
     private function safePrefix(string $value): string
     {
-        $trimmed = trim($value);
-
-        return preg_replace('/[%_\\\\]+/', '', $trimmed) ?? '';
+        // Escape SQL LIKE operators without deleting operator-entered symbols.
+        return str_replace(['!', '%', '_'], ['!!', '!%', '!_'], trim($value));
     }
 
     private function assertMatchingIdempotentRequest(
