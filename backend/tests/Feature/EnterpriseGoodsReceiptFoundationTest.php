@@ -295,7 +295,7 @@ final class EnterpriseGoodsReceiptFoundationTest extends TestCase
                 'purchase_order_line_id' => $otherOrder->lines()->firstOrFail()->id,
                 'warehouse_id' => $otherWarehouse->id,
                 'quantity' => 1,
-            ]],
+            ]]],
         );
         foreach ([
             [$target, 'GRN_%!\\-A'],
