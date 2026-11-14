@@ -306,7 +306,9 @@ final class B2cDashboardService
             return [];
         }
 
-        $needle = '%'.str_replace(['%', '_'], ['\\%', '\\_'], $term).'%';
+        // An entered search is a literal substring on SQLite and MySQL/MariaDB;
+        // use a fixed escape marker and bound values, never SQL wildcards.
+        $needle = '%'.str_replace(['!', '%', '_'], ['!!', '!%', '!_'], $term).'%';
 
         $orders = DB::table('orders')
             ->leftJoin('b2c_customers', function ($join): void {
@@ -317,9 +319,9 @@ final class B2cDashboardService
             ->whereIn('orders.store_id', $storeIds)
             ->where('orders.channel', 'b2c')
             ->where(function (Builder $query) use ($needle, $term): void {
-                $query->where('orders.order_number', 'like', $needle)
-                    ->orWhere('b2c_customers.name', 'like', $needle)
-                    ->orWhere('legacy_customers.name', 'like', $needle);
+                $query->whereRaw("orders.order_number LIKE ? ESCAPE '!'", [$needle])
+                    ->orWhereRaw("b2c_customers.name LIKE ? ESCAPE '!'", [$needle])
+                    ->orWhereRaw("legacy_customers.name LIKE ? ESCAPE '!'", [$needle]);
 
                 $shortId = DisplayNumber::referenceId($term);
                 if ($shortId !== null) {
@@ -344,8 +346,8 @@ final class B2cDashboardService
             ->join('store_products', 'store_products.product_id', '=', 'products.id')
             ->whereIn('store_products.store_id', $storeIds)
             ->where(function (Builder $query) use ($needle): void {
-                $query->where('products.name', 'like', $needle)
-                    ->orWhere('products.sku', 'like', $needle);
+                $query->whereRaw("products.name LIKE ? ESCAPE '!'", [$needle])
+                    ->orWhereRaw("products.sku LIKE ? ESCAPE '!'", [$needle]);
             })
             ->distinct()
             ->limit(4)
@@ -360,9 +362,9 @@ final class B2cDashboardService
         $customers = DB::table('b2c_customers')
             ->whereIn('b2c_customers.store_id', $storeIds)
             ->where(function (Builder $query) use ($needle): void {
-                $query->where('b2c_customers.name', 'like', $needle)
-                    ->orWhere('b2c_customers.email', 'like', $needle)
-                    ->orWhere('b2c_customers.phone', 'like', $needle);
+                $query->whereRaw("b2c_customers.name LIKE ? ESCAPE '!'", [$needle])
+                    ->orWhereRaw("b2c_customers.email LIKE ? ESCAPE '!'", [$needle])
+                    ->orWhereRaw("b2c_customers.phone LIKE ? ESCAPE '!'", [$needle]);
             })
             ->limit(4)
             ->get(['b2c_customers.name', 'b2c_customers.email'])

@@ -106,9 +106,21 @@ final class V2FinancialReportsSidebarAuthorityTest extends TestCase
             'code' => 'P309-WHOLESALE-PERIOD',
             'name' => 'Wholesale corporate fiscal period',
             'sequence' => 1,
-            'starts_on' => now()->startOfMonth()->toDateString(),
-            'ends_on' => now()->endOfMonth()->toDateString(),
+            'starts_on' => now()->startOfYear()->toDateString(),
+            'ends_on' => now()->startOfYear()->endOfMonth()->toDateString(),
         ]);
+
+        // Two distinct fiscal periods prove report and comparative-statement identity.
+        $comparison = $finance->createFiscalPeriod($actor, $context, $year->id, [
+            'code' => 'P309-WHOLESALE-COMPARISON',
+            'name' => 'Wholesale comparison period',
+            'sequence' => 2,
+            'starts_on' => now()->startOfYear()->addMonth()->toDateString(),
+            'ends_on' => now()->startOfYear()->addMonth()->endOfMonth()->toDateString(),
+        ]);
+        $journalCount = DB::table('enterprise_finance_journals')->count();
+        $ledgerCount = DB::table('enterprise_finance_ledger_entries')->count();
+        $auditCount = DB::table('audit_logs')->count();
 
         foreach (['en' => 'ltr', 'ar' => 'rtl'] as $locale => $direction) {
             $actor->forceFill(['locale' => $locale])->save();
@@ -116,35 +128,51 @@ final class V2FinancialReportsSidebarAuthorityTest extends TestCase
 
             $overview = $this->actingAs($actor->fresh())
                 ->get(route('admin.erp.finance.index', [
-                    'store_id' => $store->id,
-                    'tab' => 'overview',
-                    'period_id' => $period->id,
-                ]))
-                ->assertOk()
+                    'store_id' => $store->id, 'tab' => 'overview', 'period_id' => $period->id,
+                ]))->assertOk()
                 ->assertSee('dir="'.$direction.'"', false)
                 ->assertSee(__('finance_workbench.tabs.reports'));
             $this->assertTrue($overview->viewData('data')['legal_entity_reporting_available']);
 
-            $this->actingAs($actor->fresh())
-                ->get(route('admin.erp.finance.index', [
-                    'store_id' => $store->id,
-                    'tab' => 'reports',
-                    'report' => 'cash_flow',
-                    'period_id' => $period->id,
-                ]))
-                ->assertOk()
-                ->assertSee(__('finance_workbench.reports.title'));
+            // Positive real HTTP coverage for all seven authorized corporate reports.
+            foreach ([
+                'cash_flow', 'budget_vs_actual', 'tax_vat', 'consolidated',
+                'variance_exceptions', 'fixed_assets', 'close_status',
+            ] as $reportType) {
+                $response = $this->actingAs($actor->fresh())
+                    ->get(route('admin.erp.finance.index', [
+                        'store_id' => $store->id, 'tab' => 'reports',
+                        'report' => $reportType, 'period_id' => $period->id,
+                    ]))->assertOk()
+                    ->assertSee(__('finance_workbench.reports.title'));
+                $report = $response->viewData('data')['report'];
+                $this->assertSame($reportType, $report['code']);
+                $this->assertSame((int) $period->id, (int) $report['period']->id);
+                $this->assertSame(count($report['lines']), $report['row_count']);
+                $this->assertSame('enterprise_reporting', $report['export_handoff']);
+            }
 
-            $this->actingAs($actor->fresh())
-                ->get(route('admin.erp.finance.index', [
-                    'store_id' => $store->id,
-                    'tab' => 'statements',
-                    'statement' => 'trial_balance',
-                    'period_id' => $period->id,
-                ]))
-                ->assertOk()
-                ->assertSee(__('finance_workbench.tabs.statements'));
+            // Each statement must carry the authorized current and comparative
+            // period exactly, with bilingual rendering and no GL data mutation.
+            foreach (['trial_balance', 'profit_and_loss', 'balance_sheet'] as $statementType) {
+                $response = $this->actingAs($actor->fresh())
+                    ->get(route('admin.erp.finance.index', [
+                        'store_id' => $store->id, 'tab' => 'statements',
+                        'statement' => $statementType,
+                        'period_id' => $period->id,
+                        'comparative_period_id' => $comparison->id,
+                    ]))->assertOk()
+                    ->assertSee(__('finance_workbench.tabs.statements'));
+                $statement = $response->viewData('data')['statement'];
+                $this->assertSame($statementType, $statement['statement']);
+                $this->assertSame((int) $period->id, $statement['period']['id']);
+                $this->assertSame((int) $comparison->id, $statement['comparison_period']['id']);
+            }
         }
+        $this->assertSame($journalCount, DB::table('enterprise_finance_journals')->count());
+        $this->assertSame($ledgerCount, DB::table('enterprise_finance_ledger_entries')->count());
+        $this->assertSame($auditCount, DB::table('audit_logs')->count());
+
     }
 
     public function test_gl_read_does_not_grant_foundation_financial_reports_without_entitlement(): void

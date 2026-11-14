@@ -5,6 +5,7 @@ namespace Tests\Feature;
 use App\Enterprise\Entitlements\EntitlementScope;
 use App\Enterprise\Entitlements\ModuleEntitlementManager;
 use App\Enterprise\Finance\FinanceFoundationService;
+use App\Enterprise\Finance\FinancePlanningService;
 use App\Enterprise\Modules\ModuleLifecycleManager;
 use App\Enterprise\Modules\ModuleRegistry;
 use App\Enterprise\Modules\ModuleState;
@@ -272,6 +273,115 @@ final class EnterpriseFinanceFoundationTest extends TestCase
             $this->fail('Cross-tenant parent cost centers must be rejected.');
         } catch (ModelNotFoundException) {
             $this->assertTrue(true);
+        }
+    }
+
+    public function test_profit_center_search_preserves_literal_prefix_and_legal_entity_scope_without_writes(): void
+    {
+        [$actor, , $context] = $this->scopedUser(
+            ['finance.view', 'finance.manage'],
+            'FIN-PROFIT-LITERAL',
+        );
+        $this->enableFinance($actor, $context);
+        $planning = app(FinancePlanningService::class);
+
+        $exact = $planning->createProfitCenter($actor, $context, [
+            'code' => 'PC_LIT',
+            'name' => '%_! Exact',
+        ]);
+        $lookalike = $planning->createProfitCenter($actor, $context, [
+            'code' => 'PCXLIT',
+            'name' => 'PercentLookalike',
+        ]);
+        $arabic = $planning->createProfitCenter($actor, $context, [
+            'code' => 'ARPROFIT',
+            'name' => 'مركز أرباح التجارة',
+        ]);
+        $underscore = $planning->createProfitCenter($actor, $context, [
+            'code' => 'UNDERSCORE',
+            'name' => '_مركز عربي',
+        ]);
+        $bang = $planning->createProfitCenter($actor, $context, [
+            'code' => 'BANG',
+            'name' => '! Premium',
+        ]);
+        $slash = $planning->createProfitCenter($actor, $context, [
+            'code' => 'BACKSLASH',
+            'name' => chr(92).' Path',
+        ]);
+        $inactive = $planning->createProfitCenter($actor, $context, [
+            'code' => 'PC_INACTIVE',
+            'name' => '%_! Inactive',
+        ]);
+        $planning->setProfitCenterStatus($actor, $context, $inactive->id, 'inactive');
+
+        [$foreignActor, , $foreignContext] = $this->scopedUserInNewOrganization(
+            ['finance.view', 'finance.manage'],
+            'FIN-PROFIT-FOREIGN',
+        );
+        $this->enableFinance($foreignActor, $foreignContext);
+        $foreign = $planning->createProfitCenter($foreignActor, $foreignContext, [
+            'code' => 'PC_FOREIGN',
+            'name' => '%_! Foreign',
+        ]);
+
+        $before = [
+            'centers' => DB::table('enterprise_profit_centers')->count(),
+            'audits' => DB::table('audit_logs')->count(),
+        ];
+
+        foreach ([
+            ['query' => 'PC_', 'status' => 'active', 'ids' => [$exact->id]],
+            ['query' => 'PC_', 'status' => 'inactive', 'ids' => [$inactive->id]],
+            ['query' => 'PC', 'status' => 'active', 'ids' => [$exact->id, $lookalike->id]],
+            ['query' => '%_!', 'status' => 'active', 'ids' => [$exact->id]],
+            ['query' => '%_!', 'status' => 'inactive', 'ids' => [$inactive->id]],
+            ['query' => '%', 'status' => 'active', 'ids' => [$exact->id]],
+            ['query' => '_', 'status' => 'active', 'ids' => [$underscore->id]],
+            ['query' => '!', 'status' => 'active', 'ids' => [$bang->id]],
+            ['query' => chr(92), 'status' => 'active', 'ids' => [$slash->id]],
+            ['query' => 'مركز', 'status' => 'active', 'ids' => [$arabic->id]],
+            ['query' => 'ARPROFIT', 'status' => 'active', 'ids' => [$arabic->id]],
+            ['query' => 'MISSING%_!', 'status' => 'active', 'ids' => []],
+            ['query' => "' OR 1=1 --", 'status' => 'active', 'ids' => []],
+        ] as $case) {
+            $page = $planning->paginateProfitCenters($actor, $context, [
+                'q' => $case['query'],
+                'status' => $case['status'],
+            ], 10);
+            $actual = $page->getCollection()->pluck('id')->map(static fn ($id): int => (int) $id)->all();
+            $expected = $case['ids'];
+            sort($actual);
+            sort($expected);
+            $this->assertSame($expected, $actual, 'Profit center literal prefix and tenant boundary.');
+            $this->assertSame(count($expected), $page->total());
+            $this->assertNotContains((int) $foreign->id, $actual);
+        }
+
+        $this->assertSame($before['centers'], DB::table('enterprise_profit_centers')->count());
+        $this->assertSame($before['audits'], DB::table('audit_logs')->count());
+
+        [$roleless, , $rolelessContext] = $this->scopedUser(
+            ['finance.manage'],
+            'FIN-PROFIT-NO-VIEW',
+        );
+        $this->enableFinance($roleless, $rolelessContext);
+        try {
+            $planning->paginateProfitCenters($roleless, $rolelessContext, ['q' => '%']);
+            $this->fail('finance.view must be required for profit center search.');
+        } catch (HttpException $exception) {
+            $this->assertSame(403, $exception->getStatusCode());
+        }
+
+        [$unentitled, , $unentitledContext] = $this->scopedUserInNewOrganization(
+            ['finance.view'],
+            'FIN-PROFIT-NO-ENT',
+        );
+        try {
+            $planning->paginateProfitCenters($unentitled, $unentitledContext, ['q' => '%']);
+            $this->fail('Finance foundation entitlement must be required.');
+        } catch (HttpException $exception) {
+            $this->assertSame(403, $exception->getStatusCode());
         }
     }
 

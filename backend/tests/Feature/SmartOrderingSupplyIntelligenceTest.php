@@ -374,6 +374,72 @@ class SmartOrderingSupplyIntelligenceTest extends TestCase
         $this->assertSame('snapshot_delta_only', $variance['evidence']);
     }
 
+    public function test_wholesale_supply_product_picker_uses_literal_bilingual_search_with_store_scope(): void
+    {
+        $f = $this->fixture();
+        $storeId = $f['wholesale_store_id'];
+        $supply = app(SupplyIntelligenceService::class);
+
+        DB::table('products')->where('id', $f['wholesale_product_id'])
+            ->update(['name' => 'مكونات %_! عربية']);
+
+        $skuId = $this->product($storeId, 'b2b', 'FDX-SKU_!MARK', 5, 100);
+        $barcodeId = $this->product($storeId, 'b2b', 'FDX-BARCODE-ONE', 5, 100);
+        DB::table('products')->where('id', $barcodeId)
+            ->update(['name' => 'English supply ingredient', 'barcode' => 'BC%!QR']);
+
+        $lookalikeId = $this->product($storeId, 'b2b', 'FDX-LOOKALIKE', 5, 100);
+        DB::table('products')->where('id', $lookalikeId)
+            ->update(['name' => 'مكونات ABC! عربية']);
+
+        $slashId = $this->product($storeId, 'b2b', 'FDX-SLASH', 5, 100);
+        DB::table('products')->where('id', $slashId)
+            ->update(['name' => 'Path '.chr(92).' ingredient']);
+
+        $inactiveId = $this->product($storeId, 'b2b', 'FDX-INACTIVE', 5, 100);
+        DB::table('products')->where('id', $inactiveId)
+            ->update(['name' => 'مكونات %_! inactive', 'is_active' => false]);
+
+        $foreignId = $this->product(
+            $f['restaurant_store_id'],
+            'b2c',
+            'FDX-FOREIGN-'.Str::upper(Str::random(6)),
+            5,
+            100,
+        );
+        DB::table('products')->where('id', $foreignId)
+            ->update(['name' => 'مكونات %_! foreign']);
+
+        $counts = [
+            'products' => DB::table('products')->count(),
+            'store_products' => DB::table('store_products')->count(),
+            'orders' => DB::table('orders')->count(),
+            'audit' => DB::table('audit_logs')->count(),
+        ];
+
+        foreach ([
+            ['query' => '%_!', 'expected' => [$f['wholesale_product_id']]],
+            ['query' => 'SKU_!', 'expected' => [$skuId]],
+            ['query' => 'BC%!', 'expected' => [$barcodeId]],
+            ['query' => chr(92), 'expected' => [$slashId]],
+            ['query' => 'عربية', 'expected' => [$f['wholesale_product_id'], $lookalikeId]],
+            ['query' => 'English', 'expected' => [$barcodeId]],
+            ['query' => 'missing%_!', 'expected' => []],
+        ] as $case) {
+            $actual = array_column($supply->foodexProducts($case['query']), 'id');
+            $expected = $case['expected'];
+            sort($actual);
+            sort($expected);
+            $this->assertSame($expected, $actual, 'Supply search must match literal text inside the authorized B2B catalog.');
+        }
+
+        $this->assertCount(1, $supply->foodexProducts('عربية', 1));
+        $this->assertSame($counts['products'], DB::table('products')->count());
+        $this->assertSame($counts['store_products'], DB::table('store_products')->count());
+        $this->assertSame($counts['orders'], DB::table('orders')->count());
+        $this->assertSame($counts['audit'], DB::table('audit_logs')->count());
+    }
+
     /** @return array<string,mixed> */
     private function fixture(): array
     {
