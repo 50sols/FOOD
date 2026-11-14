@@ -183,6 +183,19 @@ def _member_name(info: zipfile.ZipInfo) -> str:
     _require(
         not any(part == ".env" or part.startswith(".env.") for part in folded_parts)
         and "storage" not in folded_parts[:2]
+        # Historical update archives are code-only, never a source of user
+        # uploads. Reject both exact directory-name files (which could
+        # overwrite public/storage) and descendants on case-insensitive hosts.
+        and not any(
+            folded_parts[:len(root)] == list(root)
+            for root in (
+                ("backend", "public", "storage"),
+                ("backend", "public", "uploads"),
+                ("public", "storage"),
+                ("public", "uploads"),
+                ("backend", "uploads"),
+            )
+        )
         and not folded_canonical.startswith(("apps/", "release/", "docs/", ".github/"))
         and not folded_canonical.startswith("backend/tests/"),
         f"Private/non-runtime member in update: {name!r}",

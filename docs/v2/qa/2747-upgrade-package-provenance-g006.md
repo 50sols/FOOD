@@ -149,3 +149,30 @@ Cross-surface impact: historical offline ZIP validation script/tests/QA only. No
 The offline verifier now rejects ZIP entries marked encrypted (general-purpose flag bit 0) and entries using compression methods other than **STORED** or **DEFLATED** before ZIP CRC/decompression scanning. Some ZIP readers reject these with an unhandled password or unsupported-method exception, and shared-host extractors may not implement the same methods. A matching SHA-256 is not permission to accept an encrypted or non-portable ZIP. Two real synthetic ZIP-header regression cases update both local and central headers and recompute the manifest, standalone checksum and Dashboard digest to prove that the explicit policy—not a stale hash—rejects these inputs. The existing historical release integrity and ordinary ZIP tests must remain green.
 
 This is **archive-integrity-only** hardening on the original G006 PR. It is not a publisher-authenticated digital-signature check, a Laravel runtime change, a completed MySQL historical upgrade or recovery proof. Customer, Driver, Van and Dashboard APIs, UI strings and AR/EN/RTL are unchanged. G006 acceptance and the existing PR remain open/draft pending verified full-source requirements.
+
+
+## Laravel public-disk / legacy uploaded-file protection (2026-11-14)
+
+The offline G006 archive verifier now rejects checksum-valid ZIP members aimed at
+`backend/public/storage`, `backend/public/uploads`, `public/storage`,
+`public/uploads`, and `backend/uploads`, including the exact path itself,
+case-insensitive aliases, and descendants. These are deployment-specific user
+uploads or the Laravel public-disk symlink, **not** code owned by an immutable
+release archive. A malicious update with a valid archive digest and forged
+manifest must not overwrite those files after extraction. The guard is applied
+before `archive.testzip()` and before trusting the manifest's member inventory.
+
+A real synthetic Update ZIP and consistent SHA-256/JSON/list sidecars exercise
+eight rejected path variants and a positive example with
+`backend/public/.htaccess` and a static SVG. It preserves existing signed
+runtime assets but does not assert that unknown custom user-upload directory
+names are automatically protected; installation/apply-time allowlisting remains
+a separately required control.
+
+**Scope/limits:** verifier, synthetic Python test, and QA documentation only.
+No changes to Laravel, API, Dashboard, Customer, Driver, Van or tenant data.
+No real backup/recovery or database update was performed. This is an additional
+defense, not publisher-signature authentication, a production ZIP, or evidence
+of historical populated-MySQL v124→v125→v127 upgrade. Original PR #3364
+and Issue #2747 must remain OPEN/DRAFT pending independently accepted G006
+full-source CI, recovery and approval. No `main` or production changes.

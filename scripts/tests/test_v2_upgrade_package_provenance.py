@@ -566,6 +566,44 @@ class V2G006PackageProvenanceTest(unittest.TestCase):
         self.first = build_bundle(self.first)
         self.assertEqual("1.0.125", self.verify_first()["to"])
 
+    def test_checksum_valid_public_upload_paths_are_rejected_as_runtime_data(self) -> None:
+        # ZIP hashes and sidecars are genuine; matching integrity metadata
+        # cannot authorize replacement of files in the Laravel public disk or
+        # older public upload roots. A basename equal to 'storage' also risks
+        # replacing a public/storage symlink after extraction.
+        forbidden_paths = (
+            "backend/public/storage",
+            "backend/public/storage/users/avatar.png",
+            "backend/Public/STORAGE/users/avatar.png",
+            "backend/public/uploads/tenant-1/invoice.pdf",
+            "backend/public/UPLOADS/tenant-2/receipt.png",
+            "public/storage/customer-photo.jpg",
+            "public/uploads/customer-photo.jpg",
+            "backend/uploads/customer-photo.jpg",
+        )
+        for path in forbidden_paths:
+            with self.subTest(path=path):
+                self.first = build_bundle(
+                    self.first,
+                    entries=[
+                        ("VERSION", b"1.0.125", False),
+                        (path, b"not a runtime release file", False),
+                    ],
+                )
+                with self.assertRaisesRegex(PackageContractError, "Private/non-runtime"):
+                    self.verify_first()
+
+        # Publicly served static application assets are valid update members.
+        self.first = build_bundle(
+            self.first,
+            entries=[
+                ("VERSION", b"1.0.125", False),
+                ("backend/public/.htaccess", b"Options -Indexes", False),
+                ("backend/public/images/product.svg", b"<svg/>", False),
+            ],
+        )
+        self.assertEqual(3, self.verify_first()["files"])
+
     def test_traversal_symlink_secret_and_non_runtime_paths_rejected(self) -> None:
         for forbidden in ("../outside.php", "backend/../outside.php", "backend/.env",
                           "backend/storage/app/private.txt", "apps/driver/app.apk"):
