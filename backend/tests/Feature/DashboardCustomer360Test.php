@@ -771,7 +771,7 @@ class DashboardCustomer360Test extends TestCase
         };
 
         $targetId = $invoice($platform->id, $platform->legacy_customer_id, $domain->id, $invoiceNumber);
-        $invoice($platform->id, $platform->legacy_customer_id, $domain->id, 'FINX-OTHER');
+        $decoyId = $invoice($platform->id, $platform->legacy_customer_id, $domain->id, 'FINX-OTHER');
         $invoice($platform->id, $platform->legacy_customer_id, $domain->id, 'FIN_%!-FOREIGN-CURRENCY', 'KWD');
 
         $otherStoreId = $this->store('B2C', 'PICKER-LITERAL-FOREIGN', 'Literal Foreign');
@@ -793,19 +793,27 @@ class DashboardCustomer360Test extends TestCase
         $before = DB::table('invoices')->count();
         $ledgerBefore = DB::table('customer_account_ledger_entries')->count();
         $super = $this->globalAdmin('SUPER_ADMIN');
-        foreach (['FIN_', '%', '_', '!', '\\', 'FIN_%!', 'FIN'] as $term) {
+        foreach (['FIN_', '%', '_', '!', '\\', 'FIN_%!'] as $term) {
             $this->actingAs($super)
                 ->getJson(route('admin.customer-360.finance-invoices', [
                     'platformCustomer' => $platform->id,
                     'q' => $term,
                 ]))
                 ->assertOk()
-                ->assertJsonCount(1 + (int) ($term === 'FIN'), 'results')
-                ->assertJsonPath(
-                    'results.0.id',
-                    $term === 'FIN' ? $targetId : $targetId,
-                );
+                ->assertJsonCount(1, 'results')
+                ->assertJsonPath('results.0.id', $targetId)
+                ->assertJsonPath('results.0.internal_number', $invoiceNumber);
         }
+
+        $this->actingAs($super)
+            ->getJson(route('admin.customer-360.finance-invoices', [
+                'platformCustomer' => $platform->id,
+                'q' => 'FIN',
+            ]))
+            ->assertOk()
+            ->assertJsonCount(2, 'results')
+            ->assertJsonPath('results.0.id', $decoyId)
+            ->assertJsonPath('results.1.id', $targetId);
 
         $this->actingAs($super)
             ->getJson(route('admin.customer-360.finance-invoices', [
