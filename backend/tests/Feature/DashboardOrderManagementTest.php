@@ -1047,21 +1047,22 @@ class DashboardOrderManagementTest extends TestCase
             $this->assertNotContains($foreignProduct, $case['type'] === 'product' ? $actual : []);
         }
 
+        // Successful lookup GETs must have no order, audit or stock write side effects.
+        // Authorization denials are checked afterwards because security auditing may be intentional.
+        $this->assertSame($before['orders'], DB::table('orders')->count());
+        $this->assertSame($before['audits'], DB::table('audit_logs')->count());
+        $this->assertSame($before['inventories'], DB::table('inventories')->count());
+        $this->assertSame($before['reserved'], DB::table('inventories')->where('id', $exactInventory)->value('reserved_quantity'));
+
         $this->actingAs($admin)
             ->getJson('/admin/operations/orders/lookups/customer?channel=b2c&store_id='.$foreignStore.'&q=Foreign')
             ->assertNotFound();
         $this->actingAs($admin)
             ->getJson('/admin/operations/orders/lookups/product?channel=b2b&store_id='.$store.'&q=SKU')
             ->assertNotFound();
-
         $this->actingAs($unprivileged)
             ->getJson('/admin/operations/orders/lookups/customer?channel=b2c&store_id='.$store.'&q=%25')
             ->assertNotFound();
-
-        $this->assertSame($before['orders'], DB::table('orders')->count());
-        $this->assertSame($before['audits'], DB::table('audit_logs')->count());
-        $this->assertSame($before['inventories'], DB::table('inventories')->count());
-        $this->assertSame($before['reserved'], DB::table('inventories')->where('id', $exactInventory)->value('reserved_quantity'));
     }
 
     public function test_new_order_wizard_b2b_lookup_preserves_approved_account_scope_with_literal_query(): void
