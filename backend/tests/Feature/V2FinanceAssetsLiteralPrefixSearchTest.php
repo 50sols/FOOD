@@ -77,6 +77,8 @@ final class V2FinanceAssetsLiteralPrefixSearchTest extends TestCase
             (int) $foreignOrganization->id,
             (int) $foreignCompany->id,
             (int) $foreignEntity->id,
+            $scope->businessUnitId,
+            $scope->storeId,
         );
         $foreignCategory = $this->category($foreignScope, $actor, 'FA-FOREIGN');
         $this->asset($foreignScope, $foreignCategory, $actor, 'EQ_999', 'Crate_% Foreign');
@@ -92,7 +94,7 @@ final class V2FinanceAssetsLiteralPrefixSearchTest extends TestCase
         $this->assertSame(['EQ_001'], $find('Crate_%'));
         $this->assertSame(['EQ-004'], $find('Crate%'));
         $this->assertSame(['EQ-002'], $find('Crate!_'));
-        $this->assertSame(['EQ-004', 'EQ-005', 'EQ_001'], $find('Crate_'));
+        $this->assertSame(['EQ-005', 'EQ_001'], $find('Crate_'));
         $this->assertSame(['EQ-003'], $find('مخزن'));
         $this->assertSame([], $find('%'));
         $this->assertSame([], $find('_'));
