@@ -58,8 +58,21 @@ class EnterpriseRbacTest extends TestCase
             'email' => 'security-literal-leading@example.test',
             'is_active' => true,
         ]);
+        $symbolUsers = [];
+        foreach ([
+            '_' => '_Only-Symbol',
+            '!' => '!Only-Symbol',
+            '\\' => '\\Only-Symbol',
+        ] as $symbol => $name) {
+            $symbolUsers[$symbol] = User::factory()->create([
+                'name' => $name,
+                'email' => 'security-literal-symbol-'.ord($symbol).'@example.test',
+                'is_active' => true,
+            ]);
+        }
         $userCount = DB::table('users')->count();
         $roleAssignments = DB::table('role_user')->count();
+        $auditCount = AuditLog::query()->count();
 
         foreach (['SEC_', 'SEC_%', 'SEC_%!', 'SEC_%!\\-'] as $q) {
             $this->actingAs($admin)
@@ -87,9 +100,11 @@ class EnterpriseRbacTest extends TestCase
                 ->assertJsonPath('meta.total', 1)
                 ->assertJsonPath('data.0.id', $target->id);
         }
-        $this->getJson('/api/v1/admin/security/users?q='.rawurlencode('%'))
-            ->assertOk()
-            ->assertJsonPath('meta.total', 2);
+        foreach (['%', '_', '!', '\\'] as $symbol) {
+            $this->getJson('/api/v1/admin/security/users?q='.rawurlencode($symbol))
+                ->assertOk()
+                ->assertJsonPath('meta.total', 2);
+        }
         $this->getJson('/api/v1/admin/security/users?q='.rawurlencode('SEC%'))
             ->assertOk()
             ->assertJsonPath('meta.total', 0);
@@ -111,6 +126,7 @@ class EnterpriseRbacTest extends TestCase
         $this->assertTrue($leading->exists);
         $this->assertSame($userCount, DB::table('users')->count());
         $this->assertSame($roleAssignments, DB::table('role_user')->count());
+        $this->assertSame($auditCount, AuditLog::query()->count());
     }
 
     public function test_security_center_defaults_to_compact_users_tab_and_splits_governance_surfaces(): void
