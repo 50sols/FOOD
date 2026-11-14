@@ -732,6 +732,123 @@ class DashboardCustomer360Test extends TestCase
         ]);
     }
 
+    public function test_finance_invoice_picker_treats_sql_wildcards_and_backslash_as_literal_scoped_text(): void
+    {
+        $retailStoreId = $this->store('B2C', 'PICKER-LITERAL-OWNER', 'Literal Owner');
+        $owner = User::query()->create([
+            'name' => 'Literal Finance Owner',
+            'email' => 'literal-finance-owner@example.test',
+            'password' => 'password123',
+            'locale' => 'en',
+            'is_active' => true,
+        ]);
+        $tierId = (int) DB::table('b2b_price_tiers')->where('code', 'STANDARD')->value('id');
+        $domain = app(RetailWholesaleAccountService::class)->ensureForStore(
+            Store::query()->findOrFail($retailStoreId),
+            $tierId,
+            $owner,
+        );
+        $platform = PlatformCustomer::query()->where('user_id', $owner->id)->firstOrFail();
+        $wholesaleStoreId = app(WholesalePrincipal::class)->storeId();
+
+        $invoiceNumber = 'FIN_%!\-A';
+        $invoice = function (int $customerId, int $legacyId, int $b2bId, string $number, string $currency = 'EGP', string $status = 'issued') use ($wholesaleStoreId): int {
+            return (int) DB::table('invoices')->insertGetId([
+                'store_id' => $wholesaleStoreId,
+                'customer_id' => $legacyId,
+                'platform_customer_id' => $customerId,
+                'b2b_customer_id' => $b2bId,
+                'b2c_customer_id' => null,
+                'invoice_number' => $number,
+                'status' => $status,
+                'channel' => 'b2b',
+                'currency' => $currency,
+                'total' => 25,
+                'issued_at' => now(),
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+        };
+
+        $targetId = $invoice($platform->id, $platform->legacy_customer_id, $domain->id, $invoiceNumber);
+        $decoyId = $invoice($platform->id, $platform->legacy_customer_id, $domain->id, 'FINX-OTHER');
+        // A cancelled currency-mismatched invoice must remain outside the picker, without
+        // corrupting the active EGP account ledger into a mixed-currency 409.
+        $invoice($platform->id, $platform->legacy_customer_id, $domain->id, 'FIN_%!-FOREIGN-CURRENCY', 'KWD', 'cancelled');
+
+        $otherStoreId = $this->store('B2C', 'PICKER-LITERAL-FOREIGN', 'Literal Foreign');
+        $otherOwner = User::query()->create([
+            'name' => 'Foreign Literal Owner',
+            'email' => 'foreign-literal-owner@example.test',
+            'password' => 'password123',
+            'locale' => 'en',
+            'is_active' => true,
+        ]);
+        $otherDomain = app(RetailWholesaleAccountService::class)->ensureForStore(
+            Store::query()->findOrFail($otherStoreId),
+            $tierId,
+            $otherOwner,
+        );
+        $otherPlatform = PlatformCustomer::query()->where('user_id', $otherOwner->id)->firstOrFail();
+        $invoice($otherPlatform->id, $otherPlatform->legacy_customer_id, $otherDomain->id, 'FIN_%!\\-B');
+
+        $before = DB::table('invoices')->count();
+        $ledgerBefore = DB::table('customer_account_ledger_entries')->count();
+        $super = $this->globalAdmin('SUPER_ADMIN');
+        foreach (['FIN_', '%', '_', '!', '\\', 'FIN_%!'] as $term) {
+            $this->actingAs($super)
+                ->getJson(route('admin.customer-360.finance-invoices', [
+                    'platformCustomer' => $platform->id,
+                    'q' => $term,
+                ]))
+                ->assertOk()
+                ->assertJsonCount(1, 'results')
+                ->assertJsonPath('results.0.id', $targetId)
+                ->assertJsonPath('results.0.internal_number', $invoiceNumber);
+        }
+
+        $this->actingAs($super)
+            ->getJson(route('admin.customer-360.finance-invoices', [
+                'platformCustomer' => $platform->id,
+                'q' => 'FIN',
+            ]))
+            ->assertOk()
+            ->assertJsonCount(2, 'results')
+            ->assertJsonPath('results.0.id', $decoyId)
+            ->assertJsonPath('results.1.id', $targetId);
+
+        $this->actingAs($super)
+            ->getJson(route('admin.customer-360.finance-invoices', [
+                'platformCustomer' => $platform->id,
+                'q' => 'FIN_%! missing',
+                'selected_id' => $targetId,
+            ]))
+            ->assertOk()
+            ->assertJsonCount(0, 'results')
+            ->assertJsonPath('selected.id', $targetId);
+
+        $super->forceFill(['locale' => 'ar'])->save();
+        $this->actingAs($super)
+            ->getJson(route('admin.customer-360.finance-invoices', [
+                'platformCustomer' => $platform->id,
+                'q' => '%',
+            ]))
+            ->assertOk()
+            ->assertJsonCount(1, 'results')
+            ->assertJsonPath('results.0.internal_number', $invoiceNumber);
+
+        $this->actingAs($this->retailAdmin($retailStoreId))
+            ->getJson(route('admin.customer-360.finance-invoices', [
+                'platformCustomer' => $platform->id,
+                'q' => '%',
+            ]))
+            // Retail roles cannot see this Wholesale identity; deny without leaking its existence.
+            ->assertNotFound();
+
+        $this->assertSame($before, DB::table('invoices')->count());
+        $this->assertSame($ledgerBefore, DB::table('customer_account_ledger_entries')->count());
+    }
+
     public function test_customer_360_manual_finance_entry_uses_authoritative_ledger_currency_and_precision(): void
     {
         $retailStoreId = $this->store('B2C', 'FINANCE-CURRENCY-OWNER', 'Finance Currency Owner');
