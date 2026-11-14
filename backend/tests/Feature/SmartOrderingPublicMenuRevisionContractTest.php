@@ -125,6 +125,87 @@ class SmartOrderingPublicMenuRevisionContractTest extends TestCase
         $this->assertNotSame($readKeyV1, (string) $publishedResponse->json('meta.read_key'));
     }
 
+    public function test_public_menu_search_treats_bilingual_symbols_as_literal_and_keeps_site_scope(): void
+    {
+        $fixture = $this->publishedFixture('LIT', 7);
+        $foreign = $this->publishedFixture('ELSE', 1);
+
+        $revisionId = (int) DB::table('smart_ordering_revisions')
+            ->where('site_id', $fixture['site']->id)
+            ->where('status', 'published')
+            ->value('id');
+        $rows = DB::table('smart_ordering_menu_items')
+            ->where('site_id', $fixture['site']->id)
+            ->where('revision_id', $revisionId)
+            ->orderBy('sort_order')
+            ->get(['id', 'public_id']);
+        $this->assertCount(7, $rows);
+
+        $samples = [
+            ['name_ar' => 'قهوة %_! طازجة', 'name_en' => 'Literal %_! coffee', 'description_ar' => 'مكونات %_!', 'description_en' => 'Fresh roast'],
+            ['name_ar' => 'قهوة ABC! طازجة', 'name_en' => 'Coffee ABC! lookalike', 'description_ar' => 'عادية', 'description_en' => 'Unrelated'],
+            ['name_ar' => 'مشروب', 'name_en' => 'SKU_! special', 'description_ar' => 'غير متعلق', 'description_en' => 'Distinct'],
+            ['name_ar' => 'حلوى', 'name_en' => 'Dessert', 'description_ar' => 'مختلف', 'description_en' => 'A%_! description'],
+            ['name_ar' => 'قائمة', 'name_en' => 'Backslash '.chr(92).' sample', 'description_ar' => 'مختلف', 'description_en' => 'Separate'],
+            ['name_ar' => 'عادي', 'name_en' => 'Common English', 'description_ar' => 'مختلف', 'description_en' => 'Everyday'],
+            ['name_ar' => 'مكونات عربية', 'name_en' => 'Fruit plate', 'description_ar' => 'مختلف', 'description_en' => 'Fruit'],
+        ];
+        foreach ($rows as $index => $item) {
+            DB::table('smart_ordering_menu_items')->where('id', $item->id)->update($samples[$index]);
+        }
+
+        $foreignRevisionId = (int) DB::table('smart_ordering_revisions')
+            ->where('site_id', $foreign['site']->id)
+            ->where('status', 'published')
+            ->value('id');
+        DB::table('smart_ordering_menu_items')
+            ->where('site_id', $foreign['site']->id)
+            ->where('revision_id', $foreignRevisionId)
+            ->update(['name_ar' => 'قهوة %_! خارج المتجر', 'name_en' => 'Literal %_! foreign']);
+
+        $site = $fixture['site']->fresh();
+        $branch = $fixture['branch']->fresh();
+        $url = '/api/v1/smart-ordering/'.$site->slug.'/items';
+
+        $beforeCounts = [
+            'items' => DB::table('smart_ordering_menu_items')->count(),
+            'orders' => DB::table('orders')->count(),
+            'revisions' => DB::table('smart_ordering_revisions')->count(),
+        ];
+
+        foreach ([
+            ['query' => '%_!', 'indices' => [0, 3]],
+            ['query' => 'SKU_!', 'indices' => [2]],
+            ['query' => 'A%_!', 'indices' => [3]],
+            ['query' => chr(92), 'indices' => [4]],
+            ['query' => 'قهوة', 'indices' => [0, 1]],
+            ['query' => 'مكونات', 'indices' => [0, 6]],
+            ['query' => 'English', 'indices' => [5]],
+            ['query' => 'missing%_!', 'indices' => []],
+        ] as $case) {
+            $params = http_build_query([
+                'branch' => $branch->public_id,
+                'locale' => 'ar',
+                'q' => $case['query'],
+            ], '', '&', PHP_QUERY_RFC3986);
+
+            $response = $this->getJson($url.'?'.$params)
+                ->assertOk()
+                ->assertJsonPath('meta.revision.id', (string) DB::table('smart_ordering_revisions')->where('id', $revisionId)->value('public_id'));
+
+            $expected = array_map(static fn (int $index): string => (string) $rows[$index]->public_id, $case['indices']);
+            $actual = array_column((array) $response->json('data'), 'id');
+            sort($actual);
+            sort($expected);
+            $this->assertSame($expected, $actual, 'Public menu search must be literal and site-scoped.');
+            $response->assertJsonPath('meta.total', count($expected));
+        }
+
+        $this->assertSame($beforeCounts['items'], DB::table('smart_ordering_menu_items')->count());
+        $this->assertSame($beforeCounts['orders'], DB::table('orders')->count());
+        $this->assertSame($beforeCounts['revisions'], DB::table('smart_ordering_revisions')->count());
+    }
+
     public function test_public_item_search_is_bounded_to_fifty_rows(): void
     {
         $fixture = $this->publishedFixture('BOUND', 55);
