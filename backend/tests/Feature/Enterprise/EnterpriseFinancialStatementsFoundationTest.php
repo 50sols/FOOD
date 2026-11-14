@@ -340,23 +340,18 @@ final class EnterpriseFinancialStatementsFoundationTest extends TestCase
      */
     private function fixture(string $code, bool $newOrganization = false): array
     {
-        $store = $this->createStore($code, ! $newOrganization);
+        $store = $this->createWholesaleStore($code, ! $newOrganization);
         if ($newOrganization) {
             $this->assignStoreToNewOrganization($store, $code);
         }
 
-        $maker = $this->userForStore(
-            $store,
-            ['finance.view', 'finance.manage', 'finance.post'],
-            $code.'-MAKER',
-        );
-        $poster = $this->userForStore(
-            $store,
-            ['finance.view', 'finance.post'],
-            $code.'-POSTER',
-        );
-        $makerContext = app(TenantContextResolver::class)->retail($maker, $store->id);
-        $posterContext = app(TenantContextResolver::class)->retail($poster, $store->id);
+        // Posted GL statements are legal-entity reports. Use two genuine
+        // Wholesale Finance actors, not store-scoped Retail actors whose
+        // access must now be rejected even within a shared legal entity.
+        $maker = $this->wholesaleFinanceUser();
+        $poster = $this->wholesaleFinanceUser();
+        $makerContext = app(TenantContextResolver::class)->wholesale($maker, $store->id);
+        $posterContext = app(TenantContextResolver::class)->wholesale($poster, $store->id);
         $this->enableFinance($maker, $makerContext);
 
         $finance = app(FinanceFoundationService::class);
@@ -537,6 +532,37 @@ final class EnterpriseFinancialStatementsFoundationTest extends TestCase
         }
 
         return $store;
+    }
+
+    private function createWholesaleStore(string $code, bool $defaultScope = true): Store
+    {
+        $typeId = (int) DB::table('store_types')->where('code', 'B2B')->value('id');
+        $store = Store::query()->create([
+            'store_type_id' => $typeId,
+            'code' => $code,
+            'name' => $code,
+            'is_active' => true,
+        ]);
+
+        if ($defaultScope) {
+            app(OrganizationHierarchyService::class)->ensureDefaultScopeForStore($store);
+        }
+
+        return $store;
+    }
+
+    private function wholesaleFinanceUser(): User
+    {
+        $role = Role::query()
+            ->where('code', 'FINANCE')
+            ->where('scope', 'global')
+            ->where('is_active', true)
+            ->firstOrFail();
+
+        $actor = User::factory()->create(['is_active' => true]);
+        $actor->roles()->syncWithoutDetaching([$role->id]);
+
+        return $actor;
     }
 
     private function assignStoreToNewOrganization(Store $store, string $code): void
