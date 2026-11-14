@@ -46,6 +46,41 @@ test('canonical issue PR number survives status checkpoints without a repeated P
   untrusted.body+='\nPR: https://github.com/example/FOOD/pull/4455';
   assert.equal(parseClaim([untrusted]).pr,0);
 });
+test('original PR and branch aliases preserve exact issue scope, strict PR syntax and claim age', () => {
+  const first = state(1, '2026-11-10T09:20:00Z');
+  first.body = first.body.replace('\nBRANCH: feat/2929-lease-tests',
+    '\nORIGINAL_BRANCH: feat/2929-lease-tests');
+  first.body += '\nORIGINAL_PR: #4455 (DRAFT)';
+  const later = state(2, '2026-11-10T09:25:00Z', 'worker-a', 'WAITING_CI');
+  later.body = later.body.replace('\nBRANCH: feat/2929-lease-tests',
+    '\nORIGINAL_BRANCH: feat/2929-lease-tests');
+  const parsed = parseClaim([first, later]);
+  assert.equal(parsed.branch, 'feat/2929-lease-tests');
+  assert.equal(parsed.pr, 4455);
+  assert.equal(parsed.createdMs, Date.parse('2026-11-10T09:20:00Z'));
+
+  const canonical = state(1, '2026-11-10T09:20:00Z');
+  canonical.body += '\nPR: #2211\nORIGINAL_PR: #4455'
+    + '\nORIGINAL_BRANCH: fix/4455-not-canonical';
+  assert.equal(parseClaim([canonical]).pr, 2211);
+  assert.equal(parseClaim([canonical]).branch, 'feat/2929-lease-tests');
+
+  const untrusted = state(1, '2026-11-10T09:20:00Z');
+  untrusted.body += '\nORIGINAL_PR: https://github.com/example/FOOD/pull/4455';
+  assert.equal(parseClaim([untrusted]).pr, 0);
+});
+
+test('a new worker never inherits original PR provenance from a different owner', () => {
+  const abandoned = state(1, '2026-11-10T09:00:00Z');
+  abandoned.body += '\nORIGINAL_PR: #4455';
+  const successor = state(2, '2026-11-10T09:50:00Z', 'worker-b', 'ACTIVE');
+  const parsed = parseClaim([abandoned, successor]);
+  assert.equal(parsed.owner, 'worker-b');
+  assert.equal(parsed.pr, 0);
+  assert.equal(parsed.claimId, 2);
+  assert.equal(parsed.createdMs, Date.parse('2026-11-10T09:50:00Z'));
+});
+
 test('GitHub Search item pagination and REST array pagination both work', async () => {
   assert.deepEqual(await listPages(async()=>({data:{items:[{number:2929}]}}),{},2),[{number:2929}]);
   assert.deepEqual(await listPages(async()=>({data:[{number:2929}]}),{},2),[{number:2929}]);
@@ -75,7 +110,15 @@ function harness(opts={}) {
     labels: [{name:'worker:active'}, ...(opts.humanGate ? [{name:'gate:human'}] : [])] };
   const mutations=[]; let branchReads=0, commentReads=0, prReads=0;
   const oldState = state(1,'2026-11-10T09:20:00Z');
-  if (opts.claimPr) oldState.body+='\nPR: #4455 (DRAFT)';
+  if (opts.claimPr) {
+    if (opts.originalFieldStyle) {
+      oldState.body = oldState.body.replace('\nBRANCH: feat/2929-lease-tests',
+        '\nORIGINAL_BRANCH: feat/2929-lease-tests');
+      oldState.body += '\nORIGINAL_PR: #4455 (DRAFT)';
+    } else {
+      oldState.body += '\nPR: #4455 (DRAFT)';
+    }
+  }
   const freshState = state(2,'2026-11-10T09:59:00Z','worker-b');
   const matchingPr = { number:4455, merged:Boolean(opts.mergedPr),
     merged_at:opts.mergedPr?'2026-11-10T09:40:00Z':null,
@@ -158,6 +201,24 @@ test('closed unmerged original PR is approval-gated, never handed off or recreat
   assert.deepEqual(out.mutations,['remove:worker:active','add:gate:approval','comment']);
   assert.equal(out.getBranchReads(),2);
 });
+test('ORIGINAL_PR/ORIGINAL_BRANCH aliases prevent duplicate merged or closed issue handoff', async () => {
+  for (const option of [
+    { mergedPr: true, expected: ['remove:worker:active', 'comment'] },
+    { closedOriginalPr: true, expected: ['remove:worker:active', 'add:gate:approval', 'comment'] },
+  ]) {
+    const out = await sweep({ claimPr: true, originalFieldStyle: true, ...option });
+    assert.deepEqual(out.mutations, option.expected);
+    assert.equal(out.result.released, 0);
+    assert.equal(out.getBranchReads(), 2);
+  }
+  // An unrelated main-branch PR still cannot suppress a real 30m handoff.
+  const foreign = await sweep({
+    claimPr: true, originalFieldStyle: true, mergedPr: true, foreignPr: true,
+  });
+  assert.deepEqual(foreign.mutations,
+    ['remove:worker:active', 'add:worker:handoff-ready', 'comment']);
+});
+
 test('closed original PR gate respects queued CI and a racing successor or branch', async () => {
   for (const opts of [{queuedCi:true},{runningWorkflow:true},{newClaim:true},{branchMoves:true}]) {
     const out=await sweep({...opts,claimPr:true,closedOriginalPr:true});

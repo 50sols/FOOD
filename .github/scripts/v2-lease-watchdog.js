@@ -51,7 +51,7 @@ function parseClaim(comments) {
     if (!kv.OWNER || !time(c.created_at)) continue;
     // A worker may claim before creating its issue branch; keep the empty
     // branch identity until a subsequent checkpoint supplies the real ref.
-    const branch = kv.BRANCH || '';
+    const branch = kv.BRANCH || kv.ORIGINAL_BRANCH || '';
     if (!claim || claim.owner !== kv.OWNER || claim.branch !== branch) {
       claim = { owner: kv.OWNER, branch, claimId: c.id,
         createdMs: time(c.created_at) };
@@ -59,7 +59,7 @@ function parseClaim(comments) {
     // The canonical worker block commonly spells PR as "#1234 (DRAFT)".
     // Number('#1234') is NaN; preserve the last valid PR on checkpoints
     // that omit the field, without accepting URLs or arbitrary numbers.
-    const prMatch = String(kv.PR || '').match(/^\s*#?([1-9]\d*)(?:\b|$)/);
+    const prMatch = String(kv.PR || kv.ORIGINAL_PR || '').match(/^\s*#?([1-9]\d*)(?:\b|$)/);
     const pr = prMatch ? Number(prMatch[1]) : 0;
     claim = { ...claim, commentId: c.id, state, pr: pr || claim.pr || 0,
       blocker: (kv.BLOCKER || '').toLowerCase(), heartbeatMs: time(kv.HEARTBEAT) };
