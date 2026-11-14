@@ -261,11 +261,11 @@ final class SmartOrderingMenuAdminController extends Controller
             ->where('products.is_active', true)
             ->where('store_products.is_active', true)
             ->when($query !== '', function ($builder) use ($query): void {
-                $needle = '%'.$query.'%';
+                $needle = self::literalLikeNeedle($query);
                 $builder->where(function ($nested) use ($needle): void {
-                    $nested->where('products.name', 'like', $needle)
-                        ->orWhere('products.sku', 'like', $needle)
-                        ->orWhere('products.barcode', 'like', $needle);
+                    $nested->whereRaw("products.name LIKE ? ESCAPE '!'", [$needle])
+                        ->orWhereRaw("products.sku LIKE ? ESCAPE '!'", [$needle])
+                        ->orWhereRaw("products.barcode LIKE ? ESCAPE '!'", [$needle]);
                 });
             })
             ->orderBy('products.name')
@@ -944,13 +944,22 @@ final class SmartOrderingMenuAdminController extends Controller
     /**
      * @return list<array{type:string,type_label:string,id:int,menu_id:int,label:string,anchor:string}>
      */
+    /**
+     * Treat user-entered text as a literal substring on SQLite and MySQL.
+     * SQL identifiers stay fixed in each caller; only the escaped value is bound.
+     */
+    private static function literalLikeNeedle(string $query): string
+    {
+        return '%'.str_replace(['!', '%', '_'], ['!!', '!%', '!_'], $query).'%';
+    }
+
     private function focusResults(SmartOrderingSite $site, SmartOrderingRevision $draft, string $query): array
     {
         if ($query === '') {
             return [];
         }
 
-        $needle = '%'.$query.'%';
+        $needle = self::literalLikeNeedle($query);
         $isAr = app()->getLocale() === 'ar';
         $results = collect();
 
@@ -983,9 +992,9 @@ final class SmartOrderingMenuAdminController extends Controller
                 ->where('site_id', $site->id)
                 ->where('revision_id', $draft->id)
                 ->where(function ($builder) use ($needle): void {
-                    $builder->where('name_ar', 'like', $needle)
-                        ->orWhere('name_en', 'like', $needle)
-                        ->orWhere('public_id', 'like', $needle);
+                    $builder->whereRaw("name_ar LIKE ? ESCAPE '!'", [$needle])
+                        ->orWhereRaw("name_en LIKE ? ESCAPE '!'", [$needle])
+                        ->orWhereRaw("public_id LIKE ? ESCAPE '!'", [$needle]);
                 })
                 ->orderBy('sort_order')
                 ->limit(6)
@@ -1001,9 +1010,9 @@ final class SmartOrderingMenuAdminController extends Controller
                 ->where('menus.site_id', $site->id)
                 ->where('menus.revision_id', $draft->id)
                 ->where(function ($builder) use ($needle): void {
-                    $builder->where('categories.name_ar', 'like', $needle)
-                        ->orWhere('categories.name_en', 'like', $needle)
-                        ->orWhere('categories.public_id', 'like', $needle);
+                    $builder->whereRaw("categories.name_ar LIKE ? ESCAPE '!'", [$needle])
+                        ->orWhereRaw("categories.name_en LIKE ? ESCAPE '!'", [$needle])
+                        ->orWhereRaw("categories.public_id LIKE ? ESCAPE '!'", [$needle]);
                 })
                 ->orderBy('categories.sort_order')
                 ->limit(6)
@@ -1020,9 +1029,9 @@ final class SmartOrderingMenuAdminController extends Controller
                 ->where('menus.site_id', $site->id)
                 ->where('menus.revision_id', $draft->id)
                 ->where(function ($builder) use ($needle): void {
-                    $builder->where('items.name_ar', 'like', $needle)
-                        ->orWhere('items.name_en', 'like', $needle)
-                        ->orWhere('items.public_id', 'like', $needle);
+                    $builder->whereRaw("items.name_ar LIKE ? ESCAPE '!'", [$needle])
+                        ->orWhereRaw("items.name_en LIKE ? ESCAPE '!'", [$needle])
+                        ->orWhereRaw("items.public_id LIKE ? ESCAPE '!'", [$needle]);
                 })
                 ->orderBy('items.sort_order')
                 ->limit(6)
@@ -1040,8 +1049,8 @@ final class SmartOrderingMenuAdminController extends Controller
                 ->where('menus.site_id', $site->id)
                 ->where('menus.revision_id', $draft->id)
                 ->where(function ($builder) use ($needle): void {
-                    $builder->where('groups.name_ar', 'like', $needle)
-                        ->orWhere('groups.name_en', 'like', $needle);
+                    $builder->whereRaw("groups.name_ar LIKE ? ESCAPE '!'", [$needle])
+                        ->orWhereRaw("groups.name_en LIKE ? ESCAPE '!'", [$needle]);
                 })
                 ->orderBy('groups.sort_order')
                 ->limit(4)
@@ -1060,8 +1069,8 @@ final class SmartOrderingMenuAdminController extends Controller
                 ->where('menus.site_id', $site->id)
                 ->where('menus.revision_id', $draft->id)
                 ->where(function ($builder) use ($needle): void {
-                    $builder->where('options.name_ar', 'like', $needle)
-                        ->orWhere('options.name_en', 'like', $needle);
+                    $builder->whereRaw("options.name_ar LIKE ? ESCAPE '!'", [$needle])
+                        ->orWhereRaw("options.name_en LIKE ? ESCAPE '!'", [$needle]);
                 })
                 ->orderBy('options.sort_order')
                 ->limit(4)
