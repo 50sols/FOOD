@@ -297,6 +297,9 @@ final class VanOrderController extends Controller
             ->where('customer_type', 'b2b')
             ->where('customer_id', $customer)
             ->where('store_id', $storeId)
+            // A completed/closed historical visit is not an authorization
+            // grant for another sale. Collections retain their own scope.
+            ->whereIn('status', ['planned', 'started'])
             ->exists(), 404);
     }
 
@@ -350,11 +353,14 @@ final class VanOrderController extends Controller
             ->where('catalogs.is_active', true)
             ->where('catalogs.is_migration_quarantine', false)
             ->when($search !== '', function ($query) use ($search): void {
-                $like = '%'.$search.'%';
+                // Treat operator-entered % and _ as text, not SQL wildcards.
+                // A fixed escape marker and bound values work on MySQL and SQLite.
+                $literal = str_replace(['!', '%', '_'], ['!!', '!%', '!_'], $search);
+                $like = '%'.$literal.'%';
                 $query->where(function ($nested) use ($like): void {
-                    $nested->where('products.name', 'like', $like)
-                        ->orWhere('products.sku', 'like', $like)
-                        ->orWhere('products.barcode', 'like', $like);
+                    $nested->whereRaw("products.name LIKE ? ESCAPE '!'", [$like])
+                        ->orWhereRaw("products.sku LIKE ? ESCAPE '!'", [$like])
+                        ->orWhereRaw("products.barcode LIKE ? ESCAPE '!'", [$like]);
                 });
             })
             ->orderBy('products.name')

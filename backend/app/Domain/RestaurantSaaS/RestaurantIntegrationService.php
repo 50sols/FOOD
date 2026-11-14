@@ -481,11 +481,11 @@ final class RestaurantIntegrationService
             $query->where('d.created_at', '<=', (string) $filters['to'].' 23:59:59');
         }
         if (($filters['q'] ?? '') !== '') {
-            $needle = '%'.str_replace(['%', '_'], ['\\%', '\\_'], trim((string) $filters['q'])).'%';
+            $needle = '%'.str_replace(['!', '%', '_'], ['!!', '!%', '!_'], trim((string) $filters['q'])).'%';
             $query->where(function ($nested) use ($needle): void {
-                $nested->where('d.event_key', 'like', $needle)
-                    ->orWhere('d.event_type', 'like', $needle)
-                    ->orWhere('s.target_url', 'like', $needle);
+                $nested->whereRaw("d.event_key LIKE ? ESCAPE '!'", [$needle])
+                    ->orWhereRaw("d.event_type LIKE ? ESCAPE '!'", [$needle])
+                    ->orWhereRaw("s.target_url LIKE ? ESCAPE '!'", [$needle]);
             });
         }
 
@@ -817,11 +817,11 @@ final class RestaurantIntegrationService
             $query->where('e.created_at', '<=', (string) $filters['to'].' 23:59:59');
         }
         if (($filters['q'] ?? '') !== '') {
-            $needle = '%'.str_replace(['%', '_'], ['\\%', '\\_'], trim((string) $filters['q'])).'%';
+            $needle = '%'.str_replace(['!', '%', '_'], ['!!', '!%', '!_'], trim((string) $filters['q'])).'%';
             $query->where(function ($nested) use ($needle): void {
-                $nested->where('e.external_event_key', 'like', $needle)
-                    ->orWhere('e.event_type', 'like', $needle)
-                    ->orWhere('i.provider_key', 'like', $needle);
+                $nested->whereRaw("e.external_event_key LIKE ? ESCAPE '!'", [$needle])
+                    ->orWhereRaw("e.event_type LIKE ? ESCAPE '!'", [$needle])
+                    ->orWhereRaw("i.provider_key LIKE ? ESCAPE '!'", [$needle]);
             });
         }
     }

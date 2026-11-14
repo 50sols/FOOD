@@ -51,7 +51,13 @@ function parseClaim(comments) {
     if (!kv.OWNER || !time(c.created_at)) continue;
     // A worker may claim before creating its issue branch; keep the empty
     // branch identity until a subsequent checkpoint supplies the real ref.
-    const branch = kv.BRANCH || '';
+    // Some valid issue claims add the target as inline metadata, e.g.
+    // BRANCH: fix/123-v2-work; BASE: Foodex_V2 ONLY. The annotated text
+    // is not a Git ref: probing it returns 404 and hides newer commits.
+    // Strip only explicit trailing BASE/TARGET metadata; otherwise keep
+    // the supplied exact branch identity (never guess a replacement ref).
+    const branch = String(kv.BRANCH || kv.ORIGINAL_BRANCH || '')
+      .replace(/;\s*(?:BASE|TARGET)\s*:.*$/i, '').trim();
     if (!claim || claim.owner !== kv.OWNER || claim.branch !== branch) {
       claim = { owner: kv.OWNER, branch, claimId: c.id,
         createdMs: time(c.created_at) };
@@ -59,7 +65,7 @@ function parseClaim(comments) {
     // The canonical worker block commonly spells PR as "#1234 (DRAFT)".
     // Number('#1234') is NaN; preserve the last valid PR on checkpoints
     // that omit the field, without accepting URLs or arbitrary numbers.
-    const prMatch = String(kv.PR || '').match(/^\s*#?([1-9]\d*)(?:\b|$)/);
+    const prMatch = String(kv.PR || kv.ORIGINAL_PR || '').match(/^\s*#?([1-9]\d*)(?:\b|$)/);
     const pr = prMatch ? Number(prMatch[1]) : 0;
     claim = { ...claim, commentId: c.id, state, pr: pr || claim.pr || 0,
       blocker: (kv.BLOCKER || '').toLowerCase(), heartbeatMs: time(kv.HEARTBEAT) };
@@ -165,6 +171,10 @@ async function run({ github, context, core, nowMs = Date.now() }) {
     const claim = parseClaim(comments);
     if (!claim) continue;
     scanned += 1;
+    // Approval/human gates have no releasable coding lease. Check before
+    // branch/CI probes: a deleted historical ref or failed GitHub API call
+    // must not abort the sweep of unrelated actionable issues.
+    if (humanGate(labels, claim)) { active += 1; continue; }
     const ownPr = prs.find(pr =>
       pr.base?.ref === 'Foodex_V2' &&
       (
@@ -176,7 +186,6 @@ async function run({ github, context, core, nowMs = Date.now() }) {
     const firstBranch = await branchState(github, owner, repo, claim.branch);
     const head = firstBranch.sha || ownPr?.head?.sha || '';
     const ciRunning = await ciInProgress(github, owner, repo, head, claim.branch);
-    if (humanGate(labels, claim)) { active += 1; continue; }
 
     // A merged original issue PR is NOT an abandoned unmerged branch/PR.
     // The source Issue may correctly remain OPEN for wider acceptance, but

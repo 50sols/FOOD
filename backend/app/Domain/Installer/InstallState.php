@@ -58,18 +58,34 @@ final class InstallState
         }
 
         $decoded = (array) $document;
-        $admin = null;
-        $candidate = $decoded['admin'] ?? null;
-        if ($candidate instanceof stdClass) {
-            $candidate = (array) $candidate;
+        // A persisted progress object is written with all three keys, even
+        // before the admin is configured. Missing fields indicate a partial
+        // snapshot; never silently rewrite it as a fresh installation.
+        foreach (['completed_step', 'admin', 'token'] as $requiredKey) {
+            if (! array_key_exists($requiredKey, $decoded)) {
+                throw new RuntimeException('Installer progress state is invalid.');
+            }
         }
 
-        if (is_array($candidate)
-            && isset($candidate['name'], $candidate['email'], $candidate['password_hash'], $candidate['locale'])
-            && is_string($candidate['name'])
-            && is_string($candidate['email'])
-            && is_string($candidate['password_hash'])
-            && is_string($candidate['locale'])) {
+        $admin = null;
+        $candidate = $decoded['admin'];
+        if ($candidate !== null) {
+            // The writer persists either null or a fully typed admin object.
+            // Silently coercing a damaged saved object to null could erase the
+            // previously configured administrator on the next checkpoint.
+            if (! $candidate instanceof stdClass) {
+                throw new RuntimeException('Installer progress state is invalid.');
+            }
+
+            $candidate = (array) $candidate;
+            if (! isset($candidate['name'], $candidate['email'], $candidate['password_hash'], $candidate['locale'])
+                || ! is_string($candidate['name'])
+                || ! is_string($candidate['email'])
+                || ! is_string($candidate['password_hash'])
+                || ! is_string($candidate['locale'])) {
+                throw new RuntimeException('Installer progress state is invalid.');
+            }
+
             $admin = [
                 'name' => $candidate['name'],
                 'email' => $candidate['email'],
@@ -78,10 +94,13 @@ final class InstallState
             ];
         }
 
-        $token = $decoded['token'] ?? null;
-        $token = is_string($token) && preg_match('/^[a-f0-9]{64}$/', $token) === 1
-            ? $token
-            : null;
+        // The persisted token is null only before initial setup. A damaged
+        // non-null token must not be silently reset: token() would replace
+        // saved progress and erase the prior setup session's recovery state.
+        $token = $decoded['token'];
+        if ($token !== null && (! is_string($token) || preg_match('/\\A[a-f0-9]{64}\\z/', $token) !== 1)) {
+            throw new RuntimeException('Installer progress state is invalid.');
+        }
 
         // Progress is a persisted trust boundary: coercing "12", 12.9 or
         // true into a completed step would allow a corrupt JSON state to
