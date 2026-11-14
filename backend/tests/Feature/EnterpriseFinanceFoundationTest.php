@@ -495,7 +495,7 @@ final class EnterpriseFinanceFoundationTest extends TestCase
         }
         $this->assertSame([$cost->id, $costDecoy->id], $costSearch('COST'));
         $this->assertSame([$yearDecoy->id, $year->id], $yearSearch('YEAR'));
-        $this->assertSame([$period->id, $periodDecoy->id], $periodSearch('PERIOD'));
+        $this->assertSame([$periodDecoy->id, $period->id], $periodSearch('PERIOD'));
         $this->assertSame(1, $finance->paginateAccounts(
             $foreignActor, $foreignContext, ['q' => 'ACC_%!'],
         )->total());
