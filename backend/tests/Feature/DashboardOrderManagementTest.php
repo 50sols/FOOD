@@ -999,6 +999,7 @@ class DashboardOrderManagementTest extends TestCase
             'name' => 'عربي %_! Foreign',
             'email' => 'literal-foreign@example.test',
         ]);
+        DB::table('b2c_customers')->where('id', $exactCustomer->id)->update(['phone' => '+965%_!']);
         $admin = $this->storeAdmin($store, 'literal-wizard-admin@example.test');
 
         $before = [
@@ -1010,6 +1011,8 @@ class DashboardOrderManagementTest extends TestCase
 
         foreach ([
             ['type' => 'customer', 'query' => '%_!', 'ids' => [$exactCustomer->id]],
+            ['type' => 'customer', 'query' => '+965%_!', 'ids' => [$exactCustomer->id]],
+            ['type' => 'customer', 'query' => 'literal-exact@example.test', 'ids' => [$exactCustomer->id]],
             ['type' => 'customer', 'query' => 'عربي', 'ids' => [$exactCustomer->id, $lookalikeCustomer->id]],
             ['type' => 'customer', 'query' => chr(92), 'ids' => [$slashCustomer->id]],
             ['type' => 'customer', 'query' => "' OR 1=1 --", 'ids' => []],
@@ -1080,10 +1083,18 @@ class DashboardOrderManagementTest extends TestCase
                 'status' => 'active',
             ]);
         }
+        DB::table('b2b_customers')->where('id', $exact->id)->update(['phone' => '+965%_!']);
+        DB::table('b2b_accounts')->where('b2b_customer_id', $exact->id)->update([
+            'tax_number' => 'TAX%_!',
+            'company_name' => 'شركة%_!',
+        ]);
         $admin = $this->globalAdmin('B2B_ADMIN', 'literal-wizard-wholesale@example.test');
 
         foreach ([
             ['type' => 'customer', 'q' => '%_!', 'ids' => [$exact->id]],
+            ['type' => 'customer', 'q' => 'TAX%_!', 'ids' => [$exact->id]],
+            ['type' => 'customer', 'q' => 'شركة%_!', 'ids' => [$exact->id]],
+            ['type' => 'customer', 'q' => '+965%_!', 'ids' => [$exact->id]],
             ['type' => 'customer', 'q' => 'Wholesale', 'ids' => [$exact->id, $lookalike->id]],
             ['type' => 'product', 'q' => 'B2B%_!', 'ids' => [$exactProduct]],
             ['type' => 'product', 'q' => 'B2Babc!', 'ids' => [$lookalikeProduct]],
