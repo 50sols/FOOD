@@ -70,6 +70,17 @@ test('original PR and branch aliases preserve exact issue scope, strict PR synta
   assert.equal(parseClaim([untrusted]).pr, 0);
 });
 
+test('a new worker never inherits original PR provenance from a different owner', () => {
+  const abandoned = state(1, '2026-11-10T09:00:00Z');
+  abandoned.body += '\nORIGINAL_PR: #4455';
+  const successor = state(2, '2026-11-10T09:50:00Z', 'worker-b', 'ACTIVE');
+  const parsed = parseClaim([abandoned, successor]);
+  assert.equal(parsed.owner, 'worker-b');
+  assert.equal(parsed.pr, 0);
+  assert.equal(parsed.claimId, 2);
+  assert.equal(parsed.createdMs, Date.parse('2026-11-10T09:50:00Z'));
+});
+
 test('GitHub Search item pagination and REST array pagination both work', async () => {
   assert.deepEqual(await listPages(async()=>({data:{items:[{number:2929}]}}),{},2),[{number:2929}]);
   assert.deepEqual(await listPages(async()=>({data:[{number:2929}]}),{},2),[{number:2929}]);
