@@ -1042,7 +1042,7 @@ class DashboardOrderManagementTest extends TestCase
             $expected = array_map('intval', $case['ids']);
             sort($actual);
             sort($expected);
-            $this->assertSame($expected, $actual, 'Wizard '. $case['type'].' search must be literal and store-scoped.');
+            $this->assertSame($expected, $actual, 'Wizard '.$case['type'].' search must be literal and store-scoped.');
             $this->assertNotContains((int) $foreignCustomer->id, $case['type'] === 'customer' ? $actual : []);
             $this->assertNotContains($foreignProduct, $case['type'] === 'product' ? $actual : []);
         }
