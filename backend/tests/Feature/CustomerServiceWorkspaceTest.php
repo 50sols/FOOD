@@ -226,7 +226,6 @@ class CustomerServiceWorkspaceTest extends TestCase
         return $result;
     }
 
-
     public function test_customer_service_picker_and_case_list_use_literal_scoped_search(): void
     {
         $storeA = $this->store('B2C', 'V2-CS-3643-A');
@@ -238,8 +237,14 @@ class CustomerServiceWorkspaceTest extends TestCase
         $decoy = $this->customer($storeA, 'b2c', 'Service QABC! Customer');
         $foreign = $this->customer($storeB, 'b2c', 'Foreign Q%_! Customer');
         $slash = $this->customer($storeA, 'b2c', 'Slash Customer');
+        $email = $this->customer($storeA, 'b2c', 'Email Contact Literal');
+        $phone = $this->customer($storeA, 'b2c', 'Phone Contact Literal');
         $arabic = $this->customer($storeA, 'b2c', 'Arabic Customer');
 
+        DB::table('platform_customers')->where('id', $email->id)
+            ->update(['email' => 'service%_!@example.test']);
+        DB::table('platform_customers')->where('id', $phone->id)
+            ->update(['phone' => '777%_!123']);
         DB::table('platform_customers')->where('id', $slash->id)
             ->update(['name' => 'Slash'.chr(92).'Customer']);
         DB::table('platform_customers')->where('id', $arabic->id)
@@ -259,6 +264,8 @@ class CustomerServiceWorkspaceTest extends TestCase
         $create($actor, $storeA, $matching->id, 'Incident %_! literal');
         $create($actor, $storeA, $decoy->id, 'Incident ABC! lookalike');
         $create($actor, $storeA, $slash->id, 'Backslash'.chr(92).' incident');
+        $create($actor, $storeA, $email->id, 'Email-linked incident');
+        $create($actor, $storeA, $phone->id, 'Phone-linked incident');
         $create($actor, $storeA, $arabic->id, 'شكوى عربية للعميل');
         $create($foreignActor, $storeB, $foreign->id, 'Incident %_! foreign');
 
@@ -269,6 +276,8 @@ class CustomerServiceWorkspaceTest extends TestCase
         foreach ([
             ['q' => 'Q%_!', 'locale' => 'en', 'customer' => [$matching->id], 'subject' => ['Incident %_! literal']],
             ['q' => chr(92), 'locale' => 'en', 'customer' => [$slash->id], 'subject' => ['Backslash'.chr(92).' incident']],
+            ['q' => 'service%_!', 'locale' => 'en', 'customer' => [$email->id], 'subject' => ['Email-linked incident']],
+            ['q' => '777%_!', 'locale' => 'ar', 'customer' => [$phone->id], 'subject' => ['Phone-linked incident']],
             ['q' => 'عميل عربي', 'locale' => 'ar', 'customer' => [$arabic->id], 'subject' => ['شكوى عربية للعميل']],
             ['q' => 'absent%_!', 'locale' => 'en', 'customer' => [], 'subject' => []],
         ] as $case) {
