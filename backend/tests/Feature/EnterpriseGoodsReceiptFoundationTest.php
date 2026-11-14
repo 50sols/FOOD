@@ -247,6 +247,103 @@ final class EnterpriseGoodsReceiptFoundationTest extends TestCase
         }
     }
 
+    public function test_grn_number_prefix_search_is_literal_scoped_and_read_only(): void
+    {
+        $this->enableProcurement();
+        [$actor, $store, $context] = $this->scopedUser($this->allPermissions(), 'GRN-LIT-A');
+        [$otherActor, $otherStore, $otherContext] = $this->scopedUser(
+            $this->allPermissions(),
+            'GRN-LIT-B',
+        );
+        [, $warehouse] = $this->stockTarget($store, 'GRN-LIT-A-SKU');
+        [, $otherWarehouse] = $this->stockTarget($otherStore, 'GRN-LIT-B-SKU');
+        $order = $this->issuedOrder($actor, $context, 'GRN-LIT-A-SUP', 'GRN-LIT-A-SKU', 10);
+        $otherOrder = $this->issuedOrder(
+            $otherActor, $otherContext, 'GRN-LIT-B-SUP', 'GRN-LIT-B-SKU', 2,
+        );
+        $manager = app(GoodsReceiptManager::class);
+        $orderLine = $order->lines()->firstOrFail()->id;
+        $newReceipt = function () use ($manager, $actor, $context, $order, $orderLine, $warehouse): int {
+            return (int) $manager->createFromIssuedOrder($actor, $context, $order->id, [
+                'lines' => [[
+                    'purchase_order_line_id' => $orderLine,
+                    'warehouse_id' => $warehouse->id,
+                    'quantity' => 1,
+                ]],
+            ])->id;
+        };
+
+        $target = $newReceipt();
+        $decoy = $newReceipt();
+        $leadingSymbols = [];
+        foreach ([
+            ['%', '%P-001'],
+            ['_', '_U-001'],
+            ['!', '!B-001'],
+            ['\\', '\\S-001'],
+        ] as [$symbol, $number]) {
+            $leadingSymbols[$symbol] = $newReceipt();
+            DB::table('enterprise_goods_receipts')
+                ->where('id', $leadingSymbols[$symbol])
+                ->update(['receipt_number' => $number]);
+        }
+        $foreign = $manager->createFromIssuedOrder(
+            $otherActor,
+            $otherContext,
+            $otherOrder->id,
+            ['lines' => [[
+                'purchase_order_line_id' => $otherOrder->lines()->firstOrFail()->id,
+                'warehouse_id' => $otherWarehouse->id,
+                'quantity' => 1,
+            ]],
+        );
+        foreach ([
+            [$target, 'GRN_%!\\-A'],
+            [$decoy, 'GRNX-OTHER'],
+            [$foreign->id, 'GRN_%!\\-FOREIGN'],
+        ] as [$id, $number]) {
+            DB::table('enterprise_goods_receipts')
+                ->where('id', $id)
+                ->update(['receipt_number' => $number]);
+        }
+
+        $receiptCount = DB::table('enterprise_goods_receipts')->count();
+        $auditCount = DB::table('audit_logs')->count();
+        $movementCount = DB::table('stock_movements')->count();
+        $search = fn (string $q): array => $manager->paginate($actor, $context, ['q' => $q])
+            ->getCollection()->pluck('id')->all();
+
+        foreach (['GRN_', 'GRN_%', 'GRN_%!', 'GRN_%!\\-'] as $q) {
+            $this->assertSame([$target], $search($q), 'Incorrect literal GRN prefix: '.$q);
+        }
+        foreach ($leadingSymbols as $symbol => $id) {
+            $this->assertSame([$id], $search($symbol), 'Symbol search widened: '.$symbol);
+        }
+        $this->assertSame([$decoy, $target], $search('GRN'));
+        $this->assertSame([], $search('GRN%'));
+        $this->assertSame(1, $manager->paginate($otherActor, $otherContext, [
+            'q' => 'GRN_%!',
+        ])->total());
+        $this->assertSame(0, $manager->paginate($actor, $context, [
+            'q' => 'GRN', 'status' => 'posted',
+        ])->total());
+        $this->assertSame(0, $manager->paginate($actor, $context, [
+            'q' => 'GRN', 'purchase_order_id' => $otherOrder->id,
+        ])->total());
+        $this->assertSame(10, $manager->paginate($actor, $context, [], 1)->perPage());
+
+        $roleless = User::factory()->create(['is_active' => true]);
+        try {
+            $manager->paginate($roleless, $context, ['q' => 'GRN_%']);
+            $this->fail('Roleless actors cannot read GRN records.');
+        } catch (HttpExceptionInterface $exception) {
+            $this->assertSame(403, $exception->getStatusCode());
+        }
+        $this->assertSame($receiptCount, DB::table('enterprise_goods_receipts')->count());
+        $this->assertSame($auditCount, DB::table('audit_logs')->count());
+        $this->assertSame($movementCount, DB::table('stock_movements')->count());
+    }
+
     public function test_draft_cancel_is_retry_safe_and_posted_cancel_is_rejected(): void
     {
         $this->enableProcurement();
