@@ -183,6 +183,21 @@ final class EnterprisePurchaseRequestFoundationTest extends TestCase
         $decoy = $manager->create($actor, $context, $this->requestPayload('Normal prefix decoy'));
         $foreign = $manager->create($otherActor, $otherContext, $this->requestPayload('Foreign literal match'));
 
+        // A prefix lookup must match a symbol only at the beginning of the
+        // request number; a symbol elsewhere is not a prefix match.
+        $leadingSymbols = [];
+        foreach ([
+            ['%', '%P-001'],
+            ['_', '_U-001'],
+            ['!', '!B-001'],
+            ['\\', '\\S-001'],
+        ] as [$symbol, $number]) {
+            $row = $manager->create($actor, $context, $this->requestPayload('Leading symbol '.$number));
+            DB::table('enterprise_purchase_requests')->where('id', $row->id)
+                ->update(['request_number' => $number]);
+            $leadingSymbols[$symbol] = $row->id;
+        }
+
         // Use unique persisted identifiers; invoice-style duplicate numbers
         // are not permitted by the procurement schema either.
         DB::table('enterprise_purchase_requests')->where('id', $target->id)
@@ -198,8 +213,11 @@ final class EnterprisePurchaseRequestFoundationTest extends TestCase
             ->paginate($actor, $context, ['q' => $term])
             ->getCollection()->pluck('id')->all();
 
-        foreach (['REQ_', 'REQ_%', 'REQ_%!', 'REQ_%!\\-', '%', '_', '!', '\\'] as $term) {
+        foreach (['REQ_', 'REQ_%', 'REQ_%!', 'REQ_%!\\-'] as $term) {
             $this->assertSame([$target->id], $search($term), 'Failed literal prefix: '.$term);
+        }
+        foreach ($leadingSymbols as $symbol => $id) {
+            $this->assertSame([$id], $search($symbol), 'Symbol-only search widened results: '.$symbol);
         }
         $this->assertSame([$decoy->id, $target->id], $search('REQ'));
         $this->assertSame([], $search('REQ%'));
