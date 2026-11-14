@@ -443,11 +443,13 @@ final class PlatformMarketplaceController extends Controller
 
         return $this->productQuery($storeId)
             ->when($search !== '', function (Builder $query) use ($search): void {
-                $like = '%'.$search.'%';
+                // Shoppers enter literal names, SKUs and barcodes; % and _ are
+                // text here, never wildcard operators supplied by the client.
+                $like = '%'.str_replace(['!', '%', '_'], ['!!', '!%', '!_'], $search).'%';
                 $query->where(function (Builder $query) use ($like): void {
-                    $query->where('products.name', 'like', $like)
-                        ->orWhere('products.sku', 'like', $like)
-                        ->orWhere('products.barcode', 'like', $like);
+                    $query->whereRaw("products.name LIKE ? ESCAPE '!'", [$like])
+                        ->orWhereRaw("products.sku LIKE ? ESCAPE '!'", [$like])
+                        ->orWhereRaw("products.barcode LIKE ? ESCAPE '!'", [$like]);
                 });
             })
             ->when($categoryId > 0, fn (Builder $query) => $query->where('products.category_id', $categoryId))
