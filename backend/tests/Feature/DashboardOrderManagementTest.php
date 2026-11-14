@@ -1048,6 +1048,16 @@ class DashboardOrderManagementTest extends TestCase
             ->getJson('/admin/operations/orders/lookups/product?channel=b2b&store_id='.$store.'&q=SKU')
             ->assertNotFound();
 
+        $unprivileged = User::query()->create([
+            'name' => 'Roleless Lookup User',
+            'email' => 'roleless-wizard-literal@example.test',
+            'password' => 'password',
+            'is_active' => true,
+        ]);
+        $this->actingAs($unprivileged)
+            ->getJson('/admin/operations/orders/lookups/customer?channel=b2c&store_id='.$store.'&q=%25')
+            ->assertNotFound();
+
         $this->assertSame($before['orders'], DB::table('orders')->count());
         $this->assertSame($before['audits'], DB::table('audit_logs')->count());
         $this->assertSame($before['inventories'], DB::table('inventories')->count());
