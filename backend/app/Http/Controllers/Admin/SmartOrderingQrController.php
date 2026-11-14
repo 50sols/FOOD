@@ -53,13 +53,13 @@ final class SmartOrderingQrController extends Controller
             ->when($selectedStoreId !== null, fn ($q) => $q->where('store_id', $selectedStoreId))
             ->when(isset($filters['type']), fn ($q) => $q->where('type', $filters['type']))
             ->when(isset($filters['q']), function ($q) use ($filters): void {
-                $term = '%'.str_replace(['%', '_'], ['\\%', '\\_'], trim((string) $filters['q'])).'%';
+                $term = '%'.str_replace(['!', '%', '_'], ['!!', '!%', '!_'], trim((string) $filters['q'])).'%';
                 $q->where(function ($nested) use ($term): void {
-                    $nested->where('label', 'like', $term)
-                        ->orWhere('campaign', 'like', $term)
-                        ->orWhere('source', 'like', $term)
-                        ->orWhere('branch_reference', 'like', $term)
-                        ->orWhere('table_reference', 'like', $term);
+                    $nested->whereRaw("label LIKE ? ESCAPE '!'", [$term])
+                        ->orWhereRaw("campaign LIKE ? ESCAPE '!'", [$term])
+                        ->orWhereRaw("source LIKE ? ESCAPE '!'", [$term])
+                        ->orWhereRaw("branch_reference LIKE ? ESCAPE '!'", [$term])
+                        ->orWhereRaw("table_reference LIKE ? ESCAPE '!'", [$term]);
                 });
             })
             ->when(($filters['state'] ?? null) === 'enabled', fn ($q) => $q
