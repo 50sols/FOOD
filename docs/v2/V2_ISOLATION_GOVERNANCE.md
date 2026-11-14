@@ -35,6 +35,8 @@ The owner decision in #2503 (comment 6880597654) permits **deferral of independe
 5. Merge only after all applicable gates pass; then close the completed leaf as `CODE_COMPLETE / FINAL_ACCEPTANCE_DEFERRED` with PR URL, tested SHA, integration SHA, CI run links and any deferred review/UAT. A green PR without a merge is not a closed leaf.
 6. Keep #2503 open and maintain a final independent-review register of all LOW deferred leaves, plus security/staging/manual acceptance, until each is reviewed and resolved on the frozen final V2 head. Any discovered defect reopens its leaf or creates a linked corrective issue before final acceptance.
 
+**Mobile impact assessment (Customer / Driver / Van):** This policy-only change has no direct runtime, UI, API, or binary effect on any of the three apps. Future app-affecting changes remain subject to the existing per-app impact matrix and automated checks.
+
 **Server-side enforcement limitation:** GitHub's existing main ruleset does not enforce V2-specific owner approval (#2742). This policy must never be interpreted as authorization to relax `main` protection or promote V2. A ruleset/branch-protection change, if required, needs explicit authorized maintainer configuration and independent verification; the repository text alone is not technical enforcement.
 
 ## Mandatory V2 Issue template
