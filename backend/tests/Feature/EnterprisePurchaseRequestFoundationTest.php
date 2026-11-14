@@ -186,11 +186,11 @@ final class EnterprisePurchaseRequestFoundationTest extends TestCase
         // Use unique persisted identifiers; invoice-style duplicate numbers
         // are not permitted by the procurement schema either.
         DB::table('enterprise_purchase_requests')->where('id', $target->id)
-            ->update(['request_number' => 'REQ_%!\-A']);
+            ->update(['request_number' => 'REQ_%!\\-A']);
         DB::table('enterprise_purchase_requests')->where('id', $decoy->id)
             ->update(['request_number' => 'REQX-OTHER']);
         DB::table('enterprise_purchase_requests')->where('id', $foreign->id)
-            ->update(['request_number' => 'REQ_%!\-FOREIGN']);
+            ->update(['request_number' => 'REQ_%!\\-FOREIGN']);
 
         $rowCount = DB::table('enterprise_purchase_requests')->count();
         $auditCount = DB::table('audit_logs')->count();
@@ -198,7 +198,7 @@ final class EnterprisePurchaseRequestFoundationTest extends TestCase
             ->paginate($actor, $context, ['q' => $term])
             ->getCollection()->pluck('id')->all();
 
-        foreach (['REQ_', 'REQ_%', 'REQ_%!', 'REQ_%!\-', '%', '_', '!', '\'] as $term) {
+        foreach (['REQ_', 'REQ_%', 'REQ_%!', 'REQ_%!\\-', '%', '_', '!', '\\'] as $term) {
             $this->assertSame([$target->id], $search($term), 'Failed literal prefix: '.$term);
         }
         $this->assertSame([$decoy->id, $target->id], $search('REQ'));
