@@ -78,10 +78,11 @@ final class SupplyIntelligenceService
             ->where('products.is_active', true)
             ->where('store_products.is_active', true)
             ->when($query !== '', function ($builder) use ($query): void {
-                $builder->where(function ($scope) use ($query): void {
-                    $scope->where('products.name', 'like', '%'.$query.'%')
-                        ->orWhere('products.sku', 'like', '%'.$query.'%')
-                        ->orWhere('products.barcode', 'like', '%'.$query.'%');
+                $term = '%'.str_replace(['!', '%', '_'], ['!!', '!%', '!_'], $query).'%';
+                $builder->where(function ($scope) use ($term): void {
+                    $scope->whereRaw("products.name LIKE ? ESCAPE '!'", [$term])
+                        ->orWhereRaw("products.sku LIKE ? ESCAPE '!'", [$term])
+                        ->orWhereRaw("products.barcode LIKE ? ESCAPE '!'", [$term]);
                 });
             })
             ->orderBy('products.name')

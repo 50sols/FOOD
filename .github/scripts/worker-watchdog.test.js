@@ -14,6 +14,7 @@ const {
   isRateLimitError,
   linkedIssueNumbers,
   parseWorkerState,
+  run,
   statusLabel,
   targetIssueNumbersFromContext,
   summarizeCheckRuns,
@@ -110,6 +111,66 @@ test('extracts existing branch from legacy claim comment', () => {
     branchFromText('Owner: worker\nBranch: `fix/512-live-map-production-reliability`\nLease: active'),
     'fix/512-live-map-production-reliability',
   );
+});
+
+test('explicit Issue gates survive stale-green and red-PR watchdog reconciliation', async () => {
+  // The default watchdog may examine an open PR with an old worker claim,
+  // but must not probe branch/CI or replace a human-approved gate with a
+  // resumable worker handoff. This also covers contradictory old queue labels.
+  for (const gate of ['gate:approval', 'gate:human', 'gate:device']) {
+    const labels = [{ name: gate }, { name: 'worker:handoff-ready' }];
+    const calls = [];
+    const issue = {
+      number: 3629,
+      state: 'open',
+      title: 'V2 | OPS — preserve explicit review gates',
+      labels,
+      comments: 1,
+      body: `${STATE_MARKER}\nSTATE: READY_TO_MERGE\nOWNER: old-worker\n`,
+    };
+    const github = {
+      rest: {
+        pulls: {
+          list: async () => {
+            calls.push('pulls.list');
+            return {
+              data: [{
+                number: 99,
+                base: { ref: 'Foodex_V2' },
+                head: { ref: 'fix/3629-v2-watchdog-preserve-review-gates', sha: 'old-head' },
+                body: 'Fixes #3629',
+                mergeable: true,
+              }],
+            };
+          },
+        },
+        issues: {
+          get: async () => {
+            calls.push('issues.get');
+            return { data: issue };
+          },
+          listComments: async () => { throw Error('approval gate must skip comment probes'); },
+          removeLabel: async () => { throw Error('approval gate must never be deleted'); },
+          addLabels: async () => { throw Error('approval gate must not be overwritten'); },
+          createComment: async () => { throw Error('approval gate must not produce handoff comments'); },
+        },
+      },
+    };
+    const result = await run({
+      github,
+      context: {
+        repo: { owner: 'example', repo: 'FOOD' },
+        eventName: 'issues',
+        payload: { issue: { number: issue.number } },
+      },
+      core: { info: () => {} },
+      nowMs: NOW,
+    });
+
+    assert.deepEqual(result, { processed: 0, targeted: true });
+    assert.deepEqual(calls, ['pulls.list', 'issues.get']);
+    assert.deepEqual(issue.labels, labels);
+  }
 });
 
 test('unclaimed managed issue is ready', () => {
