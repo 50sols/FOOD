@@ -175,6 +175,9 @@ class SmartOrderingPublicMenuRevisionContractTest extends TestCase
 
         foreach ([
             ['query' => '%_!', 'indices' => [0, 3]],
+            ['query' => '%', 'indices' => [0, 3]],
+            ['query' => '_', 'indices' => [0, 2, 3]],
+            ['query' => '!', 'indices' => [0, 1, 2, 3]],
             ['query' => 'SKU_!', 'indices' => [2]],
             ['query' => 'A%_!', 'indices' => [3]],
             ['query' => chr(92), 'indices' => [4]],
@@ -182,6 +185,7 @@ class SmartOrderingPublicMenuRevisionContractTest extends TestCase
             ['query' => 'مكونات', 'indices' => [0, 6]],
             ['query' => 'English', 'indices' => [5]],
             ['query' => 'missing%_!', 'indices' => []],
+            ['query' => "' OR 1=1 --", 'indices' => []],
         ] as $case) {
             $params = http_build_query([
                 'branch' => $branch->public_id,
