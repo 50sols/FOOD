@@ -249,6 +249,125 @@ final class EnterprisePurchaseInvoiceHandoffFoundationTest extends TestCase
         }
     }
 
+    public function test_purchase_invoice_number_and_supplier_reference_prefix_search_is_literal_scoped_and_read_only(): void
+    {
+        $this->enableProcurement();
+        [$actor, $store, $context] = $this->scopedUser($this->allPermissions(), 'PINV-LIT-A');
+        [$foreignActor, $foreignStore, $foreignContext] = $this->scopedUser(
+            $this->allPermissions(),
+            'PINV-LIT-B',
+        );
+        [, $warehouse] = $this->stockTarget($store, 'PINV-LIT-A-SKU');
+        [, $foreignWarehouse] = $this->stockTarget($foreignStore, 'PINV-LIT-B-SKU');
+        $receipt = $this->postedReceipt(
+            $actor, $context, $warehouse, 'PINV-LIT-A-SUP', 'PINV-LIT-A-SKU', 12,
+        );
+        $foreignReceipt = $this->postedReceipt(
+            $foreignActor, $foreignContext, $foreignWarehouse,
+            'PINV-LIT-B-SUP', 'PINV-LIT-B-SKU', 2,
+        );
+
+        $manager = app(PurchaseInvoiceHandoffManager::class);
+        $newInvoice = static function (
+            User $owner, ResolvedTenantContext $scope, EnterpriseGoodsReceipt $source, string $supplierNumber,
+        ) use ($manager): int {
+            return (int) $manager->createFromPostedReceipt($owner, $scope, $source->id, [
+                'supplier_invoice_number' => $supplierNumber,
+                'invoice_date' => '2026-10-16',
+                'lines' => [[
+                    'goods_receipt_line_id' => $source->lines()->firstOrFail()->id,
+                    'quantity' => 1,
+                ]],
+            ])->id;
+        };
+
+        $target = $newInvoice($actor, $context, $receipt, 'VEND-TARGET');
+        $decoy = $newInvoice($actor, $context, $receipt, 'VEND-DECOY');
+        $supplierTarget = $newInvoice($actor, $context, $receipt, 'VEND_%!\\-Z');
+        $leadingSymbols = [];
+        foreach ([
+            ['%', '%P-001'],
+            ['_', '_U-001'],
+            ['!', '!B-001'],
+            ['\\', '\\S-001'],
+        ] as [$symbol, $number]) {
+            $leadingSymbols[$symbol] = $newInvoice(
+                $actor, $context, $receipt, 'VEND-SYMBOL-'.bin2hex($symbol),
+            );
+            DB::table('enterprise_purchase_invoices')
+                ->where('id', $leadingSymbols[$symbol])
+                ->update(['invoice_number' => $number]);
+        }
+        $foreign = $newInvoice(
+            $foreignActor, $foreignContext, $foreignReceipt, 'VEND-FOREIGN',
+        );
+        foreach ([
+            [$target, 'PINV_%!\\-A'],
+            [$decoy, 'PINVX-OTHER'],
+            [$supplierTarget, 'ALT-ONLY'],
+            [$foreign, 'PINV_%!\\-FOREIGN'],
+        ] as [$id, $number]) {
+            DB::table('enterprise_purchase_invoices')
+                ->where('id', $id)
+                ->update(['invoice_number' => $number]);
+        }
+
+        $invoiceCount = DB::table('enterprise_purchase_invoices')->count();
+        $lineCount = DB::table('enterprise_purchase_invoice_lines')->count();
+        $movementCount = DB::table('stock_movements')->count();
+        $auditCount = DB::table('audit_logs')->count();
+        $outboxCount = DB::table('enterprise_outbox_messages')->count();
+        $search = fn (string $q): array => $manager->paginate($actor, $context, ['q' => $q])
+            ->getCollection()->pluck('id')->all();
+
+        foreach (['PINV_', 'PINV_%', 'PINV_%!', 'PINV_%!\\-'] as $q) {
+            $this->assertSame([$target], $search($q), 'Incorrect literal invoice prefix: '.$q);
+        }
+        foreach (['VEND_', 'VEND_%', 'VEND_%!', 'VEND_%!\\-'] as $q) {
+            $this->assertSame([$supplierTarget], $search($q), 'Incorrect supplier reference prefix: '.$q);
+        }
+        foreach ($leadingSymbols as $symbol => $id) {
+            $this->assertSame([$id], $search($symbol), 'Symbol search broadened: '.$symbol);
+        }
+        $this->assertSame([$decoy, $target], $search('PINV'));
+        $this->assertSame([], $search('PINV%'));
+        $this->assertSame([], $search('VEND%'));
+        $this->assertSame(1, $manager->paginate(
+            $foreignActor, $foreignContext, ['q' => 'PINV_%!'],
+        )->total());
+        $this->assertSame(0, $manager->paginate(
+            $actor, $context, ['q' => 'PINV_%!', 'status' => 'handed_off'],
+        )->total());
+        $this->assertSame(1, $manager->paginate(
+            $actor, $context, [
+                'q' => 'PINV_%!', 'status' => 'draft',
+                'supplier_id' => $receipt->supplier_id,
+                'goods_receipt_id' => $receipt->id,
+            ],
+        )->total());
+        $this->assertSame(0, $manager->paginate(
+            $actor, $context, ['q' => 'PINV_%!', 'goods_receipt_id' => $foreignReceipt->id],
+        )->total());
+        $this->assertSame(0, $manager->paginate(
+            $actor, $context, ['q' => 'PINV_%!', 'supplier_id' => 999999],
+        )->total());
+        $this->assertSame(10, $manager->paginate($actor, $context, [], 1)->perPage());
+
+        $roleless = User::factory()->create(['is_active' => true]);
+        try {
+            $manager->paginate($roleless, $context, ['q' => 'PINV_%']);
+            $this->fail('Roleless actors may not read procurement purchase invoices.');
+        } catch (HttpExceptionInterface $exception) {
+            $this->assertSame(403, $exception->getStatusCode());
+        }
+
+        $this->assertSame($invoiceCount, DB::table('enterprise_purchase_invoices')->count());
+        $this->assertSame($lineCount, DB::table('enterprise_purchase_invoice_lines')->count());
+        $this->assertSame($movementCount, DB::table('stock_movements')->count());
+        $this->assertSame($auditCount, DB::table('audit_logs')->count());
+        $this->assertSame($outboxCount, DB::table('enterprise_outbox_messages')->count());
+    }
+
     public function test_draft_cancel_is_retry_safe_and_handed_off_invoice_is_immutable(): void
     {
         $this->enableProcurement();
