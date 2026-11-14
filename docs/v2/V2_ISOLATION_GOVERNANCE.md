@@ -15,6 +15,28 @@ Date: 2026-11-10 | Parent: #2503 | Integration: `Foodex_V2`
 11. If a workflow, branch protection or repository settings allow a main merge, this **does not constitute owner authorization**. A dedicated GitHub ruleset requiring owner approval for `Foodex_V2` → `main` must be configured separately by a maintainer; a branch-contained workflow alone cannot fully enforce a main-base server-side ban.
 12. No direct changes to original main policies or production artifacts to establish this V2 program.
 
+
+## Owner-approved V2 staged independent-review policy (2026-11-14; #3615)
+
+The owner decision in #2503 (comment 6880597654) permits **deferral of independent source review only for demonstrably low-risk, non-sensitive V2 leaf changes** until the consolidated V2 acceptance review. This does **not** defer code implementation, automated testing, or required GitHub enforcement. It does not authorize V2 promotion to `main`.
+
+### Risk classification before merge
+
+- **LOW / deferrable:** narrowly scoped, read-only presentation, copy, or literal search corrections where the existing server-side authorization, tenant visibility, persistence, public/mobile API contracts, and sensitive-data disclosure are unchanged. Record a file-by-file impact assessment, relevant negative RBAC/tenant tests, AR/EN coverage, and the reviewer-deferral rationale in the leaf PR and Issue. A search touching tenant/customer data is not automatically low risk: verify its scoped query and negative isolation tests; unresolved uncertainty is **HIGH**.
+- **HIGH / never deferred:** authentication/identity, permissions/RBAC, tenant isolation, sensitive personal data exposure, finance/pricing/credit/settlement, order fulfillment/dispatch, Customer/Driver/Van security-relevant API behavior, migrations/data integrity, installer/update ZIP, backups/recovery, signing/provenance, CI/policy enforcement, or changes with unclear cross-module impact. An independent qualified `APPROVED` review remains required **before** merge.
+- **Unknown or mixed scope:** treat as HIGH until narrowed or independently reviewed. Do not relabel a high-risk PR as low-risk merely to accelerate closure.
+
+### Technical merge and closure gate
+
+1. Existing issue-scoped branch and PR only, target `Foodex_V2`; no direct integration commit, `main` PR, release or deployment.
+2. Complete the source-required programming and applicable Laravel/Flutter/security/RBAC/tenant/AR-EN checks. Required CI, Repository Policy, V2 Isolation and all applicable checks must be **GREEN on the exact final PR head**. No waivers for failures, pending runs, or missing required jobs.
+3. Respect actual GitHub branch protection/rulesets and unresolved blocking reviews. A required server-side approval **cannot** be self-approved, administratively bypassed or silently replaced with this policy. If GitHub requires approval, obtain it or separately configure a reviewed and authorized policy; this document does not change GitHub settings.
+4. For a verified LOW leaf with no required GitHub independent-approval gate, record `REVIEW_RISK: LOW`, `INDEPENDENT_REVIEW: DEFERRED_TO_V2_FINAL`, code/CI evidence, and the final-audit tracking reference #2503. For HIGH leaves record independent reviewer identity, approval URL, and tested head. Preserve `MANUAL_ACCEPTANCE: DEFERRED_TO_V2_FINAL` separately.
+5. Merge only after all applicable gates pass; then close the completed leaf as `CODE_COMPLETE / FINAL_ACCEPTANCE_DEFERRED` with PR URL, tested SHA, integration SHA, CI run links and any deferred review/UAT. A green PR without a merge is not a closed leaf.
+6. Keep #2503 open and maintain a final independent-review register of all LOW deferred leaves, plus security/staging/manual acceptance, until each is reviewed and resolved on the frozen final V2 head. Any discovered defect reopens its leaf or creates a linked corrective issue before final acceptance.
+
+**Server-side enforcement limitation:** GitHub's existing main ruleset does not enforce V2-specific owner approval (#2742). This policy must never be interpreted as authorization to relax `main` protection or promote V2. A ruleset/branch-protection change, if required, needs explicit authorized maintainer configuration and independent verification; the repository text alone is not technical enforcement.
+
 ## Mandatory V2 Issue template
 - Source document section/paragraph/table row or sidebar line identifier.
 - Exact actor/persona, entry point, data and permission scope, role/module/entitlement/readiness guard.
