@@ -6,6 +6,7 @@ use App\Models\Permission;
 use App\Models\PlatformCustomer;
 use App\Models\Role;
 use App\Models\User;
+use App\Services\CustomerServiceCaseManager;
 use Database\Seeders\CoreReferenceSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
@@ -250,7 +251,7 @@ class CustomerServiceWorkspaceTest extends TestCase
         DB::table('platform_customers')->where('id', $arabic->id)
             ->update(['name' => 'عميل عربي مميز']);
 
-        $cases = app(\App\Services\CustomerServiceCaseManager::class);
+        $cases = app(CustomerServiceCaseManager::class);
         $create = static function (User $user, int $storeId, int $customerId, string $subject) use ($cases): void {
             $cases->createCase($user, [
                 'store_id' => $storeId,
@@ -321,7 +322,7 @@ class CustomerServiceWorkspaceTest extends TestCase
         $store = $this->store('B2C', 'V2-CS-3643-PAGE');
         $actor = $this->storeUser($store, ['customers.view', 'customers.manage']);
         $customer = $this->customer($store, 'b2c', 'Case Page Client');
-        $cases = app(\App\Services\CustomerServiceCaseManager::class);
+        $cases = app(CustomerServiceCaseManager::class);
 
         for ($i = 0; $i < 26; $i++) {
             $cases->createCase($actor, [
