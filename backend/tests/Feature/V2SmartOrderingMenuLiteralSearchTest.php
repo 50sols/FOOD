@@ -45,7 +45,7 @@ final class V2SmartOrderingMenuLiteralSearchTest extends TestCase
             ['locale' => 'ar', 'q' => '%_!', 'expected' => [$symbol]],
             ['locale' => 'en', 'q' => 'SKU_!', 'expected' => [$sku]],
             ['locale' => 'en', 'q' => 'BAR%!', 'expected' => [$barcode]],
-            ['locale' => 'en', 'q' => '\', 'expected' => [$slash]],
+            ['locale' => 'en', 'q' => chr(92), 'expected' => [$slash]],
             ['locale' => 'ar', 'q' => 'عربي', 'expected' => [$symbol]],
             ['locale' => 'en', 'q' => 'English', 'expected' => [$sku]],
             ['locale' => 'en', 'q' => 'missing%_!', 'expected' => []],
@@ -135,7 +135,7 @@ final class V2SmartOrderingMenuLiteralSearchTest extends TestCase
         foreach ([
             ['locale' => 'ar', 'q' => '%_!', 'type' => 'menu', 'expected' => [$match->id]],
             ['locale' => 'en', 'q' => '%_!', 'type' => 'menu', 'expected' => [$match->id]],
-            ['locale' => 'en', 'q' => '!_\', 'type' => 'category', 'expected' => [$category->id]],
+            ['locale' => 'en', 'q' => '!_'.chr(92), 'type' => 'category', 'expected' => [$category->id]],
             ['locale' => 'ar', 'q' => 'عربية', 'type' => 'menu', 'expected' => [$match->id]],
             ['locale' => 'en', 'q' => 'missing%_!', 'type' => 'menu', 'expected' => []],
         ] as $case) {
