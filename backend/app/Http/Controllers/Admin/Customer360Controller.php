@@ -1337,8 +1337,8 @@ final class Customer360Controller extends Controller
         if (in_array($source, ['current_location', 'map_pin'], true)
             && ($latitude === null || $longitude === null)) {
             throw ValidationException::withMessages([
-                'latitude' => ['Latitude and longitude are required for the selected location source.'],
-                'longitude' => ['Latitude and longitude are required for the selected location source.'],
+                'latitude' => [__('customer_address_location.coordinate_pair_required')],
+                'longitude' => [__('customer_address_location.coordinate_pair_required')],
             ]);
         }
 
@@ -1346,7 +1346,7 @@ final class Customer360Controller extends Controller
             && $validated['location_accuracy_meters'] !== null
             && ($latitude === null || $longitude === null)) {
             throw ValidationException::withMessages([
-                'location_accuracy_meters' => ['Location accuracy requires a saved coordinate pair.'],
+                'location_accuracy_meters' => [__('customer_address_location.accuracy_pair_required')],
             ]);
         }
     }
