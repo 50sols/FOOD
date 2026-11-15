@@ -215,7 +215,7 @@ final class V2CustomerSalesSidebarGroupAuthorityTest extends TestCase
             ->assertSee('data-nav-item="whatsapp_inbox"', false);
 
         $html = (string) $response->getContent();
-        preg_match('/<section[^>]*data-nav-domain="customer-sales-service"[^>]*>(.*?)</section>~s', $html, $matches);
+        preg_match('~<section[^>]*data-nav-domain="customer-sales-service"[^>]*>(.*?)</section>~s', $html, $matches);
         $this->assertNotEmpty($matches[1] ?? null, 'Customer and support links must share the same domain container.');
         foreach (['accounts', 'sales', 'customer_service'] as $key) {
             $this->assertStringContainsString('data-nav-group="'.$key.'"', $matches[1]);
