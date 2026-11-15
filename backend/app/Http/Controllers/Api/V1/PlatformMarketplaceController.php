@@ -17,10 +17,8 @@ final class PlatformMarketplaceController extends Controller
 
     public function home(Request $request): JsonResponse
     {
-        $store = $this->principalStore();
-        $storeId = (int) $store->id;
-        // Parse optional public filters once. Malformed arrays and nested values
-        // must fail with field-specific 422s before any SQL/search coercion.
+        // Validate query shapes before the first data lookup. Nested inputs must
+        // fail as 422, never reach the public search or placement queries.
         $filters = $request->validate([
             'q' => ['nullable', 'string', 'max:160'],
             'category_id' => ['nullable', 'integer', 'min:1'],
@@ -28,6 +26,8 @@ final class PlatformMarketplaceController extends Controller
             'city' => ['nullable', 'string', 'max:160'],
             'area' => ['nullable', 'string', 'max:160'],
         ]);
+        $store = $this->principalStore();
+        $storeId = (int) $store->id;
         $wholesaleBanners = $this->wholesaleBanners($storeId);
 
         return response()->json([
