@@ -123,23 +123,30 @@ final class V2VolumeQuantityPricingTest extends TestCase
         Sanctum::actingAs($this->actor('B2B_ADMIN', 'volume-admin-reject@example.test'));
         $base = $this->rule($storeId, $productId, $tierId);
         $this->putJson('/api/v1/admin/b2b/prices', $base)->assertCreated();
+        $originalBreaks = DB::table('b2b_price_rules')
+            ->where('store_id', $storeId)
+            ->where('product_id', $productId)
+            ->value('quantity_price_breaks');
 
+        // Domain normalization reports structural errors at the list level;
+        // Laravel's numeric rule reports a negative price on its nested field.
         foreach ([
-            [['minimum_quantity' => 10, 'unit_price' => 9], ['minimum_quantity' => 10, 'unit_price' => 8]],
-            [['minimum_quantity' => 20, 'unit_price' => 8], ['minimum_quantity' => 10, 'unit_price' => 7]],
-            [['minimum_quantity' => 11, 'unit_price' => 8]],
-            [['minimum_quantity' => 10, 'unit_price' => 11]],
-            [['minimum_quantity' => 10, 'unit_price' => -1]],
-        ] as $breaks) {
+            [[['minimum_quantity' => 10, 'unit_price' => 9], ['minimum_quantity' => 10, 'unit_price' => 8]], 'quantity_price_breaks'],
+            [[['minimum_quantity' => 20, 'unit_price' => 8], ['minimum_quantity' => 10, 'unit_price' => 7]], 'quantity_price_breaks'],
+            [[['minimum_quantity' => 11, 'unit_price' => 8]], 'quantity_price_breaks'],
+            [[['minimum_quantity' => 10, 'unit_price' => 11]], 'quantity_price_breaks'],
+            [[['minimum_quantity' => 10, 'unit_price' => -1]], 'quantity_price_breaks.0.unit_price'],
+        ] as [$breaks, $expectedErrorField]) {
             $this->putJson('/api/v1/admin/b2b/prices', [
                 ...$base, 'quantity_price_breaks' => $breaks,
-            ])->assertUnprocessable()->assertJsonValidationErrors('quantity_price_breaks');
+            ])->assertUnprocessable()->assertJsonValidationErrors($expectedErrorField);
 
             $this->assertDatabaseHas('b2b_price_rules', [
                 'store_id' => $storeId,
                 'product_id' => $productId,
                 'unit_price' => 10,
                 'minimum_quantity' => 5,
+                'quantity_price_breaks' => $originalBreaks,
             ]);
         }
     }
