@@ -377,6 +377,7 @@ final class VanOrderController extends Controller
                         'sku' => (string) $row->sku,
                         'barcode' => $row->barcode,
                         'unit_price' => (float) $price['price'],
+                        'quantity_price_breaks' => $price['quantity_price_breaks'],
                         'minimum_quantity' => (float) $price['minimum_quantity'],
                         'ordering_increment' => (float) $price['ordering_increment'],
                         ...$this->availability->forStoreProduct($storeId, (int) $row->id),
