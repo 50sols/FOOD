@@ -63,5 +63,7 @@ return [
         'duplicate_code' => 'This code already exists in the selected company and location.',
         'reference_too_short' => 'The account reference must contain at least four letters or digits.',
         'remittance_independent_checker' => 'Remittance approval requires a distinct, recorded maker and checker.',
+        'idempotency_actor_mismatch' => 'This financial request key belongs to a different recorded actor.',
+        'remittance_approval_evidence' => 'Remittance reconciliation requires one verified custody debit with the approved amount, currency and checker.',
     ],
 ];

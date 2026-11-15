@@ -431,6 +431,109 @@ final class V2VanTripSettlementProvenanceTest extends TestCase
         ]);
     }
 
+
+    public function test_collection_and_remittance_replays_reject_another_actor_even_when_terms_match(): void
+    {
+        $maker = User::factory()->create(['is_active' => true]);
+        $differentActor = User::factory()->create(['is_active' => true]);
+        $store = $this->store('B2B', 'P272-MAKER-BOUND-REPLAY');
+        $account = CollectionAccount::query()->create([
+            'actor_type' => 'van',
+            'actor_id' => 452,
+            'store_id' => $store,
+            'currency' => 'KWD',
+            'status' => 'active',
+        ]);
+        $service = app(CollectionCustodyService::class);
+        $collection = $service->collect($account, $maker, 'p272-bound-collection', 20, 'KWD', 'van_app');
+        $remittance = $service->submitRemittance($account, $maker, 'p272-bound-remittance', 8, 'KWD', 'cash');
+
+        foreach (['en', 'ar'] as $locale) {
+            app()->setLocale($locale);
+
+            try {
+                $service->collect($account, $differentActor, 'p272-bound-collection', 20, 'KWD', 'van_app');
+                $this->fail('A different actor must not recover a collector receipt.');
+            } catch (ValidationException $exception) {
+                $this->assertSame(
+                    __('treasury.errors.idempotency_actor_mismatch'),
+                    $exception->errors()['idempotency_key'][0],
+                );
+            }
+
+            try {
+                $service->submitRemittance($account, $differentActor, 'p272-bound-remittance', 8, 'KWD', 'cash');
+                $this->fail('A different actor must not recover a remittance submission.');
+            } catch (ValidationException $exception) {
+                $this->assertSame(
+                    __('treasury.errors.idempotency_actor_mismatch'),
+                    $exception->errors()['idempotency_key'][0],
+                );
+            }
+        }
+        app()->setLocale(config('app.locale'));
+
+        $this->assertSame($collection->id, $service->collect($account, $maker, 'p272-bound-collection', 20, 'KWD', 'van_app')->id);
+        $this->assertSame($remittance->id, $service->submitRemittance($account, $maker, 'p272-bound-remittance', 8, 'KWD', 'cash')->id);
+        $this->assertDatabaseCount('payments', 1);
+        $this->assertDatabaseCount('collection_transactions', 1);
+        $this->assertDatabaseCount('remittances', 1);
+        $this->assertDatabaseCount('custody_ledger_entries', 1);
+    }
+
+    public function test_remittance_reconciliation_refuses_wrong_amount_currency_or_checker_custody_proof(): void
+    {
+        $maker = User::factory()->create(['is_active' => true]);
+        $checker = User::factory()->create(['is_active' => true]);
+        $store = $this->store('B2B', 'P272-CHECKER-PROOF');
+        $account = CollectionAccount::query()->create([
+            'actor_type' => 'van',
+            'actor_id' => 453,
+            'store_id' => $store,
+            'currency' => 'KWD',
+            'status' => 'active',
+        ]);
+        $service = app(CollectionCustodyService::class);
+        $service->collect($account, $maker, 'p272-proof-custody', 30, 'KWD', 'van_app');
+        $pending = $service->submitRemittance($account, $maker, 'p272-proof-remit', 12, 'KWD', 'cash');
+        $approved = $service->approveRemittance($pending, $checker);
+        $ledger = DB::table('custody_ledger_entries')
+            ->where('entry_type', 'approved_remittance')
+            ->where('reference_type', \App\Models\Remittance::class)
+            ->where('reference_id', $approved->id);
+
+        $original = [
+            'amount' => -12,
+            'currency' => 'KWD',
+            'created_by' => $checker->id,
+        ];
+        foreach ([
+            'amount' => ['amount' => -11],
+            'currency' => ['currency' => 'USD'],
+            'checker' => ['created_by' => $maker->id],
+        ] as $case => $tamper) {
+            $ledger->update($tamper);
+
+            try {
+                $service->reconcileRemittance($approved, $maker);
+                $this->fail('Incorrect approval custody evidence must not reconcile: '.$case);
+            } catch (ValidationException $exception) {
+                $this->assertSame(
+                    __('treasury.errors.remittance_approval_evidence'),
+                    $exception->errors()['status'][0],
+                );
+            }
+
+            $this->assertDatabaseHas('remittances', ['id' => $approved->id, 'status' => 'approved']);
+            $ledger->update($original);
+        }
+
+        $reconciled = $service->reconcileRemittance($approved, $maker);
+        $this->assertSame('reconciled', $reconciled->status);
+        $this->assertDatabaseCount('custody_ledger_entries', 2);
+        $this->assertEqualsWithDelta(18, $service->custodyBalance($account), 0.001);
+    }
+
     public function test_van_cannot_allocate_to_retail_or_unknown_store_but_driver_retail_collection_remains_valid(): void
     {
         $actor = User::factory()->create(['is_active' => true]);

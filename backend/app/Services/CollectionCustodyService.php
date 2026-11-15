@@ -47,6 +47,14 @@ final class CollectionCustodyService
                     ]);
                 }
 
+                // A matching financial payload is not enough to authorize another
+                // identity to recover the original collector's immutable receipt.
+                if ($existing->created_by === null || (int) $existing->created_by !== (int) $actor->getKey()) {
+                    throw ValidationException::withMessages([
+                        'idempotency_key' => [__('treasury.errors.idempotency_actor_mismatch')],
+                    ]);
+                }
+
                 // A retry may return an earlier receipt only when every
                 // financial term, including its invoice allocations, agrees.
                 // Otherwise the caller would receive a false paid receipt for
@@ -232,6 +240,14 @@ final class CollectionCustodyService
                     ]);
                 }
 
+                // A replay belongs to the maker recorded on the first submission,
+                // not merely to any actor with access to the same Van wallet.
+                if ($existing->submitted_by === null || (int) $existing->submitted_by !== (int) $actor->getKey()) {
+                    throw ValidationException::withMessages([
+                        'idempotency_key' => [__('treasury.errors.idempotency_actor_mismatch')],
+                    ]);
+                }
+
                 // Reusing a key with different terms must never acknowledge
                 // someone else's previously submitted treasury remittance.
                 if (abs((float) $existing->amount - $amount) > 0.0005
@@ -358,16 +374,25 @@ final class CollectionCustodyService
             $account = CollectionAccount::query()->whereKey($locked->collection_account_id)->lockForUpdate()->firstOrFail();
             $this->assertAccountCurrency($account, (string) $locked->currency);
 
-            $approvedEntryExists = CustodyLedgerEntry::query()
+            // A reference alone is not proof that the exact approved amount was
+            // deducted exactly once. Fail closed for missing/duplicated/corrupt
+            // custody evidence, including wrong currency or checker identity.
+            $approvalEntries = CustodyLedgerEntry::query()
                 ->where('collection_account_id', $account->getKey())
                 ->where('entry_type', 'approved_remittance')
                 ->where('reference_type', Remittance::class)
                 ->where('reference_id', $locked->getKey())
-                ->exists();
+                ->get();
+            $approvalEntry = $approvalEntries->first();
 
-            if (! $approvedEntryExists) {
+            if ($locked->reviewed_by === null
+                || $approvalEntries->count() !== 1
+                || ! $approvalEntry instanceof CustodyLedgerEntry
+                || strtoupper((string) $approvalEntry->currency) !== strtoupper((string) $locked->currency)
+                || abs((float) $approvalEntry->amount + (float) $locked->amount) > 0.0005
+                || (int) $approvalEntry->created_by !== (int) $locked->reviewed_by) {
                 throw ValidationException::withMessages([
-                    'status' => ['Approved remittance custody evidence is missing and cannot be reconciled.'],
+                    'status' => [__('treasury.errors.remittance_approval_evidence')],
                 ]);
             }
 
