@@ -86,10 +86,23 @@ final class FinanceWorkbenchController extends Controller
         // Do not expose Finance context choices to operational roles lacking
         // Finance read permission. Authorize before enterprise scope resolution
         // so a service-only actor receives 403, not a misleading 409.
+        $assignedContexts = $this->contextOptions($actor);
         $contexts = array_values(array_filter(
-            $this->contextOptions($actor),
+            $assignedContexts,
             fn (array $option): bool => $this->financeAccess->canRead($actor, (int) $option['id']),
         ));
+
+        // An explicitly selected, assigned Retail store that lost Finance
+        // permission is forbidden (403), not an unassigned/unknown store (404).
+        // Another assigned store with Finance access must stay independently
+        // available; never resolve the denied store's enterprise data scope.
+        $requestedStoreId = (int) $request->input('store_id', 0);
+        if ($requestedStoreId > 0
+            && in_array($requestedStoreId, array_column($assignedContexts, 'id'), true)
+            && ! in_array($requestedStoreId, array_column($contexts, 'id'), true)) {
+            abort(403);
+        }
+
         if ($contexts === []) {
             // Only a privileged platform operator with an actual platform
             // Finance entitlement can view the non-data setup context.
