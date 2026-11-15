@@ -183,7 +183,9 @@ class CustomerCommerceContextSwitcher {
   }
 
   static void _requirePlatformSession(CustomerSession session) {
-    if (!session.isAuthenticated || !session.platformWide) {
+    if (!session.isAuthenticated ||
+        !session.platformWide ||
+        session.accessToken?.trim().isNotEmpty != true) {
       throw const CustomerCommerceContextSwitchException(
         'platform_customer_session_required',
       );
