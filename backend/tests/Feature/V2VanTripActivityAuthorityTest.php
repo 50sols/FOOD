@@ -299,13 +299,27 @@ final class V2VanTripActivityAuthorityTest extends TestCase
             'route_key' => 'P276-PLANNED-TRIP',
         ];
         $url = route('admin.field-operations.visits.store');
-        $this->actingAs($admin)->post($url, $payload)->assertRedirect();
+        // Explicitly scoped visits keep their existing Van sales semantics,
+        // but only after store/assignment/warehouse provenance is verified.
+        $this->actingAs($admin)
+            ->post($url, [...$payload, 'store_id' => $wholesaleStoreId])
+            ->assertRedirect()
+            ->assertSessionHasNoErrors();
         $this->assertDatabaseHas('van_visits', [
             'customer_type' => 'b2b',
             'customer_id' => $customerId,
             'store_id' => $wholesaleStoreId,
         ]);
-        $this->assertDatabaseCount('van_visits', 1);
+
+        // An omitted store must stay null: materializing it would newly unlock
+        // Van can_direct_sell even though P276 custody/stock remains incomplete.
+        $this->post($url, $payload)->assertRedirect()->assertSessionHasNoErrors();
+        $this->assertDatabaseHas('van_visits', [
+            'customer_type' => 'b2b',
+            'customer_id' => $customerId,
+            'store_id' => null,
+        ]);
+        $this->assertDatabaseCount('van_visits', 2);
 
         $van->forceFill(['status' => 'inactive'])->save();
         $this->post($url, $payload)->assertNotFound();
@@ -341,7 +355,7 @@ final class V2VanTripActivityAuthorityTest extends TestCase
         $assignment->forceFill(['representative_user_id' => $inactiveOperator->id])->save();
         $this->post($url, $payload)->assertNotFound();
 
-        $this->assertDatabaseCount('van_visits', 1);
+        $this->assertDatabaseCount('van_visits', 2);
     }
 
     public function test_user_without_b2b_fleet_authority_cannot_open_trip_activity(): void

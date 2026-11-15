@@ -883,9 +883,11 @@ final class FieldOperationsController extends Controller
         abort_unless(DB::table('users')->where('id', $actorUserId)->where('is_active', true)->exists(), 404);
 
         $this->assertCustomerExists((string) $data['customer_type'], (int) $data['customer_id']);
-        // The B2B visit belongs to the assignment's verified Wholesale
-        // warehouse store, never an unscoped/null or caller-forged store.
-        $storeId = $warehouseStoreId;
+        // A missing store is intentionally still unscoped: Van direct-sale
+        // eligibility uses store_id, so this planning hardening must not
+        // silently grant sales authority to legacy null-store visits.
+        // Explicit store selections are bound to this assignment's warehouse.
+        $storeId = isset($data['store_id']) ? $warehouseStoreId : null;
 
         VanVisit::query()->create([
             'actor_user_id' => (int) $actorUserId,
