@@ -216,3 +216,13 @@ exercise interrupted migrations and verified backup/recovery. Keep original
 PR #3364 DRAFT and Issue #2747 OPEN until those obligations and new exact-head
 required CI are satisfied. Never merge this bounded security increment as
 complete source acceptance; no `main`, tags, production or release.
+
+## G006 archive portable general-purpose flag-bit security regression (2026-11-15)
+
+**Verified defect on original PR HEAD `58b2848c6fcaf75e06be36f5d489aa8cf399558b`:** for a real synthetic ZIP whose local and central headers both claimed reserved/unportable flags `0x0010` or `0x2000`, Python `ZipFile.testzip()` returned `None` (valid CRC), and this read-only G006 verifier incorrectly accepted the update when the SHA-256/manifest/standalone sidecars were recomputed consistently. The G004 Setup staging verifier already rejected unsupported flags; G006 must not certify those same ambiguous extraction semantics.
+
+**Fix:** after the existing explicit encryption prohibition and before CRC scanning, reject any general-purpose bits outside `0x080E` (DEFLATE compression-level bits 1–2, data descriptor bit 3, UTF-8 filename bit 11). Keep the existing LOCAL/CENTRAL equality, method, path, symlink, budgets, migrations, SHA-256 and historical lineage guards unchanged. New checksum-consistent real ZIP regressions cover `0x0010`, `0x0040`, `0x2000` and `0x4000`; the legitimate original archive remains accepted. The cross-platform Python fixture explicitly encodes Unicode file inventories as UTF-8 and rewrites actual ZIP header bytes for the backslash-path regression (instead of relying on Windows `ZipInfo` behavior).
+
+**GCC evidence:** Windows Python 3.9.13; before the fix both `0x0010` and `0x2000` yielded `G006_ACCEPTED` with valid CRC; after the fix, `py -3.9 -m py_compile` and full `py -3.9 -m unittest scripts.tests.test_v2_upgrade_package_provenance -q` succeeded, **39 tests PASS**, on the isolated scratch folder. No production files, live DB or secrets were touched.
+
+**Acceptance boundary:** this is only an incremental security correction to the offline integrity verifier. It does not establish publisher signature trust, authoritative historical ZIP source, a real populated MySQL v124→v125→v127 upgrade, upload/config preservation, interrupted recovery or rollback. Keep #2747 and original PR #3364 OPEN/DRAFT until all source obligations and exact-head CI are actually certified. Integration target remains `Foodex_V2` only.

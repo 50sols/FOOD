@@ -223,6 +223,15 @@ def _member_name(info: zipfile.ZipInfo) -> str:
         not (info.flag_bits & 0x0001),
         f"Encrypted ZIP member is forbidden: {name!r}",
     )
+    # Python can CRC-validate archives with reserved general-purpose bits
+    # that another shared-host extractor might interpret differently.
+    # Match the portable Setup ZIP staging contract: DEFLATE levels (1-2),
+    # data descriptor (3), and UTF-8 names (11) are the only supported bits.
+    supported_flags = 0x080E
+    _require(
+        info.flag_bits & ~supported_flags == 0,
+        f"Unsupported ZIP general-purpose flags: {name!r}",
+    )
     _require(
         info.compress_type in (zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED),
         f"Unsupported ZIP compression method: {name!r}",

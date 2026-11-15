@@ -80,7 +80,9 @@ def build_bundle(
     }
     (parent / "FOODEX-Update.json").write_text(json.dumps(manifest))
     (parent / "FOODEX-Update.sha256.txt").write_text(f"{digest}  FOODEX-Update.zip\n")
-    (parent / "FOODEX-Update.files.txt").write_text("\n".join(names) + "\n")
+    (parent / "FOODEX-Update.files.txt").write_text(
+        "\n".join(names) + "\n", encoding="utf-8",
+    )
     return parent
 
 
@@ -142,6 +144,27 @@ class V2G006PackageProvenanceTest(unittest.TestCase):
             self.assertEqual(1, archive.infolist()[0].flag_bits & 1)
         with self.assertRaisesRegex(PackageContractError, "Encrypted ZIP member"):
             self.verify_first()
+
+    def test_checksum_valid_unsupported_general_purpose_zip_flags_are_rejected(self) -> None:
+        # LOCAL/CENTRAL agree, testzip() CRC passes, and all digest sidecars
+        # attest to the attacker-controlled bytes. Reserved flag semantics
+        # still differ across ordinary Windows/cPanel ZIP extractors.
+        for forbidden in (0x0010, 0x0040, 0x2000, 0x4000):
+            with self.subTest(flags=hex(forbidden)):
+                self.first = build_bundle(self.first)
+                self._modify_zip_headers_and_refresh_digest(
+                    local_offset=6, central_offset=8, field_value=forbidden,
+                )
+                with zipfile.ZipFile(self.first / "FOODEX-Update.zip") as archive:
+                    self.assertEqual(forbidden, archive.infolist()[0].flag_bits)
+                    if forbidden != 0x0040:
+                        self.assertIsNone(archive.testzip())
+                with self.assertRaisesRegex(
+                    PackageContractError, "Unsupported ZIP general-purpose flags",
+                ):
+                    self.verify_first()
+        self.first = build_bundle(self.first)
+        self.assertEqual(3, self.verify_first()["files"])
 
     def test_checksum_valid_nonportable_compression_method_rejected(self) -> None:
         # Unknown method 99 cannot be safely expanded by cPanel unzip or
@@ -419,19 +442,38 @@ class V2G006PackageProvenanceTest(unittest.TestCase):
             self.verify_first()
 
     def test_backslash_member_is_rejected_even_if_manifest_lists_normalized_path(self) -> None:
-        # Before hardening, a single backslash-containing ZIP member could
-        # pass if the attacker supplied a slash-normalized file list.
+        # ZipInfo() normalizes backslashes on Windows. Write a harmless slash
+        # path first, then mutate the *real ZIP filename bytes* in BOTH
+        # headers, retaining valid SHA sidecars and a normalized file list.
+        from hashlib import sha256
+
         self.first = build_bundle(
             self.first,
             entries=[
                 ("VERSION", b"1.0.125", False),
-                (r"backend\app\Unsafe.php", b"<?php // unsafe", False),
+                ("backend/app/Unsafe.php", b"<?php // unsafe", False),
             ],
         )
-        (self.first / "FOODEX-Update.files.txt").write_text(
-            "VERSION\nbackend/app/Unsafe.php\n", encoding="utf-8",
+        archive_path = self.first / "FOODEX-Update.zip"
+        archive_bytes = archive_path.read_bytes()
+        normal_name = b"backend/app/Unsafe.php"
+        self.assertEqual(2, archive_bytes.count(normal_name))
+        payload = archive_bytes.replace(normal_name, b"backend\\app\\Unsafe.php")
+        archive_path.write_bytes(payload)
+        digest = sha256(payload).hexdigest()
+        manifest_path = self.first / "FOODEX-Update.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["sha256"] = digest
+        manifest["dashboard_fields"]["sha256"] = digest
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+        (self.first / "FOODEX-Update.sha256.txt").write_text(
+            f"{digest}  FOODEX-Update.zip\n", encoding="utf-8",
         )
-        with self.assertRaisesRegex(PackageContractError, "Unsafe archive member path"):
+        # On Windows zipfile normalizes CENTRAL backslashes to '/' but
+        # the mutated LOCAL filename still conflicts; both paths fail closed.
+        with self.assertRaisesRegex(
+            PackageContractError, "Unsafe archive member path|Conflicting local ZIP name",
+        ):
             self.verify_first()
 
     def test_zip_member_count_and_expansion_limits_fail_before_crc_scan(self) -> None:
