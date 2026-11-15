@@ -93,3 +93,69 @@ This change introduces an optional, **typed** invoice-to-enterprise-AR identity 
 **Evidence:** `V2ReceivableSettlementWorkbenchTest::test_invoice_to_ar_source_link_requires_exact_store_customer_currency_amount_and_does_not_post` covers valid persisted identity, replay, duplicate source, foreign store/customer, currency/amount/status/void mismatches, missing invoice and no GL mutation; EN/AR error strings added. Legacy P303 RBAC/SoD and retail sibling-store tests are preserved. Customer, Driver and Van public API/Flutter sources unchanged.
 
 **Still required before #2633 source acceptance:** canonical invoice-to-enterprise receivable bookkeeping attestation, historical invoice lineage acceptance/backfill policy, verified collection receipt and invoice allocation authority, transactionally unique available source amounts with consistent MySQL locks and reversible accounting, receipt selection in the bilingual Finance Workbench with maker/checker, real two-connection MySQL tests and browser UX. This is a **SOURCE_INCOMPLETE / SAFE_INCREMENT**, not a P303 source-complete PR, not evidence of signed release/production readiness. Keep original PR DRAFT/Issue OPEN until full acceptance and independent HIGH-risk review. No `main`, release or production.
+
+
+## 2026-11-16 — typed collection allocation evidence (incremental, NOT GL posting)
+
+The operational collector has one canonical, posted `collection_transactions` record
+with one or more per-invoice `collection_allocations`. The independent Enterprise
+AR ledger has historically recorded only editable settlement reference text.
+An invoice-source FK alone cannot prove a receipt; an equal customer/store pair
+does not prove the same collectible invoice or that its cash is available.
+
+This P303 increment adds an **optional nullable** typed
+`enterprise_ar_allocations.source_collection_allocation_id` FK to
+`collection_allocations.id`, restricted on source deletion and uniquely
+claimable across AR drafts. Existing historic manual allocation rows remain
+NULL; there is **no** synthetic migration/backfill from free-text references.
+Legacy idempotency request hashes remain byte-for-byte unchanged when the
+optional source key is omitted.
+
+When a service caller provides this source key during draft creation, the
+existing scoped parent AR row lock and DB transaction now also verify and
+lock the canonical collection allocation and its posted source transaction.
+The server requires an explicit `source_invoice_id` on the AR document,
+canonical invoice still issued/unvoided, exact same customer/store/currency
+and invoice amount, the collected allocation's exact invoice and amount,
+matching active store-scoped collection account and channel (Retail DRIVER,
+Wholesale VAN), matching posted collection transaction and paid field-payment
+identity, matching currency, source total not exceeding transaction or
+payment, no posted reversal and no previous AR claim of this source.
+A mismatched, duplicate, altered, foreign or reversed source is rejected
+with AR/EN `source_collection_allocation_id` validation and no AR mutation.
+The persisted FK plus database unique constraint is the last at-most-once
+draft-claim defense after application checks. This does **not** consume or
+re-post the operational payment, GL or customer receivable.
+
+**Critical finance boundary:** A linked operational collection is still
+NOT independently certified Finance cash/AR journal evidence. The source
+invoice-linked AR document itself remains non-postable under the existing
+separate revenue/AR accounting handoff guard. The P303 Admin
+`postAllocation(...requiresVerifiedCollectionSource:true)` route remains
+strictly fail-closed, including direct HTTP calls and already-posted manual
+allocations, even when a draft has the new FK. No money journal can be
+created by this new link. Do not loosen this without a comprehensive
+cross-ledger exactly-once accounting integration, maker/checker and safe
+void/reversal/reconciliation contract.
+
+GCC focused PHPUnit regression:
+`V2ReceivableSettlementWorkbenchTest` 11 tests / 148 assertions PASS on
+PHP 8.3 with test-only SQLite PDO and isolated APP_KEY (including two new
+source identity allow/deny paths). Existing neighboring Finance tests and
+hosted exact-final-head CI must also pass after any commit. This local
+SQLite run is **not** a claim of two-connection MySQL concurrency,
+certified legal receipt ownership or finished P303 source.
+
+Customer/Driver/Van evaluation: Admin-service draft identity and schema
+only; no public API contract, mobile app binary or collection writer changed.
+A Driver receipt is accepted only for a matching Retail store, Van receipt
+only for matching Wholesale store, with those existing payloads unchanged.
+No Mobile parity acceptance for broader Stage 2 is inferred.
+
+**Remaining P303 source acceptance / NO MERGE / NO CLOSE:** independent
+accounting-recognition authority and GL handoff for operational invoice and
+receipt, transactional source consumption/reversal with real MySQL
+concurrency, true business-facing bilingual authorized receipt search and
+posting approval, browser accessibility, cross-channel accounting
+reconciliation and all required final-head CI. Original PR #3309 remains
+DRAFT and Issue #2633 OPEN. No main, tag, release or production action.

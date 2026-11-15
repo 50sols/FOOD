@@ -10,6 +10,7 @@ use App\Enterprise\Modules\ModuleLifecycleManager;
 use App\Enterprise\Modules\ModuleRegistry;
 use App\Enterprise\Modules\ModuleState;
 use App\Enterprise\Organization\OrganizationHierarchyService;
+use App\Models\CollectionAccount;
 use App\Models\Customer;
 use App\Models\EnterpriseAccountsReceivableAllocation;
 use App\Models\EnterpriseAccountsReceivableDocument;
@@ -17,6 +18,7 @@ use App\Models\Permission;
 use App\Models\Role;
 use App\Models\Store;
 use App\Models\User;
+use App\Services\CollectionCustodyService;
 use App\Support\ResolvedTenantContext;
 use App\Support\TenantContextResolver;
 use Database\Seeders\CoreReferenceSeeder;
@@ -650,6 +652,161 @@ final class V2ReceivableSettlementWorkbenchTest extends TestCase
         DB::table('invoices')->where('id', $invoiceId)->update($baseline);
         $reject(['source_invoice_id' => $invoiceId + 10000]);
         $this->assertDatabaseCount('enterprise_ar_documents', 2);
+        $this->assertDatabaseCount('enterprise_finance_journals', 1);
+    }
+
+    public function test_typed_collection_receipt_link_is_transactional_unique_and_never_posts_unauthorized_gl(): void
+    {
+        $fixture = $this->fixture('P303-COLLECTION-LINK');
+        $store = $fixture['store'];
+        $document = $fixture['document'];
+        $maker = $fixture['maker'];
+        $poster = $fixture['poster'];
+        $context = app(TenantContextResolver::class)->retail($maker, $store->id);
+        $posterContext = app(TenantContextResolver::class)->retail($poster, $store->id);
+
+        $invoiceId = DB::table('invoices')->insertGetId([
+            'invoice_number' => 'P303-COLLECTION-INVOICE',
+            'store_id' => $store->id,
+            'customer_id' => $document->customer_id,
+            'status' => 'issued',
+            'currency' => 'KWD',
+            'total' => '100.000',
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        // This is a test-only existing-posted AR lineage fixture. Runtime
+        // invoice-linked AR posting is still gated pending certified GL handoff.
+        $document->forceFill(['source_invoice_id' => $invoiceId])->save();
+
+        $account = CollectionAccount::query()->create([
+            'actor_type' => 'driver',
+            'actor_id' => $maker->id,
+            'store_id' => $store->id,
+            'currency' => 'KWD',
+            'status' => 'active',
+        ]);
+        $transaction = app(CollectionCustodyService::class)->collect(
+            $account,
+            $maker,
+            'p303-proven-receipt-1',
+            30.0,
+            'KWD',
+            'driver_app',
+            [['invoice_id' => $invoiceId, 'amount' => 30.0]],
+        );
+        $sourceId = (int) DB::table('collection_allocations')
+            ->where('collection_transaction_id', $transaction->id)
+            ->value('id');
+
+        $ar = app(AccountsReceivableService::class);
+        $payload = [
+            'idempotency_key' => 'p303-source-bound-draft',
+            'allocation_date' => '2027-01-12',
+            'amount' => '30.000',
+            'settlement_account_id' => $fixture['cash_account_id'],
+            'source_collection_allocation_id' => $sourceId,
+        ];
+        $draft = $ar->createAllocation($maker, $context, $document->id, $payload);
+        $this->assertSame('draft', $draft->status);
+        $this->assertSame($sourceId, (int) $draft->source_collection_allocation_id);
+        $this->assertSame($draft->id, $ar->createAllocation($maker, $context, $document->id, $payload)->id);
+        $this->assertDatabaseCount('enterprise_ar_allocations', 1);
+
+        foreach ([
+            [...$payload, 'idempotency_key' => 'p303-source-double-claim'],
+            [...$payload, 'idempotency_key' => 'p303-source-inflated', 'amount' => '31.000'],
+        ] as $invalid) {
+            try {
+                $ar->createAllocation($maker, $context, $document->id, $invalid);
+                $this->fail('Reusing or inflating a collection receipt must be rejected.');
+            } catch (ValidationException $exception) {
+                $this->assertArrayHasKey('source_collection_allocation_id', $exception->errors());
+            }
+        }
+
+        foreach (['en', 'ar'] as $locale) {
+            $poster->forceFill(['locale' => $locale])->save();
+            $this->actingAs($poster->fresh())->post(
+                route('admin.erp.finance.receivables.settlements.post', $draft->id),
+                ['store_id' => $store->id],
+            )->assertSessionHasErrors([
+                'collection_source' => __('finance_workbench.receivables.verification_pending', [], $locale),
+            ]);
+        }
+
+        // A linked operational receipt is not proof that Finance may debit
+        // Cash again. P303 remains fail-closed until existing accounting
+        // recognition and reversal are reconciled, without double journals.
+        $this->assertSame('draft', $draft->fresh()->status);
+        $this->assertNull($draft->fresh()->journal_id);
+        $this->assertDatabaseCount('enterprise_finance_journals', 1);
+        $this->assertDatabaseCount('enterprise_ar_allocations', 1);
+    }
+
+    public function test_reversed_and_cross_store_collection_sources_cannot_be_claimed(): void
+    {
+        $fixture = $this->fixture('P303-COLLECTION-NEG');
+        $store = $fixture['store'];
+        $document = $fixture['document'];
+        $maker = $fixture['maker'];
+        $context = app(TenantContextResolver::class)->retail($maker, $store->id);
+        $invoiceId = DB::table('invoices')->insertGetId([
+            'invoice_number' => 'P303-COLLECTION-NEG-INV',
+            'store_id' => $store->id,
+            'customer_id' => $document->customer_id,
+            'status' => 'issued',
+            'currency' => 'KWD',
+            'total' => '100.000',
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        $document->forceFill(['source_invoice_id' => $invoiceId])->save();
+        $account = CollectionAccount::query()->create([
+            'actor_type' => 'driver',
+            'actor_id' => $maker->id,
+            'store_id' => $store->id,
+            'currency' => 'KWD',
+            'status' => 'active',
+        ]);
+        $transaction = app(CollectionCustodyService::class)->collect(
+            $account, $maker, 'p303-negative-collect', 20.0, 'KWD',
+            'driver_app', [['invoice_id' => $invoiceId, 'amount' => 20.0]],
+        );
+        $sourceId = (int) DB::table('collection_allocations')
+            ->where('collection_transaction_id', $transaction->id)
+            ->value('id');
+        $payload = [
+            'allocation_date' => '2027-01-12',
+            'amount' => '20.000',
+            'settlement_account_id' => $fixture['cash_account_id'],
+            'source_collection_allocation_id' => $sourceId,
+        ];
+        $ar = app(AccountsReceivableService::class);
+        $reject = function (string $key) use ($ar, $maker, $context, $document, $payload): void {
+            try {
+                $ar->createAllocation(
+                    $maker, $context, $document->id,
+                    [...$payload, 'idempotency_key' => $key],
+                );
+                $this->fail('A foreign, reversed, or inactive receipt cannot be bound.');
+            } catch (ValidationException $exception) {
+                $this->assertArrayHasKey('source_collection_allocation_id', $exception->errors());
+            }
+        };
+
+        DB::table('collection_accounts')->where('id', $account->id)
+            ->update(['store_id' => $this->retailStore('P303-FOREIGN-RECEIPT')->id]);
+        $reject('p303-foreign-receipt');
+        DB::table('collection_accounts')->where('id', $account->id)
+            ->update(['store_id' => $store->id, 'status' => 'disabled']);
+        $reject('p303-inactive-receipt');
+        DB::table('collection_accounts')->where('id', $account->id)
+            ->update(['status' => 'active']);
+        DB::table('collection_transactions')->where('id', $transaction->id)
+            ->update(['status' => 'reversed']);
+        $reject('p303-reversed-receipt');
+        $this->assertDatabaseCount('enterprise_ar_allocations', 0);
         $this->assertDatabaseCount('enterprise_finance_journals', 1);
     }
 

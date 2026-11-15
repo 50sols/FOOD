@@ -456,6 +456,7 @@ final class AccountsReceivableService
             'allocation_date' => ['required', 'date'],
             'amount' => ['required', 'regex:/^\d{1,15}(?:\.\d{1,3})?$/'],
             'settlement_account_id' => ['required', 'integer', 'min:1'],
+            'source_collection_allocation_id' => ['nullable', 'integer', 'min:1'],
             'reference' => ['nullable', 'string', 'max:180'],
         ])->validate();
 
@@ -501,12 +502,19 @@ final class AccountsReceivableService
             $allocationDate = CarbonImmutable::parse((string) $data['allocation_date'])->toDateString();
             $idempotencyKey = trim((string) $data['idempotency_key']);
             $reference = $this->trimNullable($data['reference'] ?? null);
-            $requestHash = hash('sha256', json_encode([
+            $sourceCollectionAllocationId = isset($data['source_collection_allocation_id'])
+                ? (int) $data['source_collection_allocation_id'] : null;
+            $requestPayload = [
                 'allocation_date' => $allocationDate,
                 'amount' => $amount,
                 'settlement_account_id' => (int) $data['settlement_account_id'],
                 'reference' => $reference,
-            ], JSON_THROW_ON_ERROR));
+            ];
+            // Preserve the exact legacy idempotency hash when no source is bound.
+            if ($sourceCollectionAllocationId !== null) {
+                $requestPayload['source_collection_allocation_id'] = $sourceCollectionAllocationId;
+            }
+            $requestHash = hash('sha256', json_encode($requestPayload, JSON_THROW_ON_ERROR));
 
             $existing = EnterpriseAccountsReceivableAllocation::query()
                 ->where('ar_document_id', $document->id)
@@ -525,6 +533,15 @@ final class AccountsReceivableService
                 ]);
             }
 
+            if ($sourceCollectionAllocationId !== null) {
+                $this->assertCollectionAllocationMatches(
+                    $document,
+                    $context,
+                    $sourceCollectionAllocationId,
+                    $amount,
+                );
+            }
+
             $allocation = EnterpriseAccountsReceivableAllocation::query()->create([
                 'ar_document_id' => $document->id,
                 'idempotency_key' => $idempotencyKey,
@@ -532,6 +549,7 @@ final class AccountsReceivableService
                 'allocation_date' => $allocationDate,
                 'amount' => $amount,
                 'settlement_account_id' => (int) $data['settlement_account_id'],
+                'source_collection_allocation_id' => $sourceCollectionAllocationId,
                 'reference' => $reference,
                 'status' => 'draft',
                 'created_by' => $actor->id,
@@ -951,6 +969,113 @@ final class AccountsReceivableService
                 'source_invoice_id' => [__('finance_workbench.receivables.source_invoice_invalid')],
             ]);
         }
+    }
+
+    /**
+     * Reserve an immutable operational collection allocation as P303 draft
+     * evidence. This is NOT an accounting handoff and MUST NOT authorize a
+     * Finance GL post: the source may already be recognized in another ledger.
+     * The parent AR document is locked by the caller before these reads.
+     */
+    private function assertCollectionAllocationMatches(
+        EnterpriseAccountsReceivableDocument $document,
+        ResolvedTenantContext $context,
+        int $sourceAllocationId,
+        string $amount,
+    ): void {
+        if ($document->source_invoice_id === null) {
+            $this->rejectCollectionSource();
+        }
+
+        // Matching a customer and store is not enough. Require the typed,
+        // still-valid invoice association before inspecting its receipt.
+        $this->assertSourceInvoiceMatches(
+            (int) $document->source_invoice_id,
+            (int) $document->store_id,
+            (int) $document->customer_id,
+            (string) $document->currency_code,
+            (string) $document->amount,
+        );
+
+        $source = DB::table('collection_allocations')
+            ->where('id', $sourceAllocationId)
+            ->lockForUpdate()
+            ->first();
+        if ($source === null) {
+            $this->rejectCollectionSource();
+        }
+
+        $transaction = DB::table('collection_transactions')
+            ->where('id', $source->collection_transaction_id)
+            ->lockForUpdate()
+            ->first();
+        if ($transaction === null) {
+            $this->rejectCollectionSource();
+        }
+
+        $account = DB::table('collection_accounts')
+            ->where('id', $transaction->collection_account_id)
+            ->first();
+        $payment = $transaction->payment_id === null
+            ? null
+            : DB::table('payments')->where('id', $transaction->payment_id)->first();
+
+        $currency = strtoupper((string) $document->currency_code);
+        $collector = $context->isRetail() ? 'driver' : 'van_rep';
+        if (
+            $account === null
+            || $payment === null
+            || (int) $source->invoice_id !== (int) $document->source_invoice_id
+            || $this->toMills((string) $source->amount) !== $this->toMills($amount)
+            || strtoupper((string) $source->currency) !== $currency
+            || (int) $account->store_id !== (int) $document->store_id
+            || (string) $account->status !== 'active'
+            || (string) $account->actor_type !== $collector
+            || strtoupper((string) $account->currency) !== $currency
+            || (string) $transaction->type !== 'collection'
+            || (string) $transaction->status !== 'posted'
+            || strtoupper((string) $transaction->currency) !== $currency
+            || (string) $payment->status !== 'paid'
+            || (string) $payment->provider !== 'field_collection'
+            || (string) $payment->provider_reference !== (string) $transaction->idempotency_key
+            || ($payment->invoice_id !== null
+                && (int) $payment->invoice_id !== (int) $document->source_invoice_id)
+            || strtoupper((string) $payment->currency) !== $currency
+        ) {
+            $this->rejectCollectionSource();
+        }
+
+        // Reversal provenance can be a distinct, later transaction. A reversed
+        // source must never be reclassified as a fresh collectible receipt.
+        if (DB::table('collection_transactions')
+            ->where('reversal_of_id', $transaction->id)
+            ->where('status', 'posted')
+            ->exists()) {
+            $this->rejectCollectionSource();
+        }
+
+        $sourceTotal = (string) DB::table('collection_allocations')
+            ->where('collection_transaction_id', $transaction->id)
+            ->sum('amount');
+
+        if (
+            $this->toMills($sourceTotal) > $this->toMills((string) $transaction->amount)
+            || $this->toMills($sourceTotal) > $this->toMills((string) $payment->amount)
+            || DB::table('enterprise_ar_allocations')
+                ->where('source_collection_allocation_id', $sourceAllocationId)
+                ->exists()
+        ) {
+            $this->rejectCollectionSource();
+        }
+    }
+
+    private function rejectCollectionSource(): never
+    {
+        throw ValidationException::withMessages([
+            'source_collection_allocation_id' => [
+                __('finance_workbench.receivables.collection_source_invalid'),
+            ],
+        ]);
     }
 
     private function assertPostingAccount(
