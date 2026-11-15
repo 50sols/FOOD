@@ -425,6 +425,7 @@ return [
         'download_apk' => 'Download APK',
         'download_from_server' => 'Download directly from FOODEX server',
         'preparing' => 'The APK is being prepared on the FOODEX server.',
+        'unsupported_app' => 'Unsupported FOODEX mobile application.',
         'server_copy' => 'Server copy',
         'version' => 'Version',
         'progress' => 'Preparation progress',

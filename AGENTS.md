@@ -239,6 +239,8 @@ The PR must identify:
 
 Parallel work is encouraged only when ownership is file/scope-disjoint.
 
+**FOODEX V2 owner-approved concurrency (2026-11-15):** `MAX_ACTIVE_V2_WORKERS=12` for the isolated `Foodex_V2` program. The canonical machine-readable distribution is `docs/v2/V2_WORKER_CAPACITY.json`, explained in `docs/v2/V2_WORKER_CAPACITY.md`. This replaces the previous informal V2 seven-slot coordination ceiling, **not** an older mission's explicitly scoped six-lane cap. A slot requires a distinct worker identity/role, verified current Issue/branch/PR lease and non-overlapping file ownership; no implicit permission to claim a 13th slot. A full or uncertain roster fails closed and workers recheck before claiming/first edit. A policy change does not itself launch 12 independent sessions or increase hosted CI runner capacity.
+
 Before starting parallel lanes:
 
 - define exact Issue ownership;

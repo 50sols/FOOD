@@ -71,9 +71,20 @@ final class CustomerInvoiceController extends Controller
         $this->assertRequestedContext($request, $model);
         $locale = (string) ($validated['locale'] ?? $user->locale ?? 'en');
         try {
-            $pdf = $invoices->renderPdf($model, $locale);
+            // Dispatch through the container so a failing PDF renderer can be
+            // exercised by a real HTTP regression without altering final services.
+            $pdf = (string) app()->call([$invoices, 'renderPdf'], [
+                'invoice' => $model,
+                'locale' => $locale,
+            ]);
         } catch (\RuntimeException) {
-            abort(503, 'PDF generation is temporarily unavailable.');
+            $requestedLocale = $validated['locale'] ?? null;
+            $preferredLocale = $requestedLocale
+                ?? (in_array($user->locale, ['ar', 'en'], true)
+                    ? $user->locale
+                    : $request->getPreferredLanguage(['ar', 'en']));
+
+            abort(503, __('invoice_errors.pdf_generation_unavailable', [], $preferredLocale === 'ar' ? 'ar' : 'en'));
         }
 
         return response($pdf, 200, [

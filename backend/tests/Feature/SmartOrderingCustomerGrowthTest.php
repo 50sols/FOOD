@@ -34,6 +34,50 @@ class SmartOrderingCustomerGrowthTest extends TestCase
         config()->set('smart_ordering.base_domain', 'foodex.com');
     }
 
+    public function test_loyalty_redemption_missing_idempotency_key_is_bilingual_and_never_spends_points(): void
+    {
+        [$store, $admin, $site] = $this->restaurant('LOYALTY-KEY-LOCALE');
+        $customer = $this->customer($store, 'Locale Customer', '+96550000881');
+        $actor = User::query()->findOrFail($customer['user_id']);
+        // The site middleware requires a public-menu entitlement and published
+        // revision before the loyalty route reaches its missing-key guard.
+        $this->enable($admin, $site, Module::PUBLIC_MENU);
+        $this->enable($admin, $site, Module::LOYALTY);
+        app(SmartOrderingSiteService::class)->updateRuntime($admin, $site, RuntimeState::ENABLED, true);
+
+        Sanctum::actingAs($actor);
+        $url = 'https://'.$site->slug.'.foodex.com/api/v1/smart-ordering/customer/loyalty/rewards/'.Str::uuid().'/redeem';
+
+        foreach ([
+            'ar' => 'يجب توفير مفتاح Idempotency-Key لإتمام استبدال النقاط.',
+            'en' => 'Idempotency-Key is required.',
+        ] as $locale => $expected) {
+            $actor->forceFill(['locale' => $locale])->save();
+
+            $this->withHeaders(['Accept-Language' => $locale === 'ar' ? 'en' : 'ar', 'Idempotency-Key' => ''])
+                ->postJson($url)
+                ->assertUnprocessable()
+                ->assertJsonPath('message', $expected);
+
+            $this->assertDatabaseCount('smart_ordering_loyalty_ledger', 0);
+            $this->assertDatabaseCount('smart_ordering_loyalty_accounts', 0);
+        }
+
+        $actor->forceFill(['locale' => 'fr'])->save();
+        foreach ([
+            'ar-KW,ar;q=0.9,en;q=0.6' => 'يجب توفير مفتاح Idempotency-Key لإتمام استبدال النقاط.',
+            'en-US,en;q=0.9,ar;q=0.6' => 'Idempotency-Key is required.',
+        ] as $language => $expected) {
+            $this->withHeaders(['Accept-Language' => $language, 'Idempotency-Key' => '   '])
+                ->postJson($url)
+                ->assertUnprocessable()
+                ->assertJsonPath('message', $expected);
+
+            $this->assertDatabaseCount('smart_ordering_loyalty_ledger', 0);
+            $this->assertDatabaseCount('smart_ordering_loyalty_accounts', 0);
+        }
+    }
+
     public function test_verified_customer_api_is_tenant_scoped_and_public_safe(): void
     {
         [$storeA, $adminA, $siteA] = $this->restaurant('PUBLIC-CUSTOMER-A');
@@ -136,6 +180,73 @@ class SmartOrderingCustomerGrowthTest extends TestCase
             'customer_id' => $customer['legacy_id'],
             'source_order_id' => $order,
             'status' => 'DRAFT',
+        ]);
+    }
+
+    public function test_noncompleted_repeat_http_409_is_bilingual_and_never_creates_a_draft(): void
+    {
+        [$store, $admin, $site] = $this->restaurant('REPEAT-409-LOCALE');
+        $customer = $this->customer($store, 'Blocked Repeat Customer', '+96550000882');
+        $actor = User::query()->findOrFail($customer['user_id']);
+        $product = $this->sellableProduct($store, 'REPEAT-409-SKU', 'Blocked Meal', 2.250, 20);
+        $orderId = $this->order($store, $customer['legacy_id'], $customer['b2c_id'], 'PENDING', 2.250);
+        $this->orderItem($orderId, $product, 'Blocked Meal', 1, 2.250);
+
+        $this->enable($admin, $site, Module::PUBLIC_MENU);
+        $this->enable($admin, $site, Module::ORDERING);
+        app(SmartOrderingSiteService::class)->updateRuntime($admin, $site, RuntimeState::ENABLED, true);
+
+        Sanctum::actingAs($actor);
+        $orderNumber = (string) DB::table('orders')->where('id', $orderId)->value('order_number');
+        $url = 'https://'.$site->slug.'.foodex.com/api/v1/smart-ordering/customer/orders/'.$orderNumber.'/repeat';
+        $baseline = [
+            'orders' => DB::table('orders')->count(),
+            'items' => DB::table('order_items')->count(),
+            'drafts' => DB::table('smart_ordering_repeat_drafts')->count(),
+            'payments' => DB::table('payments')->count(),
+            'audit' => DB::table('audit_logs')->count(),
+            'inventory' => DB::table('inventories')->where('product_id', $product)
+                ->first(['quantity', 'reserved_quantity']),
+        ];
+
+        foreach ([
+            'ar' => 'لا يمكن إعادة الطلب إلا بعد اكتمال الطلب الأصلي.',
+            'en' => 'Only completed orders can be repeated.',
+        ] as $locale => $expected) {
+            $actor->forceFill(['locale' => $locale])->save();
+
+            $this->withHeaders(['Accept-Language' => $locale === 'ar' ? 'en' : 'ar'])
+                ->postJson($url)
+                ->assertConflict()
+                ->assertJsonPath('message', $expected);
+        }
+
+        $actor->forceFill(['locale' => 'fr'])->save();
+        foreach ([
+            'ar-KW,ar;q=0.9,en;q=0.6' => 'لا يمكن إعادة الطلب إلا بعد اكتمال الطلب الأصلي.',
+            'en-US,en;q=0.9,ar;q=0.6' => 'Only completed orders can be repeated.',
+        ] as $header => $expected) {
+            $this->withHeaders(['Accept-Language' => $header])
+                ->postJson($url)
+                ->assertConflict()
+                ->assertJsonPath('message', $expected);
+        }
+
+        $this->assertSame($baseline['orders'], DB::table('orders')->count());
+        $this->assertSame($baseline['items'], DB::table('order_items')->count());
+        $this->assertSame($baseline['drafts'], DB::table('smart_ordering_repeat_drafts')->count());
+        $this->assertSame($baseline['payments'], DB::table('payments')->count());
+        $this->assertSame($baseline['audit'], DB::table('audit_logs')->count());
+        $this->assertEquals(
+            $baseline['inventory'],
+            DB::table('inventories')->where('product_id', $product)
+                ->first(['quantity', 'reserved_quantity']),
+        );
+        $this->assertDatabaseHas('orders', [
+            'id' => $orderId,
+            'store_id' => $store,
+            'customer_id' => $customer['legacy_id'],
+            'status' => 'PENDING',
         ]);
     }
 

@@ -330,7 +330,7 @@ class DriverJourneyE2EAcceptanceTest extends TestCase
             'driver_id' => $b2bDriver->id,
             'order_id' => $b2bOrder->id,
         ])->assertConflict()
-            ->assertSee('Wholesale orders require Van fulfillment.');
+            ->assertJsonPath('message', __('fulfillment_actor_guard.b2b_van_only', [], 'en'));
 
         $this->assertDatabaseMissing('driver_assignments', [
             'driver_id' => $b2bDriver->id,

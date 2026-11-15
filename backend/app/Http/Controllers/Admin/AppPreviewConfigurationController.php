@@ -40,7 +40,7 @@ final class AppPreviewConfigurationController extends Controller
             abort_if($requestedStoreId !== null && $requestedStoreId !== $storeId, 404);
             $this->tenantResolver->wholesale($user, $storeId);
         } else {
-            abort_if($requestedStoreId === null, 422, 'Retail Guest preview configuration requires a store.');
+            abort_if($requestedStoreId === null, 422, __('preview_configuration.retail_store_required'));
             $storeId = $requestedStoreId;
             $this->tenantResolver->retail(
                 $user,

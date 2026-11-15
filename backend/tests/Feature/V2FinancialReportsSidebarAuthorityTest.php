@@ -67,10 +67,16 @@ final class V2FinancialReportsSidebarAuthorityTest extends TestCase
                 ->assertSee('aria-disabled="true"', false);
 
             $this->actingAs($actor->fresh())->get($this->url($store))->assertForbidden();
+            $this->actingAs($actor->fresh())->get(route('admin.erp.finance.index', [
+                'store_id' => $store->id, 'tab' => 'reports', 'download' => 'csv',
+            ]))->assertForbidden();
 
             $this->actingAs($actor->fresh())
                 ->get(route('admin.erp.finance.index', ['store_id' => $store->id, 'tab' => 'statements']))
                 ->assertForbidden();
+            $this->actingAs($actor->fresh())->get(route('admin.erp.finance.index', [
+                'store_id' => $store->id, 'tab' => 'statements', 'download' => 'csv',
+            ]))->assertForbidden();
 
             $this->actingAs($actor->fresh())->get($this->url($foreign))->assertNotFound();
         }
@@ -168,11 +174,84 @@ final class V2FinancialReportsSidebarAuthorityTest extends TestCase
                 $this->assertSame((int) $period->id, $statement['period']['id']);
                 $this->assertSame((int) $comparison->id, $statement['comparison_period']['id']);
             }
+
+            // Export is the same authorized Finance route, not a separate
+            // unscoped report endpoint or an unverified export_handoff token.
+            $reportCsv = $this->actingAs($actor->fresh())->get(route('admin.erp.finance.index', [
+                'store_id' => $store->id,
+                'tab' => 'reports',
+                'report' => 'cash_flow',
+                'period_id' => $period->id,
+                'download' => 'csv',
+            ]))->assertOk()->assertHeader('Content-Type', 'text/csv; charset=UTF-8');
+            $this->assertStringStartsWith("\xEF\xBB\xBF", $reportCsv->streamedContent());
+            $this->assertStringContainsString('foodex-finance-reports-cash_flow', $reportCsv->headers->get('Content-Disposition'));
+
+            $statementCsv = $this->actingAs($actor->fresh())->get(route('admin.erp.finance.index', [
+                'store_id' => $store->id,
+                'tab' => 'statements',
+                'statement' => 'trial_balance',
+                'period_id' => $period->id,
+                'comparative_period_id' => $comparison->id,
+                'download' => 'csv',
+            ]))->assertOk()->assertHeader('Content-Type', 'text/csv; charset=UTF-8');
+            $this->assertStringStartsWith("\xEF\xBB\xBF", $statementCsv->streamedContent());
+            $this->assertStringContainsString('foodex-finance-statements-trial_balance', $statementCsv->headers->get('Content-Disposition'));
         }
         $this->assertSame($journalCount, DB::table('enterprise_finance_journals')->count());
         $this->assertSame($ledgerCount, DB::table('enterprise_finance_ledger_entries')->count());
         $this->assertSame($auditCount, DB::table('audit_logs')->count());
 
+    }
+
+    public function test_financial_csv_neutralizes_spreadsheet_formulas_without_changing_numeric_values(): void
+    {
+        // The authenticated HTTP tests cover authorization. The underlying
+        // exporter is separately exercised with untrusted report-row strings.
+        $method = new \ReflectionMethod(
+            \App\Http\Controllers\Admin\FinanceWorkbenchController::class,
+            'downloadFinancialCsv',
+        );
+        $response = $method->invoke(app(\App\Http\Controllers\Admin\FinanceWorkbenchController::class), 'reports', [
+            'report' => [
+                'code' => 'fixed_assets',
+                'lines' => [
+                    ['code' => '=1+1', 'name' => '  @SUM(1,2)', 'amount' => -5],
+                ],
+            ],
+            'periodId' => 42,
+        ]);
+
+        ob_start();
+        $response->sendContent();
+        $csv = ob_get_clean();
+        $this->assertIsString($csv);
+        $this->assertStringStartsWith("\xEF\xBB\xBF", $csv);
+        $this->assertStringContainsString("'=1+1", $csv);
+        $this->assertStringContainsString("'  @SUM(1,2)", $csv);
+        $this->assertStringContainsString('-5', $csv);
+        $this->assertStringContainsString('period-42.csv', $response->headers->get('Content-Disposition'));
+
+        // Accounting statements store milli-units. An exported value of
+        // 1234567 must be 1234.567, never 1234567 currency units.
+        $statementResponse = $method->invoke(app(\App\Http\Controllers\Admin\FinanceWorkbenchController::class), 'statements', [
+            'statement' => ['lines' => [
+                [
+                    'code' => '1200', 'name' => 'Receivables', 'type' => 'asset',
+                    'debit_mills' => 1234567, 'credit_mills' => 0,
+                    'balance_mills' => -42, 'comparative_balance_mills' => null,
+                ],
+            ]],
+            'statementType' => 'trial_balance',
+            'periodId' => 42,
+        ]);
+        ob_start();
+        $statementResponse->sendContent();
+        $statementCsv = ob_get_clean();
+        $this->assertIsString($statementCsv);
+        $this->assertStringContainsString('1234.567', $statementCsv);
+        $this->assertStringContainsString('-0.042', $statementCsv);
+        $this->assertStringNotContainsString('1234567', $statementCsv);
     }
 
     public function test_gl_read_does_not_grant_foundation_financial_reports_without_entitlement(): void

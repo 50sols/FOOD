@@ -17,6 +17,13 @@ final class VanRegistryService
 {
     public function __construct(private readonly AuditLogger $audit) {}
 
+    private function validationMessage(User $actor, string $key): string
+    {
+        $locale = in_array($actor->locale, ['ar', 'en'], true) ? $actor->locale : 'ar';
+
+        return (string) __('van_assignment_guard.'.$key, [], $locale);
+    }
+
     /** @param array<string,mixed> $attributes */
     public function createVan(array $attributes): Van
     {
@@ -42,14 +49,14 @@ final class VanRegistryService
 
         if ($until !== null && $until->lessThanOrEqualTo($from)) {
             throw ValidationException::withMessages([
-                'effective_until' => ['Effective-until must be after effective-from.'],
+                'effective_until' => [$this->validationMessage($actor, 'date_window_invalid')],
             ]);
         }
 
         $type = $attributes['assignment_type'] ?? 'primary';
         if (in_array($type, ['primary', 'backup'], true) === false) {
             throw ValidationException::withMessages([
-                'assignment_type' => ['Assignment type must be primary or backup.'],
+                'assignment_type' => [$this->validationMessage($actor, 'assignment_type_invalid')],
             ]);
         }
 
@@ -82,7 +89,7 @@ final class VanRegistryService
 
                 if ($overlap) {
                     throw ValidationException::withMessages([
-                        'assignment' => ['Van already has an overlapping active primary assignment.'],
+                        'assignment' => [$this->validationMessage($actor, 'overlapping_primary_van')],
                     ]);
                 }
 
@@ -99,7 +106,7 @@ final class VanRegistryService
 
                     if ($territoryOverlap) {
                         throw ValidationException::withMessages([
-                            'territory_key' => ['Territory already has an overlapping active primary Van assignment.'],
+                            'territory_key' => [$this->validationMessage($actor, 'overlapping_primary_territory')],
                         ]);
                     }
                 }
@@ -145,21 +152,21 @@ final class VanRegistryService
 
         if ($until !== null && $until->lessThanOrEqualTo($from)) {
             throw ValidationException::withMessages([
-                'effective_until' => ['Effective-until must be after effective-from.'],
+                'effective_until' => [$this->validationMessage($actor, 'date_window_invalid')],
             ]);
         }
 
         $type = (string) ($attributes['assignment_type'] ?? $assignment->assignment_type);
         if (! in_array($type, ['primary', 'backup'], true)) {
             throw ValidationException::withMessages([
-                'assignment_type' => ['Assignment type must be primary or backup.'],
+                'assignment_type' => [$this->validationMessage($actor, 'assignment_type_invalid')],
             ]);
         }
 
         $status = (string) ($attributes['status'] ?? $assignment->status);
         if (! in_array($status, ['active', 'ended'], true)) {
             throw ValidationException::withMessages([
-                'status' => ['Assignment status must be active or ended.'],
+                'status' => [$this->validationMessage($actor, 'assignment_status_invalid')],
             ]);
         }
 
@@ -196,7 +203,7 @@ final class VanRegistryService
 
                 if ($overlap) {
                     throw ValidationException::withMessages([
-                        'assignment' => ['Van already has an overlapping active primary assignment.'],
+                        'assignment' => [$this->validationMessage($actor, 'overlapping_primary_van')],
                     ]);
                 }
 
@@ -213,7 +220,7 @@ final class VanRegistryService
 
                     if ($territoryOverlap) {
                         throw ValidationException::withMessages([
-                            'territory_key' => ['Territory already has an overlapping active primary Van assignment.'],
+                            'territory_key' => [$this->validationMessage($actor, 'overlapping_primary_territory')],
                         ]);
                     }
                 }

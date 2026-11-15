@@ -67,7 +67,9 @@ final class OpeningBalanceService
             'date_to' => ['nullable', 'date', 'after_or_equal:date_from'],
         ])->validate();
 
-        $term = $this->safePrefix((string) ($validated['q'] ?? ''));
+        $term = trim((string) ($validated['q'] ?? ''));
+        // Keep opening-balance batch identifiers literal across SQLite/MySQL LIKE.
+        $pattern = str_replace(['!', '%', '_'], ['!!', '!%', '!_'], $term).'%';
         $perPage = max(10, min(100, $perPage));
 
         return $this->batchQuery($scope)
@@ -89,7 +91,7 @@ final class OpeningBalanceService
             )
             ->when(
                 $term !== '',
-                fn (Builder $query): Builder => $query->where('batch_number', 'like', $term.'%'),
+                fn (Builder $query): Builder => $query->whereRaw("batch_number LIKE ? ESCAPE '!'", [$pattern]),
             )
             ->orderByDesc('entry_date')
             ->orderByDesc('id')
@@ -664,11 +666,6 @@ final class OpeningBalanceService
     private function formatMills(int $mills): string
     {
         return intdiv($mills, 1000).'.'.str_pad((string) ($mills % 1000), 3, '0', STR_PAD_LEFT);
-    }
-
-    private function safePrefix(string $term): string
-    {
-        return str_replace(['%', '_'], '', trim($term));
     }
 
     private function trimNullable(mixed $value): ?string

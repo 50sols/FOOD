@@ -1483,6 +1483,29 @@ paths:
       summary: Create or update an approved B2B price rule
       security:
         - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [price_tier_id, store_id, product_id, unit_price, minimum_quantity]
+              properties:
+                price_tier_id: { type: integer, minimum: 1 }
+                store_id: { type: integer, minimum: 1 }
+                product_id: { type: integer, minimum: 1 }
+                unit_price: { type: number, minimum: 0, multipleOf: 0.001 }
+                minimum_quantity: { type: number, exclusiveMinimum: 0, multipleOf: 0.001 }
+                ordering_increment: { type: number, exclusiveMinimum: 0, multipleOf: 0.001 }
+                quantity_price_breaks:
+                  type: array
+                  maxItems: 12
+                  description: Omission retains an existing compatible schedule; incompatible changes to base price, MOQ or increment return HTTP 422 until a replacement list is supplied. Explicit [] clears the schedule.
+                  items:
+                    $ref: "#/components/schemas/B2bQuantityPriceBreak"
+                replace_quantity_price_breaks:
+                  type: boolean
+                  description: When true, replace the schedule with the supplied list or an empty list.
       responses:
         "200":
           description: B2B price rule updated
@@ -3670,6 +3693,21 @@ components:
         password:
           type: string
           format: password
+        app:
+          description: >-
+            Optional first-party app selector. If omitted or null, newly issued
+            bearer token abilities are limited to app:customer (never wildcard).
+            Driver and Van tokens require an explicit matching app plus
+            independent server-side role and assignment authorization.
+          type: [string, "null"]
+          enum: [customer, driver, van, null]
+        van_id:
+          description: >-
+            Optional positive Van assignment selector evaluated by the server;
+            it does not authorize a Van runtime without app:van and a valid
+            effective role and assignment.
+          type: [integer, "null"]
+          minimum: 1
 
     LoginResponse:
       type: object
@@ -4249,6 +4287,20 @@ components:
           type: string
           format: date-time
 
+    B2bQuantityPriceBreak:
+      type: object
+      description: Whole-line (all-units) account-tier price applied at or above its base-unit threshold.
+      required: [minimum_quantity, unit_price]
+      properties:
+        minimum_quantity:
+          type: number
+          exclusiveMinimum: 0
+          multipleOf: 0.001
+        unit_price:
+          type: number
+          minimum: 0
+          multipleOf: 0.001
+
     B2bProduct:
       allOf:
         - $ref: "#/components/schemas/ProductSummary"
@@ -4258,6 +4310,12 @@ components:
             account_price:
               type: number
               multipleOf: 0.001
+            quantity_price_breaks:
+              type: array
+              description: Additive, account-scoped, non-increasing unit-price thresholds; empty for legacy flat pricing. Checkout totals are calculated by the server.
+              maxItems: 12
+              items:
+                $ref: "#/components/schemas/B2bQuantityPriceBreak"
             minimum_order_quantity:
               type: number
               minimum: 0

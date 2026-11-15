@@ -100,6 +100,7 @@ final class OrderOperationsController extends Controller
             'action_required' => ['nullable', 'boolean'],
             'store_id' => ['nullable', 'integer', 'min:1'],
             'channel' => ['nullable', 'string', Rule::in(['all', 'b2b', 'b2c'])],
+            'origin' => ['nullable', 'string', Rule::in(['van'])],
             'order' => ['nullable', 'integer', 'min:1'],
             'per_page' => ['nullable', 'integer', 'min:1', 'max:100'],
             'discount_view' => ['nullable', 'string', Rule::in(['approved', 'pending'])],
@@ -115,6 +116,11 @@ final class OrderOperationsController extends Controller
             ? (string) $data['channel']
             : $this->defaultOperationalChannel($actor);
         $this->assertOperationalChannelAllowed($availableChannels, $operationalChannel);
+        // Van direct-sale provenance is Wholesale-only. Never let a Retail
+        // actor (or an all-channel query) infer orders from this filter.
+        if (($data['origin'] ?? null) === 'van') {
+            abort_unless($operationalChannel === 'b2b', 403);
+        }
         $data['channel'] = $operationalChannel;
         $perPage = (int) ($data['per_page'] ?? 25);
 
@@ -163,6 +169,9 @@ final class OrderOperationsController extends Controller
 
         $orderQuery = Order::query()
             ->where(fn ($query) => $this->applyOperationalScopes($query, $scopes))
+            // Sale provenance is an immutable commercial snapshot; being
+            // assigned to a Van for delivery does not make it a direct sale.
+            ->when(($data['origin'] ?? null) === 'van', fn ($query) => $query->where('pricing_snapshot->commercial_origin', 'van'))
             ->when($selectedStoreId !== null, fn ($query) => $query->where('store_id', $selectedStoreId))
             ->when(
                 isset($data['from']),
@@ -246,6 +255,7 @@ final class OrderOperationsController extends Controller
             || isset($data['dispatch_status'])
             || isset($data['exception'])
             || isset($data['order'])
+            || isset($data['origin'])
             || $discountDecisionMode
         );
 
@@ -569,6 +579,9 @@ final class OrderOperationsController extends Controller
             $detailOrder = Order::query()
                 ->whereKey((int) $data['order'])
                 ->where(fn ($query) => $this->applyOperationalScopes($query, $scopes))
+                // A scoped Van-only list must not open a non-Van order through
+                // a crafted detail ID. Keep the canonical store/role guard.
+                ->when(($data['origin'] ?? null) === 'van', fn ($query) => $query->where('pricing_snapshot->commercial_origin', 'van'))
                 ->firstOrFail();
             $detail = $this->detail(
                 $actor,
@@ -1428,7 +1441,13 @@ final class OrderOperationsController extends Controller
         AuditLogger $audit,
     ): RedirectResponse {
         $actor = $this->actor($request);
+        // The authenticated operator's selected language governs user-visible
+        // failure messages, independent of the server's default locale.
+        app()->setLocale(in_array($actor->locale, ['ar', 'en'], true) ? $actor->locale : 'ar');
         $model = $this->managedOrder($actor, $order, 'orders.manage');
+        // B2B fulfillment is Van-only; even legacy B2B driver assignments
+        // must never be actionable from the Retail Driver reminder endpoint.
+        abort_unless((string) $model->channel === 'b2c', 404);
 
         $assignment = DriverAssignment::query()
             ->where('order_id', $model->getKey())
@@ -1436,12 +1455,49 @@ final class OrderOperationsController extends Controller
             ->latest('id')
             ->first();
 
-        abort_unless($assignment instanceof DriverAssignment, 409, 'Order has no active driver assignment.');
+        abort_unless(
+            $assignment instanceof DriverAssignment,
+            409,
+            $this->msg('لا يوجد تعيين سائق نشط لهذا الطلب.', 'Order has no active driver assignment.'),
+        );
+
+        // A foreign-store/Wholesale assignment can be FK-valid in legacy data:
+        // require both assignment and driver profile to match this Retail order.
+        $validRetailTarget = $this->msg(
+            'تعيين السائق غير صالح لهذا الطلب بالتجزئة.',
+            'Driver assignment is not valid for this Retail order.',
+        );
+        abort_unless(
+            (string) $assignment->assignment_type === 'b2c'
+                && (int) $assignment->store_id === (int) $model->store_id,
+            409,
+            $validRetailTarget,
+        );
 
         $driver = DB::table('drivers')
-            ->where('id', $assignment->driver_id)
-            ->first(['id', 'user_id']);
-        abort_unless($driver !== null && $driver->user_id !== null, 409, 'Assigned driver has no active app user.');
+            ->leftJoin('users as driver_user', 'driver_user.id', '=', 'drivers.user_id')
+            ->where('drivers.id', $assignment->driver_id)
+            ->first([
+                'drivers.id',
+                'drivers.user_id',
+                'drivers.store_id',
+                'drivers.driver_type',
+                'drivers.is_active',
+                'driver_user.is_active as app_user_is_active',
+            ]);
+        abort_unless(
+            $driver !== null
+                && (string) $driver->driver_type === 'b2c'
+                && (int) $driver->store_id === (int) $model->store_id
+                && (bool) $driver->is_active,
+            409,
+            $validRetailTarget,
+        );
+        abort_unless(
+            $driver->user_id !== null && (bool) $driver->app_user_is_active,
+            409,
+            $this->msg('السائق المعيّن ليس لديه حساب تطبيق نشط.', 'Assigned driver has no active app user.'),
+        );
 
         $notification = Notification::query()->create([
             'channel' => 'both',
@@ -1506,13 +1562,19 @@ final class OrderOperationsController extends Controller
             in_array(strtolower((string) $model->status), ['delivered', 'completed'], true)
                 && $targetStatus === 'cancelled',
             409,
-            'Delivered orders cannot be cancelled.',
+            $this->msg(
+                'لا يمكن إلغاء الطلبات التي تم تسليمها.',
+                'Delivered orders cannot be cancelled.',
+            ),
         );
 
         abort_if(
             in_array($targetStatus, ['confirmed', 'preparing', 'ready'], true),
             409,
-            'Confirmation and preparation steps are automatic when fulfillment is assigned.',
+            $this->msg(
+                'تُنفَّذ خطوات تأكيد الطلب وتجهيزه تلقائيًا عند إسناد جهة التنفيذ.',
+                'Confirmation and preparation steps are automatic when fulfillment is assigned.',
+            ),
         );
 
         $request->merge(['store_id' => (int) $model->store_id]);

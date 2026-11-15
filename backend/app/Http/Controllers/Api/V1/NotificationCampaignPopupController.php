@@ -142,12 +142,14 @@ final class NotificationCampaignPopupController extends Controller
             $previewChannel = (string) $request->attributes->get('app_preview_channel', '');
             $previewStoreId = (int) $request->attributes->get('app_preview_store_id', 0);
 
+            $locale = strtolower((string) ($data['locale'] ?? $request->getPreferredLanguage(['ar', 'en'])));
+
             abort_unless(
                 $previewStoreId > 0
                     && $channel === $previewChannel
                     && $storeId === $previewStoreId,
                 404,
-                'Preview campaign scope does not match the selected persona/store.',
+                (string) __('popup_preview_scope.context_mismatch', [], $locale === 'en' ? 'en' : 'ar'),
             );
         }
 

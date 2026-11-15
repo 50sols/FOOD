@@ -480,6 +480,120 @@ class EnterpriseTreasuryReceiptFoundationTest extends TestCase
         $this->assertSame(6, $search->total());
     }
 
+    public function test_receipt_number_and_reference_literal_prefix_are_store_scoped_and_read_only(): void
+    {
+        $store = $this->createRetailStore('TREASURY-LITERAL-A');
+        $foreignStore = $this->createRetailStore('TREASURY-LITERAL-B');
+        $this->mapDefaultScope($store);
+        $this->mapSeparateOrganization($foreignStore);
+        $actor = $this->retailFinanceActor('treasury-literal-a@example.test', $store);
+        $foreignActor = $this->retailFinanceActor('treasury-literal-b@example.test', $foreignStore);
+        $context = $this->retailContext($actor, $store);
+        $foreignContext = $this->retailContext($foreignActor, $foreignStore);
+        $this->enableTreasury($actor, $context);
+        $this->entitleTreasury($foreignActor, $foreignContext);
+        $cashbox = $this->cashbox(
+            $store, EnterpriseCashbox::VISIBILITY_STORE, EnterpriseCashbox::VISIBILITY_STORE,
+        );
+        $foreignCashbox = $this->cashbox(
+            $foreignStore, EnterpriseCashbox::VISIBILITY_STORE, EnterpriseCashbox::VISIBILITY_STORE,
+        );
+        $service = app(TreasuryReceiptService::class);
+        $makeReceipt = static function (
+            User $user,
+            ResolvedTenantContext $tenant,
+            EnterpriseCashbox $cash,
+            string $key,
+            string $reference
+        ) use ($service): int {
+            return (int) $service->createDraft($user, $tenant, [
+                'idempotency_key' => $key,
+                'target_type' => EnterpriseTreasuryReceipt::TARGET_CASHBOX,
+                'target_id' => $cash->id,
+                'amount' => '1.000',
+                'value_date' => '2026-10-16',
+                'reference' => $reference,
+            ])->id;
+        };
+
+        $target = $makeReceipt($actor, $context, $cashbox, 'treasury-lit-target', 'NONMATCH-TARGET');
+        $decoy = $makeReceipt($actor, $context, $cashbox, 'treasury-lit-decoy', 'NONMATCH-DECOY');
+        $leading = [];
+        foreach ([
+            ['%', '%P-001'],
+            ['_', '_U-001'],
+            ['!', '!B-001'],
+            ['\\', '\\S-001'],
+        ] as [$symbol, $number]) {
+            $leading[$symbol] = $makeReceipt(
+                $actor, $context, $cashbox, 'treasury-lit-'.ord($symbol), 'NONMATCH-'.$number,
+            );
+            DB::table('enterprise_treasury_receipts')->where('id', $leading[$symbol])
+                ->update(['receipt_number' => $number]);
+        }
+        $referenceOnly = $makeReceipt(
+            $actor, $context, $cashbox, 'treasury-lit-reference', 'REF_%!\\-A',
+        );
+        $foreign = $makeReceipt(
+            $foreignActor, $foreignContext, $foreignCashbox, 'treasury-lit-foreign', 'REF_%!\\-FOREIGN',
+        );
+        foreach ([
+            [$target, 'RCPT_%!\\-A'],
+            [$decoy, 'RCPTX-OTHER'],
+            [$referenceOnly, 'OTHER-REFERENCE'],
+            [$foreign, 'RCPT_%!\\-FOREIGN'],
+        ] as [$id, $number]) {
+            DB::table('enterprise_treasury_receipts')->where('id', $id)
+                ->update(['receipt_number' => $number]);
+        }
+
+        $receiptCount = DB::table('enterprise_treasury_receipts')->count();
+        $auditCount = DB::table('audit_logs')->count();
+        $eventCount = DB::table('enterprise_treasury_integration_events')->count();
+        $outboxCount = DB::table('enterprise_outbox_messages')->count();
+        $search = fn (string $q): array => $service->paginateReceipts($actor, $context, ['q' => $q])
+            ->getCollection()->pluck('id')->all();
+
+        foreach (['RCPT_', 'RCPT_%', 'RCPT_%!', 'RCPT_%!\\-'] as $q) {
+            $this->assertSame([$target], $search($q), 'Incorrect literal receipt prefix: '.$q);
+        }
+        foreach (['REF_', 'REF_%', 'REF_%!', 'REF_%!\\-'] as $q) {
+            $this->assertSame([$referenceOnly], $search($q), 'Incorrect literal reference prefix: '.$q);
+        }
+        foreach ($leading as $symbol => $id) {
+            $this->assertSame([$id], $search($symbol), 'Symbol-only search widened: '.$symbol);
+        }
+        $this->assertSame([$decoy, $target], $search('RCPT'));
+        $this->assertSame([], $search('RCPT%'));
+        $this->assertSame(1, $service->paginateReceipts($foreignActor, $foreignContext, [
+            'q' => 'RCPT_%!',
+        ])->total());
+        $this->assertSame(0, $service->paginateReceipts($actor, $context, [
+            'q' => 'RCPT', 'status' => EnterpriseTreasuryReceipt::STATUS_POSTED,
+        ])->total());
+        $this->assertSame(0, $service->paginateReceipts($actor, $context, [
+            'q' => 'RCPT', 'target_type' => EnterpriseTreasuryReceipt::TARGET_BANK_ACCOUNT,
+        ])->total());
+        $this->assertSame(0, $service->paginateReceipts($actor, $context, [
+            'q' => 'RCPT', 'value_date_from' => '2027-01-01',
+        ])->total());
+        $this->assertSame(10, $service->paginateReceipts($actor, $context, [], 1)->perPage());
+        $this->assertSame(100, $service->paginateReceipts($actor, $context, [], 500)->perPage());
+
+        $roleless = User::factory()->create(['is_active' => true]);
+        try {
+            $service->paginateReceipts($roleless, $context, ['q' => 'RCPT_%!']);
+            $this->fail('Unprivileged actors cannot read Treasury receipts.');
+        } catch (HttpException $exception) {
+            $this->assertSame(403, $exception->getStatusCode());
+        }
+
+        $this->assertSame($receiptCount, DB::table('enterprise_treasury_receipts')->count());
+        $this->assertSame($auditCount, DB::table('audit_logs')->count());
+        $this->assertSame($eventCount, DB::table('enterprise_treasury_integration_events')->count());
+        $this->assertSame($outboxCount, DB::table('enterprise_outbox_messages')->count());
+    }
+
     public function test_disabled_or_unentitled_treasury_performs_no_receipt_query_work(): void
     {
         $store = $this->createRetailStore('TREASURY-DISABLED');

@@ -233,6 +233,39 @@ final class EnterpriseProcurementWorkbenchTest extends TestCase
             ->assertOk();
     }
 
+    public function test_p244_purchase_invoice_tab_is_bilingual_authorized_and_foreign_store_denied(): void
+    {
+        $this->enableProcurement();
+        [$user, $store] = $this->operator('P244-UI-OWN');
+        [, $foreign] = $this->operator('P244-UI-FOREIGN');
+        $before = (int) DB::table('enterprise_purchase_invoices')->count();
+
+        foreach (['ar' => 'rtl', 'en' => 'ltr'] as $locale => $direction) {
+            app()->setLocale($locale);
+            $user->forceFill(['locale' => $locale])->save();
+
+            $this->actingAs($user->fresh())->get(route('admin.erp.procurement.index', [
+                'tab' => 'invoices',
+                'store_id' => $store->id,
+            ]))->assertOk()
+                ->assertSee('dir="'.$direction.'"', false)
+                ->assertSee(__('enterprise_procurement.tabs.invoices'));
+        }
+
+        $this->actingAs($user->fresh())->get(route('admin.erp.procurement.index', [
+            'tab' => 'invoices',
+            'store_id' => $foreign->id,
+        ]))->assertForbidden();
+
+        $outsider = User::factory()->create(['is_active' => true]);
+        $this->actingAs($outsider)->get(route('admin.erp.procurement.index', [
+            'tab' => 'invoices',
+            'store_id' => $store->id,
+        ]))->assertForbidden();
+
+        $this->assertSame($before, (int) DB::table('enterprise_purchase_invoices')->count());
+    }
+
     public function test_full_procurement_workbench_route_surface_is_registered(): void
     {
         foreach ([

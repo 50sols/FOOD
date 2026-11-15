@@ -781,8 +781,13 @@ final class AdminOrderManagementService
         }
 
         if (! in_array($paymentMethod, $allowed, true)) {
+            $userLocale = auth()->user()?->locale;
+            $locale = in_array($userLocale, ['ar', 'en'], true)
+                ? $userLocale
+                : strtolower((string) request()->getPreferredLanguage(['ar', 'en']));
+
             throw ValidationException::withMessages([
-                'payment_method' => ['The selected payment method is not configured.'],
+                'payment_method' => [__('admin_order_errors.payment_method_not_configured', [], $locale === 'ar' ? 'ar' : 'en')],
             ]);
         }
 

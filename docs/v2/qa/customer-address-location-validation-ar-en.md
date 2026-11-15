@@ -1,0 +1,12 @@
+# V2 #3742 — Customer address location validation in Arabic and English
+
+- **Source:** `docs/quality/LOCALIZATION_CONTRACT.md`; existing `CustomerProfileController::assertLocationSemantics` guards and `PlatformCustomerAddressTest` seeded API fixture.
+- **Integration:** `Foodex_V2` ONLY, no main, releases, tags, APK publication, cPanel or production.
+- **Actor / route:** authenticated platform Customer account, `POST /api/v1/profile/addresses` and `PATCH /api/v1/profile/addresses/{address}`, with existing `CustomerAddressService` B2C/B2B context and ownership checks unchanged.
+- **Scope:** localize the current two human-facing Laravel ValidationException messages to AR/EN keys; retain exactly `errors.latitude`, `errors.longitude` and `errors.location_accuracy_meters`, existing 422 JSON shape and conditions. No validation weakening or business-state change.
+- **Negative tests:** real `RefreshDatabase` + `CoreReferenceSeeder` authenticated HTTP tests in both locales: new map_pin/current_location without a coordinate pair, manual accuracy-only, and PATCH of an owned existing manual address to pin source without coordinates. Assert exact error-field text, no new addresses and no new audit events; existing saved location remains unchanged after rejected PATCH.
+- **Positive:** existing platform Customer address test asserts manual create 201 and complete coordinate update 200. Cross-user 404 and cross-channel B2B/B2C address isolation remain covered by existing suite.
+- **Dashboard:** NOT AFFECTED. No Dashboard API or Blade changes. Existing `Customer360Controller` address checks remain outside this issue fence and should be assessed under a separate Dashboard issue if needed.
+- **Customer:** AFFECTED server error copy only for existing Customer app address form; no Flutter change, transport/validation envelope/DTO field changes, or new endpoints. AR/EN machine field names unchanged, RTL/LTR app layout unchanged.
+- **Driver:** NOT AFFECTED. **Van:** NOT AFFECTED. Dispatch invariant B2B VAN ONLY and B2C DRIVER ONLY unchanged.
+- **Review risk:** HIGH due authenticated customer addresses/tenant ownership adjacency. Same-account source audit is not an independent GitHub APPROVED review. Verify Laravel/Pint/PHPStan/security/localization, exact-head MySQL/Redis deployment and full backend CI before SHA-guarded merge; #2503 remains OPEN for consolidated human/staging V2 UAT.

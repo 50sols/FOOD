@@ -16,6 +16,69 @@ class B2bReportingTest extends TestCase
 {
     use RefreshDatabase;
 
+    public function test_mixed_currency_purchases_use_bilingual_409_without_cross_customer_leak_or_writes(): void
+    {
+        $this->seed(CoreReferenceSeeder::class);
+        [$user, $customer] = $this->buyer('v2-3785-buyer@example.test', 'active');
+        [$foreignUser, $foreignCustomer] = $this->buyer('v2-3785-foreign@example.test', 'active');
+        $domain = app(CustomerDomainResolver::class)->b2b($user);
+        $foreignDomain = app(CustomerDomainResolver::class)->b2b($foreignUser);
+        $typeId = (int) DB::table('store_types')->where('code', 'B2B')->value('id');
+        $storeId = (int) DB::table('stores')->insertGetId([
+            'store_type_id' => $typeId,
+            'code' => 'V2-3785-WHOLESALE',
+            'name' => 'V2 Mixed Currency Wholesale',
+            'is_active' => true,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $kwdOrder = $this->order($storeId, $customer->id, 10, 'delivered');
+        $egpOrder = $this->order($storeId, $customer->id, 20, 'delivered');
+        $foreignOrder = $this->order($storeId, $foreignCustomer->id, 100, 'delivered');
+
+        DB::table('orders')->whereIn('id', [$kwdOrder, $egpOrder])
+            ->update(['b2b_customer_id' => $domain->getKey()]);
+        DB::table('orders')->where('id', $egpOrder)->update(['currency' => 'EGP']);
+        DB::table('orders')->where('id', $foreignOrder)->update([
+            'b2b_customer_id' => $foreignDomain->getKey(),
+            'currency' => 'USD',
+        ]);
+
+        Sanctum::actingAs($user);
+        foreach ([
+            ['ar', 'en', 'يحتوي تقرير المشتريات على عملات مختلفة، ولا يمكن جمع مبالغها بأمان.'],
+            ['en', 'ar', 'Purchase report contains mixed currencies and cannot be combined safely.'],
+            ['fr', 'ar-KW,ar;q=0.9,en;q=0.5', 'يحتوي تقرير المشتريات على عملات مختلفة، ولا يمكن جمع مبالغها بأمان.'],
+            ['fr', 'en-US,en;q=0.9,ar;q=0.5', 'Purchase report contains mixed currencies and cannot be combined safely.'],
+        ] as [$userLocale, $acceptLanguage, $expectedMessage]) {
+            $user->forceFill(['locale' => $userLocale])->save();
+            $this->withHeader('Accept-Language', $acceptLanguage)
+                ->getJson('/api/v1/b2b/reports/purchases?store_id='.$storeId)
+                ->assertConflict()
+                ->assertJsonPath('message', $expectedMessage);
+
+            $this->assertDatabaseCount('orders', 3);
+            $this->assertDatabaseHas('orders', [
+                'id' => $kwdOrder, 'b2b_customer_id' => $domain->getKey(), 'currency' => 'KWD',
+            ]);
+            $this->assertDatabaseHas('orders', [
+                'id' => $egpOrder, 'b2b_customer_id' => $domain->getKey(), 'currency' => 'EGP',
+            ]);
+        }
+
+        DB::table('orders')->where('id', $egpOrder)->update(['currency' => 'KWD']);
+        $user->forceFill(['locale' => 'en'])->save();
+
+        // The foreign USD order must not affect this account's currency
+        // decision after the two owned orders agree.
+        $this->getJson('/api/v1/b2b/reports/purchases?store_id='.$storeId)
+            ->assertOk()
+            ->assertJsonPath('currency', 'KWD')
+            ->assertJsonPath('summary.order_count', 2)
+            ->assertJsonPath('summary.total_purchases', 30);
+    }
+
     public function test_active_b2b_customer_receives_scoped_dashboard_and_purchase_aggregates(): void
     {
         $this->seed(CoreReferenceSeeder::class);

@@ -506,11 +506,17 @@ $trendMax=max(1,max(array_map(fn($r)=>max(abs((float)$r['revenue']),abs((float)$
 @forelse($data['documents'] as $document)<tr><td><strong>{{ $document->document_number }}</strong></td><td>{{ $document->customer?->name ?? '—' }}</td><td>{{ optional($document->entry_date)->format('Y-m-d') }}</td><td>{{ optional($document->due_date)->format('Y-m-d') }}</td><td class="finance-money">{{ $money($document->amount) }} {{ $document->currency_code }}</td><td><span class="finance-status">{{ $statusLabel($document->status) }}</span></td><td>@if($document->journal_id)<a class="finance-button" href="{{ route('admin.erp.finance.index',[...$routeBase,'tab'=>'journals','journal'=>$document->journal_id]) }}">{{ __('finance_workbench.actions.view_ledger') }}</a>@else—@endif</td></tr>
 @empty<tr><td colspan="7" class="finance-empty">{{ __('finance_workbench.common.no_data') }}</td></tr>@endforelse
 </tbody></table></div><div class="finance-pagination">{{ $data['documents']->links() }}</div>
+<h3>{{ __('finance_workbench.dashboard.aging') }}</h3>
+<div class="finance-table-wrap"><table class="finance-table"><thead><tr><th>{{ __('finance_workbench.common.aging_bucket') }}</th><th>{{ __('finance_workbench.common.currency') }}</th><th>{{ __('finance_workbench.common.outstanding') }}</th></tr></thead><tbody>
+@forelse($data['agingTotals'] as $bucket)<tr><td>{{ $statusLabel($bucket->aging_bucket) }}</td><td>{{ $bucket->currency_code }}</td><td class="finance-money">{{ $money($bucket->outstanding_amount) }}</td></tr>
+@empty<tr><td colspan="3" class="finance-empty">{{ __('finance_workbench.common.no_data') }}</td></tr>@endforelse
+</tbody></table></div>
 <h3>{{ __('finance_workbench.common.aging_bucket') }}</h3>
 <div class="finance-table-wrap"><table class="finance-table"><thead><tr><th>{{ __('finance_workbench.receivables.document') }}</th><th>{{ __('finance_workbench.common.due_date') }}</th><th>{{ __('finance_workbench.common.amount') }}</th><th>{{ __('finance_workbench.common.allocated') }}</th><th>{{ __('finance_workbench.common.outstanding') }}</th><th>{{ __('finance_workbench.common.aging_bucket') }}</th></tr></thead><tbody>
 @forelse($data['aging'] as $row)<tr><td>{{ $row->document_number }}</td><td>{{ $row->due_date }}</td><td class="finance-money">{{ $money($row->amount) }} {{ $row->currency_code }}</td><td class="finance-money">{{ $money($row->allocated_amount) }}</td><td class="finance-money">{{ $money($row->outstanding_amount) }}</td><td><span class="finance-status">{{ $statusLabel($row->aging_bucket) }}</span></td></tr>
 @empty<tr><td colspan="6" class="finance-empty">{{ __('finance_workbench.common.no_data') }}</td></tr>@endforelse
 </tbody></table></div>
+<div class="finance-pagination">{{ $data['aging']->links() }}</div>
 </section>
 @endif
 
@@ -679,7 +685,7 @@ $trendMax=max(1,max(array_map(fn($r)=>max(abs((float)$r['revenue']),abs((float)$
 </form></div></details>
 @endif
 @if($data['report'])
-<div class="finance-panel-head"><div><h3>{{ __('finance_workbench.reports.types.'.$data['report']['code']) }}</h3><p>{{ __('finance_workbench.reports.row_count',['count'=>$data['report']['row_count']]) }}</p></div></div>
+<div class="finance-panel-head"><div><h3>{{ __('finance_workbench.reports.types.'.$data['report']['code']) }}</h3><p>{{ __('finance_workbench.reports.row_count',['count'=>$data['report']['row_count']]) }}</p></div><a class="finance-button" href="{{ route('admin.erp.finance.index',[...$routeBase,'tab'=>'reports','report'=>$data['reportType'],'period_id'=>$data['periodId'],'download'=>'csv']) }}" download>{{ __('finance_p309.download_csv') }}</a></div>
 @if($data['report']['lines']===[])<div class="finance-empty">{{ __('finance_workbench.common.no_data') }}</div>
 @else
 @php $columns=array_keys($data['report']['lines'][0]); @endphp
@@ -703,6 +709,7 @@ $trendMax=max(1,max(array_map(fn($r)=>max(abs((float)$r['revenue']),abs((float)$
 <button class="finance-button primary" type="submit">{{ __('finance_workbench.actions.run_statement') }}</button>
 </form>
 @if($data['statement'])
+<div class="finance-panel-head"><div><h3>{{ __('finance_workbench.statements.'.$data['statementType']) }}</h3></div><a class="finance-button" href="{{ route('admin.erp.finance.index',[...$routeBase,'tab'=>'statements','statement'=>$data['statementType'],'period_id'=>$data['periodId'],'comparative_period_id'=>$data['comparativePeriodId'],'cost_center_id'=>request('cost_center_id'),'download'=>'csv']) }}" download>{{ __('finance_p309.download_csv') }}</a></div>
 <div class="finance-notice"><strong>{{ __('finance_workbench.statements.'.$data['statementType']) }}</strong>@if(array_key_exists('reconciled',$data['statement'])) · {{ __('finance_workbench.statements.reconciled') }}: {{ $data['statement']['reconciled'] ? '✓' : '—' }}@endif</div>
 <div class="finance-table-wrap"><table class="finance-table"><thead><tr><th>{{ __('finance_workbench.common.code') }}</th><th>{{ __('finance_workbench.statements.account') }}</th><th>{{ __('finance_workbench.common.type') }}</th><th>{{ __('finance_workbench.common.debit') }}</th><th>{{ __('finance_workbench.common.credit') }}</th><th>{{ __('finance_workbench.statements.balance') }}</th><th>{{ __('finance_workbench.statements.comparative') }}</th></tr></thead><tbody>
 @forelse($data['statement']['lines'] as $line)
