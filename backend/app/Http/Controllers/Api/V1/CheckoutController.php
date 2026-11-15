@@ -58,7 +58,8 @@ class CheckoutController extends Controller
         $idempotencyKey = trim((string) $request->header('Idempotency-Key', ''));
 
         if (strlen($idempotencyKey) < 16 || strlen($idempotencyKey) > 100) {
-            $userLocale = $request->user()?->locale;
+            $authenticatedUser = $request->user();
+            $userLocale = $authenticatedUser instanceof User ? $authenticatedUser->locale : null;
             $locale = in_array($userLocale, ['ar', 'en'], true)
                 ? $userLocale
                 : strtolower((string) $request->getPreferredLanguage(['ar', 'en']));
