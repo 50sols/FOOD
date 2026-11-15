@@ -45,11 +45,11 @@ final class StorefrontController extends Controller
                 'storefront_settings.header_address',
             ]);
 
+        $preferredLocale = strtolower((string) $request->getPreferredLanguage(['ar', 'en']));
         abort_if(
             $wholesale === null,
             404,
-            (string) __('platform_marketplace.wholesale_store_missing', [],
-                strtolower((string) $request->getPreferredLanguage(['ar', 'en'])) === 'ar' ? 'ar' : 'en'),
+            (string) __('platform_marketplace.wholesale_store_missing', [], $preferredLocale === 'ar' ? 'ar' : 'en'),
         );
 
         $retailStores = $this->retailStoreQuery($request)
