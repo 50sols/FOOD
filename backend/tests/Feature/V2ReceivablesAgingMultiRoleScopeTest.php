@@ -157,16 +157,14 @@ final class V2ReceivablesAgingMultiRoleScopeTest extends TestCase
             $actor->forceFill(['locale' => $locale])->save();
             $principal = $actor->fresh();
 
-            // With another authorized store still available, the Finance
-            // context selector hides the explicitly denied store (404).
-            // #3894 requests 403 here; that HTTP contract is blocked by
-            // peer-owned FinanceWorkbenchController changes (#3309/#3212).
+            // Assigned-but-denied Store A must be 403, even when another
+            // independently authorized Retail store remains accessible.
             $this->actingAs($principal)
                 ->get(route('admin.erp.finance.index', [
                     'store_id' => $storeA->id,
                     'tab' => 'receivables',
                 ]))
-                ->assertNotFound();
+                ->assertForbidden();
 
             $this->actingAs($principal)
                 ->get(route('admin.erp.finance.index', [
