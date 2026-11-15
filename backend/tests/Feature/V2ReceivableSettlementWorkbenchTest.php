@@ -139,6 +139,97 @@ final class V2ReceivableSettlementWorkbenchTest extends TestCase
         $this->assertDatabaseCount('enterprise_finance_journals', 1);
     }
 
+    public function test_receivable_account_cannot_be_its_own_settlement_account_without_financial_mutation(): void
+    {
+        $fixture = $this->fixture('P303-SELF-NET');
+        $receivables = app(AccountsReceivableService::class);
+        $context = app(TenantContextResolver::class)->retail($fixture['maker'], $fixture['store']->id);
+        $document = $fixture['document'];
+        $payload = [
+            'idempotency_key' => 'p303-selfnet-rejected',
+            'allocation_date' => '2027-01-12',
+            'amount' => '15.000',
+            'settlement_account_id' => $document->receivable_account_id,
+            'reference' => 'NOT-A-COLLECTION',
+        ];
+
+        // Debiting and crediting the identical AR account would reduce the
+        // receivable balance in the settlement model without collected cash.
+        try {
+            $receivables->createAllocation($fixture['maker'], $context, $document->id, $payload);
+            $this->fail('An AR account must not self-settle its own balance.');
+        } catch (ValidationException $exception) {
+            $this->assertArrayHasKey('settlement_account_id', $exception->errors());
+        }
+
+        foreach (['en', 'ar'] as $locale) {
+            $fixture['maker']->forceFill(['locale' => $locale])->save();
+            $this->actingAs($fixture['maker']->fresh())->post(
+                route('admin.erp.finance.receivables.settlements.store', $document->id),
+                ['store_id' => $fixture['store']->id, ...$payload],
+            )->assertSessionHasErrors([
+                'settlement_account_id' => __('finance_workbench.receivables.settlement_account_same_as_ar', [], $locale),
+            ]);
+        }
+
+        $this->assertDatabaseCount('enterprise_ar_allocations', 0);
+        $this->assertDatabaseCount('enterprise_finance_journals', 1);
+        $this->assertSame('posted', $document->fresh()->status);
+        $this->assertDatabaseMissing('audit_logs', [
+            'event' => 'enterprise.finance.ar_allocation_created',
+        ]);
+
+        // Existing legitimate cash-account drafts stay usable.
+        $cash = $receivables->createAllocation(
+            $fixture['maker'],
+            $context,
+            $document->id,
+            [...$payload, 'settlement_account_id' => $fixture['cash_account_id']],
+        );
+        $this->assertSame('draft', $cash->status);
+        $this->assertSame((int) $fixture['cash_account_id'], (int) $cash->settlement_account_id);
+        $this->assertDatabaseCount('enterprise_ar_allocations', 1);
+    }
+
+    public function test_legacy_self_netting_allocation_is_rejected_before_journal_posting(): void
+    {
+        $fixture = $this->fixture('P303-LEGACY-SELF-NET');
+        $allocation = EnterpriseAccountsReceivableAllocation::query()->create([
+            'ar_document_id' => $fixture['document']->id,
+            'idempotency_key' => 'legacy-self-netting-draft',
+            'request_hash' => hash('sha256', 'legacy-self-netting-draft'),
+            'allocation_date' => '2027-01-12',
+            'amount' => '15.000',
+            'settlement_account_id' => $fixture['document']->receivable_account_id,
+            'reference' => 'UNVERIFIED',
+            'status' => 'draft',
+            'created_by' => $fixture['maker']->id,
+        ]);
+        $posterContext = app(TenantContextResolver::class)->retail(
+            $fixture['poster'],
+            $fixture['store']->id,
+        );
+
+        try {
+            app(AccountsReceivableService::class)->postAllocation(
+                $fixture['poster'],
+                $posterContext,
+                $allocation->id,
+            );
+            $this->fail('A legacy AR self-netting draft must not be posted.');
+        } catch (ValidationException $exception) {
+            $this->assertArrayHasKey('settlement_account_id', $exception->errors());
+        }
+
+        $this->assertSame('draft', $allocation->fresh()->status);
+        $this->assertNull($allocation->fresh()->journal_id);
+        $this->assertDatabaseCount('enterprise_finance_journals', 1);
+        $this->assertDatabaseMissing('audit_logs', [
+            'event' => 'enterprise.finance.ar_allocation_posted',
+            'auditable_id' => $allocation->id,
+        ]);
+    }
+
     public function test_draft_allocation_checks_and_writes_share_a_document_transaction_with_safe_retries(): void
     {
         $fixture = $this->fixture('P303-ATOMIC-DRAFT');

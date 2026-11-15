@@ -432,6 +432,15 @@ final class AccountsReceivableService
                 ]);
             }
 
+            // A settlement must debit a distinct cash/settlement account.
+            // Debiting and crediting the receivable account itself would
+            // falsely clear outstanding AR with no collected consideration.
+            if ((int) $data['settlement_account_id'] === (int) $document->receivable_account_id) {
+                throw ValidationException::withMessages([
+                    'settlement_account_id' => [__('finance_workbench.receivables.settlement_account_same_as_ar')],
+                ]);
+            }
+
             $this->assertPostingAccount($scope, (int) $data['settlement_account_id']);
             $amount = $this->formatMills($this->toMills($data['amount']));
             if ($this->toMills($amount) < 1) {
@@ -563,6 +572,14 @@ final class AccountsReceivableService
             if ($requiresVerifiedCollectionSource) {
                 throw ValidationException::withMessages([
                     'collection_source' => [__('finance_workbench.receivables.verification_pending')],
+                ]);
+            }
+
+            // Also reject legacy drafts created before the input guard.
+            // No AR journal may debit and credit the same account.
+            if ((int) $allocation->settlement_account_id === (int) $document->receivable_account_id) {
+                throw ValidationException::withMessages([
+                    'settlement_account_id' => [__('finance_workbench.receivables.settlement_account_same_as_ar')],
                 ]);
             }
 
