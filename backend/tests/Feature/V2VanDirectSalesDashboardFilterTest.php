@@ -129,6 +129,48 @@ final class V2VanDirectSalesDashboardFilterTest extends TestCase
         $this->assertSame($before, DB::table('orders')->count());
     }
 
+    public function test_selected_detail_remains_within_requested_van_origin_scope(): void
+    {
+        $storeId = app(WholesalePrincipal::class)->storeId();
+        $customer = app(B2bCustomerService::class)->create(['name' => 'P275 Detail Context Buyer']);
+
+        $vanOrderId = $this->order(
+            $storeId,
+            (int) $customer->legacy_customer_id,
+            (int) $customer->getKey(),
+            'P275-VAN-DETAIL-2001',
+            'van',
+        );
+        $dashboardOrderId = $this->order(
+            $storeId,
+            (int) $customer->legacy_customer_id,
+            (int) $customer->getKey(),
+            'P275-DASHBOARD-DETAIL-2002',
+            'dashboard',
+        );
+
+        $actor = $this->superAdmin('p275-origin-detail@example.test');
+
+        // Selecting a genuine Van-created order through its filtered grid
+        // remains allowed, including the standard same-store detail view.
+        $this->actingAs($actor)
+            ->get("/admin/operations/orders?channel=b2b&origin=van&action_required=0&order={$vanOrderId}")
+            ->assertOk();
+
+        // A crafted detail ID must not break the Van-only source boundary.
+        $this->actingAs($actor)
+            ->get("/admin/operations/orders?channel=b2b&origin=van&action_required=0&order={$dashboardOrderId}")
+            ->assertNotFound();
+
+        // The same order is still reachable in the ordinary authorized B2B
+        // Orders context: the new predicate is contextual, not a new grant.
+        $this->actingAs($actor)
+            ->get("/admin/operations/orders?channel=b2b&action_required=0&order={$dashboardOrderId}")
+            ->assertOk();
+
+        $this->assertDatabaseCount('orders', 2);
+    }
+
     private function retailStore(string $code): int
     {
         return (int) DB::table('stores')->insertGetId([
