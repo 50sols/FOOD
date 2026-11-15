@@ -692,18 +692,16 @@ class _VanLoginScreenState extends State<VanLoginScreen> {
                     ),
                     Padding(
                       padding: const EdgeInsets.fromLTRB(22, 0, 22, 8),
-                      child: Row(
-                        children: [
-                          Expanded(
-                            child: Text(
-                              'Good Food   A Stronger Tomorrow',
-                              style: TextStyle(
-                                color: _LoginColors.muted,
-                                fontSize: 11,
-                              ),
+                      child: LayoutBuilder(
+                        builder: (context, constraints) {
+                          final tagline = Text(
+                            'Good Food   A Stronger Tomorrow',
+                            style: TextStyle(
+                              color: _LoginColors.muted,
+                              fontSize: 11,
                             ),
-                          ),
-                          Text(
+                          );
+                          final version = Text(
                             _text('Version 1.0.65', 'الإصدار 1.0.65'),
                             key: const ValueKey('van-business-login-version'),
                             style: TextStyle(
@@ -711,8 +709,26 @@ class _VanLoginScreenState extends State<VanLoginScreen> {
                               fontSize: 11,
                               fontWeight: FontWeight.w700,
                             ),
-                          ),
-                        ],
+                          );
+                          final stacked = constraints.maxWidth < 300 ||
+                              MediaQuery.textScalerOf(context).scale(11) >= 20;
+                          if (stacked) {
+                            return Column(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                tagline,
+                                const SizedBox(height: 4),
+                                version,
+                              ],
+                            );
+                          }
+                          return Row(
+                            children: [
+                              Expanded(child: tagline),
+                              version,
+                            ],
+                          );
+                        },
                       ),
                     ),
                   ],

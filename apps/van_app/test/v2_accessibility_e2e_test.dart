@@ -119,54 +119,62 @@ void main() {
     );
   }
 
-  for (final locale in const [Locale('ar'), Locale('en')]) {
-    testWidgets(
-        'Van login remains accessible at 1.5x text in ${locale.languageCode}',
-        (tester) async {
-      final semantics = tester.ensureSemantics();
-      tester.view.physicalSize = const Size(390, 844);
-      tester.view.devicePixelRatio = 1;
-      tester.platformDispatcher.textScaleFactorTestValue = 1.5;
-      addTearDown(() {
-        tester.view.resetPhysicalSize();
-        tester.view.resetDevicePixelRatio();
-        tester.platformDispatcher.clearTextScaleFactorTestValue();
-      });
+  for (final viewport in const [
+    (size: Size(390, 844), scale: 1.5),
+    (size: Size(320, 700), scale: 2.0),
+  ]) {
+    for (final locale in const [Locale('ar'), Locale('en')]) {
+      testWidgets(
+          'Van login remains accessible at ${viewport.scale}x text in ${locale.languageCode}',
+          (tester) async {
+        final semantics = tester.ensureSemantics();
+        tester.view.physicalSize = viewport.size;
+        tester.view.devicePixelRatio = 1;
+        tester.platformDispatcher.textScaleFactorTestValue = viewport.scale;
+        addTearDown(() {
+          tester.view.resetPhysicalSize();
+          tester.view.resetDevicePixelRatio();
+          tester.platformDispatcher.clearTextScaleFactorTestValue();
+        });
 
-      await tester.pumpWidget(
-        MaterialApp(
-          locale: locale,
-          supportedLocales: const [Locale('ar'), Locale('en')],
-          localizationsDelegates: const [
-            GlobalMaterialLocalizations.delegate,
-            GlobalWidgetsLocalizations.delegate,
-            GlobalCupertinoLocalizations.delegate,
-          ],
-          home: VanLoginScreen(
-            repository: _OfflineVanAuthRepository(),
-            onAuthenticated: (_, __, ___) async {},
+        await tester.pumpWidget(
+          MaterialApp(
+            locale: locale,
+            supportedLocales: const [Locale('ar'), Locale('en')],
+            localizationsDelegates: const [
+              GlobalMaterialLocalizations.delegate,
+              GlobalWidgetsLocalizations.delegate,
+              GlobalCupertinoLocalizations.delegate,
+            ],
+            home: VanLoginScreen(
+              repository: _OfflineVanAuthRepository(),
+              onAuthenticated: (_, __, ___) async {},
+            ),
           ),
-        ),
-      );
-      await tester.pumpAndSettle();
-      final email = find.byKey(const Key('van-login-email'));
-      final submit = find.byKey(const Key('van-login-submit'));
-      expect(email, findsOneWidget);
-      expect(submit, findsOneWidget);
-      expect(MediaQuery.textScalerOf(tester.element(email)).scale(16),
-          greaterThan(16));
-      expect(Directionality.of(tester.element(email)),
-          locale.languageCode == 'ar' ? TextDirection.rtl : TextDirection.ltr);
-      await tester.ensureVisible(email);
-      await tester.pump();
-      expect(tester.getSize(email).height, greaterThanOrEqualTo(48));
-      final hint = tester.widget<TextField>(email).decoration!.hintText!;
-      expect(find.bySemanticsLabel(hint), findsWidgets);
-      await tester.ensureVisible(submit);
-      await tester.pump();
-      expect(tester.getSize(submit).height, greaterThanOrEqualTo(48));
-      expect(tester.takeException(), isNull);
-      semantics.dispose();
-    });
+        );
+        await tester.pumpAndSettle();
+        final email = find.byKey(const Key('van-login-email'));
+        final submit = find.byKey(const Key('van-login-submit'));
+        expect(email, findsOneWidget);
+        expect(submit, findsOneWidget);
+        expect(MediaQuery.textScalerOf(tester.element(email)).scale(16),
+            greaterThan(16));
+        expect(
+            Directionality.of(tester.element(email)),
+            locale.languageCode == 'ar'
+                ? TextDirection.rtl
+                : TextDirection.ltr);
+        await tester.ensureVisible(email);
+        await tester.pump();
+        expect(tester.getSize(email).height, greaterThanOrEqualTo(48));
+        final hint = tester.widget<TextField>(email).decoration!.hintText!;
+        expect(find.bySemanticsLabel(hint), findsWidgets);
+        await tester.ensureVisible(submit);
+        await tester.pump();
+        expect(tester.getSize(submit).height, greaterThanOrEqualTo(48));
+        expect(tester.takeException(), isNull);
+        semantics.dispose();
+      });
+    }
   }
 }

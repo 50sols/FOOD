@@ -67,3 +67,17 @@ Continued the **same original Issue #2741 / branch / draft PR #3445** without a 
 **Still BLOCKED for original MOB-ALL02 source closure:** genuinely publisher-signed synchronized Customer/Driver/Van APK provenance on one frozen SHA, physical screen-reader/device scaling journeys and full #2749/#2503 acceptance. Preserve #2741 OPEN and #3445 DRAFT even if scoped checks pass. No main, releases, tags, APK publication or production deployment.
 
 No main merge, tags, releases, store submission, cPanel or production deployment.
+
+## 2026-11-15 — 200% text on narrow 320px screens and Van footer correction
+
+Continued the existing Issue #2741 and original draft PR #3445 under V2 Feature Freeze; no new branch or application feature. Existing bilingual Flutter widget tests now cover both 150% text at 390x844 and 200% text at 320x700. Customer, Driver and Van AR/EN RTL/LTR tests assert real text-scaler propagation, semantic labels and reachable touch targets; none submit live credentials.
+
+**Reproduced before fix:** Customer and Driver passed all 200%-scale cases. Van login at 320x700 overflowed its FOOTER Row by 34px (Arabic) and 36px (English). Flutter rendering diagnostics identified the tagline/version Row, not the remember-me/biometric controls. A temporary unrelated candidate modification to the latter was discarded.
+
+**Minimal source fix:** VanLoginScreen now uses LayoutBuilder in the existing footer. Normal widths/scaling preserve the original horizontal Row. Narrow (<300dp available footer width) or large text (11pt scaled to >=20px) stacks the exact existing tagline and version vertically with a 4dp gap. Both original labels remain visible; no text elision, auth logic, session, biometrics, route, permissions or API changes.
+
+**Actual isolated GCC validation:** Original branch 30ce35627b7e0e7df1a6776a4687b03d8eccec9a checked out separately with Flutter. Before changes, baseline accessibility suites were 4/4 PASS per app. After source fix and temporary diagnostics removal: Customer accessibility+localization 9/9 PASS; Driver 9/9 PASS; Van 8/8 PASS = 26/26. Full Van Flutter test suite 152/152 PASS. Changed-source/test flutter analyze --no-pub in all apps found zero issues, dart format checked, git diff --check passed. These are local test results; new exact-head GitHub Required CI and Android evidence must be independently verified after the commit.
+
+**Impact matrix:** Backend/API and Dashboard unchanged. Customer and Driver test-only coverage, no runtime changes. Van runtime change is limited to responsive footer layout plus tests; its authentication, VAN-only B2B dispatch, persisted data and financial scope are unchanged. No new dependencies, screens, menus, secrets, signing keys or releases.
+
+**Outstanding acceptance:** Real physical-screen-reader (TalkBack/VoiceOver) device journeys, all-screen acceptance, publisher-authenticated synchronized Customer/Driver/Van APKs built from final V2 SHA, #2749 G008 and master #2503 remain unverified. This increment alone is not full MOB-ALL02 completion. Keep original PR DRAFT, Issue #2741 OPEN, and do not merge into Foodex_V2 until full source acceptance and exact-final-head CI. No main, production, tags or APK publication.

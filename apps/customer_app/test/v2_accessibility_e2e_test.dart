@@ -62,44 +62,52 @@ void main() {
     });
   }
 
-  for (final locale in const [Locale('ar'), Locale('en')]) {
-    testWidgets(
-        'Customer diagnostics remains accessible at 1.5x text in ${locale.languageCode}',
-        (tester) async {
-      final semantics = tester.ensureSemantics();
-      tester.view.physicalSize = const Size(390, 844);
-      tester.view.devicePixelRatio = 1;
-      tester.platformDispatcher.textScaleFactorTestValue = 1.5;
-      addTearDown(() {
-        tester.view.resetPhysicalSize();
-        tester.view.resetDevicePixelRatio();
-        tester.platformDispatcher.clearTextScaleFactorTestValue();
-      });
+  for (final viewport in const [
+    (size: Size(390, 844), scale: 1.5),
+    (size: Size(320, 700), scale: 2.0),
+  ]) {
+    for (final locale in const [Locale('ar'), Locale('en')]) {
+      testWidgets(
+          'Customer diagnostics remains accessible at ${viewport.scale}x text in ${locale.languageCode}',
+          (tester) async {
+        final semantics = tester.ensureSemantics();
+        tester.view.physicalSize = viewport.size;
+        tester.view.devicePixelRatio = 1;
+        tester.platformDispatcher.textScaleFactorTestValue = viewport.scale;
+        addTearDown(() {
+          tester.view.resetPhysicalSize();
+          tester.view.resetDevicePixelRatio();
+          tester.platformDispatcher.clearTextScaleFactorTestValue();
+        });
 
-      await tester.pumpWidget(FoodexCustomerApp(
-        locale: locale,
-        initialRoute: CustomerRoutePaths.diagnostics,
-        translationFetcher: (_) async => <String, String>{},
-      ));
-      await tester.pumpAndSettle();
-      expect(tester.takeException(), isNull,
-          reason: 'Diagnostics should render at mobile text scale.');
-      final note = find.byKey(const ValueKey('customer-diagnostics-note'));
-      await tester.scrollUntilVisible(note, 180,
-          scrollable: find.byType(Scrollable).last);
-      await tester.pumpAndSettle();
-      expect(note, findsOneWidget);
-      expect(MediaQuery.textScalerOf(tester.element(note)).scale(16),
-          greaterThan(16));
-      expect(Directionality.of(tester.element(note)),
-          locale.languageCode == 'ar' ? TextDirection.rtl : TextDirection.ltr);
-      await tester.ensureVisible(note);
-      await tester.pump();
-      expect(tester.getSize(note).height, greaterThanOrEqualTo(44));
-      final label = tester.widget<TextField>(note).decoration!.labelText!;
-      expect(tester.getSemantics(note).label, contains(label));
-      expect(tester.takeException(), isNull);
-      semantics.dispose();
-    });
+        await tester.pumpWidget(FoodexCustomerApp(
+          locale: locale,
+          initialRoute: CustomerRoutePaths.diagnostics,
+          translationFetcher: (_) async => <String, String>{},
+        ));
+        await tester.pumpAndSettle();
+        expect(tester.takeException(), isNull,
+            reason: 'Diagnostics should render at mobile text scale.');
+        final note = find.byKey(const ValueKey('customer-diagnostics-note'));
+        await tester.scrollUntilVisible(note, 180,
+            scrollable: find.byType(Scrollable).last);
+        await tester.pumpAndSettle();
+        expect(note, findsOneWidget);
+        expect(MediaQuery.textScalerOf(tester.element(note)).scale(16),
+            greaterThan(16));
+        expect(
+            Directionality.of(tester.element(note)),
+            locale.languageCode == 'ar'
+                ? TextDirection.rtl
+                : TextDirection.ltr);
+        await tester.ensureVisible(note);
+        await tester.pump();
+        expect(tester.getSize(note).height, greaterThanOrEqualTo(44));
+        final label = tester.widget<TextField>(note).decoration!.labelText!;
+        expect(tester.getSemantics(note).label, contains(label));
+        expect(tester.takeException(), isNull);
+        semantics.dispose();
+      });
+    }
   }
 }
