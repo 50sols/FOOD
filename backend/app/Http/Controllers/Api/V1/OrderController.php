@@ -124,6 +124,12 @@ class OrderController extends Controller
         }
 
         [$customer, $channel] = $this->customerContext($request);
+
+        // The split Customer endpoint is domain-authoritative. A caller may
+        // filter its orders only within that channel, never relabel a Retail
+        // list as Wholesale (or vice versa) through the optional query.
+        abort_if(isset($validated['channel']) && $validated['channel'] !== $channel, 404);
+
         $customerColumn = $channel === 'b2b' ? 'b2b_customer_id' : 'b2c_customer_id';
 
         $query = Order::query()
