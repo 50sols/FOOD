@@ -48,6 +48,7 @@ final class V2ReceivablesAgingMultiRoleScopeTest extends TestCase
 
         $actor = User::factory()->create(['locale' => 'en', 'is_active' => true]);
         $this->grantPlatformErpAccess($actor);
+        $financeView = Permission::query()->where('code', 'finance.view')->firstOrFail();
 
         foreach ([
             [$storeA, 'B2C_STORE_ADMIN'],
@@ -58,6 +59,9 @@ final class V2ReceivablesAgingMultiRoleScopeTest extends TestCase
                 ->where('scope', 'store')
                 ->where('is_active', true)
                 ->firstOrFail();
+            // CoreReferenceSeeder creates the role identities; the feature
+            // fixture grants the same scoped read permission as P288/#3085.
+            $role->permissions()->syncWithoutDetaching([$financeView->id]);
             $this->assertTrue($role->permissions()->where('code', 'finance.view')->exists());
 
             DB::table('user_store_roles')->insert([
@@ -136,7 +140,7 @@ final class V2ReceivablesAgingMultiRoleScopeTest extends TestCase
                 ->assertNotFound();
         }
 
-        $permission = Permission::query()->where('code', 'finance.view')->firstOrFail();
+        $permission = $financeView;
         DB::table('user_permission_overrides')->insert([
             'user_id' => $actor->id,
             'permission_id' => $permission->id,
