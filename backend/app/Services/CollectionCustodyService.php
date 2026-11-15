@@ -290,7 +290,7 @@ final class CollectionCustodyService
             // as well; neither a route check nor Super Admin status waives SoD.
             if ($locked->submitted_by === null || (int) $locked->submitted_by === (int) $actor->getKey()) {
                 throw ValidationException::withMessages([
-                    'reviewed_by' => ['Remittance approval requires a distinct, recorded maker and checker.'],
+                    'reviewed_by' => [__('treasury.errors.remittance_independent_checker')],
                 ]);
             }
 
