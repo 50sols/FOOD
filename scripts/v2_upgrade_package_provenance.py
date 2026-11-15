@@ -390,6 +390,17 @@ def validate_package(
                 seen.add(name)
                 portable_seen.add(portable_name)
                 names.append(name)
+            # Every ZIP member here is a regular FILE; implicit parent
+            # components must be directories, never another attested file.
+            # Compare NFC/casefold targets so Windows/macOS extractors cannot
+            # disagree with Linux about a file-vs-directory collision.
+            for target in portable_seen:
+                components = target.split("/")
+                for length in range(1, len(components)):
+                    _require(
+                        "/".join(components[:length]) not in portable_seen,
+                        f"File/directory target collision in update ZIP: {target!r}",
+                    )
             _require(bool(names) and "VERSION" in seen, "Archive has no VERSION member.")
             _require(
                 archive.read("VERSION").decode("utf-8").strip() == target_version,

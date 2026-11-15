@@ -221,6 +221,42 @@ class V2G006PackageProvenanceTest(unittest.TestCase):
                 with self.assertRaisesRegex(PackageContractError, "Private/non-runtime member"):
                     self.verify_first()
 
+    def test_regular_file_cannot_be_parent_of_another_zip_member(self) -> None:
+        # A ZIP with a regular file at 'asset' and a second member nested
+        # beneath 'asset/' is portable-path ambiguous. Python accepts its
+        # central directory/CRC; cPanel and Windows extractors may not.
+        for parent, child in (
+            ("backend/public/cache-entry", "backend/public/cache-entry/index.php"),
+            ("backend/public/cache-entry", "backend/public/CACHE-ENTRY/index.php"),
+            ("backend/public/caf\u00e9", "backend/public/cafe\u0301/index.php"),
+        ):
+            with self.subTest(parent=parent, child=child):
+                self.first = build_bundle(
+                    self.first,
+                    entries=[
+                        ("VERSION", b"1.0.125", False),
+                        (RUNTIME, b"<?php // update code", False),
+                        (parent, b"regular parent file", False),
+                        (child, b"<?php // child", False),
+                    ],
+                )
+                with zipfile.ZipFile(self.first / "FOODEX-Update.zip") as archive:
+                    self.assertIsNone(archive.testzip())
+                with self.assertRaisesRegex(PackageContractError, "File/directory target collision"):
+                    self.verify_first()
+
+        # Implicit directories and ordinary sibling paths must still pass.
+        self.first = build_bundle(
+            self.first,
+            entries=[
+                ("VERSION", b"1.0.125", False),
+                (RUNTIME, b"<?php // update code", False),
+                ("backend/public/cache-entry.php", b"<?php // ordinary file", False),
+                ("backend/public/cache-entry/index.php", b"<?php // nested file", False),
+            ],
+        )
+        self.assertEqual(4, self.verify_first()["files"])
+
     def test_checksum_valid_encrypted_zip_member_rejected_before_crc_scan(self) -> None:
         # ZIP local and central general-purpose bit 0 requests decryption.
         self._modify_zip_headers_and_refresh_digest(
