@@ -9,7 +9,7 @@ return [
         'scheduling_window' => 'Scheduled time exceeds the branch pre-order window.',
         'pickup_lead_time' => 'Pickup time is earlier than the branch preparation lead time.',
         'holiday_closed' => 'This branch is closed on the selected date.',
-        'outside_business_hours' => 'This branch is closed at the selected time.'
+        'outside_business_hours' => 'This branch is closed at the selected time.',
     ],
     'checkout' => [
         'idempotency_conflict' => 'Idempotency-Key was already used for a different checkout request.',
