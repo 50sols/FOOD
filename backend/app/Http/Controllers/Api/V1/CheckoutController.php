@@ -173,7 +173,7 @@ class CheckoutController extends Controller
                 ->lockForUpdate()
                 ->first();
 
-            abort_unless($cart instanceof Cart, 409, 'No authenticated cart exists for this store.');
+            abort_unless($cart instanceof Cart, 409, $this->localizedCartConflict($request, $user, 'checkout_cart_missing'));
 
             $smartOrderingAttribution->markCheckoutStartedForCart($cart);
 
@@ -183,7 +183,7 @@ class CheckoutController extends Controller
                 ->lockForUpdate()
                 ->get();
 
-            abort_if($lockedItems->isEmpty(), 409, 'The cart is empty.');
+            abort_if($lockedItems->isEmpty(), 409, $this->localizedCartConflict($request, $user, 'checkout_cart_empty'));
 
             // This is the authoritative reprice point. No submitted or stale cart price is trusted.
             $quote = $quotes->quoteCart(
@@ -426,6 +426,15 @@ class CheckoutController extends Controller
             $this->orderPayload($order->fresh()),
             $created ? 201 : 200,
         );
+    }
+
+    private function localizedCartConflict(Request $request, User $user, string $key): string
+    {
+        $locale = in_array($user->locale, ['ar', 'en'], true)
+            ? (string) $user->locale
+            : (string) $request->getPreferredLanguage(['ar', 'en']);
+
+        return __('checkout_errors.'.$key, [], $locale === 'en' ? 'en' : 'ar');
     }
 
     private function orderPayload(Order $order): array
