@@ -125,7 +125,6 @@ class MobileAppDownloadTest extends TestCase
         ]);
     }
 
-
     public function test_invalid_mobile_download_app_is_localized_and_never_schedules_or_changes_release_artifacts(): void
     {
         Queue::fake();
