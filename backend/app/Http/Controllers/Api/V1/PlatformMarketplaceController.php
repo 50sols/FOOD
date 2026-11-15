@@ -19,6 +19,15 @@ final class PlatformMarketplaceController extends Controller
     {
         $store = $this->principalStore();
         $storeId = (int) $store->id;
+        // Parse optional public filters once. Malformed arrays and nested values
+        // must fail with field-specific 422s before any SQL/search coercion.
+        $filters = $request->validate([
+            'q' => ['nullable', 'string', 'max:160'],
+            'category_id' => ['nullable', 'integer', 'min:1'],
+            'country_code' => ['nullable', 'string', 'max:8'],
+            'city' => ['nullable', 'string', 'max:160'],
+            'area' => ['nullable', 'string', 'max:160'],
+        ]);
         $wholesaleBanners = $this->wholesaleBanners($storeId);
 
         return response()->json([
@@ -32,9 +41,9 @@ final class PlatformMarketplaceController extends Controller
             'brands' => $this->brands($storeId),
             'offers' => $this->offers($storeId),
             'products' => [
-                'data' => $this->products($request, $storeId),
+                'data' => $this->products($filters, $storeId),
             ],
-            'retail_banners' => $this->retailPlacements($request, $storeId),
+            'retail_banners' => $this->retailPlacements($filters, $storeId),
             'currency' => 'EGP',
         ]);
     }
@@ -284,11 +293,12 @@ final class PlatformMarketplaceController extends Controller
     }
 
     /** @return list<array<string,mixed>> */
-    private function retailPlacements(Request $request, int $platformStoreId): array
+    /** @param array<string, mixed> $filters */
+    private function retailPlacements(array $filters, int $platformStoreId): array
     {
-        $countryCode = strtoupper(trim((string) $request->query('country_code', '')));
-        $city = trim((string) $request->query('city', ''));
-        $area = trim((string) $request->query('area', ''));
+        $countryCode = strtoupper(trim((string) ($filters['country_code'] ?? '')));
+        $city = trim((string) ($filters['city'] ?? ''));
+        $area = trim((string) ($filters['area'] ?? ''));
         $now = now();
 
         $placementsQuery = DB::table('banners')
@@ -436,10 +446,11 @@ final class PlatformMarketplaceController extends Controller
     }
 
     /** @return list<array<string,mixed>> */
-    private function products(Request $request, int $storeId): array
+    /** @param array<string, mixed> $filters */
+    private function products(array $filters, int $storeId): array
     {
-        $search = trim((string) $request->query('q', ''));
-        $categoryId = $request->integer('category_id');
+        $search = trim((string) ($filters['q'] ?? ''));
+        $categoryId = isset($filters['category_id']) ? (int) $filters['category_id'] : 0;
 
         return $this->productQuery($storeId)
             ->when($search !== '', function (Builder $query) use ($search): void {
