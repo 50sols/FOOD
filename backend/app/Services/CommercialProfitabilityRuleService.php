@@ -67,13 +67,21 @@ final class CommercialProfitabilityRuleService
         $digest = hash('sha256', json_encode($canonical, JSON_THROW_ON_ERROR));
 
         DB::transaction(function () use ($actor, $request, $storeId, $productId, $data, $canonical, $digest): void {
+            // Lock a stable parent row before reading revisions. A first revision has
+            // no child row to lock, so concurrent proposals must serialize here.
+            // This also serializes request-id collisions across products in a store.
+            abort_if(DB::table('stores')->where('id', $storeId)
+                ->lockForUpdate()->first(['id']) === null, 404);
+
             $existing = DB::table('commercial_profitability_rule_revisions')
                 ->where('store_id', $storeId)
                 ->where('request_id', $data['request_id'])
                 ->lockForUpdate()
                 ->first();
             if ($existing !== null) {
-                if ((int) $existing->product_id !== $productId || ! hash_equals((string) $existing->content_sha256, $digest)) {
+                if ((int) $existing->proposed_by !== (int) $actor->getKey()
+                    || (int) $existing->product_id !== $productId
+                    || ! hash_equals((string) $existing->content_sha256, $digest)) {
                     throw ValidationException::withMessages([
                         'request_id' => [__('commercial.profitability.idempotency_conflict')],
                     ]);

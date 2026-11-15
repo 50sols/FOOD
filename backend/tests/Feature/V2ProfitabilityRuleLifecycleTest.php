@@ -61,6 +61,26 @@ final class V2ProfitabilityRuleLifecycleTest extends TestCase
         $this->assertSame(['DRAFT', 'DRAFT'], $rules->pluck('status')->all());
     }
 
+    public function test_another_authorized_maker_cannot_replay_a_different_makers_request_id(): void
+    {
+        [$maker, $store, $product] = $this->fixture();
+        $otherMaker = $this->user('B2B_ADMIN');
+        $key = (string) Str::uuid();
+        $payload = $this->proposal($key, '12.34');
+        $route = $this->saveRoute($store, $product);
+
+        $this->actingAs($maker)->put($route, $payload)->assertSessionHasNoErrors();
+        $this->actingAs($otherMaker)->put($route, $payload)->assertSessionHasErrors('request_id');
+
+        $this->assertDatabaseHas('commercial_profitability_rule_revisions', [
+            'request_id' => $key,
+            'proposed_by' => $maker->id,
+            'status' => 'DRAFT',
+        ]);
+        $this->assertSame(1, DB::table('commercial_profitability_rule_revisions')->count());
+        $this->assertSame(1, DB::table('audit_logs')->where('event', 'commercial.profitability_rule.proposed')->count());
+    }
+
     public function test_independent_checker_review_remains_inactive_and_is_idempotent(): void
     {
         [$maker, $store, $product] = $this->fixture();
