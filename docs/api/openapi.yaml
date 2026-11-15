@@ -49,6 +49,48 @@ tags:
     description: Retailer-owned actual sell-out connections, SKU mapping, ingestion and reconciliation.
 
 paths:
+  /platform/storefront:
+    get:
+      tags: [Stores, Catalog]
+      summary: Public Platform Wholesale storefront with active Retail store placements
+      operationId: getPublicPlatformWholesaleStorefront
+      description: The configured active B2B principal is the only Wholesale product source. Active B2C Retail placements remain separately service-zone-scoped. Optional filters must be scalar; arrays and malformed or oversized inputs return field-scoped JSON 422.
+      parameters:
+        - in: query
+          name: q
+          description: Literal Wholesale product name, SKU or barcode search
+          schema:
+            type: string
+            maxLength: 160
+        - in: query
+          name: category_id
+          description: Positive Wholesale category ID
+          schema:
+            type: integer
+            minimum: 1
+        - in: query
+          name: country_code
+          schema:
+            type: string
+            maxLength: 8
+        - in: query
+          name: city
+          schema:
+            type: string
+            maxLength: 160
+        - in: query
+          name: area
+          schema:
+            type: string
+            maxLength: 160
+      responses:
+        "200":
+          description: Public B2B platform store, product groups, and active B2C Retail placements
+        "422":
+          $ref: "#/components/responses/ValidationError"
+        "503":
+          description: The configured active Platform Wholesale principal is unavailable
+
   /assistant/sellout/connections:
     get:
       tags: [AI Sell-Out]
