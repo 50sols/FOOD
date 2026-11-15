@@ -667,6 +667,10 @@
           <button type="button" class="foodex-primary" data-v2-add-volume-break>{{ __('commercial.quantity_tiers.add_break') }}</button>
           <span class="muted" data-v2-volume-edit-status role="status" aria-live="polite"></span>
         </fieldset>
+        <input type="hidden" name="pack_size" value="1">
+        <input type="hidden" name="case_size" value="">
+        <input type="hidden" name="pack_label" value="">
+        <input type="hidden" name="retail_reference_price" value="">
         <input type="hidden" name="is_active" value="1">
         <button class="foodex-primary" type="submit">{{ app()->getLocale()==='ar'?'حفظ قاعدة السعر':'Save price rule' }}</button>
       </form>
@@ -713,7 +717,12 @@
               product_id: button.dataset.product,
               unit_price: button.dataset.price,
               minimum_quantity: button.dataset.minimum,
-              ordering_increment: button.dataset.increment
+              ordering_increment: button.dataset.increment,
+              pack_size: button.dataset.packSize,
+              case_size: button.dataset.caseSize,
+              pack_label: button.dataset.packLabel,
+              retail_reference_price: button.dataset.retailReference,
+              is_active: button.dataset.active
             })) {
               form.elements.namedItem(field).value = value;
             }
@@ -745,6 +754,11 @@
             data-price="{{ $row['actions']['unit_price'] }}"
             data-minimum="{{ $row['actions']['minimum_quantity'] }}"
             data-increment="{{ $row['actions']['ordering_increment'] }}"
+            data-pack-size="{{ $row['actions']['pack_size'] }}"
+            data-case-size="{{ $row['actions']['case_size'] }}"
+            data-pack-label="{{ $row['actions']['pack_label'] }}"
+            data-retail-reference="{{ $row['actions']['retail_reference_price'] }}"
+            data-active="{{ $row['actions']['is_active'] ? '1' : '0' }}"
             data-breaks="{{ json_encode($row['actions']['breaks'], JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) }}">
             {{ __('commercial.quantity_tiers.edit_rule') }}
           </button>
