@@ -43,4 +43,7 @@ return [
     'updated' => 'Coupon updated.',
     'status_updated' => 'Coupon status updated.',
     'deleted' => 'Coupon deleted.',
+    'used_cannot_delete' => 'Used coupons cannot be deleted; deactivate them instead.',
+    'code_exists' => 'Coupon code already exists in this business scope.',
+    'percentage_exceeds_max' => 'Percentage discount cannot exceed 100%.',
 ];

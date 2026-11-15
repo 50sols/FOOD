@@ -134,6 +134,10 @@ return [
     'deleted' => 'Notification deleted.',
     'preview_ar' => 'Arabic preview',
     'preview_en' => 'English preview',
+    'campaign_customer_app_mismatch' => 'Customer campaigns cannot target operations apps.',
+    'campaign_driver_app_mismatch' => 'Driver campaigns cannot target Customer or Van apps.',
+    'campaign_van_app_mismatch' => 'Van campaigns cannot target Customer or Driver apps.',
+    'campaign_van_requires_wholesale' => 'Van notifications are available for Wholesale/B2B operations only.',
     'audience_options' => [
         'all' => 'Everyone',
         'customer' => 'Customers',

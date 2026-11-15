@@ -403,6 +403,74 @@ class PromotionalNotificationCampaignTest extends TestCase
         ]);
     }
 
+    public function test_campaign_audience_app_conflicts_are_localized_without_writes_or_scope_bypass(): void
+    {
+        $admin = $this->globalRoleUser('SUPER_ADMIN', 'campaign-audience-locale@example.test');
+        $cases = [
+            [['audience' => 'customer', 'app' => 'driver', 'target_channel' => 'b2b'], 'app', 'campaign_customer_app_mismatch'],
+            [['audience' => 'driver', 'app' => 'customer', 'target_channel' => 'b2b'], 'app', 'campaign_driver_app_mismatch'],
+            [['audience' => 'van', 'app' => 'driver', 'target_channel' => 'b2b'], 'app', 'campaign_van_app_mismatch'],
+            [['audience' => 'van', 'app' => 'van', 'target_channel' => 'b2c'], 'target_channel', 'campaign_van_requires_wholesale'],
+        ];
+
+        foreach (['ar', 'en'] as $locale) {
+            $admin->forceFill(['locale' => $locale])->save();
+
+            foreach ($cases as [$fields, $field, $key]) {
+                $this->actingAs($admin)
+                    ->postJson('/admin/notification-campaigns', $this->payload($fields))
+                    ->assertUnprocessable()
+                    ->assertJsonPath('errors.'.$field.'.0', trans('notifications.'.$key, [], $locale));
+            }
+        }
+
+        $this->assertDatabaseCount('notification_campaigns', 0);
+        $this->assertSame(
+            0,
+            DB::table('audit_logs')->where('event', 'notification_campaign.created')->count(),
+        );
+
+        // An unprivileged actor still gets denied before audience validation.
+        $unprivileged = User::factory()->create(['locale' => 'ar']);
+        $this->actingAs($unprivileged)
+            ->postJson('/admin/notification-campaigns', $this->payload($cases[0][0]))
+            ->assertForbidden();
+        $this->assertDatabaseCount('notification_campaigns', 0);
+    }
+
+    public function test_campaign_update_audience_conflict_is_localized_and_does_not_modify_existing_draft(): void
+    {
+        $admin = $this->globalRoleUser('SUPER_ADMIN', 'campaign-update-locale@example.test');
+
+        $this->actingAs($admin)->post('/admin/notification-campaigns', $this->payload())
+            ->assertRedirect();
+        $campaign = NotificationCampaign::query()->firstOrFail();
+        $before = $campaign->only(['audience', 'app', 'target_channel', 'status']);
+        $beforeUpdatedAudit = DB::table('audit_logs')
+            ->where('event', 'notification_campaign.updated')->count();
+
+        foreach (['ar', 'en'] as $locale) {
+            $admin->forceFill(['locale' => $locale])->save();
+            $this->actingAs($admin)
+                ->patchJson('/admin/notification-campaigns/'.$campaign->id, $this->payload([
+                    'audience' => 'driver',
+                    'app' => 'customer',
+                    'target_channel' => 'b2b',
+                ]))
+                ->assertUnprocessable()
+                ->assertJsonPath(
+                    'errors.app.0',
+                    trans('notifications.campaign_driver_app_mismatch', [], $locale),
+                );
+        }
+
+        $this->assertSame($before, $campaign->fresh()->only(['audience', 'app', 'target_channel', 'status']));
+        $this->assertSame(
+            $beforeUpdatedAudit,
+            DB::table('audit_logs')->where('event', 'notification_campaign.updated')->count(),
+        );
+    }
+
     public function test_campaign_rejects_customer_driver_app_mismatch(): void
     {
         $mine = $this->store('B2C', 'APP-MISMATCH-MINE');

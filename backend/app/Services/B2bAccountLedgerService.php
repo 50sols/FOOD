@@ -9,6 +9,7 @@ use App\Models\User;
 use Carbon\CarbonImmutable;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
 
 final class B2bAccountLedgerService
@@ -216,10 +217,11 @@ final class B2bAccountLedgerService
             'metadata' => isset($data['metadata']) ? json_encode($data['metadata'], JSON_THROW_ON_ERROR) : null,
             'occurred_at' => $data['occurred_at'] ?? now(),
             'created_at' => now(),
+            'settlement_request_id' => $data['settlement_request_id'] ?? null,
         ]);
     }
 
-    /** @return array{ledger_entry_id:int,outstanding_before:float,outstanding_after:float,amount:float} */
+    /** @return array{ledger_entry_id:int,outstanding_before:float,outstanding_after:float,amount:float,replayed:bool} */
     public function settleInvoice(
         B2bCustomer $customer,
         Invoice $invoice,
@@ -228,15 +230,58 @@ final class B2bAccountLedgerService
         User $actor,
         ?string $reference = null,
         ?string $description = null,
+        ?string $settlementRequestId = null,
     ): array {
+        if ($settlementRequestId !== null && ! Str::isUuid($settlementRequestId)) {
+            throw ValidationException::withMessages([
+                'settlement_request_id' => [__('invoice_errors.settlement_request_id_invalid')],
+            ]);
+        }
+
         $amount = round($amount, 3);
         if ($amount <= 0) {
             throw ValidationException::withMessages(['amount' => ['Settlement amount must be greater than zero.']]);
         }
 
-        return DB::transaction(function () use ($customer, $invoice, $amount, $currency, $actor, $reference, $description): array {
+        return DB::transaction(function () use ($customer, $invoice, $amount, $currency, $actor, $reference, $description, $settlementRequestId): array {
             $locked = Invoice::query()->lockForUpdate()->findOrFail($invoice->getKey());
             abort_unless((int) $locked->b2b_customer_id === (int) $customer->getKey(), 404);
+
+            // A repeat of the same browser submission MUST be read-only,
+            // including after another payment has completed the invoice.
+            // Locking the invoice serializes retries on that invoice. The
+            // customer-scoped UNIQUE index protects parallel different-invoice
+            // reuse of the same ID (even across multiple PHP workers).
+            if ($settlementRequestId !== null) {
+                $existing = DB::table('customer_account_ledger_entries')
+                    ->where('b2b_customer_id', $customer->getKey())
+                    ->where('settlement_request_id', $settlementRequestId)
+                    ->first(['id', 'invoice_id', 'store_id', 'credit', 'debit', 'currency', 'source', 'metadata']);
+                if ($existing !== null) {
+                    if ((int) $existing->invoice_id !== (int) $locked->getKey()
+                        || (int) $existing->store_id !== (int) $locked->store_id
+                        || (string) $existing->source !== 'dashboard_invoice_settlement'
+                        || round((float) $existing->credit, 3) !== $amount
+                        || round((float) $existing->debit, 3) !== 0.0
+                        || strtoupper((string) $existing->currency) !== strtoupper($currency)) {
+                        throw ValidationException::withMessages([
+                            'settlement_request_id' => [__('invoice_errors.settlement_request_id_conflict')],
+                        ]);
+                    }
+
+                    $metadata = json_decode((string) ($existing->metadata ?? '{}'), true);
+                    $now = $this->invoiceAmounts($locked);
+
+                    return [
+                        'ledger_entry_id' => (int) $existing->id,
+                        'outstanding_before' => (float) ($metadata['outstanding_before'] ?? $now['outstanding_amount']),
+                        'outstanding_after' => round((float) $now['outstanding_amount'], 3),
+                        'amount' => $amount,
+                        'replayed' => true,
+                    ];
+                }
+            }
+
             abort_if(in_array(strtolower((string) $locked->status), ['cancelled', 'canceled', 'void', 'voided'], true), 409, 'Cancelled or void invoices cannot be settled.');
 
             $amounts = $this->invoiceAmounts($locked);
@@ -260,6 +305,7 @@ final class B2bAccountLedgerService
                 'store_id' => $locked->store_id === null ? null : (int) $locked->store_id,
                 'occurred_at' => now(),
                 'source' => 'dashboard_invoice_settlement',
+                'settlement_request_id' => $settlementRequestId,
                 'metadata' => [
                     'invoice_number' => (string) $locked->invoice_number,
                     'outstanding_before' => $outstanding,
@@ -273,6 +319,7 @@ final class B2bAccountLedgerService
                 'outstanding_before' => $outstanding,
                 'outstanding_after' => round((float) $after['outstanding_amount'], 3),
                 'amount' => $amount,
+                'replayed' => false,
             ];
         }, 3);
     }

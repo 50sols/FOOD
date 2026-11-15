@@ -311,6 +311,21 @@ final class SalesQuotationController extends Controller
             ? route('admin.b2b.pricing-approvals')
             : null;
 
+        // P195 is a distinct contract register: an issued quotation is never
+        // automatically treated as a signed or internally approved contract.
+        $contracts = DB::table('customer_sales_contracts')
+            ->where('store_id', $storeId)
+            ->orderByDesc('id')
+            ->paginate(15, ['*'], 'contracts_page');
+        $selectedContract = $selected === null ? null
+            : DB::table('customer_sales_contracts')->where('quotation_id', $selected->id)
+                ->where('store_id', $storeId)->first();
+        $canApproveContracts = in_array(
+            $storeId,
+            $this->scope->allowedStoreIds($actor, 'orders.approve', $channel),
+            true,
+        );
+
         return view('admin.sales-quotations', [
             'user' => $actor,
             'storeId' => $storeId,
@@ -327,6 +342,9 @@ final class SalesQuotationController extends Controller
             'products' => $products,
             'canCreate' => $canCreate,
             'canManage' => $canManage,
+            'contracts' => $contracts,
+            'selectedContract' => $selectedContract,
+            'canApproveContracts' => $canApproveContracts,
             'pricingControlUrl' => $pricingControlUrl,
             'priceListsUrl' => $priceListsUrl,
             'navGroups' => $this->navigation->groupsFor($actor),

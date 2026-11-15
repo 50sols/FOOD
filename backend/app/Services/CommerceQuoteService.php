@@ -3,6 +3,7 @@
 namespace App\Services;
 
 use App\Domain\Pricing\B2bPriceResolver;
+use App\Domain\Pricing\QuantityPriceBreaks;
 use App\Enterprise\Commercial\CommercialCreditEligibilityPolicy;
 use App\Models\B2bAccount;
 use App\Models\B2bCustomer;
@@ -63,7 +64,12 @@ final class CommerceQuoteService
             ->all();
 
         if ($strict && $items === []) {
-            abort(409, 'The cart is empty.');
+            $actorLocale = $user?->locale;
+            $locale = in_array($actorLocale, ['ar', 'en'], true)
+                ? $actorLocale
+                : request()->getPreferredLanguage(['ar', 'en']);
+
+            abort(409, __('checkout_errors.quote_cart_empty', [], $locale === 'ar' ? 'ar' : 'en'));
         }
 
         $smartOrderingPromotionId = $channel === 'b2c'
@@ -558,7 +564,7 @@ final class CommerceQuoteService
             $packSize = max(0.001, (float) $pricing['pack_size']);
             $caseSize = $pricing['case_size'] === null ? null : (float) $pricing['case_size'];
             $packLabel = $pricing['pack_label'];
-            $unitPrice = (float) $pricing['price'];
+            $unitPrice = QuantityPriceBreaks::priceForQuantity($pricing, $quantity);
 
             $steps = ($quantity - $minimum) / $increment;
             $validQuantity = $quantity + 0.0001 >= $minimum

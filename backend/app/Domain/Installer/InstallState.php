@@ -2,7 +2,9 @@
 
 namespace App\Domain\Installer;
 
+use JsonException;
 use RuntimeException;
+use stdClass;
 
 final class InstallState
 {
@@ -36,21 +38,54 @@ final class InstallState
             return ['completed_step' => 0, 'admin' => null, 'token' => null];
         }
 
-        $decoded = json_decode((string) file_get_contents($path), true);
+        // Existing progress must never be treated as a fresh installation
+        // when its contents are corrupt: token() could otherwise overwrite
+        // its prior admin, step and token snapshot with a new first-run token.
+        $contents = @file_get_contents($path);
+        if ($contents === false) {
+            throw new RuntimeException('Installer progress state could not be read.');
+        }
 
-        if (! is_array($decoded)) {
-            return ['completed_step' => 0, 'admin' => null, 'token' => null];
+        try {
+            $document = json_decode($contents, false, 512, JSON_THROW_ON_ERROR);
+        } catch (JsonException) {
+            throw new RuntimeException('Installer progress state is invalid.');
+        }
+
+        // The persisted root is a JSON object, not a scalar or list.
+        if (! $document instanceof stdClass) {
+            throw new RuntimeException('Installer progress state is invalid.');
+        }
+
+        $decoded = (array) $document;
+        // A persisted progress object is written with all three keys, even
+        // before the admin is configured. Missing fields indicate a partial
+        // snapshot; never silently rewrite it as a fresh installation.
+        foreach (['completed_step', 'admin', 'token'] as $requiredKey) {
+            if (! array_key_exists($requiredKey, $decoded)) {
+                throw new RuntimeException('Installer progress state is invalid.');
+            }
         }
 
         $admin = null;
-        $candidate = $decoded['admin'] ?? null;
+        $candidate = $decoded['admin'];
+        if ($candidate !== null) {
+            // The writer persists either null or a fully typed admin object.
+            // Silently coercing a damaged saved object to null could erase the
+            // previously configured administrator on the next checkpoint.
+            if (! $candidate instanceof stdClass) {
+                throw new RuntimeException('Installer progress state is invalid.');
+            }
 
-        if (is_array($candidate)
-            && isset($candidate['name'], $candidate['email'], $candidate['password_hash'], $candidate['locale'])
-            && is_string($candidate['name'])
-            && is_string($candidate['email'])
-            && is_string($candidate['password_hash'])
-            && is_string($candidate['locale'])) {
+            $candidate = (array) $candidate;
+            if (! isset($candidate['name'], $candidate['email'], $candidate['password_hash'], $candidate['locale'])
+                || ! is_string($candidate['name'])
+                || ! is_string($candidate['email'])
+                || ! is_string($candidate['password_hash'])
+                || ! is_string($candidate['locale'])) {
+                throw new RuntimeException('Installer progress state is invalid.');
+            }
+
             $admin = [
                 'name' => $candidate['name'],
                 'email' => $candidate['email'],
@@ -59,10 +94,13 @@ final class InstallState
             ];
         }
 
-        $token = $decoded['token'] ?? null;
-        $token = is_string($token) && preg_match('/^[a-f0-9]{64}$/', $token) === 1
-            ? $token
-            : null;
+        // The persisted token is null only before initial setup. A damaged
+        // non-null token must not be silently reset: token() would replace
+        // saved progress and erase the prior setup session's recovery state.
+        $token = $decoded['token'];
+        if ($token !== null && (! is_string($token) || preg_match('/\\A[a-f0-9]{64}\\z/', $token) !== 1)) {
+            throw new RuntimeException('Installer progress state is invalid.');
+        }
 
         // Progress is a persisted trust boundary: coercing "12", 12.9 or
         // true into a completed step would allow a corrupt JSON state to
@@ -88,13 +126,33 @@ final class InstallState
             return $progress['token'];
         }
 
-        // The first two installer pages may be loaded at the same time. The
-        // progress JSON rename is atomic, but read/generate/write is not.
-        // Keep the separate lock file across requests: removing it on unlock
-        // could let a third request lock a different inode.
+        return $this->withProgressWriteLock(function (): string {
+            // A competing checkpoint may have supplied the token while this
+            // request waited for the same persistent lock.
+            $progress = $this->progress();
+
+            if ($progress['token'] === null) {
+                $progress['token'] = bin2hex(random_bytes(32));
+                $this->writeJson($this->progressPath(), $progress);
+            }
+
+            return $progress['token'];
+        });
+    }
+
+    /**
+     * Progress JSON is replaced by rename, so locking its disposable inode
+     * cannot serialize read/modify/write across requests. Both initial token
+     * writes and step/admin checkpoints share this persistent, verified lock.
+     *
+     * @template TResult
+     *
+     * @param  callable(): TResult  $operation
+     * @return TResult
+     */
+    private function withProgressWriteLock(callable $operation): mixed
+    {
         $progressPath = $this->progressPath();
-        // Keep the persistent inode outside a disposable progress directory.
-        // Testing and custom hosting layouts can override this safe local path.
         $tokenLockPath = (string) config(
             'foodex.installer_token_lock_path',
             storage_path('framework/installer-token-locks/'.hash('sha256', $progressPath).'.lock'),
@@ -123,15 +181,7 @@ final class InstallState
 
             $this->assertTokenLockFile($tokenLockPath, $lock);
 
-            // Always re-read while holding the exclusive lock. The caller's
-            // earlier snapshot might predate another request's successful init.
-            $progress = $this->progress();
-            if ($progress['token'] === null) {
-                $progress['token'] = bin2hex(random_bytes(32));
-                $this->writeJson($progressPath, $progress);
-            }
-
-            return $progress['token'];
+            return $operation();
         } finally {
             @flock($lock, LOCK_UN);
             fclose($lock);
@@ -147,9 +197,14 @@ final class InstallState
         $opened = fstat($lock);
         $linked = @lstat($path);
 
-        // Reject a replaced file or redirected symlink even when it was
-        // swapped between the initial filesystem check and fopen/flock.
+        // Reject a replaced file, symlink or hardlinked foreign inode before
+        // chmod or saving a token. A hardlink passes is_link() and shares the
+        // original file's permissions, so the lock must have one link only.
         if ($opened === false || $linked === false
+            || ($opened['mode'] & 0170000) !== 0100000
+            || ($linked['mode'] & 0170000) !== 0100000
+            || $opened['nlink'] !== 1
+            || $linked['nlink'] !== 1
             || $opened['dev'] !== $linked['dev']
             || $opened['ino'] !== $linked['ino']) {
             throw new RuntimeException('Installer token lock path changed unexpectedly.');
@@ -161,15 +216,24 @@ final class InstallState
      */
     public function markStepComplete(int $step, ?array $admin = null): void
     {
-        $progress = $this->progress();
-        $progress['completed_step'] = max($progress['completed_step'], min(15, $step));
-        $progress['token'] ??= bin2hex(random_bytes(32));
+        // Fail closed before creating a lock file if persisted progress is
+        // corrupt, as the original installer state contract requires.
+        $this->progress();
 
-        if ($admin !== null) {
-            $progress['admin'] = $admin;
-        }
+        $this->withProgressWriteLock(function () use ($step, $admin): void {
+            // A concurrent request may have advanced setup or stored Super
+            // Admin details while this request waited. Never write its stale
+            // snapshot back over the authoritative progress document.
+            $progress = $this->progress();
+            $progress['completed_step'] = max($progress['completed_step'], min(15, $step));
+            $progress['token'] ??= bin2hex(random_bytes(32));
 
-        $this->writeJson($this->progressPath(), $progress);
+            if ($admin !== null) {
+                $progress['admin'] = $admin;
+            }
+
+            $this->writeJson($this->progressPath(), $progress);
+        });
     }
 
     public function writeLock(string $version): void

@@ -134,6 +134,10 @@ return [
     'deleted' => 'تم حذف الإشعار.',
     'preview_ar' => 'معاينة العربية',
     'preview_en' => 'معاينة الإنجليزية',
+    'campaign_customer_app_mismatch' => 'لا يمكن توجيه حملات العملاء إلى التطبيقات التشغيلية.',
+    'campaign_driver_app_mismatch' => 'لا يمكن توجيه حملات السائقين إلى تطبيق العميل أو الفان.',
+    'campaign_van_app_mismatch' => 'لا يمكن توجيه حملات الفان إلى تطبيق العميل أو السائق.',
+    'campaign_van_requires_wholesale' => 'إشعارات الفان متاحة لعمليات الجملة B2B فقط.',
     'audience_options' => [
         'all' => 'الجميع',
         'customer' => 'العملاء',
