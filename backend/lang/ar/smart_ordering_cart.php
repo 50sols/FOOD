@@ -9,4 +9,5 @@ return [
     'guest_token_required' => 'يرجى إدخال رمز سلة الضيف.',
     'guest_token_invalid' => 'رمز سلة الضيف غير صالح.',
     'authenticated_store_required' => 'يجب تحديد متجر عند بدء سلة المشتريات بعد تسجيل الدخول.',
+    'expired' => 'انتهت صلاحية سلة المشتريات.',
 ];

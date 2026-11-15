@@ -441,12 +441,58 @@ class CheckoutDomainTest extends TestCase
                 ->count(),
         );
 
-        $this->withHeader('Idempotency-Key', 'checkout-key-000002')
-            ->postJson('/api/v1/checkout', [
+        $before = [
+            'orders' => DB::table('orders')->count(),
+            'order_items' => DB::table('order_items')->count(),
+            'invoices' => DB::table('invoices')->count(),
+            'payments' => DB::table('payments')->count(),
+            'notifications' => DB::table('notifications')->count(),
+            'audit_logs' => DB::table('audit_logs')->count(),
+            'cart_items' => DB::table('cart_items')->count(),
+            'stock_movements' => DB::table('stock_movements')->count(),
+            'inventory_reserved' => (float) DB::table('inventories')
+                ->where('warehouse_id', $this->warehouseId)
+                ->where('product_id', $this->productId)
+                ->value('reserved_quantity'),
+        ];
+        $originalRequestHash = (string) DB::table('orders')->where('id', $orderId)->value('checkout_request_hash');
+
+        foreach ([
+            'ar' => 'تم استخدام مفتاح منع التكرار لطلب إتمام شراء مختلف.',
+            'en' => 'Idempotency key was already used for a different checkout request.',
+        ] as $locale => $message) {
+            $this->user->forceFill(['locale' => $locale])->saveQuietly();
+            app()->setLocale($locale);
+
+            $this->withHeaders([
+                'Idempotency-Key' => 'checkout-key-000002',
+                'Accept-Language' => $locale === 'ar' ? 'en' : 'ar',
+            ])->postJson('/api/v1/checkout', [
                 ...$payload,
                 'note' => 'Different request',
             ])
-            ->assertConflict();
+                ->assertConflict()
+                ->assertJsonPath('message', $message);
+
+            $this->assertSame($before, [
+                'orders' => DB::table('orders')->count(),
+                'order_items' => DB::table('order_items')->count(),
+                'invoices' => DB::table('invoices')->count(),
+                'payments' => DB::table('payments')->count(),
+                'notifications' => DB::table('notifications')->count(),
+                'audit_logs' => DB::table('audit_logs')->count(),
+                'cart_items' => DB::table('cart_items')->count(),
+                'stock_movements' => DB::table('stock_movements')->count(),
+                'inventory_reserved' => (float) DB::table('inventories')
+                    ->where('warehouse_id', $this->warehouseId)
+                    ->where('product_id', $this->productId)
+                    ->value('reserved_quantity'),
+            ]);
+            $this->assertSame(
+                $originalRequestHash,
+                (string) DB::table('orders')->where('id', $orderId)->value('checkout_request_hash'),
+            );
+        }
 
         $this->assertDatabaseCount('orders', 1);
     }

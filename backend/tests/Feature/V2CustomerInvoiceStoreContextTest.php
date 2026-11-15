@@ -4,6 +4,7 @@ namespace Tests\Feature;
 
 use App\Models\User;
 use App\Services\B2cCustomerService;
+use App\Services\InvoiceService;
 use Database\Seeders\CoreReferenceSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
@@ -69,6 +70,41 @@ class V2CustomerInvoiceStoreContextTest extends TestCase
         ]);
 
         Sanctum::actingAs($this->customerUser);
+    }
+
+    public function test_owned_pdf_failure_is_localized_and_does_not_reveal_runtime_details_or_mutate_invoices(): void
+    {
+        // The renderer and its PDF factory are final. Laravel's method
+        // binding injects a deterministic failure into the real HTTP route.
+        $this->app->bindMethod(InvoiceService::class.'@renderPdf', static function (): string {
+            throw new \RuntimeException('INTERNAL_SECRET_SENTINEL');
+        });
+
+        foreach ([
+            ['en', 'en', 'ar', 'خدمة إنشاء ملف الفاتورة بصيغة PDF غير متاحة مؤقتًا.'],
+            ['ar', 'ar', 'en', 'PDF generation is temporarily unavailable.'],
+            ['ar', 'en', null, 'خدمة إنشاء ملف الفاتورة بصيغة PDF غير متاحة مؤقتًا.'],
+            ['en', 'ar', null, 'PDF generation is temporarily unavailable.'],
+            ['fr', 'ar-KW,ar;q=0.9,en;q=0.6', null, 'خدمة إنشاء ملف الفاتورة بصيغة PDF غير متاحة مؤقتًا.'],
+            ['fr', 'en-US,en;q=0.9,ar;q=0.6', null, 'PDF generation is temporarily unavailable.'],
+        ] as [$accountLocale, $acceptLanguage, $queryLocale, $expected]) {
+            $this->customerUser->forceFill(['locale' => $accountLocale])->save();
+
+            $query = $queryLocale === null ? '' : '?locale='.$queryLocale;
+            $this->withHeader('Accept-Language', $acceptLanguage)
+                ->getJson('/api/v1/invoices/'.$this->invoiceId.'/download'.$query)
+                ->assertStatus(503)
+                ->assertJsonPath('message', $expected)
+                ->assertDontSee('INTERNAL_SECRET_SENTINEL', false);
+
+            $this->assertDatabaseHas('invoices', [
+                'id' => $this->invoiceId,
+                'store_id' => $this->storeId,
+                'status' => 'issued',
+                'channel' => 'b2c',
+            ]);
+            $this->assertDatabaseCount('invoices', 1);
+        }
     }
 
     public function test_owned_invoice_show_and_pdf_support_valid_or_omitted_store_context(): void
