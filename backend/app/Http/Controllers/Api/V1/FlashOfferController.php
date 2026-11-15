@@ -220,7 +220,13 @@ final class FlashOfferController extends Controller
             $legacyCustomerId = $customers->legacyId($customer);
             $baseQuantity = round((float) $data['quantity'] * (float) $offerProduct->conversion_factor, 3);
             // The commercial policy must never receive INF from a finite JSON quantity.
-            abort_if(! is_finite($baseQuantity) || $baseQuantity <= 0, 422, 'Resolved base quantity must be greater than zero.');
+            if (! is_finite($baseQuantity) || $baseQuantity <= 0) {
+                $locale = in_array($user->locale, ['ar', 'en'], true)
+                    ? (string) $user->locale
+                    : (string) $request->getPreferredLanguage(['ar', 'en']);
+
+                abort(422, __('flash_checkout.invalid_base_quantity', [], $locale === 'en' ? 'en' : 'ar'));
+            }
             $decision = $commercialPolicy->evaluate(
                 (int) $offerProduct->product_id,
                 $legacyCustomerId,
