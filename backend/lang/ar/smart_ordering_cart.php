@@ -9,6 +9,7 @@ return [
     'existing_line_selling_unit_conflict' => 'احذف سطر المنتج الموجود قبل تغيير وحدة بيعه.',
     'guest_token_required' => 'يرجى إدخال رمز سلة الضيف.',
     'guest_token_invalid' => 'رمز سلة الضيف غير صالح.',
+    'b2b_quantity_minimum_increment' => 'يجب أن تستوفي الكمية الحد الأدنى للطلب بالجملة ومضاعفات الزيادة المحددة.',
     'authenticated_store_required' => 'يجب تحديد متجر عند بدء سلة المشتريات بعد تسجيل الدخول.',
     'expired' => 'انتهت صلاحية سلة المشتريات.',
 ];

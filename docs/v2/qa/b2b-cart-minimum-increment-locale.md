@@ -1,0 +1,9 @@
+# V2 #3866 — localized B2B cart minimum / ordering-increment HTTP 409
+
+- **Original scope:** `GuestCartController` authenticated Wholesale B2B cart `POST /api/v1/cart/items` and `PATCH /api/v1/cart/items/{item}`.
+- **Defect:** the preexisting rejected quantity branches used one hard-coded English 409 message even for an Arabic saved Customer locale; other GuestCart denial paths already use `localizedCartMessage`.
+- **Fix:** same 409 status, same error schema, same B2B price rule computation and customer/store authorization. The two quantity checks accept the current request and resolve one paired `smart_ordering_cart.b2b_quantity_minimum_increment` translation using the existing persisted-user locale behavior.
+- **Real HTTP regression:** existing `CartDomainTest::test_b2b_customer_is_restricted_to_b2b_cart_channel` creates real authenticated B2B account, price tier/rule, warehouse inventory and an allowed cart. A configured minimum=3 and increment=2 denies additive quantity=2 (min) and replacement quantity=4 (increment) in Arabic and English; opposite Accept-Language confirms stored locale precedence. Checks unchanged carts/items, orders, payments, audits, stock movements and quantity/reservations; a permitted quantity=3 succeeds.
+- **Impact:** Customer: existing B2B error text only. Driver: none. Van: none. Dashboard: none. No Flutter source, API fields, routes, schema, module/role/tenant gates, business computations or dispatch changes. B2B remains VAN ONLY and B2C remains DRIVER ONLY.
+- **Security review risk:** HIGH (financial quantity guard at customer API boundary); no relaxation of any guard. Rejected attempts cannot mutate cart rows, audit/finance or stock. Branch and PR target isolated `Foodex_V2` exclusively.
+- **Validation:** Laravel `CartDomainTest`, PHP lint/Pint, AR/EN localization, full exact-head Required CI and explicit technical review required before merge. Manual device/staging acceptance remains under #2503.
