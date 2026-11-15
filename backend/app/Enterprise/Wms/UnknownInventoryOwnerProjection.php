@@ -1,0 +1,80 @@
+<?php
+
+namespace App\Enterprise\Wms;
+
+use App\Models\Inventory;
+use Illuminate\Support\Facades\DB;
+use LogicException;
+
+/**
+ * Reconcile legally UNATTRIBUTED procurement stock with the canonical inventory
+ * row. This is not a legal-title attribution, valuation source, or second ledger.
+ *
+ * Called only while the canonical inventory is locked by the surrounding
+ * Procurement posting transaction. Known-owner positions are deliberately left
+ * stale: a receipt/return cannot infer which party owns a physical unit.
+ */
+final class UnknownInventoryOwnerProjection
+{
+    public function afterProcurementMutation(Inventory $inventory): void
+    {
+        if (DB::transactionLevel() < 1) {
+            throw new LogicException('Inventory owner projection requires the canonical stock transaction.');
+        }
+
+        $inventoryId = (int) $inventory->getKey();
+        $rows = DB::table('enterprise_inventory_owner_positions')
+            ->where('inventory_id', $inventoryId)
+            ->lockForUpdate()
+            ->get(['id', 'owner_key', 'owner_kind', 'supplier_id']);
+
+        // Never rewrite, redistribute, or implicitly refresh a legal-owner
+        // assertion. Without authenticated title evidence the entire set must
+        // remain fail-closed/stale after the aggregate inventory mutation.
+        if ($rows->count() > 1) {
+            return;
+        }
+
+        if ($rows->count() === 1) {
+            $row = $rows->first();
+            if ($row->owner_key !== 'UNKNOWN'
+                || $row->owner_kind !== 'UNKNOWN'
+                || $row->supplier_id !== null) {
+                return;
+            }
+        }
+
+        // Read the already locked canonical row, not client-supplied quantity.
+        $canonical = DB::table('inventories')
+            ->where('id', $inventoryId)
+            ->first(['quantity', 'reserved_quantity', 'updated_at']);
+
+        if ($canonical === null) {
+            throw new LogicException('Canonical inventory disappeared before owner projection.');
+        }
+
+        $data = [
+            'quantity' => $canonical->quantity,
+            'reserved_quantity' => $canonical->reserved_quantity,
+            'source_inventory_updated_at' => $canonical->updated_at,
+            'updated_at' => now(),
+        ];
+
+        if ($rows->isNotEmpty()) {
+            DB::table('enterprise_inventory_owner_positions')
+                ->where('id', $rows->first()->id)
+                ->update($data);
+
+            return;
+        }
+
+        DB::table('enterprise_inventory_owner_positions')->insert([
+            'inventory_id' => $inventoryId,
+            'owner_key' => 'UNKNOWN',
+            'owner_kind' => 'UNKNOWN',
+            'supplier_id' => null,
+            ...$data,
+            'created_at' => now(),
+        ]);
+    }
+}

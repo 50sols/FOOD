@@ -3,6 +3,8 @@
 namespace Tests\Feature\Enterprise;
 
 use App\Enterprise\Wms\InventoryOwnerProvenanceReadService;
+use App\Enterprise\Wms\UnknownInventoryOwnerProjection;
+use App\Models\Inventory;
 use App\Models\Role;
 use App\Models\User;
 use App\Models\UserStoreRole;
@@ -185,6 +187,107 @@ final class V2InventoryOwnerProvenanceTest extends TestCase
         $this->assertNull($snapshot['positions'][1]['supplier_id']);
         $this->assertFalse($snapshot['positions'][0]['certified']);
         $this->assertFalse($snapshot['positions'][1]['certified']);
+    }
+
+    public function test_unknown_projection_tracks_canonical_stock_without_claiming_legal_title(): void
+    {
+        $this->seed(CoreReferenceSeeder::class);
+        $stock = $this->stock('UNKNOWN-RECEIPT');
+        $inventory = Inventory::query()->findOrFail($stock['inventory_id']);
+
+        DB::transaction(function () use ($inventory): void {
+            $inventory->forceFill(['quantity' => 12])->save();
+            app(UnknownInventoryOwnerProjection::class)->afterProcurementMutation($inventory);
+        });
+
+        $this->assertDatabaseHas('enterprise_inventory_owner_positions', [
+            'inventory_id' => $stock['inventory_id'],
+            'owner_key' => 'UNKNOWN',
+            'owner_kind' => 'UNKNOWN',
+            'supplier_id' => null,
+            'quantity' => 12,
+            'reserved_quantity' => 3,
+            'certified_by' => null,
+        ]);
+
+        DB::transaction(function () use ($inventory): void {
+            $inventory->forceFill(['quantity' => 9])->save();
+            app(UnknownInventoryOwnerProjection::class)->afterProcurementMutation($inventory);
+        });
+
+        $this->assertSame(1, DB::table('enterprise_inventory_owner_positions')
+            ->where('inventory_id', $stock['inventory_id'])->count());
+        $this->assertDatabaseHas('enterprise_inventory_owner_positions', [
+            'inventory_id' => $stock['inventory_id'],
+            'owner_key' => 'UNKNOWN',
+            'quantity' => 9,
+            'reserved_quantity' => 3,
+        ]);
+        $snapshot = app(InventoryOwnerProvenanceReadService::class)
+            ->snapshot($this->inventoryActor($stock['store_id']), $stock['inventory_id']);
+        $this->assertSame('UNKNOWN', $snapshot['state']);
+        $this->assertFalse($snapshot['certified']);
+        $this->assertSame('9.000', $snapshot['quantity']);
+        $this->assertSame('3.000', $snapshot['reserved_quantity']);
+    }
+
+    public function test_unknown_projection_does_not_rewrite_known_owner_assertions_or_hide_stale_stock(): void
+    {
+        $this->seed(CoreReferenceSeeder::class);
+        $stock = $this->stock('MIXED-PRESERVED');
+        $actor = $this->inventoryActor($stock['store_id']);
+        $checker = User::query()->create([
+            'name' => 'Separate Title Checker',
+            'email' => 'p110-mixed-checker@example.test',
+            'password' => 'password',
+            'is_active' => true,
+        ]);
+        $this->position($stock['inventory_id'], 'FOODEX', null, 10, 3, $actor->id, $checker->id, true);
+        $inventory = Inventory::query()->findOrFail($stock['inventory_id']);
+
+        DB::transaction(function () use ($inventory): void {
+            $inventory->forceFill(['quantity' => 11])->save();
+            app(UnknownInventoryOwnerProjection::class)->afterProcurementMutation($inventory);
+        });
+
+        $this->assertDatabaseHas('enterprise_inventory_owner_positions', [
+            'inventory_id' => $stock['inventory_id'],
+            'owner_key' => 'FOODEX',
+            'quantity' => 10,
+            'reserved_quantity' => 3,
+        ]);
+        $this->assertSame(0, DB::table('enterprise_inventory_owner_positions')
+            ->where('inventory_id', $stock['inventory_id'])
+            ->where('owner_key', 'UNKNOWN')->count());
+        $snapshot = app(InventoryOwnerProvenanceReadService::class)
+            ->snapshot($actor, $stock['inventory_id']);
+        $this->assertSame('STALE', $snapshot['state']);
+        $this->assertFalse($snapshot['certified']);
+    }
+
+    public function test_unknown_projection_is_rolled_back_with_failed_canonical_stock_mutation(): void
+    {
+        $this->seed(CoreReferenceSeeder::class);
+        $stock = $this->stock('ROLLBACK-PROJECTION');
+        $inventory = Inventory::query()->findOrFail($stock['inventory_id']);
+
+        $rolledBack = false;
+        try {
+            DB::transaction(function () use ($inventory): void {
+                $inventory->forceFill(['quantity' => 15])->save();
+                app(UnknownInventoryOwnerProjection::class)->afterProcurementMutation($inventory);
+                throw new \RuntimeException('simulated movement failure');
+            });
+        } catch (\RuntimeException $exception) {
+            $rolledBack = true;
+            $this->assertSame('simulated movement failure', $exception->getMessage());
+        }
+        $this->assertTrue($rolledBack);
+
+        $this->assertSame(10.0, (float) DB::table('inventories')
+            ->where('id', $stock['inventory_id'])->value('quantity'));
+        $this->assertSame(0, DB::table('enterprise_inventory_owner_positions')
+            ->where('inventory_id', $stock['inventory_id'])->count());
     }
 
     public function test_other_store_inventory_is_never_exposed_through_owner_read_service(): void

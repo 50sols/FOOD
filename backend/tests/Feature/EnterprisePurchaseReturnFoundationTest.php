@@ -89,6 +89,18 @@ final class EnterprisePurchaseReturnFoundationTest extends TestCase
 
         $this->assertNotNull($inventory);
         $this->assertSame(3.0, (float) $inventory->quantity);
+        // This return is unattributed, never silently FOODEX/supplier-owned.
+        $this->assertDatabaseHas('enterprise_inventory_owner_positions', [
+            'inventory_id' => $inventory->id,
+            'owner_key' => 'UNKNOWN',
+            'owner_kind' => 'UNKNOWN',
+            'supplier_id' => null,
+            'quantity' => 3,
+            'reserved_quantity' => 0,
+            'certified_by' => null,
+        ]);
+        $this->assertSame(1, DB::table('enterprise_inventory_owner_positions')
+            ->where('inventory_id', $inventory->id)->count());
         $this->assertSame(
             1,
             DB::table('stock_movements')
