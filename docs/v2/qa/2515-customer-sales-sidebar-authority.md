@@ -22,7 +22,7 @@ The target parent `العملاء والمبيعات وخدمة العملاء` 
 | Customers | `admin.b2b.customer-groups.index` | `customers.view` + authorized Wholesale B2B store |
 | Customers | `admin.b2c.customer-groups.index`, `admin.b2c.module?module=customers` | `customers.view`, Retail Store A only; Store B and Wholesale cross-channel denied |
 | Sales | `admin.sales-quotations.index` | `orders.view` and existing B2B/B2C + store scope and quotation readiness |
-| Sales | `admin.commercial-exception-approvals.index` (when projected) | existing effective order/approval entitlement; no visibility grant |
+| Sales | `admin.operations.orders.index` (when projected; commercial exceptions are a permission-gated Orders workbench view) | existing effective order/approval entitlement; no visibility grant |
 | Customer Service | `admin.whatsapp-inbox.index` | `whatsapp.inbox.view`, operational Inbox capability, permitted active store and existing customer-service role/scope |
 
 The group and each child are derived **after** the real authorization and operational readiness checks; direct HTTP controllers still deny foreign store / disabled module / unauthenticated or unprivileged actors. A hidden heading or presentation override never affects direct-URL authority.
