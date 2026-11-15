@@ -78,9 +78,13 @@ final class V2RetailWholesaleProductMappingLocaleTest extends TestCase
         $before = $this->watchedCounts();
 
         $this->putJson($url, $payload)->assertUnauthorized();
+        $this->assertSame($before, $this->watchedCounts());
 
+        // Creating the FINANCE fixture adds one user; baseline after fixture setup
+        // so a rejected HTTP request cannot be mistaken for a fixture write.
         $finance = $this->actor('FINANCE');
         Sanctum::actingAs($finance);
+        $before = $this->watchedCounts();
         $this->putJson($url, $payload)->assertForbidden();
         $this->assertSame($before, $this->watchedCounts());
 
