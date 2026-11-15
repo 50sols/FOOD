@@ -71,6 +71,50 @@ final class V2VanTripSessionIdentityTest extends TestCase
         $this->assertDatabaseCount('van_trip_session_events', 0);
     }
 
+    public function test_offline_replay_survives_expired_assignment_without_reauthorizing_new_work(): void
+    {
+        [$actor, $assignment] = $this->fixture();
+        $registry = app(VanTripSessionService::class);
+        $trip = $registry->start($actor, (int) $assignment->id, 'P276-original-offline-key');
+
+        $assignment->forceFill([
+            'status' => 'revoked',
+            'effective_until' => now()->subMinute(),
+        ])->save();
+        DB::table('vans')->where('id', $assignment->van_id)->update(['status' => 'inactive']);
+
+        // Immutable idempotency wins over mutable assignment/Van readiness.
+        // The original authorized actor may retrieve only the recorded result.
+        $replayed = $registry->start($actor, (int) $assignment->id, 'P276-original-offline-key');
+        $this->assertSame((int) $trip->id, (int) $replayed->id);
+        $this->assertSame($trip->public_id, $replayed->public_id);
+
+        $this->expectNotFoundOrForbidden(
+            fn () => $registry->start($actor, (int) $assignment->id, 'P276-new-offline-key-01')
+        );
+        $other = $this->superAdmin();
+        $this->expectHttpConflict(
+            fn () => $registry->start($other, (int) $assignment->id, 'P276-original-offline-key')
+        );
+
+        // Even a matching historical key is not permission to read another
+        // tenant's retained trip after the original store has been disabled.
+        DB::table('stores')->where('id', $trip->store_id)->update(['is_active' => false]);
+        $this->expectNotFoundOrForbidden(
+            fn () => $registry->start($actor, (int) $assignment->id, 'P276-original-offline-key')
+        );
+        DB::table('stores')->where('id', $trip->store_id)->update(['is_active' => true]);
+
+        $actor->forceFill(['is_active' => false])->save();
+        $this->expectNotFoundOrForbidden(
+            fn () => $registry->start($actor->fresh(), (int) $assignment->id, 'P276-original-offline-key')
+        );
+
+        $this->assertDatabaseCount('van_trip_sessions', 1);
+        $this->assertDatabaseCount('van_trip_session_events', 1);
+        $this->assertDatabaseCount('stock_movements', 0);
+    }
+
     public function test_end_of_operational_trip_never_implies_financial_or_physical_closeout(): void
     {
         [$actor, $assignment] = $this->fixture();
@@ -194,6 +238,25 @@ final class V2VanTripSessionIdentityTest extends TestCase
         } catch (QueryException $exception) {
             $this->assertNotEmpty($exception->getMessage());
         }
+
+        // Assignment reassignment cannot generate a second physical trip
+        // identity for the same immutable offline request key.
+        $differentVan = app(VanRegistryService::class)->createVan([
+            'code' => 'P276-DIFFERENT-VAN-'.Str::random(6),
+        ]);
+        $secondPayload = array_replace($payload, [
+            'public_id' => (string) Str::uuid(),
+            'van_id' => $differentVan->id,
+            'reserved_van_id' => $differentVan->id,
+            'start_key' => $trip->start_key,
+        ]);
+        try {
+            DB::table('van_trip_sessions')->insert($secondPayload);
+            $this->fail('Database must reject duplicate start keys under the same assignment.');
+        } catch (QueryException $exception) {
+            $this->assertNotEmpty($exception->getMessage());
+        }
+
         $this->assertDatabaseCount('van_trip_sessions', 1);
         $this->assertDatabaseCount('van_trip_session_events', 1);
     }

@@ -29,6 +29,23 @@ final class VanTripSessionService
 
         return DB::transaction(function () use ($actor, $assignmentId, $key): VanTripSession {
             $assignment = VanAssignment::query()->lockForUpdate()->findOrFail($assignmentId);
+
+            // Offline retries must resolve the immutable original outcome even
+            // after a Van is suspended or its assignment expires. This is a
+            // replay, not renewed permission to dispatch a new trip: require
+            // the same initiating actor and live store-scoped permissions.
+            $replayed = VanTripSession::query()
+                ->where('van_assignment_id', $assignment->id)
+                ->where('start_key', $key)
+                ->first();
+            if ($replayed !== null) {
+                abort_unless((int) $replayed->started_by_user_id === (int) $actor->id, 409);
+                $this->tenantScope->assertStore($actor, (int) $replayed->store_id, 'drivers.b2b.manage', 'b2b');
+                $this->tenantScope->assertStore($actor, (int) $replayed->store_id, 'customers.view', 'b2b');
+
+                return $replayed;
+            }
+
             $van = Van::query()->whereKey($assignment->van_id)->lockForUpdate()->firstOrFail();
             abort_unless($assignment->status === 'active' && $van->status === 'active', 404);
             $effectiveFrom = $assignment->effective_from;

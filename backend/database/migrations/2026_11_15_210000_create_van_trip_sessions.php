@@ -31,6 +31,7 @@ return new class extends Migration
             $table->timestamps();
 
             $table->unique(['van_id', 'start_key'], 'van_trip_start_idempotency');
+            $table->unique(['van_assignment_id', 'start_key'], 'van_trip_assignment_idempotency');
             $table->index(['store_id', 'status', 'started_at'], 'van_trip_scoped_status');
         });
 
