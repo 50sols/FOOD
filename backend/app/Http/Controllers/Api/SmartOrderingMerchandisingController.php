@@ -86,7 +86,15 @@ final class SmartOrderingMerchandisingController extends Controller
     private function context(string $cart, Request $request, CartService $carts): array
     {
         $token = trim((string) $request->header('X-Smart-Cart-Token', ''));
-        abort_if($token === '', 401, 'Cart token is required.');
+        $locale = in_array(app()->getLocale(), ['ar', 'en'], true) ? app()->getLocale() : 'en';
+        foreach ($request->getLanguages() as $preferredLanguage) {
+            $candidate = strtolower(substr((string) $preferredLanguage, 0, 2));
+            if (in_array($candidate, ['ar', 'en'], true)) {
+                $locale = $candidate;
+                break;
+            }
+        }
+        abort_if($token === '', 401, __('smart_ordering.cart.token_required', [], $locale));
 
         $model = $carts->authorized($cart, $token);
         $branch = $carts->branchForCart($model);
