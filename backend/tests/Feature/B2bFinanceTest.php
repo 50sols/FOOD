@@ -7,6 +7,7 @@ use App\Models\Customer;
 use App\Models\Invoice;
 use App\Models\Product;
 use App\Models\User;
+use App\Services\CustomerDomainResolver;
 use Database\Seeders\CoreReferenceSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
@@ -222,7 +223,7 @@ class B2bFinanceTest extends TestCase
         [$other, $foreignLegacy] = $this->buyer('literal-invoices-foreign@example.test', 'active');
         [$pending] = $this->buyer('literal-invoices-pending@example.test', 'pending');
 
-        $resolver = app(\App\Services\CustomerDomainResolver::class);
+        $resolver = app(CustomerDomainResolver::class);
         $ownerProfile = $resolver->b2b($actor);
         $foreignProfile = $resolver->b2b($other);
 
