@@ -6618,6 +6618,28 @@ class _CartLine extends StatelessWidget {
   }
 }
 
+// A quote or credit amount cannot be compared across different currencies.
+// Missing quote/credit currency inherits the canonical cart currency; explicit
+// contradictory or malformed currency evidence must block submission.
+bool _checkoutCurrenciesConsistent(
+  Map<String, dynamic> cart,
+  Map<String, dynamic> quote,
+  Map<String, dynamic> options,
+) {
+  final rawCartCurrency = cart['currency'];
+  if (rawCartCurrency is! String) return false;
+  final currency = rawCartCurrency.trim().toUpperCase();
+  if (!RegExp(r'^[A-Z]{3}$').hasMatch(currency)) return false;
+
+  for (final reported in <Object?>[quote['currency'], options['currency']]) {
+    if (reported == null) continue;
+    if (reported is! String || reported.trim().toUpperCase() != currency) {
+      return false;
+    }
+  }
+  return true;
+}
+
 // Only finite, nonnegative server-owned money may authorize checkout UI.
 double? _verifiedCheckoutMoney(Object? value) {
   if (value is bool) return null;
@@ -7190,6 +7212,9 @@ class _WholesaleCheckoutDesignScreenState
         ? Map<String, dynamic>.from(payload.cart['quote'] as Map)
         : <String, dynamic>{};
     final quote = appliedQuote ?? cartQuote;
+    if (!_checkoutCurrenciesConsistent(payload.cart, quote, payload.options)) {
+      return;
+    }
     final verifiedGrandTotal = _verifiedCheckoutMoney(quote['grand_total']);
     if (verifiedGrandTotal == null) return;
     if (paymentMethod == 'account_credit') {
@@ -7202,9 +7227,7 @@ class _WholesaleCheckoutDesignScreenState
       payload.options['minimum_order_egp'] ?? payload.cart['minimum_order_egp'],
     );
     final cartCurrency =
-        (appliedQuote?['currency'] ?? payload.cart['currency'] ?? 'EGP')
-            .toString()
-            .toUpperCase();
+        (payload.cart['currency'] as String).trim().toUpperCase();
     if (cartCurrency == 'EGP' && minimum == null) return;
     if (minimum != null) {
       final remaining = _wholesaleMinimumRemaining(
@@ -7389,6 +7412,8 @@ class _WholesaleCheckoutDesignScreenState
                     ? Map<String, dynamic>.from(cart['quote'] as Map)
                     : <String, dynamic>{};
                 final effectiveQuote = appliedQuote ?? cartQuote;
+                final currencyConsistent =
+                    _checkoutCurrenciesConsistent(cart, effectiveQuote, data);
                 // A cart subtotal is not an authoritative final quote:
                 // it excludes possible discounts, taxes and delivery charges.
                 final grandTotal =
@@ -7426,12 +7451,11 @@ class _WholesaleCheckoutDesignScreenState
                 final minimum = _verifiedCheckoutMoney(
                   data['minimum_order_egp'] ?? cart['minimum_order_egp'],
                 );
-                final quoteCurrency =
-                    (effectiveQuote['currency'] ?? cart['currency'] ?? 'EGP')
-                        .toString()
-                        .toUpperCase();
-                final minimumUnavailable =
-                    quoteCurrency == 'EGP' && minimum == null;
+                final quoteCurrency = currencyConsistent
+                    ? (cart['currency'] as String).trim().toUpperCase()
+                    : null;
+                final minimumUnavailable = quoteCurrency == null ||
+                    (quoteCurrency == 'EGP' && minimum == null);
                 final minimumMissing = minimumUnavailable
                     ? 0.0
                     : _wholesaleMinimumRemaining(
@@ -7439,7 +7463,8 @@ class _WholesaleCheckoutDesignScreenState
                         quoteOverride: appliedQuote,
                         minimumOverride: minimum,
                       );
-                final financialUnavailable = grandTotal == null ||
+                final financialUnavailable = !currencyConsistent ||
+                    grandTotal == null ||
                     minimumUnavailable ||
                     (paymentMethod == 'account_credit' &&
                         purchasingPower == null);

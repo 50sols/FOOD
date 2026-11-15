@@ -2922,6 +2922,30 @@ void main() {
         'blocked': false
       },
       {
+        'name': 'quote currency differs from cart',
+        'total': 25.0,
+        'power': 100.0,
+        'method': 'cash_on_delivery',
+        'quoteCurrency': 'USD',
+        'blocked': true
+      },
+      {
+        'name': 'credit currency differs from cart',
+        'total': 25.0,
+        'power': 100.0,
+        'method': 'account_credit',
+        'creditCurrency': 'USD',
+        'blocked': true
+      },
+      {
+        'name': 'invalid signed quote currency',
+        'total': 25.0,
+        'power': 100.0,
+        'method': 'cash_on_delivery',
+        'quoteCurrency': '???',
+        'blocked': true
+      },
+      {
         'name': 'missing EGP order minimum',
         'total': 25.0,
         'power': 100.0,
@@ -2976,6 +3000,7 @@ void main() {
               'delivery_total': 0.0,
               'tax_total': 0.0,
               'grand_total': scenario['total'],
+              'currency': scenario['quoteCurrency'] ?? 'EGP',
             },
             'items': [
               {
@@ -3006,7 +3031,7 @@ void main() {
             ],
             'payment_methods': [scenario['method']],
             'purchasing_power': scenario['power'],
-            'currency': 'EGP',
+            'currency': scenario['creditCurrency'] ?? 'EGP',
           });
           await tester.pumpWidget(FoodexCustomerApp(
             session: b2b,
