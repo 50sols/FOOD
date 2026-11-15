@@ -176,3 +176,11 @@ defense, not publisher-signature authentication, a production ZIP, or evidence
 of historical populated-MySQL v124→v125→v127 upgrade. Original PR #3364
 and Issue #2747 must remain OPEN/DRAFT pending independently accepted G006
 full-source CI, recovery and approval. No `main` or production changes.
+
+### Local ZIP header / CENTRAL directory extraction parity (2026-11-15)
+
+The G006 offline **archive-integrity-only** verifier now checks physical local ZIP member headers before reading VERSION or decompressing: local signature, flags, method, CRC32, compressed/uncompressed sizes, filename encoding and identity, local extra field framing and alternate Info-ZIP Unicode filename alias type `0x7075`. Non-data-descriptor members must match CENTRAL metadata exactly; bit-3 data-descriptor members may leave local CRC/sizes zero but cannot assert contradictory nonzero values. Python `zipfile.testzip()` validates CENTRAL CRC, so a checksum-valid, same-manifest ZIP may be accepted even though another hosting extractor follows conflicting LOCAL metadata.
+
+The issue-owned synthetic tests forge **five** real, SHA-256- and manifest-consistent ZIP header variants (flags, method, CRC, compressed size, uncompressed size) and a **local-only** Unicode Path alias to `backend/.env` with harmless CENTRAL metadata. Each forged archive is CRC-valid for Python, but the stricter G006 verifier must reject it. Existing legitimate historical v124→v125 and v125→v127 archive integrity checks remain required on exact final HEAD.
+
+The change is confined to this original G006 Python verifier, its unit tests and documentation. It is NOT a trusted publisher signature, safe runtime ZIP installer, historical populated MySQL upgrade, or backup/rollback/recovery validation. G006 #2747 and PR #3364 remain OPEN/DRAFT until the signed publisher identity, supported v124/v125/v127 data-preserving upgrade paths and full source acceptance pass. No Backend PHP, Dashboard, Customer/Driver/Van API or Flutter, AR/EN/RTL, `main`, release, tag, live cPanel or production change.
