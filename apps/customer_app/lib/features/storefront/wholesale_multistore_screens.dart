@@ -7048,7 +7048,10 @@ class _WholesaleCheckoutDesignScreenState
     // A coupon quote is valid only for the cart revision it was quoted for.
     // Refreshing checkout must require a new server quote, never reuse the
     // previous discount or account-credit calculation.
-    _checkoutDataRevision++;
+    final requestRevision = ++_checkoutDataRevision;
+    // An earlier response must not provide the validation snapshot for a
+    // later checkout, even when its network request completes last.
+    _latestCheckoutPayload = null;
     appliedCouponCode = null;
     appliedQuote = null;
     if (storeId <= 0) {
@@ -7074,7 +7077,9 @@ class _WholesaleCheckoutDesignScreenState
         : <String, dynamic>{};
 
     final payload = _CheckoutPayload(options: options, cart: cart);
-    _latestCheckoutPayload = payload;
+    if (requestRevision == _checkoutDataRevision) {
+      _latestCheckoutPayload = payload;
+    }
     return payload;
   }
 
@@ -7179,43 +7184,41 @@ class _WholesaleCheckoutDesignScreenState
     }
 
     final payload = _latestCheckoutPayload;
-    if (payload != null) {
-      final cartQuote = payload.cart['quote'] is Map
-          ? Map<String, dynamic>.from(payload.cart['quote'] as Map)
-          : <String, dynamic>{};
-      final quote = appliedQuote ?? cartQuote;
-      final verifiedGrandTotal = _verifiedCheckoutMoney(quote['grand_total']);
-      if (verifiedGrandTotal == null) return;
-      if (paymentMethod == 'account_credit') {
-        final power =
-            _verifiedCheckoutMoney(payload.options['purchasing_power']);
-        if (power == null || verifiedGrandTotal > power + .0001) return;
-      }
-      // Never replace a malformed server-owned minimum with the legacy
-      // fallback when deciding whether a Wholesale order can be submitted.
-      final minimum = _verifiedCheckoutMoney(
-        payload.options['minimum_order_egp'] ??
-            payload.cart['minimum_order_egp'],
+    if (payload == null) return;
+
+    final cartQuote = payload.cart['quote'] is Map
+        ? Map<String, dynamic>.from(payload.cart['quote'] as Map)
+        : <String, dynamic>{};
+    final quote = appliedQuote ?? cartQuote;
+    final verifiedGrandTotal = _verifiedCheckoutMoney(quote['grand_total']);
+    if (verifiedGrandTotal == null) return;
+    if (paymentMethod == 'account_credit') {
+      final power = _verifiedCheckoutMoney(payload.options['purchasing_power']);
+      if (power == null || verifiedGrandTotal > power + .0001) return;
+    }
+    // Never replace a malformed server-owned minimum with the legacy
+    // fallback when deciding whether a Wholesale order can be submitted.
+    final minimum = _verifiedCheckoutMoney(
+      payload.options['minimum_order_egp'] ?? payload.cart['minimum_order_egp'],
+    );
+    final cartCurrency =
+        (appliedQuote?['currency'] ?? payload.cart['currency'] ?? 'EGP')
+            .toString()
+            .toUpperCase();
+    if (cartCurrency == 'EGP' && minimum == null) return;
+    if (minimum != null) {
+      final remaining = _wholesaleMinimumRemaining(
+        payload.cart,
+        quoteOverride: appliedQuote,
+        minimumOverride: minimum,
       );
-      final cartCurrency =
-          (appliedQuote?['currency'] ?? payload.cart['currency'] ?? 'EGP')
-              .toString()
-              .toUpperCase();
-      if (cartCurrency == 'EGP' && minimum == null) return;
-      if (minimum != null) {
-        final remaining = _wholesaleMinimumRemaining(
-          payload.cart,
-          quoteOverride: appliedQuote,
-          minimumOverride: minimum,
+      if (remaining > 0.0001) {
+        await _showWholesaleMinimumPopup(
+          context,
+          minimum: minimum,
+          remaining: remaining,
         );
-        if (remaining > 0.0001) {
-          await _showWholesaleMinimumPopup(
-            context,
-            minimum: minimum,
-            remaining: remaining,
-          );
-          return;
-        }
+        return;
       }
     }
 

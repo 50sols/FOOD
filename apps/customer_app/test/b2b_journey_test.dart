@@ -3034,6 +3034,93 @@ void main() {
     }
   }
 
+  // MOB-C03: the latest checkout snapshot wins even when an older cart
+  // refresh completes after the latest one.
+  for (final language in <String>['ar', 'en']) {
+    testWidgets(
+      'MOB-C03 ignores out-of-order checkout cart responses $language',
+      (tester) async {
+        tester.view.physicalSize = const Size(900, 1900);
+        tester.view.devicePixelRatio = 1;
+        addTearDown(() {
+          tester.view.resetPhysicalSize();
+          tester.view.resetDevicePixelRatio();
+        });
+        final commerce = _OutOfOrderCheckoutCartApi(cartValue: {
+          'store_id': 7,
+          'currency': 'EGP',
+          'minimum_order_egp': 0.0,
+          'quote': {'grand_total': 20.0, 'currency': 'EGP'},
+          'has_unavailable_items': false,
+          'items': [
+            {
+              'id': 21,
+              'product': {'id': 201, 'name': 'Fresh item', 'sku': 'F-201'},
+              'quantity': 1.0,
+              'unit_price_snapshot': 20.0,
+              'line_total': 20.0,
+              'is_available': true,
+            }
+          ],
+        });
+        final storefront = _C13CheckoutStorefrontApi({
+          'store_id': 7,
+          'minimum_order_egp': 0.0,
+          'addresses': [
+            {'id': 1, 'label': 'Warehouse', 'line1': '1 Street'},
+          ],
+          'payment_methods': ['account_credit'],
+          'purchasing_power': 100.0,
+          'currency': 'EGP',
+        });
+        await tester.pumpWidget(FoodexCustomerApp(
+          session: b2b,
+          locale: Locale(language),
+          initialRoute: '/b2b/checkout?store_id=7',
+          storefrontApi: storefront,
+          wholesaleCommerceApi: commerce,
+        ));
+        await _pumpCustomerFrames(tester);
+        expect(commerce.cartRequests, 1);
+
+        tester.binding
+            .handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+        await _pumpCustomerFrames(tester);
+        expect(commerce.pending, hasLength(1));
+
+        tester.binding
+            .handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+        await _pumpCustomerFrames(tester);
+        expect(commerce.pending, hasLength(2));
+
+        // Current quote permits credit purchase; the older response must
+        // never replace its authoritative guard after arriving late.
+        commerce.pending[1].complete({
+          ...commerce.cartValue,
+          'quote': {'grand_total': 20.0, 'currency': 'EGP'},
+        });
+        await _pumpCustomerFrames(tester);
+        commerce.pending[0].complete({
+          ...commerce.cartValue,
+          'quote': {'grand_total': 250.0, 'currency': 'EGP'},
+        });
+        await _pumpCustomerFrames(tester);
+
+        final submit = find.byKey(const ValueKey('b2b-checkout-submit'));
+        await tester.ensureVisible(submit);
+        final action = tester.widget<InkWell>(find.descendant(
+          of: submit,
+          matching: find.byType(InkWell),
+        ));
+        expect(action.onTap, isNotNull);
+        await tester.tap(submit);
+        await tester.pump();
+        expect(commerce.checkoutCalls, 1);
+        expect(commerce.checkoutKeys, hasLength(1));
+      },
+    );
+  }
+
   // MOB-C03: a confirmed coupon quote must not outlive a cart refresh.
   for (final language in <String>['ar', 'en']) {
     testWidgets(
@@ -5599,6 +5686,22 @@ class _C13WholesaleCommerceApi implements WholesaleCommerceApi {
       return checkoutCompleter!.future;
     }
     return <String, Object?>{};
+  }
+}
+
+class _OutOfOrderCheckoutCartApi extends _C13WholesaleCommerceApi {
+  _OutOfOrderCheckoutCartApi({required super.cartValue});
+
+  int cartRequests = 0;
+  final pending = <Completer<Object?>>[];
+
+  @override
+  Future<Object?> cart(int storeId) async {
+    cartRequests++;
+    if (cartRequests == 1) return super.cart(storeId);
+    final request = Completer<Object?>();
+    pending.add(request);
+    return request.future;
   }
 }
 
