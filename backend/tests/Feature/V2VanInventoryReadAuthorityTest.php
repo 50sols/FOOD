@@ -486,6 +486,53 @@ final class V2VanInventoryReadAuthorityTest extends TestCase
         $this->assertSame(0, DB::table('stock_movements')->count());
     }
 
+    public function test_retail_roleless_inactive_and_revoked_entitlement_cannot_open_inventory_tab(): void
+    {
+        config()->set('security.mfa.enforce_privileged', false);
+        $storeId = $this->store('B2B', 'P274-HTTP-STORE-ENTITLEMENT');
+        $warehouse = $this->warehouse($storeId, 'P274-HTTP-ENTITLEMENT-WH');
+        $this->enableEnterpriseWmsForStore($storeId);
+        $viewer = $this->viewer($storeId);
+        $van = $this->van($warehouse);
+        $this->assign($van, $warehouse, $viewer);
+        $this->stock($warehouse, $storeId, 'P274-HTTP-SECRET-STOCK');
+
+        $url = route('admin.field-operations.vans.show', [
+            'van' => $van->id,
+            'tab' => 'warehouse-stock',
+        ]);
+        $roleless = User::factory()->create(['is_active' => true, 'locale' => 'en']);
+        $retail = User::factory()->create(['is_active' => true, 'locale' => 'ar']);
+        $retail->roles()->attach(Role::query()->where('code', 'B2C_DRIVER')->firstOrFail()->id);
+
+        foreach ([$roleless, $retail] as $unauthorized) {
+            $this->actingAs($unauthorized)->get($url)
+                ->assertForbidden()
+                ->assertDontSee('P274-HTTP-SECRET-STOCK');
+        }
+        $this->actingAs($viewer)->get($url)->assertOk()->assertSee('P274-HTTP-SECRET-STOCK');
+
+        app(ModuleEntitlementManager::class)->set(
+            'inventory_wms',
+            new EntitlementScope(EntitlementScope::STORE, $storeId),
+            false,
+        );
+        $this->actingAs($viewer->fresh())->get($url)->assertNotFound();
+        $this->actingAs($viewer->fresh())->get(route('admin.field-operations.vans.show', [
+            'van' => $van->id,
+        ]))->assertOk()->assertDontSee('data-van-assigned-stock-tab', false);
+
+        app(ModuleEntitlementManager::class)->set(
+            'inventory_wms',
+            new EntitlementScope(EntitlementScope::STORE, $storeId),
+            true,
+        );
+        $viewer->forceFill(['is_active' => false])->save();
+        $this->actingAs($viewer->fresh())->get($url)->assertForbidden();
+
+        $this->assertSame(0, DB::table('stock_movements')->count());
+    }
+
     private function store(string $channel, string $code): int
     {
         return (int) DB::table('stores')->insertGetId([
