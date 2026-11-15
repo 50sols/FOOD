@@ -167,7 +167,7 @@ class MobileAppDownloadTest extends TestCase
         Queue::fake();
 
         $this->getJson(route('admin.mobile-apps.status', ['app' => 'unknown']))
-            ->assertUnauthorized();
+            ->assertRedirect(route('admin.b2c.login'));
 
         $user = User::query()->create([
             'name' => 'Unauthorized Dashboard User',
