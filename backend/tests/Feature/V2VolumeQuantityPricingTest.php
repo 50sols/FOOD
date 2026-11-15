@@ -173,6 +173,47 @@ final class V2VolumeQuantityPricingTest extends TestCase
         $this->actingAs($finance)->get('/admin/b2b/pricing-approvals')->assertForbidden();
     }
 
+    public function test_pricing_read_only_actor_sees_price_rows_without_edit_actions_in_both_locales(): void
+    {
+        [$storeId, $productId, $tierId] = $this->catalog();
+        $this->pricingMode($storeId, true);
+        $manager = $this->actor('B2B_ADMIN', 'volume-reader-seed@example.test');
+        Sanctum::actingAs($manager);
+        $this->putJson('/api/v1/admin/b2b/prices', $this->rule($storeId, $productId, $tierId))
+            ->assertCreated();
+
+        $reader = $this->actor('B2B_ADMIN', 'volume-read-only@example.test');
+        DB::table('user_permission_overrides')->insert([
+            'user_id' => $reader->getKey(),
+            'permission_id' => DB::table('permissions')->where('code', 'b2b.pricing.manage')->value('id'),
+            'scope_key' => 'global',
+            'store_id' => null,
+            'effect' => 'deny',
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        $reader->forceFill(['has_permission_overrides' => true])->save();
+
+        foreach (['en' => 'ltr', 'ar' => 'rtl'] as $locale => $direction) {
+            $reader->forceFill(['locale' => $locale])->save();
+
+            $this->actingAs($reader->fresh())
+                ->get('/admin/b2b/pricing-approvals')
+                ->assertOk()
+                ->assertSee('Volume product')
+                ->assertSee('dir="'.$direction.'"', false)
+                ->assertDontSee('data-v2-pricing-edit', false)
+                ->assertDontSee('data-v2-volume-pricing-form', false)
+                ->assertViewHas('moduleData', static fn (array $data): bool => ! in_array('actions', $data['columns'], true));
+        }
+
+        $this->assertDatabaseHas('b2b_price_rules', [
+            'store_id' => $storeId,
+            'product_id' => $productId,
+            'unit_price' => 10,
+        ]);
+    }
+
     /** @return array{int,int,int} */
     private function catalog(): array
     {
