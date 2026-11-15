@@ -1446,12 +1446,13 @@ final class OrderOperationsController extends Controller
         );
 
         $driver = DB::table('drivers')
-            ->where('id', $assignment->driver_id)
-            ->first(['id', 'user_id']);
+            ->leftJoin('users as driver_user', 'driver_user.id', '=', 'drivers.user_id')
+            ->where('drivers.id', $assignment->driver_id)
+            ->first(['drivers.id', 'drivers.user_id', 'driver_user.is_active as app_user_is_active']);
         abort_unless(
-            $driver !== null && $driver->user_id !== null,
+            $driver !== null && $driver->user_id !== null && (bool) $driver->app_user_is_active,
             409,
-            $this->msg('السائق المعيّن غير مرتبط بحساب مستخدم للتطبيق.', 'Assigned driver has no active app user.'),
+            $this->msg('السائق المعيّن ليس لديه حساب تطبيق نشط.', 'Assigned driver has no active app user.'),
         );
 
         $notification = Notification::query()->create([
