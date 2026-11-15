@@ -203,7 +203,7 @@ final class NotificationCampaignPopupController extends Controller
                 // An authenticated identity is not sufficient for user-targeted
                 // Customer popups: recheck its current channel/store membership.
                 // This same query also authorizes impression/dismiss/open events.
-                if ($isCustomer && $user !== null) {
+                if ($isCustomer) {
                     $audience->orWhere(function (Builder $targeted) use ($user): void {
                         $targeted->where('audience', 'user')
                             ->where('user_id', $user->getKey());
