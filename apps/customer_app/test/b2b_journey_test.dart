@@ -2886,14 +2886,34 @@ void main() {
   // MOB-C03: unverified financial totals may never enable a Customer checkout.
   for (final locale in [const Locale('ar'), const Locale('en')]) {
     final cases = <Map<String, Object?>>[
-      {'name': 'nonfinite total', 'total': double.nan,
-       'power': 100.0, 'method': 'cash_on_delivery', 'blocked': true},
-      {'name': 'missing credit', 'total': 25.0,
-       'power': null, 'method': 'account_credit', 'blocked': true},
-      {'name': 'nonfinite credit', 'total': 25.0,
-       'power': double.nan, 'method': 'account_credit', 'blocked': true},
-      {'name': 'valid credit', 'total': 25.0,
-       'power': 100.0, 'method': 'account_credit', 'blocked': false},
+      {
+        'name': 'nonfinite total',
+        'total': double.nan,
+        'power': 100.0,
+        'method': 'cash_on_delivery',
+        'blocked': true
+      },
+      {
+        'name': 'missing credit',
+        'total': 25.0,
+        'power': null,
+        'method': 'account_credit',
+        'blocked': true
+      },
+      {
+        'name': 'nonfinite credit',
+        'total': 25.0,
+        'power': double.nan,
+        'method': 'account_credit',
+        'blocked': true
+      },
+      {
+        'name': 'valid credit',
+        'total': 25.0,
+        'power': 100.0,
+        'method': 'account_credit',
+        'blocked': false
+      },
     ];
     for (final scenario in cases) {
       testWidgets(
@@ -2936,8 +2956,12 @@ void main() {
             'customer_name': 'Acme Buyer',
             'minimum_order_egp': 0.0,
             'addresses': [
-              {'id': 1, 'label': 'Warehouse', 'line1': 'Street 1',
-               'city': 'Cairo'},
+              {
+                'id': 1,
+                'label': 'Warehouse',
+                'line1': 'Street 1',
+                'city': 'Cairo'
+              },
             ],
             'payment_methods': [scenario['method']],
             'purchasing_power': scenario['power'],

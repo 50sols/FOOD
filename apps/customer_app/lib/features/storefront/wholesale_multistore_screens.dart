@@ -7509,8 +7509,10 @@ class _WholesaleCheckoutDesignScreenState
                     ),
                     if (financialUnavailable)
                       FoodexErrorState(
-                        key: const ValueKey('b2b-checkout-financial-unavailable'),
-                        message: context.tr('b2b.checkout.financial_unavailable'),
+                        key: const ValueKey(
+                            'b2b-checkout-financial-unavailable'),
+                        message:
+                            context.tr('b2b.checkout.financial_unavailable'),
                         onRetry: () => setState(() {
                           appliedCouponCode = null;
                           appliedQuote = null;
