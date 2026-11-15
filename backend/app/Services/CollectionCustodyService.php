@@ -217,9 +217,12 @@ final class CollectionCustodyService
                 ->firstOrFail();
             $this->assertAccountCurrency($lockedAccount, $currency);
 
+            // This exact-key check is read-only: account locking already
+            // serializes same-account submissions. Do not lock the remittance
+            // row here: maker/checker approval locks remittance before account,
+            // which could deadlock against an account-first replay.
             $existing = Remittance::query()
                 ->where('idempotency_key', $idempotencyKey)
-                ->lockForUpdate()
                 ->first();
 
             if ($existing instanceof Remittance) {

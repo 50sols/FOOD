@@ -188,3 +188,27 @@ maker/checker, trip settlement posting, reconciled returns and Van offline
 flows are still missing. Keep #3332 DRAFT and #2602 OPEN until the complete
 source acceptance and final-head checks succeed. No main, tags, releases or
 production changes.
+
+## Remittance replay lock-order safety (same #2602 incremental scope)
+
+Maker/checker approval and reconciliation currently lock an existing
+`remittances` row **before** locking its collection account. New remittance
+submissions need the inverse, account-first lock to serialize distinct-key
+reservations against aggregate pending custody. A replay of an existing
+Idempotency-Key must **not** acquire the remittance row lock after the account
+lock or the two paths may deadlock if approval/replay interleave. The canonical
+service therefore performs a **read-only** terms and account ownership lookup
+under the held account row lock, without `FOR UPDATE` on remittances.
+Financial terms remain immutable in the existing service transitions, so a
+concurrent reviewer updating status/review metadata cannot change replay
+identity or authorize new writes. Database UNIQUE(idempotency_key) still
+prevents a racing key from creating duplicate financial rows across
+different accounts. This bounded guard does not claim to normalize all
+cross-account simultaneous-key constraint errors into HTTP 422, or to prove
+deadlock freedom across all third-party writers. Dedicated real concurrent
+MySQL testing remains required at full P272 acceptance.
+
+The new inactive-account/replay and reserved-balance test, along with
+existing collection/remittance lifecycle tests, exercises the post-change
+read-only path sequentially. No new routes, API payloads, migrations,
+Customer/Driver/Van mobile code, or legal stock ownership changes.
