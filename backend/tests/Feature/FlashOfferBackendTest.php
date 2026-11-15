@@ -381,6 +381,54 @@ class FlashOfferBackendTest extends TestCase
             'payment_method' => 'cash_on_delivery',
         ];
 
+        // Customer checkout must reject every missing required field in the
+        // authenticated actor's language, without consuming the reservation.
+        $originalLocale = $this->user->locale;
+        $beforeMissingField = [
+            'flash_reservations' => DB::table('flash_reservations')->count(),
+            'flash_offer_events' => DB::table('flash_offer_events')->count(),
+            'orders' => DB::table('orders')->count(),
+            'order_items' => DB::table('order_items')->count(),
+            'invoices' => DB::table('invoices')->count(),
+            'payments' => DB::table('payments')->count(),
+            'audit_logs' => DB::table('audit_logs')->count(),
+            'stock_movements' => DB::table('stock_movements')->count(),
+            'reserved_quantity' => (float) DB::table('inventories')
+                ->where('id', $this->inventoryId)->value('reserved_quantity'),
+        ];
+        foreach ([
+            ['ar', 'en-US', 'هذا الحقل مطلوب لإتمام شراء عرض فلاش للعميل.'],
+            ['en', 'ar-KW', 'This field is required for Customer Flash checkout.'],
+            ['fr', 'ar-KW', 'هذا الحقل مطلوب لإتمام شراء عرض فلاش للعميل.'],
+            ['fr', 'en-US', 'This field is required for Customer Flash checkout.'],
+        ] as [$actorLocale, $headerLocale, $message]) {
+            $this->user->forceFill(['locale' => $actorLocale])->save();
+            foreach (['store_id', 'address_id', 'payment_method'] as $missing) {
+                $invalidPayload = $confirmPayload;
+                unset($invalidPayload[$missing]);
+
+                $this->withHeaders([
+                    ...$confirmHeaders,
+                    'Accept-Language' => $headerLocale,
+                ])->postJson('/api/v1/flash-reservations/'.$reservationId.'/confirm', $invalidPayload)
+                    ->assertUnprocessable()
+                    ->assertJsonPath('errors.'.$missing.'.0', $message);
+
+                foreach ($beforeMissingField as $table => $count) {
+                    $actual = $table === 'reserved_quantity'
+                        ? (float) DB::table('inventories')->where('id', $this->inventoryId)->value('reserved_quantity')
+                        : DB::table($table)->count();
+                    $this->assertSame($count, $actual, $table.' must remain unchanged on rejection');
+                }
+                $this->assertDatabaseHas('flash_reservations', [
+                    'id' => $reservationId,
+                    'status' => 'active',
+                    'order_id' => null,
+                ]);
+            }
+        }
+        $this->user->forceFill(['locale' => $originalLocale])->save();
+
         $checkout = $this->withHeaders($confirmHeaders)
             ->postJson('/api/v1/flash-reservations/'.$reservationId.'/confirm', $confirmPayload)
             ->assertCreated()
