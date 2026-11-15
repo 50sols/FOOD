@@ -275,7 +275,7 @@ class V2SetupStagingVerifierTest(unittest.TestCase):
             with self.subTest(field=field):
                 pack_streaming_zip()
                 payload = bytearray(self.archive.read_bytes())
-                descriptor_start = payload.index(b"PK\\x07\\x08")
+                descriptor_start = payload.index(b"PK\x07\x08")
                 original = int.from_bytes(
                     payload[descriptor_start + offset:descriptor_start + offset + 4],
                     "little",

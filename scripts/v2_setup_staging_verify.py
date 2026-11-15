@@ -122,7 +122,7 @@ def _verify_local_header(archive: zipfile.ZipFile, member: zipfile.ZipInfo) -> N
         marker = source.read(4)
         _require(len(marker) == 4,
                  f"Truncated Setup ZIP data descriptor: {member.filename!r}")
-        descriptor = (source.read(12) if marker == b"PK\\x07\\x08"
+        descriptor = (source.read(12) if marker == b"PK\x07\x08"
                       else marker + source.read(8))
         _require(len(descriptor) == 12,
                  f"Truncated Setup ZIP data descriptor: {member.filename!r}")
