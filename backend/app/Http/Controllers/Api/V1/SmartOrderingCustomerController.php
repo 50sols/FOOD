@@ -205,7 +205,15 @@ final class SmartOrderingCustomerController extends Controller
         }
 
         $idempotencyKey = trim((string) $request->header('Idempotency-Key', ''));
-        abort_if($idempotencyKey === '', 422, 'Idempotency-Key is required.');
+        if ($idempotencyKey === '') {
+            $actor = $request->user();
+            $userLocale = $actor instanceof User ? $actor->locale : null;
+            $locale = in_array($userLocale, ['ar', 'en'], true)
+                ? $userLocale
+                : $request->getPreferredLanguage(['ar', 'en']);
+
+            abort(422, __('smart_ordering_customer.idempotency_required', [], $locale === 'ar' ? 'ar' : 'en'));
+        }
 
         $result = $loyalty->redeemReward(
             $site,
