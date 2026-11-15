@@ -316,6 +316,37 @@ class FlashOfferBackendTest extends TestCase
             ->assertJsonPath('data.0.products.0.name', 'Flash Product')
             ->assertJsonPath('data.0.products.0.available_quantity', 2);
 
+        // Guard the public Customer route before commercial policy evaluates a
+        // finite JSON number whose 10x conversion would overflow to infinity.
+        $beforeOverflowHttp = [
+            'reservations' => DB::table('flash_reservations')->count(),
+            'events' => DB::table('flash_offer_events')->count(),
+            'stock_movements' => DB::table('stock_movements')->count(),
+            'orders' => DB::table('orders')->count(),
+            'payments' => DB::table('payments')->count(),
+            'reserved' => (float) DB::table('inventories')
+                ->where('id', $this->inventoryId)->value('reserved_quantity'),
+        ];
+        $this->withHeaders([
+            'X-FOODEX-Store-ID' => (string) $this->storeId,
+            'X-FOODEX-Customer-Domain' => 'b2c',
+        ])->postJson('/api/v1/flash-offers/products/'.$offerProduct->id.'/reserve', [
+            'store_id' => $this->storeId,
+            'channel' => 'customer',
+            'quantity' => PHP_FLOAT_MAX,
+            'idempotency_key' => 'v2-3809-http-overflow',
+        ])->assertUnprocessable()
+            ->assertJsonPath('message', 'Resolved base quantity must be greater than zero.');
+        $this->assertSame($beforeOverflowHttp, [
+            'reservations' => DB::table('flash_reservations')->count(),
+            'events' => DB::table('flash_offer_events')->count(),
+            'stock_movements' => DB::table('stock_movements')->count(),
+            'orders' => DB::table('orders')->count(),
+            'payments' => DB::table('payments')->count(),
+            'reserved' => (float) DB::table('inventories')
+                ->where('id', $this->inventoryId)->value('reserved_quantity'),
+        ]);
+
         $reserve = $this->withHeaders([
             'X-FOODEX-Store-ID' => (string) $this->storeId,
             'X-FOODEX-Customer-Domain' => 'b2c',
