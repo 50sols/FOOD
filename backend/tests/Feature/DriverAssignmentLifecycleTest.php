@@ -166,6 +166,71 @@ class DriverAssignmentLifecycleTest extends TestCase
         $this->assertDatabaseHas('audit_logs', ['event' => 'delivery.assignment.status_changed']);
     }
 
+    public function test_retail_admin_inactive_driver_assignment_rejection_is_bilingual_and_has_no_writes(): void
+    {
+        $this->seed(CoreReferenceSeeder::class);
+        [$storeId, $order] = $this->order('b2c');
+        $order->update(['status' => 'ready']);
+
+        $admin = $this->roleUser('B2C_STORE_ADMIN', 'inactive-delivery-admin@example.test');
+        $roleId = (int) Role::query()->where('code', 'B2C_STORE_ADMIN')->value('id');
+        DB::table('user_store_roles')->insert([
+            'user_id' => $admin->id,
+            'store_id' => $storeId,
+            'role_id' => $roleId,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        $driverUser = $this->roleUser('B2C_DRIVER', 'inactive-delivery-driver@example.test');
+        $driver = Driver::query()->create([
+            'user_id' => $driverUser->id,
+            'store_id' => $storeId,
+            'driver_type' => 'b2c',
+            'is_available' => true,
+            'is_active' => false,
+        ]);
+
+        $baseline = [
+            'assignments' => DB::table('driver_assignments')->count(),
+            'orders' => DB::table('orders')->count(),
+            'status_history' => DB::table('order_status_history')->count(),
+            'audit_logs' => DB::table('audit_logs')->count(),
+            'notifications' => DB::table('notifications')->count(),
+            'payments' => DB::table('payments')->count(),
+            'reserved_stock' => (float) DB::table('inventories')->sum('reserved_quantity'),
+        ];
+
+        foreach ([
+            'ar' => 'يجب أن يكون السائق نشطًا قبل إسناد الطلب إليه.',
+            'en' => 'Driver must be active before assignment.',
+        ] as $locale => $message) {
+            $admin->forceFill(['locale' => $locale])->saveQuietly();
+            app()->setLocale($locale);
+            Sanctum::actingAs($admin);
+
+            $this->withHeaders([
+                'Accept-Language' => $locale === 'ar' ? 'en' : 'ar',
+            ])->postJson('/api/v1/admin/deliveries/assign', [
+                'driver_id' => $driver->id,
+                'order_id' => $order->id,
+            ])
+                ->assertConflict()
+                ->assertJsonPath('message', $message);
+
+            $this->assertSame($baseline, [
+                'assignments' => DB::table('driver_assignments')->count(),
+                'orders' => DB::table('orders')->count(),
+                'status_history' => DB::table('order_status_history')->count(),
+                'audit_logs' => DB::table('audit_logs')->count(),
+                'notifications' => DB::table('notifications')->count(),
+                'payments' => DB::table('payments')->count(),
+                'reserved_stock' => (float) DB::table('inventories')->sum('reserved_quantity'),
+            ]);
+            $this->assertDatabaseHas('orders', ['id' => $order->id, 'status' => 'ready']);
+            $this->assertDatabaseHas('drivers', ['id' => $driver->id, 'is_active' => false]);
+        }
+    }
+
     public function test_retail_customer_support_can_assign_driver_without_driver_registry_permission(): void
     {
         $this->seed(CoreReferenceSeeder::class);
