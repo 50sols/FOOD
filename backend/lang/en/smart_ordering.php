@@ -12,6 +12,9 @@ return [
     'checkout' => [
         'idempotency_conflict' => 'Idempotency-Key was already used for a different checkout request.',
     ],
+    'cart' => [
+        'token_required' => 'Cart token is required.',
+    ],
     'nav_title' => 'Smart Ordering',
     'title' => 'FOODEX Smart Ordering',
     'description' => 'Control restaurant site identity, runtime rollout, entitlements and atomic publishing.',

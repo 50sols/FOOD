@@ -169,7 +169,7 @@ final class SmartOrderingController extends Controller
     private function cartToken(Request $request): string
     {
         $token = trim((string) $request->header('X-Smart-Cart-Token', ''));
-        abort_if($token === '', 401, 'Cart token is required.');
+        abort_if($token === '', 401, __('smart_ordering.cart.token_required'));
 
         return $token;
     }
