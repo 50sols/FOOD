@@ -31,3 +31,9 @@
 - **P276 full acceptance stays OPEN** until authentic Van trip identity/operational lifecycle and all impacted Van application contracts are established and verified. This read-only phase must not be passed off as a full trip settlement implementation.
 
 No merge to `main`; no tag, APK, release or production deployment is authorized.
+
+## 2026-11-15 — P276 visit-to-Van identity provenance
+- Existing trip label projection accepted `metadata.van_id` if that Van had **any** current authorized B2B assignment, even when the visit's `metadata.van_assignment_id` pointed to a different Van or operator. Such a row could misattribute a B2B visit despite having no valid visit-to-Van proof.
+- The original authorized 30-row P276 tab now resolves only current effective B2B WMS-scoped assignments explicitly referenced by each visit; the recorded Van ID, assignment ID, actor user and (when present) B2B store must all agree. An absent/stale/inconsistent recorded assignment renders a neutral dash; metadata alone cannot substitute for an authoritative assignment. Existing active assignment and inactive/expired/disabled-warehouse guards remain.
+- Authenticated seeded regression covers positive matching provenance, wrong Van ID despite both Vans having legitimate active in-scope assignments, and assignment operator mismatch; the view still shows the route without a forged Van label. Existing AR/EN, channel/store and authorization assertions retained. The change touches no Van Flutter/API or dispatch lifecycle.
+- **Not source complete:** Recorded assignment metadata is not itself immutable trip identity, and P276 still lacks canonical trip session/closeout/stock custody/remittance/offline parity. Do not merge this source increment or close #2606 based on a green CI alone. Related #2602/#2604/#2607/#2588/#2739 preserve independent ownership.

@@ -742,26 +742,56 @@ final class FieldOperationsController extends Controller
         // Visit metadata is not authority to read arbitrary Van codes. An
         // expired/revoked assignment, inactive warehouse or retired Van must
         // never revive the historical label through a forged metadata.van_id.
-        $tripVanCodes = $tripView === 'trips'
-            ? Van::query()
-                ->whereIn('id', $visits->getCollection()
+        // A Van's current authorized assignment is not sufficient evidence
+        // that it actually belongs to this visit. Bind the recorded assignment,
+        // Van, operator and B2B store together before rendering the Van label.
+        $tripAssignments = $tripView === 'trips'
+            ? VanAssignment::query()
+                ->with('van')
+                ->join('warehouses', 'warehouses.id', '=', 'van_assignments.warehouse_id')
+                ->whereIn('van_assignments.id', $visits->getCollection()
                     ->pluck('metadata')
-                    ->map(static fn ($metadata): int => (int) ($metadata['van_id'] ?? 0))
+                    ->map(static fn ($metadata): int => is_array($metadata) ? (int) ($metadata['van_assignment_id'] ?? 0) : 0)
                     ->filter()
                     ->unique())
-                ->where('status', 'active')
-                ->whereHas('assignments', static function ($query) use ($allowedB2bStores): void {
-                    $query->join('warehouses', 'warehouses.id', '=', 'van_assignments.warehouse_id')
-                        ->where('van_assignments.status', 'active')
-                        ->where('van_assignments.effective_from', '<=', now())
-                        ->where(function ($query): void {
-                            $query->whereNull('van_assignments.effective_until')
-                                ->orWhere('van_assignments.effective_until', '>', now());
-                        })
-                        ->where('warehouses.is_active', true)
-                        ->whereIn('warehouses.store_id', $allowedB2bStores);
+                ->where('van_assignments.status', 'active')
+                ->where('van_assignments.effective_from', '<=', now())
+                ->where(function ($query): void {
+                    $query->whereNull('van_assignments.effective_until')
+                        ->orWhere('van_assignments.effective_until', '>', now());
                 })
-                ->pluck('code', 'id')
+                ->where('warehouses.is_active', true)
+                ->whereIn('warehouses.store_id', $allowedB2bStores)
+                ->whereHas('van', static function ($query): void {
+                    $query->where('status', 'active');
+                })
+                ->get(['van_assignments.*', 'warehouses.store_id as assigned_store_id'])
+                ->keyBy('id')
+            : collect();
+        $tripDriverUsers = DB::table('drivers')
+            ->whereIn('id', $tripAssignments->pluck('driver_id')->filter()->values())
+            ->where('driver_type', 'b2b')
+            ->where('is_active', true)
+            ->pluck('user_id', 'id');
+        $tripVanCodes = $tripView === 'trips'
+            ? $visits->getCollection()->mapWithKeys(static function (VanVisit $visit) use ($tripAssignments, $tripDriverUsers): array {
+                $metadata = is_array($visit->metadata) ? $visit->metadata : [];
+                $assignmentId = (int) ($metadata['van_assignment_id'] ?? 0);
+                $vanId = (int) ($metadata['van_id'] ?? 0);
+                $assignment = $tripAssignments->get($assignmentId);
+                if ($assignment === null || $vanId < 1 || (int) $assignment->van_id !== $vanId) {
+                    return [$visit->id => null];
+                }
+
+                $operatorId = $assignment->representative_user_id
+                    ?? $tripDriverUsers->get((int) $assignment->driver_id);
+                if ((int) $operatorId !== (int) $visit->actor_user_id
+                    || ($visit->store_id !== null && (int) $assignment->assigned_store_id !== (int) $visit->store_id)) {
+                    return [$visit->id => null];
+                }
+
+                return [$visit->id => $assignment->van?->code];
+            })
             : collect();
 
         return $this->render($request, 'visits', compact(

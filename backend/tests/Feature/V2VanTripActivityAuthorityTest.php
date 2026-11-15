@@ -151,6 +151,7 @@ final class V2VanTripActivityAuthorityTest extends TestCase
             'status' => 'active',
             'effective_from' => now()->subHour(),
             'effective_until' => now()->addHour(),
+            'representative_user_id' => $admin->id,
             'created_by' => $admin->id,
         ]);
 
@@ -164,6 +165,7 @@ final class V2VanTripActivityAuthorityTest extends TestCase
             'metadata' => [
                 'route_key' => 'V2-P276-AUTHORIZED-ROUTE',
                 'van_id' => $van->id,
+                'van_assignment_id' => $assignment->id,
             ],
         ]);
 
@@ -201,6 +203,70 @@ final class V2VanTripActivityAuthorityTest extends TestCase
         $van->forceFill(['status' => 'active'])->save();
         DB::table('warehouses')->where('id', $warehouseId)->update(['is_active' => false]);
         $assertTripLabel('—');
+
+        $this->assertDatabaseCount('van_visits', 1);
+    }
+
+
+    public function test_forged_metadata_cannot_attribute_a_visit_to_another_authorized_van_or_operator(): void
+    {
+        $admin = $this->superAdmin();
+        $warehouseId = app(WholesalePrincipal::class)->warehouseId();
+        $legitimateVan = app(VanRegistryService::class)->createVan(['code' => 'V2-P276-LEGITIMATE-TRIP-VAN']);
+        $otherVan = app(VanRegistryService::class)->createVan(['code' => 'V2-P276-FORGED-TRIP-VAN']);
+        $assignment = VanAssignment::query()->create([
+            'public_id' => (string) Str::uuid(),
+            'van_id' => $legitimateVan->id,
+            'warehouse_id' => $warehouseId,
+            'assignment_type' => 'primary',
+            'status' => 'active',
+            'effective_from' => now()->subHour(),
+            'effective_until' => now()->addHour(),
+            'representative_user_id' => $admin->id,
+            'created_by' => $admin->id,
+        ]);
+        VanAssignment::query()->create([
+            'public_id' => (string) Str::uuid(),
+            'van_id' => $otherVan->id,
+            'warehouse_id' => $warehouseId,
+            'assignment_type' => 'primary',
+            'status' => 'active',
+            'effective_from' => now()->subHour(),
+            'effective_until' => now()->addHour(),
+            'representative_user_id' => $admin->id,
+            'created_by' => $admin->id,
+        ]);
+        $visit = VanVisit::query()->create([
+            'actor_user_id' => $admin->id,
+            'customer_type' => 'b2b',
+            'customer_id' => 10001,
+            'store_id' => null,
+            'status' => 'planned',
+            'planned_at' => now(),
+            'metadata' => [
+                'route_key' => 'V2-P276-FORGED-TRIP-ROUTE',
+                'van_id' => $otherVan->id,
+                'van_assignment_id' => $assignment->id,
+            ],
+        ]);
+
+        $url = route('admin.field-operations.visits', ['trip_view' => 'trips']);
+        $assertNeutralTripLabel = function () use ($url): void {
+            $response = $this->actingAs($this->superAdmin())->get($url)->assertOk();
+            $this->assertMatchesRegularExpression(
+                '/<tr data-trip-route="V2-P276-FORGED-TRIP-ROUTE">\\s*<td>—<\\/td>/u',
+                (string) $response->getContent(),
+            );
+        };
+
+        $assertNeutralTripLabel();
+        $visit->forceFill(['metadata' => [
+            'route_key' => 'V2-P276-FORGED-TRIP-ROUTE',
+            'van_id' => $legitimateVan->id,
+            'van_assignment_id' => $assignment->id,
+        ]])->save();
+        $assignment->forceFill(['representative_user_id' => User::factory()->create()->id])->save();
+        $assertNeutralTripLabel();
 
         $this->assertDatabaseCount('van_visits', 1);
     }

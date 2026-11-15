@@ -590,12 +590,11 @@
                             <tbody>
                                 @foreach($visits as $visit)
                                     @php
-                                        $vanId = (int) ($visit->metadata['van_id'] ?? 0);
                                         $routeKey = $visit->metadata['route_key'] ?? ($visit->metadata['route_code'] ?? ($visit->metadata['route'] ?? null));
                                         $storeLabel = $visitStores->firstWhere('id', $visit->store_id)?->name;
                                     @endphp
                                     <tr data-trip-route="{{ $routeKey }}">
-                                        <td>{{ $tripVanCodes->get($vanId) ?: '—' }}</td>
+                                        <td>{{ $tripVanCodes->get($visit->id) ?: '—' }}</td>
                                         <td>{{ $routeKey ?: '—' }}</td>
                                         <td>{{ $storeLabel ?: '—' }}</td>
                                         <td>{{ $visit->actor?->name ?: '—' }}</td>
