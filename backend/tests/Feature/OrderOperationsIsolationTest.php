@@ -780,6 +780,107 @@ class OrderOperationsIsolationTest extends TestCase
             ->assertSee('31.2357120');
     }
 
+    public function test_driver_reminder_409_is_localized_for_missing_assignment_and_inactive_app_user(): void
+    {
+        Queue::fake();
+
+        $store = $this->store('OPS-REMINDER-409-A');
+        $foreign = $this->store('OPS-REMINDER-409-B');
+        $admin = $this->storeAdmin($store, 'ops-reminder-409@example.test');
+        $buyer = app(B2cCustomerService::class)->create($store, ['name' => 'Reminder Failure Buyer']);
+        $otherBuyer = app(B2cCustomerService::class)->create($foreign, ['name' => 'Foreign Reminder Buyer']);
+        $order = $this->order(
+            $store,
+            (int) $buyer->legacy_customer_id,
+            (int) $buyer->id,
+            'OPS-REMINDER-409-001',
+        );
+        $foreignOrder = $this->order(
+            $foreign,
+            (int) $otherBuyer->legacy_customer_id,
+            (int) $otherBuyer->id,
+            'OPS-REMINDER-409-002',
+        );
+
+        $inactiveDriverUser = User::query()->create([
+            'name' => 'Inactive Reminder Driver',
+            'email' => 'ops-reminder-inactive-driver@example.test',
+            'password' => 'password',
+            'is_active' => false,
+        ]);
+        $driverId = (int) DB::table('drivers')->insertGetId([
+            'user_id' => $inactiveDriverUser->id,
+            'store_id' => $store,
+            'driver_type' => 'b2c',
+            'is_available' => false,
+            'is_active' => true,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        $assignedOrder = $this->order(
+            $store,
+            (int) $buyer->legacy_customer_id,
+            (int) $buyer->id,
+            'OPS-REMINDER-409-003',
+        );
+        DB::table('driver_assignments')->insert([
+            'driver_id' => $driverId,
+            'order_id' => $assignedOrder,
+            'store_id' => $store,
+            'assignment_type' => 'b2c',
+            'status' => 'assigned',
+            'assigned_at' => now(),
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $notificationsBefore = DB::table('notifications')->count();
+        $auditBefore = DB::table('audit_logs')
+            ->where('event', 'operations.order.driver_reminder_sent')->count();
+
+        foreach ([
+            'ar' => 'لا يوجد تعيين سائق نشط لهذا الطلب.',
+            'en' => 'Order has no active driver assignment.',
+        ] as $locale => $message) {
+            $admin->locale = $locale;
+            $admin->save();
+
+            $this->actingAs($admin)
+                ->postJson("/admin/operations/orders/{$order}/remind-driver")
+                ->assertStatus(409)
+                ->assertJsonPath('message', $message);
+
+            $this->actingAs($admin)
+                ->postJson("/admin/operations/orders/{$assignedOrder}/remind-driver")
+                ->assertStatus(409)
+                ->assertJsonPath(
+                    'message',
+                    $locale === 'ar'
+                        ? 'السائق المعيّن ليس لديه حساب تطبيق نشط.'
+                        : 'Assigned driver has no active app user.',
+                );
+
+            $this->actingAs($admin)
+                ->postJson("/admin/operations/orders/{$foreignOrder}/remind-driver")
+                ->assertNotFound();
+        }
+
+        $this->assertDatabaseHas('orders', ['id' => $order, 'status' => 'pending']);
+        $this->assertDatabaseMissing('driver_assignments', ['order_id' => $order]);
+        $this->assertDatabaseHas('driver_assignments', [
+            'order_id' => $assignedOrder,
+            'driver_id' => $driverId,
+            'status' => 'assigned',
+        ]);
+        $this->assertDatabaseHas('users', ['id' => $inactiveDriverUser->id, 'is_active' => false]);
+        $this->assertSame($notificationsBefore, DB::table('notifications')->count());
+        $this->assertSame(
+            $auditBefore,
+            DB::table('audit_logs')->where('event', 'operations.order.driver_reminder_sent')->count(),
+        );
+        Queue::assertNotPushed(DispatchPushNotification::class);
+    }
+
     public function test_driver_reminder_is_actionable_persisted_and_queued(): void
     {
         Queue::fake();
