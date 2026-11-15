@@ -16,3 +16,6 @@ Parent #2503; original B2B VAN ONLY/B2C DRIVER ONLY canonical policy #2859 is al
 - Van: no valid B2B execution flow change, no Flutter/API schema update; forbidden B2C execution remains forbidden
 
 REVIEW_RISK: HIGH because the touched class enforces actor/channel security invariants. Require file-by-file same-account COMMENTED technical audit (not independent approval), exact-final-head Repository Policy, V2 Isolation, localization, backend Laravel/Pint/PHPStan/security, MySQL/Redis and terminal Required CI success. Manual staging/device/business acceptance remains tracked under #2503.
+
+## Explicit Mobile impact: Customer / Driver / Van
+The shared actor policy runs on the server. Customer has no new application data model or API fields; Driver keeps only the existing B2C executor contract, and Van keeps only the existing B2B executor contract. A rejected cross-channel assignment still produces its original field-scoped 422 response; only its human-readable wording changes by the selected Laravel request locale. None of the three Flutter applications gains a new executor role or fallback from this patch.
