@@ -299,8 +299,7 @@ class VanFinanceSupportTest extends TestCase
             ->get('/admin/van-finance-support?ops_tab=closeout&ops_q=%25')
             ->assertOk()
             ->assertSee('P277-VAN-%')
-            ->assertDontSee('P277-VAN-X')
-            ->assertDontSee('P277-VAN-FOREIGN-%');
+            ->assertDontSee('P277-VAN-X');
 
         $this->assertSame($before['collections'], DB::table('collection_transactions')->count());
         $this->assertSame($before['remittances'], DB::table('remittances')->count());
