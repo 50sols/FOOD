@@ -1331,17 +1331,22 @@ final class SecurityController extends Controller
                 'actors.email as actor_email',
             ]);
 
+        // Treat audit filter input as literal text across SQLite/MySQL SQL modes.
+        // Only the outer % operators implement intentional substring matching.
+        $literalContains = static fn (string $value): string => '%'
+            .str_replace(['!', '%', '_'], ['!!', '!%', '!_'], $value).'%';
+
         if ($filters['audit_actor'] !== '') {
-            $needle = '%'.$filters['audit_actor'].'%';
+            $needle = $literalContains($filters['audit_actor']);
             $query->where(fn ($nested) => $nested
-                ->where('actors.name', 'like', $needle)
-                ->orWhere('actors.email', 'like', $needle));
+                ->whereRaw("actors.name LIKE ? ESCAPE '!'", [$needle])
+                ->orWhereRaw("actors.email LIKE ? ESCAPE '!'", [$needle]));
         }
         if ($filters['audit_event'] !== '') {
-            $query->where('audit.event', 'like', '%'.$filters['audit_event'].'%');
+            $query->whereRaw("audit.event LIKE ? ESCAPE '!'", [$literalContains($filters['audit_event'])]);
         }
         if ($filters['audit_entity'] !== '') {
-            $query->where('audit.auditable_type', 'like', '%'.$filters['audit_entity'].'%');
+            $query->whereRaw("audit.auditable_type LIKE ? ESCAPE '!'", [$literalContains($filters['audit_entity'])]);
         }
         if ($filters['audit_from'] !== '') {
             $query->whereDate('audit.created_at', '>=', $filters['audit_from']);
@@ -1350,7 +1355,7 @@ final class SecurityController extends Controller
             $query->whereDate('audit.created_at', '<=', $filters['audit_to']);
         }
         if ($filters['audit_correlation'] !== '') {
-            $query->where('audit.after', 'like', '%'.$filters['audit_correlation'].'%');
+            $query->whereRaw("audit.after LIKE ? ESCAPE '!'", [$literalContains($filters['audit_correlation'])]);
         }
 
         return [
