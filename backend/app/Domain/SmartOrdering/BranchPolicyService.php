@@ -64,7 +64,7 @@ final class BranchPolicyService
 
         if ($scheduled->lt($now->subMinutes(2))) {
             throw ValidationException::withMessages([
-                'scheduled_for' => ['Scheduled time cannot be in the past.'],
+                'scheduled_for' => [__('smart_ordering.branch_policy.past_schedule')],
             ]);
         }
 
@@ -142,7 +142,7 @@ final class BranchPolicyService
             }
         }
 
-        abort(409, 'Delivery address is outside this branch service area.');
+        abort(409, __('smart_ordering.branch_policy.delivery_zone_outside'));
     }
 
     public function table(SmartOrderingBranch $branch, string $tablePublicId, string $token): object
