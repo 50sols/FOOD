@@ -559,6 +559,7 @@ final class V2VanTripSettlementProvenanceTest extends TestCase
             'updated_at' => now(),
         ]);
     }
+
     public function test_inactive_van_custody_account_cannot_submit_new_remittance_but_existing_replay_is_stable(): void
     {
         $actor = User::factory()->create(['is_active' => true]);
@@ -617,5 +618,4 @@ final class V2VanTripSettlementProvenanceTest extends TestCase
         $this->assertDatabaseCount('remittances', 2);
         $this->assertDatabaseCount('custody_ledger_entries', 1);
     }
-
 }
