@@ -32,6 +32,29 @@ class VanOrderControllerTest extends TestCase
             ->assertNotFound();
     }
 
+    public function test_van_order_routes_reject_retail_customer_type_without_mutating_financial_or_audit_data(): void
+    {
+        $this->vanActor();
+
+        $orderCount = DB::table('orders')->count();
+        $auditCount = DB::table('audit_logs')->count();
+
+        foreach (['catalog', 'order-options'] as $endpoint) {
+            $this->getJson("/api/v1/van/customers/b2c/999/{$endpoint}?store_id=7")
+                ->assertNotFound();
+        }
+
+        foreach (['order-quote', 'orders'] as $endpoint) {
+            $this->postJson("/api/v1/van/customers/b2c/999/{$endpoint}", [
+                'store_id' => 7,
+                'items' => [['product_id' => 1, 'quantity' => 1]],
+            ])->assertNotFound();
+        }
+
+        $this->assertSame($orderCount, DB::table('orders')->count());
+        $this->assertSame($auditCount, DB::table('audit_logs')->count());
+    }
+
     public function test_van_b2b_catalog_uses_platform_customer_base_price_fallback_and_explicit_tier_override(): void
     {
         $actor = $this->vanActor();
