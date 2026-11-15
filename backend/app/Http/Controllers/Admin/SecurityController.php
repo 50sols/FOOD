@@ -1355,7 +1355,10 @@ final class SecurityController extends Controller
             $query->whereDate('audit.created_at', '<=', $filters['audit_to']);
         }
         if ($filters['audit_correlation'] !== '') {
-            $query->whereRaw("audit.after LIKE ? ESCAPE '!'", [$literalContains($filters['audit_correlation'])]);
+            // audit.after stores JSON text: a literal backslash in a value is
+            // serialized as two backslashes before the LIKE pattern is applied.
+            $serializedCorrelation = str_replace('\\', '\\\\', $filters['audit_correlation']);
+            $query->whereRaw("audit.after LIKE ? ESCAPE '!'", [$literalContains($serializedCorrelation)]);
         }
 
         return [
