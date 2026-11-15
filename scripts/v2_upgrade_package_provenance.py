@@ -38,6 +38,9 @@ MAX_VERSION_MEMBER_BYTES = 4096
 MAX_MANIFEST_METADATA_BYTES = 8 * 1024 * 1024
 MAX_FILE_LIST_METADATA_BYTES = 8 * 1024 * 1024
 MAX_CHECKSUM_METADATA_BYTES = 4096
+# The immutable v125/v127 archives retain Laravel's harmless directory marker.
+# Only this exact byte sequence may traverse the bootstrap/cache exclusion.
+CANONICAL_BOOTSTRAP_CACHE_GITIGNORE = b"*\n!.gitignore\n"
 
 
 def _require(condition: bool, message: str) -> None:
@@ -250,10 +253,11 @@ def _member_name(info: zipfile.ZipInfo) -> str:
     _require(
         not any(part == ".env" or part.startswith(".env.") for part in folded_parts)
         and "storage" not in folded_parts[:2]
-        # Never ship compiled Laravel bootstrap/config/route caches: a dirty
-        # build may embed APP_KEY, DB credentials or host-specific routes,
-        # and replacing the live cache during a ZIP update is unsafe.
-        and folded_parts[:3] != ["backend", "bootstrap", "cache"]
+        # Never ship compiled Laravel bootstrap/config/route caches. The
+        # immutable historical v125/v127 ZIPs contain one harmless .gitignore
+        # directory marker; validate its exact bytes before certifying it.
+        and (folded_parts[:3] != ["backend", "bootstrap", "cache"]
+             or name == "backend/bootstrap/cache/.gitignore")
         # Historical update archives are code-only, never a source of user
         # uploads. Reject both exact directory-name files (which could
         # overwrite public/storage) and descendants on case-insensitive hosts.
@@ -372,6 +376,12 @@ def validate_package(
                     )
                 name = _member_name(info)
                 _validate_local_member_header(archive, info)
+                if name == "backend/bootstrap/cache/.gitignore":
+                    _require(
+                        info.file_size == len(CANONICAL_BOOTSTRAP_CACHE_GITIGNORE)
+                        and archive.read(name) == CANONICAL_BOOTSTRAP_CACHE_GITIGNORE,
+                        "Unsafe Laravel bootstrap cache directory marker.",
+                    )
                 portable_name = unicodedata.normalize("NFC", name).casefold()
                 _require(
                     name not in seen and portable_name not in portable_seen,

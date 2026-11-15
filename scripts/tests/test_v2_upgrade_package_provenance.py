@@ -173,6 +173,54 @@ class V2G006PackageProvenanceTest(unittest.TestCase):
         )
         self.assertEqual(5, self.verify_first()["files"])
 
+    def test_historical_bootstrap_cache_marker_requires_exact_safe_bytes(self) -> None:
+        # Published v125/v127 update archives retain the Laravel .gitignore
+        # marker; allowing arbitrary bytes or case aliases would permit a
+        # secret-bearing cached configuration file to masquerade as it.
+        marker = "backend/bootstrap/cache/.gitignore"
+        content = b"*\n!.gitignore\n"
+        self.first = build_bundle(
+            self.first,
+            entries=[
+                ("VERSION", b"1.0.125", False),
+                (RUNTIME, b"<?php // valid source", False),
+                (marker, content, False),
+            ],
+        )
+        self.assertEqual(3, self.verify_first()["files"])
+
+        for poisoned in (b"APP_KEY=secret", b"*\n!.gitignore\nDB_PASSWORD=secret"):
+            with self.subTest(poisoned=poisoned):
+                self.first = build_bundle(
+                    self.first,
+                    entries=[
+                        ("VERSION", b"1.0.125", False),
+                        (RUNTIME, b"<?php // valid source", False),
+                        (marker, poisoned, False),
+                    ],
+                )
+                with self.assertRaisesRegex(
+                    PackageContractError, "Unsafe Laravel bootstrap cache directory marker",
+                ):
+                    self.verify_first()
+
+        for alias in (
+            "Backend/bootstrap/cache/.gitignore",
+            "backend/bootstrap/cache/.GITIGNORE",
+            "backend/Bootstrap/Cache/.gitignore",
+        ):
+            with self.subTest(alias=alias):
+                self.first = build_bundle(
+                    self.first,
+                    entries=[
+                        ("VERSION", b"1.0.125", False),
+                        (RUNTIME, b"<?php // valid source", False),
+                        (alias, content, False),
+                    ],
+                )
+                with self.assertRaisesRegex(PackageContractError, "Private/non-runtime member"):
+                    self.verify_first()
+
     def test_checksum_valid_encrypted_zip_member_rejected_before_crc_scan(self) -> None:
         # ZIP local and central general-purpose bit 0 requests decryption.
         self._modify_zip_headers_and_refresh_digest(
