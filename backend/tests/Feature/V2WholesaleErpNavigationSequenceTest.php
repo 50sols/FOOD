@@ -6,12 +6,14 @@ use App\Enterprise\Modules\ModuleRegistry;
 use App\Enums\StoreBusinessProfile;
 use App\Models\Role;
 use App\Models\User;
+use App\Services\WholesalePrincipal;
 use App\Services\AdminSidebarManager;
 use App\Support\AdminNavigation;
 use Database\Seeders\CoreReferenceSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Route;
+use Tests\Feature\Enterprise\Concerns\EnablesEnterpriseWms;
 use Tests\TestCase;
 
 /**
@@ -20,6 +22,7 @@ use Tests\TestCase;
  */
 final class V2WholesaleErpNavigationSequenceTest extends TestCase
 {
+    use EnablesEnterpriseWms;
     use RefreshDatabase;
 
     private const NAVIGATION_KEYS = [
@@ -59,6 +62,9 @@ final class V2WholesaleErpNavigationSequenceTest extends TestCase
     {
         parent::setUp();
         $this->seed(CoreReferenceSeeder::class);
+        // Certified ERP navigation needs a real WMS-entitled B2B store.
+        // Platform-only bootstrap must not bypass the store-scoped WMS route.
+        $this->enableEnterpriseWmsForStore(app(WholesalePrincipal::class)->storeId());
         // The Sidebar now requires exact-version operational certification.
         // Exercise the intentionally ready business-journey order only in this
         // fixture: production defaults remain uncertified until approved.
