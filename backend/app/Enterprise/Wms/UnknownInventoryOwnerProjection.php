@@ -7,22 +7,30 @@ use Illuminate\Support\Facades\DB;
 use LogicException;
 
 /**
- * Reconcile legally UNATTRIBUTED procurement stock with the canonical inventory
- * row. This is not a legal-title attribution, valuation source, or second ledger.
+ * Reconcile legally UNATTRIBUTED stock with the canonical inventory row. This is not a legal-title attribution, valuation source, or second ledger.
  *
  * Called only while the canonical inventory is locked by the surrounding
- * Procurement posting transaction. Known-owner positions are deliberately left
- * stale: a receipt/return cannot infer which party owns a physical unit.
+ * procurement or WMS stock-posting transaction. Known-owner positions are
+ * deliberately left stale: a transfer/receipt/return cannot infer legal title.
  */
 final class UnknownInventoryOwnerProjection
 {
     public function afterProcurementMutation(Inventory $inventory): void
     {
-        if (DB::transactionLevel() < 1) {
+        $this->afterUnattributedInventoryMutation((int) $inventory->getKey());
+    }
+
+    /**
+     * Refresh ONLY a wholly UNKNOWN stock position from already-posted canonical
+     * inventory. The caller must hold the inventory row lock in this transaction.
+     * This is a read-model projection, never a second stock posting or title grant.
+     */
+    public function afterUnattributedInventoryMutation(int $inventoryId): void
+    {
+        if ($inventoryId < 1 || DB::transactionLevel() < 1) {
             throw new LogicException('Inventory owner projection requires the canonical stock transaction.');
         }
 
-        $inventoryId = (int) $inventory->getKey();
         $rows = DB::table('enterprise_inventory_owner_positions')
             ->where('inventory_id', $inventoryId)
             ->lockForUpdate()

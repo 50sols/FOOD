@@ -4,6 +4,7 @@ namespace Tests\Feature\Enterprise;
 
 use App\Enterprise\Wms\InventoryOwnerProvenanceReadService;
 use App\Enterprise\Wms\UnknownInventoryOwnerProjection;
+use App\Enterprise\Wms\WarehouseTransferService;
 use App\Models\Inventory;
 use App\Models\Role;
 use App\Models\User;
@@ -289,6 +290,117 @@ final class V2InventoryOwnerProvenanceTest extends TestCase
             ->where('inventory_id', $stock['inventory_id'])->count());
     }
 
+    public function test_wms_dispatch_and_receive_keep_unattributed_positions_current_without_stock_double_posting(): void
+    {
+        $this->seed(CoreReferenceSeeder::class);
+        $stock = $this->stock('TRANSFER-UNKNOWN');
+        $target = $this->transferTarget($stock, 'TRANSFER-UNKNOWN');
+        $actor = $this->inventoryActor($stock['store_id']);
+        $service = app(WarehouseTransferService::class);
+
+        $transfer = $service->create(
+            $actor,
+            $target['source_warehouse_id'],
+            $target['target_warehouse_id'],
+            [['product_id' => $target['product_id'], 'quantity' => 2]],
+            'p110-unknown-transfer',
+        );
+
+        $service->dispatch($actor, $transfer->id);
+        $service->dispatch($actor, $transfer->id);
+        $this->assertDatabaseHas('inventories', [
+            'id' => $stock['inventory_id'],
+            'quantity' => 8,
+            'reserved_quantity' => 3,
+        ]);
+        $this->assertDatabaseHas('enterprise_inventory_owner_positions', [
+            'inventory_id' => $stock['inventory_id'],
+            'owner_key' => 'UNKNOWN',
+            'owner_kind' => 'UNKNOWN',
+            'quantity' => 8,
+            'reserved_quantity' => 3,
+        ]);
+
+        $service->receive($actor, $transfer->id);
+        $service->receive($actor, $transfer->id);
+        $this->assertDatabaseHas('inventories', [
+            'id' => $target['target_inventory_id'],
+            'quantity' => 3,
+            'reserved_quantity' => 0,
+        ]);
+        $this->assertDatabaseHas('enterprise_inventory_owner_positions', [
+            'inventory_id' => $target['target_inventory_id'],
+            'owner_key' => 'UNKNOWN',
+            'owner_kind' => 'UNKNOWN',
+            'supplier_id' => null,
+            'quantity' => 3,
+            'reserved_quantity' => 0,
+        ]);
+
+        $this->assertSame(2, DB::table('enterprise_inventory_owner_positions')
+            ->whereIn('inventory_id', [$stock['inventory_id'], $target['target_inventory_id']])
+            ->count());
+        $this->assertSame(2, DB::table('stock_movements')
+            ->where('reference_type', 'enterprise_warehouse_transfer')
+            ->where('reference_id', $transfer->id)
+            ->count());
+
+        $read = app(InventoryOwnerProvenanceReadService::class);
+        foreach ([$stock['inventory_id'], $target['target_inventory_id']] as $inventoryId) {
+            $snapshot = $read->snapshot($actor, $inventoryId);
+            $this->assertSame('UNKNOWN', $snapshot['state']);
+            $this->assertFalse($snapshot['certified']);
+            $this->assertSame('UNKNOWN', $snapshot['positions'][0]['owner_kind']);
+        }
+    }
+
+    public function test_wms_transfer_never_silently_converts_unverified_foodex_title_to_unknown_or_certified(): void
+    {
+        $this->seed(CoreReferenceSeeder::class);
+        $stock = $this->stock('TRANSFER-KNOWN');
+        $target = $this->transferTarget($stock, 'TRANSFER-KNOWN');
+        $actor = $this->inventoryActor($stock['store_id']);
+        $checker = User::query()->create([
+            'name' => 'WMS Distinct Checker',
+            'email' => 'p110-wms-distinct-checker@example.test',
+            'password' => 'password',
+            'is_active' => true,
+        ]);
+        $this->position($stock['inventory_id'], 'FOODEX', null, 10, 3, $actor->id, $checker->id, true);
+        $service = app(WarehouseTransferService::class);
+        $transfer = $service->create(
+            $actor,
+            $target['source_warehouse_id'],
+            $target['target_warehouse_id'],
+            [['product_id' => $target['product_id'], 'quantity' => 2]],
+            'p110-unverified-transfer',
+        );
+
+        $service->dispatch($actor, $transfer->id);
+        $this->assertDatabaseHas('enterprise_inventory_owner_positions', [
+            'inventory_id' => $stock['inventory_id'],
+            'owner_key' => 'FOODEX',
+            'quantity' => 10,
+            'reserved_quantity' => 3,
+        ]);
+        $this->assertSame(0, DB::table('enterprise_inventory_owner_positions')
+            ->where('inventory_id', $stock['inventory_id'])
+            ->where('owner_key', 'UNKNOWN')->count());
+
+        $read = app(InventoryOwnerProvenanceReadService::class);
+        $source = $read->snapshot($actor, $stock['inventory_id']);
+        $this->assertSame('STALE', $source['state']);
+        $this->assertFalse($source['certified']);
+
+        $service->receive($actor, $transfer->id);
+        $destination = $read->snapshot($actor, $target['target_inventory_id']);
+        $this->assertSame('UNKNOWN', $destination['state']);
+        $this->assertFalse($destination['certified']);
+        $this->assertSame('UNKNOWN', $destination['positions'][0]['owner_kind']);
+        $this->assertDatabaseHas('inventories', ['id' => $stock['inventory_id'], 'quantity' => 8]);
+        $this->assertDatabaseHas('inventories', ['id' => $target['target_inventory_id'], 'quantity' => 3]);
+    }
+
     public function test_other_store_inventory_is_never_exposed_through_owner_read_service(): void
     {
         $this->seed(CoreReferenceSeeder::class);
@@ -355,6 +467,38 @@ final class V2InventoryOwnerProvenanceTest extends TestCase
         ]);
 
         return ['store_id' => $storeId, 'inventory_id' => $inventoryId];
+    }
+
+    /** @param array{store_id:int,inventory_id:int} $stock
+     * @return array{source_warehouse_id:int,target_warehouse_id:int,target_inventory_id:int,product_id:int}
+     */
+    private function transferTarget(array $stock, string $suffix): array
+    {
+        $source = DB::table('inventories')->where('id', $stock['inventory_id'])
+            ->first(['warehouse_id', 'product_id']);
+        $targetWarehouseId = (int) DB::table('warehouses')->insertGetId([
+            'store_id' => $stock['store_id'],
+            'code' => 'P110-WMS-TARGET-'.$suffix,
+            'name' => 'P110 Target Warehouse',
+            'is_active' => true,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        $targetInventoryId = (int) DB::table('inventories')->insertGetId([
+            'warehouse_id' => $targetWarehouseId,
+            'product_id' => (int) $source->product_id,
+            'quantity' => 1,
+            'reserved_quantity' => 0,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        return [
+            'source_warehouse_id' => (int) $source->warehouse_id,
+            'target_warehouse_id' => $targetWarehouseId,
+            'target_inventory_id' => $targetInventoryId,
+            'product_id' => (int) $source->product_id,
+        ];
     }
 
     private function inventoryActor(int $storeId): User
