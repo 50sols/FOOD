@@ -244,7 +244,7 @@ Route::prefix('admin')
         Route::post('/sales/contracts/{contract}/terminate', [CustomerSalesContractController::class, 'terminate'])
             ->whereNumber('contract')->middleware('throttle:20,1')->name('sales-contracts.terminate');
         Route::get('/sales/contracts/{contract}/evidence', [CustomerSalesContractController::class, 'evidence'])
-            ->whereNumber('contract')->middleware('throttle:30,1')->name('sales-contracts.evidence');
+            ->whereNumber('contract')->middleware('throttle:30,1')->name('sales-contracts.download');
         Route::prefix('erp/procurement')->name('erp.procurement.')->group(function (): void {
             Route::get('/', [EnterpriseProcurementController::class, 'index'])->name('index');
             Route::post('/suppliers', [EnterpriseProcurementController::class, 'storeSupplier'])->middleware('throttle:30,1')->name('suppliers.store');
