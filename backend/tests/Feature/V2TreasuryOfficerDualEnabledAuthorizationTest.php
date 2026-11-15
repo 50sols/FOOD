@@ -5,6 +5,7 @@ namespace Tests\Feature;
 use App\Enterprise\Entitlements\EntitlementScope;
 use App\Enterprise\Entitlements\ModuleEntitlementResolver;
 use App\Enterprise\Modules\ModuleLifecycleManager;
+use App\Enterprise\Modules\ModuleOperationalReadiness;
 use App\Enterprise\Modules\ModuleRegistry;
 use App\Enterprise\Modules\ModuleState;
 use App\Enterprise\Organization\OrganizationHierarchyService;
@@ -53,6 +54,11 @@ final class V2TreasuryOfficerDualEnabledAuthorizationTest extends TestCase
                 $registry->manifest($module)->version,
             );
             $this->assertTrue($registry->isEnabled($module));
+            $this->assertSame('ready', app(ModuleOperationalReadiness::class)->status(
+                $module,
+                $registry->manifest($module)->version,
+                ModuleState::ENABLED,
+            ));
         }
 
         $wholesale = Store::query()->findOrFail(app(WholesalePrincipal::class)->storeId());
