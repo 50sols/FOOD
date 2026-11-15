@@ -3,6 +3,7 @@
 namespace Tests\Feature;
 
 use App\Models\Role;
+use App\Services\FieldOperationsFinanceService;
 use App\Models\User;
 use Database\Seeders\CoreReferenceSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -228,6 +229,82 @@ class VanFinanceSupportTest extends TestCase
             ->assertOk()
             ->assertSee('dir="rtl"', false)
             ->assertSee('مراجعة العهدة قبل الإقفال');
+    }
+
+    public function test_literal_finance_search_preserves_punctuation_scope_and_read_only_behavior(): void
+    {
+        $admin = $this->superAdmin();
+        $now = now();
+        $typeId = (int) DB::table('store_types')->where('code', 'B2B')->value('id');
+        $allowedStoreIds = [];
+        $expectedStoreBySymbol = [];
+
+        foreach (['%', '_', '!', '\\', 'X', 'FOREIGN-%'] as $token) {
+            $storeId = (int) DB::table('stores')->insertGetId([
+                'store_type_id' => $typeId,
+                'code' => 'P277-LITERAL-'.bin2hex($token),
+                'name' => 'P277 Literal '.$token,
+                'is_active' => true, 'created_at' => $now, 'updated_at' => $now,
+            ]);
+            $vanId = (int) DB::table('vans')->insertGetId([
+                'public_id' => (string) Str::uuid(),
+                'code' => 'P277-VAN-'.$token,
+                'plate_number' => 'P277-PLATE-'.$token,
+                'status' => 'active',
+                'created_at' => $now, 'updated_at' => $now,
+            ]);
+            $accountId = (int) DB::table('collection_accounts')->insertGetId([
+                'actor_type' => 'van', 'actor_id' => $vanId, 'store_id' => $storeId,
+                'currency' => 'KWD', 'status' => 'active', 'custody_limit' => 500,
+                'created_at' => $now, 'updated_at' => $now,
+            ]);
+            DB::table('collection_transactions')->insert([
+                'collection_account_id' => $accountId, 'payment_id' => null,
+                'idempotency_key' => 'P277-COL-'.$token,
+                'type' => 'collection', 'status' => 'posted', 'amount' => 1,
+                'currency' => 'KWD', 'source' => 'cash_on_delivery',
+                'created_by' => $admin->id, 'created_at' => $now, 'updated_at' => $now,
+            ]);
+            DB::table('remittances')->insert([
+                'collection_account_id' => $accountId,
+                'idempotency_key' => 'P277-REM-'.$token,
+                'amount' => 1, 'currency' => 'KWD', 'method' => 'bank_transfer',
+                'reference' => 'P277-REF-'.$token, 'status' => 'pending',
+                'submitted_by' => $admin->id, 'created_at' => $now, 'updated_at' => $now,
+            ]);
+            if ($token !== 'FOREIGN-%') {
+                $allowedStoreIds[] = $storeId;
+                $expectedStoreBySymbol[$token] = $storeId;
+            }
+        }
+
+        $before = [
+            'collections' => DB::table('collection_transactions')->count(),
+            'remittances' => DB::table('remittances')->count(),
+            'ledger' => DB::table('custody_ledger_entries')->count(),
+        ];
+
+        $service = app(FieldOperationsFinanceService::class);
+        foreach (['%', '_', '!', '\\'] as $symbol) {
+            foreach (['wallets', 'collections', 'remittances', 'closeout'] as $tab) {
+                $model = $service->viewModel($allowedStoreIds, [
+                    'ops_tab' => $tab, 'ops_q' => $symbol,
+                ]);
+                $this->assertCount(1, $model['rows'], "Literal {$symbol} search widened {$tab}");
+                $this->assertSame((int) $expectedStoreBySymbol[$symbol], (int) $model['rows'][0]['store_id']);
+            }
+        }
+
+        $this->actingAs($admin)
+            ->get('/admin/van-finance-support?ops_tab=closeout&ops_q=%25')
+            ->assertOk()
+            ->assertSee('P277-VAN-%')
+            ->assertDontSee('P277-VAN-X')
+            ->assertDontSee('P277-VAN-FOREIGN-%');
+
+        $this->assertSame($before['collections'], DB::table('collection_transactions')->count());
+        $this->assertSame($before['remittances'], DB::table('remittances')->count());
+        $this->assertSame($before['ledger'], DB::table('custody_ledger_entries')->count());
     }
 
     private function superAdmin(): User
