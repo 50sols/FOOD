@@ -867,6 +867,24 @@ paths:
       parameters:
         - $ref: "#/components/parameters/Page"
         - $ref: "#/components/parameters/PerPage"
+        - in: query
+          name: country_code
+          description: Optional service-zone country filter; an empty value is ignored.
+          schema:
+            type: string
+            maxLength: 16
+        - in: query
+          name: city
+          description: Optional service-zone city filter; an empty value is ignored.
+          schema:
+            type: string
+            maxLength: 150
+        - in: query
+          name: area
+          description: Optional service-zone area filter; an empty value is ignored.
+          schema:
+            type: string
+            maxLength: 150
       responses:
         "200":
           description: Store collection
@@ -874,6 +892,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/StoreCollection"
+        "422":
+          $ref: "#/components/responses/ValidationError"
 
   /stores/{store}/categories:
     get:
