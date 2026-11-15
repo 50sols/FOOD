@@ -6,6 +6,7 @@ return [
     'guest_store_mismatch' => 'سلة الضيف مرتبطة بمتجر آخر.',
     'guest_channel_mismatch' => 'لا يمكن دمج سلة ضيف B2C في سلة B2B.',
     'merge_selling_unit_conflict' => 'لا يمكن دمج سلتي المشتريات عند اختلاف وحدة بيع المنتج نفسه. احذف أحد السطرين المتعارضين أولًا.',
+    'existing_line_selling_unit_conflict' => 'احذف سطر المنتج الموجود قبل تغيير وحدة بيعه.',
     'guest_token_required' => 'يرجى إدخال رمز سلة الضيف.',
     'guest_token_invalid' => 'رمز سلة الضيف غير صالح.',
     'authenticated_store_required' => 'يجب تحديد متجر عند بدء سلة المشتريات بعد تسجيل الدخول.',
