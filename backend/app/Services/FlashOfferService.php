@@ -49,7 +49,9 @@ final class FlashOfferService
         string $channel,
         string $idempotencyKey,
     ): FlashReservation {
-        if ($sellingQuantity <= 0) {
+        // NaN bypasses <= 0, while +INF can taint allocation and stock calculations.
+        // Reject non-finite values before idempotency replay lookup or DB writes.
+        if (! is_finite($sellingQuantity) || $sellingQuantity <= 0) {
             throw new HttpException(422, 'Selling quantity must be greater than zero.');
         }
 
