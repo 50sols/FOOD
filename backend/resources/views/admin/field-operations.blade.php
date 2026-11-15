@@ -331,6 +331,15 @@
             {{ $vans->links() }}
 
         @elseif($section === 'van-detail')
+            @if($canViewVanWarehouseStock)
+            <nav class="foodex-tabs fieldops-actions" aria-label="{{ __('van_inventory.title') }}" data-van-inventory-workspace-tabs>
+                <a class="foodex-tab" href="{{ route('admin.field-operations.vans.show', ['van' => $van->id]) }}" @if(! $inventoryTab) aria-current="page" @endif>{{ __('van_inventory.details') }}</a>
+                <a class="foodex-tab" href="{{ route('admin.field-operations.vans.show', ['van' => $van->id, 'tab' => 'warehouse-stock']) }}" data-van-assigned-stock-tab @if($inventoryTab) aria-current="page" @endif>{{ __('van_inventory.assigned_stock') }}</a>
+            </nav>
+            @endif
+            @if($inventoryTab && $vanWarehouseStock !== null)
+                @include('admin._van-assigned-warehouse-stock', ['vanWarehouseStock' => $vanWarehouseStock, 'van' => $van])
+            @endif
             <div class="fieldops-actions"><a href="{{ route('admin.field-operations.vans') }}">← {{ __('field_operations.back_to_vans') }}</a></div>
             <section class="fieldops-grid">
                 <article class="fieldops-card"><h2>{{ __('field_operations.van_identity') }}</h2>
