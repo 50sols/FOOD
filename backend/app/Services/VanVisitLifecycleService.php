@@ -38,14 +38,14 @@ final class VanVisitLifecycleService
             $allowed = self::TRANSITIONS[$current] ?? [];
             if (in_array($targetStatus, $allowed, true) === false) {
                 throw ValidationException::withMessages([
-                    'status' => ["Visit cannot transition from {$current} to {$targetStatus}."],
+                    'status' => [__('van_visit_guard.transition_not_allowed')],
                 ]);
             }
 
             if ($targetStatus === 'completed_with_order') {
                 if ($orderId === null) {
                     throw ValidationException::withMessages([
-                        'order_id' => ['An authoritative order is required to complete a visit with order.'],
+                        'order_id' => [__('van_visit_guard.authoritative_order_required')],
                     ]);
                 }
 
@@ -72,7 +72,7 @@ final class VanVisitLifecycleService
             if ($targetStatus === 'completed_no_order') {
                 if ($noOrderReasonId === null) {
                     throw ValidationException::withMessages([
-                        'no_order_reason_id' => ['A configured no-order reason is required.'],
+                        'no_order_reason_id' => [__('van_visit_guard.no_order_reason_required')],
                     ]);
                 }
 
@@ -83,7 +83,7 @@ final class VanVisitLifecycleService
 
                 if ($reasonExists === false) {
                     throw ValidationException::withMessages([
-                        'no_order_reason_id' => ['The selected no-order reason is not active.'],
+                        'no_order_reason_id' => [__('van_visit_guard.no_order_reason_inactive')],
                     ]);
                 }
             }
