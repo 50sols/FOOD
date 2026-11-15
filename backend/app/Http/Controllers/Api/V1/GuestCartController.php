@@ -47,7 +47,7 @@ class GuestCartController extends Controller
 
             $cart = $token === null
                 ? null
-                : $this->mergeGuestCart($token, $customer, $channel, $storeId > 0 ? $storeId : null);
+                : $this->mergeGuestCart($request, $token, $customer, $channel, $storeId > 0 ? $storeId : null);
 
             if ($cart === null) {
                 $this->activeStoreForChannel($resolvedStoreId, $channel);
@@ -98,7 +98,7 @@ class GuestCartController extends Controller
             $this->activeStoreForChannel((int) $cart->store_id, 'b2c');
 
             if ($storeId > 0 && (int) $cart->store_id !== $storeId) {
-                abort(409, 'Guest cart belongs to another store.');
+                abort(409, $this->conflictMessage($request, 'smart_ordering_cart.guest_store_mismatch'));
             }
         }
 
@@ -145,7 +145,7 @@ class GuestCartController extends Controller
 
             $cart = $token === null
                 ? $this->customerCart($customer, $storeId, $channel)
-                : $this->mergeGuestCart($token, $customer, $channel, $storeId);
+                : $this->mergeGuestCart($request, $token, $customer, $channel, $storeId);
         } else {
             $this->activeStoreForChannel($storeId, 'b2c');
 
@@ -157,7 +157,7 @@ class GuestCartController extends Controller
                 ->first();
 
             if ($cart !== null && (int) $cart->store_id !== $storeId) {
-                abort(409, 'Guest cart belongs to another store.');
+                abort(409, $this->conflictMessage($request, 'smart_ordering_cart.guest_store_mismatch'));
             }
 
             if ($cart === null) {
@@ -325,6 +325,16 @@ class GuestCartController extends Controller
         return $token;
     }
 
+    private function conflictMessage(Request $request, string $key): string
+    {
+        $actor = Auth::guard('sanctum')->user();
+        $locale = $actor instanceof User && in_array($actor->locale, ['ar', 'en'], true)
+            ? $actor->locale
+            : ($request->getPreferredLanguage(['ar', 'en']) ?? 'ar');
+
+        return __($key, [], $locale);
+    }
+
     private function guestCartForToken(string $token): Cart
     {
         return Cart::query()
@@ -353,18 +363,19 @@ class GuestCartController extends Controller
     }
 
     private function mergeGuestCart(
+        Request $request,
         string $token,
         B2bCustomer|B2cCustomer $customer,
         string $channel,
         ?int $requestedStoreId = null,
     ): Cart {
-        abort_if($channel !== 'b2c', 409, 'A B2C guest cart cannot be merged into a B2B cart.');
+        abort_if($channel !== 'b2c', 409, $this->conflictMessage($request, 'smart_ordering_cart.guest_channel_mismatch'));
 
         $guestCart = $this->guestCartForToken($token);
         $storeId = (int) $guestCart->store_id;
 
         if ($requestedStoreId !== null && $storeId !== $requestedStoreId) {
-            abort(409, 'Guest cart belongs to another store.');
+            abort(409, $this->conflictMessage($request, 'smart_ordering_cart.guest_store_mismatch'));
         }
 
         $this->activeStoreForChannel($storeId, 'b2c');
