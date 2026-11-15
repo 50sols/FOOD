@@ -380,6 +380,61 @@ class VanDeliveryExecutionTest extends TestCase
         $this->assertDatabaseCount('order_van_execution_events', 0);
     }
 
+
+    public function test_invalid_van_execution_idempotency_key_is_localized_and_cannot_write(): void
+    {
+        Storage::fake('public');
+        $actor = $this->vanActor();
+        [$order] = $this->assignedB2bOrder($actor, 'IDEMPOTENCY-LOCALE');
+
+        $messages = [
+            'ar' => 'يجب أن يتكون مفتاح Idempotency-Key من 8 إلى 128 حرفًا، باستخدام الأحرف والأرقام والنقطة والشرطة السفلية والنقطتين والشرطة.',
+            'en' => 'Idempotency-Key must be 8-128 characters using letters, numbers, dot, underscore, colon or dash.',
+        ];
+        $keys = ['', 'invalid/key', str_repeat('x', 129)];
+        $base = '/api/v1/van/orders/'.$order->id.'/execution';
+
+        foreach ($messages as $locale => $message) {
+            $actor->forceFill(['locale' => $locale])->save();
+            $contraryHeader = $locale === 'ar' ? 'en' : 'ar';
+
+            foreach ($keys as $key) {
+                foreach ([
+                    ['/transition', ['status' => 'accepted']],
+                    ['/fail', ['failure_reason' => 'customer_no_answer']],
+                    ['/retry', []],
+                ] as [$suffix, $payload]) {
+                    $this->withHeaders([
+                        'Idempotency-Key' => $key,
+                        'Accept-Language' => $contraryHeader,
+                    ])->postJson($base.$suffix, $payload)
+                        ->assertUnprocessable()
+                        ->assertJsonPath('errors.idempotency_key.0', $message);
+                }
+
+                $this->withHeaders([
+                    'Idempotency-Key' => $key,
+                    'Accept-Language' => $contraryHeader,
+                ])->post($base.'/proof', [
+                    'proof_image' => UploadedFile::fake()->image('invalid-header-proof.jpg', 100, 100),
+                ])
+                    ->assertUnprocessable()
+                    ->assertJsonPath('errors.idempotency_key.0', $message);
+
+                $this->assertDatabaseHas('orders', [
+                    'id' => $order->id,
+                    'status' => 'pending',
+                ]);
+                $this->assertDatabaseHas('order_van_execution_states', [
+                    'order_id' => $order->id,
+                    'status' => 'assigned',
+                ]);
+                $this->assertDatabaseCount('order_van_execution_events', 0);
+                $this->assertSame(0, DB::table('payments')->where('order_id', $order->id)->count());
+            }
+        }
+    }
+
     private function transition(int $orderId, string $status, string $key)
     {
         return $this->withHeader('Idempotency-Key', $key)

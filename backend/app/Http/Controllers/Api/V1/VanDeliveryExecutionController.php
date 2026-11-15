@@ -145,6 +145,10 @@ final class VanDeliveryExecutionController extends Controller
 
     private function idempotencyKey(Request $request): string
     {
+        $actorLocale = $request->user()?->locale;
+        $locale = in_array($actorLocale, ['ar', 'en'], true)
+            ? $actorLocale
+            : ($request->getPreferredLanguage(['ar', 'en']) ?? 'ar');
         $key = trim((string) $request->header('Idempotency-Key', ''));
 
         if (
@@ -154,7 +158,7 @@ final class VanDeliveryExecutionController extends Controller
         ) {
             throw ValidationException::withMessages([
                 'idempotency_key' => [
-                    'Idempotency-Key must be 8-128 characters using letters, numbers, dot, underscore, colon or dash.',
+                    __('van_delivery_execution_errors.invalid_idempotency_key', [], $locale),
                 ],
             ]);
         }
