@@ -68,10 +68,13 @@ final class Customer360Controller extends Controller
 
         $search = trim((string) ($filters['q'] ?? ''));
         if ($search !== '') {
-            $query->where(function ($q) use ($search): void {
-                $q->where('platform_customers.name', 'like', "%{$search}%")
-                    ->orWhere('platform_customers.email', 'like', "%{$search}%")
-                    ->orWhere('platform_customers.phone', 'like', "%{$search}%");
+            // Treat search as literal text: escape SQL LIKE's !, % and _ operators
+            // before adding the intentional substring wildcards.
+            $literalSearch = '%'.str_replace(['!', '%', '_'], ['!!', '!%', '!_'], $search).'%';
+            $query->where(function ($q) use ($literalSearch): void {
+                $q->whereRaw("platform_customers.name LIKE ? ESCAPE '!'", [$literalSearch])
+                    ->orWhereRaw("platform_customers.email LIKE ? ESCAPE '!'", [$literalSearch])
+                    ->orWhereRaw("platform_customers.phone LIKE ? ESCAPE '!'", [$literalSearch]);
             });
         }
 
@@ -359,9 +362,11 @@ final class Customer360Controller extends Controller
 
         $query = clone $base;
         if ($search !== '') {
-            $needle = '%'.addcslashes($search, '%_\\\\').'%';
+            // Explicit, portable LIKE escaping keeps finance invoice identifiers
+            // literal on SQLite and MySQL/MariaDB, including backslashes.
+            $needle = '%'.str_replace(['!', '%', '_'], ['!!', '!%', '!_'], $search).'%';
             $query->where(function ($builder) use ($needle, $referenceId): void {
-                $builder->where('invoices.invoice_number', 'like', $needle);
+                $builder->whereRaw("invoices.invoice_number LIKE ? ESCAPE '!'", [$needle]);
                 if ($referenceId !== null) {
                     $builder->orWhere('invoices.id', $referenceId);
                 }

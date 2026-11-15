@@ -221,6 +221,48 @@ final class V2VanTripSettlementProvenanceTest extends TestCase
         ]);
     }
 
+    public function test_duplicate_invoice_allocations_reject_without_writes_and_allow_corrected_idempotent_retry(): void
+    {
+        $actor = User::factory()->create(['is_active' => true]);
+        $store = $this->store('B2B', 'P272-DUPLICATE-ALLOCATION-GUARD');
+        $invoice = $this->invoice($store, 'b2b', 'P272-DUPLICATE-INVOICE');
+        $account = CollectionAccount::query()->create([
+            'actor_type' => 'van',
+            'actor_id' => 410,
+            'store_id' => $store,
+            'currency' => 'KWD',
+            'status' => 'active',
+        ]);
+        $service = app(CollectionCustodyService::class);
+        $key = 'p272-rejected-duplicate-lines';
+
+        try {
+            $service->collect($account, $actor, $key, 20, 'KWD', 'van_app', [
+                ['invoice_id' => (int) $invoice->getKey(), 'amount' => 10],
+                ['invoice_id' => (int) $invoice->getKey(), 'amount' => 10],
+            ]);
+            $this->fail('Duplicate invoice allocations must be rejected before financial posting.');
+        } catch (ValidationException $exception) {
+            $this->assertArrayHasKey('allocations', $exception->errors());
+        }
+
+        $this->assertDatabaseMissing('payments', ['provider_reference' => $key]);
+        $this->assertDatabaseMissing('collection_transactions', ['idempotency_key' => $key]);
+        $this->assertDatabaseCount('collection_allocations', 0);
+        $this->assertDatabaseCount('custody_ledger_entries', 0);
+
+        // A rejected key has no persisted receipt; the corrected request
+        // and its identical replay return a single transaction.
+        $valid = [['invoice_id' => (int) $invoice->getKey(), 'amount' => 10]];
+        $first = $service->collect($account, $actor, $key, 10, 'KWD', 'van_app', $valid);
+        $replayed = $service->collect($account, $actor, $key, 10, 'KWD', 'van_app', $valid);
+        $this->assertSame($first->getKey(), $replayed->getKey());
+        $this->assertDatabaseCount('payments', 1);
+        $this->assertDatabaseCount('collection_transactions', 1);
+        $this->assertDatabaseCount('collection_allocations', 1);
+        $this->assertDatabaseCount('custody_ledger_entries', 1);
+    }
+
     public function test_non_finite_collection_and_remittance_totals_cannot_create_financial_entries(): void
     {
         $actor = User::factory()->create(['is_active' => true]);

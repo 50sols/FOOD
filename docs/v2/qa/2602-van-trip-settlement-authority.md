@@ -139,3 +139,22 @@ At initial preflight:
 **FULL P272 SOURCE INCOMPLETE / NO SAFE FULL TRIP-SETTLEMENT MERGE OR CODE-COMPLETE CLAIM.** The independently reviewed, issue-scoped invoice allocation isolation regression and fail-closed service guard are a bounded security slice that may be integrated only into `Foodex_V2` after every required exact-final-head check is GREEN. This *partial integration* does not authorize trip closeout, per-trip cash posting or stock reconciliation, and Issue #2602 must remain OPEN until all remaining P272 source requirements are implemented and verified. No claim of fresh-install/upgrade success, full Laravel pass or live-account proof is inferred from source inspection; attach exact head CI evidence when available. Once full source and CI are green, manual owner/browser/device UAT may be recorded as `MANUAL_ACCEPTANCE: DEFERRED_TO_V2_FINAL` under #2503, not before.
 
 No `main` integration, tags, releases or production deployment.
+
+## Duplicate invoice allocation IDs — consistent collection idempotency
+
+The collection write path previously permitted two positive lines with the
+same invoice ID even though its replay validator insists on unique invoice IDs.
+This could create an acknowledged paid receipt that cannot be replayed with
+identical terms, as well as duplicate allocation rows. The bounded source guard
+rejects non-positive or duplicate IDs in the same existing transaction **before
+financial writes**. The real RefreshDatabase regression verifies rejection
+without Payment, CollectionTransaction, allocation or custody entry; it then
+proves a corrected first submission with the same key and its replay both
+return the exact single transaction. Existing store/channel checks and
+B2B=VAN ONLY / B2C=DRIVER ONLY remain intact.
+
+Dashboard: no UI or route changes. Customer: no public API/Flutter changes.
+Driver: no public API/Flutter changes. Van: no public API or Flutter payload
+change; invalid duplicate invoice lines now fail closed in the backend.
+No production, main or release artifacts. Full P272 trip-session, stock and
+maker/checker settlement acceptance remains open.

@@ -96,7 +96,17 @@ final class CollectionCustodyService
             }
 
             $allocatedTotal = 0.0;
+            $seenInvoiceIds = [];
             foreach ($allocations as $allocation) {
+                // Duplicate invoice lines create a receipt that cannot be
+                // replayed idempotently and can double-count the same invoice.
+                $invoiceId = (int) ($allocation['invoice_id'] ?? 0);
+                if ($invoiceId <= 0 || isset($seenInvoiceIds[$invoiceId])) {
+                    throw ValidationException::withMessages([
+                        'allocations' => ['Each allocation must reference one distinct, valid invoice.'],
+                    ]);
+                }
+                $seenInvoiceIds[$invoiceId] = true;
                 // Never post zero, negative or non-finite invoice allocations:
                 // a negative line can otherwise offset a positive line and
                 // bypass the collected-amount cap before the payment is posted.

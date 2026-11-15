@@ -199,12 +199,12 @@ final class SmartOrderingMenuReadService
             })
             ->when($featured !== null, fn ($builder) => $builder->where('featured', $featured))
             ->when($query !== null && trim($query) !== '', function ($builder) use ($query): void {
-                $needle = '%'.trim($query).'%';
+                $needle = '%'.str_replace(['!', '%', '_'], ['!!', '!%', '!_'], trim($query)).'%';
                 $builder->where(function ($nested) use ($needle): void {
-                    $nested->where('name_ar', 'like', $needle)
-                        ->orWhere('name_en', 'like', $needle)
-                        ->orWhere('description_ar', 'like', $needle)
-                        ->orWhere('description_en', 'like', $needle);
+                    $nested->whereRaw("name_ar LIKE ? ESCAPE '!'", [$needle])
+                        ->orWhereRaw("name_en LIKE ? ESCAPE '!'", [$needle])
+                        ->orWhereRaw("description_ar LIKE ? ESCAPE '!'", [$needle])
+                        ->orWhereRaw("description_en LIKE ? ESCAPE '!'", [$needle]);
                 });
             })
             ->orderBy('sort_order')
