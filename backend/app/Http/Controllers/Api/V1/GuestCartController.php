@@ -176,7 +176,7 @@ class GuestCartController extends Controller
         $pricing = null;
         if ($user instanceof User && $channel === 'b2b') {
             $pricing = app(B2bPriceResolver::class)->resolve($customer, $storeId, $productId);
-            $this->assertB2bQuantity($quantity, $pricing);
+            $this->assertB2bQuantity($request, $quantity, $pricing);
             $state['price'] = $pricing['price'];
         }
 
@@ -194,7 +194,7 @@ class GuestCartController extends Controller
         $newQuantity = ($item->exists ? (float) $item->quantity : 0.0) + $quantity;
         if ($user instanceof User && $channel === 'b2b') {
             abort_unless(is_array($pricing), 500, 'B2B pricing context is unavailable.');
-            $this->assertB2bQuantity($newQuantity, $pricing);
+            $this->assertB2bQuantity($request, $newQuantity, $pricing);
         }
         $this->assertQuantityAvailable($state['available_quantity'], $newQuantity);
 
@@ -255,7 +255,7 @@ class GuestCartController extends Controller
         if ((string) $cart->channel === 'b2b' && $cart->b2b_customer_id !== null) {
             $customer = B2bCustomer::query()->findOrFail((int) $cart->b2b_customer_id);
             $pricing = app(B2bPriceResolver::class)->resolve($customer, (int) $cart->store_id, (int) $cartItem->product_id);
-            $this->assertB2bQuantity($quantity, $pricing);
+            $this->assertB2bQuantity($request, $quantity, $pricing);
             $state['price'] = $pricing['price'];
         }
         $this->assertQuantityAvailable($state['available_quantity'], $quantity);
@@ -544,12 +544,12 @@ class GuestCartController extends Controller
     }
 
     /** @param array{minimum_quantity: float, ordering_increment: float} $pricing */
-    private function assertB2bQuantity(float $quantity, array $pricing): void
+    private function assertB2bQuantity(Request $request, float $quantity, array $pricing): void
     {
         abort_unless(
             $this->isValidB2bQuantity($quantity, $pricing),
             409,
-            'Quantity must meet the B2B minimum and ordering increment.',
+            $this->localizedCartMessage($request, 'smart_ordering_cart.b2b_quantity_minimum_increment'),
         );
     }
 
