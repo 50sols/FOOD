@@ -86,6 +86,80 @@ class VanCollectionControllerTest extends TestCase
 
         Sanctum::actingAs($actor, ['app:van']);
 
+        // Verify persisted actor language takes precedence over contrary headers.
+        // Invalid idempotency headers must fail before any financial/stock write.
+        $guardedTables = [
+            'collection_accounts',
+            'collection_transactions',
+            'remittances',
+            'custody_ledger_entries',
+            'payments',
+            'orders',
+            'invoices',
+            'stock_movements',
+            'inventory_reservations',
+            'audit_logs',
+        ];
+        $beforeInvalid = [];
+        foreach ($guardedTables as $table) {
+            if (DB::getSchemaBuilder()->hasTable($table)) {
+                $beforeInvalid[$table] = DB::table($table)->count();
+            }
+        }
+
+        $invalidHeaderMessage = [
+            'en' => 'Idempotency-Key must be 8-72 characters using letters, numbers, dot, underscore, colon or dash.',
+            'ar' => 'يجب أن يتكوّن مفتاح Idempotency-Key من 8 إلى 72 حرفًا، باستخدام الأحرف الإنجليزية والأرقام والنقطة والشرطة السفلية والنقطتين والشرطة فقط.',
+        ];
+
+        foreach ($invalidHeaderMessage as $locale => $message) {
+            $actor->forceFill(['locale' => $locale])->save();
+
+            foreach (['short', 'invalid key!', str_repeat('A', 73)] as $invalidKey) {
+                $headers = [
+                    'Idempotency-Key' => $invalidKey,
+                    'Accept-Language' => $locale === 'ar' ? 'en-US,en;q=0.9' : 'ar-KW,ar;q=0.9',
+                ];
+
+                $this->withHeaders($headers)
+                    ->postJson("/api/v1/van/customers/b2b/{$customer->getKey()}/collect", [
+                        'store_id' => $storeId,
+                        'invoice_id' => $invoice->getKey(),
+                        'amount' => 30,
+                    ])
+                    ->assertUnprocessable()
+                    ->assertJsonPath('errors.idempotency_key.0', $message);
+
+                $this->withHeaders($headers)
+                    ->postJson('/api/v1/van/remittances', [
+                        'collection_account_id' => 999999,
+                        'amount' => 10,
+                        'method' => 'bank_deposit',
+                    ])
+                    ->assertUnprocessable()
+                    ->assertJsonPath('errors.idempotency_key.0', $message);
+
+                foreach ($beforeInvalid as $table => $count) {
+                    $this->assertSame($count, DB::table($table)->count(), "Unexpected {$table} write for invalid Van idempotency header");
+                }
+            }
+        }
+
+        // Unsupported/empty saved locale uses the supported Accept-Language negotiation.
+        $actor->forceFill(['locale' => null])->save();
+        $this->withHeaders(['Idempotency-Key' => 'short', 'Accept-Language' => 'en-US,en;q=0.9'])
+            ->postJson('/api/v1/van/remittances', [
+                'collection_account_id' => 999999,
+                'amount' => 10,
+                'method' => 'bank_deposit',
+            ])
+            ->assertUnprocessable()
+            ->assertJsonPath('errors.idempotency_key.0', $invalidHeaderMessage['en']);
+        foreach ($beforeInvalid as $table => $count) {
+            $this->assertSame($count, DB::table($table)->count());
+        }
+        $actor->forceFill(['locale' => 'ar'])->save();
+
         $this->getJson(
             "/api/v1/van/customers/b2b/{$customer->getKey()}/collection-context?store_id={$storeId}",
         )
