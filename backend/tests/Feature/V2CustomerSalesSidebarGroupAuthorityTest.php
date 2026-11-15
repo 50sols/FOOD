@@ -5,6 +5,7 @@ namespace Tests\Feature;
 use App\Models\Permission;
 use App\Models\Role;
 use App\Models\User;
+use App\Models\WhatsAppModuleState;
 use App\Support\AdminNavigation;
 use Database\Seeders\CoreReferenceSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -199,7 +200,7 @@ final class V2CustomerSalesSidebarGroupAuthorityTest extends TestCase
             ->assertOk();
         $this->assertStringNotContainsString('data-nav-group="customer_service"', (string) $before->getContent());
 
-        \App\Models\WhatsAppModuleState::query()->findOrFail(1)->forceFill([
+        WhatsAppModuleState::query()->findOrFail(1)->forceFill([
             'lifecycle' => 'INTERNAL_TEST',
             'emergency_stop' => true,
             'capabilities' => ['agent_inbox' => true],
@@ -220,7 +221,7 @@ final class V2CustomerSalesSidebarGroupAuthorityTest extends TestCase
             $this->assertStringContainsString('data-nav-group="'.$key.'"', $matches[1]);
         }
 
-        \App\Models\WhatsAppModuleState::query()->findOrFail(1)->forceFill([
+        WhatsAppModuleState::query()->findOrFail(1)->forceFill([
             'capabilities' => ['agent_inbox' => false],
         ])->save();
         $denied = $this->actingAs($actor->fresh())->get(route('admin.whatsapp-inbox.index'));
