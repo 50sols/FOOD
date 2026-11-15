@@ -12,6 +12,7 @@ import '../../core/engagement/live_ad_service.dart';
 import '../../core/engagement/notification_campaign_popup_service.dart';
 import '../../core/localization/app_translations.dart';
 import '../../core/routing/customer_commerce_context.dart';
+import '../../core/routing/customer_commerce_context_switcher.dart';
 import '../../core/routing/customer_routes.dart';
 import '../../shared/customer_favorite_button.dart';
 import 'storefront_design_system.dart';
@@ -73,11 +74,22 @@ class _StoreSelectionDesignScreenState
         }
       }
 
-      return widget.storefrontApi!.selection(
+      final selection = await widget.storefrontApi!.selection(
         countryCode: countryCode,
         city: city,
         area: area,
       );
+      if (widget.session.isAuthenticated && widget.session.platformWide) {
+        if (widget.session.accessToken?.trim().isNotEmpty != true) {
+          throw const CustomerCommerceContextSwitchException(
+            'platform_customer_session_required',
+          );
+        }
+        // Never display a channel/store candidate that failed the same
+        // authoritative selector contract used by Customer context switches.
+        return CustomerCommerceContextSwitcher.validatedSelection(selection);
+      }
+      return selection;
     }
     final stores = await widget.catalogApi.stores();
     return {
@@ -232,8 +244,15 @@ class _StoreSelectionDesignScreenState
                               store: store,
                               onTap: () {
                                 final id = intValue(store['id']);
-                                Navigator.of(context)
-                                    .pushNamed('/retail/$id/home');
+                                if (id <= 0) return;
+                                Navigator.of(context).pushNamed(
+                                  CustomerRouteLocations.retailHome(
+                                    CustomerCommerceContext(
+                                      channel: CustomerCommerceChannel.retail,
+                                      storeId: id,
+                                    ),
+                                  ),
+                                );
                               },
                             ),
                           ),
@@ -263,11 +282,20 @@ class _StoreSelectionDesignScreenState
                                 }
 
                                 widget.enterWholesale(retailContext);
-                                var route =
-                                    '/b2b/home?store_id=' + storeId.toString();
+                                if (storeId <= 0) return;
+                                final wholesaleContext = CustomerCommerceContext(
+                                  channel: CustomerCommerceChannel.wholesale,
+                                  storeId: storeId,
+                                );
+                                var route = CustomerRouteLocations.wholesaleHome(
+                                  wholesaleContext,
+                                );
                                 if (retailContext != null) {
-                                  route += '&retail_store_id=' +
-                                      retailContext.toString();
+                                  final uri = Uri.parse(route);
+                                  route = uri.replace(queryParameters: {
+                                    ...uri.queryParameters,
+                                    'retail_store_id': '$retailContext',
+                                  }).toString();
                                 }
                                 WidgetsBinding.instance
                                     .addPostFrameCallback((_) {
