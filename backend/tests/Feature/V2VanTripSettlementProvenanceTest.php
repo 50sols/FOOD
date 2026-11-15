@@ -5,6 +5,7 @@ namespace Tests\Feature;
 use App\Models\CollectionAccount;
 use App\Models\Customer;
 use App\Models\Invoice;
+use App\Models\Remittance;
 use App\Models\Role;
 use App\Models\User;
 use App\Services\CollectionCustodyService;
@@ -431,7 +432,6 @@ final class V2VanTripSettlementProvenanceTest extends TestCase
         ]);
     }
 
-
     public function test_collection_and_remittance_replays_reject_another_actor_even_when_terms_match(): void
     {
         $maker = User::factory()->create(['is_active' => true]);
@@ -499,7 +499,7 @@ final class V2VanTripSettlementProvenanceTest extends TestCase
         $approved = $service->approveRemittance($pending, $checker);
         $ledger = DB::table('custody_ledger_entries')
             ->where('entry_type', 'approved_remittance')
-            ->where('reference_type', \App\Models\Remittance::class)
+            ->where('reference_type', Remittance::class)
             ->where('reference_id', $approved->id);
 
         $original = [
