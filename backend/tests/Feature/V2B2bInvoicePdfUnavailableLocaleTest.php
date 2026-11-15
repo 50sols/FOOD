@@ -78,6 +78,8 @@ final class V2B2bInvoicePdfUnavailableLocaleTest extends TestCase
     {
         [$owner, $invoice] = $this->buyerWithInvoice('B2B-OWNER-SECURE-PDF', 'active', 'en');
         $path = '/api/v1/b2b/invoices/'.$invoice->id.'/download';
+        $downloadAuditBefore = DB::table('audit_logs')
+            ->where('event', 'b2b.finance.invoice_downloaded')->count();
         $this->getJson($path)->assertUnauthorized();
 
         [$foreign] = $this->buyerWithInvoice('B2B-FOREIGN-SECURE-PDF', 'active', 'ar');
@@ -103,7 +105,10 @@ final class V2B2bInvoicePdfUnavailableLocaleTest extends TestCase
         ]);
         $this->getJson('/api/v1/b2b/invoices/'.$retailChannelInvoice->id.'/download')
             ->assertNotFound();
-        $this->assertDatabaseCount('audit_logs', 0);
+        $this->assertSame(
+            $downloadAuditBefore,
+            DB::table('audit_logs')->where('event', 'b2b.finance.invoice_downloaded')->count(),
+        );
     }
 
     /**
