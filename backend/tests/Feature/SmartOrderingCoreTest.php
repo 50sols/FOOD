@@ -573,6 +573,82 @@ class SmartOrderingCoreTest extends TestCase
         }
     }
 
+    public function test_holiday_and_branch_hours_checkout_rejections_are_bilingual_and_never_write_orders(): void
+    {
+        $expected = [
+            'en' => [
+                'holiday' => 'This branch is closed on the selected date.',
+                'closed_hours' => 'This branch is closed at the selected time.',
+                'outside_hours' => 'This branch is closed at the selected time.',
+            ],
+            'ar' => [
+                'holiday' => 'هذا الفرع مغلق في التاريخ المحدد.',
+                'closed_hours' => 'هذا الفرع مغلق في الوقت المحدد.',
+                'outside_hours' => 'هذا الفرع مغلق في الوقت المحدد.',
+            ],
+        ];
+
+        foreach ($expected as $locale => $messages) {
+            app()->setLocale($locale);
+            $this->withHeaders(['Accept-Language' => $locale]);
+
+            foreach (['holiday', 'closed_hours', 'outside_hours'] as $scenario) {
+                $scheduled = CarbonImmutable::now('Asia/Kuwait')->addDay()->startOfDay()->addHours(13);
+
+                DB::table('smart_ordering_branch_hours')
+                    ->where('branch_id', $this->branch->id)
+                    ->delete();
+
+                $this->branch->update([
+                    'allow_scheduled' => true,
+                    'max_schedule_days' => 7,
+                    'pickup_lead_minutes' => 0,
+                    'holiday_closed_dates' => $scenario === 'holiday'
+                        ? [$scheduled->format('Y-m-d')]
+                        : [],
+                ]);
+
+                if ($scenario !== 'holiday') {
+                    DB::table('smart_ordering_branch_hours')->insert([
+                        'branch_id' => $this->branch->id,
+                        'day_of_week' => $scheduled->dayOfWeek,
+                        'is_closed' => $scenario === 'closed_hours',
+                        'opens_at' => $scenario === 'outside_hours' ? '00:00:00' : null,
+                        'closes_at' => $scenario === 'outside_hours' ? '00:30:00' : null,
+                        'created_at' => now(),
+                        'updated_at' => now(),
+                    ]);
+                }
+
+                [$cart, $token] = $this->cart();
+                $this->addItem($cart, $token, 1);
+
+                $before = [
+                    'orders' => DB::table('orders')->count(),
+                    'payments' => DB::table('payments')->count(),
+                    'audit' => DB::table('audit_logs')->count(),
+                    'cart_items' => DB::table('smart_ordering_cart_items')->count(),
+                    'cart_status' => DB::table('smart_ordering_carts')->where('public_id', $cart)->value('status'),
+                    'reserved' => DB::table('inventories')->where('product_id', $this->productId)->value('reserved_quantity'),
+                ];
+
+                $this->checkout($cart, $token, 'v2-hours-'.$locale.'-'.$scenario, [
+                    'fulfillment_mode' => 'pickup',
+                    'scheduled_for' => $scheduled->format('Y-m-d H:i:s'),
+                ])
+                    ->assertConflict()
+                    ->assertJsonPath('message', $messages[$scenario]);
+
+                $this->assertSame($before['orders'], DB::table('orders')->count());
+                $this->assertSame($before['payments'], DB::table('payments')->count());
+                $this->assertSame($before['audit'], DB::table('audit_logs')->count());
+                $this->assertSame($before['cart_items'], DB::table('smart_ordering_cart_items')->count());
+                $this->assertSame($before['cart_status'], DB::table('smart_ordering_carts')->where('public_id', $cart)->value('status'));
+                $this->assertEquals($before['reserved'], DB::table('inventories')->where('product_id', $this->productId)->value('reserved_quantity'));
+            }
+        }
+    }
+
     public function test_dine_in_requires_valid_branch_table_token(): void
     {
         $tablePublicId = (string) Str::uuid();
