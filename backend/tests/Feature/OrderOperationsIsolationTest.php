@@ -780,7 +780,7 @@ class OrderOperationsIsolationTest extends TestCase
             ->assertSee('31.2357120');
     }
 
-    public function test_driver_reminder_409_is_localized_and_never_queues_for_missing_assignment(): void
+    public function test_driver_reminder_409_is_localized_for_missing_assignment_and_inactive_app_user(): void
     {
         Queue::fake();
 
@@ -802,6 +802,38 @@ class OrderOperationsIsolationTest extends TestCase
             'OPS-REMINDER-409-002',
         );
 
+        $inactiveDriverUser = User::query()->create([
+            'name' => 'Inactive Reminder Driver',
+            'email' => 'ops-reminder-inactive-driver@example.test',
+            'password' => 'password',
+            'is_active' => false,
+        ]);
+        $driverId = (int) DB::table('drivers')->insertGetId([
+            'user_id' => $inactiveDriverUser->id,
+            'store_id' => $store,
+            'driver_type' => 'b2c',
+            'is_available' => false,
+            'is_active' => true,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        $assignedOrder = $this->order(
+            $store,
+            (int) $buyer->legacy_customer_id,
+            (int) $buyer->id,
+            'OPS-REMINDER-409-003',
+        );
+        DB::table('driver_assignments')->insert([
+            'driver_id' => $driverId,
+            'order_id' => $assignedOrder,
+            'store_id' => $store,
+            'assignment_type' => 'b2c',
+            'status' => 'assigned',
+            'assigned_at' => now(),
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
         $notificationsBefore = DB::table('notifications')->count();
         $auditBefore = DB::table('audit_logs')
             ->where('event', 'operations.order.driver_reminder_sent')->count();
@@ -819,12 +851,28 @@ class OrderOperationsIsolationTest extends TestCase
                 ->assertJsonPath('message', $message);
 
             $this->actingAs($admin)
+                ->postJson("/admin/operations/orders/{$assignedOrder}/remind-driver")
+                ->assertStatus(409)
+                ->assertJsonPath(
+                    'message',
+                    $locale === 'ar'
+                        ? 'السائق المعيّن ليس لديه حساب تطبيق نشط.'
+                        : 'Assigned driver has no active app user.',
+                );
+
+            $this->actingAs($admin)
                 ->postJson("/admin/operations/orders/{$foreignOrder}/remind-driver")
                 ->assertNotFound();
         }
 
         $this->assertDatabaseHas('orders', ['id' => $order, 'status' => 'pending']);
         $this->assertDatabaseMissing('driver_assignments', ['order_id' => $order]);
+        $this->assertDatabaseHas('driver_assignments', [
+            'order_id' => $assignedOrder,
+            'driver_id' => $driverId,
+            'status' => 'assigned',
+        ]);
+        $this->assertDatabaseHas('users', ['id' => $inactiveDriverUser->id, 'is_active' => false]);
         $this->assertSame($notificationsBefore, DB::table('notifications')->count());
         $this->assertSame(
             $auditBefore,
