@@ -74,6 +74,26 @@ def _verify_local_header(archive: zipfile.ZipFile, member: zipfile.ZipInfo) -> N
     _require(method == member.compress_type,
              f"Conflicting local/central Setup ZIP compression: {member.filename!r}")
 
+    # Python uses CENTRAL metadata for integrity checks, while another
+    # shared-host extractor may trust the LOCAL header. Reject disagreement
+    # before unpacking even if ZipFile.testzip() would accept this archive.
+    local_crc = int.from_bytes(header[14:18], "little")
+    local_compressed = int.from_bytes(header[18:22], "little")
+    local_uncompressed = int.from_bytes(header[22:26], "little")
+    if flags & 0x08:
+        # Data-descriptor entries may legitimately use zero placeholders.
+        _require(local_crc in (0, member.CRC),
+                 f"Conflicting local/central Setup ZIP CRC: {member.filename!r}")
+        _require(local_compressed in (0, member.compress_size)
+                 and local_uncompressed in (0, member.file_size),
+                 f"Conflicting local/central Setup ZIP sizes: {member.filename!r}")
+    else:
+        _require(local_crc == member.CRC,
+                 f"Conflicting local/central Setup ZIP CRC: {member.filename!r}")
+        _require(local_compressed == member.compress_size
+                 and local_uncompressed == member.file_size,
+                 f"Conflicting local/central Setup ZIP sizes: {member.filename!r}")
+
     filename_size = int.from_bytes(header[26:28], "little")
     extra_size = int.from_bytes(header[28:30], "little")
     filename = source.read(filename_size)
