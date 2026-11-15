@@ -5446,8 +5446,23 @@ class _B2bAccountStatementRemoteStateState
         : <Object?, Object?>{};
     final currentPage = _int(pagination['current_page'], fallback: _page);
     final lastPage = _int(pagination['last_page'], fallback: currentPage);
-    final closing = _amount(data['closing_balance']);
-    final current = _amount(data['balance']);
+    // Reject corrupt financial snapshots instead of presenting a false settled state.
+    // The legacy statement response may contain only "balance".
+    final closingRaw = data.containsKey('closing_balance')
+        ? data['closing_balance']
+        : data['balance'];
+    final currentRaw =
+        data.containsKey('balance') ? data['balance'] : closingRaw;
+    final closing = _finiteAmount(closingRaw);
+    final current = _finiteAmount(currentRaw);
+    if (closing == null ||
+        current == null ||
+        !RegExp(r'^[A-Z]{3}$').hasMatch(currency)) {
+      return _B2bRemoteErrorCard(
+        error: StateError('Invalid authoritative Wholesale statement balance'),
+        onRetry: _load,
+      );
+    }
     final direction = closing > 0
         ? context.tr('b2b.statement.owed_to_you')
         : closing < 0
@@ -6032,15 +6047,24 @@ class _B2bAccountStatementRemoteStateState
         _ => CustomerUiColors.inkSoft,
       };
 
-  static double _amount(Object? value) =>
-      double.tryParse(value?.toString() ?? '') ?? 0;
+  static double? _finiteAmount(Object? value) {
+    final amount = value is num
+        ? value.toDouble()
+        : value is String
+            ? double.tryParse(value.trim())
+            : null;
+    return amount != null && amount.isFinite ? amount : null;
+  }
+
+  // Use zero only for neutral sign coloring, never to display money.
+  static double _amount(Object? value) => _finiteAmount(value) ?? 0;
 
   static int _int(Object? value, {required int fallback}) =>
       int.tryParse(value?.toString() ?? '') ?? fallback;
 
   static String _money(Object? value, String currency) {
-    final amount = _amount(value);
-    return foodexMoneyText(amount, currency);
+    final amount = _finiteAmount(value);
+    return amount == null ? '—' : foodexMoneyText(amount, currency);
   }
 
   static String _shortDate(String? value) {

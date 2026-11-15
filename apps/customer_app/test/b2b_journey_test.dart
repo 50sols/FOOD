@@ -4199,6 +4199,115 @@ void main() {
     },
   );
 
+  for (final locale in const <Locale>[Locale('ar'), Locale('en')]) {
+    testWidgets(
+      'Wholesale statement rejects a false settled balance '
+      '${locale.languageCode}',
+      (tester) async {
+        final api = _FakeB2bApi({
+          'data': {
+            'currency': 'KWD',
+            'opening_balance': 100,
+            'period_debits': 20,
+            'period_credits': 10,
+            'balance': 110,
+            'closing_balance': 'NaN',
+            'transactions': <Object?>[],
+          },
+        });
+
+        await tester.pumpWidget(
+          FoodexCustomerApp(
+            session: b2b,
+            locale: locale,
+            initialRoute: '/b2b/account-statement?store_id=7',
+            b2bApi: api,
+          ),
+        );
+        await _pumpCustomerFrames(tester);
+
+        expect(find.byKey(const ValueKey('b2b-error')), findsOneWidget);
+        expect(find.byKey(const ValueKey('b2b-error-retry')), findsOneWidget);
+        expect(find.byKey(const ValueKey('b2b-statement-data')), findsNothing);
+        expect(
+          find.byKey(const ValueKey('b2b-statement-summary-closing')),
+          findsNothing,
+        );
+      },
+    );
+
+    testWidgets(
+      'Wholesale statement renders unknown rather than forged zero '
+      '${locale.languageCode}',
+      (tester) async {
+        final api = _FakeB2bApi({
+          'data': {
+            'currency': 'KWD',
+            'opening_balance': 25,
+            'period_debits': 0,
+            'period_credits': 0,
+            'balance': 25,
+            'closing_balance': 25,
+            'transactions': [
+              {
+                'id': 'payment:invalid',
+                'type': 'payment',
+                'reference': 'PAY-INVALID',
+                'debit': 'not-a-number',
+                'credit': null,
+                'running_balance': 'NaN',
+                'occurred_at': '2026-10-02T10:00:00Z',
+              },
+            ],
+            'pagination': {
+              'current_page': 1,
+              'per_page': 30,
+              'total': 1,
+              'last_page': 1,
+              'has_more': false,
+            },
+          },
+        });
+
+        await tester.pumpWidget(
+          FoodexCustomerApp(
+            session: b2b,
+            locale: locale,
+            initialRoute: '/b2b/account-statement?store_id=7',
+            b2bApi: api,
+          ),
+        );
+        await _pumpCustomerFrames(tester);
+
+        final row = find.byKey(
+          const ValueKey('b2b-statement-row-payment:invalid'),
+        );
+        expect(row, findsOneWidget);
+        final amounts = tester
+            .widgetList<Text>(
+              find.descendant(of: row, matching: find.byType(Text)),
+            )
+            .map((text) => text.data ?? '')
+            .toList(growable: false);
+        expect(
+          amounts.where((value) => value.endsWith(': —')).length,
+          greaterThanOrEqualTo(3),
+        );
+        expect(amounts.any((value) => value.contains('0.000 KWD')), isFalse);
+        expect(
+          tester
+              .widget<Text>(
+                find.byKey(
+                  const ValueKey('b2b-statement-running-payment:invalid'),
+                ),
+              )
+              .data,
+          contains('—'),
+        );
+      },
+    );
+  }
+
   testWidgets('C13 Screen 6 quick period preset reloads authoritative query', (
     tester,
   ) async {
