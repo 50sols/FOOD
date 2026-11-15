@@ -125,6 +125,67 @@ class MobileAppDownloadTest extends TestCase
         ]);
     }
 
+
+    public function test_invalid_mobile_download_app_is_localized_and_never_schedules_or_changes_release_artifacts(): void
+    {
+        Queue::fake();
+
+        $admin = $this->superAdmin();
+        $this->installVersion('9.8.7');
+        $initialArtifactCount = MobileReleaseArtifact::query()->count();
+        $initialPolicyCount = AppVersion::query()->count();
+
+        foreach ([
+            'ar' => 'تطبيق FOODEX المطلوب غير مدعوم.',
+            'en' => 'Unsupported FOODEX mobile application.',
+        ] as $locale => $expectedMessage) {
+            $admin->forceFill(['locale' => $locale])->save();
+
+            $this->actingAs($admin)
+                ->getJson(route('admin.mobile-apps.status', ['app' => 'unknown']))
+                ->assertStatus(422)
+                ->assertJsonPath('message', $expectedMessage);
+
+            $this->actingAs($admin)
+                ->postJson(route('admin.mobile-apps.prepare'), ['app' => ['customer']])
+                ->assertStatus(422)
+                ->assertJsonPath('message', $expectedMessage);
+
+            $this->actingAs($admin)
+                ->postJson(route('admin.mobile-apps.retry'), ['app' => 'unknown'])
+                ->assertStatus(422)
+                ->assertJsonPath('message', $expectedMessage);
+        }
+
+        Queue::assertNothingPushed();
+        $this->assertSame($initialArtifactCount, MobileReleaseArtifact::query()->count());
+        $this->assertSame($initialPolicyCount, AppVersion::query()->count());
+        $this->assertSame(1, SystemVersion::query()->where('version', '9.8.7')->count());
+    }
+
+    public function test_invalid_mobile_download_app_cannot_bypass_dashboard_authorization(): void
+    {
+        Queue::fake();
+
+        $this->getJson(route('admin.mobile-apps.status', ['app' => 'unknown']))
+            ->assertUnauthorized();
+
+        $user = User::query()->create([
+            'name' => 'Unauthorized Dashboard User',
+            'email' => 'mobile-downloads-denied@example.test',
+            'password' => 'Password1234',
+            'locale' => 'ar',
+            'is_active' => true,
+        ]);
+
+        $this->actingAs($user)
+            ->postJson(route('admin.mobile-apps.prepare'), ['app' => 'unknown'])
+            ->assertForbidden();
+
+        Queue::assertNothingPushed();
+        $this->assertSame(0, MobileReleaseArtifact::query()->count());
+    }
+
     public function test_admin_status_endpoint_reports_progress_without_dispatching_work(): void
     {
         Queue::fake();
