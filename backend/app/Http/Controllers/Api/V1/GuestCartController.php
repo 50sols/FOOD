@@ -187,7 +187,7 @@ class GuestCartController extends Controller
 
         if ($item->exists && trim((string) ($item->selling_unit_code ?? '')) !== $sellingUnitCode) {
             throw ValidationException::withMessages([
-                'selling_unit_code' => ['Remove the existing product line before changing its selling unit.'],
+                'selling_unit_code' => [$this->localizedCartMessage($request, 'smart_ordering_cart.existing_line_selling_unit_conflict')],
             ]);
         }
 
