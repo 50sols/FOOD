@@ -23,6 +23,9 @@ class V2SmartOrderingMissingCartTokenLocalizationTest extends TestCase
             'en' => 'Cart token is required.',
             'ar' => 'رمز سلة الطلب الذكي مطلوب.',
         ] as $locale => $expectedMessage) {
+            // Requests in the previous locale must not retain a forged token header.
+            $this->flushHeaders();
+
             $before = [
                 'carts' => DB::table('smart_ordering_carts')->count(),
                 'items' => DB::table('smart_ordering_cart_items')->count(),
