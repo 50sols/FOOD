@@ -2,6 +2,27 @@
 
 return [
     'eyebrow' => 'Commercial & Sales',
+    'profitability' => [
+        'title' => 'Profitability rule proposals',
+        'inactive_explanation' => 'These versioned drafts and independent reviews are NOT active price restrictions. Trusted WMS ownership and cost valuation and credit/discount approval are required before activation.',
+        'min_margin' => 'Minimum margin (%)',
+        'effective_from' => 'Proposed start date',
+        'effective_until' => 'Proposed end date',
+        'propose' => 'Submit inactive rule proposal',
+        'revision' => 'Revision :number',
+        'review_inactive' => 'Review as inactive',
+        'reject' => 'Reject proposal',
+        'saved_inactive' => 'The proposal/review was recorded. No price restriction was activated.',
+        'empty' => 'No profitability rule proposals yet.',
+        'unsupported_field' => 'This profitability action does not accept the supplied field.',
+        'idempotency_conflict' => 'This request identifier belongs to a different rule proposal.',
+        'already_reviewed' => 'This proposal was already reviewed and cannot be changed.',
+        'statuses' => [
+            'draft' => 'Draft — not active',
+            'reviewed_inactive' => 'Independently reviewed — not active',
+            'rejected' => 'Rejected — not active',
+        ],
+    ],
     'sales' => [
         'title' => 'Product Sales Control',
         'description' => 'Manage product availability, selling units, quotas, channels and break-pack policy from one operational workspace.',

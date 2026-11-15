@@ -493,6 +493,53 @@
                         @endif
                         <button type="submit" class="foodex-primary">{{ __('commercial.sales.save_policy') }}</button>
                     </form>
+                    <section class="policy-section" id="profitability-rules" data-v2-p229-profitability>
+                        <div class="policy-section-title"><span>{{ __('commercial.profitability.title') }}</span></div>
+                        <p class="muted">{{ __('commercial.profitability.inactive_explanation') }}</p>
+                        @if($errors->any())
+                            <div role="alert" class="commercial-status">{{ $errors->first() }}</div>
+                        @endif
+                        @if($canProposeProfitability)
+                            <form method="post" action="{{ route('admin.commercial.sales-control.save', ['product'=>$product->id] + $scope) }}">
+                                @csrf @method('put')
+                                <input type="hidden" name="profitability_action" value="propose">
+                                <input type="hidden" name="request_id" value="{{ old('request_id', (string) \Illuminate\Support\Str::uuid()) }}">
+                                <div class="commercial-form-grid">
+                                    <label>{{ __('commercial.profitability.min_margin') }}
+                                        <input type="number" name="minimum_margin_percent" min="0" max="100" step="0.01" value="{{ old('minimum_margin_percent') }}" required>
+                                    </label>
+                                    <label>{{ __('commercial.profitability.effective_from') }}
+                                        <input type="date" name="effective_from" value="{{ old('effective_from') }}" required>
+                                    </label>
+                                    <label>{{ __('commercial.profitability.effective_until') }}
+                                        <input type="date" name="effective_until" value="{{ old('effective_until') }}" required>
+                                    </label>
+                                </div>
+                                <button type="submit" class="foodex-primary">{{ __('commercial.profitability.propose') }}</button>
+                            </form>
+                        @endif
+                        <div class="structured-list">
+                            @forelse($profitabilityRevisions as $revision)
+                                <div class="structured-row">
+                                    <strong>{{ __('commercial.profitability.revision', ['number'=>$revision->revision]) }}</strong>
+                                    <span>{{ number_format($revision->minimum_margin_basis_points / 100, 2) }}%</span>
+                                    <span>{{ $revision->effective_from }} — {{ $revision->effective_until }}</span>
+                                    <span class="commercial-status">{{ __('commercial.profitability.statuses.'.strtolower($revision->status)) }}</span>
+                                    @if($canReviewProfitability && $revision->status === 'DRAFT' && (int)$revision->proposed_by !== (int)auth()->id())
+                                        <form method="post" action="{{ route('admin.commercial.sales-control.save', ['product'=>$product->id] + $scope) }}">
+                                            @csrf @method('put')
+                                            <input type="hidden" name="profitability_action" value="review">
+                                            <input type="hidden" name="revision_id" value="{{ $revision->id }}">
+                                            <button class="foodex-primary" name="decision" value="review" type="submit">{{ __('commercial.profitability.review_inactive') }}</button>
+                                            <button name="decision" value="reject" type="submit">{{ __('commercial.profitability.reject') }}</button>
+                                        </form>
+                                    @endif
+                                </div>
+                            @empty
+                                <p class="muted">{{ __('commercial.profitability.empty') }}</p>
+                            @endforelse
+                        </div>
+                    </section>
                     </div>
                 </article>
             @endforeach

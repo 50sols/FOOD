@@ -7,6 +7,7 @@ use App\Models\User;
 use App\Services\AuditLogger;
 use App\Services\B2bPricingMode;
 use App\Services\CommercialFeatureFlags;
+use App\Services\CommercialProfitabilityRuleService;
 use App\Services\OperationalTenantScope;
 use App\Services\WholesalePrincipal;
 use App\Support\AdminNavigation;
@@ -135,6 +136,9 @@ final class CommercialDashboardController extends Controller
             'commercialRules' => DB::table('product_commercial_rules')->whereIn('product_id', $selectedProductIds)->orderBy('id')->get()->groupBy('product_id'),
             'ruleCustomers' => $ruleCustomers,
             'ruleGroups' => $ruleGroups,
+            'profitabilityRevisions' => $selectedProduct === null ? collect() : app(CommercialProfitabilityRuleService::class)->revisions($storeId, $selectedProductId),
+            'canProposeProfitability' => $selectedProduct !== null && app(CommercialProfitabilityRuleService::class)->canPropose($user, $storeId),
+            'canReviewProfitability' => $selectedProduct !== null && app(CommercialProfitabilityRuleService::class)->canReview($user, $storeId),
             'featureFlags' => $this->flags->snapshot(),
             'canManageFeatureFlags' => $this->canManageFeatureFlags($user),
             'contractReady' => $this->hasApiContract('commercial'),
@@ -188,6 +192,28 @@ final class CommercialDashboardController extends Controller
                 ->exists(),
             404,
         );
+
+        // A dedicated action on the existing canonical product route avoids a
+        // second Sidebar/route authority and never mixes draft rules with the
+        // operational quota configuration parser.
+        if ($request->has('profitability_action')) {
+            $registry = app(CommercialProfitabilityRuleService::class);
+            $action = $request->input('profitability_action');
+            if ($action === 'propose') {
+                $registry->propose($user, $storeId, $product, $request);
+            } elseif ($action === 'review') {
+                $registry->review($user, $storeId, $product, $request);
+            } else {
+                throw ValidationException::withMessages([
+                    'profitability_action' => [__('commercial.profitability.unsupported_field')],
+                ]);
+            }
+
+            return redirect()->route('admin.commercial.sales-control', [
+                'store_id' => $storeId,
+                'product' => $product,
+            ])->with('status', __('commercial.profitability.saved_inactive'));
+        }
 
         $this->rejectUnsupportedProfitabilityFields($request);
 
