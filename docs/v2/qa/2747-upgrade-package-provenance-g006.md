@@ -349,3 +349,25 @@ apply, or signed frozen-final-V2 ZIP deployment. These remain explicit G006,
 G005 and P112 source blockers before PR #3364 can become Ready or Issue
 #2747 can close. Never mark a backup/recovery scenario successful without
 an actual restore/consistency assertion.
+
+### First real-MySQL CI attempt: fail-closed harness bootstrap correction
+
+On original PR head `16194976ecba1942877fe551515b1f20ba1e49e1`, the new
+historical-MySQL G006 run
+[43769892264](https://github.com/walidatiyaai2025-gif/FOOD/actions/runs/43769892264)
+verified release downloads, archive SHA/source lineage and the disposable MySQL
+connection, but the first apply step stopped **before running any PHP upgrade**:
+the old issue branch does not contain
+`scripts/verify-recovery-update-manifest.py`, which is already present in
+the canonical `Foodex_V2@f5c4c033e5b47766329d31fc3d87b311a1972bc4`
+source. This was a CI harness dependency failure, **not** a successfully
+executed MySQL upgrade or a database rollback.
+
+The follow-up copies that same immutable canonical helper by GitHub blob
+`484a7cb5ba6258d810aaaf7b6a14540962e5e66b` using the already
+read-only GitHub download token, and verifies the blob hash with
+`git hash-object` **before** passing it into each throwaway tagged worktree.
+No dynamic branch ref, other worker file, runtime updater, release package or
+production environment is altered. The real-MySQL job is **not** accepted
+until the next exact-head run reaches terminal SUCCESS; do not downgrade
+preflight security to hide a missing file.

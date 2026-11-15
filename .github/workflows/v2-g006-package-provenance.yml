@@ -160,6 +160,11 @@ jobs:
             --upgrade-125-127 "$base/assets-127" \
             --source-125 1a4d2ba341424c816040a7185a9ab1df59c3d574 \
             --source-127 a75d3780a8cf1eeb702781adbb17a5dcfd7d8130
+          # The historical G006 branch predates this helper. Pin the exact
+          # canonical Git blob; never load unverified code from a mutable ref.
+          gh api "repos/$GITHUB_REPOSITORY/git/blobs/484a7cb5ba6258d810aaaf7b6a14540962e5e66b" --jq .content |
+            tr -d '\n' | base64 -d > "$base/verified-recovery-manifest-preflight.py"
+          test "$(git hash-object "$base/verified-recovery-manifest-preflight.py")" = '484a7cb5ba6258d810aaaf7b6a14540962e5e66b'
       - name: Apply real published ZIPs on populated historical MySQL installs
         shell: bash
         run: |
@@ -176,7 +181,7 @@ jobs:
             test "$(tr -d '[:space:]' < "$target/VERSION")" = "1.0.$v"
             mkdir -p "$target/dist/update"
             cp "$base/assets-$v/FOODEX-Update.zip" "$base/assets-$v/FOODEX-Update.json" "$target/dist/update/"
-            cp "$GITHUB_WORKSPACE/scripts/verify-recovery-update-manifest.py" "$target/scripts/"
+            cp "$base/verified-recovery-manifest-preflight.py" "$target/scripts/verify-recovery-update-manifest.py"
             if [ "$v" = 125 ]; then
               cp "$GITHUB_WORKSPACE/scripts/ci-125-recovery-upgrade.sh" "$target/scripts/"
             else
