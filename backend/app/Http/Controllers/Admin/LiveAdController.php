@@ -317,7 +317,7 @@ final class LiveAdController extends Controller
             $start = CarbonImmutable::parse((string) $data['starts_at'], self::TIMEZONE);
             $end = CarbonImmutable::parse((string) $data['ends_at'], self::TIMEZONE);
             if ($end->lte($start)) {
-                throw ValidationException::withMessages(['ends_at' => ['End time must be after start time.']]);
+                throw ValidationException::withMessages(['ends_at' => [__('live_ads.ends_after_start')]]);
             }
         }
 
