@@ -56,7 +56,9 @@ final class GoodsReceiptManager
         ])->validate();
 
         $perPage = max(10, min(100, $perPage));
-        $term = str_replace(['%', '_'], '', trim((string) ($validated['q'] ?? '')));
+        $term = trim((string) ($validated['q'] ?? ''));
+        // Keep operator-entered receipt-number symbols literal across SQL drivers.
+        $pattern = str_replace(['!', '%', '_'], ['!!', '!%', '!_'], $term).'%';
 
         return $this->visibleQuery($scope)
             ->when(
@@ -69,7 +71,7 @@ final class GoodsReceiptManager
             )
             ->when(
                 $term !== '',
-                fn (Builder $query): Builder => $query->where('receipt_number', 'like', $term.'%'),
+                fn (Builder $query): Builder => $query->whereRaw("receipt_number LIKE ? ESCAPE '!'", [$pattern]),
             )
             ->orderByDesc('id')
             ->paginate($perPage)

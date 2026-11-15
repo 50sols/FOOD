@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Admin;
 
+use App\Enterprise\Search\LiteralLikePattern;
 use App\Http\Controllers\Api\V1\FleetLocationController;
 use App\Http\Controllers\Controller;
 use App\Models\AddressQualityReview;
@@ -1113,11 +1114,16 @@ final class FieldOperationsController extends Controller
             'status' => ['nullable', Rule::in(['unmapped', 'confirmed', 'rejected'])],
             'q' => ['nullable', 'string', 'max:150'],
         ]);
+        $term = trim((string) ($filters['q'] ?? ''));
+        $needle = LiteralLikePattern::contains($term);
         $reviews = AddressQualityReview::query()->with('events')
             ->when(isset($filters['status']), fn ($q) => $q->where('status', $filters['status']))
-            ->when(isset($filters['q']), function ($q) use ($filters): void {
-                $needle = '%'.str_replace(['%', '_'], ['\\%', '\\_'], (string) $filters['q']).'%';
-                $q->where(fn ($s) => $s->where('public_id', 'like', $needle)->orWhere('territory_key', 'like', $needle)->orWhere('reason', 'like', $needle));
+            ->when($term !== '', function ($query) use ($needle): void {
+                $query->where(function ($search) use ($needle): void {
+                    $search->whereRaw("public_id LIKE ? ESCAPE '!'", [$needle])
+                        ->orWhereRaw("territory_key LIKE ? ESCAPE '!'", [$needle])
+                        ->orWhereRaw("reason LIKE ? ESCAPE '!'", [$needle]);
+                });
             })
             ->orderByDesc('created_at')
             ->paginate(25)

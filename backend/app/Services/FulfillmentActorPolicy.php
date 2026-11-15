@@ -17,7 +17,7 @@ final class FulfillmentActorPolicy
             'b2b' => self::VAN,
             'b2c' => self::DRIVER,
             default => throw ValidationException::withMessages([
-                'channel' => ['Unsupported order channel for fulfillment.'],
+                'channel' => [__('fulfillment_actor_guard.channel_invalid')],
             ]),
         };
     }
@@ -30,12 +30,9 @@ final class FulfillmentActorPolicy
         if ($actual !== $expected) {
             throw ValidationException::withMessages([
                 'assignee_type' => [
-                    sprintf(
-                        'Order channel %s must be fulfilled by %s, not %s.',
-                        strtolower((string) $order->channel),
-                        $expected,
-                        $actual === '' ? 'unknown' : $actual,
-                    ),
+                    __($expected === self::VAN
+                        ? 'fulfillment_actor_guard.b2b_van_only'
+                        : 'fulfillment_actor_guard.b2c_driver_only'),
                 ],
             ]);
         }

@@ -2,9 +2,11 @@
 
 namespace Tests\Feature;
 
+use App\Models\User;
 use Database\Seeders\CoreReferenceSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
+use Laravel\Sanctum\Sanctum;
 use Tests\TestCase;
 
 class GuestBrowsingTest extends TestCase
@@ -233,6 +235,71 @@ class GuestBrowsingTest extends TestCase
             ->assertNotFound();
     }
 
+    public function test_guest_product_search_matches_literal_special_characters_within_its_retail_store(): void
+    {
+        $existing = DB::table('products')->where('id', $this->productId)->firstOrFail();
+        DB::table('products')->where('id', $this->productId)->update([
+            'sku' => 'B2C-A%!_B',
+            'name' => 'Literal %!_ Guest Item',
+        ]);
+
+        $lookalikeId = (int) DB::table('products')->insertGetId([
+            'catalog_id' => $existing->catalog_id,
+            'category_id' => $existing->category_id,
+            'unit_id' => $existing->unit_id,
+            'sku' => 'B2C-AABB',
+            'name' => 'Plain Guest Item',
+            'is_active' => true,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        DB::table('store_products')->insert([
+            'store_id' => $this->storeId,
+            'product_id' => $lookalikeId,
+            'price' => 2.5,
+            'is_active' => true,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $url = "/api/v1/stores/{$this->storeId}/products?q=";
+        foreach (['%', '_', '!', '%!_'] as $literalSearch) {
+            $this->getJson($url.rawurlencode($literalSearch))
+                ->assertOk()
+                ->assertJsonCount(1, 'data')
+                ->assertJsonPath('data.0.id', $this->productId)
+                ->assertJsonPath('meta.total', 1);
+        }
+
+        // Existing ordinary substring and pagination behavior stays intact.
+        $this->getJson($url.rawurlencode('B2C-A'))
+            ->assertOk()
+            ->assertJsonCount(2, 'data')
+            ->assertJsonPath('meta.total', 2);
+
+        $this->getJson($url.rawurlencode('B2C-A').'&per_page=1&page=2')
+            ->assertOk()
+            ->assertJsonCount(1, 'data')
+            ->assertJsonPath('meta.per_page', 1)
+            ->assertJsonPath('meta.total', 2)
+            ->assertJsonPath('meta.current_page', 2);
+
+        $this->getJson($url.rawurlencode('not-present%'))
+            ->assertOk()
+            ->assertJsonCount(0, 'data');
+
+        // A product in another Retail store never joins this store's result.
+        DB::table('products')->where('sku', 'SKU-001')->update(['sku' => 'OTHER%!_SKU']);
+        $this->getJson($url.rawurlencode('OTHER%!_SKU'))
+            ->assertOk()
+            ->assertJsonCount(0, 'data');
+
+        // Public access is denied for an inactive or non-Retail store.
+        DB::table('stores')->where('id', $this->storeId)->update(['is_active' => false]);
+        $this->getJson($url.rawurlencode('%'))->assertNotFound();
+    }
+
     public function test_inactive_catalog_rows_and_expired_offers_are_hidden(): void
     {
         DB::table('products')->where('id', $this->productId)->update(['is_active' => false]);
@@ -286,18 +353,150 @@ class GuestBrowsingTest extends TestCase
             ->assertJsonCount(0, 'items');
     }
 
+    public function test_invalid_guest_token_validation_is_bilingual_and_never_creates_or_mutates_a_cart(): void
+    {
+        $originalCarts = DB::table('carts')->count();
+        $originalItems = DB::table('cart_items')->count();
+
+        foreach ([
+            'ar' => 'رمز سلة الضيف غير صالح.',
+            'en' => 'The guest cart token is invalid.',
+        ] as $locale => $message) {
+            foreach (['short', str_repeat('x', 201)] as $invalidToken) {
+                $headers = [
+                    'X-Guest-Token' => $invalidToken,
+                    'Accept-Language' => $locale,
+                ];
+
+                $this->withHeaders($headers)
+                    ->getJson("/api/v1/cart?store={$this->storeId}")
+                    ->assertUnprocessable()
+                    ->assertJsonValidationErrors(['X-Guest-Token'])
+                    ->assertJsonPath('errors.X-Guest-Token.0', $message);
+
+                $this->withHeaders($headers)
+                    ->postJson('/api/v1/cart/items', [
+                        'store_id' => $this->storeId,
+                        'product_id' => $this->productId,
+                        'quantity' => 1,
+                    ])
+                    ->assertUnprocessable()
+                    ->assertJsonValidationErrors(['X-Guest-Token'])
+                    ->assertJsonPath('errors.X-Guest-Token.0', $message);
+
+                $this->assertSame($originalCarts, DB::table('carts')->count());
+                $this->assertSame($originalItems, DB::table('cart_items')->count());
+            }
+        }
+
+        // Omitting the optional token on guest GET must still initialize a cart.
+        $this->withHeaders(['X-Guest-Token' => '', 'Accept-Language' => 'ar'])
+            ->getJson("/api/v1/cart?store={$this->storeId}")
+            ->assertOk()
+            ->assertJsonPath('store_id', $this->storeId);
+
+        $this->assertSame($originalCarts + 1, DB::table('carts')->count());
+        $this->assertSame($originalItems, DB::table('cart_items')->count());
+    }
+
+    public function test_missing_guest_token_on_patch_and_delete_is_bilingual_and_preserves_items(): void
+    {
+        $cart = $this->postJson('/api/v1/cart/items', [
+            'store_id' => $this->storeId,
+            'product_id' => $this->productId,
+            'quantity' => 1,
+        ])->assertCreated();
+
+        $itemId = (int) $cart->json('items.0.id');
+        $cartCount = DB::table('carts')->count();
+        $itemCount = DB::table('cart_items')->count();
+
+        foreach ([
+            'ar' => 'يرجى إدخال رمز سلة الضيف.',
+            'en' => 'A guest cart token is required.',
+        ] as $locale => $message) {
+            $headers = ['X-Guest-Token' => '', 'Accept-Language' => $locale];
+
+            $this->withHeaders($headers)
+                ->patchJson("/api/v1/cart/items/{$itemId}", ['quantity' => 5])
+                ->assertUnprocessable()
+                ->assertJsonValidationErrors(['X-Guest-Token'])
+                ->assertJsonPath('errors.X-Guest-Token.0', $message);
+
+            $this->withHeaders($headers)
+                ->deleteJson("/api/v1/cart/items/{$itemId}")
+                ->assertUnprocessable()
+                ->assertJsonValidationErrors(['X-Guest-Token'])
+                ->assertJsonPath('errors.X-Guest-Token.0', $message);
+
+            $this->assertSame($cartCount, DB::table('carts')->count());
+            $this->assertSame($itemCount, DB::table('cart_items')->count());
+            $this->assertSame(1.0, (float) DB::table('cart_items')->where('id', $itemId)->value('quantity'));
+        }
+    }
+
+    public function test_authenticated_user_locale_controls_guest_token_validation_instead_of_language_header(): void
+    {
+        $user = User::query()->create([
+            'name' => 'Token Locale Customer',
+            'email' => 'token-locale-guest@example.test',
+            'password' => 'secret-password',
+            'locale' => 'ar',
+            'is_active' => true,
+        ]);
+
+        Sanctum::actingAs($user);
+
+        foreach ([
+            'ar' => ['en', 'رمز سلة الضيف غير صالح.'],
+            'en' => ['ar', 'The guest cart token is invalid.'],
+        ] as $locale => [$headerLocale, $message]) {
+            $user->forceFill(['locale' => $locale])->save();
+
+            $this->withHeaders([
+                'X-Guest-Token' => 'short',
+                'Accept-Language' => $headerLocale,
+            ])
+                ->getJson("/api/v1/cart?store={$this->storeId}")
+                ->assertUnprocessable()
+                ->assertJsonValidationErrors(['X-Guest-Token'])
+                ->assertJsonPath('errors.X-Guest-Token.0', $message);
+
+            $this->assertSame(0, DB::table('carts')->count());
+            $this->assertSame(0, DB::table('cart_items')->count());
+        }
+    }
+
     public function test_guest_cart_token_cannot_cross_store_boundary(): void
     {
         $cart = $this->getJson("/api/v1/cart?store={$this->storeId}")->assertOk();
         $token = (string) $cart->headers->get('X-Guest-Token');
+        $initialCartCount = DB::table('carts')->count();
+        $initialItemCount = DB::table('cart_items')->count();
 
-        $this->withHeader('X-Guest-Token', $token)
-            ->postJson('/api/v1/cart/items', [
-                'store_id' => $this->otherStoreId,
-                'product_id' => $this->productId,
-                'quantity' => 1,
-            ])
-            ->assertConflict();
+        foreach ([
+            'ar' => 'سلة الضيف مرتبطة بمتجر آخر.',
+            'en' => 'The guest cart belongs to another store.',
+        ] as $locale => $message) {
+            $headers = ['X-Guest-Token' => $token, 'Accept-Language' => $locale];
+
+            $this->withHeaders($headers)
+                ->getJson("/api/v1/cart?store={$this->otherStoreId}")
+                ->assertConflict()
+                ->assertJsonPath('message', $message);
+
+            $this->withHeaders($headers)
+                ->postJson('/api/v1/cart/items', [
+                    'store_id' => $this->otherStoreId,
+                    'product_id' => $this->productId,
+                    'quantity' => 1,
+                ])
+                ->assertConflict()
+                ->assertJsonPath('message', $message);
+
+            $this->assertSame($initialCartCount, DB::table('carts')->count());
+            $this->assertSame($initialItemCount, DB::table('cart_items')->count());
+        }
     }
 
     public function test_guest_cannot_mutate_another_guest_cart_item(): void

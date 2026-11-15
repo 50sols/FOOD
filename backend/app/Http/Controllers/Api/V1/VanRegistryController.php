@@ -60,7 +60,12 @@ class VanRegistryController extends Controller
             ? Van::query()->findOrFail($data['transfer_target_van_id'])
             : null;
 
-        abort_if($target?->is($van), 422, 'Transfer target must be a different Van.');
+        if ($target?->is($van)) {
+            $actorLocale = $request->user()?->locale;
+            $locale = in_array($actorLocale, ['ar', 'en'], true) ? $actorLocale : 'ar';
+
+            abort(422, (string) __('van_assignment_guard.self_transfer_target', [], $locale));
+        }
 
         return response()->json(['data' => $service->suspend($van, $target, $data['reason'] ?? null)]);
     }

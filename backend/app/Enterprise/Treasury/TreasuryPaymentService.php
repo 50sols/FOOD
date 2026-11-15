@@ -83,7 +83,9 @@ final class TreasuryPaymentService
             'value_date_to' => ['nullable', 'date', 'after_or_equal:value_date_from'],
         ])->validate();
 
-        $term = $this->safePrefix((string) ($validated['q'] ?? ''));
+        $term = trim((string) ($validated['q'] ?? ''));
+        // Treat user-entered Treasury payment search symbols literally across SQL drivers.
+        $pattern = str_replace(['!', '%', '_'], ['!!', '!%', '!_'], $term).'%';
         $perPage = max(10, min(100, $perPage));
 
         return $this->paymentQuery($scope)
@@ -107,8 +109,8 @@ final class TreasuryPaymentService
                 $term !== '',
                 fn (Builder $query): Builder => $query->where(
                     fn (Builder $nested): Builder => $nested
-                        ->where('payment_number', 'like', $term.'%')
-                        ->orWhere('reference', 'like', $term.'%'),
+                        ->whereRaw("payment_number LIKE ? ESCAPE '!'", [$pattern])
+                        ->orWhereRaw("reference LIKE ? ESCAPE '!'", [$pattern]),
                 ),
             )
             ->orderByDesc('value_date')
@@ -479,11 +481,6 @@ final class TreasuryPaymentService
         $trimmed = trim((string) $value);
 
         return $trimmed === '' ? null : $trimmed;
-    }
-
-    private function safePrefix(string $value): string
-    {
-        return preg_replace('/[%_\\\\]+/', '', trim($value)) ?? '';
     }
 
     private function assertMatchingIdempotentRequest(

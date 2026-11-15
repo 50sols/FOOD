@@ -9,6 +9,7 @@ use App\Services\TranslationCatalog;
 use Database\Seeders\CoreReferenceSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Arr;
+use Illuminate\Support\Facades\DB;
 use Tests\TestCase;
 
 class TranslationCenterTest extends TestCase
@@ -60,6 +61,74 @@ class TranslationCenterTest extends TestCase
             ->assertOk()
             ->assertJsonPath('direction', 'ltr')
             ->assertJsonFragment(['admin.title' => 'FOODEX Console']);
+    }
+
+    public function test_database_translation_loader_isolates_literal_group_names_in_arabic_and_english(): void
+    {
+        $fixtures = [
+            ['qa_literal_rules.title', 'العنوان الحقيقي', 'Real title'],
+            ['qa_literal_rules.nested.caption', 'وصف صحيح', 'Correct caption'],
+            // Each underscore in the requested group must be literal.
+            ['qaXliteral_rules.leaked_first', 'تسريب ١', 'Leaked first'],
+            ['qa_literalXrules.leaked_second', 'تسريب ٢', 'Leaked second'],
+            ['qa_literal_rules_extra.leaked_suffix', 'تسريب ٣', 'Leaked suffix'],
+            // A percent in a literal group is not a request for all groups.
+            ['qa%scope_rules.title', 'عنوان النسبة', 'Percent title'],
+            ['qaXscope_rules.leaked_percent', 'تسريب ٤', 'Leaked percent'],
+            // An exclamation point is the selected LIKE escape character.
+            ['qa!scope_rules.title', 'عنوان التعجب', 'Bang title'],
+            ['qa!!scope_rules.leaked_bang', 'تسريب ٥', 'Leaked bang'],
+        ];
+
+        foreach ($fixtures as [$key, $arabic, $english]) {
+            AppTranslation::query()->create([
+                'key' => $key,
+                'surface' => 'admin',
+                'ar' => $arabic,
+                'en' => $english,
+            ]);
+        }
+
+        $translationsBefore = AppTranslation::query()->count();
+        $auditBefore = DB::table('audit_logs')->count();
+        $loader = app('translation.loader');
+
+        $english = $loader->load('en', 'qa_literal_rules');
+        $this->assertSame('Real title', $english['title'] ?? null);
+        $this->assertSame('Correct caption', Arr::get($english, 'nested.caption'));
+        foreach (['leaked_first', 'leaked_second', 'leaked_suffix'] as $leaked) {
+            $this->assertArrayNotHasKey($leaked, $english);
+        }
+        $arabic = $loader->load('ar', 'qa_literal_rules');
+        $this->assertSame('العنوان الحقيقي', $arabic['title'] ?? null);
+        $this->assertSame('وصف صحيح', Arr::get($arabic, 'nested.caption'));
+        $this->assertArrayNotHasKey('leaked_first', $arabic);
+
+        $this->assertSame(
+            ['title' => 'Percent title'],
+            $loader->load('en', 'qa%scope_rules'),
+        );
+        $this->assertSame(
+            ['title' => 'عنوان النسبة'],
+            $loader->load('ar', 'qa%scope_rules'),
+        );
+        $this->assertSame(
+            ['title' => 'Bang title'],
+            $loader->load('en', 'qa!scope_rules'),
+        );
+        $this->assertSame(
+            ['title' => 'عنوان التعجب'],
+            $loader->load('ar', 'qa!scope_rules'),
+        );
+
+        // Confirm the ordinary translator uses the same loader contract.
+        $this->assertSame('Real title', __('qa_literal_rules.title', [], 'en'));
+        $this->assertSame('العنوان الحقيقي', __('qa_literal_rules.title', [], 'ar'));
+        $this->assertSame($translationsBefore, AppTranslation::query()->count());
+        $this->assertSame(
+            $auditBefore,
+            DB::table('audit_logs')->count(),
+        );
     }
 
     public function test_non_authorized_admin_cannot_manage_translations(): void

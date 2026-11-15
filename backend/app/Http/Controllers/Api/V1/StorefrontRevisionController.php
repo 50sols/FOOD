@@ -286,7 +286,7 @@ final class StorefrontRevisionController extends Controller
             abort_if($requestedStoreId !== null && $requestedStoreId !== $storeId, 404);
             $this->tenantResolver->wholesale($actor, $storeId);
         } else {
-            abort_if($requestedStoreId === null, 422, 'Retail storefront revision requires a store.');
+            abort_if($requestedStoreId === null, 422, __('storefront_revision_errors.retail_store_required', [], $this->locale($request, $actor)));
             $storeId = $requestedStoreId;
             $this->tenantResolver->retail($actor, $storeId, $supportAccess, $request);
         }
@@ -302,6 +302,15 @@ final class StorefrontRevisionController extends Controller
     private function revision(string $publicId): StorefrontRevision
     {
         return StorefrontRevision::query()->where('public_id', $publicId)->firstOrFail();
+    }
+
+    private function locale(Request $request, User $actor): string
+    {
+        $saved = $actor->locale;
+
+        return in_array($saved, ['ar', 'en'], true)
+            ? $saved
+            : ($request->getPreferredLanguage(['ar', 'en']) ?? 'ar');
     }
 
     private function actor(Request $request): User
