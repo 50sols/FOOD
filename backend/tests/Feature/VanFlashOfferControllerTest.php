@@ -156,6 +156,83 @@ final class VanFlashOfferControllerTest extends TestCase
             ->assertJsonPath('data.0.products.0.selling_unit_name', 'Carton');
     }
 
+    public function test_van_flash_missing_multistore_scope_422_is_bilingual_and_explicit_store_stays_authorized(): void
+    {
+        foreach (['ar', 'en'] as $locale) {
+            $actor = $this->vanActor();
+            $actor->forceFill(['locale' => $locale])->save();
+            $storeTypeId = (int) DB::table('store_types')->where('code', 'B2B')->value('id');
+            $this->assertGreaterThan(0, $storeTypeId);
+
+            $storeIds = [];
+            foreach ([1, 2] as $index) {
+                $storeIds[] = (int) DB::table('stores')->insertGetId([
+                    'store_type_id' => $storeTypeId,
+                    'code' => 'VAN-FLASH-MULTI-'.strtoupper($locale).'-'.$index.'-'.$actor->id,
+                    'name' => 'Van Flash Multi Store '.$index,
+                    'is_active' => true,
+                    'created_at' => now(),
+                    'updated_at' => now(),
+                ]);
+            }
+
+            $customerUser = User::factory()->create(['is_active' => true]);
+            $legacy = Customer::query()->create([
+                'user_id' => $customerUser->id,
+                'type' => 'b2b',
+                'name' => 'Van Flash Multi Store Buyer',
+                'email' => 'van-flash-multi-'.$actor->id.'@example.test',
+            ]);
+            $customer = B2bCustomer::query()->create([
+                'legacy_customer_id' => $legacy->id,
+                'user_id' => $customerUser->id,
+                'name' => 'Van Flash Multi Store Buyer',
+                'email' => 'van-flash-multi-'.$actor->id.'@example.test',
+            ]);
+
+            foreach ($storeIds as $storeId) {
+                VanVisit::query()->create([
+                    'actor_user_id' => $actor->id,
+                    'customer_type' => 'b2b',
+                    'customer_id' => $customer->id,
+                    'store_id' => $storeId,
+                    'status' => 'planned',
+                ]);
+            }
+
+            $path = '/api/v1/van/customers/b2b/'.$customer->id.'/flash-offers';
+            $oppositeLanguage = $locale === 'ar' ? 'en' : 'ar';
+            $beforeVisits = VanVisit::query()->where('actor_user_id', $actor->id)->get()
+                ->map(fn (VanVisit $visit): array => $visit->toArray())->all();
+
+            $this->withHeader('Accept-Language', $oppositeLanguage)
+                ->getJson($path)
+                ->assertUnprocessable()
+                ->assertJsonPath(
+                    'errors.store_id.0',
+                    __('van_flash_scope_errors.store_required_for_multistore', [], $locale),
+                );
+
+            $this->assertSame(
+                $beforeVisits,
+                VanVisit::query()->where('actor_user_id', $actor->id)->get()
+                    ->map(fn (VanVisit $visit): array => $visit->toArray())->all(),
+            );
+            $this->assertDatabaseCount('flash_reservations', 0);
+
+            $this->withHeader('Accept-Language', $oppositeLanguage)
+                ->getJson($path.'?store_id='.$storeIds[0])
+                ->assertOk()
+                ->assertJsonPath('data', []);
+
+            $this->withHeader('Accept-Language', $oppositeLanguage)
+                ->getJson($path.'?store_id='.($storeIds[1] + 1000000))
+                ->assertNotFound();
+
+            $this->assertDatabaseCount('flash_reservations', 0);
+        }
+    }
+
     private function vanActor(): User
     {
         $this->seed(CoreReferenceSeeder::class);
