@@ -139,6 +139,56 @@ class B2bPricingTest extends TestCase
             'minimum_quantity' => 2,
         ])->assertConflict();
 
+        // The existing deny path is invariant under locale; neither list nor
+        // write may mutate rules, audit, orders or inventory while tiers are off.
+        $persistedAdminLocale = (string) DB::table('users')
+            ->where('id', $admin->getKey())->value('locale');
+        $beforeDisabled = [];
+        foreach (['b2b_price_rules', 'settings', 'audit_logs', 'orders', 'payments', 'stock_movements'] as $table) {
+            $beforeDisabled[$table] = DB::table($table)->count();
+        }
+        $beforeReserved = (float) DB::table('inventories')->sum('reserved_quantity');
+        $mutation = [
+            'price_tier_id' => $tierId,
+            'store_id' => $storeId,
+            'product_id' => $productId,
+            'unit_price' => 3.000,
+            'minimum_quantity' => 2,
+        ];
+
+        foreach ([
+            ['ar', 'en-US', 'شرائح تسعير الجملة غير مفعّلة.'],
+            ['en', 'ar-KW', 'B2B pricing tiers are disabled.'],
+            ['fr', 'ar-KW', 'شرائح تسعير الجملة غير مفعّلة.'],
+            ['fr', 'en-US', 'B2B pricing tiers are disabled.'],
+        ] as [$actorLocale, $headerLocale, $message]) {
+            $admin->forceFill(['locale' => $actorLocale])->save();
+
+            $this->withHeader('Accept-Language', $headerLocale)
+                ->getJson('/api/v1/admin/b2b/prices')
+                ->assertConflict()
+                ->assertJsonPath('message', $message);
+            $this->withHeader('Accept-Language', $headerLocale)
+                ->putJson('/api/v1/admin/b2b/prices', $mutation)
+                ->assertConflict()
+                ->assertJsonPath('message', $message);
+
+            foreach ($beforeDisabled as $table => $count) {
+                $this->assertSame($count, DB::table($table)->count(), $table.' must be unchanged while tiers are disabled');
+            }
+            $this->assertSame(
+                $beforeReserved,
+                (float) DB::table('inventories')->sum('reserved_quantity'),
+            );
+            $this->assertDatabaseHas('b2b_price_rules', [
+                'price_tier_id' => $tierId,
+                'store_id' => $storeId,
+                'product_id' => $productId,
+                'unit_price' => 4.000,
+            ]);
+        }
+        $admin->forceFill(['locale' => $persistedAdminLocale])->save();
+
         $buyer = User::query()->create([
             'name' => 'Base Buyer',
             'email' => 'base-price-buyer@example.test',
@@ -293,6 +343,97 @@ class B2bPricingTest extends TestCase
             'branding' => json_encode(['show_in_stock_only' => false], JSON_THROW_ON_ERROR),
         ]);
         $this->getJson($endpoint)->assertOk()->assertJsonCount(2, 'data');
+    }
+
+    public function test_wholesale_product_search_treats_name_sku_and_barcode_wildcards_as_literals(): void
+    {
+        $this->seed(CoreReferenceSeeder::class);
+        [$storeId, $firstId, $tierId] = $this->catalog();
+        $this->setPricingTiers($storeId, false);
+
+        $first = DB::table('products')->where('id', $firstId)->firstOrFail();
+        DB::table('products')->where('id', $firstId)->update([
+            'name' => 'Wholesale %_ Item',
+            'sku' => 'B2B-%_SKU',
+            'barcode' => 'B2B-%_BAR',
+        ]);
+
+        $lookalikeId = (int) DB::table('products')->insertGetId([
+            'catalog_id' => $first->catalog_id,
+            'unit_id' => $first->unit_id,
+            'sku' => 'B2B-ABSKU',
+            'barcode' => 'B2B-ABBAR',
+            'name' => 'Wholesale AB Item',
+            'is_active' => true,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        $escapedId = (int) DB::table('products')->insertGetId([
+            'catalog_id' => $first->catalog_id,
+            'unit_id' => $first->unit_id,
+            'sku' => 'B2B-!_SKU',
+            'barcode' => 'B2B-!_BAR',
+            'name' => 'Wholesale !_ Item',
+            'is_active' => true,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        foreach ([$lookalikeId, $escapedId] as $id) {
+            DB::table('store_products')->insert([
+                'store_id' => $storeId,
+                'product_id' => $id,
+                'price' => 10,
+                'is_active' => true,
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+        }
+
+        $buyer = User::query()->create([
+            'name' => 'Literal Wholesale Buyer',
+            'email' => 'b2b-literal-buyer@example.test',
+            'password' => 'password',
+            'is_active' => true,
+        ]);
+        $customer = Customer::query()->create([
+            'user_id' => $buyer->id,
+            'type' => 'b2b',
+            'name' => 'Literal Wholesale Buyer',
+            'email' => $buyer->email,
+        ]);
+        B2bAccount::query()->create([
+            'customer_id' => $customer->id,
+            'price_tier_id' => $tierId,
+            'company_name' => 'Literal Buyer Co',
+            'status' => 'active',
+        ]);
+        Sanctum::actingAs($buyer);
+
+        foreach (['Wholesale %_', 'B2B-%_SKU', 'B2B-%_BAR'] as $literal) {
+            $this->getJson("/api/v1/b2b/products?store_id={$storeId}&q=".rawurlencode($literal))
+                ->assertOk()
+                ->assertJsonCount(1, 'data')
+                ->assertJsonPath('data.0.id', $firstId);
+        }
+
+        foreach (['Wholesale !_', 'B2B-!_SKU', 'B2B-!_BAR'] as $literal) {
+            $this->getJson("/api/v1/b2b/products?store_id={$storeId}&q=".rawurlencode($literal))
+                ->assertOk()
+                ->assertJsonCount(1, 'data')
+                ->assertJsonPath('data.0.id', $escapedId);
+        }
+
+        $this->getJson("/api/v1/b2b/products?store_id={$storeId}&q=".rawurlencode('Wholesale _%'))
+            ->assertOk()
+            ->assertJsonCount(0, 'data');
+
+        $this->getJson("/api/v1/b2b/products?store_id={$storeId}&q=Wholesale")
+            ->assertOk()
+            ->assertJsonCount(3, 'data');
+
+        $this->assertSame(3, DB::table('products')
+            ->whereIn('id', [$firstId, $lookalikeId, $escapedId])
+            ->count());
     }
 
     private function catalog(): array

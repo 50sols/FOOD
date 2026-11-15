@@ -201,6 +201,216 @@ class DriverLiveTrackingDashboardTest extends TestCase
         $this->assertStringContainsString('Lookup Retail', (string) $route->json('data.0.context'));
     }
 
+    public function test_live_tracking_lookup_prefixes_preserve_literal_special_characters_and_store_channel_scope(): void
+    {
+        $admin = $this->globalUser('SUPER_ADMIN', 'literal-tracking-admin@example.test');
+        $now = now();
+        $retailTypeId = (int) DB::table('store_types')->where('code', 'B2C')->value('id');
+        $wholesaleTypeId = (int) DB::table('store_types')->where('code', 'B2B')->value('id');
+        $retailStore = (int) DB::table('stores')->insertGetId([
+            'store_type_id' => $retailTypeId,
+            'code' => 'LITERAL-TRACK-RETAIL',
+            'name' => 'Literal Tracking Retail',
+            'is_active' => true,
+            'created_at' => $now,
+            'updated_at' => $now,
+        ]);
+        $wholesaleStore = (int) DB::table('stores')->insertGetId([
+            'store_type_id' => $wholesaleTypeId,
+            'code' => 'LITERAL-TRACK-WHOLESALE',
+            'name' => 'Literal Tracking Wholesale',
+            'is_active' => true,
+            'created_at' => $now,
+            'updated_at' => $now,
+        ]);
+        $foreignWholesaleStore = (int) DB::table('stores')->insertGetId([
+            'store_type_id' => $wholesaleTypeId,
+            'code' => 'LITERAL-TRACK-OTHER',
+            'name' => 'Literal Tracking Other',
+            'is_active' => true,
+            'created_at' => $now,
+            'updated_at' => $now,
+        ]);
+        $customerId = (int) DB::table('customers')->insertGetId([
+            'type' => 'b2c',
+            'name' => 'Literal Tracking Customer',
+            'phone' => '+96551111111',
+            'email' => 'literal-tracking-customer@example.test',
+            'created_at' => $now,
+            'updated_at' => $now,
+        ]);
+
+        $symbols = ['percent' => '%', 'underscore' => '_', 'bang' => '!', 'backslash' => '\\'];
+        $expected = ['driver' => [], 'van' => [], 'order' => [], 'route' => []];
+
+        foreach ($symbols as $case => $symbol) {
+            $driverUser = User::query()->create([
+                'name' => 'D'.$symbol.'Live',
+                'email' => 'literal-driver-'.$case.'@example.test',
+                'password' => 'password',
+                'locale' => 'en',
+                'is_active' => true,
+            ]);
+            $driverId = (int) DB::table('drivers')->insertGetId([
+                'user_id' => $driverUser->getKey(),
+                'store_id' => $retailStore,
+                'driver_type' => 'b2c',
+                'is_available' => true,
+                'is_active' => true,
+                'created_at' => $now,
+                'updated_at' => $now,
+            ]);
+            DB::table('driver_current_locations')->insert([
+                'driver_id' => $driverId,
+                'store_id' => $retailStore,
+                'channel' => 'b2c',
+                'latitude' => 29.37,
+                'longitude' => 47.98,
+                'captured_at' => $now,
+                'received_at' => $now,
+                'created_at' => $now,
+                'updated_at' => $now,
+            ]);
+
+            $orderId = (int) DB::table('orders')->insertGetId([
+                'store_id' => $retailStore,
+                'customer_id' => $customerId,
+                'order_number' => 'O'.$symbol.'Live',
+                'channel' => 'b2c',
+                'status' => 'out_for_delivery',
+                'currency' => 'KWD',
+                'subtotal' => 12,
+                'discount_total' => 0,
+                'delivery_total' => 0,
+                'tax_total' => 0,
+                'grand_total' => 12,
+                'payment_method' => 'cash_on_delivery',
+                'created_at' => $now,
+                'updated_at' => $now,
+            ]);
+
+            $vanId = (int) DB::table('vans')->insertGetId([
+                'public_id' => (string) Str::uuid(),
+                'code' => 'V'.$symbol.'Live',
+                'plate_number' => 'LITERAL-'.$case,
+                'status' => 'active',
+                'created_at' => $now,
+                'updated_at' => $now,
+            ]);
+            $routeKey = 'R'.$symbol.'Live';
+            DB::table('fleet_current_locations')->insert([
+                'actor_type' => 'van',
+                'actor_id' => $vanId,
+                'vehicle_id' => $vanId,
+                'route_key' => $routeKey,
+                'store_id' => $wholesaleStore,
+                'channel' => 'b2b',
+                'latitude' => 29.38,
+                'longitude' => 47.99,
+                'captured_at' => $now,
+                'received_at' => $now,
+                'source_app' => 'van',
+                'created_at' => $now,
+                'updated_at' => $now,
+            ]);
+
+            $expected['driver'][$symbol] = $driverId;
+            $expected['van'][$symbol] = $vanId;
+            $expected['order'][$symbol] = $orderId;
+            $expected['route'][$symbol] = $routeKey;
+        }
+
+        // An identical prefix in a different store must not appear in the
+        // requested store's authorized Van or route options.
+        $foreignVan = (int) DB::table('vans')->insertGetId([
+            'public_id' => (string) Str::uuid(),
+            'code' => 'V%Foreign',
+            'plate_number' => 'FOREIGN-PLATE',
+            'status' => 'active',
+            'created_at' => $now,
+            'updated_at' => $now,
+        ]);
+        DB::table('fleet_current_locations')->insert([
+            'actor_type' => 'van',
+            'actor_id' => $foreignVan,
+            'vehicle_id' => $foreignVan,
+            'route_key' => 'R%Foreign',
+            'store_id' => $foreignWholesaleStore,
+            'channel' => 'b2b',
+            'latitude' => 29.38,
+            'longitude' => 47.99,
+            'captured_at' => $now,
+            'received_at' => $now,
+            'source_app' => 'van',
+            'created_at' => $now,
+            'updated_at' => $now,
+        ]);
+
+        $before = [
+            'orders' => DB::table('orders')->count(),
+            'driver_locations' => DB::table('driver_current_locations')->count(),
+            'fleet_locations' => DB::table('fleet_current_locations')->count(),
+            'audit' => DB::table('audit_logs')->count(),
+        ];
+
+        foreach ($symbols as $symbol) {
+            foreach (['driver' => ['D', 'b2c', $retailStore],
+                'van' => ['V', 'b2b', $wholesaleStore],
+                'order' => ['O', 'b2c', $retailStore],
+                'route' => ['R', 'b2b', $wholesaleStore]] as $kind => [$prefix, $channel, $storeId]) {
+                $response = $this->actingAs($admin)->getJson('/admin/driver-live-tracking/lookups?'.http_build_query([
+                    'kind' => $kind,
+                    'q' => $prefix.$symbol,
+                    'channel' => $channel,
+                    'store_id' => $storeId,
+                ]));
+
+                $response->assertOk();
+                $rows = $response->json('data');
+                $this->assertCount(1, $rows, 'Literal prefix match should return exactly one '.$kind.' for '.bin2hex($symbol));
+                $this->assertSame($expected[$kind][$symbol], $rows[0]['value']);
+            }
+        }
+
+        // The generic entity picker reuses exactly the same guarded lookups.
+        $this->actingAs($admin)->getJson('/admin/driver-live-tracking/lookups?'.http_build_query([
+            'kind' => 'entity', 'q' => 'D%', 'channel' => 'b2c', 'store_id' => $retailStore,
+        ]))->assertOk()->assertJsonCount(1, 'data')->assertJsonPath('data.0.value', $expected['driver']['%']);
+        $this->actingAs($admin)->getJson('/admin/driver-live-tracking/lookups?'.http_build_query([
+            'kind' => 'entity', 'q' => 'V%', 'channel' => 'b2b', 'store_id' => $wholesaleStore,
+        ]))->assertOk()->assertJsonCount(1, 'data')->assertJsonPath('data.0.value', $expected['van']['%']);
+
+        // Empty query and numeric order deep links retain their prior behavior.
+        $this->actingAs($admin)->getJson('/admin/driver-live-tracking/lookups?'.http_build_query([
+            'kind' => 'driver', 'q' => '  ', 'channel' => 'b2c', 'store_id' => $retailStore,
+        ]))->assertOk()->assertJsonCount(4, 'data');
+        $this->actingAs($admin)->getJson('/admin/driver-live-tracking/lookups?'.http_build_query([
+            'kind' => 'order', 'q' => '#'.$expected['order']['%'], 'channel' => 'b2c', 'store_id' => $retailStore,
+        ]))->assertOk()->assertJsonCount(1, 'data')->assertJsonPath('data.0.value', $expected['order']['%']);
+
+        $admin->forceFill(['locale' => 'ar'])->save();
+        $this->actingAs($admin)->getJson('/admin/driver-live-tracking/lookups?'.http_build_query([
+            'kind' => 'van', 'q' => 'V!', 'channel' => 'b2b', 'store_id' => $wholesaleStore,
+        ]))->assertOk()->assertJsonCount(1, 'data')->assertJsonPath('data.0.value', $expected['van']['!']);
+
+        $unprivileged = User::query()->create([
+            'name' => 'No Tracking Access',
+            'email' => 'literal-no-tracking@example.test',
+            'password' => 'password',
+            'locale' => 'en',
+            'is_active' => true,
+        ]);
+        $this->actingAs($unprivileged)->getJson('/admin/driver-live-tracking/lookups?kind=van&q=V%25')
+            ->assertForbidden();
+
+        $this->assertSame($before, [
+            'orders' => DB::table('orders')->count(),
+            'driver_locations' => DB::table('driver_current_locations')->count(),
+            'fleet_locations' => DB::table('fleet_current_locations')->count(),
+            'audit' => DB::table('audit_logs')->count(),
+        ]);
+    }
+
     public function test_arabic_live_tracking_contract_exposes_localized_status_labels(): void
     {
         $user = $this->globalUser('SUPER_ADMIN', 'tracking-ar@example.test');

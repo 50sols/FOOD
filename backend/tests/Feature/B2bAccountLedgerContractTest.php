@@ -325,6 +325,70 @@ final class B2bAccountLedgerContractTest extends TestCase
         $ledger->settleInvoice($customer, $invoice, 1, 'EGP', $user, 'SETTLE-OVER');
     }
 
+    public function test_invoice_settlement_retries_are_idempotent_and_conflicting_reuse_is_rejected(): void
+    {
+        [$user, $legacyCustomer, $customer, $storeId] = $this->account(100);
+        $invoice = $this->invoice($legacyCustomer->id, $customer->id, $storeId, 80, now()->subDay());
+        $other = $this->invoice($legacyCustomer->id, $customer->id, $storeId, 40, now()->subDay());
+        $ledger = app(B2bAccountLedgerService::class);
+
+        $key = '71817375-12ea-48ab-8982-316ff128a555';
+        $one = $ledger->settleInvoice($customer, $invoice, 30, 'EGP', $user, 'RETRY-A', null, $key);
+        $again = $ledger->settleInvoice($customer, $invoice, 30, 'EGP', $user, 'RETRY-A', null, $key);
+        $this->assertSame($one['ledger_entry_id'], $again['ledger_entry_id']);
+        $this->assertFalse($one['replayed']);
+        $this->assertTrue($again['replayed']);
+        $this->assertSame(50.0, $ledger->invoiceAmounts($invoice)['outstanding_amount']);
+        $this->assertSame(1, DB::table('customer_account_ledger_entries')
+            ->where('settlement_request_id', $key)->count());
+
+        foreach ([[$invoice, 29.0], [$other, 30.0]] as [$wrongInvoice, $wrongAmount]) {
+            try {
+                $ledger->settleInvoice($customer, $wrongInvoice, $wrongAmount, 'EGP', $user, 'DIFFERENT', null, $key);
+                $this->fail('Reusing the request ID for a different transaction must be rejected.');
+            } catch (ValidationException $e) {
+                $this->assertArrayHasKey('settlement_request_id', $e->errors());
+            }
+        }
+        $this->assertSame(1, DB::table('customer_account_ledger_entries')->count());
+
+        $this->app->setLocale('ar');
+        try {
+            $ledger->settleInvoice($customer, $other, 30, 'EGP', $user, null, null, $key);
+            $this->fail('The same key must not switch invoices in Arabic either.');
+        } catch (ValidationException $e) {
+            $this->assertSame(__('invoice_errors.settlement_request_id_conflict'), $e->errors()['settlement_request_id'][0]);
+            $this->assertStringContainsString('مُعرّف', $e->errors()['settlement_request_id'][0]);
+        }
+        $this->app->setLocale('en');
+        $this->assertSame(1, DB::table('customer_account_ledger_entries')->count());
+
+        $fullKey = 'dd672165-7a5c-41e2-b131-287ee7920ba7';
+        $full = $ledger->settleInvoice($customer, $invoice, 50, 'EGP', $user, 'RETRY-B', null, $fullKey);
+        $this->assertSame(0.0, $full['outstanding_after']);
+        $fullReplay = $ledger->settleInvoice($customer, $invoice, 50, 'EGP', $user, 'RETRY-B', null, $fullKey);
+        $this->assertTrue($fullReplay['replayed']);
+        $this->assertSame($full['ledger_entry_id'], $fullReplay['ledger_entry_id']);
+        $this->assertSame(2, DB::table('customer_account_ledger_entries')->count());
+        $this->assertSame(80.0, $ledger->invoiceAmounts($invoice)['paid_amount']);
+    }
+
+    public function test_invalid_settlement_request_key_never_writes_to_ledger(): void
+    {
+        [$user, $legacyCustomer, $customer, $storeId] = $this->account(100);
+        $invoice = $this->invoice($legacyCustomer->id, $customer->id, $storeId, 60, now()->subDay());
+
+        try {
+            app(B2bAccountLedgerService::class)
+                ->settleInvoice($customer, $invoice, 20, 'EGP', $user, null, null, '../forged');
+            $this->fail('Malformed request identity must fail closed.');
+        } catch (ValidationException $e) {
+            $this->assertArrayHasKey('settlement_request_id', $e->errors());
+        }
+
+        $this->assertSame(0, DB::table('customer_account_ledger_entries')->count());
+    }
+
     public function test_reversal_is_append_only_idempotent_and_restores_invoice_outstanding(): void
     {
         [$user, $legacyCustomer, $customer, $storeId] = $this->account(100);

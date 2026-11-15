@@ -168,7 +168,7 @@ final class SmartOrderingMerchandisingAdminController extends Controller
                     $query->whereNull('store_id')->orWhere('store_id', $site->store_id);
                 })->exists();
             if (! $valid) {
-                throw ValidationException::withMessages(['promotion_id' => ['Promotion is outside this restaurant scope.']]);
+                throw ValidationException::withMessages(['promotion_id' => [__('smart_ordering_merchandising.promotion_out_of_scope')]]);
             }
         }
 
@@ -178,7 +178,7 @@ final class SmartOrderingMerchandisingAdminController extends Controller
                 ->where('scope_key', 'b2c:'.$site->store_id)
                 ->exists();
             if (! $valid) {
-                throw ValidationException::withMessages(['marketing_coupon_id' => ['Coupon is outside this restaurant scope.']]);
+                throw ValidationException::withMessages(['marketing_coupon_id' => [__('smart_ordering_merchandising.coupon_out_of_scope')]]);
             }
         }
 
@@ -231,7 +231,7 @@ final class SmartOrderingMerchandisingAdminController extends Controller
                 ->where('catalogs.channel', 'b2c')
                 ->exists();
             if (! $valid) {
-                throw ValidationException::withMessages([$field => ['Product is outside this restaurant catalog.']]);
+                throw ValidationException::withMessages([$field => [__('smart_ordering_merchandising.product_out_of_scope')]]);
             }
         }
 
@@ -260,7 +260,7 @@ final class SmartOrderingMerchandisingAdminController extends Controller
             ->where('id', (int) $branchId)
             ->exists();
         if (! $valid) {
-            throw ValidationException::withMessages(['branch_id' => ['Branch is outside this restaurant scope.']]);
+            throw ValidationException::withMessages(['branch_id' => [__('smart_ordering_merchandising.branch_out_of_scope')]]);
         }
     }
 

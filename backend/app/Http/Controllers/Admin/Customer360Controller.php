@@ -68,10 +68,13 @@ final class Customer360Controller extends Controller
 
         $search = trim((string) ($filters['q'] ?? ''));
         if ($search !== '') {
-            $query->where(function ($q) use ($search): void {
-                $q->where('platform_customers.name', 'like', "%{$search}%")
-                    ->orWhere('platform_customers.email', 'like', "%{$search}%")
-                    ->orWhere('platform_customers.phone', 'like', "%{$search}%");
+            // Treat search as literal text: escape SQL LIKE's !, % and _ operators
+            // before adding the intentional substring wildcards.
+            $literalSearch = '%'.str_replace(['!', '%', '_'], ['!!', '!%', '!_'], $search).'%';
+            $query->where(function ($q) use ($literalSearch): void {
+                $q->whereRaw("platform_customers.name LIKE ? ESCAPE '!'", [$literalSearch])
+                    ->orWhereRaw("platform_customers.email LIKE ? ESCAPE '!'", [$literalSearch])
+                    ->orWhereRaw("platform_customers.phone LIKE ? ESCAPE '!'", [$literalSearch]);
             });
         }
 
@@ -359,9 +362,11 @@ final class Customer360Controller extends Controller
 
         $query = clone $base;
         if ($search !== '') {
-            $needle = '%'.addcslashes($search, '%_\\\\').'%';
+            // Explicit, portable LIKE escaping keeps finance invoice identifiers
+            // literal on SQLite and MySQL/MariaDB, including backslashes.
+            $needle = '%'.str_replace(['!', '%', '_'], ['!!', '!%', '!_'], $search).'%';
             $query->where(function ($builder) use ($needle, $referenceId): void {
-                $builder->where('invoices.invoice_number', 'like', $needle);
+                $builder->whereRaw("invoices.invoice_number LIKE ? ESCAPE '!'", [$needle]);
                 if ($referenceId !== null) {
                     $builder->orWhere('invoices.id', $referenceId);
                 }
@@ -873,6 +878,7 @@ final class Customer360Controller extends Controller
             'amount' => ['required', 'numeric', 'gt:0'],
             'reference' => ['nullable', 'string', 'max:120'],
             'description' => ['nullable', 'string', 'max:500'],
+            'settlement_request_id' => ['nullable', 'uuid'],
         ]);
 
         $result = $ledger->settleInvoice(
@@ -883,9 +889,12 @@ final class Customer360Controller extends Controller
             $actor,
             $validated['reference'] ?? null,
             $validated['description'] ?? null,
+            $validated['settlement_request_id'] ?? null,
         );
 
-        $audit->record('customer360.invoice_settled', $actor, $model, null, $result, $request);
+        if (! $result['replayed']) {
+            $audit->record('customer360.invoice_settled', $actor, $model, null, $result, $request);
+        }
 
         return redirect()
             ->to(route('admin.customer-360.show', ['platformCustomer' => $customer->getKey()]).'#invoices')
@@ -1332,8 +1341,8 @@ final class Customer360Controller extends Controller
         if (in_array($source, ['current_location', 'map_pin'], true)
             && ($latitude === null || $longitude === null)) {
             throw ValidationException::withMessages([
-                'latitude' => ['Latitude and longitude are required for the selected location source.'],
-                'longitude' => ['Latitude and longitude are required for the selected location source.'],
+                'latitude' => [__('customer_address_location.coordinate_pair_required')],
+                'longitude' => [__('customer_address_location.coordinate_pair_required')],
             ]);
         }
 
@@ -1341,7 +1350,7 @@ final class Customer360Controller extends Controller
             && $validated['location_accuracy_meters'] !== null
             && ($latitude === null || $longitude === null)) {
             throw ValidationException::withMessages([
-                'location_accuracy_meters' => ['Location accuracy requires a saved coordinate pair.'],
+                'location_accuracy_meters' => [__('customer_address_location.accuracy_pair_required')],
             ]);
         }
     }

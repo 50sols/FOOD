@@ -35,6 +35,8 @@
         .sq-line{display:flex;gap:10px;align-items:end;flex-wrap:wrap;padding:10px;background:var(--foodex-background);border-radius:10px}
         .sq-line label:first-child{flex:1 1 220px}
         .sq-actions-group{display:flex;gap:8px;flex-wrap:wrap}
+        .sq-domain-tabs{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+        .sq-domain-tabs p{flex-basis:100%;margin:4px 0 0}
         @media(max-width:900px){.sq-layout>main{padding:12px}}
         @media(max-width:620px){.sq-table,.sq-table tbody,.sq-table tr,.sq-table td{display:block;width:100%;box-sizing:border-box}.sq-table thead{display:none}.sq-table tr{border:1px solid var(--foodex-border);border-radius:12px;margin:9px 0;padding:6px}.sq-table td{border:0;display:flex;gap:8px;justify-content:space-between;align-items:center}.sq-table td::before{content:attr(data-label);font-weight:700}.sq-card{padding:12px}.sq-row>*{flex:1 1 100%}}
     </style>
@@ -98,6 +100,16 @@
         @endif
             </div>
         </div>
+        <nav class="sq-card sq-domain-tabs" data-sales-pricing-nav aria-label="{{ __('sales_quotations.contracts_prices_navigation') }}">
+            <a href="{{ route('admin.sales-quotations.index', ['store_id' => $storeId]) }}" class="sq-primary" aria-current="page">{{ __('sales_quotations.title') }}</a>
+            @if($pricingControlUrl)
+            <a href="{{ $pricingControlUrl }}" class="sq-secondary" data-pricing-control-link>{{ __('sales_quotations.pricing_controls') }}</a>
+            @endif
+            @if($priceListsUrl)
+            <a href="{{ $priceListsUrl }}" class="sq-secondary" data-pricing-lists-link>{{ __('sales_quotations.price_lists') }}</a>
+            @endif
+            <p class="sq-muted">{{ __('sales_quotations.contract_scope_note') }}</p>
+        </nav>
         @if(session('status'))<div class="sq-card" role="status">{{ session('status') }}</div>@endif
         @if($errors->any())<div class="sq-card sq-error" role="alert">{{ $errors->first() }}</div>@endif
         <section class="sq-card" aria-label="{{ __('sales_quotations.store') }}">
@@ -147,6 +159,84 @@
             <p><a href="{{ route('admin.sales-quotations.index', ['store_id'=>$storeId]) }}">{{ __('sales_quotations.back_to_list') }}</a></p>
         </section>
         @endif
+        @if($selected && $selected->status === 'issued' && $canManage && ! $selectedContract && (string) $selected->expires_at >= today()->toDateString())
+        <section class="sq-card" aria-labelledby="contracts-create-title" data-customer-contract-create>
+            <h2 id="contracts-create-title">{{ __('sales_contracts.create') }}</h2>
+            <p class="sq-muted">{{ __('sales_contracts.description') }}</p>
+            <form method="post" action="{{ route('admin.sales-contracts.store') }}" enctype="multipart/form-data">
+                @csrf
+                <input type="hidden" name="quotation_id" value="{{ $selected->id }}">
+                <div class="sq-row">
+                    <label>{{ __('sales_contracts.start_date') }}
+                        <input type="date" name="starts_on" min="{{ today()->toDateString() }}" value="{{ old('starts_on', today()->toDateString()) }}" required>
+                    </label>
+                    <label>{{ __('sales_contracts.end_date') }}
+                        <input type="date" name="ends_on" min="{{ today()->addDay()->toDateString() }}" value="{{ old('ends_on', today()->addMonths(1)->toDateString()) }}" required>
+                    </label>
+                    <label>{{ __('sales_contracts.signed_document') }}
+                        <input type="file" name="signed_document" accept="application/pdf,.pdf" required>
+                    </label>
+                    <button type="submit" class="sq-primary">{{ __('sales_contracts.create') }}</button>
+                </div>
+            </form>
+        </section>
+        @endif
+        <section class="sq-card" aria-labelledby="contracts-history-title" data-customer-contracts>
+            <h2 id="contracts-history-title">{{ __('sales_contracts.title') }}</h2>
+            <p class="sq-muted">{{ __('sales_contracts.scope_note') }}</p>
+            <table class="sq-table">
+                <thead><tr>
+                    <th>{{ __('sales_contracts.reference') }}</th>
+                    <th>{{ __('sales_contracts.customer') }}</th>
+                    <th>{{ __('sales_contracts.status') }}</th>
+                    <th>{{ __('sales_contracts.start_date') }} / {{ __('sales_contracts.end_date') }}</th>
+                    <th>{{ __('sales_contracts.total') }}</th>
+                    <th>{{ __('sales_quotations.actions') }}</th>
+                </tr></thead>
+                <tbody>
+                @forelse($contracts as $contract)
+                    <tr>
+                        <td data-label="{{ __('sales_contracts.reference') }}">SC-{{ strtoupper(substr($contract->reference, 0, 8)) }}</td>
+                        <td data-label="{{ __('sales_contracts.customer') }}">{{ $contract->customer_name_snapshot }}</td>
+                        <td data-label="{{ __('sales_contracts.status') }}">{{ __('sales_contracts.statuses.'.$contract->status) }}</td>
+                        <td data-label="{{ __('sales_contracts.start_date') }}">{{ $contract->starts_on }} — {{ $contract->ends_on }}</td>
+                        <td data-label="{{ __('sales_contracts.total') }}">{{ number_format((float) $contract->grand_total, 3) }} {{ $contract->currency }}</td>
+                        <td data-label="{{ __('sales_quotations.actions') }}">
+                            <details class="sq-actions">
+                                <summary aria-label="{{ __('sales_quotations.actions') }}">⋯</summary>
+                                <a href="{{ route('admin.sales-quotations.show', ['quotation' => $contract->quotation_id]) }}">{{ __('sales_quotations.view') }}</a>
+                                <a href="{{ route('admin.sales-contracts.download', ['contract' => $contract->id]) }}">{{ __('sales_contracts.evidence') }}</a>
+                            </details>
+                            @if($canApproveContracts && $contract->status === 'pending' && (int) $contract->created_by !== (int) $user->id)
+                            <form method="post" action="{{ route('admin.sales-contracts.decision', ['contract' => $contract->id]) }}">
+                                @csrf
+                                <input type="hidden" name="decision" value="approve">
+                                <button type="submit" class="sq-primary">{{ __('sales_contracts.approve') }}</button>
+                            </form>
+                            <form method="post" action="{{ route('admin.sales-contracts.decision', ['contract' => $contract->id]) }}">
+                                @csrf
+                                <input type="hidden" name="decision" value="reject">
+                                <label>{{ __('sales_contracts.reason') }}
+                                    <input name="rejection_reason" required maxlength="500">
+                                </label>
+                                <button type="submit" class="sq-secondary">{{ __('sales_contracts.reject') }}</button>
+                            </form>
+                            @elseif($canApproveContracts && $contract->status === 'active')
+                            <form method="post" action="{{ route('admin.sales-contracts.terminate', ['contract' => $contract->id]) }}"
+                                onsubmit="return window.confirm(@js(__('sales_contracts.terminate')));">
+                                @csrf
+                                <button type="submit" class="sq-secondary">{{ __('sales_contracts.terminate') }}</button>
+                            </form>
+                            @endif
+                        </td>
+                    </tr>
+                @empty
+                    <tr><td colspan="6">{{ __('sales_contracts.empty') }}</td></tr>
+                @endforelse
+                </tbody>
+            </table>
+            {{ $contracts->withQueryString()->links() }}
+        </section>
         <section class="sq-card" aria-labelledby="sq-history-title">
             <h2 id="sq-history-title">{{ __('sales_quotations.history') }}</h2>
             <table class="sq-table">

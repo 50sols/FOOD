@@ -42,9 +42,20 @@ final class InvoiceController extends Controller
         $locale = (string) ($validated['locale'] ?? $user->locale ?? 'en');
 
         try {
-            $content = $invoices->renderPdf($model, $locale);
+            // Resolve through the container so real HTTP tests can inject a
+            // failing renderer without relaxing invoice authorization.
+            $content = (string) app()->call([$invoices, 'renderPdf'], [
+                'invoice' => $model,
+                'locale' => $locale,
+            ]);
         } catch (\RuntimeException) {
-            abort(503, 'PDF generation is temporarily unavailable.');
+            $requestedLocale = $validated['locale'] ?? null;
+            $preferredLocale = $requestedLocale
+                ?? (in_array($user->locale, ['ar', 'en'], true)
+                    ? $user->locale
+                    : $request->getPreferredLanguage(['ar', 'en']));
+
+            abort(503, __('invoice_errors.pdf_generation_unavailable', [], $preferredLocale === 'ar' ? 'ar' : 'en'));
         }
 
         return response($content, 200, [
@@ -70,6 +81,7 @@ final class InvoiceController extends Controller
             'amount' => ['required', 'numeric', 'gt:0'],
             'reference' => ['nullable', 'string', 'max:120'],
             'description' => ['nullable', 'string', 'max:500'],
+            'settlement_request_id' => ['nullable', 'uuid'],
         ]);
 
         $result = $ledger->settleInvoice(
@@ -80,8 +92,11 @@ final class InvoiceController extends Controller
             $user,
             $validated['reference'] ?? null,
             $validated['description'] ?? null,
+            $validated['settlement_request_id'] ?? null,
         );
-        $audit->record('invoice.settled', $user, $model, null, $result, $request);
+        if (! $result['replayed']) {
+            $audit->record('invoice.settled', $user, $model, null, $result, $request);
+        }
 
         return redirect()
             ->route('admin.invoices.show', ['invoice' => $model->getKey()])

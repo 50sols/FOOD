@@ -59,7 +59,14 @@ aside.foodex-sidebar-expanded{width:var(--foodex-sidebar-width)!important}
 .foodex-sidebar-search{position:relative}.foodex-sidebar-search input{width:100%;padding-inline-start:38px}
 .foodex-nav-link[hidden],.foodex-nav-subchildren[hidden],.foodex-nav-group[hidden],.foodex-sidebar-search-empty[hidden]{display:none!important}
 .foodex-sidebar-search-empty{margin:4px 8px;padding:10px 12px;border:1px dashed var(--foodex-border);border-radius:10px;color:var(--foodex-muted);font-size:.82rem}.foodex-sidebar-search .foodex-svg-icon{position:absolute;inset-inline-start:11px;top:12px;width:18px;height:18px;color:var(--foodex-muted)}
-.foodex-nav{display:grid;gap:6px}.foodex-nav-group{border:1px solid transparent;border-radius:12px}.foodex-nav-group summary{list-style:none;cursor:pointer;min-height:46px;display:grid;grid-template-columns:30px minmax(0,1fr) auto auto;align-items:center;gap:9px;padding:8px 10px;border-radius:11px;font-weight:800;color:var(--foodex-ink)}.foodex-nav-group-icon{display:grid;place-items:center;width:28px;height:28px;font-size:1.35rem;line-height:1}.foodex-nav-group summary::-webkit-details-marker{display:none}.foodex-nav-group summary:hover{background:var(--foodex-green-soft);color:var(--foodex-green-dark)}
+.foodex-nav{display:grid;gap:6px}
+.foodex-nav-domain{display:grid;gap:6px;min-width:0;padding-inline-start:6px;border-inline-start:2px solid var(--foodex-border)}
+.foodex-nav-domain-title{margin:0;padding:7px 8px 3px;font-size:.8rem;font-weight:800;line-height:1.4;color:var(--foodex-green-dark);overflow-wrap:anywhere}
+.foodex-nav-domain:not(:has(> .foodex-nav-group:not([hidden]))){display:none!important}
+aside.foodex-sidebar-collapsed .foodex-nav-domain{padding-inline-start:0;border-inline-start:0}
+aside.foodex-sidebar-collapsed .foodex-nav-domain-title{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
+@media(max-width:1023px){aside.foodex-sidebar-collapsed .foodex-nav-domain{padding-inline-start:6px;border-inline-start:2px solid var(--foodex-border)}aside.foodex-sidebar-collapsed .foodex-nav-domain-title{position:static;width:auto;height:auto;padding:7px 8px 3px;margin:0;overflow:visible;clip:auto;white-space:normal}}
+.foodex-nav-group{border:1px solid transparent;border-radius:12px}.foodex-nav-group summary{list-style:none;cursor:pointer;min-height:46px;display:grid;grid-template-columns:30px minmax(0,1fr) auto auto;align-items:center;gap:9px;padding:8px 10px;border-radius:11px;font-weight:800;color:var(--foodex-ink)}.foodex-nav-group-icon{display:grid;place-items:center;width:28px;height:28px;font-size:1.35rem;line-height:1}.foodex-nav-group summary::-webkit-details-marker{display:none}.foodex-nav-group summary:hover{background:var(--foodex-green-soft);color:var(--foodex-green-dark)}
 .foodex-nav-group-title{display:flex;align-items:center;flex-wrap:wrap;gap:5px;min-width:0;line-height:1.35}
 .foodex-nav-group-status{display:inline-flex;align-items:center;max-width:100%;padding:2px 6px;border:1px solid var(--foodex-border);border-radius:999px;background:var(--foodex-surface);color:var(--foodex-muted);font-size:.66rem;font-weight:700;line-height:1.2;white-space:normal;overflow-wrap:anywhere}
 .foodex-nav-group-status[data-group-status="approval_required"]{background:var(--foodex-orange-soft);color:var(--foodex-ink)}
@@ -181,7 +188,27 @@ html[dir=ltr] .dashboard-layout:has(>.dashboard-sidebar.foodex-sidebar-collapsed
     @include('admin._sidebar-context-picker')
 
     <nav class="foodex-nav" aria-label="{{ __('admin.navigation') }}" data-foodex-nav>
-        @foreach($navGroups as $group)
+        {{-- P185/P237 business-domain headings compose ONLY groups already projected
+             by the canonical server authorizer. They never grant routes or override
+             an administrator's saved group ordering. Empty groups are absent. --}}
+        @php($p185DomainKeys = ['accounts', 'sales', 'customer_service'])
+        @php($p237DomainKeys = ['procurement', 'inventory', 'warehouses'])
+        @php($p237OrderedGroups = array_values($navGroups))
+        @foreach($p237OrderedGroups as $navIndex => $group)
+            @php($p185Member = in_array($group['key'], $p185DomainKeys, true))
+            @php($p185Before = $navIndex > 0 && in_array($p237OrderedGroups[$navIndex - 1]['key'], $p185DomainKeys, true))
+            @php($p185After = $navIndex + 1 < count($p237OrderedGroups) && in_array($p237OrderedGroups[$navIndex + 1]['key'], $p185DomainKeys, true))
+            @php($p237Member = in_array($group['key'], $p237DomainKeys, true))
+            @php($p237Before = $navIndex > 0 && in_array($p237OrderedGroups[$navIndex - 1]['key'], $p237DomainKeys, true))
+            @php($p237After = $navIndex + 1 < count($p237OrderedGroups) && in_array($p237OrderedGroups[$navIndex + 1]['key'], $p237DomainKeys, true))
+            @if($p185Member && ! $p185Before)
+                <section class="foodex-nav-domain" role="group" aria-labelledby="p185-domain-title-{{ $navIndex }}" data-nav-domain="customer-sales-service">
+                    <h2 id="p185-domain-title-{{ $navIndex }}" class="foodex-nav-domain-title">{{ __('v2_sidebar_domains.customer_sales_service') }}</h2>
+            @endif
+            @if($p237Member && ! $p237Before)
+                <section class="foodex-nav-domain" role="group" aria-labelledby="p237-domain-title-{{ $navIndex }}" data-nav-domain="procurement-inventory">
+                    <h2 id="p237-domain-title-{{ $navIndex }}" class="foodex-nav-domain-title">{{ __('v2_sidebar_domains.procurement_inventory') }}</h2>
+            @endif
             @php($groupActive = $containsContext($group, (string)($navContext??'')))
             @php($groupPrimary = $group['label_text'] ?? __($group['label']))
             @php($authorizedLinkCount = $countAuthorizedChildren((array) ($group['children'] ?? [])))
@@ -210,6 +237,12 @@ html[dir=ltr] .dashboard-layout:has(>.dashboard-sidebar.foodex-sidebar-collapsed
                     @endforeach
                 </div>
             </details>
+            @if($p237Member && ! $p237After)
+                </section>
+            @endif
+            @if($p185Member && ! $p185After)
+                </section>
+            @endif
         @endforeach
     </nav>
     <p class="foodex-sidebar-search-empty" data-foodex-nav-search-empty role="status" aria-live="polite" hidden>{{ __('sidebar_admin.search_empty') }}</p>
@@ -234,6 +267,16 @@ html[dir=ltr] .dashboard-layout:has(>.dashboard-sidebar.foodex-sidebar-collapsed
     const mobileOpenLabel = @json(__('admin.sidebar_open'));
     const mobileCloseLabel = @json(__('admin.sidebar_close'));
     const navigationLabel = @json(__('admin.navigation'));
+
+    // Storage access itself may throw SecurityError (privacy policies, blocked
+    // cookies, or embedded browsers). Preferences are presentation-only: a
+    // denied read/write must never abort authorized Sidebar initialization.
+    const readPreference = key => {
+        try { return localStorage.getItem(key); } catch { return null; }
+    };
+    const writePreference = (key, value) => {
+        try { localStorage.setItem(key, value); } catch { /* Native navigation remains usable. */ }
+    };
     const originalShellState = {
         role: shell.getAttribute('role'),
         ariaModal: shell.getAttribute('aria-modal'),
@@ -255,12 +298,12 @@ html[dir=ltr] .dashboard-layout:has(>.dashboard-sidebar.foodex-sidebar-collapsed
         if (!matchMedia('(max-width:767px)').matches) {
             toggle?.setAttribute('aria-expanded', expanded ? 'true' : 'false');
         }
-        if (persist) localStorage.setItem(stateKey, expanded ? '1' : '0');
+        if (persist) writePreference(stateKey, expanded ? '1' : '0');
     };
 
     const compactMedia = matchMedia('(max-width:1023px)');
     const mobileMedia = matchMedia('(max-width:767px)');
-    setExpanded(compactMedia.matches || (!defaultCollapsed && localStorage.getItem(stateKey) === '1'), false);
+    setExpanded(compactMedia.matches || (!defaultCollapsed && readPreference(stateKey) === '1'), false);
 
     const brand = shell.querySelector('.foodex-sidebar-brand');
     const bar = document.createElement('div');
@@ -388,7 +431,7 @@ html[dir=ltr] .dashboard-layout:has(>.dashboard-sidebar.foodex-sidebar-collapsed
         const mobile = mobileMedia.matches;
         document.body.classList.toggle('foodex-mobile-web', mobile);
         setDrawer(false, { restoreFocus: false });
-        setExpanded(compact ? true : localStorage.getItem(stateKey) === '1', false);
+        setExpanded(compact ? true : readPreference(stateKey) === '1', false);
     };
 
     launcher.addEventListener('click', () => setDrawer(!document.body.classList.contains('foodex-mobile-nav-open')));
@@ -447,7 +490,7 @@ html[dir=ltr] .dashboard-layout:has(>.dashboard-sidebar.foodex-sidebar-collapsed
     const groupStateKey = 'foodex.sidebar.groups.{{ $user->id ?? 'guest' }}';
     let savedGroupState = {};
     try {
-        const stored = JSON.parse(localStorage.getItem(groupStateKey) || 'null');
+        const stored = JSON.parse(readPreference(groupStateKey) || 'null');
         if (stored && typeof stored === 'object' && !Array.isArray(stored)) savedGroupState = stored;
     } catch {
         // Private browsing or a malformed historic preference cannot hide navigation.
@@ -470,7 +513,7 @@ html[dir=ltr] .dashboard-layout:has(>.dashboard-sidebar.foodex-sidebar-collapsed
             requestAnimationFrame(() => {
                 const next = { ...savedGroupState, [key]: group.open };
                 try {
-                    localStorage.setItem(groupStateKey, JSON.stringify(next));
+                    writePreference(groupStateKey, JSON.stringify(next));
                     savedGroupState = next;
                 } catch {
                     // Storage denied/full: native disclosure continues to work.
