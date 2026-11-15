@@ -55,8 +55,13 @@ final class FlashCheckoutService
 
         $allowedMethods = array_values((array) config('checkout.payment_methods', ['cash_on_delivery']));
         if (! in_array($paymentMethod, $allowedMethods, true)) {
+            $userLocale = $user->locale;
+            $locale = in_array($userLocale, ['ar', 'en'], true)
+                ? $userLocale
+                : strtolower((string) $request->getPreferredLanguage(['ar', 'en']));
+
             throw ValidationException::withMessages([
-                'payment_method' => ['The selected payment method is not configured.'],
+                'payment_method' => [__('flash_checkout.payment_method_not_configured', [], $locale === 'ar' ? 'ar' : 'en')],
             ]);
         }
 
