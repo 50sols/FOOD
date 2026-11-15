@@ -579,12 +579,31 @@ final class V2VanTripSettlementProvenanceTest extends TestCase
             $account, $maker, 'p272-sod-remittance', 10, 'KWD', 'cash',
         );
 
+        foreach ([
+            'en' => 'Remittance approval requires a distinct, recorded maker and checker.',
+            'ar' => 'لا يمكن اعتماد التوريد بواسطة مقدّمه؛ يجب تسجيل هوية مقدّم التوريد واعتماده بواسطة مراجع مستقل.',
+        ] as $locale => $errorMessage) {
+            app()->setLocale($locale);
+
+            try {
+                $service->approveRemittance($remittance, $maker);
+                $this->fail('The remittance maker must never approve their own custody deduction.');
+            } catch (ValidationException $exception) {
+                $this->assertSame($errorMessage, $exception->errors()['reviewed_by'][0] ?? null);
+            }
+        }
+
+        // Historical remittances may lose their submitted_by reference when
+        // an old user is removed. Unknown maker is not automatic approval.
+        $remittance->forceFill(['submitted_by' => null])->save();
         try {
-            $service->approveRemittance($remittance, $maker);
-            $this->fail('The remittance maker must never approve their own custody deduction.');
+            $service->approveRemittance($remittance->fresh(), $checker);
+            $this->fail('A remittance without recorded maker cannot be approved.');
         } catch (ValidationException $exception) {
             $this->assertArrayHasKey('reviewed_by', $exception->errors());
         }
+        $remittance->forceFill(['submitted_by' => $maker->getKey()])->save();
+        app()->setLocale('en');
 
         $this->assertDatabaseHas('remittances', [
             'id' => $remittance->getKey(),
