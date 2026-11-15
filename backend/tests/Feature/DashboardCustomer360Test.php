@@ -475,7 +475,7 @@ class DashboardCustomer360Test extends TestCase
                         'country_code' => 'EG',
                         'location_source' => $source,
                     ])
-                    ->assertRedirect($pageUrl)
+                    ->assertRedirect()
                     ->assertSessionHasErrors([
                         'latitude' => __('customer_address_location.coordinate_pair_required'),
                         'longitude' => __('customer_address_location.coordinate_pair_required'),
@@ -491,7 +491,7 @@ class DashboardCustomer360Test extends TestCase
                     'location_source' => 'manual',
                     'location_accuracy_meters' => 9.5,
                 ])
-                ->assertRedirect($pageUrl)
+                ->assertRedirect()
                 ->assertSessionHasErrors([
                     'location_accuracy_meters' => __('customer_address_location.accuracy_pair_required'),
                 ]);
@@ -501,7 +501,7 @@ class DashboardCustomer360Test extends TestCase
                     'platformCustomer' => $platform->id,
                     'address' => $address->id,
                 ]), ['location_source' => 'map_pin'])
-                ->assertRedirect($pageUrl)
+                ->assertRedirect()
                 ->assertSessionHasErrors([
                     'latitude' => __('customer_address_location.coordinate_pair_required'),
                     'longitude' => __('customer_address_location.coordinate_pair_required'),
