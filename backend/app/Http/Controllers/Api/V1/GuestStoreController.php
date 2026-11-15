@@ -6,16 +6,46 @@ use App\Http\Controllers\Controller;
 use App\Models\Store;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Validator;
+use Illuminate\Validation\ValidationException;
 
 class GuestStoreController extends Controller
 {
     public function index(Request $request): JsonResponse
     {
-        $perPage = min(max($request->integer('per_page', 20), 1), 100);
+        // Validate the actual query bag, not merged request input. Malformed
+        // arrays must never be cast to "Array" or used as implicit filters.
+        $validator = Validator::make($request->query(), [
+            'country_code' => ['nullable', 'string', 'max:16'],
+            'city' => ['nullable', 'string', 'max:150'],
+            'area' => ['nullable', 'string', 'max:150'],
+            'per_page' => ['nullable', 'integer', 'min:1', 'max:100'],
+            'page' => ['nullable', 'integer', 'min:1'],
+        ]);
 
-        $countryCode = strtoupper(trim((string) $request->query('country_code', '')));
-        $city = trim((string) $request->query('city', ''));
-        $area = trim((string) $request->query('area', ''));
+        if ($validator->fails()) {
+            $locale = in_array(app()->getLocale(), ['ar', 'en'], true) ? app()->getLocale() : 'en';
+            foreach ($request->getLanguages() as $preferredLanguage) {
+                $candidate = strtolower(substr((string) $preferredLanguage, 0, 2));
+                if (in_array($candidate, ['ar', 'en'], true)) {
+                    $locale = $candidate;
+                    break;
+                }
+            }
+
+            $errors = [];
+            foreach ($validator->errors()->keys() as $field) {
+                $errors[$field] = [__('guest_store_query.invalid_filter', [], $locale)];
+            }
+
+            throw ValidationException::withMessages($errors);
+        }
+
+        $filters = $validator->validated();
+        $perPage = (int) ($filters['per_page'] ?? 20);
+        $countryCode = strtoupper(trim((string) ($filters['country_code'] ?? '')));
+        $city = trim((string) ($filters['city'] ?? ''));
+        $area = trim((string) ($filters['area'] ?? ''));
 
         $query = Store::query()
             ->select('stores.*', 'storefront_settings.theme_code', 'storefront_settings.header_address')
