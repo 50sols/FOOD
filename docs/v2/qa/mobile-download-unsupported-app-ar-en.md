@@ -18,4 +18,4 @@ Only the existing abort message now resolves `admin.mobile_apps.unsupported_app`
 - **Van:** not affected (no Van API or Flutter change).
 - **Security:** HIGH review classification because near mobile release control; malformed input is rejected before mirror scheduling, authorized access is unchanged, no new allowlist member or policy bypass.
 
-Exact-head checks, reviewed SHA, and PR audit are recorded in PR #TBD. Manual/staging acceptance remains under #2503. No merge to main or live deployment is authorized.
+Exact-head checks, reviewed SHA, and PR audit are recorded in PR #3747. Manual/staging acceptance remains under #2503. No merge to main or live deployment is authorized.
