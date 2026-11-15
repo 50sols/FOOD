@@ -110,6 +110,31 @@ def _verify_local_header(archive: zipfile.ZipFile, member: zipfile.ZipInfo) -> N
              f"Truncated Setup ZIP local extra field: {member.filename!r}")
     _reject_ambiguous_extra_fields(extra, member.filename + " (local)")
 
+    if flags & 0x08:
+        # A streaming ZIP has a data descriptor after the compressed payload.
+        # Python ZipFile.testzip() trusts CENTRAL CRC/sizes and ignores these
+        # descriptor fields, but shared-host unzip tools may consume them.
+        descriptor_offset = (
+            member.header_offset + 30 + filename_size + extra_size
+            + member.compress_size
+        )
+        source.seek(descriptor_offset)
+        marker = source.read(4)
+        _require(len(marker) == 4,
+                 f"Truncated Setup ZIP data descriptor: {member.filename!r}")
+        descriptor = (source.read(12) if marker == b"PK\\x07\\x08"
+                      else marker + source.read(8))
+        _require(len(descriptor) == 12,
+                 f"Truncated Setup ZIP data descriptor: {member.filename!r}")
+        declared_crc = int.from_bytes(descriptor[0:4], "little")
+        declared_compressed = int.from_bytes(descriptor[4:8], "little")
+        declared_uncompressed = int.from_bytes(descriptor[8:12], "little")
+        _require(
+            (declared_crc, declared_compressed, declared_uncompressed)
+            == (member.CRC, member.compress_size, member.file_size),
+            f"Conflicting Setup ZIP data descriptor: {member.filename!r}",
+        )
+
 
 def _member_target(member: zipfile.ZipInfo) -> tuple[str, str, bool]:
     name = member.filename

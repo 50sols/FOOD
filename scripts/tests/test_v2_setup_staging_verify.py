@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import stat
 import tempfile
 import unittest
@@ -245,6 +246,49 @@ class V2SetupStagingVerifierTest(unittest.TestCase):
                 with zipfile.ZipFile(self.archive) as archive:
                     self.assertIsNone(archive.testzip())
                 with self.assertRaisesRegex(SetupZipError, "Conflicting local/central Setup ZIP " + reason):
+                    self.verify()
+
+    def test_streaming_zip_data_descriptors_are_consistent_before_extraction(self) -> None:
+        # A non-seekable ZIP writer emits flag 0x08 and an actual post-data
+        # descriptor. Python's testzip() never verifies its CRC/size fields.
+        class NonSeekable(io.BytesIO):
+            def seek(self, *args: object, **kwargs: object) -> int:
+                raise io.UnsupportedOperation("non-seekable output")
+
+        def pack_streaming_zip() -> None:
+            output = NonSeekable()
+            with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+                for name, payload in BASE_ENTRIES.items():
+                    member = zipfile.ZipInfo(name)
+                    member.external_attr = (stat.S_IFREG | 0o644) << 16
+                    archive.writestr(member, payload, compress_type=zipfile.ZIP_DEFLATED)
+            self.archive.write_bytes(output.getvalue())
+
+        pack_streaming_zip()
+        with zipfile.ZipFile(self.archive) as archive:
+            self.assertTrue(all(member.flag_bits & 0x08 for member in archive.infolist()))
+            self.assertIsNone(archive.testzip())
+        self.assertEqual("UNTRUSTED_CI_STAGING_ONLY", self.verify()["status"])
+
+        for offset, field in ((4, "CRC"), (8, "compressed size"),
+                              (12, "uncompressed size")):
+            with self.subTest(field=field):
+                pack_streaming_zip()
+                payload = bytearray(self.archive.read_bytes())
+                descriptor_start = payload.index(b"PK\\x07\\x08")
+                original = int.from_bytes(
+                    payload[descriptor_start + offset:descriptor_start + offset + 4],
+                    "little",
+                )
+                payload[descriptor_start + offset:descriptor_start + offset + 4] = (
+                    original ^ 1
+                ).to_bytes(4, "little")
+                self.archive.write_bytes(payload)
+                with zipfile.ZipFile(self.archive) as archive:
+                    self.assertIsNone(archive.testzip())
+                with self.assertRaisesRegex(
+                    SetupZipError, "Conflicting Setup ZIP data descriptor"
+                ):
                     self.verify()
 
     def test_reserved_general_purpose_flags_fail_even_when_zipfile_crc_passes(self) -> None:
