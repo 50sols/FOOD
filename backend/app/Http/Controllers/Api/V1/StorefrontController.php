@@ -489,8 +489,12 @@ final class StorefrontController extends Controller
 
         $storeId = $request->integer('store_id');
         if ($storeId <= 0) {
+            $locale = in_array($user->locale, ['ar', 'en'], true)
+                ? (string) $user->locale
+                : (string) $request->getPreferredLanguage(['ar', 'en']);
+
             throw ValidationException::withMessages([
-                'store_id' => ['A B2B store is required.'],
+                'store_id' => [__('b2b_checkout_options_errors.store_required', [], $locale === 'en' ? 'en' : 'ar')],
             ]);
         }
 
