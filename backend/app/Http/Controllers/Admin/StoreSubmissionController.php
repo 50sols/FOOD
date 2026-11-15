@@ -129,7 +129,7 @@ final class StoreSubmissionController extends Controller
         );
 
         return $this->backToSettings($data['app'], $data['environment'])
-            ->with('status', 'Store submission metadata saved.');
+            ->with('status', __('mobile_settings.store_submission_saved'));
     }
 
     public function upsertReviewer(Request $request, AuditLogger $audit): RedirectResponse
@@ -221,7 +221,7 @@ final class StoreSubmissionController extends Controller
         );
 
         return $this->backToSettings($data['app'], $data['environment'])
-            ->with('status', 'Reviewer account configuration saved.');
+            ->with('status', __('mobile_settings.reviewer_account_saved'));
     }
 
     public function rotateReviewer(
@@ -252,7 +252,7 @@ final class StoreSubmissionController extends Controller
         );
 
         return $this->backToSettings($reviewer->app, $reviewer->environment)
-            ->with('status', 'Reviewer secret rotated.');
+            ->with('status', __('mobile_settings.reviewer_secret_rotated'));
     }
 
     public function testReviewer(

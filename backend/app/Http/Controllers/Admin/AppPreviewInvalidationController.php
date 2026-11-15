@@ -39,7 +39,7 @@ final class AppPreviewInvalidationController extends Controller
             abort_if($requestedStoreId !== null && $requestedStoreId !== $storeId, 404);
             $this->tenantResolver->wholesale($user, $storeId);
         } else {
-            abort_if($requestedStoreId === null, 422, 'Retail preview event stream requires a store.');
+            abort_if($requestedStoreId === null, 422, __('preview_invalidation.retail_store_required'));
             $storeId = $requestedStoreId;
             $this->tenantResolver->retail(
                 $user,
