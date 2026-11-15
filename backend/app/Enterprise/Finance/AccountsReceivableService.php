@@ -120,6 +120,7 @@ final class AccountsReceivableService
             ],
             'store_id' => ['required', 'integer', 'min:1'],
             'customer_id' => ['required', 'integer', 'min:1'],
+            'source_invoice_id' => ['nullable', 'integer', 'min:1'],
             'entry_date' => ['required', 'date'],
             'due_date' => ['required', 'date', 'after_or_equal:entry_date'],
             'amount' => ['required', 'regex:/^\d{1,15}(?:\.\d{1,3})?$/'],
@@ -149,9 +150,12 @@ final class AccountsReceivableService
         }
 
         $currency = strtoupper((string) ($data['currency_code'] ?? 'KWD'));
+        $sourceInvoiceId = isset($data['source_invoice_id']) ? (int) $data['source_invoice_id'] : null;
         $description = $this->trimNullable($data['description'] ?? null);
         $idempotencyKey = trim((string) $data['idempotency_key']);
-        $requestHash = hash('sha256', json_encode([
+        // Preserve the historical idempotency hash for manual/legacy AR
+        // documents. A source invoice participates only when explicitly bound.
+        $requestPayload = [
             'store_id' => (int) $data['store_id'],
             'customer_id' => (int) $data['customer_id'],
             'entry_date' => $entryDate,
@@ -161,7 +165,11 @@ final class AccountsReceivableService
             'receivable_account_id' => (int) $data['receivable_account_id'],
             'offset_account_id' => (int) $data['offset_account_id'],
             'description' => $description,
-        ], JSON_THROW_ON_ERROR));
+        ];
+        if ($sourceInvoiceId !== null) {
+            $requestPayload['source_invoice_id'] = $sourceInvoiceId;
+        }
+        $requestHash = hash('sha256', json_encode($requestPayload, JSON_THROW_ON_ERROR));
 
         $existing = $this->documentQuery($scope, $context)
             ->where('idempotency_key', $idempotencyKey)
@@ -182,6 +190,7 @@ final class AccountsReceivableService
             $dueDate,
             $amount,
             $currency,
+            $sourceInvoiceId,
             $description,
             $idempotencyKey,
             $requestHash,
@@ -197,12 +206,33 @@ final class AccountsReceivableService
                 return $existing;
             }
 
+            if ($sourceInvoiceId !== null) {
+                // Lock the source invoice as part of the draft transaction. Do not
+                // trust a free-text receipt number or a document from another store.
+                $this->assertSourceInvoiceMatches(
+                    $sourceInvoiceId,
+                    (int) $data['store_id'],
+                    (int) $data['customer_id'],
+                    $currency,
+                    $amount,
+                );
+                if (EnterpriseAccountsReceivableDocument::query()
+                    ->where('legal_entity_id', $scope->legalEntityId)
+                    ->where('source_invoice_id', $sourceInvoiceId)
+                    ->exists()) {
+                    throw ValidationException::withMessages([
+                        'source_invoice_id' => [__('finance_workbench.receivables.source_invoice_invalid')],
+                    ]);
+                }
+            }
+
             $document = EnterpriseAccountsReceivableDocument::query()->create([
                 'organization_id' => $scope->organizationId,
                 'company_id' => $scope->companyId,
                 'legal_entity_id' => $scope->legalEntityId,
                 'store_id' => (int) $data['store_id'],
                 'customer_id' => (int) $data['customer_id'],
+                'source_invoice_id' => $sourceInvoiceId,
                 'document_number' => 'AR-'.Str::ulid(),
                 'idempotency_key' => $idempotencyKey,
                 'request_hash' => $requestHash,
@@ -273,6 +303,25 @@ final class AccountsReceivableService
             if (! $requester instanceof User) {
                 throw ValidationException::withMessages([
                     'created_by' => ['The AR document creator is unavailable.'],
+                ]);
+            }
+
+            if ($document->source_invoice_id !== null) {
+                // An invoice can be voided or revised after the AR draft. Prevent
+                // a stale source from being posted as an authenticated receivable.
+                $this->assertSourceInvoiceMatches(
+                    (int) $document->source_invoice_id,
+                    (int) $document->store_id,
+                    (int) $document->customer_id,
+                    (string) $document->currency_code,
+                    (string) $document->amount,
+                );
+                // Invoice identity is not yet a certified accounting handoff.
+                // An operational invoice/payment may already have its own GL
+                // source posting: never post another revenue/AR journal merely
+                // because the customer/store/amount metadata matches.
+                throw ValidationException::withMessages([
+                    'source_invoice_id' => [__('finance_workbench.receivables.source_invoice_invalid')],
                 ]);
             }
 
@@ -872,6 +921,36 @@ final class AccountsReceivableService
             ->exists();
 
         abort_unless($exists, 404);
+    }
+
+    /**
+     * Certifies only invoice-to-AR identity, not receipt-to-AR settlement.
+     * Legacy invoice rows without a store or with an untrusted status fail closed.
+     * Called inside the document draft/post transaction to lock the source row.
+     */
+    private function assertSourceInvoiceMatches(
+        int $invoiceId,
+        int $storeId,
+        int $customerId,
+        string $currency,
+        string $amount,
+    ): void {
+        $invoice = DB::table('invoices')
+            ->where('id', $invoiceId)
+            ->lockForUpdate()
+            ->first(['store_id', 'customer_id', 'currency', 'total', 'status', 'voided_at']);
+
+        if ($invoice === null
+            || ! in_array((string) $invoice->status, ['issued', 'reissued'], true)
+            || $invoice->voided_at !== null
+            || (int) $invoice->store_id !== $storeId
+            || (int) $invoice->customer_id !== $customerId
+            || strtoupper((string) $invoice->currency) !== strtoupper($currency)
+            || $this->toMills((string) $invoice->total) !== $this->toMills($amount)) {
+            throw ValidationException::withMessages([
+                'source_invoice_id' => [__('finance_workbench.receivables.source_invoice_invalid')],
+            ]);
+        }
     }
 
     private function assertPostingAccount(

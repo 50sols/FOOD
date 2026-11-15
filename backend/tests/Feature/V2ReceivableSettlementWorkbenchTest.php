@@ -544,6 +544,115 @@ final class V2ReceivableSettlementWorkbenchTest extends TestCase
         $ar->postAllocation($current, $currentContext, $foreignAllocation->id);
     }
 
+    public function test_invoice_to_ar_source_link_requires_exact_store_customer_currency_amount_and_does_not_post(): void
+    {
+        $fixture = $this->fixture('P303-INVOICE-LINK');
+        $maker = $fixture['maker'];
+        $poster = $fixture['poster'];
+        $store = $fixture['store'];
+        $original = $fixture['document'];
+        $context = app(TenantContextResolver::class)->retail($maker, $store->id);
+        $posterContext = app(TenantContextResolver::class)->retail($poster, $store->id);
+        $ar = app(AccountsReceivableService::class);
+
+        $invoice = [
+            'invoice_number' => 'P303-INVOICE-SOURCE-1',
+            'customer_id' => $original->customer_id,
+            'store_id' => $store->id,
+            'status' => 'issued',
+            'currency' => 'KWD',
+            'total' => '40.000',
+            'created_at' => now(),
+            'updated_at' => now(),
+        ];
+        $invoiceId = DB::table('invoices')->insertGetId($invoice);
+        $payload = [
+            'idempotency_key' => 'p303-invoice-source-draft',
+            'store_id' => $store->id,
+            'customer_id' => $original->customer_id,
+            'source_invoice_id' => $invoiceId,
+            'entry_date' => '2027-01-05',
+            'due_date' => '2027-02-05',
+            'amount' => '40.000',
+            'currency_code' => 'KWD',
+            'receivable_account_id' => $original->receivable_account_id,
+            'offset_account_id' => $original->offset_account_id,
+        ];
+
+        $linked = $ar->createDraft($maker, $context, $payload);
+        $this->assertSame($invoiceId, (int) $linked->source_invoice_id);
+        $this->assertSame('draft', $linked->status);
+        $this->assertNull($original->source_invoice_id);
+        $this->assertSame($linked->id, $ar->createDraft($maker, $context, $payload)->id);
+
+        // Identity linkage is NOT enough to certify revenue/AR accounting.
+        // Even an entitled independent poster cannot duplicate a journal.
+        foreach (['en', 'ar'] as $locale) {
+            app()->setLocale($locale);
+            try {
+                $ar->post($poster, $posterContext, $linked->id);
+                $this->fail('An invoice link must not bypass certified accounting handoff.');
+            } catch (ValidationException $exception) {
+                $this->assertSame(
+                    __('finance_workbench.receivables.source_invoice_invalid', [], $locale),
+                    $exception->errors()['source_invoice_id'][0] ?? null,
+                );
+            }
+        }
+        $this->assertSame('draft', $linked->fresh()->status);
+        $this->assertNull($linked->fresh()->journal_id);
+        $this->assertDatabaseCount('enterprise_finance_journals', 1);
+
+        $sequence = 0;
+        $reject = function (array $changes = []) use ($ar, $maker, $context, $payload, &$sequence): void {
+            $sequence++;
+            try {
+                $ar->createDraft($maker, $context, array_merge(
+                    $payload,
+                    ['idempotency_key' => 'p303-source-negative-'.$sequence],
+                    $changes,
+                ));
+                $this->fail('Unverified invoice source must be rejected.');
+            } catch (ValidationException $exception) {
+                $this->assertArrayHasKey('source_invoice_id', $exception->errors());
+            }
+        };
+
+        // A second receivable cannot claim the same invoice even with a new key.
+        $reject();
+
+        $baseline = [
+            'customer_id' => $original->customer_id,
+            'store_id' => $store->id,
+            'status' => 'issued',
+            'currency' => 'KWD',
+            'total' => '40.000',
+            'voided_at' => null,
+        ];
+        $foreign = $this->retailStore('P303-FOREIGN-INV');
+        $otherCustomer = Customer::query()->create([
+            'type' => 'b2b',
+            'name' => 'Other Invoice Customer',
+            'email' => 'other-invoice@example.test',
+        ]);
+        foreach ([
+            ['store_id' => $foreign->id],
+            ['customer_id' => $otherCustomer->id],
+            ['currency' => 'USD'],
+            ['total' => '39.000'],
+            ['status' => 'draft'],
+            ['voided_at' => now()],
+        ] as $tamper) {
+            DB::table('invoices')->where('id', $invoiceId)->update(array_merge($baseline, $tamper));
+            $reject();
+        }
+
+        DB::table('invoices')->where('id', $invoiceId)->update($baseline);
+        $reject(['source_invoice_id' => $invoiceId + 10000]);
+        $this->assertDatabaseCount('enterprise_ar_documents', 2);
+        $this->assertDatabaseCount('enterprise_finance_journals', 1);
+    }
+
     /** @return array{store:Store,maker:User,poster:User,document:EnterpriseAccountsReceivableDocument,cash_account_id:int} */
     private function fixture(string $prefix): array
     {
