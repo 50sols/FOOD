@@ -35,7 +35,7 @@ The distribution is a preferred schedule, **not** fixed authorization for any pa
 
 - The older standalone #1034 UI/UX mission in `AGENTS.md` retains its narrower six-lane rule **within that mission**. The twelve-slot ceiling applies to FOODEX V2, not legacy mission governance.
 - GitHub-hosted CI concurrency, GitHub API limits, scheduling jitter, and available ChatGPT execution sessions are separate constraints. More slots can increase queue time; avoid redundant CI reruns and preserve required gates.
-- Existing five ChatGPT scheduled automations (if enabled) are not increased or rescheduled by this repository policy; starting additional independent sessions/jobs is a **separate operational action**. Never report twelve actually running workers without runtime evidence.
+- ChatGPT scheduled automations are not increased or rescheduled by this repository policy; starting additional independent sessions/jobs is a **separate operational action**. Never report twelve actually running workers without runtime evidence.
 - All changes remain isolated from `main` and production; owner approval to increase V2 concurrency is **not** authorization for main merges or deployment.
 
 ## Impact classification
