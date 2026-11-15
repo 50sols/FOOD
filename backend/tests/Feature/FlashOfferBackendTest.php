@@ -383,7 +383,9 @@ class FlashOfferBackendTest extends TestCase
 
         // Customer checkout must reject every missing required field in the
         // authenticated actor's language, without consuming the reservation.
-        $originalLocale = $this->user->locale;
+        // Read the persisted default; the freshly created factory model may not
+        // hydrate the database's NOT NULL locale default into its attributes.
+        $originalLocale = (string) DB::table('users')->where('id', $this->user->getKey())->value('locale');
         $beforeMissingField = [
             'flash_reservations' => DB::table('flash_reservations')->count(),
             'flash_offer_events' => DB::table('flash_offer_events')->count(),
