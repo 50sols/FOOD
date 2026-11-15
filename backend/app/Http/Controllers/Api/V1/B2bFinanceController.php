@@ -290,7 +290,7 @@ class B2bFinanceController extends Controller
         try {
             $export = $exports->build($report, $format, $locale);
         } catch (\RuntimeException) {
-            abort(503, 'Document export is temporarily unavailable.');
+            abort(503, __('b2b_statement_export_errors.temporarily_unavailable', [], $locale));
         }
 
         app(AuditLogger::class)->record('b2b.finance.statement_exported', $request->user(), $customer, null, [
