@@ -98,7 +98,7 @@ class GuestCartController extends Controller
             $this->activeStoreForChannel((int) $cart->store_id, 'b2c');
 
             if ($storeId > 0 && (int) $cart->store_id !== $storeId) {
-                abort(409, 'Guest cart belongs to another store.');
+                abort(409, __('smart_ordering_cart.guest_store_mismatch'));
             }
         }
 
@@ -157,7 +157,7 @@ class GuestCartController extends Controller
                 ->first();
 
             if ($cart !== null && (int) $cart->store_id !== $storeId) {
-                abort(409, 'Guest cart belongs to another store.');
+                abort(409, __('smart_ordering_cart.guest_store_mismatch'));
             }
 
             if ($cart === null) {
@@ -358,13 +358,13 @@ class GuestCartController extends Controller
         string $channel,
         ?int $requestedStoreId = null,
     ): Cart {
-        abort_if($channel !== 'b2c', 409, 'A B2C guest cart cannot be merged into a B2B cart.');
+        abort_if($channel !== 'b2c', 409, __('smart_ordering_cart.guest_channel_mismatch'));
 
         $guestCart = $this->guestCartForToken($token);
         $storeId = (int) $guestCart->store_id;
 
         if ($requestedStoreId !== null && $storeId !== $requestedStoreId) {
-            abort(409, 'Guest cart belongs to another store.');
+            abort(409, __('smart_ordering_cart.guest_store_mismatch'));
         }
 
         $this->activeStoreForChannel($storeId, 'b2c');
