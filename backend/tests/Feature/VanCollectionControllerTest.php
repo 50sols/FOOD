@@ -145,8 +145,8 @@ class VanCollectionControllerTest extends TestCase
             }
         }
 
-        // Unsupported/empty saved locale uses the supported Accept-Language negotiation.
-        $actor->forceFill(['locale' => null])->save();
+        // Unsupported saved locale uses the supported Accept-Language negotiation.
+        $actor->forceFill(['locale' => 'zz'])->save();
         $this->withHeaders(['Idempotency-Key' => 'short', 'Accept-Language' => 'en-US,en;q=0.9'])
             ->postJson('/api/v1/van/remittances', [
                 'collection_account_id' => 999999,
