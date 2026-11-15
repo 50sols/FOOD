@@ -26,6 +26,7 @@ use Illuminate\Database\Eloquent\ModelNotFoundException;
 use Illuminate\Database\Events\QueryExecuted;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
 use Illuminate\Validation\ValidationException;
 use Tests\TestCase;
 
@@ -42,6 +43,19 @@ final class V2ReceivableSettlementWorkbenchTest extends TestCase
             'enterprise_module_readiness.certified_versions.finance',
             app(ModuleRegistry::class)->manifest('finance')->version,
         );
+    }
+
+    public function test_collection_source_migration_retries_safely_with_short_mysql_constraint(): void
+    {
+        // A failed MySQL DDL can leave the column behind without a migration
+        // ledger record. A second up() must not duplicate column/FK/index.
+        $migration = require database_path('migrations/2026_11_16_010000_add_collection_source_identity_to_enterprise_ar_allocations.php');
+        $migration->up();
+        $migration->up();
+
+        $this->assertTrue(Schema::hasColumn('enterprise_ar_allocations', 'source_collection_allocation_id'));
+        $this->assertTrue(Schema::hasIndex('enterprise_ar_allocations', 'ear_alloc_collection_source_unique'));
+        $this->assertLessThanOrEqual(64, strlen('ear_alloc_coll_src_fk'));
     }
 
     public function test_bilingual_ar_draft_refuses_unverified_collection_posting_without_journal(): void

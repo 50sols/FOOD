@@ -159,3 +159,11 @@ concurrency, true business-facing bilingual authorized receipt search and
 posting approval, browser accessibility, cross-channel accounting
 reconciliation and all required final-head CI. Original PR #3309 remains
 DRAFT and Issue #2633 OPEN. No main, tag, release or production action.
+
+## 2026-11-16 — MySQL/MariaDB identifier-length migration CI rescue
+
+**Original P303 PR #3309, exact previous head b0a147ca.** Direct GitHub Actions logs for Required CI #43775706684, job #133002681948 (MySQL Redis deployment acceptance), show SQLSTATE[42000] 1059: Laravel's auto-derived foreign-key name `enterprise_ar_allocations_source_collection_allocation_id_foreign` exceeded the MySQL/MariaDB 64-character identifier limit. The four affected deployment acceptance tests fail at migration bootstrap, so they provide no evidence about runtime AR posting. The required-ci-gate failure is a derivative of the failed MySQL job, **not** an acceptable test waiver.
+
+**Fix:** short stable named FK `ear_alloc_coll_src_fk`, retaining `ON DELETE RESTRICT` and unique `ear_alloc_collection_source_unique` on the nullable source ID; down() drops the actual named FK before dropping unique index and column. Since MySQL DDL is nontransactional, up() uses schema introspection to tolerate partial earlier attempts that already added the nullable column/FK/index; it never rewrites existing AR entries or infers collection identity from free text. A new dedicated migration retry test calls up() twice on SQLite and confirms required column/unique key and identifier length. This does **not** establish MySQL transactional rollback of posted ledger data; it only mitigates the specifically observed schema-failure replay state.
+
+**Validation:** GCC PHP 8.3 targeted migration retry 1 test / 4 assertions PASS; two-file Pint --test and both PHP syntax checks PASS. Full relevant P303 + Accounts Receivable + Finance Workbench test results and exact new HEAD MySQL CI must be recorded separately after re-run. Keep #2633/PR #3309 DRAFT and OPEN; draft-only receipt provenance does not complete certified cross-ledger posted collection accounting, MySQL concurrency, independent finance review or Stage 2 #2706 acceptance. No main, release, tag or production.
