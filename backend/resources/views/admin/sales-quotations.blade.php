@@ -205,7 +205,7 @@
                             <details class="sq-actions">
                                 <summary aria-label="{{ __('sales_quotations.actions') }}">⋯</summary>
                                 <a href="{{ route('admin.sales-quotations.show', ['quotation' => $contract->quotation_id]) }}">{{ __('sales_quotations.view') }}</a>
-                                <a href="{{ route('admin.sales-contracts.evidence', ['contract' => $contract->id]) }}">{{ __('sales_contracts.evidence') }}</a>
+                                <a href="{{ route('admin.sales-contracts.download', ['contract' => $contract->id]) }}">{{ __('sales_contracts.evidence') }}</a>
                             </details>
                             @if($canApproveContracts && $contract->status === 'pending' && (int) $contract->created_by !== (int) $user->id)
                             <form method="post" action="{{ route('admin.sales-contracts.decision', ['contract' => $contract->id]) }}">
