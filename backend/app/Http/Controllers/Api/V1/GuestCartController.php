@@ -20,6 +20,7 @@ use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Validator;
 use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
 use Symfony\Component\HttpFoundation\Response;
@@ -30,7 +31,20 @@ class GuestCartController extends Controller
     {
         $user = $this->apiUser($request);
         $token = $this->guestToken($request, false);
-        $storeId = $request->integer('store');
+
+        // A supplied store selector must never silently coerce to 0 and
+        // fall back to an existing guest token's store context.
+        $storeQuery = Validator::make($request->query(), [
+            'store' => ['sometimes', 'required', 'integer', 'min:1'],
+        ]);
+
+        if ($storeQuery->fails()) {
+            throw ValidationException::withMessages([
+                'store' => [$this->localizedCartMessage($request, 'guest_cart_store_query.invalid_store')],
+            ]);
+        }
+
+        $storeId = (int) ($storeQuery->validated()['store'] ?? 0);
 
         if ($user instanceof User) {
             $resolvedStoreId = $storeId > 0
