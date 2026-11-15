@@ -447,6 +447,7 @@ body{margin:0;background:var(--foodex-background);color:var(--foodex-ink)}
 <dialog id="c360-settlement-dialog" class="c360-settlement-dialog">
 <form method="post" data-settlement-form>
 @csrf
+<input type="hidden" name="settlement_request_id" value="{{ (string) \Illuminate\Support\Str::uuid() }}" data-settlement-request-id required>
 <h3>{{ __('customer_360.finance.settle_invoice') }}</h3>
 <p><strong data-settlement-invoice></strong></p>
 <p>{{ __('customer_360.finance.outstanding') }}: <strong data-settlement-outstanding></strong></p>
@@ -639,6 +640,7 @@ body{margin:0;background:var(--foodex-background);color:var(--foodex-ink)}
             if (!settlementDialog) return;
             const form = settlementDialog.querySelector('[data-settlement-form]');
             const invoiceId = button.dataset.invoiceId;
+            form.elements.namedItem('settlement_request_id').value = window.crypto?.randomUUID?.() || form.elements.namedItem('settlement_request_id').value;
             form.action = @json(route('admin.customer-360.show',['platformCustomer'=>$customer->id])) + '/invoices/' + invoiceId + '/settle';
             settlementDialog.querySelector('[data-settlement-invoice]').textContent = button.dataset.invoiceNumber || '';
             settlementDialog.querySelector('[data-settlement-outstanding]').textContent = (button.dataset.outstanding || '') + ' ' + (button.dataset.currency || '');

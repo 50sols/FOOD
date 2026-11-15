@@ -538,6 +538,7 @@ final class AdminSidebarManager
 
         $global = $user->roles()
             ->where('roles.is_active', true)
+            ->whereNull('roles.archived_at')
             ->pluck('roles.id')
             ->map(static fn ($id): int => (int) $id)
             ->all();
@@ -548,6 +549,7 @@ final class AdminSidebarManager
                 ->join('roles', 'roles.id', '=', 'user_store_roles.role_id')
                 ->where('user_store_roles.user_id', $user->id)
                 ->where('roles.is_active', true)
+                ->whereNull('roles.archived_at')
                 ->pluck('roles.id')
                 ->map(static fn ($id): int => (int) $id)
                 ->all();

@@ -867,6 +867,24 @@ paths:
       parameters:
         - $ref: "#/components/parameters/Page"
         - $ref: "#/components/parameters/PerPage"
+        - in: query
+          name: country_code
+          description: Optional service-zone country filter; an empty value is ignored.
+          schema:
+            type: string
+            maxLength: 16
+        - in: query
+          name: city
+          description: Optional service-zone city filter; an empty value is ignored.
+          schema:
+            type: string
+            maxLength: 150
+        - in: query
+          name: area
+          description: Optional service-zone area filter; an empty value is ignored.
+          schema:
+            type: string
+            maxLength: 150
       responses:
         "200":
           description: Store collection
@@ -874,6 +892,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/StoreCollection"
+        "422":
+          $ref: "#/components/responses/ValidationError"
 
   /stores/{store}/categories:
     get:
@@ -891,6 +911,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/CategoryCollection"
+        "422":
+          $ref: "#/components/responses/ValidationError"
         "404":
           $ref: "#/components/responses/NotFound"
 
@@ -940,6 +962,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ProductCollection"
+        "422":
+          $ref: "#/components/responses/ValidationError"
         "404":
           $ref: "#/components/responses/NotFound"
 
@@ -959,6 +983,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/OfferCollection"
+        "422":
+          $ref: "#/components/responses/ValidationError"
         "404":
           $ref: "#/components/responses/NotFound"
 
@@ -970,7 +996,14 @@ paths:
       parameters:
         - $ref: "#/components/parameters/StoreId"
         - $ref: "#/components/parameters/Page"
-        - $ref: "#/components/parameters/PerPage"
+        - in: query
+          name: per_page
+          description: Maximum 50 banners per page.
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 50
+            default: 10
       responses:
         "200":
           description: Store banner collection
@@ -978,6 +1011,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/BannerCollection"
+        "422":
+          $ref: "#/components/responses/ValidationError"
         "404":
           $ref: "#/components/responses/NotFound"
 
@@ -2021,6 +2056,8 @@ paths:
                 $ref: "#/components/schemas/NotificationCollection"
         "401":
           $ref: "#/components/responses/Unauthenticated"
+        "422":
+          $ref: "#/components/responses/ValidationError"
 
   /notifications/{notification}:
     get:
@@ -2043,6 +2080,8 @@ paths:
           $ref: "#/components/responses/Unauthenticated"
         "404":
           $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/ValidationError"
 
   /notifications/{notification}/read:
     post:
@@ -3140,7 +3179,7 @@ components:
     Locale:
       in: query
       name: locale
-      description: Requested localized notification content. Falls back to the authenticated user's locale.
+      description: Optional scalar ar/en. Missing uses the authenticated user's supported locale; invalid explicit values return HTTP 422.
       schema:
         type: string
         enum: [ar, en]
