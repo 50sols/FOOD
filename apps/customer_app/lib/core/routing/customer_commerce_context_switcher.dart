@@ -53,8 +53,15 @@ class CustomerCommerceContextSwitcher {
     CustomerSession session,
   ) async {
     _requirePlatformSession(session);
+    return targetsFromSelection(await storefrontApi.selection());
+  }
 
-    final payload = await storefrontApi.selection();
+  /// The same server-selector decoder is used by the live store selector and
+  /// programmatic context switches. Decode everything before exposing any
+  /// candidate so malformed rows cannot be converted into storefront links.
+  static List<CustomerCommerceSwitchTarget> targetsFromSelection(
+    Map<String, dynamic> payload,
+  ) {
     final entitlements = _map(payload['entitlements']);
     final principalId =
         _positiveInt(entitlements['principal_wholesale_store_id']);
@@ -141,6 +148,36 @@ class CustomerCommerceContextSwitcher {
     }
 
     return List<CustomerCommerceSwitchTarget>.unmodifiable(targets);
+  }
+
+  /// Keep existing public store card metadata, but admit only exactly
+  /// validated server-authorized identities to the signed-in selector UI.
+  /// Retail discovery is public: an allowed Retail row does not by itself
+  /// confer purchasing permission; the destination HTTP guard still applies.
+  static Map<String, dynamic> validatedSelection(
+    Map<String, dynamic> payload,
+  ) {
+    final targets = targetsFromSelection(payload);
+    final retailIds = targets
+        .where((target) => target.context.isRetail)
+        .map((target) => target.context.storeId)
+        .toSet();
+    final principalIds = targets
+        .where((target) => target.isPrincipalWholesale)
+        .map((target) => target.context.storeId)
+        .toSet();
+
+    return <String, dynamic>{
+      ...payload,
+      'retail_stores': (payload['retail_stores'] as List)
+          .where((row) =>
+              retailIds.contains(_positiveInt((row as Map)['id'] ?? row['store_id'])))
+          .toList(growable: false),
+      'wholesale_stores': (payload['wholesale_stores'] as List)
+          .where((row) =>
+              principalIds.contains(_positiveInt((row as Map)['id'])))
+          .toList(growable: false),
+    };
   }
 
   Future<CustomerCommerceSwitchResult> switchTo({
