@@ -270,6 +270,81 @@ final class V2VanTripActivityAuthorityTest extends TestCase
         $this->assertDatabaseCount('van_visits', 1);
     }
 
+
+    public function test_planned_visit_rejects_inactive_or_cross_channel_assignment_provenance_before_writing(): void
+    {
+        $admin = $this->superAdmin();
+        $wholesaleStoreId = app(WholesalePrincipal::class)->storeId();
+        $warehouseId = app(WholesalePrincipal::class)->warehouseId();
+        $customerId = (int) DB::table('b2b_customers')->insertGetId([
+            'name' => 'P276 assigned Wholesale customer',
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        $van = app(VanRegistryService::class)->createVan(['code' => 'V2-P276-PLANNED-VAN']);
+        $assignment = VanAssignment::query()->create([
+            'public_id' => (string) Str::uuid(),
+            'van_id' => $van->id,
+            'warehouse_id' => $warehouseId,
+            'assignment_type' => 'primary',
+            'status' => 'active',
+            'effective_from' => now()->subHour(),
+            'effective_until' => now()->addHour(),
+            'representative_user_id' => $admin->id,
+            'created_by' => $admin->id,
+        ]);
+        $payload = [
+            'assignment_id' => $assignment->id,
+            'customer_type' => 'b2b',
+            'customer_id' => $customerId,
+            'route_key' => 'P276-PLANNED-TRIP',
+        ];
+        $url = route('admin.field-operations.visits.store');
+        $this->actingAs($admin)->post($url, $payload)->assertRedirect();
+        $this->assertDatabaseHas('van_visits', [
+            'customer_type' => 'b2b',
+            'customer_id' => $customerId,
+            'store_id' => $wholesaleStoreId,
+        ]);
+        $this->assertDatabaseCount('van_visits', 1);
+
+        $van->forceFill(['status' => 'inactive'])->save();
+        $this->post($url, $payload)->assertNotFound();
+        $van->forceFill(['status' => 'active'])->save();
+
+        DB::table('warehouses')->where('id', $warehouseId)->update(['is_active' => false]);
+        $this->post($url, $payload)->assertNotFound();
+        DB::table('warehouses')->where('id', $warehouseId)->update(['is_active' => true]);
+
+        $otherB2bStoreId = (int) DB::table('stores')->insertGetId([
+            'store_type_id' => DB::table('store_types')->where('code', 'B2B')->value('id'),
+            'code' => 'P276-OTHER-B2B',
+            'name' => 'P276 another Wholesale store',
+            'is_active' => true,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        $this->post($url, $payload + ['store_id' => $otherB2bStoreId])->assertNotFound();
+
+        $retailStoreId = (int) DB::table('stores')->insertGetId([
+            'store_type_id' => DB::table('store_types')->where('code', 'B2C')->value('id'),
+            'code' => 'P276-RETAIL',
+            'name' => 'P276 Retail store',
+            'is_active' => true,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        DB::table('warehouses')->where('id', $warehouseId)->update(['store_id' => $retailStoreId]);
+        $this->post($url, $payload)->assertNotFound();
+        DB::table('warehouses')->where('id', $warehouseId)->update(['store_id' => $wholesaleStoreId]);
+
+        $inactiveOperator = User::factory()->create(['is_active' => false]);
+        $assignment->forceFill(['representative_user_id' => $inactiveOperator->id])->save();
+        $this->post($url, $payload)->assertNotFound();
+
+        $this->assertDatabaseCount('van_visits', 1);
+    }
+
     public function test_user_without_b2b_fleet_authority_cannot_open_trip_activity(): void
     {
         $user = User::factory()->create(['is_active' => true]);

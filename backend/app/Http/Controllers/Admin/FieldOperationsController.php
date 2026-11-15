@@ -837,6 +837,26 @@ final class FieldOperationsController extends Controller
 
         $assignment = VanAssignment::query()->with('van')->findOrFail((int) $data['assignment_id']);
         abort_unless($assignment->status === 'active', 422, 'Only an active Van assignment can receive a planned visit.');
+
+        // A live assignment ID alone cannot authorize a Van visit. Bind the
+        // selected assignment to an active Van and active Wholesale warehouse,
+        // and never accept a client-supplied store that differs from custody.
+        abort_unless($assignment->van?->status === 'active', 404);
+        $warehouse = DB::table('warehouses')
+            ->join('stores', 'stores.id', '=', 'warehouses.store_id')
+            ->join('store_types', 'store_types.id', '=', 'stores.store_type_id')
+            ->where('warehouses.id', $assignment->warehouse_id)
+            ->where('warehouses.is_active', true)
+            ->where('stores.is_active', true)
+            ->where('store_types.code', 'B2B')
+            ->first(['warehouses.store_id']);
+        abort_unless($warehouse !== null, 404);
+        $warehouseStoreId = (int) $warehouse->store_id;
+        abort_unless(in_array($warehouseStoreId, $this->b2bStoreIds($user), true), 404);
+        if (isset($data['store_id'])) {
+            abort_unless((int) $data['store_id'] === $warehouseStoreId, 404);
+        }
+
         if ($assignment->driver_id !== null) {
             // A crafted assignment_id cannot bring a B2C Driver into a B2B Van visit.
             abort_unless(
@@ -860,13 +880,12 @@ final class FieldOperationsController extends Controller
         if ($actorUserId === null) {
             throw ValidationException::withMessages(['assignment_id' => ['Assignment has no operator user.']]);
         }
+        abort_unless(DB::table('users')->where('id', $actorUserId)->where('is_active', true)->exists(), 404);
 
         $this->assertCustomerExists((string) $data['customer_type'], (int) $data['customer_id']);
-        $storeId = $data['store_id'] ?? (
-            (string) $data['customer_type'] === 'b2c'
-                ? DB::table('b2c_customers')->where('id', $data['customer_id'])->value('store_id')
-                : null
-        );
+        // The B2B visit belongs to the assignment's verified Wholesale
+        // warehouse store, never an unscoped/null or caller-forged store.
+        $storeId = $warehouseStoreId;
 
         VanVisit::query()->create([
             'actor_user_id' => (int) $actorUserId,
