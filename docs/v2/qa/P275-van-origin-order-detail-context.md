@@ -15,7 +15,8 @@ In `OrderOperationsController::index`, the direct-detail query retains `whereKey
 - An authorized actor can open a genuine Van direct-sale detail under `channel=b2b&origin=van&order=id` (HTTP 200).
 - The same actor requesting a same-store `origin=dashboard` order inside that Van filter receives HTTP 404 (not a guessed 403 or leaked alternate origin).
 - Removing the optional `origin` filter restores the original same-store authorized detail behavior (HTTP 200).
-- Existing cross-store operational scopes, Retail-only B2B denial, cross-channel 403 and malformed-origin HTTP 422 continue unchanged and remain covered by the previous filter test.
+- A directly selected Van-origin order from a foreign B2B store remains concealed by the existing store-scope authority (HTTP 404); the new seeded detail regression asserts it, not only the list exclusion.
+- Retail-only B2B denial, cross-channel 403 and malformed-origin HTTP 422 continue unchanged; the detail regression also directly asserts selected-ID Retail/all-channel HTTP 403.
 - No write operation, order/stock/audit/finance change or new API; the regression verifies unchanged order count.
 
 A companion feature test extends `V2VanDirectSalesDashboardFilterTest` with positive, negative and backward-compatibility HTTP assertions using seeded test-only records. Existing AR/EN view labels and RTL/LTR presentation stay untouched.
