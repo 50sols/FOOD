@@ -262,13 +262,13 @@ class VanFinanceSupportTest extends TestCase
                 'collection_account_id' => $accountId, 'payment_id' => null,
                 'idempotency_key' => 'P277-COL-'.$token,
                 'type' => 'collection', 'status' => 'posted', 'amount' => 1,
-                'currency' => 'KWD', 'source' => 'cash_on_delivery',
+                'currency' => 'KWD', 'source' => 'cash',
                 'created_by' => $admin->id, 'created_at' => $now, 'updated_at' => $now,
             ]);
             DB::table('remittances')->insert([
                 'collection_account_id' => $accountId,
                 'idempotency_key' => 'P277-REM-'.$token,
-                'amount' => 1, 'currency' => 'KWD', 'method' => 'bank_transfer',
+                'amount' => 1, 'currency' => 'KWD', 'method' => 'cash',
                 'reference' => 'P277-REF-'.$token, 'status' => 'pending',
                 'submitted_by' => $admin->id, 'created_at' => $now, 'updated_at' => $now,
             ]);
