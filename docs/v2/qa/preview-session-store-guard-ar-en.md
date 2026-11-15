@@ -12,6 +12,14 @@ V2DashboardPreviewSessionStoreLocaleTest uses RefreshDatabase and CoreReferenceS
 
 Existing AppPreviewDashboardBridgeTest retains positive 201 preview session creation, hashed token, scope and 204 revocation/audit regression; full CI must prove this still passes. No preview authentication or credential transfer behavior changes.
 
+## Mobile impact matrix
+
+| Surface | Affected? | Evidence |
+| --- | --- | --- |
+| Customer | No | Dashboard-only authenticated session POST; mobile API, Flutter model and signed runtime unchanged |
+| Driver | No | No delivery/driver API, assignment or Flutter change; Retail delivery remains Driver-only |
+| Van | No | No van API, route or Flutter change; Wholesale delivery remains Van-only |
+
 ## Surface and security audit
 
 - Dashboard: existing Preview Center session POST message only; no navigation, Blade/UI, responsive, RTL/LTR changes.
