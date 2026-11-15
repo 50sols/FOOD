@@ -168,6 +168,17 @@ final class V2VanDirectSalesDashboardFilterTest extends TestCase
             ->get("/admin/operations/orders?channel=b2b&action_required=0&order={$dashboardOrderId}")
             ->assertOk();
 
+        // A selected detail ID cannot bypass the original channel guard.
+        $this->actingAs($actor)
+            ->get("/admin/operations/orders?channel=all&origin=van&order={$vanOrderId}")
+            ->assertForbidden();
+
+        $retailStoreId = $this->retailStore('P275-DETAIL-RETAIL');
+        $retailActor = $this->retailAdmin($retailStoreId, 'p275-retail-detail@example.test');
+        $this->actingAs($retailActor)
+            ->get("/admin/operations/orders?channel=b2b&origin=van&order={$vanOrderId}")
+            ->assertForbidden();
+
         $this->assertDatabaseCount('orders', 2);
     }
 
