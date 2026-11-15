@@ -2,12 +2,15 @@
 
 namespace Tests\Feature;
 
+use App\Models\B2bCustomer;
+use App\Models\Customer;
 use App\Models\Role;
 use App\Models\User;
 use App\Models\VanVisit;
 use App\Services\VanRegistryService;
 use Database\Seeders\CoreReferenceSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\DB;
 use Laravel\Sanctum\Sanctum;
 use Tests\TestCase;
 
@@ -52,6 +55,68 @@ class VanVisitControllerTest extends TestCase
         $this->getJson('/api/v1/van/visits')
             ->assertOk()
             ->assertJsonPath('data.0.route_key', 'ROUTE-LEGACY');
+    }
+
+
+    public function test_missing_b2b_customer_validation_uses_saved_van_locale_and_does_not_write(): void
+    {
+        $actor = $this->vanActor();
+        $arabic = 'العميل المحدد غير موجود في سجل العملاء المعتمد.';
+        $english = 'The selected customer does not exist in the authoritative customer domain.';
+
+        foreach ([
+            ['ar', 'en', $arabic],
+            ['en', 'ar', $english],
+            ['fr', 'en', $english],
+            ['fr', 'ar', $arabic],
+        ] as [$savedLocale, $acceptLanguage, $expected]) {
+            $actor->forceFill(['locale' => $savedLocale])->save();
+            $tables = ['van_visits', 'orders', 'invoices', 'payments', 'stock_movements', 'audit_logs'];
+            $before = [];
+            foreach ($tables as $table) {
+                $before[$table] = DB::table($table)->count();
+            }
+
+            $this->withHeaders(['Accept-Language' => $acceptLanguage])
+                ->postJson('/api/v1/van/visits', [
+                    'customer_type' => 'b2b',
+                    'customer_id' => 99999999,
+                    'idempotency_key' => 'missing-customer-'.$savedLocale.'-'.$acceptLanguage,
+                ])
+                ->assertUnprocessable()
+                ->assertJsonPath('errors.customer_id.0', $expected);
+
+            foreach ($tables as $table) {
+                $this->assertSame($before[$table], DB::table($table)->count(), $table.' was mutated on a rejected Van visit');
+            }
+        }
+    }
+
+    public function test_existing_b2b_customer_visit_creation_still_succeeds(): void
+    {
+        $this->vanActor();
+
+        $legacy = Customer::query()->create([
+            'name' => 'Authorized Visit Buyer',
+            'type' => 'b2b',
+            'email' => 'authorized-visit-buyer@example.test',
+        ]);
+        $customer = B2bCustomer::query()->create([
+            'legacy_customer_id' => $legacy->getKey(),
+            'name' => 'Authorized Visit Buyer',
+            'email' => 'authorized-visit-buyer@example.test',
+        ]);
+
+        $this->postJson('/api/v1/van/visits', [
+            'customer_type' => 'b2b',
+            'customer_id' => (int) $customer->getKey(),
+            'idempotency_key' => 'valid-van-b2b-visit-localization-3816',
+        ])
+            ->assertCreated()
+            ->assertJsonPath('customer_type', 'b2b')
+            ->assertJsonPath('customer_id', (int) $customer->getKey());
+
+        $this->assertSame(1, VanVisit::query()->where('customer_id', $customer->getKey())->count());
     }
 
     private function vanActor(): User
