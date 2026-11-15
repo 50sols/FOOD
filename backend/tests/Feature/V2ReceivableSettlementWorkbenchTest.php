@@ -230,6 +230,72 @@ final class V2ReceivableSettlementWorkbenchTest extends TestCase
         ]);
     }
 
+    public function test_allocation_post_locks_parent_document_before_allocation_to_match_draft_order(): void
+    {
+        $fixture = $this->fixture('P303-LOCK-ORDER');
+        $ar = app(AccountsReceivableService::class);
+        $makerContext = app(TenantContextResolver::class)->retail(
+            $fixture['maker'],
+            $fixture['store']->id,
+        );
+        $posterContext = app(TenantContextResolver::class)->retail(
+            $fixture['poster'],
+            $fixture['store']->id,
+        );
+
+        $allocation = $ar->createAllocation(
+            $fixture['maker'],
+            $makerContext,
+            $fixture['document']->id,
+            [
+                'idempotency_key' => 'p303-parent-first-post-lock',
+                'allocation_date' => '2027-01-12',
+                'amount' => '15.000',
+                'settlement_account_id' => $fixture['cash_account_id'],
+                'reference' => 'NO-VERIFIED-RECEIPT',
+            ],
+        );
+
+        $baseTransactionLevel = DB::transactionLevel();
+        $readOrder = [];
+        DB::listen(function (QueryExecuted $event) use (&$readOrder, $baseTransactionLevel): void {
+            if (DB::transactionLevel() <= $baseTransactionLevel) {
+                return;
+            }
+
+            $sql = strtolower(ltrim($event->sql));
+            if (! str_starts_with($sql, 'select')) {
+                return;
+            }
+
+            if (preg_match('/\\bfrom\\s+["`]?enterprise_ar_allocations["`]?\\s/i', $sql)) {
+                $readOrder[] = 'allocation';
+            } elseif (preg_match('/\\bfrom\\s+["`]?enterprise_ar_documents["`]?\\s/i', $sql)) {
+                $readOrder[] = 'document';
+            }
+        });
+
+        try {
+            $ar->postAllocation(
+                $fixture['poster'],
+                $posterContext,
+                $allocation->id,
+                requiresVerifiedCollectionSource: true,
+            );
+            $this->fail('Unverified P303 receipt must not authorize posting.');
+        } catch (ValidationException $exception) {
+            $this->assertArrayHasKey('collection_source', $exception->errors());
+        }
+
+        // A non-locking ID probe may precede both locks, but the actual
+        // locking sequence must acquire the document first and allocation
+        // second; createAllocation already uses the parent-first order.
+        $this->assertSame(['allocation', 'document', 'allocation'], array_slice($readOrder, 0, 3));
+        $this->assertSame('draft', $allocation->fresh()->status);
+        $this->assertNull($allocation->fresh()->journal_id);
+        $this->assertDatabaseCount('enterprise_finance_journals', 1);
+    }
+
     public function test_draft_allocation_checks_and_writes_share_a_document_transaction_with_safe_retries(): void
     {
         $fixture = $this->fixture('P303-ATOMIC-DRAFT');

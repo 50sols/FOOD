@@ -30,6 +30,16 @@
 
 Run: `php artisan test --filter=V2ReceivableSettlementWorkbenchTest`, `php artisan test --filter=EnterpriseAccountsReceivableFoundationTest`, plus full exact-head Repository Policy, V2 Isolation, localization and required-ci-gate (including MySQL/Redis upgrade and recovery). Browser/device tests for desktop/320-430px mobile, keyboard, RTL/LTR remain independent final evidence; no screenshot workflow is claimed.
 
+## Parent-first AR draft/post lock ordering — incremental correction (2026-11-15)
+
+Previously `createAllocation()` locked the parent AR document before reading/writing allocations, but `postAllocation()` locked the allocation row **before** its parent document. Concurrent MySQL create/post operations could acquire those rows in opposite orders, increasing deadlock risk.
+
+Posting now resolves a scoped allocation's parent ID without a row lock, locks the authoritative tenant/store-scoped AR document first, and **re-reads and locks** the allocation under that document before making any posting, identity, idempotency or audit decision. Both paths follow document -> allocation lock order. The unlocked identity probe is not trusted for financial state.
+
+`test_allocation_post_locks_parent_document_before_allocation_to_match_draft_order` asserts the three SQL read stages (allocation identity -> scoped document -> locked allocation read) and that unverified P303 posting leaves draft/journal unchanged. SQLite verifies query ordering; no two-connection MySQL contention claim is made. Existing Retail sibling-store isolation, accounting maker/checker, AR/EN and P303 unverified-receipt denial remain intact. Customer/Driver/Van app code and public API remain unchanged.
+
+This is only a safe concurrency guard; **P303 source acceptance remains blocked** on a trusted immutable receipt-to-customer/order/invoice/AR link, atomic receipt consumption, currency/store limits, recovery and full staging tests. PR #3309 remains DRAFT; #2633 must stay OPEN.
+
 ## Source provenance checklist (P303, 2026-11-13)
 
 The following are **unimplemented acceptance prerequisites**, not evidence of a verified settlement:

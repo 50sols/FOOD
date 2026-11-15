@@ -520,7 +520,11 @@ final class AccountsReceivableService
             $allocationId,
             $requiresVerifiedCollectionSource,
         ): EnterpriseAccountsReceivableAllocation {
-            $allocation = EnterpriseAccountsReceivableAllocation::query()
+            // Read the scoped allocation identity without a row lock first.
+            // Draft creation locks the parent AR document before touching
+            // allocations. Posting must use the same lock order to prevent
+            // opposite-order MySQL deadlocks under concurrent draft/post calls.
+            $allocationIdentity = EnterpriseAccountsReceivableAllocation::query()
                 ->whereHas(
                     'document',
                     fn (Builder $query): Builder => $query
@@ -529,14 +533,21 @@ final class AccountsReceivableService
                         ->where('legal_entity_id', $scope->legalEntityId),
                 )
                 ->whereKey($allocationId)
+                ->firstOrFail(['ar_document_id']);
+
+            // Check canonical store/channel scope BEFORE touching the allocation
+            // or returning an idempotent posted row. The locked document is the
+            // authoritative parent; Retail sibling stores remain inaccessible.
+            $document = $this->documentQuery($scope, $context)
+                ->whereKey($allocationIdentity->ar_document_id)
                 ->lockForUpdate()
                 ->firstOrFail();
 
-            // Check canonical store/channel scope BEFORE returning an idempotent
-            // already-posted allocation. Legal-entity scope alone is not enough
-            // for Retail siblings that share the same legal entity.
-            $document = $this->documentQuery($scope, $context)
-                ->whereKey($allocation->ar_document_id)
+            // Re-read and lock the allocation only after the parent document.
+            // Never act on the unlocked identity snapshot under concurrency.
+            $allocation = EnterpriseAccountsReceivableAllocation::query()
+                ->where('ar_document_id', $document->id)
+                ->whereKey($allocationId)
                 ->lockForUpdate()
                 ->firstOrFail();
 
