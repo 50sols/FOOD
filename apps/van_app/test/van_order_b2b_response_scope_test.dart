@@ -306,6 +306,115 @@ void main() {
     ]);
   });
 
+  test('malformed Van quote and order money never becomes a successful zero',
+      () async {
+    for (final invalid in <Object?>[null, 'not-a-number', 'NaN', 'Infinity', -1]) {
+      final repository = _repository((request) async {
+        if (request.url.path.endsWith('/order-quote')) {
+          return http.Response(
+            jsonEncode({
+              'data': {
+                'currency': 'EGP',
+                'subtotal': 125.5,
+                'discount_total': 0,
+                'delivery_total': 0,
+                'tax_total': 0,
+                'grand_total': invalid,
+                'has_unavailable_items': false,
+              },
+            }),
+            200,
+          );
+        }
+        if (request.method == 'POST') {
+          return http.Response(
+            jsonEncode({'data': {..._order(), 'grand_total': invalid}}),
+            200,
+          );
+        }
+        return http.Response(
+          jsonEncode(_page([{..._order(), 'grand_total': invalid}])),
+          200,
+        );
+      });
+
+      await expectLater(
+        repository.orders(customer: _customer),
+        throwsA(isA<VanApiException>()),
+      );
+      await expectLater(
+        repository.quote(
+          customer: _customer,
+          lines: const [],
+          paymentMethod: 'cash_on_delivery',
+        ),
+        throwsA(isA<VanApiException>()),
+      );
+      await expectLater(
+        repository.createOrder(
+          customer: _customer,
+          lines: const [],
+          paymentMethod: 'cash_on_delivery',
+          idempotencyKey: 'van-truthful-money-501',
+        ),
+        throwsA(isA<VanApiException>()),
+      );
+    }
+  });
+
+  test('Van catalog and invoice detail reject malformed financial amounts',
+      () async {
+    final repository = _repository((request) async {
+      if (request.url.path.endsWith('/catalog')) {
+        return http.Response(
+          jsonEncode({
+            'currency': 'EGP',
+            'data': [
+              {
+                'id': 17,
+                'name': 'Wholesale item',
+                'sku': 'B2B-17',
+                'unit_price': 'NaN',
+              },
+            ],
+            'meta': {'page': 1, 'per_page': 50, 'has_more': false},
+          }),
+          200,
+        );
+      }
+      return http.Response(
+        jsonEncode({
+          'data': {
+            ..._order(),
+            'items': <Object>[],
+            'invoice': {
+              'id': 19,
+              'invoice_number': 'INV-19',
+              'status': 'partially_paid',
+              'currency': 'EGP',
+              'total': 125.5,
+              'paid_amount': 'Infinity',
+              'outstanding_amount': 100,
+            },
+            'payments': <Object>[],
+            'collections': <Object>[],
+            'timeline': <Object>[],
+          },
+        }),
+        200,
+      );
+    });
+
+    await expectLater(
+      repository.catalog(_customer),
+      throwsA(isA<VanApiException>()),
+    );
+    await expectLater(
+      repository.order(501),
+      throwsA(isA<VanApiException>()),
+    );
+  });
+
   test('Retail customer request never reaches a Van order endpoint', () async {
     var sent = 0;
     final repository = _repository((request) async {

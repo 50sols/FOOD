@@ -34,7 +34,7 @@ class HttpVanOrderRepository implements VanOrderRepository {
         name: _string(data['name']),
         sku: _string(data['sku']),
         barcode: _nullableString(data['barcode']),
-        unitPrice: _double(data['unit_price']),
+        unitPrice: _requiredMoney(data['unit_price']),
         minimumQuantity: _double(data['minimum_quantity'], fallback: 1),
         orderingIncrement: _double(data['ordering_increment'], fallback: 1),
         availableQuantity: _nullableDouble(data['available_quantity']),
@@ -234,7 +234,7 @@ class HttpVanOrderRepository implements VanOrderRepository {
           name: _string(item['name']),
           sku: _string(item['sku']),
           quantity: _double(item['quantity']),
-          lineTotal: _double(item['line_total']),
+          lineTotal: _requiredMoney(item['line_total']),
         );
       }).toList(growable: false),
       invoice: invoice == null
@@ -246,16 +246,16 @@ class HttpVanOrderRepository implements VanOrderRepository {
               ),
               status: _string(invoice['status']),
               currency: _string(invoice['currency']),
-              total: _double(invoice['total']),
-              paidAmount: _double(invoice['paid_amount']),
-              outstandingAmount: _double(invoice['outstanding_amount']),
+              total: _requiredMoney(invoice['total']),
+              paidAmount: _requiredMoney(invoice['paid_amount']),
+              outstandingAmount: _requiredMoney(invoice['outstanding_amount']),
             ),
       payments: _list(data['payments']).map((row) {
         final item = _map(row);
         return VanOrderPaymentRecord(
           provider: _string(item['provider']),
           status: _string(item['status']),
-          amount: _double(item['amount']),
+          amount: _requiredMoney(item['amount']),
           currency: _string(item['currency']),
         );
       }).toList(growable: false),
@@ -264,7 +264,7 @@ class HttpVanOrderRepository implements VanOrderRepository {
         return VanOrderCollectionRecord(
           status: _string(item['status']),
           source: _string(item['source']),
-          amount: _double(item['amount']),
+          amount: _requiredMoney(item['amount']),
           currency: _string(item['currency']),
         );
       }).toList(growable: false),
@@ -387,11 +387,11 @@ class HttpVanOrderRepository implements VanOrderRepository {
 
   VanOrderQuote _quote(Map<String, dynamic> data) => VanOrderQuote(
         currency: _string(data['currency']),
-        subtotal: _double(data['subtotal']),
-        discountTotal: _double(data['discount_total']),
-        deliveryTotal: _double(data['delivery_total']),
-        taxTotal: _double(data['tax_total']),
-        grandTotal: _double(data['grand_total']),
+        subtotal: _requiredMoney(data['subtotal']),
+        discountTotal: _requiredMoney(data['discount_total']),
+        deliveryTotal: _requiredMoney(data['delivery_total']),
+        taxTotal: _requiredMoney(data['tax_total']),
+        grandTotal: _requiredMoney(data['grand_total']),
         hasUnavailableItems: data['has_unavailable_items'] == true,
       );
 
@@ -426,7 +426,7 @@ class HttpVanOrderRepository implements VanOrderRepository {
       storeId: _requiredInt(data['store_id']),
       status: _string(data['status']),
       currency: _string(data['currency']),
-      grandTotal: _double(data['grand_total']),
+      grandTotal: _requiredMoney(data['grand_total']),
       createdAt: _nullableString(data['created_at']),
       vanExecutionStatus: _nullableString(data['van_execution_status']),
       vanFailureReasonCode: _nullableString(data['van_failure_reason_code']),
@@ -498,6 +498,20 @@ class HttpVanOrderRepository implements VanOrderRepository {
       throw const VanApiException('Invalid order identifier.');
     }
     return parsed;
+  }
+
+  // Client-side truthfulness only; server remains the financial authority.
+  // Never turn a malformed price, quote, invoice or collection into zero.
+  double _requiredMoney(Object? value) {
+    final amount = value is num
+        ? value.toDouble()
+        : value is String
+            ? double.tryParse(value.trim())
+            : null;
+    if (amount == null || !amount.isFinite || amount < 0) {
+      throw const VanApiException('Invalid Van monetary response.');
+    }
+    return amount;
   }
 
   double _double(Object? value, {double fallback = 0}) {
