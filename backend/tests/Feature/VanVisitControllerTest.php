@@ -57,7 +57,6 @@ class VanVisitControllerTest extends TestCase
             ->assertJsonPath('data.0.route_key', 'ROUTE-LEGACY');
     }
 
-
     public function test_missing_b2b_customer_validation_uses_saved_van_locale_and_does_not_write(): void
     {
         $actor = $this->vanActor();
