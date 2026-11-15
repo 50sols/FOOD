@@ -45,7 +45,7 @@ final class BranchPolicyService
             $this->request,
             $branch,
         );
-        abort_unless((bool) $branch->accepting_orders, 409, 'This branch is not accepting orders.');
+        abort_unless((bool) $branch->accepting_orders, 409, __('smart_ordering.branch_policy.not_accepting_orders'));
     }
 
     public function scheduledFor(

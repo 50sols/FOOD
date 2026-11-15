@@ -3,6 +3,7 @@
 return [
     'branch_policy' => [
         'past_schedule' => 'لا يمكن تحديد موعد في الماضي.',
+        'not_accepting_orders' => 'هذا الفرع لا يستقبل طلبات جديدة حاليًا.',
         'delivery_zone_outside' => 'عنوان التوصيل خارج نطاق خدمة هذا الفرع.',
     ],
     'checkout' => [
