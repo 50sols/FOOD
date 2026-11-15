@@ -207,7 +207,6 @@ final class V2VanTripActivityAuthorityTest extends TestCase
         $this->assertDatabaseCount('van_visits', 1);
     }
 
-
     public function test_forged_metadata_cannot_attribute_a_visit_to_another_authorized_van_or_operator(): void
     {
         $admin = $this->superAdmin();
