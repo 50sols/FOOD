@@ -32,6 +32,12 @@ flutter test test/v2_accessibility_e2e_test.dart --reporter expanded
 
 Local GCC Flutter focused accessibility tests were actually executed after correcting the semantics-handle test teardown: **Customer 2 PASS / Driver 2 PASS / Van 2 PASS (6 test cases total)**. The initial failing Customer header teardown and its fix were reproduced. The original localization suites were also run on GCC: **Customer 3 PASS, Driver 3 PASS, Van 2 PASS**; total **14 passing Flutter widget tests** across six suites. Focused `flutter analyze --no-pub` returned **No issues found** for the Customer source+new test and both Driver/Van new tests. These are verified local execution results; official exact-final-HEAD GitHub Policy, V2 Isolation, Required CI and three-app provenance outcomes still require independent checking before any merge claim.
 
+## 2026-11-15 successor: focused RTL/LTR and password-input assertions
+
+The original issue branch/PR is reused after the stale lease was released. The six AR/EN accessibility test cases now additionally inspect the effective widget `Directionality` at each entry-point field (Arabic RTL / English LTR). Driver and Van login cases exercise focus and actual synthetic password editing, verify the input remains obscured, and never submit credentials to a network endpoint. Customer diagnostics checks directionality at the note control. This is additive to the prior semantic-label and field-validation assertions; it does not alter runtime code, APIs, authentication, signing or product routes.
+
+**Verification state:** These new assertions require fresh exact-final-HEAD Flutter CI and review. Prior 14 Flutter passes and green CI refer only to the older `e484e752a22c1144f875f0225870a5df692905cb` commit, not automatically to these changes. The remaining publisher-signed synchronized APK/provenance requirement under #2749 is **unfulfilled**: never describe CI-only APKs as trusted publisher-signed releases, and do not close #2741 based on this bounded test increment.
+
 ## Security and application impact
 
 - **Backend/API:** no controller, route, permission, token, ledger, database or business state delta.
