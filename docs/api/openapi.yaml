@@ -3693,6 +3693,21 @@ components:
         password:
           type: string
           format: password
+        app:
+          description: >-
+            Optional first-party app selector. If omitted or null, newly issued
+            bearer token abilities are limited to app:customer (never wildcard).
+            Driver and Van tokens require an explicit matching app plus
+            independent server-side role and assignment authorization.
+          type: [string, "null"]
+          enum: [customer, driver, van, null]
+        van_id:
+          description: >-
+            Optional positive Van assignment selector evaluated by the server;
+            it does not authorize a Van runtime without app:van and a valid
+            effective role and assignment.
+          type: [integer, "null"]
+          minimum: 1
 
     LoginResponse:
       type: object
