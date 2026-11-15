@@ -38,11 +38,11 @@ final class V2ProfitabilityRuleInputGuardTest extends TestCase
                     'store_id' => $storeId,
                     'product' => $productId,
                 ]), $this->validForm([
-                    'rules_json' => '[{"channel":"van","min_margin_pct":12.5}]',
+                    'rules_json' => '[{"channel":"van","min_margin_pct":12.5,"minMarginPct":12.5}]',
                 ]));
 
             $response->assertRedirect()
-                ->assertSessionHasErrors(['rules_json.0.min_margin_pct']);
+                ->assertSessionHasErrors(['rules_json.0.min_margin_pct', 'rules_json.0.minMarginPct']);
             $this->assertSame(
                 __('commercial.validation.profitability_policy_unavailable', [], $locale),
                 session('errors')->first('rules_json.0.min_margin_pct'),
@@ -65,10 +65,11 @@ final class V2ProfitabilityRuleInputGuardTest extends TestCase
                 'product' => $productId,
             ]), $this->validForm([
                 'minimum_margin_percent' => '15',
+                'minimumMarginPercent' => '15',
                 'profitability_rules' => '[{"floor":15}]',
             ]))
             ->assertRedirect()
-            ->assertSessionHasErrors(['minimum_margin_percent', 'profitability_rules']);
+            ->assertSessionHasErrors(['minimum_margin_percent', 'minimumMarginPercent', 'profitability_rules']);
 
         $this->assertSame(0, DB::table('product_commercial_policies')->where('product_id', $productId)->count());
         $this->assertSame(0, DB::table('product_commercial_rules')->where('product_id', $productId)->count());

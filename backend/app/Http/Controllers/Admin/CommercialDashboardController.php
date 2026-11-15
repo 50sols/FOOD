@@ -22,7 +22,7 @@ use Illuminate\Validation\ValidationException;
 final class CommercialDashboardController extends Controller
 {
     // P229: unsupported margin/cost fields must never be silently accepted as quota rules.
-    private const PROFITABILITY_FIELD = '/(?:^|_)(?:profitability|profit|margin|cost_basis|stock_owner)(?:_|$)/i';
+    private const PROFITABILITY_FIELD = '/profitability|profit|margin|cost[_-]?basis|stock[_-]?owner/i';
 
     public function __construct(
         private readonly AdminNavigation $navigation,
