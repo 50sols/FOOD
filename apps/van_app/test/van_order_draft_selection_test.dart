@@ -39,6 +39,43 @@ void main() {
     expect(draft.paymentMethod, 'card');
   });
 
+  test('unchanged draft retains its submission key across retries', () {
+    final draft = VanOrderDraftController()..selectCustomer(_customer);
+    draft.add(_product);
+    draft.applyOptions(_options);
+    final key = draft.submissionKey;
+    draft.selectCustomer(_customer);
+    draft.applyOptions(_options);
+    draft.setQuoteForRevision(_quote, draft.revision);
+    expect(draft.submissionKey, key);
+    expect(key.length, inInclusiveRange(16, 100));
+    draft.changeQuantity(_product, 2);
+    expect(draft.submissionKey, isNot(key));
+  });
+
+  test('switching store clears same-customer order and retry authority', () {
+    final draft = VanOrderDraftController()..selectCustomer(_customer);
+    draft.add(_product);
+    draft.applyOptions(_options);
+    draft.setSelection(note: 'Store-specific note');
+    final revision = draft.revision;
+    final key = draft.submissionKey;
+    draft.setQuoteForRevision(_quote, revision);
+    draft.selectCustomer(
+      const VanCustomerScope(type: 'b2b', id: 7, name: 'Customer', storeId: 4),
+    );
+    expect(draft.customer?.storeId, 4);
+    expect(draft.lines, isEmpty);
+    expect(draft.options, isNull);
+    expect(draft.addressId, isNull);
+    expect(draft.warehouseId, isNull);
+    expect(draft.paymentMethod, isNull);
+    expect(draft.customerNote, isNull);
+    expect(draft.setQuoteForRevision(_quote, revision), isFalse);
+    expect(draft.hasCurrentQuote, isFalse);
+    expect(draft.submissionKey, isNot(key));
+  });
+
   test('explicit clear stays clear through quote option refresh', () {
     final draft = VanOrderDraftController();
     draft.selectCustomer(_customer);

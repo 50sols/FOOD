@@ -1,3 +1,6 @@
+import 'dart:convert';
+import 'dart:math';
+
 import 'package:flutter/foundation.dart';
 
 import '../wallet/van_wallet_contract.dart';
@@ -439,6 +442,13 @@ class VanOrderDraftController extends ChangeNotifier {
   bool _paymentSelectionInitialized = false;
   int _revision = 0;
   int? _quotedRevision;
+  String? _submissionKey;
+
+  String get submissionKey => _submissionKey ??= 'van-order-${base64Url.encode(
+        List<int>.generate(18, (_) => _random.nextInt(256)),
+      )}';
+
+  static final _random = Random.secure();
 
   List<VanOrderLine> get lines => _lines.values.toList(growable: false);
   int get revision => _revision;
@@ -446,12 +456,17 @@ class VanOrderDraftController extends ChangeNotifier {
 
   void _touch() {
     _revision += 1;
+    _submissionKey = null;
     quote = null;
     _quotedRevision = null;
   }
 
   void selectCustomer(VanCustomerScope value) {
-    if (customer?.type == value.type && customer?.id == value.id) return;
+    if (customer?.type == value.type &&
+        customer?.id == value.id &&
+        customer?.storeId == value.storeId) {
+      return;
+    }
     customer = value;
     _lines.clear();
     options = null;

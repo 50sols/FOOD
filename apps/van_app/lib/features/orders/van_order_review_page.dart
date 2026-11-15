@@ -29,8 +29,6 @@ class _VanOrderReviewPageState extends State<VanOrderReviewPage> {
   bool _loading = false;
   bool _quoteFailed = false;
   bool _submitting = false;
-  int? _idempotencyRevision;
-  String? _idempotencyKey;
 
   bool get _arabic => Localizations.localeOf(context).languageCode == 'ar';
   String _text(String en, String ar) => _arabic ? ar : en;
@@ -59,7 +57,9 @@ class _VanOrderReviewPageState extends State<VanOrderReviewPage> {
     });
     try {
       var options = widget.draft.options;
+      final optionsRevision = widget.draft.revision;
       options ??= await widget.repository.options(customer);
+      if (!mounted || widget.draft.revision != optionsRevision) return;
       widget.draft.applyOptions(options);
       widget.draft.setSelection(note: _note.text);
       final payment = widget.draft.paymentMethod;
@@ -98,15 +98,6 @@ class _VanOrderReviewPageState extends State<VanOrderReviewPage> {
     }
   }
 
-  String _idempotencyKeyFor(int revision) {
-    if (_idempotencyRevision != revision || _idempotencyKey == null) {
-      _idempotencyRevision = revision;
-      _idempotencyKey =
-          'van-order-${DateTime.now().microsecondsSinceEpoch}-r$revision';
-    }
-    return _idempotencyKey!;
-  }
-
   Future<void> _submit() async {
     final revision = widget.draft.revision;
     final customer = widget.draft.customer;
@@ -126,7 +117,7 @@ class _VanOrderReviewPageState extends State<VanOrderReviewPage> {
     final addressId = widget.draft.addressId;
     final warehouseId = widget.draft.warehouseId;
     final customerNote = widget.draft.customerNote;
-    final idempotencyKey = _idempotencyKeyFor(revision);
+    final idempotencyKey = widget.draft.submissionKey;
 
     setState(() => _submitting = true);
     try {

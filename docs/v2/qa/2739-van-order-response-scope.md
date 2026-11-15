@@ -41,3 +41,9 @@ Manual browser/device/staging UAT is deferred to final V2 gate #2750 only; autom
 - Within the original #2739 Van order repository only, explicit quantity responses now require finite nonnegative numbers; minimum and ordering increment, when supplied, must be strictly positive. Absent optional catalog minimum/increment still default to 1, and absent optional stock remains null. Legitimate fractional increments and zero actual available stock remain accepted; no backend business validation was changed.
 - MockClient Flutter regressions reject malformed, negative, NaN, Infinity and nonnumeric stock/step values and order-line quantities. A positive default/optional-stock case preserves historical compatibility. Money parsing, B2B customer/store authority, Idempotency-Key and all existing endpoint paths remain unchanged.
 - **Source boundary:** this strengthens client-side truthfulness only; it does not implement immutable physical Van stock custody, loading/returns, trip/finance settlement or offline replay. #2739 and original #3351 remain OPEN/DRAFT until all MOB-V03 obligations and exact-head CI are proven. No other app, Laravel, Dashboard, migration or production change.
+
+## Draft replay after review navigation and store switches
+
+The order review uses the draft's random submission key throughout the same in-memory revision, including after a review-page remount following an ambiguous network response. A change of customer store clears lines, selections, quote and operation key even if customer type and ID match. An options response arriving after a revision change is discarded. Process termination and physical consignment settlement require separate source acceptance.
+
+GCC verified the focused draft and HTTP suites (22 tests), Flutter analysis and Dart formatting for the three changed Dart files.
