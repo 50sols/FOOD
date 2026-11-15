@@ -1483,6 +1483,29 @@ paths:
       summary: Create or update an approved B2B price rule
       security:
         - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [price_tier_id, store_id, product_id, unit_price, minimum_quantity]
+              properties:
+                price_tier_id: { type: integer, minimum: 1 }
+                store_id: { type: integer, minimum: 1 }
+                product_id: { type: integer, minimum: 1 }
+                unit_price: { type: number, minimum: 0, multipleOf: 0.001 }
+                minimum_quantity: { type: number, exclusiveMinimum: 0, multipleOf: 0.001 }
+                ordering_increment: { type: number, exclusiveMinimum: 0, multipleOf: 0.001 }
+                quantity_price_breaks:
+                  type: array
+                  maxItems: 12
+                  description: Omission preserves the existing schedule; an explicit empty array clears it.
+                  items:
+                    $ref: "#/components/schemas/B2bQuantityPriceBreak"
+                replace_quantity_price_breaks:
+                  type: boolean
+                  description: When true, replace the schedule with the supplied list or an empty list.
       responses:
         "200":
           description: B2B price rule updated
@@ -4249,6 +4272,20 @@ components:
           type: string
           format: date-time
 
+    B2bQuantityPriceBreak:
+      type: object
+      description: Whole-line (all-units) account-tier price applied at or above its base-unit threshold.
+      required: [minimum_quantity, unit_price]
+      properties:
+        minimum_quantity:
+          type: number
+          exclusiveMinimum: 0
+          multipleOf: 0.001
+        unit_price:
+          type: number
+          minimum: 0
+          multipleOf: 0.001
+
     B2bProduct:
       allOf:
         - $ref: "#/components/schemas/ProductSummary"
@@ -4258,6 +4295,12 @@ components:
             account_price:
               type: number
               multipleOf: 0.001
+            quantity_price_breaks:
+              type: array
+              description: Additive, account-scoped, non-increasing unit-price thresholds; empty for legacy flat pricing. Checkout totals are calculated by the server.
+              maxItems: 12
+              items:
+                $ref: "#/components/schemas/B2bQuantityPriceBreak"
             minimum_order_quantity:
               type: number
               minimum: 0
