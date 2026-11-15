@@ -11,7 +11,7 @@ use Illuminate\Validation\ValidationException;
 final class QuantityPriceBreaks
 {
     /**
-     * @param array<mixed> $breaks
+     * @param  array<mixed>  $breaks
      * @return list<array{minimum_quantity:float,unit_price:float}>
      */
     public static function normalize(array $breaks, float $minimum, float $increment, float $basePrice): array
@@ -57,7 +57,7 @@ final class QuantityPriceBreaks
     }
 
     /**
-     * @param array{price:float,quantity_price_breaks?:list<array{minimum_quantity:float,unit_price:float}>} $pricing
+     * @param  array{price:float,quantity_price_breaks?:list<array{minimum_quantity:float,unit_price:float}>}  $pricing
      */
     public static function priceForQuantity(array $pricing, float $quantity): float
     {

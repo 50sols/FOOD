@@ -2,7 +2,6 @@
 
 namespace App\Domain\Pricing;
 
-use App\Domain\Pricing\QuantityPriceBreaks;
 use App\Models\B2bAccount;
 use App\Models\B2bCustomer;
 use App\Models\User;

@@ -2,12 +2,12 @@
 
 namespace App\Http\Controllers\Admin;
 
+use App\Domain\Pricing\QuantityPriceBreaks;
 use App\Http\Controllers\Api\V1\B2bAccountController;
 use App\Http\Controllers\Api\V1\B2bPricingController;
 use App\Http\Controllers\Api\V1\DriverAssignmentController;
 use App\Http\Controllers\Api\V1\OrderController;
 use App\Http\Controllers\Controller;
-use App\Domain\Pricing\QuantityPriceBreaks;
 use App\Models\B2bAccount;
 use App\Models\B2bCustomer;
 use App\Models\Category;

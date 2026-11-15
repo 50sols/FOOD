@@ -7,6 +7,7 @@ use App\Models\B2bAccount;
 use App\Models\Customer;
 use App\Models\Role;
 use App\Models\User;
+use App\Services\WholesalePrincipal;
 use Database\Seeders\CoreReferenceSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
@@ -145,7 +146,7 @@ final class V2VolumeQuantityPricingTest extends TestCase
 
     public function test_dashboard_break_editor_is_localized_and_denies_unapproved_actor(): void
     {
-        $storeId = app(\App\Services\WholesalePrincipal::class)->storeId();
+        $storeId = app(WholesalePrincipal::class)->storeId();
         $this->pricingMode($storeId, true);
         $manager = $this->actor('B2B_ADMIN', 'volume-ui@example.test');
         $this->actingAs($manager)->get('/admin/b2b/pricing-approvals')
@@ -204,6 +205,7 @@ final class V2VolumeQuantityPricingTest extends TestCase
             'code' => 'V2-VOLUME-TIER', 'name' => 'Volume Tier', 'priority' => 10,
             'created_at' => now(), 'updated_at' => now(),
         ]);
+
         return [$store, $product, $tier];
     }
 
@@ -226,6 +228,7 @@ final class V2VolumeQuantityPricingTest extends TestCase
         if ($role !== null) {
             $user->roles()->attach(Role::query()->where('code', $role)->firstOrFail());
         }
+
         return $user;
     }
 
