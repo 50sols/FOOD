@@ -66,6 +66,51 @@ final class V2RetailWholesaleProductMappingLocaleTest extends TestCase
         }
     }
 
+    public function test_inactive_wholesale_source_catalog_cannot_be_mapped_even_by_authorized_actor(): void
+    {
+        $fixture = $this->products();
+        $sourceCatalogId = (int) DB::table('products')
+            ->where('id', $fixture['wholesale_product'])
+            ->value('catalog_id');
+
+        $this->assertGreaterThan(0, $sourceCatalogId);
+        DB::table('catalogs')->where('id', $sourceCatalogId)->update([
+            'is_active' => false,
+            'updated_at' => now(),
+        ]);
+
+        $admin = $this->actor('SUPER_ADMIN');
+        Sanctum::actingAs($admin);
+        $url = '/api/v1/b2b/product-mappings/'.$fixture['wholesale_product'];
+        $payload = [
+            'retail_store_id' => $fixture['retail_store'],
+            'retail_product_id' => $fixture['retail_product'],
+            'quantity_conversion_factor' => 1.5,
+        ];
+
+        foreach ([
+            ['ar', 'en-US,en;q=0.9', 'يجب أن ينتمي المنتج المصدر إلى كتالوج جملة نشط.'],
+            ['en', 'ar-KW,ar;q=0.9', 'The source product must belong to an active wholesale catalog.'],
+        ] as [$locale, $acceptLanguage, $expectedMessage]) {
+            $admin->forceFill(['locale' => $locale])->save();
+            $before = $this->watchedCounts();
+
+            $this->withHeader('Accept-Language', $acceptLanguage)
+                ->putJson($url, $payload)
+                ->assertUnprocessable()
+                ->assertJsonPath('errors.source_product.0', $expectedMessage);
+
+            $this->assertSame($before, $this->watchedCounts());
+            $this->assertDatabaseHas('catalogs', [
+                'id' => $sourceCatalogId,
+                'store_id' => app(WholesalePrincipal::class)->storeId(),
+                'channel' => 'b2b',
+                'is_active' => false,
+            ]);
+            $this->assertDatabaseCount('retail_wholesale_product_mappings', 0);
+        }
+    }
+
     public function test_missing_actor_and_non_mapping_role_are_denied_and_valid_mapping_upsert_is_idempotent(): void
     {
         $fixture = $this->products();
