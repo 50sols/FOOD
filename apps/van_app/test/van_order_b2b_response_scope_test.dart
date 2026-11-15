@@ -4,6 +4,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:foodex_van_app/core/api/http_van_api.dart';
 import 'package:foodex_van_app/core/auth/van_session.dart';
 import 'package:foodex_van_app/features/orders/http_van_order_repository.dart';
+import 'package:foodex_van_app/features/orders/van_order_contract.dart';
 import 'package:foodex_van_app/features/wallet/van_wallet_contract.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
@@ -93,6 +94,67 @@ void main() {
       '/api/v1/van/customers/b2b/42/orders',
       '/api/v1/van/orders/501',
     ]);
+  });
+
+  test('mutation keys cannot be empty or inject HTTP header controls',
+      () async {
+    var sent = 0;
+    final repository = _repository((request) async {
+      sent++;
+      return http.Response('{}', 200);
+    });
+
+    const proof = VanProofAttachment(
+      path: 'unused-test-proof.jpg',
+      fileName: 'unused-test-proof.jpg',
+      byteLength: 4,
+    );
+    final invalidKeys = <String>[
+      '',
+      ' ',
+      'van order key',
+      'van\rkey',
+      'van\nkey',
+      'van\tkey',
+      List<String>.filled(121, 'x').join(),
+    ];
+    for (final key in invalidKeys) {
+      final operations = <Future<void> Function()>[
+        () async => repository.createOrder(
+              customer: _customer,
+              lines: const [],
+              paymentMethod: 'cash_on_delivery',
+              idempotencyKey: key,
+            ),
+        () async => repository.transitionOrder(
+              orderId: 501,
+              status: 'in_progress',
+              idempotencyKey: key,
+            ),
+        () async => repository.uploadProof(
+              orderId: 501,
+              proof: proof,
+              idempotencyKey: key,
+            ),
+        () async => repository.failOrder(
+              orderId: 501,
+              failureReason: 'not_home',
+              idempotencyKey: key,
+            ),
+        () async => repository.retryOrder(
+              orderId: 501,
+              idempotencyKey: key,
+            ),
+      ];
+      for (final operation in operations) {
+        await expectLater(
+          operation(),
+          throwsA(isA<VanApiException>()),
+          reason: 'Rejected mutation key: ${key.length} characters',
+        );
+      }
+    }
+    expect(sent, 0, reason: 'Invalid mutation must fail before HTTP.');
   });
 
   test('mixed B2B and Retail history is rejected as one response', () async {

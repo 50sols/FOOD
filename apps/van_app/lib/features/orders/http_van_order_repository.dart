@@ -145,6 +145,7 @@ class HttpVanOrderRepository implements VanOrderRepository {
     String? customerNote,
   }) async {
     _assertWholesaleCustomer(customer);
+    _assertMutationIdempotencyKey(idempotencyKey);
     final decoded = _map(
       await api.postJson(
         'van/customers/${customer.type}/${customer.id}/orders',
@@ -293,6 +294,7 @@ class HttpVanOrderRepository implements VanOrderRepository {
     required String status,
     required String idempotencyKey,
   }) async {
+    _assertMutationIdempotencyKey(idempotencyKey);
     final decoded = _map(
       await api.postJson(
         'van/orders/$orderId/execution/transition',
@@ -331,6 +333,7 @@ class HttpVanOrderRepository implements VanOrderRepository {
     required String idempotencyKey,
     String? note,
   }) async {
+    _assertMutationIdempotencyKey(idempotencyKey);
     final decoded = _map(
       await api.postMultipart(
         'van/orders/$orderId/execution/proof',
@@ -354,6 +357,7 @@ class HttpVanOrderRepository implements VanOrderRepository {
     String? note,
     VanProofAttachment? proof,
   }) async {
+    _assertMutationIdempotencyKey(idempotencyKey);
     final decoded = _map(
       await api.postMultipart(
         'van/orders/$orderId/execution/fail',
@@ -376,6 +380,7 @@ class HttpVanOrderRepository implements VanOrderRepository {
     required String idempotencyKey,
     String? note,
   }) async {
+    _assertMutationIdempotencyKey(idempotencyKey);
     final decoded = _map(
       await api.postJson(
         'van/orders/$orderId/execution/retry',
@@ -546,6 +551,17 @@ class HttpVanOrderRepository implements VanOrderRepository {
       return value.toDouble();
     }
     return double.tryParse(value.toString());
+  }
+
+  // A missing or header-unsafe key may turn an offline/retried B2B Van
+  // mutation into an unintended second write. Reject it before networking.
+  // This does not replace the server-side idempotency and custody authority.
+  void _assertMutationIdempotencyKey(String key) {
+    if (key.isEmpty ||
+        key.length > 120 ||
+        !RegExp(r'^[\x21-\x7E]+$').hasMatch(key)) {
+      throw const VanApiException('Invalid Van operation idempotency key.');
+    }
   }
 
   String _string(Object? value) => value?.toString() ?? '';

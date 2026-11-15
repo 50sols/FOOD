@@ -47,3 +47,15 @@ Manual browser/device/staging UAT is deferred to final V2 gate #2750 only; autom
 The order review uses the draft's random submission key throughout the same in-memory revision, including after a review-page remount following an ambiguous network response. A change of customer store clears lines, selections, quote and operation key even if customer type and ID match. An options response arriving after a revision change is discarded. Process termination and physical consignment settlement require separate source acceptance.
 
 GCC verified the focused draft and HTTP suites (22 tests), Flutter analysis and Dart formatting for the three changed Dart files.
+
+## V2 MOB-V03 — reject invalid Van mutation idempotency headers before HTTP (2026-11-15)
+
+**Existing risk:** the Van order client was forwarding any caller-provided `Idempotency-Key` for B2B create, execution transition, proof upload, failed-delivery and retry. Empty/whitespace/overlong or HTTP control-containing values could allow unsafe/non-idempotent mutation retries or header injection in transport. The draft-generated key uses a secure random `van-order-...` token, but the repository API accepts explicit keys from callers and must validate at its own HTTP boundary.
+
+**Guard:** a shared `_assertMutationIdempotencyKey` check rejects empty, length greater than 120, any space, nonprintable ASCII, CR/LF/TAB or non-ASCII header bytes **before networking**. It does not mutate or truncate caller keys, generate replacement keys, change server idempotency storage, disclose user data or add untrusted client-side stock/finance authority. Legitimate printable B2B headers and existing HTTP request paths remain unchanged. The existing server is still authoritative for exactly-once effects, tenant/store scope and replay.
+
+**GCC proof:** isolated original branch `ab637207690fac9d6c28e5dc330e045a2f32620b`, Flutter stable on GCC. The hermetic MockClient negative matrix exercises seven invalid keys across **five HTTP mutations** with a zero-request assertion, while existing legitimate B2B create/list/detail cases still pass. Focused Van HTTP suite **16/16 PASS**; full Van Flutter test suite **167/167 PASS** including Arabic/English screen contracts; `flutter analyze --no-pub` on changed Dart paths **No issues found**; `dart format` and `git diff --check` PASS. Screenshot and local Flutter/Android cache files generated in GCC were not included in the commit.
+
+**Impacts:** Van mobile HTTP repository and tests only; no Laravel API, Dashboard, Customer or Driver change. This is an incremental anti-duplicate-request safety bound, **not durable process-death offline replay** or a verified stock/settlement transfer.
+
+**Still NOT accepted:** real #2844 legal stock title, #2606 trip identity, physical Van warehouse load/return (#2588/#2604), single B2B order inventory consumption, #2602/#2607 settlement, offline persistence/recovery and integrated authorization+AR/EN tests. Preserve #2739 OPEN, original PR DRAFT until source-complete and exact-head CI; only Foodex_V2, no main/release/tag/production.
