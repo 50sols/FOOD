@@ -113,6 +113,8 @@ return [
     'all' => 'الكل',
     'filters' => [
         'from' => 'من',
+        'origin' => 'مصدر الطلب',
+        'van_direct_sales' => 'البيع المباشر للفان',
         'to' => 'إلى',
         'order_number' => 'رقم الطلب',
         'status' => 'الحالة',

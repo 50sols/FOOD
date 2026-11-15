@@ -21,6 +21,7 @@ use App\Http\Controllers\Admin\CatalogManagementController;
 use App\Http\Controllers\Admin\CommercialDashboardController;
 use App\Http\Controllers\Admin\Customer360Controller;
 use App\Http\Controllers\Admin\CustomerGroupManagementController;
+use App\Http\Controllers\Admin\CustomerSalesContractController;
 use App\Http\Controllers\Admin\CustomerServiceWorkspaceController;
 use App\Http\Controllers\Admin\DocumentBrandingController;
 use App\Http\Controllers\Admin\DriverLiveTrackingDashboardController;
@@ -235,6 +236,15 @@ Route::prefix('admin')
         Route::get('/sales/quotations/{quotation}', [SalesQuotationController::class, 'show'])->whereNumber('quotation')->name('sales-quotations.show');
         Route::post('/sales/quotations/{quotation}/{action}', [SalesQuotationController::class, 'transition'])
             ->whereNumber('quotation')->whereIn('action', ['issue', 'cancel'])->middleware('throttle:30,1')->name('sales-quotations.transition');
+        // P195: customer contracts reuse issued quotations and real store/channel authorization.
+        Route::post('/sales/contracts', [CustomerSalesContractController::class, 'store'])
+            ->middleware('throttle:20,1')->name('sales-contracts.store');
+        Route::post('/sales/contracts/{contract}/decision', [CustomerSalesContractController::class, 'decide'])
+            ->whereNumber('contract')->middleware('throttle:20,1')->name('sales-contracts.decision');
+        Route::post('/sales/contracts/{contract}/terminate', [CustomerSalesContractController::class, 'terminate'])
+            ->whereNumber('contract')->middleware('throttle:20,1')->name('sales-contracts.terminate');
+        Route::get('/sales/contracts/{contract}/evidence', [CustomerSalesContractController::class, 'evidence'])
+            ->whereNumber('contract')->middleware('throttle:30,1')->name('sales-contracts.download');
         Route::prefix('erp/procurement')->name('erp.procurement.')->group(function (): void {
             Route::get('/', [EnterpriseProcurementController::class, 'index'])->name('index');
             Route::post('/suppliers', [EnterpriseProcurementController::class, 'storeSupplier'])->middleware('throttle:30,1')->name('suppliers.store');

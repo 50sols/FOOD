@@ -183,10 +183,17 @@ class VanFinanceSupportTest extends TestCase
             ->assertOk()
             ->assertSee('data-van-closeout-review', false)
             ->assertSee('P277-VAN-01')
-            ->assertSee('Financial ledger clear')
+            // An empty custody ledger is NOT proof of a financially clear Van.
+            ->assertSee('Financial review required')
+            ->assertDontSee('Financial ledger clear')
             ->assertSee('does not close a trip or visit')
             ->assertDontSee('P277-RETAIL-VAN')
             ->assertDontSee('P277 Retail');
+
+        // A zero-balance account with no entries must remain under review.
+        // The financial tab never asserts operational trip closure.
+        $this->assertSame(0, DB::table('custody_ledger_entries')
+            ->where('collection_account_id', $accountId)->count());
 
         DB::table('custody_ledger_entries')->insert([
             'collection_account_id' => $accountId, 'entry_type' => 'collection',

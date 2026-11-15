@@ -6,6 +6,7 @@ use App\Models\Driver;
 use App\Models\Role;
 use App\Models\User;
 use App\Services\VanRegistryService;
+use App\Services\VanRuntimeContextResolver;
 use Database\Seeders\CoreReferenceSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
@@ -171,10 +172,29 @@ class V2CrossAppTokenScopeMatrixTest extends TestCase
 
         $registry = app(VanRegistryService::class);
         $van = $registry->createVan(['code' => 'V2-MOB-ALL01-VAN-'.(int) $user->getKey()]);
-        $registry->assign($user, $van, [
-            'driver_id' => $driver->getKey(),
+        // Keep an old B2C Driver-linked Van assignment as a negative fixture.
+        // It must never become the authorized Van context.
+        $legacyAssignment = $registry->assign($user, $van, [
+            'representative_user_id' => $user->getKey(),
             'assignment_type' => 'primary',
             'effective_from' => now()->subMinute(),
         ]);
+        $legacyAssignment->forceFill([
+            'driver_id' => $driver->getKey(),
+            'representative_user_id' => null,
+        ])->save();
+
+        // A separate representative-only assignment permits explicit
+        // VAN_OPERATOR login without treating the legacy Retail row as B2B.
+        $operatorVan = $registry->createVan(['code' => 'V2-MOB-ALL01-REP-VAN-'.(int) $user->getKey()]);
+        $operatorAssignment = $registry->assign($user, $operatorVan, [
+            'representative_user_id' => $user->getKey(),
+            'assignment_type' => 'primary',
+            'effective_from' => now()->subMinute(),
+        ]);
+        $context = app(VanRuntimeContextResolver::class)->resolve($user);
+        $this->assertSame($operatorAssignment->id, $context['selected']['assignment_id']);
+        $this->assertCount(1, $context['available']);
+        $this->assertDatabaseHas('van_assignments', ['id' => $legacyAssignment->id, 'driver_id' => $driver->getKey()]);
     }
 }

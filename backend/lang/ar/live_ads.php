@@ -24,6 +24,7 @@ return [
     'priority' => 'الأولوية',
     'starts_at' => 'يبدأ في',
     'ends_at' => 'ينتهي في',
+    'ends_after_start' => 'يجب أن يكون وقت الانتهاء بعد وقت البدء.',
     'duration_minutes' => 'أو مدة بالدقائق',
     'dismissible' => 'يسمح بالإغلاق',
     'active' => 'مفعل',
