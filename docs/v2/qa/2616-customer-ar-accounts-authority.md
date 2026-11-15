@@ -22,8 +22,9 @@ New dedicated test backend/tests/Feature/V2AccountsReceivablePageAuthorityTest.p
 3. Disabled Finance -> HTTP 403. Enabled without finance.ar.read -> HTTP 403. Enabled with scoped AR entitlement -> HTTP 200. Enabled but uncertified/unready -> HTTP 403.
 4. Denial of finance.manage leaves existing AR reads available but blocks direct document creation before DB mutation; explicit finance.view DENY then rejects HTTP. Records are preserved.
 5. Roleless and inactive users cannot request the AR tab directly.
+6. A multi-role, two-Retail-store actor receives no customer AR records before selecting a store, and after selecting A or B sees only that store's documents despite both sharing the same legal entity.
 
-Existing EnterpriseAccountsReceivableFoundationTest independently covers canonical draft/post, allocation maker/checker separation, idempotency, audit and financial journals. V2ReceivablesAgingSidebarContractTest (#2618 / merged PR #3085) owns limited aging authority, which is **not duplicated**. #3217 / PR #3218 owns the separately scoped, still-unmerged full-ledger aging pagination implementation. #3269 / PR #3276 owns broader Finance Navigation/LEGAL_ENTITY vs STORE entitlement equivalence. None of their shared source paths are edited here.
+Existing EnterpriseAccountsReceivableFoundationTest independently covers canonical draft/post, allocation maker/checker separation, idempotency, audit and financial journals. V2ReceivablesAgingSidebarContractTest (#2618 / merged PR #3085) owns limited aging authority, which is **not duplicated**. #3217 / PR #3218 has now MERGED into Foodex_V2; its distinct full-ledger aging and same-legal-entity Retail store isolation fix is retained and exercised by this P286 HTTP regression. This issue does not duplicate its service/controller files. #3269 / PR #3276 owns broader Finance Navigation/LEGAL_ENTITY vs STORE entitlement equivalence. None of their shared source paths are edited here.
 
 ## Security / cross-surface impact
 
@@ -36,6 +37,12 @@ Existing EnterpriseAccountsReceivableFoundationTest independently covers canonic
 | Van | Not affected: B2B Van-only assignment/stock/visit/dispatch and APIs remain unchanged. |
 
 Only synthetic test accounts/documents are created in isolated PHPUnit databases. No production account, customer, upload or cash ledger is touched.
+
+## GCC isolated execution and original PR recovery (2026-11-15)
+
+- The original #3278 PR had been administratively closed, its head branch deleted and its earlier Required CI failed at the cross-Retail AR denial. The same original branch and PR were restored rather than forked. Source #3217 / PR #3218 is independently merged into Foodex_V2.
+- An initial GCC test borrowed another clone's Composer vendor/autoload and loaded old application classes, reproducing the historical false-negative. Retesting with a local, untracked PSR-4 bootstrap explicitly mapping App/Tests/Database to the new isolated checkout passed 5 HTTP tests / 47 assertions under PHP 8.3.33, SQLite in memory; no changes to shared vendor or production. This is local evidence only, not GitHub exact-head CI or a substitute for real MySQL/Redis tests.
+- Restored source covers the existing Finance AR tab only; no new finance mutation/API/Flutter code. Final-HEAD Required CI and HIGH-risk audit remain mandatory before merge and CODE_COMPLETE closure.
 
 ## Required gates and scope boundaries
 

@@ -170,6 +170,48 @@ final class V2AccountsReceivablePageAuthorityTest extends TestCase
         $this->actingAs($roleless)->get($url)->assertForbidden();
     }
 
+    public function test_multi_store_actor_must_explicitly_select_a_store_without_leaking_sibling_ar(): void
+    {
+        [$actor, $storeA, $contextA] = $this->operator('P286-MULTI-A');
+        [$otherActor, $storeB, $contextB] = $this->operator('P286-MULTI-B');
+        $this->enableFinance($actor, $contextA);
+        $this->enableFinance($otherActor, $contextB);
+        $this->createCustomerDraft($actor, $storeA, $contextA, 'M-A');
+        $this->createCustomerDraft($otherActor, $storeB, $contextB, 'M-B');
+
+        $roleId = (int) DB::table('user_store_roles')
+            ->where('user_id', $otherActor->id)
+            ->where('store_id', $storeB->id)
+            ->value('role_id');
+        DB::table('user_store_roles')->insert([
+            'user_id' => $actor->id,
+            'store_id' => $storeB->id,
+            'role_id' => $roleId,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $this->actingAs($actor->fresh())
+            ->get(route('admin.erp.finance.index', ['tab' => 'receivables']))
+            ->assertOk()
+            ->assertDontSee('P286-M-A Customer')
+            ->assertDontSee('P286-M-B Customer');
+
+        foreach ([
+            [$storeA, 'P286-M-A Customer', 'P286-M-B Customer'],
+            [$storeB, 'P286-M-B Customer', 'P286-M-A Customer'],
+        ] as [$store, $visible, $hidden]) {
+            $this->actingAs($actor->fresh())
+                ->get(route('admin.erp.finance.index', [
+                    'store_id' => $store->id,
+                    'tab' => 'receivables',
+                ]))
+                ->assertOk()
+                ->assertSee($visible)
+                ->assertDontSee($hidden);
+        }
+    }
+
     /** @return array{User, Store, ResolvedTenantContext} */
     private function operator(string $code): array
     {

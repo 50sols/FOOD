@@ -167,6 +167,80 @@ final class EnterprisePurchaseRequestFoundationTest extends TestCase
         $manager->detail($actorB, $contextB, $request->id);
     }
 
+    public function test_purchase_request_number_prefix_search_is_literal_and_store_scoped(): void
+    {
+        [$actor, , $context] = $this->scopedUser([
+            'procurement.purchase_requests.view',
+            'procurement.purchase_requests.manage',
+        ], 'PR-LITERAL-OWN');
+        [$otherActor, , $otherContext] = $this->scopedUser([
+            'procurement.purchase_requests.view',
+            'procurement.purchase_requests.manage',
+        ], 'PR-LITERAL-OTHER');
+
+        $manager = app(PurchaseRequestManager::class);
+        $target = $manager->create($actor, $context, $this->requestPayload('Literal target'));
+        $decoy = $manager->create($actor, $context, $this->requestPayload('Normal prefix decoy'));
+        $foreign = $manager->create($otherActor, $otherContext, $this->requestPayload('Foreign literal match'));
+
+        // A prefix lookup must match a symbol only at the beginning of the
+        // request number; a symbol elsewhere is not a prefix match.
+        $leadingSymbols = [];
+        foreach ([
+            ['%', '%P-001'],
+            ['_', '_U-001'],
+            ['!', '!B-001'],
+            ['\\', '\\S-001'],
+        ] as [$symbol, $number]) {
+            $row = $manager->create($actor, $context, $this->requestPayload('Leading symbol '.$number));
+            DB::table('enterprise_purchase_requests')->where('id', $row->id)
+                ->update(['request_number' => $number]);
+            $leadingSymbols[$symbol] = $row->id;
+        }
+
+        // Use unique persisted identifiers; invoice-style duplicate numbers
+        // are not permitted by the procurement schema either.
+        DB::table('enterprise_purchase_requests')->where('id', $target->id)
+            ->update(['request_number' => 'REQ_%!\\-A']);
+        DB::table('enterprise_purchase_requests')->where('id', $decoy->id)
+            ->update(['request_number' => 'REQX-OTHER']);
+        DB::table('enterprise_purchase_requests')->where('id', $foreign->id)
+            ->update(['request_number' => 'REQ_%!\\-FOREIGN']);
+
+        $rowCount = DB::table('enterprise_purchase_requests')->count();
+        $auditCount = DB::table('audit_logs')->count();
+        $search = fn (string $term): array => $manager
+            ->paginate($actor, $context, ['q' => $term])
+            ->getCollection()->pluck('id')->all();
+
+        foreach (['REQ_', 'REQ_%', 'REQ_%!', 'REQ_%!\\-'] as $term) {
+            $this->assertSame([$target->id], $search($term), 'Failed literal prefix: '.$term);
+        }
+        foreach ($leadingSymbols as $symbol => $id) {
+            $this->assertSame([$id], $search($symbol), 'Symbol-only search widened results: '.$symbol);
+        }
+        $this->assertSame([$decoy->id, $target->id], $search('REQ'));
+        $this->assertSame([], $search('REQ%'));
+        $this->assertSame(1, $manager->paginate($otherActor, $otherContext, [
+            'q' => 'REQ_%!',
+        ])->total());
+        $this->assertSame(0, $manager->paginate($actor, $context, [
+            'q' => 'REQ', 'status' => 'approved',
+        ])->total());
+        $this->assertSame(10, $manager->paginate($actor, $context, [], 1)->perPage());
+
+        $unprivileged = User::factory()->create(['is_active' => true]);
+        try {
+            $manager->paginate($unprivileged, $context, ['q' => 'REQ_%']);
+            $this->fail('A roleless actor cannot read purchase requests.');
+        } catch (HttpException $exception) {
+            $this->assertSame(403, $exception->getStatusCode());
+        }
+
+        $this->assertSame($rowCount, DB::table('enterprise_purchase_requests')->count());
+        $this->assertSame($auditCount, DB::table('audit_logs')->count());
+    }
+
     public function test_supplier_reference_must_be_visible_and_active_in_request_scope(): void
     {
         [$actorA, , $contextA] = $this->scopedUser([

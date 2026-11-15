@@ -33,7 +33,14 @@ final class QuoteController extends Controller
             ->where('channel', $channel)
             ->first();
 
-        abort_unless($cart instanceof Cart, 409, 'No authenticated cart exists for this store.');
+        if (! $cart instanceof Cart) {
+            $userLocale = $user->locale;
+            $locale = in_array($userLocale, ['ar', 'en'], true)
+                ? $userLocale
+                : $request->getPreferredLanguage(['ar', 'en']);
+
+            abort(409, __('checkout_errors.quote_cart_missing', [], $locale === 'ar' ? 'ar' : 'en'));
+        }
 
         $quote = $quotes->quoteCart(
             $cart,

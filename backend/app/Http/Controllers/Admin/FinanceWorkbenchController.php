@@ -13,6 +13,7 @@ use App\Enterprise\Finance\FinanceCreditTermsService;
 use App\Enterprise\Finance\FinanceFoundationService;
 use App\Enterprise\Finance\FinancePeriodCloseService;
 use App\Enterprise\Finance\FinancePlanningService;
+use App\Enterprise\Finance\FinanceWorkbenchAccess;
 use App\Enterprise\Finance\FinancialStatementService;
 use App\Enterprise\Finance\GeneralLedgerService;
 use App\Enterprise\Finance\OpeningBalanceService;
@@ -61,6 +62,7 @@ final class FinanceWorkbenchController extends Controller
         private readonly AdminNavigation $navigation,
         private readonly TenantContextResolver $tenants,
         private readonly ModuleRegistry $modules,
+        private readonly FinanceWorkbenchAccess $financeAccess,
         private readonly ModuleEntitlementResolver $entitlements,
         private readonly FinanceFoundationService $finance,
         private readonly GeneralLedgerService $ledger,
@@ -84,11 +86,38 @@ final class FinanceWorkbenchController extends Controller
         // Do not expose Finance context choices to operational roles lacking
         // Finance read permission. Authorize before enterprise scope resolution
         // so a service-only actor receives 403, not a misleading 409.
+        $assignedContexts = $this->contextOptions($actor);
         $contexts = array_values(array_filter(
-            $this->contextOptions($actor),
-            fn (array $option): bool => $actor->hasPermission('finance.view', (int) $option['id']),
+            $assignedContexts,
+            fn (array $option): bool => $this->financeAccess->canRead($actor, (int) $option['id']),
         ));
-        abort_if($contexts === [], 403);
+
+        // A Retail store assigned through an actual store-scoped role but
+        // denied Finance is forbidden (403). Global Wholesale roles enumerate
+        // B2B contexts without store assignment: preserve their 404 when denied.
+        // Never resolve a denied store's enterprise data scope or borrow access
+        // from the user's other authorized Retail store.
+        $requestedStoreId = (int) $request->input('store_id', 0);
+        $assignedRetailStoreIds = array_column(
+            array_filter($assignedContexts, static fn (array $option): bool => $option['channel'] === 'b2c'),
+            'id',
+        );
+        if ($requestedStoreId > 0
+            && in_array($requestedStoreId, $assignedRetailStoreIds, true)
+            && ! in_array($requestedStoreId, array_column($contexts, 'id'), true)) {
+            abort(403);
+        }
+
+        if ($contexts === []) {
+            // Only a privileged platform operator with an actual platform
+            // Finance entitlement can view the non-data setup context.
+            // Missing/denied store contexts never grant ledger access.
+            $setupAccess = $this->navigation->canAccessPlatformErp($actor)
+                && ($actor->isPlatformOwner() || $actor->hasRole('SUPER_ADMIN'))
+                && $actor->hasPermission('finance.view')
+                && $this->entitlements->allows(FinanceFoundationService::MODULE, EntitlementScope::platform());
+            abort_unless($setupAccess, 403);
+        }
 
         $selected = $this->selectedContextOption($request, $contexts);
         if ($selected === null && count($contexts) === 1) {
@@ -786,14 +815,11 @@ final class FinanceWorkbenchController extends Controller
         $filters = $request->only(['customer_id', 'status', 'date_from', 'date_to']);
         $documents = $this->receivables->paginate($actor, $context, $filters, 25);
         $documents->getCollection()->load('customer');
-        $aging = $this->receivables->aging(
-            $actor,
-            $context,
-            $request->filled('customer_id') ? $request->integer('customer_id') : null,
-            100,
-        );
+        $customerId = $request->filled('customer_id') ? $request->integer('customer_id') : null;
+        $aging = $this->receivables->paginateAging($actor, $context, $customerId, 25);
+        $agingTotals = $this->receivables->agingTotals($actor, $context, $customerId);
 
-        return compact('documents', 'aging', 'filters');
+        return compact('documents', 'aging', 'agingTotals', 'filters');
     }
 
     /** @return array<string, mixed> */
@@ -957,13 +983,16 @@ final class FinanceWorkbenchController extends Controller
     {
         $scope = $context->enterpriseScope;
         abort_if($scope === null, 409);
+        $storeId = $context->requiresStore();
 
+        // Require the ledger's legal-entity capability as well as its exact
+        // store-effective capability (including child store overrides).
         $entitled = fn (string $capability): bool => $this->entitlements->allows(
             FinanceFoundationService::MODULE,
             new EntitlementScope(EntitlementScope::LEGAL_ENTITY, $scope->legalEntityId),
             $capability,
-        );
-        $permitted = fn (string $permission): bool => $actor->hasPermission($permission, $context->storeId);
+        ) && $this->financeAccess->allowsAtStore($storeId, $capability);
+        $permitted = fn (string $permission): bool => $actor->hasPermission($permission, $storeId);
 
         return [
             'foundation_read' => $permitted('finance.view') && $entitled('finance.foundation.read'),
@@ -1117,7 +1146,58 @@ final class FinanceWorkbenchController extends Controller
         $context = $this->resolveContext($request, $actor, $selected);
         abort_if($context->enterpriseScope === null, 409, 'Enterprise data scope is required.');
 
+        // Preserve the canonical 404 for an actual foreign Finance resource
+        // before applying an additional store-specific capability gate.
+        // Do not disclose whether the referenced journal/batch exists.
+        $action = $request->route()?->getActionMethod();
+        if (in_array($action, ['requestJournalApproval', 'postJournal'], true)) {
+            $this->scopedJournal($context, (int) $request->route('journal'));
+        } elseif (in_array($action, ['requestOpeningBalanceApproval', 'postOpeningBalance', 'cancelOpeningBalance'], true)) {
+            $this->scopedOpeningBalance($context, (int) $request->route('batch'));
+        }
+
+        // An approved legal-entity action can still be revoked at a narrower
+        // STORE scope. Domain services independently enforce finance SoD.
+        [$permission, $capability] = $this->mutationEntitlement($request);
+        abort_unless(
+            $this->financeAccess->canPerform($actor, (int) $selected['id'], $permission, $capability),
+            403,
+        );
+
         return [$actor, $context];
+    }
+
+    /**
+     * Each Finance mutation must satisfy the same capability at the actual
+     * store as at its authoritative legal entity. Unknown routes fail closed.
+     *
+     * @return array{string, string}
+     */
+    private function mutationEntitlement(Request $request): array
+    {
+        $action = $request->route()?->getActionMethod();
+
+        return match ($action) {
+            'storeAccount', 'updateAccountStatus', 'storeCostCenter',
+            'updateCostCenterStatus', 'storeFiscalYear', 'updateFiscalYearState',
+            'storeFiscalPeriod', 'updateFiscalPeriodState', 'storeProfitCenter',
+            'updateProfitCenterStatus', 'updateCashFlowClassification',
+            'storeBudget', 'storeBudgetLine', 'reviseBudget', 'storeTaxCode',
+            'storeAllocationRule', 'applyAllocationRule', 'storeAssetCategory',
+            'storeAsset', 'createAssetDepreciation', 'prepareAssetDisposal' => ['finance.manage', 'finance.foundation.manage'],
+            'storeJournal' => ['finance.manage', 'finance.gl.manage'],
+            'requestJournalApproval', 'requestOpeningBalanceApproval' => ['finance.manage', 'finance.approvals.manage'],
+            'postJournal' => ['finance.post', 'finance.gl.post'],
+            'storeOpeningBalance', 'cancelOpeningBalance' => ['finance.manage', 'finance.opening_balances.manage'],
+            'postOpeningBalance' => ['finance.post', 'finance.opening_balances.post'],
+            'storeCreditTerm', 'updateCreditTermStatus' => ['finance.manage', 'finance.credit_terms.manage'],
+            'transitionBudget' => $request->input('action') === 'submit'
+                    ? ['finance.manage', 'finance.foundation.manage']
+                    : ['finance.approve', 'finance.approvals.approve'],
+            'storeConsolidationElimination' => ['finance.approve', 'finance.approvals.approve'],
+            'evaluatePeriodClose' => ['finance.view', 'finance.foundation.read'],
+            default => abort(403),
+        };
     }
 
     private function scopedJournal(ResolvedTenantContext $context, int $journal): EnterpriseFinanceJournal

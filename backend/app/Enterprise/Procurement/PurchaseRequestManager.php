@@ -49,7 +49,9 @@ final class PurchaseRequestManager
         ])->validate();
 
         $perPage = max(10, min(100, $perPage));
-        $term = str_replace(['%', '_'], '', trim((string) ($validated['q'] ?? '')));
+        $term = trim((string) ($validated['q'] ?? ''));
+        // Search the literal request-number prefix, not SQL wildcard patterns.
+        $pattern = str_replace(['!', '%', '_'], ['!!', '!%', '!_'], $term).'%';
 
         return $this->visibleQuery($scope)
             ->with('supplier:id,code,name_en,name_ar,status')
@@ -59,7 +61,7 @@ final class PurchaseRequestManager
             )
             ->when(
                 $term !== '',
-                fn (Builder $query): Builder => $query->where('request_number', 'like', $term.'%'),
+                fn (Builder $query): Builder => $query->whereRaw("request_number LIKE ? ESCAPE '!'", [$pattern]),
             )
             ->orderByDesc('id')
             ->paginate($perPage)
