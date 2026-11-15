@@ -7,6 +7,7 @@ use App\Domain\Installer\InstallerEnvironment;
 use App\Domain\Installer\InstallerWorkflow;
 use App\Domain\Installer\InstallState;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 use Tests\TestCase;
@@ -80,6 +81,75 @@ class InstallerWorkflowTest extends TestCase
             ->assertSee('FOODEX')
             ->assertSee('Welcome')
             ->assertSee('Finish');
+    }
+
+    public function test_database_connection_allows_empty_fresh_install_database(): void
+    {
+        $this->assertDatabaseCount('users', 0);
+        $this->assertDatabaseCount('system_versions', 0);
+
+        app(InstallerWorkflow::class)->testDatabaseConnection();
+
+        $this->assertDatabaseCount('users', 0);
+    }
+
+    public function test_database_connection_rejects_existing_users_without_install_lock(): void
+    {
+        $this->assertFalse(app(InstallState::class)->isInstalled());
+        DB::table('users')->insert([
+            'name' => 'Existing Operator',
+            'email' => 'existing-operator@example.test',
+            'password' => 'existing-hash-not-for-auth',
+            'locale' => 'en',
+            'is_active' => true,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage('already contains FOODEX data');
+        app(InstallerWorkflow::class)->testDatabaseConnection();
+    }
+
+    public function test_database_connection_rejects_existing_version_without_install_lock(): void
+    {
+        $this->assertFalse(app(InstallState::class)->isInstalled());
+        DB::table('system_versions')->insert([
+            'version' => '99.0.0',
+            'installed_at' => now(),
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage('already contains FOODEX data');
+        app(InstallerWorkflow::class)->testDatabaseConnection();
+    }
+
+    public function test_migrations_never_run_against_database_with_existing_user_data(): void
+    {
+        DB::table('users')->insert([
+            'name' => 'Existing Operator',
+            'email' => 'existing-before-migrate@example.test',
+            'password' => 'existing-hash-not-for-auth',
+            'locale' => 'ar',
+            'is_active' => true,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        Artisan::shouldReceive('call')->never();
+
+        try {
+            app(InstallerWorkflow::class)->runMigrations();
+            $this->fail('Migrations must reject an existing FOODEX database.');
+        } catch (\RuntimeException $exception) {
+            $this->assertStringContainsString('already contains FOODEX data', $exception->getMessage());
+        }
+        $this->assertDatabaseHas('users', [
+            'email' => 'existing-before-migrate@example.test',
+            'password' => 'existing-hash-not-for-auth',
+        ]);
     }
 
     public function test_database_configuration_persists_mysql_production_defaults(): void

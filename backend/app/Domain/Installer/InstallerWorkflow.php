@@ -10,6 +10,7 @@ use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\Schema;
 use RuntimeException;
 use Throwable;
 
@@ -89,6 +90,10 @@ final class InstallerWorkflow
         } catch (Throwable) {
             throw new RuntimeException('Database connection failed. Verify the supplied host, port, database and credentials.');
         }
+
+        // A missing installer lock does not make an already populated FOODEX
+        // database safe to initialize. Check before any migrations or seeding.
+        $this->assertFreshInstallDatabase();
     }
 
     /**
@@ -195,6 +200,7 @@ final class InstallerWorkflow
     public function runMigrations(): void
     {
         $this->applyDatabaseConfiguration();
+        $this->assertFreshInstallDatabase();
 
         if (Artisan::call('migrate', ['--force' => true]) !== 0) {
             throw new RuntimeException('Database migrations failed.');
@@ -406,6 +412,29 @@ final class InstallerWorkflow
                 'database.redis.default.password' => $password,
                 'database.redis.cache.password' => $password,
             ]);
+        }
+    }
+
+    /**
+     * Refuse to treat an existing live database as an empty first install.
+     * These are durable business/version markers; empty migrated tables are
+     * allowed so an interrupted migration can be safely retried.
+     */
+    private function assertFreshInstallDatabase(): void
+    {
+        foreach (['system_versions', 'users', 'orders', 'invoices', 'products', 'b2b_accounts'] as $table) {
+            try {
+                $containsData = Schema::hasTable($table) && DB::table($table)->exists();
+            } catch (Throwable) {
+                // Do not continue when the selected database cannot be inspected.
+                throw new RuntimeException('Unable to verify that the selected database is safe for a fresh install.');
+            }
+
+            if ($containsData) {
+                throw new RuntimeException(
+                    'The selected database already contains FOODEX data. Choose an empty database for /install; existing sites must use System Updates.'
+                );
+            }
         }
     }
 
