@@ -283,6 +283,45 @@ class PlatformCustomerMarketplaceTest extends TestCase
         $this->assertSame('Retail Fallback 25', $fallback['title']);
     }
 
+    public function test_platform_selector_never_grants_wholesale_without_server_account_entitlement(): void
+    {
+        [$principalStore, $retailStore] = $this->marketplaceFixture();
+
+        // The public platform showroom is intentionally browseable, but the
+        // authenticated commerce selector must not grant an unentitled B2B context.
+        $this->getJson('/api/v1/platform/storefront')->assertOk();
+        $this->getJson('/api/v1/store-selector')->assertUnauthorized();
+
+        $actor = User::factory()->create(['is_active' => true, 'locale' => 'ar']);
+        $this->withToken($actor->createToken('customer-app')->plainTextToken);
+        $before = DB::table('b2b_customers')->count();
+
+        foreach (['ar', 'en'] as $locale) {
+            $actor->forceFill(['locale' => $locale])->save();
+            $this->getJson('/api/v1/store-selector')
+                ->assertOk()
+                ->assertJsonPath('entitlements.direct_b2b', false)
+                ->assertJsonPath('entitlements.principal_wholesale_store_id', null)
+                ->assertJsonCount(0, 'wholesale_stores')
+                ->assertJsonFragment(['id' => $retailStore]);
+        }
+
+        $this->getJson('/api/v1/stores/'.$retailStore.'/storefront')
+            ->assertOk()
+            ->assertJsonPath('store.id', $retailStore);
+        $this->getJson('/api/v1/b2b/stores/'.$principalStore.'/storefront')
+            ->assertForbidden();
+        $this->assertSame($before, DB::table('b2b_customers')->count());
+
+        // Store eligibility follows the existing server's active-store gate.
+        DB::table('stores')->where('id', $retailStore)->update(['is_active' => false]);
+        $this->getJson('/api/v1/store-selector')
+            ->assertOk()
+            ->assertJsonMissing(['id' => $retailStore]);
+        $this->getJson('/api/v1/stores/'.$retailStore.'/storefront')
+            ->assertNotFound();
+    }
+
     public function test_store_selector_exposes_only_the_authoritative_principal_wholesale_target(): void
     {
         [$wholesaleStore] = $this->marketplaceFixture();
