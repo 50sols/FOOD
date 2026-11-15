@@ -258,7 +258,8 @@ void main() {
       ),
     );
   });
-  test('live selector filters non-principal Wholesale rows without duplicate links',
+  test(
+      'live selector filters non-principal Wholesale rows without duplicate links',
       () {
     final selection = CustomerCommerceContextSwitcher.validatedSelection({
       'entitlements': {

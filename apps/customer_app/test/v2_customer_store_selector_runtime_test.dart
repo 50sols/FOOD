@@ -10,7 +10,8 @@ import 'package:foodex_customer_app/features/storefront/retail_multistore_screen
 
 void main() {
   for (final locale in const <Locale>[Locale('ar'), Locale('en')]) {
-    testWidgets('signed-in store selector shows only server-authorized Retail '
+    testWidgets(
+        'signed-in store selector shows only server-authorized Retail '
         'in ${locale.languageCode} and keeps the exact route', (tester) async {
       await tester.binding.setSurfaceSize(const Size(440, 940));
       addTearDown(() => tester.binding.setSurfaceSize(null));
@@ -31,13 +32,15 @@ void main() {
       ));
       await tester.pumpAndSettle();
 
-      expect(find.text(locale.languageCode == 'ar'
-          ? 'اختر المتجر'
-          : 'Choose a store'), findsOneWidget);
+      expect(
+          find.text(
+              locale.languageCode == 'ar' ? 'اختر المتجر' : 'Choose a store'),
+          findsOneWidget);
       expect(find.byKey(const ValueKey('b2c-store-22')), findsOneWidget);
-      expect(find.text(locale.languageCode == 'ar'
-          ? 'متجر الجملة'
-          : 'Wholesale store'), findsNothing);
+      expect(
+          find.text(
+              locale.languageCode == 'ar' ? 'متجر الجملة' : 'Wholesale store'),
+          findsNothing);
 
       await tester.tap(find.byKey(const ValueKey('b2c-store-22')));
       await tester.pumpAndSettle();
@@ -49,7 +52,8 @@ void main() {
     });
   }
 
-  testWidgets('Wholesale selector shows only principal and navigates with '
+  testWidgets(
+      'Wholesale selector shows only principal and navigates with '
       'explicit channel and store identity', (tester) async {
     await tester.binding.setSurfaceSize(const Size(440, 940));
     addTearDown(() => tester.binding.setSurfaceSize(null));
@@ -84,7 +88,8 @@ void main() {
     );
   });
 
-  testWidgets('malformed selector rows present localized error, not a '
+  testWidgets(
+      'malformed selector rows present localized error, not a '
       'partial unauthorized store list', (tester) async {
     await tester.binding.setSurfaceSize(const Size(440, 940));
     addTearDown(() => tester.binding.setSurfaceSize(null));

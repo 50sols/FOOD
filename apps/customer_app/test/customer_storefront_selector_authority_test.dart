@@ -25,18 +25,20 @@ void main() {
         if (request.url.path != '/api/v1/store-selector') {
           return http.Response('public discovery must not be consulted', 500);
         }
-        return http.Response(jsonEncode({
-          'entitlements': {
-            'direct_b2b': false,
-            'retail_context_ids': <int>[],
-            'support_access': false,
-            'principal_wholesale_store_id': null,
-          },
-          'retail_stores': [
-            {'id': 22, 'name': 'Retail Twenty Two', 'channel': 'b2c'},
-          ],
-          'wholesale_stores': <Object>[],
-        }), 200);
+        return http.Response(
+            jsonEncode({
+              'entitlements': {
+                'direct_b2b': false,
+                'retail_context_ids': <int>[],
+                'support_access': false,
+                'principal_wholesale_store_id': null,
+              },
+              'retail_stores': [
+                {'id': 22, 'name': 'Retail Twenty Two', 'channel': 'b2c'},
+              ],
+              'wholesale_stores': <Object>[],
+            }),
+            200);
       }),
     );
     final persisted = _MemoryContextStore();
@@ -81,25 +83,27 @@ void main() {
       token: 'platform-identity-token',
       client: MockClient((request) async {
         requests.add(request);
-        return http.Response(jsonEncode({
-          'entitlements': {
-            'direct_b2b': true,
-            'retail_context_ids': <int>[],
-            'support_access': false,
-            'principal_wholesale_store_id': 7,
-          },
-          'wholesale_stores': [
-            {
-              'id': 7,
-              'name': 'FOODEX Wholesale',
-              'is_platform_principal': true,
-              'channel': 'b2b',
-            },
-          ],
-          'retail_stores': [
-            {'id': 22, 'name': 'Retail 22', 'channel': 'b2c'},
-          ],
-        }), 200);
+        return http.Response(
+            jsonEncode({
+              'entitlements': {
+                'direct_b2b': true,
+                'retail_context_ids': <int>[],
+                'support_access': false,
+                'principal_wholesale_store_id': 7,
+              },
+              'wholesale_stores': [
+                {
+                  'id': 7,
+                  'name': 'FOODEX Wholesale',
+                  'is_platform_principal': true,
+                  'channel': 'b2b',
+                },
+              ],
+              'retail_stores': [
+                {'id': 22, 'name': 'Retail 22', 'channel': 'b2c'},
+              ],
+            }),
+            200);
       }),
     );
     final store = _MemoryContextStore();
@@ -147,7 +151,9 @@ void main() {
           return http.Response(jsonEncode({'message': 'Not authorized'}), 403);
         }
         return http.Response(
-          jsonEncode({'main_wholesale_store': {'id': 7}}),
+          jsonEncode({
+            'main_wholesale_store': {'id': 7}
+          }),
           200,
         );
       }),
@@ -171,11 +177,13 @@ void main() {
       storefrontApi: HttpStorefrontApi(
         baseUrl: 'https://foodex.example.test',
         token: 'platform-identity-token',
-        client: MockClient((request) async => http.Response(jsonEncode({
+        client: MockClient((request) async => http.Response(
+            jsonEncode({
               'entitlements': {'direct_b2b': false},
               'retail_stores': <Object>[],
               'wholesale_stores': 'unexpected, must be a list',
-            }), 200)),
+            }),
+            200)),
       ),
       contextStore: store,
     );
@@ -204,16 +212,18 @@ void main() {
       baseUrl: 'https://foodex.example.test',
       client: MockClient((request) async {
         requests.add(request);
-        return http.Response(jsonEncode({
-          'main_wholesale_store': {
-            'id': 7,
-            'name': 'Public Wholesale',
-            'is_platform_principal': true,
-          },
-          'retail_stores': [
-            {'id': 22, 'name': 'Public Retail'},
-          ],
-        }), 200);
+        return http.Response(
+            jsonEncode({
+              'main_wholesale_store': {
+                'id': 7,
+                'name': 'Public Wholesale',
+                'is_platform_principal': true,
+              },
+              'retail_stores': [
+                {'id': 22, 'name': 'Public Retail'},
+              ],
+            }),
+            200);
       }),
     );
 

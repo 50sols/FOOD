@@ -170,12 +170,12 @@ class CustomerCommerceContextSwitcher {
     return <String, dynamic>{
       ...payload,
       'retail_stores': (payload['retail_stores'] as List)
-          .where((row) =>
-              retailIds.contains(_positiveInt((row as Map)['id'] ?? row['store_id'])))
+          .where((row) => retailIds
+              .contains(_positiveInt((row as Map)['id'] ?? row['store_id'])))
           .toList(growable: false),
       'wholesale_stores': (payload['wholesale_stores'] as List)
-          .where((row) =>
-              principalIds.contains(_positiveInt((row as Map)['id'])))
+          .where(
+              (row) => principalIds.contains(_positiveInt((row as Map)['id'])))
           .toList(growable: false),
     };
   }

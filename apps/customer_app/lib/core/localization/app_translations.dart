@@ -145,7 +145,8 @@ class AppTranslations extends InheritedWidget {
     'customer.selector.wholesale_store': 'متجر الجملة',
     'customer.selector.authorized_only': 'للمسؤولين والمعتمدين فقط',
     'customer.selector.receiving_title': 'اختر متجر التجزئة المستلم',
-    'customer.selector.receiving_hint': 'سيتم ربط طلب الجملة ومخزون الاستلام بهذا المتجر.',
+    'customer.selector.receiving_hint':
+        'سيتم ربط طلب الجملة ومخزون الاستلام بهذا المتجر.',
     'customer.selector.retail_fallback': 'متجر التجزئة',
     'customer.selector.store_fallback': 'متجر',
     'customer.selector.pharmacy_hint': 'صيدلية · توصيل سريع',
@@ -916,7 +917,8 @@ class AppTranslations extends InheritedWidget {
     'customer.selector.search': 'Search for products',
     'customer.selector.load_failed': 'Could not load available stores.',
     'customer.selector.empty_title': 'No stores available',
-    'customer.selector.empty_body': 'No stores are available in the selected area.',
+    'customer.selector.empty_body':
+        'No stores are available in the selected area.',
     'customer.selector.all': 'All',
     'customer.selector.retail': 'Retail',
     'customer.selector.wholesale': 'Wholesale',
@@ -924,7 +926,8 @@ class AppTranslations extends InheritedWidget {
     'customer.selector.wholesale_store': 'Wholesale store',
     'customer.selector.authorized_only': 'Authorized buyers only',
     'customer.selector.receiving_title': 'Choose the receiving Retail store',
-    'customer.selector.receiving_hint': 'This store will receive your Wholesale order and inventory.',
+    'customer.selector.receiving_hint':
+        'This store will receive your Wholesale order and inventory.',
     'customer.selector.retail_fallback': 'Retail store',
     'customer.selector.store_fallback': 'Store',
     'customer.selector.pharmacy_hint': 'Pharmacy · Fast delivery',

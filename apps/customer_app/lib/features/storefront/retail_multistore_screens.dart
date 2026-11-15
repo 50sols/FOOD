@@ -284,11 +284,13 @@ class _StoreSelectionDesignScreenState
 
                                 widget.enterWholesale(retailContext);
                                 if (storeId <= 0) return;
-                                final wholesaleContext = CustomerCommerceContext(
+                                final wholesaleContext =
+                                    CustomerCommerceContext(
                                   channel: CustomerCommerceChannel.wholesale,
                                   storeId: storeId,
                                 );
-                                var route = CustomerRouteLocations.wholesaleHome(
+                                var route =
+                                    CustomerRouteLocations.wholesaleHome(
                                   wholesaleContext,
                                 );
                                 if (retailContext != null) {
@@ -311,7 +313,8 @@ class _StoreSelectionDesignScreenState
                         if (retail.isEmpty && wholesale.isEmpty)
                           FoodexEmptyState(
                             title: context.tr('customer.selector.empty_title'),
-                            subtitle: context.tr('customer.selector.empty_body'),
+                            subtitle:
+                                context.tr('customer.selector.empty_body'),
                           ),
                       ],
                     );
