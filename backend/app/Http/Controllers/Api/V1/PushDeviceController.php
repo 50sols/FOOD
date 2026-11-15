@@ -61,6 +61,11 @@ final class PushDeviceController extends Controller
             abort_unless($user->tokenCan('app:'.$data['app']), 403);
         }
 
+        // Error language follows the authenticated identity, not an untrusted header.
+        $denialLocale = $user instanceof User && in_array((string) $user->locale, ['ar', 'en'], true)
+            ? (string) $user->locale
+            : 'ar';
+
         $driverChannel = null;
 
         if ($user === null) {
@@ -80,7 +85,7 @@ final class PushDeviceController extends Controller
                 && $user->tokenCan('app:driver')
                 && $user->hasRole('B2C_DRIVER')
                 && $user->hasPermission('deliveries.b2c.execute');
-            abort_unless($allowed, 403, 'Only authorized Retail (B2C) drivers may register Driver App push devices.');
+            abort_unless($allowed, 403, __('push_device_errors.driver_registration_denied', [], $denialLocale));
         } elseif ($data['app'] === 'van') {
             if (! $user->hasPermission('van.login')) {
                 $context = $this->vanRuntimeContexts->resolve($user);
@@ -88,7 +93,7 @@ final class PushDeviceController extends Controller
                     $context['selected'] !== null
                         && $this->vanRuntimeContexts->canUseRuntime($user, $context['selected']),
                     403,
-                    'Van App access is not enabled for this account.',
+                    __('push_device_errors.van_access_denied', [], $denialLocale),
                 );
             }
         } else {
