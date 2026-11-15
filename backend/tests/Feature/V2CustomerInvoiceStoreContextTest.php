@@ -77,7 +77,7 @@ class V2CustomerInvoiceStoreContextTest extends TestCase
     {
         $pdf = Mockery::mock(PdfDocumentFactory::class);
         $pdf->shouldReceive('create')
-            ->andThrow(new \\RuntimeException('INTERNAL_SECRET_SENTINEL'));
+            ->andThrow(new \RuntimeException('INTERNAL_SECRET_SENTINEL'));
         $this->app->instance(PdfDocumentFactory::class, $pdf);
 
         foreach ([
