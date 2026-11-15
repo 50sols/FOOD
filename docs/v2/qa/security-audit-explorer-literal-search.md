@@ -72,3 +72,11 @@ B2B VAN ONLY / B2C DRIVER ONLY unchanged.
 
 Final human/staging/browser UAT is deferred to #2503 after atomic
 source code completion; parent remains open.
+
+## JSON-escaped correlation repair (Laravel CI rescue)
+
+Full Laravel validation on original head `ce0e8c1e6826e0651b9ec8af19ced6bc7798c4ce` failed **only** the new `EnterpriseRbacTest` audit-filter regression (line 230): 3979 passed, 1 skipped, 1 failed, while PHP/Pint/PHPStan, AR/EN and MySQL/Redis acceptance succeeded. The failure was reproducible specifically for backslash inside `audit_correlation`: the source `audit.after` is serialized JSON, so a typed literal `\` is stored as two consecutive backslashes. A single-backslash SQL substring cannot match that serialized JSON value, although it correctly matches the unencoded actor/event/entity columns.
+
+The correlation-only read predicate now doubles *typed* backslashes **before** building the same bound `LIKE ? ESCAPE '!'` pattern, preserving exact literal matching against the stored JSON representation. Actor, event, entity, dates, role checks, store scope and audit records are untouched; no data mutation is introduced. The existing four-symbol authenticated HTTP regression exercises this case and is retained (not weakened). The independently tested SQLite LIKE simulation confirmed the original one-backslash query does not match JSON, and the normalized two-backslash query does; production correctness still requires terminal exact-head Laravel/MySQL CI.
+
+Rescue commit: `cadd23dd3df05fe5dbe6579272945dbf746a95b0`; latest final source/head and CI must be reverified after this documentation update. Never merge on old-head green checks.
