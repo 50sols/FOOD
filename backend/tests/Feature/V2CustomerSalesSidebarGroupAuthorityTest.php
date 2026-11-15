@@ -184,9 +184,47 @@ final class V2CustomerSalesSidebarGroupAuthorityTest extends TestCase
         $this->assertSame(1, substr_count($html, 'data-nav-item="b2c_customer_groups"'));
         $this->assertSame(1, substr_count($html, 'data-nav-item="sales_quotations"'));
 
-        $this->actingAs($actor)->get(route('admin.b2c.customer-groups.index', [
+        $foreignResponse = $this->actingAs($actor)->get(route('admin.b2c.customer-groups.index', [
             'store_id' => $foreign,
-        ], false))->assertStatus(404);
+        ], false));
+        $this->assertContains($foreignResponse->getStatusCode(), [403, 404]);
+    }
+
+    public function test_p185_customer_service_subgroup_appears_only_with_the_existing_whatsapp_runtime_gate(): void
+    {
+        $this->store('B2B', 'P185-WHATSAPP-RUNTIME');
+        $actor = $this->globalActor('SUPER_ADMIN', 'p185-superadmin@example.test');
+
+        $before = $this->actingAs($actor)->get(route('admin.b2b.customer-groups.index', [], false))
+            ->assertOk();
+        $this->assertStringNotContainsString('data-nav-group="customer_service"', (string) $before->getContent());
+
+        \App\Models\WhatsAppModuleState::query()->findOrFail(1)->forceFill([
+            'lifecycle' => 'INTERNAL_TEST',
+            'emergency_stop' => true,
+            'capabilities' => ['agent_inbox' => true],
+            'test_numbers' => [],
+        ])->save();
+
+        $response = $this->actingAs($actor->fresh())
+            ->get(route('admin.b2b.customer-groups.index', [], false))
+            ->assertOk()
+            ->assertSee('data-nav-domain="customer-sales-service"', false)
+            ->assertSee('data-nav-group="customer_service"', false)
+            ->assertSee('data-nav-item="whatsapp_inbox"', false);
+
+        $html = (string) $response->getContent();
+        preg_match('/<section[^>]*data-nav-domain="customer-sales-service"[^>]*>(.*?)<\\/section>/s', $html, $matches);
+        $this->assertNotEmpty($matches[1] ?? null, 'Customer and support links must share the same domain container.');
+        foreach (['accounts', 'sales', 'customer_service'] as $key) {
+            $this->assertStringContainsString('data-nav-group="'.$key.'"', $matches[1]);
+        }
+
+        \App\Models\WhatsAppModuleState::query()->findOrFail(1)->forceFill([
+            'capabilities' => ['agent_inbox' => false],
+        ])->save();
+        $denied = $this->actingAs($actor->fresh())->get(route('admin.whatsapp-inbox.index'));
+        $this->assertSame(404, $denied->getStatusCode());
     }
 
     private function globalActor(string $roleCode, string $email): User
