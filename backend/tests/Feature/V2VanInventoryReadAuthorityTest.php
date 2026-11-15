@@ -373,6 +373,119 @@ final class V2VanInventoryReadAuthorityTest extends TestCase
         app(VanInventoryReadService::class)->page($viewer, (int) $van->id);
     }
 
+    public function test_authorized_van_detail_exposes_bilingual_scoped_stock_tab_and_bounded_pagination(): void
+    {
+        config()->set('security.mfa.enforce_privileged', false);
+        $storeId = $this->store('B2B', 'P274-HTTP-OWN');
+        $homeStoreId = $this->store('B2B', 'P274-HTTP-HOME');
+        $assignedWarehouse = $this->warehouse($storeId, 'P274-HTTP-ASSIGNED');
+        $homeWarehouse = $this->warehouse($homeStoreId, 'P274-HTTP-HOME-WH');
+        $this->enableEnterpriseWmsForStore($storeId);
+        $viewer = $this->viewer($storeId);
+        $van = $this->van($homeWarehouse);
+        $this->assign($van, $assignedWarehouse, $viewer);
+        for ($i = 1; $i <= 51; $i++) {
+            $this->stock($assignedWarehouse, $storeId, sprintf('P274-HTTP-%03d', $i));
+        }
+        $this->stock($homeWarehouse, $homeStoreId, 'P274-HTTP-FOREIGN');
+
+        $detailUrl = route('admin.field-operations.vans.show', ['van' => $van->id]);
+        $tabUrl = route('admin.field-operations.vans.show', [
+            'van' => $van->id,
+            'tab' => 'warehouse-stock',
+        ]);
+        $cursor = app(VanInventoryReadService::class)->page($viewer, (int) $van->id)['next_cursor'];
+        $this->assertNotNull($cursor);
+
+        foreach (['en' => 'ltr', 'ar' => 'rtl'] as $locale => $direction) {
+            app()->setLocale($locale);
+            $viewer->forceFill(['locale' => $locale])->save();
+            $viewer = $viewer->fresh();
+
+            $this->actingAs($viewer)->get($detailUrl)
+                ->assertOk()
+                ->assertSee('data-van-assigned-stock-tab', false)
+                ->assertDontSee('data-van-assigned-wms-inventory', false);
+
+            $response = $this->actingAs($viewer)->get($tabUrl)
+                ->assertOk()
+                ->assertSee('dir="'.$direction.'"', false)
+                ->assertSee('data-van-assigned-wms-inventory', false)
+                ->assertSee('P274-HTTP-ASSIGNED')
+                ->assertSee('P274-HTTP-001')
+                ->assertDontSee('P274-HTTP-051')
+                ->assertDontSee('P274-HTTP-FOREIGN');
+            $this->assertStringContainsString(
+                __('van_inventory.provenance_warning', [], $locale),
+                $response->getContent(),
+            );
+            $this->actingAs($viewer)->get(route('admin.field-operations.vans.show', [
+                'van' => $van->id,
+                'tab' => 'warehouse-stock',
+                'stock_after' => $cursor,
+            ]))->assertOk()->assertSee('P274-HTTP-051')->assertDontSee('P274-HTTP-001');
+        }
+
+        $this->assertSame(0, DB::table('stock_movements')->count());
+        $this->assertSame(51, DB::table('inventories')->where('warehouse_id', $assignedWarehouse)->count());
+    }
+
+    public function test_direct_van_stock_tab_fails_closed_for_cross_store_wms_off_and_missing_permission(): void
+    {
+        config()->set('security.mfa.enforce_privileged', false);
+        $own = $this->store('B2B', 'P274-HTTP-DENY-OWN');
+        $foreign = $this->store('B2B', 'P274-HTTP-DENY-FOREIGN');
+        $ownWarehouse = $this->warehouse($own, 'P274-HTTP-DENY-OWN-WH');
+        $foreignWarehouse = $this->warehouse($foreign, 'P274-HTTP-DENY-FOREIGN-WH');
+        $this->enableEnterpriseWmsForStore($own);
+        $this->enableEnterpriseWmsForStore($foreign);
+        $viewer = $this->viewer($own);
+        $van = $this->van($ownWarehouse);
+        $this->assign($van, $foreignWarehouse, $viewer);
+        $this->stock($foreignWarehouse, $foreign, 'P274-HTTP-HIDDEN');
+
+        $route = route('admin.field-operations.vans.show', [
+            'van' => $van->id,
+            'tab' => 'warehouse-stock',
+        ]);
+        $permission = Permission::query()->where('code', 'inventory.view')->firstOrFail();
+        DB::table('user_permission_overrides')->insert([
+            'user_id' => $viewer->id,
+            'permission_id' => $permission->id,
+            'scope_key' => 'store:'.$foreign,
+            'store_id' => $foreign,
+            'effect' => 'deny',
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        $viewer->forceFill(['has_permission_overrides' => true])->save();
+
+        $this->actingAs($viewer->fresh())->get($route)
+            ->assertNotFound()
+            ->assertDontSee('P274-HTTP-HIDDEN');
+        $this->actingAs($viewer->fresh())->get(route('admin.field-operations.vans.show', [
+            'van' => $van->id,
+        ]))->assertOk()->assertDontSee('data-van-assigned-stock-tab', false);
+
+        DB::table('user_permission_overrides')->where('user_id', $viewer->id)->delete();
+        $viewer->forceFill(['has_permission_overrides' => false])->save();
+        $this->actingAs($viewer->fresh())->get($route)->assertOk();
+
+        app(ModuleLifecycleManager::class)->transition('inventory_wms', ModuleState::DISABLED);
+        $this->actingAs($viewer->fresh())->get($route)->assertForbidden();
+        $this->actingAs($viewer->fresh())->get(route('admin.field-operations.vans.show', [
+            'van' => $van->id,
+        ]))->assertOk()->assertDontSee('data-van-assigned-stock-tab', false);
+
+        $this->actingAs($viewer->fresh())->get(route('admin.field-operations.vans.show', [
+            'van' => $van->id,
+            'tab' => 'warehouse-stock',
+            'stock_after' => '-1',
+        ]))->assertStatus(422);
+
+        $this->assertSame(0, DB::table('stock_movements')->count());
+    }
+
     private function store(string $channel, string $code): int
     {
         return (int) DB::table('stores')->insertGetId([
