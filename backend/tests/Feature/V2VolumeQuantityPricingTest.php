@@ -151,6 +151,66 @@ final class V2VolumeQuantityPricingTest extends TestCase
         }
     }
 
+    public function test_legacy_price_update_cannot_invalidate_retained_quantity_breaks(): void
+    {
+        [$storeId, $productId, $tierId] = $this->catalog();
+        $this->pricingMode($storeId, true);
+        Sanctum::actingAs($this->actor('B2B_ADMIN', 'volume-legacy-guard@example.test'));
+
+        $original = $this->rule($storeId, $productId, $tierId);
+        $this->putJson('/api/v1/admin/b2b/prices', $original)->assertCreated();
+        $savedBreaks = DB::table('b2b_price_rules')
+            ->where('store_id', $storeId)->where('product_id', $productId)
+            ->value('quantity_price_breaks');
+        $auditCount = DB::table('audit_logs')->count();
+
+        // Existing clients omit the new field entirely. Compatible requests
+        // keep the schedule; incompatible base terms must fail before writes.
+        $legacy = $original;
+        unset($legacy['quantity_price_breaks']);
+        foreach ([
+            ['unit_price' => 7],
+            ['minimum_quantity' => 10],
+            ['ordering_increment' => 3],
+        ] as $changed) {
+            $this->putJson('/api/v1/admin/b2b/prices', [...$legacy, ...$changed])
+                ->assertUnprocessable()
+                ->assertJsonValidationErrors('quantity_price_breaks');
+
+            $this->assertDatabaseHas('b2b_price_rules', [
+                'store_id' => $storeId,
+                'product_id' => $productId,
+                'unit_price' => 10,
+                'minimum_quantity' => 5,
+                'ordering_increment' => 5,
+                'quantity_price_breaks' => $savedBreaks,
+            ]);
+            $this->assertDatabaseCount('audit_logs', $auditCount);
+        }
+
+        $this->putJson('/api/v1/admin/b2b/prices', $legacy)
+            ->assertOk()
+            ->assertJsonPath('data.quantity_price_breaks.0.minimum_quantity', 10);
+        $this->assertSame($savedBreaks, DB::table('b2b_price_rules')
+            ->where('store_id', $storeId)->where('product_id', $productId)
+            ->value('quantity_price_breaks'));
+
+        // An explicit empty schedule is the supported way to change the
+        // base terms and return safely to legacy flat pricing.
+        $this->putJson('/api/v1/admin/b2b/prices', [
+            ...$legacy,
+            'unit_price' => 7,
+            'quantity_price_breaks' => [],
+        ])->assertOk()->assertJsonPath('data.quantity_price_breaks', []);
+
+        $this->assertDatabaseHas('b2b_price_rules', [
+            'store_id' => $storeId,
+            'product_id' => $productId,
+            'unit_price' => 7,
+            'quantity_price_breaks' => '[]',
+        ]);
+    }
+
     public function test_dashboard_break_editor_is_localized_and_denies_unapproved_actor(): void
     {
         $storeId = app(WholesalePrincipal::class)->storeId();

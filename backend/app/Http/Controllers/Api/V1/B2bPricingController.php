@@ -112,6 +112,25 @@ class B2bPricingController extends Controller
             : null;
 
         $rule = DB::transaction(function () use ($data, $request, $replaceBreaks, $breaks): B2bPriceRule {
+            // A legacy caller may omit the schedule but must not silently
+            // invalidate its saved breaks by changing base price, MOQ or increment.
+            // Lock before checking so a concurrent editor cannot change the
+            // schedule between validation and the audited write.
+            $current = B2bPriceRule::query()
+                ->where('price_tier_id', $data['price_tier_id'])
+                ->where('store_id', $data['store_id'])
+                ->where('product_id', $data['product_id'])
+                ->lockForUpdate()
+                ->first();
+            if (! $replaceBreaks && $current instanceof B2bPriceRule) {
+                QuantityPriceBreaks::normalize(
+                    QuantityPriceBreaks::readBreaks($current->quantity_price_breaks),
+                    (float) $data['minimum_quantity'],
+                    (float) ($data['ordering_increment'] ?? 1),
+                    (float) $data['unit_price'],
+                );
+            }
+
             $rule = B2bPriceRule::query()->updateOrCreate(
                 ['price_tier_id' => $data['price_tier_id'], 'store_id' => $data['store_id'], 'product_id' => $data['product_id']],
                 [

@@ -324,28 +324,51 @@ class FlashOfferBackendTest extends TestCase
             'stock_movements' => DB::table('stock_movements')->count(),
             'orders' => DB::table('orders')->count(),
             'payments' => DB::table('payments')->count(),
+            'invoices' => DB::table('invoices')->count(),
+            'audit_logs' => DB::table('audit_logs')->count(),
+            'notifications' => DB::table('notifications')->count(),
             'reserved' => (float) DB::table('inventories')
                 ->where('id', $this->inventoryId)->value('reserved_quantity'),
         ];
-        $this->withHeaders([
-            'X-FOODEX-Store-ID' => (string) $this->storeId,
-            'X-FOODEX-Customer-Domain' => 'b2c',
-        ])->postJson('/api/v1/flash-offers/products/'.$offerProduct->id.'/reserve', [
-            'store_id' => $this->storeId,
-            'channel' => 'customer',
-            'quantity' => PHP_FLOAT_MAX,
-            'idempotency_key' => 'v2-3809-http-overflow',
-        ])->assertUnprocessable()
-            ->assertJsonPath('message', 'Resolved base quantity must be greater than zero.');
-        $this->assertSame($beforeOverflowHttp, [
-            'reservations' => DB::table('flash_reservations')->count(),
-            'events' => DB::table('flash_offer_events')->count(),
-            'stock_movements' => DB::table('stock_movements')->count(),
-            'orders' => DB::table('orders')->count(),
-            'payments' => DB::table('payments')->count(),
-            'reserved' => (float) DB::table('inventories')
-                ->where('id', $this->inventoryId)->value('reserved_quantity'),
-        ]);
+        // A factory User may have a non-hydrated NOT NULL locale DB default:
+        // preserve the actual persisted value while testing actor/header precedence.
+        $originalOverflowLocale = (string) DB::table('users')
+            ->where('id', $this->user->getKey())->value('locale');
+
+        foreach ([
+            ['ar', 'en-US', 'يجب أن تكون الكمية الأساسية المحسوبة أكبر من صفر.'],
+            ['en', 'ar-KW', 'Resolved base quantity must be greater than zero.'],
+            ['fr', 'ar-KW', 'يجب أن تكون الكمية الأساسية المحسوبة أكبر من صفر.'],
+            ['fr', 'en-US', 'Resolved base quantity must be greater than zero.'],
+        ] as $case => [$actorLocale, $headerLocale, $message]) {
+            $this->user->forceFill(['locale' => $actorLocale])->saveQuietly();
+
+            $this->withHeaders([
+                'X-FOODEX-Store-ID' => (string) $this->storeId,
+                'X-FOODEX-Customer-Domain' => 'b2c',
+                'Accept-Language' => $headerLocale,
+            ])->postJson('/api/v1/flash-offers/products/'.$offerProduct->id.'/reserve', [
+                'store_id' => $this->storeId,
+                'channel' => 'customer',
+                'quantity' => PHP_FLOAT_MAX,
+                'idempotency_key' => 'v2-3884-http-overflow-'.$case,
+            ])->assertUnprocessable()
+                ->assertJsonPath('message', $message);
+
+            $this->assertSame($beforeOverflowHttp, [
+                'reservations' => DB::table('flash_reservations')->count(),
+                'events' => DB::table('flash_offer_events')->count(),
+                'stock_movements' => DB::table('stock_movements')->count(),
+                'orders' => DB::table('orders')->count(),
+                'payments' => DB::table('payments')->count(),
+                'invoices' => DB::table('invoices')->count(),
+                'audit_logs' => DB::table('audit_logs')->count(),
+                'notifications' => DB::table('notifications')->count(),
+                'reserved' => (float) DB::table('inventories')
+                    ->where('id', $this->inventoryId)->value('reserved_quantity'),
+            ], 'An overflow rejection cannot write any Flash or finance state.');
+        }
+        $this->user->forceFill(['locale' => $originalOverflowLocale])->saveQuietly();
 
         $reserve = $this->withHeaders([
             'X-FOODEX-Store-ID' => (string) $this->storeId,

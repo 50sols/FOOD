@@ -27,3 +27,7 @@ Parent: #2558 / P228 (actual DOCX paragraph P217), master #2503. Original #2558 
 - Exact latest-head Repository Policy, V2 Isolation, Pint/PHPStan/security, localization, full Laravel and real MySQL/Redis install/upgrade/recovery, HIGH file-by-file technical audit, no overlapping peer changes must all pass.
 
 - #2558 and #3871 remain OPEN while any source or CI gate fails. Human/staging UAT tracked under #2503. No main, tags, releases or production.
+
+## Legacy upsert integrity regression (HIGH source audit)
+
+A legacy authenticated management caller may omit `quantity_price_breaks` while updating the base unit price, minimum order quantity or ordering increment. Existing schedules remain stored, but the retained thresholds may become economically invalid or increment-incompatible. The issue branch now locks the existing pricing rule inside the audited write transaction and revalidates retained breaks against the submitted base terms. Incompatible requests return field-scoped 422 and leave the rule and audit unchanged. A compatible legacy edit still preserves the original schedule; an explicit empty array allows a deliberate reset to flat pricing. The new seeded HTTP regression covers price increase inversion, MOQ collision, increment mismatch, no-write/no-audit failures, unchanged success and explicit clearing. This is an additional invariant, not a new route, permission or mobile payload.

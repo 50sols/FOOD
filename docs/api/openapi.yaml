@@ -1500,7 +1500,7 @@ paths:
                 quantity_price_breaks:
                   type: array
                   maxItems: 12
-                  description: Omission preserves the existing schedule; an explicit empty array clears it.
+                  description: Omission retains an existing compatible schedule; incompatible changes to base price, MOQ or increment return HTTP 422 until a replacement list is supplied. Explicit [] clears the schedule.
                   items:
                     $ref: "#/components/schemas/B2bQuantityPriceBreak"
                 replace_quantity_price_breaks:
