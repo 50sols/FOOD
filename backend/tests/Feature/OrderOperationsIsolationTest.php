@@ -780,6 +780,59 @@ class OrderOperationsIsolationTest extends TestCase
             ->assertSee('31.2357120');
     }
 
+    public function test_driver_reminder_409_is_localized_and_never_queues_for_missing_assignment(): void
+    {
+        Queue::fake();
+
+        $store = $this->store('OPS-REMINDER-409-A');
+        $foreign = $this->store('OPS-REMINDER-409-B');
+        $admin = $this->storeAdmin($store, 'ops-reminder-409@example.test');
+        $buyer = app(B2cCustomerService::class)->create($store, ['name' => 'Reminder Failure Buyer']);
+        $otherBuyer = app(B2cCustomerService::class)->create($foreign, ['name' => 'Foreign Reminder Buyer']);
+        $order = $this->order(
+            $store,
+            (int) $buyer->legacy_customer_id,
+            (int) $buyer->id,
+            'OPS-REMINDER-409-001',
+        );
+        $foreignOrder = $this->order(
+            $foreign,
+            (int) $otherBuyer->legacy_customer_id,
+            (int) $otherBuyer->id,
+            'OPS-REMINDER-409-002',
+        );
+
+        $notificationsBefore = DB::table('notifications')->count();
+        $auditBefore = DB::table('audit_logs')
+            ->where('event', 'operations.order.driver_reminder_sent')->count();
+
+        foreach ([
+            'ar' => 'لا يوجد تعيين سائق نشط لهذا الطلب.',
+            'en' => 'Order has no active driver assignment.',
+        ] as $locale => $message) {
+            $admin->locale = $locale;
+            $admin->save();
+
+            $this->actingAs($admin)
+                ->postJson("/admin/operations/orders/{$order}/remind-driver")
+                ->assertStatus(409)
+                ->assertJsonPath('message', $message);
+
+            $this->actingAs($admin)
+                ->postJson("/admin/operations/orders/{$foreignOrder}/remind-driver")
+                ->assertNotFound();
+        }
+
+        $this->assertDatabaseHas('orders', ['id' => $order, 'status' => 'pending']);
+        $this->assertDatabaseMissing('driver_assignments', ['order_id' => $order]);
+        $this->assertSame($notificationsBefore, DB::table('notifications')->count());
+        $this->assertSame(
+            $auditBefore,
+            DB::table('audit_logs')->where('event', 'operations.order.driver_reminder_sent')->count(),
+        );
+        Queue::assertNotPushed(DispatchPushNotification::class);
+    }
+
     public function test_driver_reminder_is_actionable_persisted_and_queued(): void
     {
         Queue::fake();
