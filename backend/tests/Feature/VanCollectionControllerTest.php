@@ -244,7 +244,10 @@ class VanCollectionControllerTest extends TestCase
         $custody = app(CollectionCustodyService::class);
         $account = CollectionAccount::query()->findOrFail($accountId);
         $pending = Remittance::query()->findOrFail($remittanceId);
-        $approved = $custody->approveRemittance($pending, $actor);
+        // The Van collector submitted this remittance; a different user
+        // performs the treasury review before custody can be deducted.
+        $checker = User::factory()->create(['is_active' => true]);
+        $approved = $custody->approveRemittance($pending, $checker);
         $balanceAfterApproval = $custody->custodyBalance($account);
         $reconciled = $custody->reconcileRemittance($approved, $actor);
         $reconciledAgain = $custody->reconcileRemittance($reconciled, $actor);
