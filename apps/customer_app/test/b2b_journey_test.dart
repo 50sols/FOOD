@@ -494,7 +494,6 @@ void main() {
     },
   );
 
-
   for (final locale in const <Locale>[Locale('ar'), Locale('en')]) {
     testWidgets(
       'B2B dashboard rejects non-finite money without masking valid payments in ${locale.languageCode}',
