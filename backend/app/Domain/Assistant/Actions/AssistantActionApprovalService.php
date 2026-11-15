@@ -319,7 +319,7 @@ final class AssistantActionApprovalService
             hash_equals((string) $approval->payload_hash, $currentHash)
             && hash_equals((string) $approval->payload_hash, $expectedPayloadHash),
             409,
-            'Assistant action payload changed after preview.',
+            __('assistant_action_errors.payload_changed'),
         );
     }
 
