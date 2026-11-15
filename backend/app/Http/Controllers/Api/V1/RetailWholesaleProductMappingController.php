@@ -48,6 +48,7 @@ final class RetailWholesaleProductMappingController extends Controller
             ->join('store_types', 'store_types.id', '=', 'stores.store_type_id')
             ->where('products.id', $sourceProduct)
             ->where('catalogs.channel', 'b2b')
+            ->where('catalogs.is_active', true)
             ->where('store_types.code', 'B2B')
             ->where('stores.is_active', true)
             ->exists();
