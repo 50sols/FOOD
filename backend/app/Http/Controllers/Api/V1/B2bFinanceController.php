@@ -177,9 +177,20 @@ class B2bFinanceController extends Controller
         );
 
         try {
-            $content = $invoices->renderPdf($invoice, $locale);
+            // Container dispatch permits deterministic HTTP failure regression tests
+            // without replacing the final InvoiceService or PDF factory.
+            $content = (string) app()->call([$invoices, 'renderPdf'], [
+                'invoice' => $invoice,
+                'locale' => $locale,
+            ]);
         } catch (\RuntimeException) {
-            abort(503, 'PDF generation is temporarily unavailable.');
+            $savedLocale = $request->user()?->locale;
+            $errorLocale = $validated['locale']
+                ?? (in_array($savedLocale, ['ar', 'en'], true)
+                    ? $savedLocale
+                    : $request->getPreferredLanguage(['ar', 'en']));
+
+            abort(503, __('invoice_errors.pdf_generation_unavailable', [], $errorLocale === 'ar' ? 'ar' : 'en'));
         }
 
         return response($content, 200, [
