@@ -12,6 +12,7 @@ return [
     'quantity' => 'On hand',
     'reserved' => 'Reserved',
     'available' => 'Available',
+    'invalid_warehouse_balance' => 'The assigned warehouse has an inconsistent inventory balance. Reconcile it in WMS before reading availability.',
     'empty' => 'No inventory rows in this assigned warehouse.',
     'next_page' => 'Next 50 products',
     'start_over' => 'First page',

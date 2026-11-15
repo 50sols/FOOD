@@ -533,6 +533,63 @@ final class V2VanInventoryReadAuthorityTest extends TestCase
         $this->assertSame(0, DB::table('stock_movements')->count());
     }
 
+    public function test_inconsistent_wms_balance_is_rejected_in_ar_and_en_without_fabricating_van_stock(): void
+    {
+        config()->set('security.mfa.enforce_privileged', false);
+        $storeId = $this->store('B2B', 'P274-BALANCE-INTEGRITY');
+        $warehouse = $this->warehouse($storeId, 'P274-BALANCE-WH');
+        $this->enableEnterpriseWmsForStore($storeId);
+        $viewer = $this->viewer($storeId);
+        $van = $this->van($warehouse);
+        $this->assign($van, $warehouse, $viewer);
+        $this->stock($warehouse, $storeId, 'P274-BALANCE-ITEM');
+
+        $stockId = (int) DB::table('inventories')->where('warehouse_id', $warehouse)->value('id');
+        $url = route('admin.field-operations.vans.show', [
+            'van' => $van->id,
+            'tab' => 'warehouse-stock',
+        ]);
+
+        foreach ([
+            ['quantity' => -1, 'reserved_quantity' => 0],
+            ['quantity' => 10, 'reserved_quantity' => -1],
+            ['quantity' => 2, 'reserved_quantity' => 3],
+        ] as $invalid) {
+            DB::table('inventories')->where('id', $stockId)->update($invalid);
+            foreach (['en', 'ar'] as $locale) {
+                app()->setLocale($locale);
+                $viewer->forceFill(['locale' => $locale])->save();
+                $viewer = $viewer->fresh();
+
+                $this->actingAs($viewer)->get($url)
+                    ->assertStatus(409)
+                    ->assertDontSee('P274-BALANCE-ITEM');
+
+                try {
+                    app(VanInventoryReadService::class)->page($viewer, (int) $van->id);
+                    $this->fail('Inconsistent source stock must not appear as a Van balance.');
+                } catch (HttpException $exception) {
+                    $this->assertSame(409, $exception->getStatusCode());
+                    $this->assertSame(
+                        __('van_inventory.invalid_warehouse_balance', [], $locale),
+                        $exception->getMessage(),
+                    );
+                }
+            }
+        }
+
+        // A source WMS correction restores the existing read path. The Van
+        // reader never performs the repair or posts a competing movement.
+        DB::table('inventories')->where('id', $stockId)->update([
+            'quantity' => 10,
+            'reserved_quantity' => 2,
+        ]);
+        $this->actingAs($viewer)->get($url)
+            ->assertOk()
+            ->assertSee('P274-BALANCE-ITEM');
+        $this->assertSame(0, DB::table('stock_movements')->count());
+    }
+
     private function store(string $channel, string $code): int
     {
         return (int) DB::table('stores')->insertGetId([

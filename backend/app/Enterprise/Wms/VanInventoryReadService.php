@@ -125,6 +125,20 @@ final class VanInventoryReadService
             $quantity = (float) $row->quantity;
             $reserved = (float) $row->reserved_quantity;
 
+            // A corrupt warehouse row must never be advertised as available
+            // Van stock. In particular, do not silently clamp an over-reserved
+            // or negative balance: it needs a WMS reconciliation, not a
+            // second debit or an invented vehicle-specific adjustment.
+            abort_if(
+                ! is_finite($quantity)
+                || ! is_finite($reserved)
+                || $quantity < 0
+                || $reserved < 0
+                || $reserved > $quantity,
+                409,
+                __('van_inventory.invalid_warehouse_balance'),
+            );
+
             return [
                 'inventory_id' => (int) $row->inventory_id,
                 'product_id' => (int) $row->product_id,
