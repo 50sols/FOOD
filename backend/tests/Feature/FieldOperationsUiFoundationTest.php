@@ -140,6 +140,104 @@ class FieldOperationsUiFoundationTest extends TestCase
             ->assertSee($territory->code);
     }
 
+    public function test_address_quality_dashboard_search_treats_symbols_as_literal_under_existing_permissions(): void
+    {
+        $this->seed(CoreReferenceSeeder::class);
+
+        $admin = User::query()->create([
+            'name' => 'Literal Address Quality Admin',
+            'email' => 'fieldops-literal-admin@example.test',
+            'password' => 'password',
+            'locale' => 'en',
+            'is_active' => true,
+        ]);
+        $admin->roles()->attach(Role::query()->where('code', 'SUPER_ADMIN')->firstOrFail());
+
+        $deniedActor = User::query()->create([
+            'name' => 'Address Quality Unauthorized',
+            'email' => 'fieldops-literal-denied@example.test',
+            'password' => 'password',
+            'locale' => 'en',
+            'is_active' => true,
+        ]);
+
+        $nextSubject = 8800;
+        $review = static function (
+            string $publicId,
+            string $reason,
+            string $territory,
+            string $status = 'unmapped',
+        ) use (&$nextSubject): AddressQualityReview {
+            return AddressQualityReview::query()->create([
+                'public_id' => $publicId,
+                'subject_type' => 'customer_address',
+                'subject_id' => ++$nextSubject,
+                'status' => $status,
+                'quality_class' => 'needs_review',
+                'confidence' => 0.42,
+                'territory_key' => $territory,
+                'reason' => $reason,
+            ]);
+        };
+
+        // Imported legacy references may contain characters that are
+        // SQL LIKE operators. They are ordinary literal search input here.
+        $reason = $review('AQ-REASON-MATCH', 'Reason_%!\\-one', 'T-PLAIN');
+        $territory = $review('AQ-TERRITORY-MATCH', 'ordinary', 'ZONE_%!\\-one');
+        $reference = $review('AQ_%!\\-REFERENCE', 'ordinary', 'T-PLAIN');
+        $confirmed = $review('AQ-CONFIRMED-MATCH', 'Reason_%!\\-two', 'T-PLAIN', 'confirmed');
+        $decoy = $review('AQ-DECOY-EXCLUDED', 'ReasonABCD-one', 'ZONE-OTHER');
+        $countBefore = AddressQualityReview::query()->count();
+
+        $url = static fn (string $query, array $filters = []): string =>
+            '/admin/field-operations/address-quality?'.http_build_query(['q' => $query] + $filters);
+
+        foreach (['en', 'ar'] as $locale) {
+            $admin->forceFill(['locale' => $locale])->save();
+            $this->actingAs($admin)
+                ->get($url('Reason_%!\\'))
+                ->assertOk()
+                ->assertSee($reason->public_id)
+                ->assertSee($confirmed->public_id)
+                ->assertDontSee($decoy->public_id)
+                ->assertDontSee($territory->public_id)
+                ->assertDontSee($reference->public_id);
+        }
+
+        $this->actingAs($admin)
+            ->get($url('ZONE_%!\\'))
+            ->assertOk()
+            ->assertSee($territory->public_id)
+            ->assertDontSee($decoy->public_id);
+        $this->actingAs($admin)
+            ->get($url('AQ_%!\\'))
+            ->assertOk()
+            ->assertSee($reference->public_id)
+            ->assertDontSee($decoy->public_id);
+
+        foreach (['%', '_', '!', '\\'] as $symbol) {
+            $this->actingAs($admin)
+                ->get($url($symbol))
+                ->assertOk()
+                ->assertSee($reference->public_id)
+                ->assertDontSee($decoy->public_id);
+        }
+        $this->actingAs($admin)
+            ->get($url('Reason_%!\\', ['status' => 'confirmed']))
+            ->assertOk()
+            ->assertSee($confirmed->public_id)
+            ->assertDontSee($reason->public_id);
+
+        // Empty/whitespace-only searches intentionally retain the full list.
+        $this->actingAs($admin)
+            ->get($url('   '))
+            ->assertOk()
+            ->assertSee($decoy->public_id);
+
+        $this->actingAs($deniedActor)->get($url('%'))->assertForbidden();
+        $this->assertSame($countBefore, AddressQualityReview::query()->count());
+    }
+
     public function test_routing_normal_flow_uses_structured_controls_and_fences_json_to_super_admin_advanced(): void
     {
         $view = file_get_contents(resource_path('views/admin/field-operations.blade.php'));
