@@ -163,6 +163,96 @@ final class VanTripSessionService
         }, 3);
     }
 
+    /**
+     * Resolve a trustworthy *active trip identity* for a downstream B2B
+     * custody writer. Caller-supplied Van, store and warehouse IDs must never
+     * independently authorize a physical movement: they come from the
+     * immutable trip and its current, scoped assignment instead.
+     *
+     * This is NOT evidence of loaded stock, legal title, a committed movement,
+     * or finance/GL clearance. A caller must still establish those authorities
+     * and perform its own idempotent posting in the same outer transaction.
+     */
+    public function requireActiveCustodyContext(User $actor, int $assignmentId, string $publicId): VanTripSession
+    {
+        abort_unless($actor->is_active, 403);
+
+        return DB::transaction(function () use ($actor, $assignmentId, $publicId): VanTripSession {
+            // Match start() lock ordering to avoid a trip-start/read deadlock.
+            $assignment = VanAssignment::query()->lockForUpdate()->findOrFail($assignmentId);
+            $van = Van::query()->whereKey($assignment->van_id)->lockForUpdate()->firstOrFail();
+            $trip = VanTripSession::query()
+                ->where('public_id', $publicId)
+                ->lockForUpdate()
+                ->firstOrFail();
+
+            $this->tenantScope->assertStore($actor, (int) $trip->store_id, 'drivers.b2b.manage', 'b2b');
+            $this->tenantScope->assertStore($actor, (int) $trip->store_id, 'customers.view', 'b2b');
+            abort_unless((int) $trip->van_assignment_id === (int) $assignment->id, 404);
+
+            // Operational ending keeps the physical reservation. It does not
+            // authorize new loads, even if the reserved Van slot still exists.
+            abort_unless(
+                $trip->status === 'active'
+                && $trip->ended_at === null
+                && (int) $trip->reserved_van_id === (int) $trip->van_id,
+                409,
+            );
+            abort_unless(
+                $assignment->status === 'active'
+                && $van->status === 'active'
+                && (int) $assignment->van_id === (int) $trip->van_id
+                && (int) $assignment->warehouse_id === (int) $trip->warehouse_id,
+                404,
+            );
+            abort_unless(
+                Carbon::parse($assignment->effective_from)->lte(now())
+                && ($assignment->effective_until === null || Carbon::parse($assignment->effective_until)->gt(now())),
+                404,
+            );
+
+            $warehouse = DB::table('warehouses')
+                ->join('stores', 'stores.id', '=', 'warehouses.store_id')
+                ->join('store_types', 'store_types.id', '=', 'stores.store_type_id')
+                ->where('warehouses.id', $trip->warehouse_id)
+                ->where('warehouses.is_active', true)
+                ->where('stores.is_active', true)
+                ->where('store_types.code', 'B2B')
+                ->first(['warehouses.id', 'warehouses.store_id']);
+            abort_unless($warehouse !== null && (int) $warehouse->store_id === (int) $trip->store_id, 404);
+
+            if ($assignment->driver_id !== null) {
+                abort_unless(DB::table('drivers')
+                    ->where('id', $assignment->driver_id)
+                    ->where('driver_type', 'b2b')
+                    ->where('is_active', true)
+                    ->exists(), 404);
+            }
+            $operatorId = $assignment->representative_user_id;
+            if ($operatorId === null && $assignment->driver_id !== null) {
+                $operatorId = DB::table('drivers')->where('id', $assignment->driver_id)->value('user_id');
+            }
+            abort_unless(
+                $operatorId !== null
+                && (int) $operatorId === (int) $trip->operator_user_id
+                && DB::table('users')->where('id', $operatorId)->where('is_active', true)->exists(),
+                404,
+            );
+
+            // An orphan/corrupted trip row without the recorded immutable
+            // start event is not reliable custody provenance.
+            abort_unless(DB::table('van_trip_session_events')
+                ->where('van_trip_session_id', $trip->id)
+                ->where('sequence', 1)
+                ->where('kind', 'started')
+                ->where('actor_user_id', $trip->started_by_user_id)
+                ->where('idempotency_key', $trip->start_key)
+                ->exists(), 409);
+
+            return $trip;
+        }, 3);
+    }
+
     private function assertValidKey(string $key): void
     {
         if (preg_match('/\A[A-Za-z0-9][A-Za-z0-9._:-]{7,119}\z/D', $key) !== 1) {

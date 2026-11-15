@@ -261,6 +261,96 @@ final class V2VanTripSessionIdentityTest extends TestCase
         $this->assertDatabaseCount('van_trip_session_events', 1);
     }
 
+    public function test_custody_consumer_requires_audited_active_b2b_trip_with_live_permission_and_no_stock_write(): void
+    {
+        [$actor, $assignment] = $this->fixture();
+        $service = app(VanTripSessionService::class);
+        $trip = $service->start($actor, (int) $assignment->id, 'P276-consumer-start-001');
+
+        $resolved = $service->requireActiveCustodyContext($actor, (int) $assignment->id, $trip->public_id);
+        $this->assertSame($trip->id, $resolved->id);
+        $this->assertSame($trip->store_id, $resolved->store_id);
+        $this->assertSame($trip->van_id, $resolved->reserved_van_id);
+
+        // Even a correctly scoped source row without its immutable start
+        // event must not establish trusted physical-custody provenance.
+        DB::table('van_trip_session_events')->where('van_trip_session_id', $trip->id)
+            ->where('sequence', 1)->update(['kind' => 'tampered']);
+        $this->expectHttpConflict(fn () => $service->requireActiveCustodyContext(
+            $actor, (int) $assignment->id, $trip->public_id
+        ));
+        DB::table('van_trip_session_events')->where('van_trip_session_id', $trip->id)
+            ->where('sequence', 1)->update(['kind' => 'started']);
+
+        $retailActor = User::factory()->create(['is_active' => true]);
+        $retailActor->roles()->attach(Role::query()->where('code', 'B2C_STORE_ADMIN')->firstOrFail());
+        $this->expectNotFoundOrForbidden(fn () => $service->requireActiveCustodyContext(
+            $retailActor, (int) $assignment->id, $trip->public_id
+        ));
+
+        // A freed/corrupted reservation cannot authorize load posting.
+        DB::table('van_trip_sessions')->where('id', $trip->id)->update(['reserved_van_id' => null]);
+        $this->expectHttpConflict(fn () => $service->requireActiveCustodyContext(
+            $actor, (int) $assignment->id, $trip->public_id
+        ));
+        DB::table('van_trip_sessions')->where('id', $trip->id)->update(['reserved_van_id' => $trip->van_id]);
+
+        $service->endOperationalTrip($actor, $trip->public_id, 'P276-consumer-end-0001');
+        $this->expectHttpConflict(fn () => $service->requireActiveCustodyContext(
+            $actor, (int) $assignment->id, $trip->public_id
+        ));
+
+        $this->assertDatabaseCount('van_trip_sessions', 1);
+        $this->assertDatabaseCount('van_trip_session_events', 2);
+        $this->assertDatabaseCount('stock_movements', 0);
+    }
+
+    public function test_custody_consumer_refuses_assignment_rebinding_expiry_and_mutated_warehouse(): void
+    {
+        [$actor, $assignment] = $this->fixture();
+        $service = app(VanTripSessionService::class);
+        $trip = $service->start($actor, (int) $assignment->id, 'P276-consumer-scope-01');
+
+        $assignment->forceFill(['status' => 'revoked'])->save();
+        $this->expectNotFoundOrForbidden(fn () => $service->requireActiveCustodyContext(
+            $actor, (int) $assignment->id, $trip->public_id
+        ));
+        $assignment->forceFill(['status' => 'active', 'effective_until' => now()->subMinute()])->save();
+        $this->expectNotFoundOrForbidden(fn () => $service->requireActiveCustodyContext(
+            $actor, (int) $assignment->id, $trip->public_id
+        ));
+        $assignment->forceFill(['effective_until' => now()->addHour()])->save();
+
+        $other = User::factory()->create(['is_active' => true]);
+        $assignment->forceFill(['representative_user_id' => $other->id])->save();
+        $this->expectNotFoundOrForbidden(fn () => $service->requireActiveCustodyContext(
+            $actor, (int) $assignment->id, $trip->public_id
+        ));
+        $assignment->forceFill(['representative_user_id' => $actor->id])->save();
+
+        $otherWarehouse = DB::table('warehouses')->where('id', '!=', $assignment->warehouse_id)->value('id');
+        if ($otherWarehouse !== null) {
+            $assignment->forceFill(['warehouse_id' => $otherWarehouse])->save();
+            $this->expectNotFoundOrForbidden(fn () => $service->requireActiveCustodyContext(
+                $actor, (int) $assignment->id, $trip->public_id
+            ));
+            $assignment->forceFill(['warehouse_id' => $trip->warehouse_id])->save();
+        }
+
+        DB::table('warehouses')->where('id', $trip->warehouse_id)->update(['is_active' => false]);
+        $this->expectNotFoundOrForbidden(fn () => $service->requireActiveCustodyContext(
+            $actor, (int) $assignment->id, $trip->public_id
+        ));
+        DB::table('warehouses')->where('id', $trip->warehouse_id)->update(['is_active' => true]);
+
+        $this->assertSame($trip->id, $service->requireActiveCustodyContext(
+            $actor, (int) $assignment->id, $trip->public_id
+        )->id);
+        $this->assertDatabaseCount('van_trip_sessions', 1);
+        $this->assertDatabaseCount('van_trip_session_events', 1);
+        $this->assertDatabaseCount('stock_movements', 0);
+    }
+
     /** @return array{User, VanAssignment} */
     private function fixture(): array
     {
