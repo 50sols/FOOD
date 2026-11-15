@@ -289,6 +289,46 @@ class CartDomainTest extends TestCase
             ->assertJsonCount(0, 'items');
     }
 
+    public function test_authenticated_cart_without_store_context_reports_bilingual_422_and_does_not_create_records(): void
+    {
+        Sanctum::actingAs($this->b2cUser);
+
+        $cartCount = DB::table('carts')->count();
+        $itemCount = DB::table('cart_items')->count();
+        $orderCount = DB::table('orders')->count();
+
+        foreach ([
+            'ar' => ['en', 'يجب تحديد متجر عند بدء سلة المشتريات بعد تسجيل الدخول.'],
+            'en' => ['ar', 'A store is required when initializing an authenticated cart.'],
+        ] as $locale => [$languageHeader, $message]) {
+            $this->b2cUser->forceFill(['locale' => $locale])->save();
+
+            $this->withHeaders([
+                'X-Guest-Token' => '',
+                'Accept-Language' => $languageHeader,
+            ])->getJson('/api/v1/cart')
+                ->assertUnprocessable()
+                ->assertJsonValidationErrors(['store'])
+                ->assertJsonPath('errors.store.0', $message);
+
+            $this->assertSame($cartCount, DB::table('carts')->count());
+            $this->assertSame($itemCount, DB::table('cart_items')->count());
+            $this->assertSame($orderCount, DB::table('orders')->count());
+        }
+
+        // Explicit store selection remains the required, authorized success path.
+        $this->withHeaders(['X-Guest-Token' => '', 'Accept-Language' => 'en'])
+            ->getJson("/api/v1/cart?store={$this->b2cStoreId}")
+            ->assertOk()
+            ->assertJsonPath('store_id', $this->b2cStoreId)
+            ->assertJsonPath('channel', 'b2c')
+            ->assertJsonCount(0, 'items');
+
+        $this->assertSame($cartCount + 1, DB::table('carts')->count());
+        $this->assertSame($itemCount, DB::table('cart_items')->count());
+        $this->assertSame($orderCount, DB::table('orders')->count());
+    }
+
     public function test_authenticated_cart_items_are_customer_owned(): void
     {
         Sanctum::actingAs($this->b2cUser);
