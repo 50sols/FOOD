@@ -356,7 +356,8 @@ class B2bFinanceTest extends TestCase
         // Resolve the authorized account before taking snapshots. The real
         // request is retained; only the final renderer is replaced.
         $this->getJson('/api/v1/b2b/account-statement')->assertOk();
-        $this->app->instance(ReportExportService::class, new class {
+        $this->app->instance(ReportExportService::class, new class
+        {
             /** @param  array<string, mixed>  $report */
             public function build(array $report, string $format, string $locale): array
             {
