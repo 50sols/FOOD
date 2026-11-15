@@ -8,6 +8,7 @@ use App\Models\User;
 use App\Services\TranslationCatalog;
 use Database\Seeders\CoreReferenceSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Arr;
 use Tests\TestCase;
 
@@ -89,7 +90,7 @@ class TranslationCenterTest extends TestCase
         }
 
         $translationsBefore = AppTranslation::query()->count();
-        $auditBefore = \Illuminate\Support\Facades\DB::table('audit_logs')->count();
+        $auditBefore = DB::table('audit_logs')->count();
         $loader = app('translation.loader');
 
         $english = $loader->load('en', 'qa_literal_rules');
@@ -126,7 +127,7 @@ class TranslationCenterTest extends TestCase
         $this->assertSame($translationsBefore, AppTranslation::query()->count());
         $this->assertSame(
             $auditBefore,
-            \Illuminate\Support\Facades\DB::table('audit_logs')->count(),
+            DB::table('audit_logs')->count(),
         );
     }
 
