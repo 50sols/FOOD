@@ -22,7 +22,7 @@ Parent #2503. This localization-only follow-up **reuses the authoritative arithm
 | Surface | Impact |
 | --- | --- |
 | Backend / API | Existing authenticated Customer overflow HTTP422 **message text only**. No route, permission, status/DTO, business math or state changes |
-| Customer app | Existing Flash buy-now validation can display the correct Arabic or English error. No Flutter source, navigation or API model changes |
+| Customer app | No current UI text change: the existing Flash API client `_decode` maps non-2xx responses to `RetailCommerceException(code)` and does not use the server's `message`; the screen shows a generic error. Buy Now normally sends `quantity: 1`. This PR fixes the authoritative API response for defensive malformed/overflow inputs, **not** on-screen error presentation. No Flutter source, navigation, model or transport changes |
 | Dashboard | Not affected — no admin routing or views touched |
 | Driver app | Not affected — B2C DRIVER ONLY routing and contracts unchanged |
 | Van app | Not affected — B2B VAN ONLY fulfillment / service-level error and contracts unchanged |
