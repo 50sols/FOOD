@@ -43,8 +43,13 @@ final class FlashCheckoutService
         string $idempotencyKey,
     ): array {
         if (strlen($idempotencyKey) < 16 || strlen($idempotencyKey) > 100) {
+            $userLocale = $user->locale;
+            $locale = in_array($userLocale, ['ar', 'en'], true)
+                ? $userLocale
+                : strtolower((string) $request->getPreferredLanguage(['ar', 'en']));
+
             throw ValidationException::withMessages([
-                'Idempotency-Key' => ['A valid Idempotency-Key header is required.'],
+                'Idempotency-Key' => [__('flash_checkout.idempotency_header_invalid', [], $locale === 'ar' ? 'ar' : 'en')],
             ]);
         }
 

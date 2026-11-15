@@ -384,6 +384,67 @@ class FlashOfferBackendTest extends TestCase
         $this->assertSame(1, DB::table('orders')->where('b2c_customer_id', $domainCustomer->id)->count());
     }
 
+    public function test_customer_flash_checkout_rejects_invalid_idempotency_header_in_both_locales_without_writes(): void
+    {
+        [, $offerProduct] = $this->offer();
+        $reservation = app(FlashOfferService::class)->reserve(
+            $this->user->id,
+            $offerProduct->id,
+            1,
+            'customer',
+            'v2-3761-flash-reservation',
+        );
+        Sanctum::actingAs($this->user);
+
+        $baseline = [
+            'orders' => DB::table('orders')->count(),
+            'order_items' => DB::table('order_items')->count(),
+            'invoices' => DB::table('invoices')->count(),
+            'payments' => DB::table('payments')->count(),
+            'audit' => DB::table('audit_logs')->count(),
+            'reservations' => DB::table('flash_reservations')->count(),
+            'events' => DB::table('flash_offer_events')->count(),
+            'inventory_reserved' => (float) DB::table('inventories')->where('id', $this->inventoryId)->value('reserved_quantity'),
+            'reservation_status' => DB::table('flash_reservations')->where('id', $reservation->id)->value('status'),
+        ];
+
+        foreach ([
+            'ar' => 'يجب تقديم مفتاح منع تكرار صالح في ترويسة الطلب.',
+            'en' => 'A valid Idempotency-Key header is required.',
+        ] as $locale => $message) {
+            $this->user->forceFill(['locale' => $locale])->save();
+            app()->setLocale($locale);
+
+            foreach (['', 'short', str_repeat('x', 101)] as $invalidKey) {
+                $this->withHeaders([
+                    'X-FOODEX-Store-ID' => (string) $this->storeId,
+                    'X-FOODEX-Customer-Domain' => 'b2c',
+                    'Accept-Language' => $locale,
+                    'Idempotency-Key' => $invalidKey,
+                ])->postJson('/api/v1/flash-reservations/'.$reservation->id.'/confirm', [
+                    'store_id' => $this->storeId,
+                    'channel' => 'customer',
+                    'address_id' => 1,
+                    'payment_method' => 'cash_on_delivery',
+                ])
+                    ->assertUnprocessable()
+                    ->assertJsonPath('errors.Idempotency-Key.0', $message);
+
+                $this->assertSame($baseline, [
+                    'orders' => DB::table('orders')->count(),
+                    'order_items' => DB::table('order_items')->count(),
+                    'invoices' => DB::table('invoices')->count(),
+                    'payments' => DB::table('payments')->count(),
+                    'audit' => DB::table('audit_logs')->count(),
+                    'reservations' => DB::table('flash_reservations')->count(),
+                    'events' => DB::table('flash_offer_events')->count(),
+                    'inventory_reserved' => (float) DB::table('inventories')->where('id', $this->inventoryId)->value('reserved_quantity'),
+                    'reservation_status' => DB::table('flash_reservations')->where('id', $reservation->id)->value('status'),
+                ]);
+            }
+        }
+    }
+
     public function test_confirming_expired_reservation_commits_expiry_and_releases_inventory(): void
     {
         [, $product] = $this->offer(reservationSeconds: 30);
