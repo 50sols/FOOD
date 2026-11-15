@@ -63,6 +63,23 @@ class V2PreviewPopupScopeLocaleTest extends TestCase
         ])->assertCreated()->json('preview_token');
 
         $this->app['auth']->forgetGuards();
+
+        // The first successful preview-token resolution intentionally records
+        // a security audit event and updates the session's last_resolved_at.
+        // Establish our no-extra-writes baseline after this canonical step,
+        // rather than treating required first-use audit as a popup mutation.
+        $this->withHeader('X-Foodex-Preview-Token', $previewToken)
+            ->postJson('/api/v1/app-preview/resolve')
+            ->assertOk()
+            ->assertJsonPath('data.channel', 'b2c');
+        $this->assertDatabaseHas('audit_logs', [
+            'event' => 'app_preview.session.resolved',
+            'user_id' => $admin->id,
+            'store_id' => $storeId,
+        ]);
+        $this->assertSame(1, DB::table('audit_logs')->where('event', 'app_preview.session.resolved')->count());
+        $this->assertNotNull(DB::table('app_preview_sessions')->value('last_resolved_at'));
+
         $tableCounts = [];
         foreach (['notification_campaigns', 'notification_campaign_popup_views', 'notifications', 'audit_logs', 'app_preview_sessions'] as $table) {
             $tableCounts[$table] = DB::table($table)->count();
