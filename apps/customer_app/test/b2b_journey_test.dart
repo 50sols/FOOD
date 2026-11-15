@@ -572,6 +572,78 @@ void main() {
     );
   }
 
+  for (final locale in const <Locale>[Locale('ar'), Locale('en')]) {
+    testWidgets(
+      'B2B dashboard rejects forged credit on signed customer debt in ${locale.languageCode}',
+      (tester) async {
+        final api = _FakeB2bApi({
+          'customer': {'name': 'Buyer'},
+          'account': {'company_name': 'Buyer Co', 'status': 'active'},
+          'finance': {
+            'currency': 'KWD',
+            'balance': -20,
+            'balance_direction': 'customer_owes_company',
+            'customer_credit_balance': 20,
+            'open_amount': 20,
+            'overdue_amount': 0,
+          },
+          'operations': {
+            'purchases_this_month': 90,
+            'payments_this_month': 10,
+            'invoice_count': 1,
+            'order_count': 1,
+            'active_orders': 0,
+          },
+          'purchase_total': 90,
+          'freshness': {
+            'generated_at': DateTime.now().toUtc().toIso8601String(),
+            'stale': false,
+          },
+        });
+        await tester.pumpWidget(
+          FoodexCustomerApp(
+            session: b2b,
+            locale: locale,
+            initialRoute: '/b2b/dashboard?store_id=7',
+            b2bApi: api,
+          ),
+        );
+        await _pumpCustomerFrames(tester);
+        expect(
+          find.descendant(
+            of: find.byKey(const ValueKey('b2b-dashboard-credit-balance')),
+            matching: find.text('—'),
+          ),
+          findsOneWidget,
+        );
+        expect(
+          find.descendant(
+            of: find.byKey(const ValueKey('b2b-dashboard-open-invoices')),
+            matching: find.text('20.000 KWD'),
+          ),
+          findsOneWidget,
+        );
+        expect(
+          find.descendant(
+            of: find.byKey(const ValueKey('b2b-dashboard-payments-month')),
+            matching: find.text('10.000 KWD'),
+          ),
+          findsOneWidget,
+        );
+        expect(
+          Directionality.of(
+            tester.element(find.byKey(const ValueKey('b2b-dashboard-data'))),
+          ),
+          locale.languageCode == 'ar' ? TextDirection.rtl : TextDirection.ltr,
+        );
+        expect(
+          api.paths.where((path) => path.startsWith('/api/v1/b2b/dashboard')),
+          hasLength(1),
+        );
+      },
+    );
+  }
+
   testWidgets('B2B dashboard shows credit direction in English LTR', (
     tester,
   ) async {
@@ -580,7 +652,7 @@ void main() {
       'account': {'company_name': 'Buyer Co', 'status': 'active'},
       'finance': {
         'currency': 'KWD',
-        'balance': -20,
+        'balance': 20,
         'balance_direction': 'company_owes_customer',
         'credit_limit': 500,
         'available_credit_line': 500,

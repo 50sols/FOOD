@@ -81,6 +81,26 @@ class WholesaleFinancialSummary {
     );
   }
 
+  /// Validates the dashboard credit against signed, server-owned balance and
+  /// direction, without inventing an amount when the source is incomplete.
+  static double? dashboardCustomerCredit(Map<Object?, Object?> finance) {
+    final balance = _amount(finance['balance']);
+    final credit = _amount(finance['customer_credit_balance']);
+    if (balance == null || credit == null || credit < 0) return null;
+
+    final expectedDirection = balance > 0
+        ? 'company_owes_customer'
+        : balance < 0
+            ? 'customer_owes_company'
+            : 'settled';
+    if (finance['balance_direction'] != expectedDirection) return null;
+
+    // The backend ledger's monetary snapshot rounds to 3 decimal places.
+    final expectedCredit = balance > 0 ? balance : 0.0;
+    if ((credit - expectedCredit).abs() > 0.0015) return null;
+    return credit;
+  }
+
   /// Parses a required, server-owned monetary total without inventing zero.
   /// The balance and purchasing-power contract remains authoritative server-side.
   static double? nonNegativeAmount(Object? value) {

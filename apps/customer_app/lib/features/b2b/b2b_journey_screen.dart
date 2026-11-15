@@ -1,4 +1,3 @@
-import 'dart:math' as math;
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
@@ -1323,10 +1322,10 @@ class _B2bDashboardRemoteStateState extends State<_B2bDashboardRemoteState>
           final currency = finance['currency']?.toString() ??
               data['currency']?.toString() ??
               '';
-          final rawBalance =
-              double.tryParse(finance['balance']?.toString() ?? '');
-          final creditBalance = finance['customer_credit_balance'] ??
-              (rawBalance == null ? null : math.max(rawBalance, 0));
+          // The server owns the customer credit balance. An absent or
+          // contradictory snapshot must not be recalculated on the device.
+          final creditBalance =
+              WholesaleFinancialSummary.dashboardCustomerCredit(finance);
           final purchaseValue =
               data['purchase_total'] ?? operations['purchases_this_month'];
           final generatedAt = freshness['generated_at']?.toString();

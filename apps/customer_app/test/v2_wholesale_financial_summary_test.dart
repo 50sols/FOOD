@@ -81,6 +81,44 @@ void main() {
     expect(WholesaleFinancialSummary.tryParse(normalized)?.currency, 'KWD');
   });
 
+  test('dashboard credit requires a signed, consistent server snapshot', () {
+    Map<Object?, Object?> credit() => {
+          'balance': 20.0,
+          'balance_direction': 'company_owes_customer',
+          'customer_credit_balance': 20.0,
+        };
+
+    expect(WholesaleFinancialSummary.dashboardCustomerCredit(credit()), 20);
+    final debt = credit()
+      ..['balance'] = -20.0
+      ..['balance_direction'] = 'customer_owes_company'
+      ..['customer_credit_balance'] = 0.0;
+    expect(WholesaleFinancialSummary.dashboardCustomerCredit(debt), 0);
+    final settled = credit()
+      ..['balance'] = 0.0
+      ..['balance_direction'] = 'settled'
+      ..['customer_credit_balance'] = 0.0;
+    expect(WholesaleFinancialSummary.dashboardCustomerCredit(settled), 0);
+
+    final forged = Map<Object?, Object?>.from(debt)
+      ..['customer_credit_balance'] = 20.0;
+    expect(WholesaleFinancialSummary.dashboardCustomerCredit(forged), isNull);
+    final wrongDirection = credit()
+      ..['balance_direction'] = 'customer_owes_company';
+    expect(
+      WholesaleFinancialSummary.dashboardCustomerCredit(wrongDirection),
+      isNull,
+    );
+    final mismatch = credit()..['customer_credit_balance'] = 100.0;
+    expect(WholesaleFinancialSummary.dashboardCustomerCredit(mismatch), isNull);
+    final missing = credit()..remove('customer_credit_balance');
+    expect(WholesaleFinancialSummary.dashboardCustomerCredit(missing), isNull);
+    final nonFinite = credit()..['balance'] = double.infinity;
+    expect(WholesaleFinancialSummary.dashboardCustomerCredit(nonFinite), isNull);
+    final boolCredit = credit()..['customer_credit_balance'] = true;
+    expect(WholesaleFinancialSummary.dashboardCustomerCredit(boolCredit), isNull);
+  });
+
   test('required display totals reject invalid and fabricated zeros', () {
     expect(WholesaleFinancialSummary.nonNegativeAmount('120.500'), 120.5);
     expect(WholesaleFinancialSummary.nonNegativeAmount(0), 0);
