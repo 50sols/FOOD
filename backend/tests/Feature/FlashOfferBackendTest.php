@@ -361,9 +361,9 @@ class FlashOfferBackendTest extends TestCase
                 'stock_movements' => DB::table('stock_movements')->count(),
                 'orders' => DB::table('orders')->count(),
                 'payments' => DB::table('payments')->count(),
-            'invoices' => DB::table('invoices')->count(),
-            'audit_logs' => DB::table('audit_logs')->count(),
-            'notifications' => DB::table('notifications')->count(),
+                'invoices' => DB::table('invoices')->count(),
+                'audit_logs' => DB::table('audit_logs')->count(),
+                'notifications' => DB::table('notifications')->count(),
                 'reserved' => (float) DB::table('inventories')
                     ->where('id', $this->inventoryId)->value('reserved_quantity'),
             ], 'An overflow rejection cannot write any Flash or finance state.');
