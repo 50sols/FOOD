@@ -583,6 +583,17 @@ class CartDomainTest extends TestCase
         $tierId = (int) DB::table('b2b_price_tiers')->insertGetId(['code' => 'CART-TIER', 'name' => 'Cart Tier', 'priority' => 1, 'created_at' => now(), 'updated_at' => now()]);
         B2bAccount::query()->create(['customer_id' => $b2bCustomer->id, 'price_tier_id' => $tierId, 'company_name' => 'Cart Buyer', 'status' => 'active']);
         DB::table('b2b_price_rules')->insert(['price_tier_id' => $tierId, 'store_id' => $this->b2bStoreId, 'product_id' => $this->b2bProductId, 'unit_price' => 2.500, 'minimum_quantity' => 1, 'is_active' => true, 'created_at' => now(), 'updated_at' => now()]);
+        // The source defaults to base-price mode. Explicitly activate tier
+        // pricing, otherwise a price rule is ignored and its minimum is 1.
+        DB::table('settings')->updateOrInsert(
+            ['store_id' => $this->b2bStoreId, 'key' => 'b2b.pricing_tiers_enabled'],
+            [
+                'value' => json_encode(true, JSON_THROW_ON_ERROR),
+                'is_secret' => false,
+                'created_at' => now(),
+                'updated_at' => now(),
+            ],
+        );
 
         Sanctum::actingAs($b2bUser);
 
