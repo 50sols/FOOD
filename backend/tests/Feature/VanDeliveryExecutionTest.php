@@ -380,7 +380,6 @@ class VanDeliveryExecutionTest extends TestCase
         $this->assertDatabaseCount('order_van_execution_events', 0);
     }
 
-
     public function test_invalid_van_execution_idempotency_key_is_localized_and_cannot_write(): void
     {
         Storage::fake('public');
