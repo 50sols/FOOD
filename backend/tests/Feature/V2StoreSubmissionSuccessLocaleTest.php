@@ -88,7 +88,7 @@ class V2StoreSubmissionSuccessLocaleTest extends TestCase
                 2,
                 DB::table('audit_logs')
                     ->whereIn('event', ['store_reviewer_account.updated', 'store_reviewer_account.secret_rotated'])
-                    ->where('actor_id', $admin->id)
+                    ->where('user_id', $admin->id)
                     ->count(),
             );
         }
