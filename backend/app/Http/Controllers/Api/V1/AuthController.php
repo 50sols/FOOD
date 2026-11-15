@@ -75,7 +75,10 @@ class AuthController extends Controller
             );
         }
 
-        $tokenAbilities = $app === null ? ['*'] : ['app:'.$app];
+        // Legacy clients may omit the app selector, but a new token must
+        // never implicitly gain Driver and Van runtime abilities via '*'.
+        // All first-party apps provide an explicit app and retain that scope.
+        $tokenAbilities = ['app:'.($app ?? 'customer')];
 
         return response()->json([
             'token' => $user->createToken('foodex-'.($app ?? 'client'), $tokenAbilities)->plainTextToken,
