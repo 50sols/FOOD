@@ -40,15 +40,19 @@ class VanOrderControllerTest extends TestCase
         $auditCount = DB::table('audit_logs')->count();
 
         foreach (['catalog', 'order-options'] as $endpoint) {
-            $this->getJson("/api/v1/van/customers/b2c/999/{$endpoint}?store_id=7")
-                ->assertNotFound();
+            foreach (['', '?store_id=7'] as $query) {
+                $this->getJson("/api/v1/van/customers/b2c/999/{$endpoint}{$query}")
+                    ->assertNotFound();
+            }
         }
 
         foreach (['order-quote', 'orders'] as $endpoint) {
-            $this->postJson("/api/v1/van/customers/b2c/999/{$endpoint}", [
-                'store_id' => 7,
-                'items' => [['product_id' => 1, 'quantity' => 1]],
-            ])->assertNotFound();
+            foreach ([[], ['store_id' => 7]] as $fields) {
+                $this->postJson("/api/v1/van/customers/b2c/999/{$endpoint}", [
+                    ...$fields,
+                    'items' => [['product_id' => 1, 'quantity' => 1]],
+                ])->assertNotFound();
+            }
         }
 
         $this->assertSame($orderCount, DB::table('orders')->count());
