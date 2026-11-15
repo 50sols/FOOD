@@ -308,7 +308,13 @@ void main() {
 
   test('malformed Van quote and order money never becomes a successful zero',
       () async {
-    for (final invalid in <Object?>[null, 'not-a-number', 'NaN', 'Infinity', -1]) {
+    for (final invalid in <Object?>[
+      null,
+      'not-a-number',
+      'NaN',
+      'Infinity',
+      -1
+    ]) {
       final repository = _repository((request) async {
         if (request.url.path.endsWith('/order-quote')) {
           return http.Response(
@@ -328,12 +334,16 @@ void main() {
         }
         if (request.method == 'POST') {
           return http.Response(
-            jsonEncode({'data': {..._order(), 'grand_total': invalid}}),
+            jsonEncode({
+              'data': {..._order(), 'grand_total': invalid}
+            }),
             200,
           );
         }
         return http.Response(
-          jsonEncode(_page([{..._order(), 'grand_total': invalid}])),
+          jsonEncode(_page([
+            {..._order(), 'grand_total': invalid}
+          ])),
           200,
         );
       });
