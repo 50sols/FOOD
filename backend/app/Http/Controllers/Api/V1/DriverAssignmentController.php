@@ -117,7 +117,7 @@ class DriverAssignmentController extends Controller
         );
 
         $driver = Driver::query()->findOrFail($data['driver_id']);
-        abort_unless((bool) $driver->is_active, 409, 'Driver must be active before assignment.');
+        abort_unless((bool) $driver->is_active, 409, (string) __('driver_assignment_errors.driver_inactive', [], $locale));
         [$driverChannel, $driverStoreId] = $this->driverTenants->resolve($driver);
         abort_unless($driverChannel === $channel, 409, 'Driver and order channels must match.');
         abort_unless(
