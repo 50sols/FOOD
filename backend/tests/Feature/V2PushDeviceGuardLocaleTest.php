@@ -5,6 +5,7 @@ namespace Tests\Feature;
 use App\Models\User;
 use Database\Seeders\CoreReferenceSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\DB;
 use Laravel\Sanctum\Sanctum;
 use Tests\TestCase;
 
@@ -16,7 +17,7 @@ final class V2PushDeviceGuardLocaleTest extends TestCase
     {
         $this->seed(CoreReferenceSeeder::class);
 
-        $baselineAuditCount = \Illuminate\Support\Facades\DB::table('audit_logs')->count();
+        $baselineAuditCount = DB::table('audit_logs')->count();
         $messages = [
             'driver' => [
                 'ar' => 'يُسمح فقط لسائقي التجزئة (B2C) المخوّلين بتسجيل أجهزة إشعارات تطبيق السائق.',
@@ -49,7 +50,7 @@ final class V2PushDeviceGuardLocaleTest extends TestCase
                     ->assertJsonPath('message', $message);
 
                 $this->assertDatabaseCount('push_device_tokens', 0);
-                $this->assertSame($baselineAuditCount, \Illuminate\Support\Facades\DB::table('audit_logs')->count());
+                $this->assertSame($baselineAuditCount, DB::table('audit_logs')->count());
             }
         }
     }
@@ -58,6 +59,7 @@ final class V2PushDeviceGuardLocaleTest extends TestCase
     {
         $this->seed(CoreReferenceSeeder::class);
 
+        $baselineAuditCount = DB::table('audit_logs')->count();
         foreach ([
             'driver' => 'Only authorized Retail (B2C) drivers may register Driver App push devices.',
             'van' => 'Van App access is not enabled for this account.',
@@ -75,6 +77,7 @@ final class V2PushDeviceGuardLocaleTest extends TestCase
                 ->assertJsonPath('message', $message);
 
             $this->assertDatabaseCount('push_device_tokens', 0);
+            $this->assertSame($baselineAuditCount, DB::table('audit_logs')->count());
         }
     }
 }
