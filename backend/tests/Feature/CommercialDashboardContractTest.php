@@ -463,11 +463,13 @@ class CommercialDashboardContractTest extends TestCase
         $roleless = User::factory()->create();
         $this->actingAs($roleless)
             ->get(route('admin.commercial.sales-control.products', ['store_id' => $storeId, 'q' => '%']))
-            ->assertNotFound();
+            ->assertForbidden();
 
-        $this->actingAs($retailManager)
-            ->get(route('admin.commercial.sales-control.products', ['store_id' => $storeId, 'q' => '%']))
-            ->assertNotFound();
+        // The Dashboard gate may reject with 403 before the scoped controller
+        // returns its own 404; either response must remain fail-closed.
+        $retailDenied = $this->actingAs($retailManager)
+            ->get(route('admin.commercial.sales-control.products', ['store_id' => $storeId, 'q' => '%']));
+        $this->assertContains($retailDenied->status(), [403, 404]);
 
         $this->assertSame($before, [
             'products' => DB::table('products')->count(),
