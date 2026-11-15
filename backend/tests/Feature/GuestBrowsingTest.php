@@ -355,14 +355,32 @@ class GuestBrowsingTest extends TestCase
     {
         $cart = $this->getJson("/api/v1/cart?store={$this->storeId}")->assertOk();
         $token = (string) $cart->headers->get('X-Guest-Token');
+        $initialCartCount = DB::table('carts')->count();
+        $initialItemCount = DB::table('cart_items')->count();
 
-        $this->withHeader('X-Guest-Token', $token)
-            ->postJson('/api/v1/cart/items', [
-                'store_id' => $this->otherStoreId,
-                'product_id' => $this->productId,
-                'quantity' => 1,
-            ])
-            ->assertConflict();
+        foreach ([
+            'ar' => 'سلة الضيف مرتبطة بمتجر آخر.',
+            'en' => 'The guest cart belongs to another store.',
+        ] as $locale => $message) {
+            $headers = ['X-Guest-Token' => $token, 'Accept-Language' => $locale];
+
+            $this->withHeaders($headers)
+                ->getJson("/api/v1/cart?store={$this->otherStoreId}")
+                ->assertConflict()
+                ->assertJsonPath('message', $message);
+
+            $this->withHeaders($headers)
+                ->postJson('/api/v1/cart/items', [
+                    'store_id' => $this->otherStoreId,
+                    'product_id' => $this->productId,
+                    'quantity' => 1,
+                ])
+                ->assertConflict()
+                ->assertJsonPath('message', $message);
+
+            $this->assertSame($initialCartCount, DB::table('carts')->count());
+            $this->assertSame($initialItemCount, DB::table('cart_items')->count());
+        }
     }
 
     public function test_guest_cannot_mutate_another_guest_cart_item(): void
