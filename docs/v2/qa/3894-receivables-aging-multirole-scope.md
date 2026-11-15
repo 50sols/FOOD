@@ -1,49 +1,53 @@
 # FOODEX V2 #3894 — P288 Receivables aging multi-role HTTP authority
 
-**Parents:** source #2618 (P288 أعمار الديون), V2 master #2503. **Isolated integration:** `Foodex_V2` only. This is a deliberately bounded **test-only** final negative/positive coverage increment; original P288 [PR #3085](https://github.com/walidatiyaai2025-gif/FOOD/pull/3085) and complete 126-document pagination child [#3217 / PR #3218](https://github.com/walidatiyaai2025-gif/FOOD/pull/3218) are already merged and are not duplicated or modified.
+**Parents:** #2618 (P288 أعمار الديون) and master #2503. **Integration target:** `Foodex_V2` ONLY. **Issue-scoped PR:** #3899. This acceptance increment is built on the already-merged P288 original PR #3085 and full-ledger pagination child #3217 / PR #3218; neither was recreated.
 
-## Exact source gap and canonical placement
+## Source intent and existing placement
 
-P288's Issue acceptance explicitly includes multi-role allow/deny. Existing P288 feature tests prove authorized single store role, explicit store deny, cross-store 404, legal entity AR entitlement and full unbounded bucket-currency aging. Generic Sidebar multi-role tests do not prove **real Finance Workbench Receivables HTTP** for one person with two distinct, store-scoped Finance-capable role assignments.
+One authenticated Retail operator holds `B2C_STORE_ADMIN` at Store A and `RETAIL_FINANCE` at Store B. Stores A/B/C deliberately share a legal entity. Finance is operationally ENABLED/certified with legally scoped `finance.foundation.read` and `finance.ar.read` entitlement. A per-store `finance.view` grant permits A and B; no operational role assigns Store C.
 
-- Domain: Finance & Treasury → Accounts Receivable → Aging.
-- Entity: posted AR documents, existing aging summary, independent 25-item detail paginator.
-- Actor: one active Retail staff user assigned `B2C_STORE_ADMIN` at Retail Store A and `RETAIL_FINANCE` at Store B.
-- Placement: **Reuse** existing authorized `admin.erp.finance.index?tab=receivables&store_id=...` tab. No second Sidebar, route, backend access policy or screen.
-- Authority: `TenantContextResolver` exact Retail store; `finance.view` scoped role grants, Finance lifecycle ENABLED and operational version certification, legally scoped `finance.foundation.read` and `finance.ar.read` entitlement; explicit user DENY must take priority at only the matching store.
+- **Reuse**, do not invent a separate route/Sidebar: Finance & Treasury → Accounts Receivable → Aging, `admin.erp.finance.index?tab=receivables&store_id=...`.
+- Scope/authority: actual store-role assignment + `finance.view` including scoped explicit DENY + module readiness + scoped Finance entitlements; the real Finance Workbench HTTP response is the source of truth.
+- No new public API, persistence schema, application permission grant, customer/driver/van route or financial mutation.
 
-## Automated acceptance and failure modes
+## Verified original defect and bounded runtime correction
 
-`backend/tests/Feature/V2ReceivablesAgingMultiRoleScopeTest.php` uses `RefreshDatabase`, canonical `CoreReferenceSeeder`, synthetic A/B/C stores with the **same legal entity**, an actor with two different store-scoped roles (no C role), role permissions granted explicitly in this isolated test fixture exactly as the existing P288 route regression does, and active Finance entitlement.
+The canonical `FinanceWorkbenchController::index` filtered `contextOptions()` to readable Finance choices *before* resolving an explicitly selected `store_id`. A signed-in user authorized for B, but explicitly denied Finance at **assigned** Store A, therefore saw **404** for A. This was fail-closed but broke P288/#3894's explicit **403** acceptance for assigned-but-denied stores.
 
-For **Arabic RTL and English LTR**:
+The issue-scoped patch preserves `$assignedContexts` (already scoped to the authenticated actor's B2B/Retail role and store assignments), independently filters readable `$contexts`, and checks only a positive **explicitly selected** Store ID:
 
-1. Verify Finance is operationally **READY** and required AR read entitlement exists; absence of module certification is not a false-positive reason for denied HTTP.
-2. Store A and Store B both expose the **real Receivables Aging tab over authenticated HTTP 200**, including selected locale and text. Unassigned Store C remains HTTP **404**, even though the shared legal entity has Finance entitlement.
-3. Insert a **scoped** `finance.view` deny for Store A. Current implementation gives Store A **HTTP 404** (denied context is removed from visible store choices) while separately permitted Store B stays **HTTP 200**; unassigned Store C also stays **404**. Original #3894 acceptance demands **403 for assigned-denied Store A**, and that exact status requirement is **NOT MET**. No global permission, role expansion or real ledger mutation occurs.
-4. Verify no AR document, general ledger or finance journal mutation; existing user role assignments stay intact.
+- **Assigned, Finance-denied Store A:** 403, even if B remains allowed. Do not call tenant scope/ledger data resolvers for A.
+- **Independently assigned and Finance-authorized Store B:** 200, including the aging tab.
+- **Unassigned/foreign Retail Store C:** 404. Never leak a foreign store as a distinguishable Finance denial.
+- The behavior is read-only; no permission expansion, role/tenant/store fallback, ledger/journal/document writes, or redirect to another store.
 
-The test does **not** replace #3217's 126-document SQL, posted allocation or currency isolation regressions. It does not claim to test live production persons, an exported historical identity or real browser/staging UAT.
+The bounded controller hunk is **index pre-context selection only**. Open DRAFT #3309 modifies separate AR settlement and receivable read-model sections, and open DRAFT #3212 modifies reporting access/tab sections; this branch must preserve those distinct file fences. Coordination notes are on #2633 and #2639, and no peer branch or PR is altered.
 
-## Verified acceptance blocker — HTTP 403 versus 404
+## Test matrix and exact local evidence
 
-- On isolated GCC, `php -d extension=pdo_sqlite -d memory_limit=1024M vendor/bin/phpunit tests/Feature/V2ReceivablesAgingMultiRoleScopeTest.php` passed **1 test / 33 assertions** after aligning `OrganizationHierarchyService::scopeForStore()`'s array contract; changed PHP file passed Laravel Pint. The local test key is disposable and is never committed.
-- `FinanceWorkbenchController::index()` first filters `contextOptions()` through `FinanceWorkbenchAccess::canRead()`. With two store roles, a scoped `finance.view` DENY at Store A removes only A from the choices. A subsequent explicit selection resolves to **404**, not the Issue's required **403**. This is not the same as a one-store actor, whose fully denied context produces **403**.
-- Correct source acceptance requires **403 for a genuinely assigned-but-denied store**, **404 for unassigned Store C**, **200 for independently authorized Store B**, AR/EN and no mutation. Any coordinated fix must preserve no cross-store disclosure and the existing Finance/Sidebar permission projection.
-- Shared `backend/app/Http/Controllers/Admin/FinanceWorkbenchController.php` is modified in active DRAFT PRs **#3309** and **#3212**. This worker owns **only the original test and QA document** and must not edit or override their shared source. Coordinate a source-safe change through the proper owner/handoff before restoring the strict `assertForbidden()` expectation.
-- **STATUS: SOURCE_INCOMPLETE / DRAFT / NO_MERGE / NO_CLOSURE** regardless of green isolated test or GitHub CI. Parent #2618 and master #2503 remain open.
+`backend/tests/Feature/V2ReceivablesAgingMultiRoleScopeTest.php` uses `RefreshDatabase`, `CoreReferenceSeeder`, real Retail store-role assignments and `finance.view` test grants, same-legal-entity synthetic A/B/C, enabled/certified Finance entitlements, scoped `user_permission_overrides`, actual Finance index HTTP and both AR RTL/EN LTR. The fixture correctly reads `OrganizationHierarchyService::scopeForStore()` as a dictionary with `legal_entity_id`, while `ResolvedTenantContext::enterpriseScope` remains a typed object.
 
-## Surface classification
+On isolated GCC, PHP **8.3.33**, PHPUnit **11.5.57**, SQLite in-memory and a disposable **noncommitted test APP_KEY**:
 
-- **Backend/Dashboard:** focused regression of existing server-authorized Finance tab; no runtime code, route, HTML, schema, permission defaults or localization catalog changes.
-- **Customer:** no mobile/API/checkout/credit/invoice change.
-- **Driver:** no mobile/API/B2C dispatch/collection change.
-- **Van:** no mobile/API/B2B trip/collection change. B2B remains VAN ONLY; B2C remains DRIVER ONLY.
+- `php -l` for the controller/test: **PASS**.
+- Laravel Pint `--test` for both changed PHP files: **PASS**.
+- Focused #3894 test: **1 test, 33 assertions, PASS**.
+- Finance/Receivables regression filter `V2(ReceivablesAgingSidebarContract|FinanceEntitlementParity|ArAgingFullLedgerPagination|ReceivablesAgingMultiRoleScope)Test`: **12 tests, 128 assertions, PASS**.
+- Financial safety assertions compare `enterprise_finance_journals`, `enterprise_finance_ledger_entries` and `enterprise_ar_documents` counts before/after authorization reads.
 
-## Review and merge protocol
+The isolated GCC copy uses its **own physical Composer vendor directory**, and `ReflectionClass` verified that `FinanceWorkbenchController` resolves to the checked-out #3894 source (not an older cloned source). Local SQLite does not substitute for mandatory GitHub MySQL/Redis install/upgrade/recovery acceptance.
 
-**REVIEW_RISK: HIGH** for finance tenant-scoped RBAC, even though test-only. File-by-file audit checks three-store legal-entity fixture, scoped role grants, independent 403/404/200 outcomes, AR/EN, module readiness, and no-write financial assertions. Same-account `COMMENTED` engineering audit is not independent GitHub `APPROVED`.
+## HIGH risk / acceptance gates
 
-Must see exact final PR HEAD Repository Policy, FOODEX V2 Isolation and terminal FOODEX Required CI SUCCESS (Laravel/PHP/Pint/PHPStan/security/OpenAPI, AR/EN, MySQL/Redis fresh installation/upgrade/recovery as applicable). If red, fix SAME branch/PR, no gate bypass. Parent #2618 may be considered code-complete only after original and child scope acceptance is fully rechecked. Human/staging/mobile-web accessibility acceptance remains deferred under #2503, not fabricated.
+**REVIEW_RISK: HIGH** — Finance permission/tenant existence signaling, explicit DENY, cross-store and legal-entity isolation. A file-by-file engineering audit must cover the three changed paths and adversarial 403/404/200 behavior, AR/EN, no mutation, peer-hunk preservation and failure modes. A same-account COMMENTED review is **not** independent GitHub approval.
 
-No main merge, tags, release, APK/ZIP publication, cPanel or production deployment.
+**Status: SOURCE_PATCH_AND_LOCAL_REGRESSION_COMPLETE / EXACT_FINAL_HEAD_CI_PENDING.** The Issue cannot close and the PR cannot merge merely from a local PASS. Check the final head for terminal **Repository Policy, V2 Isolation and Required CI Gate SUCCESS**, including applicable Laravel/Pint/PHPStan, security, AR/EN and real MySQL/Redis paths. Preserve original PR #3899 and issue scope. On failure, repair this branch and rerun all exact-head gates; no checks may be waived. Parent #2618 requires separate source-completeness review before closure; final manual/staging/browser UAT remains under #2503.
+
+## Surfaces
+
+- **Backend/Dashboard:** canonical Finance Workbench GET authorization read-path fix and tests; no new page, Sidebar, API or state-changing flow.
+- **Customer:** NOT affected; no API/Flutter contract or B2B checkout change.
+- **Driver:** NOT affected; no API/Flutter contract or B2C dispatch change.
+- **Van:** NOT affected; no API/Flutter contract or B2B custody change. B2B remains VAN ONLY and B2C remains DRIVER ONLY.
+
+No `main` merge, release/tag, production install, cPanel change or APK/ZIP publication is authorized.
