@@ -406,6 +406,7 @@ class VanDeliveryExecutionTest extends TestCase
                     $this->withHeaders([
                         'Idempotency-Key' => $key,
                         'Accept-Language' => $contraryHeader,
+                        'Accept' => 'application/json',
                     ])->postJson($base.$suffix, $payload)
                         ->assertUnprocessable()
                         ->assertJsonPath('errors.idempotency_key.0', $message);
@@ -414,6 +415,7 @@ class VanDeliveryExecutionTest extends TestCase
                 $this->withHeaders([
                     'Idempotency-Key' => $key,
                     'Accept-Language' => $contraryHeader,
+                    'Accept' => 'application/json',
                 ])->post($base.'/proof', [
                     'proof_image' => UploadedFile::fake()->image('invalid-header-proof.jpg', 100, 100),
                 ])
