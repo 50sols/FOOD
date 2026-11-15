@@ -1555,7 +1555,9 @@ class B2bWorkspaceController extends Controller
                     })->all(),
             ],
             'pricing' => [
-                'columns' => ['tier', 'sku', 'product', 'unit_price', 'minimum_quantity', 'status', 'actions'],
+                'columns' => $user->hasPermission('b2b.pricing.manage')
+                    ? ['tier', 'sku', 'product', 'unit_price', 'minimum_quantity', 'status', 'actions']
+                    : ['tier', 'sku', 'product', 'unit_price', 'minimum_quantity', 'status'],
                 'rows' => DB::table('b2b_price_rules')
                     ->join('b2b_price_tiers', 'b2b_price_tiers.id', '=', 'b2b_price_rules.price_tier_id')
                     ->join('products', 'products.id', '=', 'b2b_price_rules.product_id')
