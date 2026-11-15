@@ -1481,7 +1481,7 @@ final class OrderOperationsController extends Controller
             $validRetailTarget,
         );
         abort_unless(
-            $driver !== null && $driver->user_id !== null && (bool) $driver->app_user_is_active,
+            $driver->user_id !== null && (bool) $driver->app_user_is_active,
             409,
             $this->msg('السائق المعيّن ليس لديه حساب تطبيق نشط.', 'Assigned driver has no active app user.'),
         );
