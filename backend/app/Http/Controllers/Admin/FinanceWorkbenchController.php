@@ -92,13 +92,18 @@ final class FinanceWorkbenchController extends Controller
             fn (array $option): bool => $this->financeAccess->canRead($actor, (int) $option['id']),
         ));
 
-        // An explicitly selected, assigned Retail store that lost Finance
-        // permission is forbidden (403), not an unassigned/unknown store (404).
-        // Another assigned store with Finance access must stay independently
-        // available; never resolve the denied store's enterprise data scope.
+        // A Retail store assigned through an actual store-scoped role but
+        // denied Finance is forbidden (403). Global Wholesale roles enumerate
+        // B2B contexts without store assignment: preserve their 404 when denied.
+        // Never resolve a denied store's enterprise data scope or borrow access
+        // from the user's other authorized Retail store.
         $requestedStoreId = (int) $request->input('store_id', 0);
+        $assignedRetailStoreIds = array_column(
+            array_filter($assignedContexts, static fn (array $option): bool => $option['channel'] === 'b2c'),
+            'id',
+        );
         if ($requestedStoreId > 0
-            && in_array($requestedStoreId, array_column($assignedContexts, 'id'), true)
+            && in_array($requestedStoreId, $assignedRetailStoreIds, true)
             && ! in_array($requestedStoreId, array_column($contexts, 'id'), true)) {
             abort(403);
         }
