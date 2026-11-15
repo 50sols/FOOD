@@ -2883,6 +2883,92 @@ void main() {
     },
   );
 
+  // MOB-C03: unverified financial totals may never enable a Customer checkout.
+  for (final locale in [const Locale('ar'), const Locale('en')]) {
+    final cases = <Map<String, Object?>>[
+      {'name': 'nonfinite total', 'total': double.nan,
+       'power': 100.0, 'method': 'cash_on_delivery', 'blocked': true},
+      {'name': 'missing credit', 'total': 25.0,
+       'power': null, 'method': 'account_credit', 'blocked': true},
+      {'name': 'nonfinite credit', 'total': 25.0,
+       'power': double.nan, 'method': 'account_credit', 'blocked': true},
+      {'name': 'valid credit', 'total': 25.0,
+       'power': 100.0, 'method': 'account_credit', 'blocked': false},
+    ];
+    for (final scenario in cases) {
+      testWidgets(
+        "MOB-C03 checkout verified money ${scenario['name']} ${locale.languageCode}",
+        (tester) async {
+          tester.view.physicalSize = const Size(900, 1900);
+          tester.view.devicePixelRatio = 1;
+          addTearDown(() {
+            tester.view.resetPhysicalSize();
+            tester.view.resetDevicePixelRatio();
+          });
+          final commerce = _C13WholesaleCommerceApi(cartValue: {
+            'store_id': 7,
+            'currency': 'EGP',
+            'minimum_order_egp': 0.0,
+            'subtotal': 25.0,
+            'has_unavailable_items': false,
+            'quote': {
+              'discount_total': 0.0,
+              'delivery_total': 0.0,
+              'tax_total': 0.0,
+              'grand_total': scenario['total'],
+            },
+            'items': [
+              {
+                'id': 21,
+                'product': {'id': 201, 'name': 'Test Item', 'sku': 'T-201'},
+                'quantity': 1.0,
+                'unit_price_snapshot': 25.0,
+                'line_total': 25.0,
+                'is_available': true,
+                'minimum_order_quantity': 1.0,
+                'ordering_increment': 1.0,
+              },
+            ],
+          });
+          final storefront = _C13CheckoutStorefrontApi({
+            'store_id': 7,
+            'store_name': 'Wholesale Store',
+            'customer_name': 'Acme Buyer',
+            'minimum_order_egp': 0.0,
+            'addresses': [
+              {'id': 1, 'label': 'Warehouse', 'line1': 'Street 1',
+               'city': 'Cairo'},
+            ],
+            'payment_methods': [scenario['method']],
+            'purchasing_power': scenario['power'],
+            'currency': 'EGP',
+          });
+          await tester.pumpWidget(FoodexCustomerApp(
+            session: b2b,
+            locale: locale,
+            initialRoute: '/b2b/checkout?store_id=7',
+            storefrontApi: storefront,
+            wholesaleCommerceApi: commerce,
+          ));
+          await _pumpCustomerFrames(tester);
+          final blocked = scenario['blocked'] == true;
+          expect(
+            find.byKey(const ValueKey('b2b-checkout-financial-unavailable')),
+            blocked ? findsOneWidget : findsNothing,
+          );
+          final submit = tester.widget<InkWell>(
+            find.descendant(
+              of: find.byKey(const ValueKey('b2b-checkout-submit')),
+              matching: find.byType(InkWell),
+            ),
+          );
+          expect(submit.onTap, blocked ? isNull : isNotNull);
+          expect(commerce.checkoutCalls, 0);
+        },
+      );
+    }
+  }
+
   testWidgets(
     'B2B checkout is disabled below the configured minimum and accepts zero',
     (tester) async {

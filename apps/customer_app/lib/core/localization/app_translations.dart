@@ -756,6 +756,8 @@ class AppTranslations extends InheritedWidget {
     'b2b.checkout.purchasing_power': 'القوة الشرائية المتاحة',
     'b2b.checkout.insufficient_credit':
         'القوة الشرائية الحالية لا تكفي لإجمالي الطلب. اختر طريقة دفع أخرى أو خفّض قيمة السلة.',
+    'b2b.checkout.financial_unavailable':
+        'تعذر التحقق من إجمالي الطلب أو الائتمان. حدّث بيانات السلة وأعد المحاولة.',
     'b2b.checkout.review': 'المراجعة النهائية',
     'b2b.checkout.order_summary': 'ملخص الطلب',
     'b2b.checkout.product': 'منتج',
@@ -1561,6 +1563,8 @@ class AppTranslations extends InheritedWidget {
     'b2b.checkout.purchasing_power': 'Available purchasing power',
     'b2b.checkout.insufficient_credit':
         'Current purchasing power does not cover the order total. Choose another payment method or reduce the cart.',
+    'b2b.checkout.financial_unavailable':
+        'Unable to verify order total or credit. Refresh the cart and try again.',
     'b2b.checkout.review': 'Final review',
     'b2b.checkout.order_summary': 'Order summary',
     'b2b.checkout.product': 'Product',

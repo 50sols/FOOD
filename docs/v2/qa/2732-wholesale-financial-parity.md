@@ -54,3 +54,20 @@ The exact-head Customer Flutter fast-fail for `0b5daf7` reported **565 tests pas
 The separate existing `dashboard_single_screen_test.dart` visual/refresh fixture also had inverted signed balance direction in both original/second response. It now uses coherent positive credit balances and available-line values without changing the expected credit amounts, translations, app runtime or route. This extra test-only file was coordinated via the #2732 source-fence comment before modification, with no active peer PR owning that path.
 
 This is a test-fixture correction **not** a server financial policy change. Required exact-final-head Flutter and repo CI must be rerun after the new commit; prior red remains red.
+
+## 2026-11-15 — B2B checkout malformed finance snapshot fail-closed
+
+The existing Customer Wholesale checkout converted untrusted quote totals and
+purchasing-power data using a permissive monetary helper. NaN could evade
+the insufficient-credit comparison; invalid totals could appear as zero.
+The existing checkout now requires finite, nonnegative authoritative money:
+order grand total for every method, purchasing power for account credit.
+Missing/malformed values disable confirmation and show bilingual retry, with
+no fabricated local money. Valid zero, cash without credit and normal credit
+remain supported. AR/EN widget tests cover invalid total, missing/nonfinite
+credit, and valid-credit positive control on the original store-scoped route.
+No finance server-side writer, new endpoint, settlement, Driver or Van changes.
+Full source MOB-C03 requires server-side store/RBAC/SoD checkout and ledger,
+partial-collection and discount E2E; PR #3337 remains DRAFT until complete.
+
+GCC regression initially reproduced an additional pre-existing disabled Checkout button lifecycle exception: the late AnimationController initialized in dispose() after the widget was deactivated, triggering unsafe ancestor lookup. The same original Checkout state now eagerly constructs its ticker in initState and safely disposes regardless of enabled state. All eight new Arabic/English negative/positive widget cases then PASS without teardown exceptions. No new route/feature, pricing authority, payment mutation, or non-Customer application change.

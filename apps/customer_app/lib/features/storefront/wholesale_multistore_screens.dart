@@ -6618,6 +6618,17 @@ class _CartLine extends StatelessWidget {
   }
 }
 
+// Only finite, nonnegative server-owned money may authorize checkout UI.
+double? _verifiedCheckoutMoney(Object? value) {
+  if (value is bool) return null;
+  final parsed = value is num
+      ? value.toDouble()
+      : value is String
+          ? double.tryParse(value.trim())
+          : null;
+  return parsed != null && parsed.isFinite && parsed >= 0 ? parsed : null;
+}
+
 double _wholesaleMinimumRemaining(
   Map<String, dynamic> cart, {
   Map<String, dynamic>? quoteOverride,
@@ -6829,14 +6840,17 @@ class _WholesaleWaveCheckoutButton extends StatefulWidget {
 class _WholesaleWaveCheckoutButtonState
     extends State<_WholesaleWaveCheckoutButton>
     with SingleTickerProviderStateMixin {
-  late final AnimationController _waves = AnimationController(
-    vsync: this,
-    duration: const Duration(milliseconds: 1800),
-  );
+  late final AnimationController _waves;
 
   @override
   void initState() {
     super.initState();
+    // Initialize even when confirmation is disabled; dispose must never
+    // lazily create a ticker after the widget has been deactivated.
+    _waves = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 1800),
+    );
     if (widget.enabled) _waves.repeat();
   }
 
@@ -7336,14 +7350,13 @@ class _WholesaleCheckoutDesignScreenState
                     ? Map<String, dynamic>.from(cart['quote'] as Map)
                     : <String, dynamic>{};
                 final effectiveQuote = appliedQuote ?? cartQuote;
-                final grandTotal = doubleValue(
+                final grandTotal = _verifiedCheckoutMoney(
                   effectiveQuote['grand_total'] ??
                       cart['grand_total'] ??
                       cart['subtotal'],
-                  0,
                 );
                 final purchasingPower =
-                    doubleValue(data['purchasing_power'], 0);
+                    _verifiedCheckoutMoney(data['purchasing_power']);
                 final hasUnavailable = cart['has_unavailable_items'] == true ||
                     items.any((item) => item['is_available'] == false);
 
@@ -7379,7 +7392,12 @@ class _WholesaleCheckoutDesignScreenState
                   quoteOverride: appliedQuote,
                   minimumOverride: minimum,
                 );
+                final financialUnavailable = grandTotal == null ||
+                    (paymentMethod == 'account_credit' &&
+                        purchasingPower == null);
                 final creditInsufficient = paymentMethod == 'account_credit' &&
+                    grandTotal != null &&
+                    purchasingPower != null &&
                     grandTotal > purchasingPower + .0001;
                 final couponReady = _normalizedCoupon.isEmpty ||
                     appliedCouponCode == _normalizedCoupon;
@@ -7391,6 +7409,7 @@ class _WholesaleCheckoutDesignScreenState
                     paymentMethod != null &&
                     couponReady &&
                     !creditInsufficient &&
+                    !financialUnavailable &&
                     !submitting;
 
                 return ListView(
@@ -7488,6 +7507,16 @@ class _WholesaleCheckoutDesignScreenState
                         appliedQuote = null;
                       }),
                     ),
+                    if (financialUnavailable)
+                      FoodexErrorState(
+                        key: const ValueKey('b2b-checkout-financial-unavailable'),
+                        message: context.tr('b2b.checkout.financial_unavailable'),
+                        onRetry: () => setState(() {
+                          appliedCouponCode = null;
+                          appliedQuote = null;
+                          future = _load();
+                        }),
+                      ),
                     if (creditInsufficient) ...[
                       const SizedBox(height: 8),
                       Text(
@@ -7579,10 +7608,11 @@ class _WholesaleCheckoutDesignScreenState
                           : _paymentLabel(context, paymentMethod!),
                     ),
                     const SizedBox(height: 12),
-                    _CheckoutSummary(
-                      cart: cart,
-                      quoteOverride: appliedQuote,
-                    ),
+                    if (!financialUnavailable)
+                      _CheckoutSummary(
+                        cart: cart,
+                        quoteOverride: appliedQuote,
+                      ),
                     if (minimumMissing > 0.0001) ...[
                       const SizedBox(height: 9),
                       Text(
