@@ -162,8 +162,13 @@ final class VanOrderController extends Controller
 
         $idempotencyKey = trim((string) $request->header('Idempotency-Key', ''));
         if (strlen($idempotencyKey) < 16 || strlen($idempotencyKey) > 100) {
+            $actorLocale = $actor->locale;
+            $locale = in_array($actorLocale, ['ar', 'en'], true)
+                ? $actorLocale
+                : strtolower((string) $request->getPreferredLanguage(['ar', 'en']));
+
             throw ValidationException::withMessages([
-                'Idempotency-Key' => ['A valid Idempotency-Key header is required.'],
+                'Idempotency-Key' => [__('van_order_errors.idempotency_header_invalid', [], $locale === 'ar' ? 'ar' : 'en')],
             ]);
         }
 

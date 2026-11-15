@@ -320,6 +320,67 @@ class CartDomainTest extends TestCase
             ->assertUnprocessable();
     }
 
+    public function test_guest_cart_same_product_selling_unit_change_is_localized_and_read_only(): void
+    {
+        DB::table('product_selling_units')->insert([
+            'product_id' => $this->productId,
+            'unit_id' => null,
+            'code' => 'BAG-CONFLICT',
+            'name' => 'Bag conflict',
+            'conversion_factor' => 3,
+            'price' => 4.5,
+            'sku' => 'CART-001-BAG-CONFLICT',
+            'is_base' => false,
+            'is_active' => true,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $created = $this->postJson('/api/v1/cart/items', [
+            'store_id' => $this->b2cStoreId,
+            'product_id' => $this->productId,
+            'quantity' => 1,
+            'selling_unit_code' => 'BAG-CONFLICT',
+        ])->assertCreated();
+
+        $token = (string) $created->headers->get('X-Guest-Token');
+        $itemId = (int) $created->json('items.0.id');
+        $original = DB::table('cart_items')->where('id', $itemId)->first();
+        $counts = [
+            'carts' => DB::table('carts')->count(),
+            'cart_items' => DB::table('cart_items')->count(),
+            'orders' => DB::table('orders')->count(),
+            'audit_logs' => DB::table('audit_logs')->count(),
+            'stock_movements' => DB::table('stock_movements')->count(),
+        ];
+
+        foreach ([
+            'ar-KW' => 'احذف سطر المنتج الموجود قبل تغيير وحدة بيعه.',
+            'en-US' => 'Remove the existing product line before changing its selling unit.',
+        ] as $language => $message) {
+            $this->withHeaders([
+                'X-Guest-Token' => $token,
+                'Accept-Language' => $language,
+            ])->postJson('/api/v1/cart/items', [
+                'store_id' => $this->b2cStoreId,
+                'product_id' => $this->productId,
+                'quantity' => 1,
+            ])->assertUnprocessable()
+                ->assertJsonPath('errors.selling_unit_code.0', $message);
+
+            $this->assertEquals($original, DB::table('cart_items')->where('id', $itemId)->first());
+            foreach ($counts as $table => $count) {
+                $this->assertSame($count, DB::table($table)->count(), $table.' must remain unchanged');
+            }
+            $this->assertDatabaseHas('inventories', [
+                'warehouse_id' => $this->b2cWarehouseId,
+                'product_id' => $this->productId,
+                'quantity' => 5,
+                'reserved_quantity' => 0,
+            ]);
+        }
+    }
+
     public function test_stale_selling_unit_remains_removable_during_cart_review_but_strict_checkout_fails(): void
     {
         DB::table('product_selling_units')->insert([

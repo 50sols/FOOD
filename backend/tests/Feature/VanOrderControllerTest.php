@@ -242,11 +242,44 @@ class VanOrderControllerTest extends TestCase
             'status' => 'planned',
         ]);
 
-        $this->postJson('/api/v1/van/customers/b2b/999/orders', [
-            'store_id' => 7,
-        ])
-            ->assertUnprocessable()
-            ->assertJsonValidationErrors(['Idempotency-Key']);
+        $baseline = [
+            'orders' => DB::table('orders')->count(),
+            'order_items' => DB::table('order_items')->count(),
+            'invoices' => DB::table('invoices')->count(),
+            'payments' => DB::table('payments')->count(),
+            'audit_logs' => DB::table('audit_logs')->count(),
+            'stock_movements' => DB::table('stock_movements')->count(),
+            'reserved_stock' => (float) DB::table('inventories')->sum('reserved_quantity'),
+        ];
+
+        foreach ([
+            'ar' => 'يجب تقديم مفتاح صالح لمنع تكرار الطلب في الترويسة.',
+            'en' => 'A valid Idempotency-Key header is required.',
+        ] as $locale => $message) {
+            $actor->forceFill(['locale' => $locale])->saveQuietly();
+            app()->setLocale($locale);
+
+            foreach (['', 'short', str_repeat('k', 101)] as $invalidKey) {
+                $this->withHeaders([
+                    'Idempotency-Key' => $invalidKey,
+                    'Accept-Language' => $locale === 'ar' ? 'en' : 'ar',
+                ])->postJson('/api/v1/van/customers/b2b/999/orders', [
+                    'store_id' => 7,
+                ])
+                    ->assertUnprocessable()
+                    ->assertJsonPath('errors.Idempotency-Key.0', $message);
+
+                $this->assertSame($baseline, [
+                    'orders' => DB::table('orders')->count(),
+                    'order_items' => DB::table('order_items')->count(),
+                    'invoices' => DB::table('invoices')->count(),
+                    'payments' => DB::table('payments')->count(),
+                    'audit_logs' => DB::table('audit_logs')->count(),
+                    'stock_movements' => DB::table('stock_movements')->count(),
+                    'reserved_stock' => (float) DB::table('inventories')->sum('reserved_quantity'),
+                ]);
+            }
+        }
     }
 
     public function test_van_order_feed_is_empty_without_actor_customer_scope(): void

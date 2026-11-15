@@ -484,10 +484,13 @@ class CustomerProfileController extends Controller
                 'X-FOODEX-Customer-Domain',
                 'b2c',
             )));
+            $locale = in_array($user->locale, ['ar', 'en'], true)
+                ? (string) $user->locale
+                : (string) $request->getPreferredLanguage(['ar', 'en']);
             abort_unless(
                 in_array($channel, ['b2b', 'b2c'], true),
                 400,
-                'Unsupported customer address commerce channel.',
+                __('customer_address_domain_errors.unsupported_channel', [], $locale === 'en' ? 'en' : 'ar'),
             );
 
             $customer = $channel === 'b2b'

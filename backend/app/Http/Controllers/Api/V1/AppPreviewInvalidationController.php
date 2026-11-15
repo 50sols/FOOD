@@ -16,10 +16,19 @@ final class AppPreviewInvalidationController extends Controller
         AppPreviewInvalidationStream $stream,
     ): StreamedResponse {
         $token = $request->header('X-Foodex-Preview-Token');
+        $preferredLocale = strtolower((string) $request->getPreferredLanguage(['ar', 'en']));
+        $acceptedLocales = array_map(
+            static fn (string $language): string => explode('-', str_replace('_', '-', strtolower($language)), 2)[0],
+            $request->getLanguages(),
+        );
+        $appLocale = strtolower((string) app()->getLocale());
+        $fallbackLocale = in_array($appLocale, ['ar', 'en'], true) ? $appLocale : 'en';
+        $locale = in_array($preferredLocale, $acceptedLocales, true) ? $preferredLocale : $fallbackLocale;
+
         abort_unless(
             is_string($token) && trim($token) !== '',
             401,
-            'Preview token is required.',
+            (string) __('preview_session.token_required', [], $locale),
         );
 
         $session = $sessions->resolve($token, $request);
