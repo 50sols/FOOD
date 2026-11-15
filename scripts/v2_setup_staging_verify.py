@@ -138,6 +138,22 @@ def _member_target(member: zipfile.ZipInfo) -> tuple[str, str, bool]:
 
     normalized = "/".join(parts)
     folded_parts = [p.casefold() for p in parts]
+    # Public upload roots are live runtime data, not fresh-install source.
+    # Reject the roots themselves (including directory-only ZIP members)
+    # because they can shadow an installer-created public/storage symlink;
+    # also reject every descendant, regardless of path casing.
+    public_upload_roots = (
+        ("backend", "public", "storage"),
+        ("backend", "public", "uploads"),
+        ("public", "storage"),
+        ("public", "uploads"),
+        ("backend", "uploads"),
+    )
+    _require(
+        not any(tuple(folded_parts[:len(root)]) == root for root in public_upload_roots),
+        f"Public uploaded/runtime content in Setup ZIP: {name!r}",
+    )
+
     # Fresh Setup ZIPs may include empty Laravel storage directories, but
     # must not carry uploaded files from the public disk or private/system
     # runtime data from a dirty checkout/build workspace.
