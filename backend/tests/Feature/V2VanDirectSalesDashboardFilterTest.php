@@ -2,6 +2,8 @@
 
 namespace Tests\Feature;
 
+use App\Models\Role;
+use App\Models\User;
 use App\Services\B2bCustomerService;
 use App\Services\WholesalePrincipal;
 use Database\Seeders\CoreReferenceSeeder;
@@ -125,6 +127,54 @@ final class V2VanDirectSalesDashboardFilterTest extends TestCase
             ->assertUnprocessable();
 
         $this->assertSame($before, DB::table('orders')->count());
+    }
+
+    private function retailStore(string $code): int
+    {
+        return (int) DB::table('stores')->insertGetId([
+            'store_type_id' => DB::table('store_types')->where('code', 'B2C')->value('id'),
+            'code' => $code,
+            'name' => $code,
+            'is_active' => true,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+    }
+
+    private function retailAdmin(int $storeId, string $email): User
+    {
+        $user = User::query()->create([
+            'name' => 'P275 Retail Admin',
+            'email' => $email,
+            'password' => 'password',
+            'locale' => 'en',
+            'is_active' => true,
+        ]);
+        $role = Role::query()->where('code', 'B2C_STORE_ADMIN')->firstOrFail();
+
+        DB::table('user_store_roles')->insert([
+            'user_id' => $user->id,
+            'store_id' => $storeId,
+            'role_id' => $role->id,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        return $user;
+    }
+
+    private function superAdmin(string $email): User
+    {
+        $user = User::query()->create([
+            'name' => 'P275 Platform Super Admin',
+            'email' => $email,
+            'password' => 'password',
+            'locale' => 'en',
+            'is_active' => true,
+        ]);
+        $user->roles()->attach(Role::query()->where('code', 'SUPER_ADMIN')->firstOrFail());
+
+        return $user;
     }
 
     private function order(int $storeId, int $legacyCustomerId, int $customerId, string $number, string $origin): int
