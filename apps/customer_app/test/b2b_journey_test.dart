@@ -494,6 +494,85 @@ void main() {
     },
   );
 
+
+  for (final locale in const <Locale>[Locale('ar'), Locale('en')]) {
+    testWidgets(
+      'B2B dashboard rejects non-finite money without masking valid payments in ${locale.languageCode}',
+      (tester) async {
+        final api = _FakeB2bApi({
+          'customer': {'name': 'Buyer'},
+          'account': {'company_name': 'Buyer Co', 'status': 'active'},
+          'finance': {
+            'currency': 'KWD',
+            'balance': 0,
+            'balance_direction': 'settled',
+            'customer_credit_balance': double.nan,
+            'open_amount': double.infinity,
+            'overdue_amount': double.nan,
+          },
+          'operations': {
+            'purchases_this_month': 'NaN',
+            'payments_this_month': 12.5,
+            'invoice_count': 1,
+            'order_count': 1,
+            'active_orders': 0,
+          },
+          'purchase_total': 'Infinity',
+          'freshness': {
+            'generated_at': DateTime.now().toUtc().toIso8601String(),
+            'stale': false,
+          },
+        });
+
+        await tester.pumpWidget(
+          FoodexCustomerApp(
+            session: b2b,
+            locale: locale,
+            initialRoute: '/b2b/dashboard',
+            b2bApi: api,
+          ),
+        );
+        await _pumpCustomerFrames(tester);
+
+        for (final key in const [
+          'credit-balance',
+          'purchase-value',
+          'open-invoices',
+          'overdue',
+          'purchases-month',
+        ]) {
+          expect(
+            find.descendant(
+              of: find.byKey(ValueKey('b2b-dashboard-$key')),
+              matching: find.text('—'),
+            ),
+            findsOneWidget,
+            reason: '$key must not display a non-finite monetary amount',
+          );
+        }
+        expect(
+          find.descendant(
+            of: find.byKey(const ValueKey('b2b-dashboard-payments-month')),
+            matching: find.text('12.500 KWD'),
+          ),
+          findsOneWidget,
+        );
+        expect(find.textContaining('NaN'), findsNothing);
+        expect(find.textContaining('Infinity'), findsNothing);
+        expect(
+          Directionality.of(
+            tester.element(find.byKey(const ValueKey('b2b-dashboard-data'))),
+          ),
+          locale.languageCode == 'ar' ? TextDirection.rtl : TextDirection.ltr,
+        );
+        expect(
+          api.paths.where((path) => path.startsWith('/api/v1/b2b/dashboard')),
+          hasLength(1),
+        );
+      },
+    );
+  }
+
   testWidgets('B2B dashboard shows credit direction in English LTR', (
     tester,
   ) async {

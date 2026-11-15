@@ -848,7 +848,8 @@ class _B2bDashboardRemoteStateState extends State<_B2bDashboardRemoteState>
 
   String _money(Object? value, String currency) {
     final amount = double.tryParse(value?.toString() ?? '');
-    if (amount == null) return '—';
+    // Dashboard numbers are display-only. Never render NaN/Infinity as money.
+    if (amount == null || !amount.isFinite) return '—';
     return foodexMoneyText(amount, currency);
   }
 
