@@ -71,7 +71,12 @@ final class CustomerInvoiceController extends Controller
         $this->assertRequestedContext($request, $model);
         $locale = (string) ($validated['locale'] ?? $user->locale ?? 'en');
         try {
-            $pdf = $invoices->renderPdf($model, $locale);
+            // Dispatch through the container so a failing PDF renderer can be
+            // exercised by a real HTTP regression without altering final services.
+            $pdf = (string) app()->call([$invoices, 'renderPdf'], [
+                'invoice' => $model,
+                'locale' => $locale,
+            ]);
         } catch (\RuntimeException) {
             $requestedLocale = $validated['locale'] ?? null;
             $preferredLocale = $requestedLocale
