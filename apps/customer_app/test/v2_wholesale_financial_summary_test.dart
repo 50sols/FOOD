@@ -114,9 +114,11 @@ void main() {
     final missing = credit()..remove('customer_credit_balance');
     expect(WholesaleFinancialSummary.dashboardCustomerCredit(missing), isNull);
     final nonFinite = credit()..['balance'] = double.infinity;
-    expect(WholesaleFinancialSummary.dashboardCustomerCredit(nonFinite), isNull);
+    expect(
+        WholesaleFinancialSummary.dashboardCustomerCredit(nonFinite), isNull);
     final boolCredit = credit()..['customer_credit_balance'] = true;
-    expect(WholesaleFinancialSummary.dashboardCustomerCredit(boolCredit), isNull);
+    expect(
+        WholesaleFinancialSummary.dashboardCustomerCredit(boolCredit), isNull);
   });
 
   test('required display totals reject invalid and fabricated zeros', () {
