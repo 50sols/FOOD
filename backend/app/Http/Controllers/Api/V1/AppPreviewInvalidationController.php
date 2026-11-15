@@ -16,10 +16,11 @@ final class AppPreviewInvalidationController extends Controller
         AppPreviewInvalidationStream $stream,
     ): StreamedResponse {
         $token = $request->header('X-Foodex-Preview-Token');
+        $preferredLocale = strtolower((string) $request->getPreferredLanguage(['ar', 'en']));
         abort_unless(
             is_string($token) && trim($token) !== '',
             401,
-            'Preview token is required.',
+            (string) __('preview_session.token_required', [], $preferredLocale === 'ar' ? 'ar' : 'en'),
         );
 
         $session = $sessions->resolve($token, $request);
