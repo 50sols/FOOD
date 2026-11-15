@@ -6996,6 +6996,7 @@ class _WholesaleCheckoutDesignScreenState
   String? appliedCouponCode;
   Map<String, dynamic>? appliedQuote;
   _CheckoutPayload? _latestCheckoutPayload;
+  int _checkoutDataRevision = 0;
   Map<String, dynamic>? createdOrder;
   final note = TextEditingController();
   final coupon = TextEditingController();
@@ -7044,6 +7045,12 @@ class _WholesaleCheckoutDesignScreenState
   }
 
   Future<_CheckoutPayload> _load() async {
+    // A coupon quote is valid only for the cart revision it was quoted for.
+    // Refreshing checkout must require a new server quote, never reuse the
+    // previous discount or account-credit calculation.
+    _checkoutDataRevision++;
+    appliedCouponCode = null;
+    appliedQuote = null;
     if (storeId <= 0) {
       storeId = await resolveWholesaleStoreId(
         location: widget.location,
@@ -7112,13 +7119,15 @@ class _WholesaleCheckoutDesignScreenState
       return;
     }
     final WholesaleQuoteApi quoteApi = commerceApi as WholesaleQuoteApi;
+    final dataRevision = _checkoutDataRevision;
+    final requestedPaymentMethod = paymentMethod;
 
     setState(() => applyingCoupon = true);
     try {
       final raw = await quoteApi.quote(
         storeId: storeId,
         couponCode: code,
-        paymentMethod: paymentMethod,
+        paymentMethod: requestedPaymentMethod,
       );
       final next = _quoteMap(raw);
       if (next.isEmpty) {
@@ -7127,6 +7136,14 @@ class _WholesaleCheckoutDesignScreenState
         );
       }
       if (!mounted) return;
+      // A response for a stale cart, edited code or changed payment method
+      // cannot become an accepted financial quote after an async boundary.
+      if (dataRevision != _checkoutDataRevision ||
+          requestedPaymentMethod != paymentMethod ||
+          code != _normalizedCoupon) {
+        setState(() => applyingCoupon = false);
+        return;
+      }
       final couponData = next['coupon'];
       final confirmedCode = couponData is Map &&
               couponData['code']?.toString().trim().isNotEmpty == true

@@ -3034,6 +3034,123 @@ void main() {
     }
   }
 
+  // MOB-C03: a confirmed coupon quote must not outlive a cart refresh.
+  for (final language in <String>['ar', 'en']) {
+    testWidgets(
+      'MOB-C03 invalidates a coupon quote after resumed cart refresh $language',
+      (tester) async {
+        tester.view.physicalSize = const Size(900, 1900);
+        tester.view.devicePixelRatio = 1;
+        addTearDown(() {
+          tester.view.resetPhysicalSize();
+          tester.view.resetDevicePixelRatio();
+        });
+        final commerce = _QuoteC13WholesaleCommerceApi(cartValue: {
+          'store_id': 7,
+          'currency': 'EGP',
+          'minimum_order_egp': 0.0,
+          'has_unavailable_items': false,
+          'quote': {'grand_total': 150.0, 'currency': 'EGP'},
+          'items': [
+            {
+              'id': 21,
+              'product': {'id': 201, 'name': 'Coupon Item', 'sku': 'CP-201'},
+              'quantity': 1.0,
+              'unit_price_snapshot': 150.0,
+              'line_total': 150.0,
+              'is_available': true,
+              'minimum_order_quantity': 1.0,
+              'ordering_increment': 1.0,
+            }
+          ],
+        });
+        final storefront = _C13CheckoutStorefrontApi({
+          'store_id': 7,
+          'store_name': 'Wholesale',
+          'customer_name': 'Buyer',
+          'minimum_order_egp': 0.0,
+          'addresses': [
+            {
+              'id': 1,
+              'label': 'Warehouse',
+              'line1': '1 Street',
+              'city': 'Cairo'
+            }
+          ],
+          'payment_methods': ['account_credit'],
+          'purchasing_power': 100.0,
+          'currency': 'EGP',
+        });
+        await tester.pumpWidget(FoodexCustomerApp(
+          session: b2b,
+          locale: Locale(language),
+          initialRoute: '/b2b/checkout?store_id=7',
+          storefrontApi: storefront,
+          wholesaleCommerceApi: commerce,
+        ));
+        await _pumpCustomerFrames(tester);
+        final couponField = find.byKey(const ValueKey('b2b-checkout-coupon'));
+        await tester.ensureVisible(couponField);
+        await tester.enterText(couponField, 'SAVE');
+        await tester.pump();
+        final apply = find.byKey(const ValueKey('b2b-checkout-apply-coupon'));
+        await tester.ensureVisible(apply);
+        await tester.tap(apply);
+        await _pumpCustomerFrames(tester);
+        expect(commerce.quoteCalls, 1);
+        expect(find.byKey(const ValueKey('b2b-checkout-coupon-applied')),
+            findsOneWidget);
+        expect(find.byKey(const ValueKey('b2b-checkout-insufficient-credit')),
+            findsNothing);
+
+        // In a resumed session the backend cart can change while an old
+        // coupon quote was calculated for the previous cart revision.
+        commerce.cartValue['quote'] = {'grand_total': 250.0, 'currency': 'EGP'};
+        tester.binding
+            .handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+        await _pumpCustomerFrames(tester);
+
+        expect(find.byKey(const ValueKey('b2b-checkout-coupon-applied')),
+            findsNothing);
+        expect(find.byKey(const ValueKey('b2b-checkout-insufficient-credit')),
+            findsOneWidget);
+        final submit = tester.widget<InkWell>(find.descendant(
+          of: find.byKey(const ValueKey('b2b-checkout-submit')),
+          matching: find.byType(InkWell),
+        ));
+        expect(submit.onTap, isNull);
+        expect(commerce.checkoutCalls, 0);
+
+        // An in-flight quote from the previous cart revision must also be
+        // discarded, even when its network response arrives after refresh.
+        final deferredQuote = Completer<Object?>();
+        commerce.deferredQuote = deferredQuote;
+        await tester.ensureVisible(apply);
+        await tester.tap(apply);
+        await tester.pump();
+        expect(commerce.quoteCalls, 2);
+        commerce.cartValue['quote'] = {
+          'grand_total': 400.0,
+          'currency': 'EGP',
+        };
+        tester.binding
+            .handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+        await _pumpCustomerFrames(tester);
+        deferredQuote.complete({
+          'grand_total': 50.0,
+          'currency': 'EGP',
+          'coupon': {'code': 'SAVE'},
+        });
+        await _pumpCustomerFrames(tester);
+        expect(find.byKey(const ValueKey('b2b-checkout-coupon-applied')),
+            findsNothing);
+        expect(find.byKey(const ValueKey('b2b-checkout-insufficient-credit')),
+            findsOneWidget);
+        expect(commerce.checkoutCalls, 0);
+      },
+    );
+  }
+
   testWidgets(
     'B2B checkout is disabled below the configured minimum and accepts zero',
     (tester) async {
@@ -5482,6 +5599,29 @@ class _C13WholesaleCommerceApi implements WholesaleCommerceApi {
       return checkoutCompleter!.future;
     }
     return <String, Object?>{};
+  }
+}
+
+class _QuoteC13WholesaleCommerceApi extends _C13WholesaleCommerceApi
+    implements WholesaleQuoteApi {
+  _QuoteC13WholesaleCommerceApi({required super.cartValue});
+
+  int quoteCalls = 0;
+  Completer<Object?>? deferredQuote;
+
+  @override
+  Future<Object?> quote({
+    required int storeId,
+    String? couponCode,
+    String? paymentMethod,
+  }) async {
+    quoteCalls++;
+    if (deferredQuote != null) return deferredQuote!.future;
+    return <String, Object?>{
+      'grand_total': 50.0,
+      'currency': 'EGP',
+      'coupon': {'code': couponCode},
+    };
   }
 }
 
