@@ -46,3 +46,11 @@ The Customer B2B Dashboard hero previously trusted `customer_credit_balance` wit
 The new existing-model `dashboardCustomerCredit` verifies finite balance/credit, nonnegative credit, direction agreement and rounded credit consistency; missing or contradictory snapshots show an em dash instead of fabricated credit. Pure tests cover debt, positive credit, settled, forged credit, missing, wrong direction, nonfinite and malformed values. AR/EN RTL/LTR widgets verify that forged credit stays unknown while legitimate open invoices/payments and B2B dashboard API are unchanged. An old contradictory positive-credit fixture was aligned with the server convention.
 
 **Impact:** Customer read-only dashboard only. Backend and Admin Dashboard monetary posting, Customer checkout/discount/partial collection, Driver and Van APIs/UI are unchanged. Full MOB-C03 source-required checkout, credit, pricing, partial collection, ledger reconciliation, RBAC/SoD and end-to-end acceptance remain pending; green incremental CI does not permit premature PR merge/Issue closure.
+
+## 2026-11-15 — original Dashboard test fixtures aligned to signed source
+
+The exact-head Customer Flutter fast-fail for `0b5daf7` reported **565 tests passed, one failed**: the pre-existing authoritative Dashboard refresh test expected `35.000 KWD` even though its fake server payload had `balance=10`, `balance_direction=customer_owes_company` and `customer_credit_balance=35`, a contradiction now correctly rejected by the source guard. The test-only fake is corrected to a positive signed credit of 35 with matching direction and credit line; the visible expected `35.000 KWD` remains unchanged.
+
+The separate existing `dashboard_single_screen_test.dart` visual/refresh fixture also had inverted signed balance direction in both original/second response. It now uses coherent positive credit balances and available-line values without changing the expected credit amounts, translations, app runtime or route. This extra test-only file was coordinated via the #2732 source-fence comment before modification, with no active peer PR owning that path.
+
+This is a test-fixture correction **not** a server financial policy change. Required exact-final-head Flutter and repo CI must be rerun after the new commit; prior red remains red.

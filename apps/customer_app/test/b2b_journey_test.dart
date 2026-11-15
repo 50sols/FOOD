@@ -186,10 +186,10 @@ void main() {
         'account': {'id': 3, 'company_name': 'Buyer Co', 'status': 'active'},
         'finance': {
           'currency': 'KWD',
-          'balance': 10,
-          'balance_direction': 'customer_owes_company',
+          'balance': 35,
+          'balance_direction': 'company_owes_customer',
           'credit_limit': 500,
-          'available_credit_line': 490,
+          'available_credit_line': 500,
           'customer_credit_balance': 35,
           'open_amount': 10,
           'overdue_amount': 2,
