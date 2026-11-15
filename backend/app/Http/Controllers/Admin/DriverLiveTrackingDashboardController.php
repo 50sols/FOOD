@@ -205,8 +205,8 @@ final class DriverLiveTrackingDashboardController extends Controller
             ->when($query !== '', function ($builder) use ($query): void {
                 $prefix = $this->likePrefix($query);
                 $builder->where(function ($search) use ($prefix): void {
-                    $search->where('users.name', 'like', $prefix.'%')
-                        ->orWhere('users.email', 'like', $prefix.'%');
+                    $search->whereRaw("users.name LIKE ? ESCAPE '!'", [$prefix])
+                        ->orWhereRaw("users.email LIKE ? ESCAPE '!'", [$prefix]);
                 });
             })
             ->orderBy('users.name')
@@ -260,10 +260,10 @@ final class DriverLiveTrackingDashboardController extends Controller
             ->when($query !== '', function ($builder) use ($query): void {
                 $prefix = $this->likePrefix($query);
                 $builder->where(function ($search) use ($prefix): void {
-                    $search->where('vans.code', 'like', $prefix.'%')
-                        ->orWhere('vans.plate_number', 'like', $prefix.'%')
-                        ->orWhere('operators.name', 'like', $prefix.'%')
-                        ->orWhere('operators.email', 'like', $prefix.'%');
+                    $search->whereRaw("vans.code LIKE ? ESCAPE '!'", [$prefix])
+                        ->orWhereRaw("vans.plate_number LIKE ? ESCAPE '!'", [$prefix])
+                        ->orWhereRaw("operators.name LIKE ? ESCAPE '!'", [$prefix])
+                        ->orWhereRaw("operators.email LIKE ? ESCAPE '!'", [$prefix]);
                 });
             })
             ->orderByDesc('locations.received_at')
@@ -323,7 +323,7 @@ final class DriverLiveTrackingDashboardController extends Controller
             ->when($query !== '', function ($builder) use ($query, $referenceId): void {
                 $prefix = $this->likePrefix($query);
                 $builder->where(function ($search) use ($prefix, $referenceId): void {
-                    $search->where('orders.order_number', 'like', $prefix.'%');
+                    $search->whereRaw("orders.order_number LIKE ? ESCAPE '!'", [$prefix]);
                     if ($referenceId !== null) {
                         $search->orWhere('orders.id', $referenceId);
                     }
@@ -393,11 +393,11 @@ final class DriverLiveTrackingDashboardController extends Controller
             ->when($query !== '', function ($builder) use ($query): void {
                 $prefix = $this->likePrefix($query);
                 $builder->where(function ($search) use ($prefix): void {
-                    $search->where('locations.route_key', 'like', $prefix.'%')
-                        ->orWhere('assignments.territory_key', 'like', $prefix.'%')
-                        ->orWhere('vans.code', 'like', $prefix.'%')
-                        ->orWhere('vans.plate_number', 'like', $prefix.'%')
-                        ->orWhere('stores.name', 'like', $prefix.'%');
+                    $search->whereRaw("locations.route_key LIKE ? ESCAPE '!'", [$prefix])
+                        ->orWhereRaw("assignments.territory_key LIKE ? ESCAPE '!'", [$prefix])
+                        ->orWhereRaw("vans.code LIKE ? ESCAPE '!'", [$prefix])
+                        ->orWhereRaw("vans.plate_number LIKE ? ESCAPE '!'", [$prefix])
+                        ->orWhereRaw("stores.name LIKE ? ESCAPE '!'", [$prefix]);
                 });
             })
             ->orderByDesc('locations.received_at')
@@ -438,7 +438,9 @@ final class DriverLiveTrackingDashboardController extends Controller
 
     private function likePrefix(string $value): string
     {
-        return str_replace(['\\', '%', '_'], ['\\\\', '\\%', '\\_'], $value);
+        // ! is an explicit cross-database LIKE escape marker. Backslash
+        // remains literal even when MySQL has NO_BACKSLASH_ESCAPES enabled.
+        return str_replace(['!', '%', '_'], ['!!', '!%', '!_'], $value).'%';
     }
 
     private function canView(User $user): bool
