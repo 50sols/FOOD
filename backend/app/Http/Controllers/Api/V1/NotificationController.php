@@ -10,6 +10,7 @@ use App\Services\NotificationAudience;
 use DateTimeInterface;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Validation\ValidationException;
 use Symfony\Component\HttpFoundation\Response;
 
 final class NotificationController extends Controller
@@ -96,9 +97,24 @@ final class NotificationController extends Controller
 
     private function locale(Request $request, User $user): string
     {
-        $locale = (string) $request->query('locale', $user->locale ?: 'ar');
+        $requestedLocale = $request->query('locale');
+        if ($requestedLocale === null) {
+            return in_array($user->locale, ['ar', 'en'], true) ? $user->locale : 'ar';
+        }
 
-        return in_array($locale, ['ar', 'en'], true) ? $locale : 'ar';
+        // Query arrays must not be coerced to strings. Invalid explicit
+        // locales are client errors, not a silently selected other language.
+        if (! is_string($requestedLocale) || ! in_array($requestedLocale, ['ar', 'en'], true)) {
+            $errorLocale = in_array($user->locale, ['ar', 'en'], true)
+                ? $user->locale
+                : ($request->getPreferredLanguage(['ar', 'en']) ?? 'ar');
+
+            throw ValidationException::withMessages([
+                'locale' => [(string) __('notification_api_errors.invalid_locale', [], $errorLocale)],
+            ]);
+        }
+
+        return $requestedLocale;
     }
 
     private function user(Request $request): User
