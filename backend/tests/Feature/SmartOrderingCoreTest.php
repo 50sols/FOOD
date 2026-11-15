@@ -510,6 +510,69 @@ class SmartOrderingCoreTest extends TestCase
         }
     }
 
+    public function test_scheduled_checkout_rejection_messages_are_bilingual_and_never_mutate_orders(): void
+    {
+        $expected = [
+            'en' => [
+                'disabled' => 'Scheduled orders are disabled for this branch.',
+                'window' => 'Scheduled time exceeds the branch pre-order window.',
+                'lead' => 'Pickup time is earlier than the branch preparation lead time.',
+            ],
+            'ar' => [
+                'disabled' => 'الطلبات المجدولة غير متاحة لهذا الفرع.',
+                'window' => 'الموعد المحدد يتجاوز فترة الحجز المسبق المسموحة لهذا الفرع.',
+                'lead' => 'موعد الاستلام أبكر من مدة التحضير المطلوبة لهذا الفرع.',
+            ],
+        ];
+
+        foreach ($expected as $locale => $messages) {
+            app()->setLocale($locale);
+            $this->withHeaders(['Accept-Language' => $locale]);
+
+            foreach (['disabled', 'window', 'lead'] as $scenario) {
+                $settings = match ($scenario) {
+                    'disabled' => ['allow_scheduled' => false, 'max_schedule_days' => 7, 'pickup_lead_minutes' => 0],
+                    'window' => ['allow_scheduled' => true, 'max_schedule_days' => 1, 'pickup_lead_minutes' => 0],
+                    'lead' => ['allow_scheduled' => true, 'max_schedule_days' => 7, 'pickup_lead_minutes' => 180],
+                };
+                $this->branch->update($settings);
+
+                $now = CarbonImmutable::now('Asia/Kuwait');
+                $scheduledAt = match ($scenario) {
+                    'window' => $now->addDays(3),
+                    'lead' => $now->addMinutes(30),
+                    default => $now->addHours(4),
+                };
+
+                [$cart, $token] = $this->cart();
+                $this->addItem($cart, $token, 1);
+
+                $before = [
+                    'orders' => DB::table('orders')->count(),
+                    'payments' => DB::table('payments')->count(),
+                    'audit' => DB::table('audit_logs')->count(),
+                    'items' => DB::table('smart_ordering_cart_items')->count(),
+                    'status' => DB::table('smart_ordering_carts')->where('public_id', $cart)->value('status'),
+                    'reserved' => DB::table('inventories')->where('product_id', $this->productId)->value('reserved_quantity'),
+                ];
+
+                $this->checkout($cart, $token, 'v2-schedule-policy-'.$locale.'-'.$scenario, [
+                    'fulfillment_mode' => 'pickup',
+                    'scheduled_for' => $scheduledAt->format('Y-m-d H:i:s'),
+                ])
+                    ->assertConflict()
+                    ->assertJsonPath('message', $messages[$scenario]);
+
+                $this->assertSame($before['orders'], DB::table('orders')->count());
+                $this->assertSame($before['payments'], DB::table('payments')->count());
+                $this->assertSame($before['audit'], DB::table('audit_logs')->count());
+                $this->assertSame($before['items'], DB::table('smart_ordering_cart_items')->count());
+                $this->assertSame($before['status'], DB::table('smart_ordering_carts')->where('public_id', $cart)->value('status'));
+                $this->assertEquals($before['reserved'], DB::table('inventories')->where('product_id', $this->productId)->value('reserved_quantity'));
+            }
+        }
+    }
+
     public function test_dine_in_requires_valid_branch_table_token(): void
     {
         $tablePublicId = (string) Str::uuid();
