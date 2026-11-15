@@ -175,7 +175,7 @@ final class V2VolumeQuantityPricingTest extends TestCase
 
     public function test_pricing_read_only_actor_sees_price_rows_without_edit_actions_in_both_locales(): void
     {
-        [$storeId, $productId, $tierId] = $this->catalog();
+        [$storeId, $productId, $tierId] = $this->catalog(usePrincipalStore: true);
         $this->pricingMode($storeId, true);
         $manager = $this->actor('B2B_ADMIN', 'volume-reader-seed@example.test');
         Sanctum::actingAs($manager);
@@ -216,7 +216,7 @@ final class V2VolumeQuantityPricingTest extends TestCase
 
     public function test_editing_volume_breaks_preserves_existing_pack_reference_and_inactive_status(): void
     {
-        [$storeId, $productId, $tierId] = $this->catalog();
+        [$storeId, $productId, $tierId] = $this->catalog(usePrincipalStore: true);
         $this->pricingMode($storeId, true);
         $manager = $this->actor('B2B_ADMIN', 'volume-pack-editor@example.test');
         Sanctum::actingAs($manager);
@@ -274,13 +274,15 @@ final class V2VolumeQuantityPricingTest extends TestCase
     }
 
     /** @return array{int,int,int} */
-    private function catalog(): array
+    private function catalog(bool $usePrincipalStore = false): array
     {
         $type = DB::table('store_types')->where('code', 'B2B')->value('id');
-        $store = (int) DB::table('stores')->insertGetId([
-            'store_type_id' => $type, 'code' => 'V2-VOLUME-B2B', 'name' => 'Volume B2B',
-            'is_active' => true, 'created_at' => now(), 'updated_at' => now(),
-        ]);
+        $store = $usePrincipalStore
+            ? app(WholesalePrincipal::class)->storeId()
+            : (int) DB::table('stores')->insertGetId([
+                'store_type_id' => $type, 'code' => 'V2-VOLUME-B2B', 'name' => 'Volume B2B',
+                'is_active' => true, 'created_at' => now(), 'updated_at' => now(),
+            ]);
         $catalog = (int) DB::table('catalogs')->insertGetId([
             'store_id' => $store, 'channel' => 'b2b', 'code' => 'volume',
             'name' => 'Volume wholesale', 'is_active' => true,
