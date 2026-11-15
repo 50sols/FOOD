@@ -212,3 +212,11 @@ The new inactive-account/replay and reserved-balance test, along with
 existing collection/remittance lifecycle tests, exercises the post-change
 read-only path sequentially. No new routes, API payloads, migrations,
 Customer/Driver/Van mobile code, or legal stock ownership changes.
+
+## P272 2026-11-15 — custody maker/checker security increment
+
+The existing `CollectionCustodyService::submitRemittance` saves the submitting user in `remittances.submitted_by`, but `approveRemittance` previously accepted that same user as the approver, posting a negative custody ledger movement without independent review. On the original P272 branch the locked pending-remittance approval now **fails closed** if maker identity is absent or equals the reviewer ID, before any custody balance or journal write. It preserves the existing approved-status replay path, avoids duplicate ledger deduction, and does not add a new settlement, route or permission.
+
+The new isolated Laravel regression verifies: the maker's approval gets a `reviewed_by` validation error; pending status, null reviewer and original custody balance remain unchanged; a different checker can approve exactly once; and identical approved retries add no second ledger entry.
+
+**Not full P272 acceptance:** the account's pending remittance is still not attributable to a single immutable Van trip or its physical stock movement, and separate authoritative trip-settlement maker/checker, ledger reconciliation, AR/EN Dashboard and Van app offline parity remain unimplemented. Preserve PR #3332 as DRAFT and Issue #2602 OPEN, even if tests succeed. Actual source completion requires the source-proven trip/session and per-trip collection/remittance/return identities; never infer trip closure from an account-level custody balance. No `main`, production, tags or release.
