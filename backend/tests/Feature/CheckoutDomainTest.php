@@ -524,6 +524,58 @@ class CheckoutDomainTest extends TestCase
             ->assertUnprocessable();
     }
 
+    public function test_unconfigured_checkout_payment_method_is_localized_and_does_not_mutate_checkout(): void
+    {
+        $this->addCartItem(1);
+
+        $inventoryReserved = (float) DB::table('inventories')
+            ->where('warehouse_id', $this->warehouseId)
+            ->where('product_id', $this->productId)
+            ->value('reserved_quantity');
+
+        $before = [
+            'orders' => DB::table('orders')->count(),
+            'order_items' => DB::table('order_items')->count(),
+            'invoices' => DB::table('invoices')->count(),
+            'payments' => DB::table('payments')->count(),
+            'audit_logs' => DB::table('audit_logs')->count(),
+            'notifications' => DB::table('notifications')->count(),
+            'carts' => DB::table('carts')->count(),
+            'cart_items' => DB::table('cart_items')->count(),
+        ];
+
+        foreach ([
+            'ar' => 'طريقة الدفع المحددة غير مهيأة.',
+            'en' => 'The selected payment method is not configured.',
+        ] as $locale => $message) {
+            $this->user->forceFill(['locale' => $locale])->saveQuietly();
+            app()->setLocale($locale);
+
+            $this->withHeaders([
+                'Accept-Language' => $locale === 'ar' ? 'en' : 'ar',
+                'X-FOODEX-Customer-Domain' => 'b2c',
+                'Idempotency-Key' => 'v2-3771-checkout-payment-'.$locale.'-0001',
+            ])->postJson('/api/v1/checkout', [
+                'store_id' => $this->storeId,
+                'address_id' => $this->address->id,
+                'payment_method' => 'unsupported_offline_payment',
+            ])
+                ->assertUnprocessable()
+                ->assertJsonPath('errors.payment_method.0', $message);
+
+            foreach ($before as $table => $count) {
+                $this->assertSame($count, DB::table($table)->count(), $table.' must stay unchanged after unconfigured payment-method checkout rejection.');
+            }
+
+            $this->assertSame($inventoryReserved, (float) DB::table('inventories')
+                ->where('warehouse_id', $this->warehouseId)
+                ->where('product_id', $this->productId)
+                ->value('reserved_quantity'));
+        }
+
+        $this->assertDatabaseCount('orders', 0);
+    }
+
     public function test_checkout_rechecks_stock_inside_transaction_and_preserves_cart_on_conflict(): void
     {
         $this->addCartItem(4);
