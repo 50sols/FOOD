@@ -112,7 +112,7 @@ class V2QuoteEmptyCartLocaleTest extends TestCase
     private function snapshot(): array
     {
         $counts = [];
-        foreach (['carts', 'cart_items', 'orders', 'order_items', 'invoices', 'payments', 'audit_logs'] as $table) {
+        foreach (['carts', 'cart_items', 'orders', 'order_items', 'invoices', 'payments', 'audit_logs', 'stock_movements'] as $table) {
             $counts[$table] = DB::table($table)->count();
         }
 
