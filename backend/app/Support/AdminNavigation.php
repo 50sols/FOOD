@@ -7,6 +7,7 @@ use App\Domain\WhatsApp\RuntimePolicy;
 use App\Enterprise\Entitlements\EntitlementScope;
 use App\Enterprise\Entitlements\ModuleEntitlementResolver;
 use App\Enterprise\Finance\FinanceFoundationService;
+use App\Enterprise\Finance\FinanceWorkbenchAccess;
 use App\Enterprise\Modules\ModuleOperationalReadiness;
 use App\Enterprise\Modules\ModuleRegistry;
 use App\Enterprise\Organization\OrganizationHierarchyService;
@@ -1138,6 +1139,7 @@ class AdminNavigation
             ->get();
 
         $eligible = [];
+        $financeAccess = app(FinanceWorkbenchAccess::class);
         foreach ($stores as $store) {
             $storeId = (int) $store->id;
             if (! $user->hasPermission('finance.view', $storeId)) {
@@ -1151,21 +1153,8 @@ class AdminNavigation
                     $this->tenantContext->wholesale($user, $storeId);
                 }
 
-                $organizationScope = app(OrganizationHierarchyService::class)->scopeForStore($storeId);
-                if ($organizationScope === null) {
-                    continue;
-                }
-
-                $scope = new EntitlementScope(
-                    EntitlementScope::LEGAL_ENTITY,
-                    $organizationScope['legal_entity_id'],
-                );
                 foreach (['receivables' => 'finance.ar.read', 'payables' => 'finance.ap.read'] as $tab => $capability) {
-                    if (! isset($eligible[$tab]) && $this->enterpriseEntitlements->allows(
-                        FinanceFoundationService::MODULE,
-                        $scope,
-                        $capability,
-                    )) {
+                    if (! isset($eligible[$tab]) && $financeAccess->allowsAtStore($storeId, $capability)) {
                         $eligible[$tab] = $this->routeItemScoped(
                             $user,
                             'erp_'.$tab,
@@ -1235,6 +1224,20 @@ class AdminNavigation
             return $this->enterpriseModuleAccessMemo[$memoKey];
         }
 
+        // Finance has legal-entity ledger authority plus effective store
+        // overrides. An entitled Wholesale actor must not have a dead link,
+        // and a Platform Owner cannot bypass the same finance constraints.
+        if ($moduleCode === 'finance') {
+            // Platform Super Admin can inspect a ready and entitled Finance
+            // workspace even before any store is provisioned. This grants
+            // only the empty setup context, never store or ledger access.
+            $setupAccess = $this->isSuperAdmin($user)
+                && $this->enterpriseEntitlements->allows($moduleCode, EntitlementScope::platform());
+
+            return $this->enterpriseModuleAccessMemo[$memoKey] =
+                $setupAccess || $this->financeWorkspacesAccessible($user);
+        }
+
         if ($user->isPlatformOwner()) {
             return $this->enterpriseModuleAccessMemo[$memoKey] = true;
         }
@@ -1257,6 +1260,54 @@ class AdminNavigation
         }
 
         return $this->enterpriseModuleAccessMemo[$memoKey] = false;
+    }
+
+    /**
+     * Project the same authorized Finance store contexts as the actual HTTP
+     * workbench. No navigation-only entitlement or blanket global-role grant.
+     */
+    private function financeWorkspacesAccessible(User $user): bool
+    {
+        if (! $user->is_active) {
+            return false;
+        }
+
+        $retailStoreIds = $this->tenantContext->retailStoreIds($user);
+        $canWholesale = $this->canAccess($user, 'b2b');
+        if (! $canWholesale && $retailStoreIds === []) {
+            return false;
+        }
+
+        // Match the controller's bounded context chooser, including order
+        // and limit. A grant outside the chooser must not create a dead link.
+        $stores = DB::table('stores as store')
+            ->join('store_types as type', 'type.id', '=', 'store.store_type_id')
+            ->where('store.is_active', true)
+            ->where(function ($query) use ($canWholesale, $retailStoreIds): void {
+                if ($canWholesale) {
+                    $query->where('type.code', 'B2B');
+                }
+                if ($retailStoreIds !== []) {
+                    $method = $canWholesale ? 'orWhere' : 'where';
+                    $query->{$method}(function ($retail) use ($retailStoreIds): void {
+                        $retail->where('type.code', 'B2C')
+                            ->whereIn('store.id', $retailStoreIds);
+                    });
+                }
+            })
+            ->orderBy('type.code')
+            ->orderBy('store.code')
+            ->limit(100)
+            ->pluck('store.id');
+
+        $finance = app(FinanceWorkbenchAccess::class);
+        foreach ($stores as $storeId) {
+            if ($finance->canRead($user, (int) $storeId)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private function isSuperAdmin(User $user): bool

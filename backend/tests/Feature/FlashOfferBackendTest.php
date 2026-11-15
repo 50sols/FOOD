@@ -370,6 +370,57 @@ class FlashOfferBackendTest extends TestCase
         }
         $this->user->forceFill(['locale' => $originalOverflowLocale])->saveQuietly();
 
+        // A distinct, finite Customer reservation can be denied by the canonical
+        // commercial policy. Its human 422 error must not leak internal reason
+        // codes or mutate reservation, inventory, order or finance state.
+        DB::table('products')->where('id', $this->productId)->update(['is_active' => false]);
+        $policyRejectSnapshot = fn (): array => [
+            'reservations' => DB::table('flash_reservations')->count(),
+            'events' => DB::table('flash_offer_events')->count(),
+            'stock_movements' => DB::table('stock_movements')->count(),
+            'quota_reservations' => DB::table('commercial_quota_reservations')->count(),
+            'orders' => DB::table('orders')->count(),
+            'payments' => DB::table('payments')->count(),
+            'invoices' => DB::table('invoices')->count(),
+            'audit_logs' => DB::table('audit_logs')->count(),
+            'notifications' => DB::table('notifications')->count(),
+            'reserved' => (float) DB::table('inventories')
+                ->where('id', $this->inventoryId)->value('reserved_quantity'),
+        ];
+        $beforePolicyReject = $policyRejectSnapshot();
+
+        foreach ([
+            ['ar', 'en-US', 'حجز العرض غير متاح وفق سياسة الشراء الحالية.'],
+            ['en', 'ar-KW', 'Flash reservation is not available under the current purchase policy.'],
+            ['fr', 'ar-KW', 'حجز العرض غير متاح وفق سياسة الشراء الحالية.'],
+            ['fr', 'en-US', 'Flash reservation is not available under the current purchase policy.'],
+        ] as $case => [$actorLocale, $headerLocale, $message]) {
+            $this->user->forceFill(['locale' => $actorLocale])->saveQuietly();
+
+            $this->withHeaders([
+                'X-FOODEX-Store-ID' => (string) $this->storeId,
+                'X-FOODEX-Customer-Domain' => 'b2c',
+                'Accept-Language' => $headerLocale,
+            ])->postJson('/api/v1/flash-offers/products/'.$offerProduct->id.'/reserve', [
+                'store_id' => $this->storeId,
+                'channel' => 'customer',
+                'quantity' => 1,
+                'idempotency_key' => 'v2-3895-policy-denial-'.$case,
+            ])->assertUnprocessable()
+                ->assertJsonPath('message', $message)
+                ->assertJsonPath('errors.flash_offer.0', $message)
+                ->assertDontSee('PRODUCT_INACTIVE', false);
+
+            $this->assertSame(
+                $beforePolicyReject,
+                $policyRejectSnapshot(),
+                'Commercial policy denial must not write any Flash, inventory or finance state.',
+            );
+        }
+
+        DB::table('products')->where('id', $this->productId)->update(['is_active' => true]);
+        $this->user->forceFill(['locale' => $originalOverflowLocale])->saveQuietly();
+
         $reserve = $this->withHeaders([
             'X-FOODEX-Store-ID' => (string) $this->storeId,
             'X-FOODEX-Customer-Domain' => 'b2c',
