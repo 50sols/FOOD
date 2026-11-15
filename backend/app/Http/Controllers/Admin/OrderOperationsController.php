@@ -100,6 +100,7 @@ final class OrderOperationsController extends Controller
             'action_required' => ['nullable', 'boolean'],
             'store_id' => ['nullable', 'integer', 'min:1'],
             'channel' => ['nullable', 'string', Rule::in(['all', 'b2b', 'b2c'])],
+            'origin' => ['nullable', 'string', Rule::in(['van'])],
             'order' => ['nullable', 'integer', 'min:1'],
             'per_page' => ['nullable', 'integer', 'min:1', 'max:100'],
             'discount_view' => ['nullable', 'string', Rule::in(['approved', 'pending'])],
@@ -115,6 +116,11 @@ final class OrderOperationsController extends Controller
             ? (string) $data['channel']
             : $this->defaultOperationalChannel($actor);
         $this->assertOperationalChannelAllowed($availableChannels, $operationalChannel);
+        // Van direct-sale provenance is Wholesale-only. Never let a Retail
+        // actor (or an all-channel query) infer orders from this filter.
+        if (($data['origin'] ?? null) === 'van') {
+            abort_unless($operationalChannel === 'b2b', 403);
+        }
         $data['channel'] = $operationalChannel;
         $perPage = (int) ($data['per_page'] ?? 25);
 
@@ -163,6 +169,9 @@ final class OrderOperationsController extends Controller
 
         $orderQuery = Order::query()
             ->where(fn ($query) => $this->applyOperationalScopes($query, $scopes))
+            // Sale provenance is an immutable commercial snapshot; being
+            // assigned to a Van for delivery does not make it a direct sale.
+            ->when(($data['origin'] ?? null) === 'van', fn ($query) => $query->where('pricing_snapshot->commercial_origin', 'van'))
             ->when($selectedStoreId !== null, fn ($query) => $query->where('store_id', $selectedStoreId))
             ->when(
                 isset($data['from']),
@@ -246,6 +255,7 @@ final class OrderOperationsController extends Controller
             || isset($data['dispatch_status'])
             || isset($data['exception'])
             || isset($data['order'])
+            || isset($data['origin'])
             || $discountDecisionMode
         );
 
