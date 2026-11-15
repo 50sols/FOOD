@@ -412,7 +412,7 @@ class CommercialDashboardContractTest extends TestCase
         $skuProductId = $addProduct('Widget Plain B', 'SKU-%_!\\-B');
         $decoyId = $addProduct('Widget ABC literal', 'SKU-NORMAL-C');
 
-        [, $retailStoreId] = $this->retailManager();
+        [$retailManager, $retailStoreId] = $this->retailManager();
         $retailId = $this->flashProduct($retailStoreId);
         DB::table('products')->where('id', $retailId)->update([
             'name' => 'Widget %_!\\ Retail',
@@ -449,7 +449,6 @@ class CommercialDashboardContractTest extends TestCase
             ->get(route('admin.commercial.sales-control.products', ['store_id' => $storeId, 'q' => '%']))
             ->assertNotFound();
 
-        [$retailManager] = $this->retailManager();
         $this->actingAs($retailManager)
             ->get(route('admin.commercial.sales-control.products', ['store_id' => $storeId, 'q' => '%']))
             ->assertNotFound();
