@@ -128,7 +128,7 @@ final class V2AdminInvoicePdfUnavailableLocaleTest extends TestCase
             ], false))
             ->assertOk()
             ->assertHeader('Content-Type', 'application/pdf')
-            ->assertHeader('Cache-Control', 'private, no-store')
+            ->assertHeader('Cache-Control', 'no-store, private')
             ->assertSee('%PDF', false);
     }
 
