@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Api\V1;
 
+use App\Enterprise\Search\LiteralLikePattern;
 use App\Http\Controllers\Controller;
 use App\Models\B2bAccount;
 use App\Models\B2bCustomer;
@@ -16,10 +17,12 @@ use App\Services\CustomerDomainResolver;
 use App\Services\InvoiceService;
 use App\Services\ReportExportService;
 use App\Support\DisplayNumber;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Http\Response;
 use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\DB;
 
 class B2bFinanceController extends Controller
 {
@@ -48,24 +51,24 @@ class B2bFinanceController extends Controller
         $search = trim((string) ($filters['q'] ?? ''));
         $status = strtolower(trim((string) ($filters['status'] ?? '')));
 
-        $rows = Invoice::query()
-            ->where('b2b_customer_id', $customer->getKey())
+        $rows = $this->ownedInvoiceQuery($customer)
             ->when($storeId, fn ($query, int $id) => $query->where('store_id', $id))
             ->when($filters['from'] ?? null, fn ($query, string $from) => $query->whereDate('issued_at', '>=', $from))
             ->when($filters['to'] ?? null, fn ($query, string $to) => $query->whereDate('issued_at', '<=', $to))
             ->when($search !== '', function ($query) use ($search): void {
-                $needle = '%'.addcslashes($search, '%_\\').'%';
+                // Keep typed %, _, ! and backslashes literal across SQLite/MySQL.
+                $needle = LiteralLikePattern::contains($search);
                 $displayId = DisplayNumber::referenceId($search);
 
                 $query->where(function ($nested) use ($needle, $displayId): void {
                     if ($displayId !== null) {
                         $nested->where('id', $displayId)
-                            ->orWhere('invoice_number', 'like', $needle);
+                            ->orWhereRaw("invoice_number LIKE ? ESCAPE '!'", [$needle]);
 
                         return;
                     }
 
-                    $nested->where('invoice_number', 'like', $needle);
+                    $nested->whereRaw("invoice_number LIKE ? ESCAPE '!'", [$needle]);
                 });
             })
             ->latest('issued_at')
@@ -129,7 +132,7 @@ class B2bFinanceController extends Controller
         $customer = $this->approvedCustomer($request);
         $requestedStoreId = $this->storeId($request);
         abort_unless(
-            (int) $invoice->b2b_customer_id === (int) $customer->getKey()
+            $this->ownedInvoiceQuery($customer)->whereKey($invoice->getKey())->exists()
                 && ($requestedStoreId === null || (int) $invoice->store_id === $requestedStoreId),
             404,
         );
@@ -153,7 +156,7 @@ class B2bFinanceController extends Controller
         $customer = $this->approvedCustomer($request);
         $requestedStoreId = $this->storeId($request);
         abort_unless(
-            (int) $invoice->b2b_customer_id === (int) $customer->getKey()
+            $this->ownedInvoiceQuery($customer)->whereKey($invoice->getKey())->exists()
                 && ($requestedStoreId === null || (int) $invoice->store_id === $requestedStoreId),
             404,
         );
@@ -287,7 +290,7 @@ class B2bFinanceController extends Controller
         try {
             $export = $exports->build($report, $format, $locale);
         } catch (\RuntimeException) {
-            abort(503, 'Document export is temporarily unavailable.');
+            abort(503, __('b2b_statement_export_errors.temporarily_unavailable', [], $locale));
         }
 
         app(AuditLogger::class)->record('b2b.finance.statement_exported', $request->user(), $customer, null, [
@@ -301,6 +304,32 @@ class B2bFinanceController extends Controller
             'Content-Disposition' => 'attachment; filename="'.$exports->filename($report, $export['extension']).'"',
             'Cache-Control' => 'private, no-store',
         ]);
+    }
+
+    /**
+     * Fail closed on contradictory imported channel, customer-domain or seller-store
+     * provenance before exposing Wholesale invoice rows, details or PDF content.
+     *
+     * Historical invoices with a null channel/store remain eligible only when
+     * the authoritative B2B customer FK is owned and no B2C FK is populated.
+     *
+     * @return Builder<Invoice>
+     */
+    private function ownedInvoiceQuery(B2bCustomer $customer): Builder
+    {
+        return Invoice::query()
+            ->where('b2b_customer_id', $customer->getKey())
+            ->whereNull('b2c_customer_id')
+            ->where(function (Builder $query): void {
+                $query->where('channel', 'b2b')->orWhereNull('channel');
+            })
+            ->where(function (Builder $query): void {
+                $query->whereNull('store_id')
+                    ->orWhereIn('store_id', DB::table('stores')
+                        ->join('store_types', 'store_types.id', '=', 'stores.store_type_id')
+                        ->where('store_types.code', 'B2B')
+                        ->select('stores.id'));
+            });
     }
 
     private function approvedCustomer(Request $request): B2bCustomer

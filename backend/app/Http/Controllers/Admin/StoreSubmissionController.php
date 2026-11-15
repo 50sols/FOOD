@@ -129,7 +129,7 @@ final class StoreSubmissionController extends Controller
         );
 
         return $this->backToSettings($data['app'], $data['environment'])
-            ->with('status', 'Store submission metadata saved.');
+            ->with('status', __('mobile_settings.store_submission_saved'));
     }
 
     public function upsertReviewer(Request $request, AuditLogger $audit): RedirectResponse
@@ -157,7 +157,7 @@ final class StoreSubmissionController extends Controller
 
         if (! $reviewer instanceof StoreReviewerAccount && empty($data['reviewer_secret'])) {
             throw ValidationException::withMessages([
-                'reviewer_secret' => ['A reviewer secret is required when creating the reviewer persona.'],
+                'reviewer_secret' => [__('mobile_settings.reviewer_secret_required')],
             ]);
         }
 
@@ -182,7 +182,7 @@ final class StoreSubmissionController extends Controller
                     ->value('store_types.code'));
                 if ($channel !== '' && $storeChannel !== $channel) {
                     throw ValidationException::withMessages([
-                        'reviewer_store_id' => ['The selected store does not belong to the selected business channel.'],
+                        'reviewer_store_id' => [__('mobile_settings.reviewer_store_channel_mismatch')],
                     ]);
                 }
                 $context['store_id'] = $storeId;
@@ -221,7 +221,7 @@ final class StoreSubmissionController extends Controller
         );
 
         return $this->backToSettings($data['app'], $data['environment'])
-            ->with('status', 'Reviewer account configuration saved.');
+            ->with('status', __('mobile_settings.reviewer_account_saved'));
     }
 
     public function rotateReviewer(
@@ -252,7 +252,7 @@ final class StoreSubmissionController extends Controller
         );
 
         return $this->backToSettings($reviewer->app, $reviewer->environment)
-            ->with('status', 'Reviewer secret rotated.');
+            ->with('status', __('mobile_settings.reviewer_secret_rotated'));
     }
 
     public function testReviewer(
@@ -265,7 +265,7 @@ final class StoreSubmissionController extends Controller
 
         if (! is_string($secret) || $secret === '') {
             throw ValidationException::withMessages([
-                'reviewer' => ['Reviewer secret is not configured.'],
+                'reviewer' => [__('mobile_settings.reviewer_test_secret_missing')],
             ]);
         }
 

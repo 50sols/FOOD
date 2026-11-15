@@ -308,4 +308,85 @@ class RestaurantSaaSIntegrationHubTest extends TestCase
             $this->assertSame(404, $exception->getStatusCode());
         }
     }
+
+    public function test_observability_queries_treat_special_characters_as_literal_and_never_cross_sites(): void
+    {
+        $actor = User::factory()->create(['is_active' => true, 'locale' => 'en']);
+        $typeId = (int) DB::table('store_types')->where('code', 'B2C')->value('id');
+        $service = app(RestaurantIntegrationService::class);
+        $sites = [];
+
+        foreach (['A', 'B'] as $suffix) {
+            $storeId = (int) DB::table('stores')->insertGetId([
+                'store_type_id' => $typeId,
+                'code' => 'INT-LITERAL-'.$suffix,
+                'name' => 'Integration Literal '.$suffix,
+                'is_active' => true,
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+            $site = SmartOrderingSite::query()->create([
+                'public_id' => (string) Str::uuid(),
+                'store_id' => $storeId,
+                'slug' => 'integration-literal-'.strtolower($suffix),
+                'runtime_state' => 'ENABLED',
+                'master_enabled' => true,
+            ]);
+            $sites[$suffix] = $site;
+            $connector = $service->install(
+                $actor, $site, null, 'generic',
+                'literal_'.strtolower($suffix), 'Literal Connector '.$suffix,
+                ['orders.ingest'],
+            );
+            $service->setStatus($site, $connector, 'enabled');
+            $hook = $service->createWebhook(
+                $actor, $site, 'https://example.test/literal/'.strtolower($suffix), ['order.created'],
+            );
+            $events = $suffix === 'A'
+                ? ['event%_literal', 'eventABliteral', 'event!_literal', 'event\\_literal', 'launch-alpha', 'طلب-جملة']
+                : ['event%_foreign'];
+            $deliveries = $suffix === 'A'
+                ? ['hook%_literal', 'hookABliteral', 'hook!_literal', 'hook\\_literal', 'launch-hook', 'طلب-إشعار']
+                : ['hook%_foreign'];
+            foreach ($events as $key) {
+                $service->ingest($site, $connector, $key, 'order.accepted', ['key' => $key]);
+            }
+            foreach ($deliveries as $key) {
+                $service->queueWebhook($site, $hook['public_id'], $key, 'order.created', ['key' => $key]);
+            }
+        }
+
+        $site = $sites['A'];
+        $eventKeys = static fn (array $filters): array => array_column(
+            $service->integrationEvents($site, $filters), 'external_event_key',
+        );
+        $hookKeys = static fn (array $filters): array => array_column(
+            $service->webhookDeliveries($site, $filters), 'event_key',
+        );
+
+        $this->assertSame(['event%_literal'], $eventKeys(['q' => '%_']));
+        $this->assertSame(['event!_literal'], $eventKeys(['q' => '!_']));
+        $this->assertSame(['event\\_literal'], $eventKeys(['q' => '\\_']));
+        $this->assertSame(['launch-alpha'], $eventKeys(['q' => 'launch']));
+        $this->assertSame(['طلب-جملة'], $eventKeys(['q' => 'طلب']));
+        $this->assertSame([], $eventKeys(['q' => 'missing%_']));
+
+        $this->assertSame(['hook%_literal'], $hookKeys(['q' => '%_']));
+        $this->assertSame(['hook!_literal'], $hookKeys(['q' => '!_']));
+        $this->assertSame(['hook\\_literal'], $hookKeys(['q' => '\\_']));
+        $this->assertSame(['launch-hook'], $hookKeys(['q' => 'launch']));
+        $this->assertSame(['طلب-إشعار'], $hookKeys(['q' => 'طلب']));
+        $this->assertSame([], $hookKeys(['q' => 'missing%_']));
+
+        $this->assertSame(7, DB::table('restaurant_saas_integration_events')->count());
+        $this->assertSame(7, DB::table('restaurant_saas_webhook_deliveries')->count());
+        foreach ($service->integrationEvents($site) as $item) {
+            $this->assertArrayNotHasKey('payload_ciphertext', $item);
+            $this->assertArrayNotHasKey('credential_reference', $item);
+        }
+        foreach ($service->webhookDeliveries($site) as $item) {
+            $this->assertArrayNotHasKey('payload_ciphertext', $item);
+            $this->assertArrayNotHasKey('secret_ciphertext', $item);
+        }
+    }
 }

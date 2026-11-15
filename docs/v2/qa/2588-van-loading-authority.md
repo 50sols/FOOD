@@ -16,6 +16,16 @@
 - Preserve existing WMS warehouse-to-warehouse transfer semantics and P251 authority. Do **not** add a misleading live `تحميل للفان` link or count a warehouse-to-warehouse movement as a van load.
 - No new localized UI wording; framework validation messages already use the selected locale. No new route/permission/API schema.
 
+## Critical double-debit stock-authority gate (verified 2026-11-15)
+
+**Source-level blocker, not a UI acceptance deferral:** `CommercialVanSalesBridge::contract()` currently publishes `stock_source => inventories` and `inventory_authority => OrderInventoryReservationService::class`. `VanOrderController::store` goes through `CommercialVanSalesBridge::create` → `AdminOrderManagementService::create`; `ProductAvailabilityService::forStoreProduct` reads the wholesale principal's **warehouse inventories**. In contrast, `WarehouseTransferService::dispatch` immediately subtracts source `inventories.quantity` and posts `stock_movements`. Its destination is another **warehouse**, never a Van custody account. The imported `van_inventory_history_documents` do not back operational stock.
+
+**Failure if a naive Van-load debit is shipped now:** physical loading would reduce the source warehouse's available balance, but a later Van-originated order could still reserve/debit the same warehouse inventory through the existing order service. Neither a successfully returned HTTP 200 nor a GREEN generic CI check demonstrates conservation of stock between warehouse, Van, reserved order, delivered order and return. This can cause double-debits or sale denial for stock actually aboard the Van; a shadow `van_stock_balance` without a single order-consumption authority is not acceptable.
+
+**Mandatory integration before source completion:** (a) choose one authoritative, immutable warehouse/Van custody ledger with B2B-only store, active warehouse-bound Van assignment/trip and positive lot/valuation provenance; (b) change the Van order quote/reserve/dispatch/deliver/replay stock authority to use that same Van custody ledger exactly once (never both balances); (c) implement independent maker/checker, transactional dispatch/partial returns, sales deduction, returns, negative-stock rejection, concurrent locks and idempotency; (d) exercise creation/approval/load/Van sale/offline replay/delivery/return/reconciliation via seeded real HTTP against both ledgers under AR/EN, forged cross-store and Retail actor negatives; (e) expose a permission-projected responsive WMS/Van Operations contextual action, plus scoped Van runtime stock read/update contract and three-app impact. No posting endpoint may be enabled before this integrated contract is verified.
+
+The current three-file interim guard is **safe but incomplete**: do not remove the original DRAFT status, merge it, or close #2588 merely for successful Policy, Isolation and Required CI.
+
 ## Unmet P258 acceptance (issue stays OPEN, PR remains DRAFT)
 
 A future fully implemented Van Loading workflow requires an approved **canonical stock ownership model**, not an ad hoc rebranding of WMS transfers:

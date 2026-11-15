@@ -35,9 +35,9 @@ final class CartService
 
         $site = $branch->site()->firstOrFail();
         $published = $this->revisions->published($site);
-        abort_unless($published !== null, 409, 'Smart Ordering has no published revision.');
+        abort_unless($published !== null, 409, __('smart_ordering_cart.no_published_revision'));
         if ($revisionPublicId !== null && ! hash_equals((string) $published->public_id, $revisionPublicId)) {
-            abort(409, 'Requested Smart Ordering revision is stale or unpublished.');
+            abort(409, __('smart_ordering_cart.stale_or_unpublished_revision'));
         }
 
         $trustedAttribution = null;
@@ -99,7 +99,7 @@ final class CartService
 
         abort_unless(hash_equals((string) $cart->token_hash, hash('sha256', $token)), 404);
         $expiresAt = $cart->expires_at === null ? null : CarbonImmutable::parse((string) $cart->expires_at);
-        abort_if($expiresAt?->isPast() === true, 410, 'Cart expired.');
+        abort_if($expiresAt?->isPast() === true, 410, __('smart_ordering_cart.expired'));
 
         return $cart;
     }

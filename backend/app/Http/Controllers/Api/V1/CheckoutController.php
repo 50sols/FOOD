@@ -58,8 +58,14 @@ class CheckoutController extends Controller
         $idempotencyKey = trim((string) $request->header('Idempotency-Key', ''));
 
         if (strlen($idempotencyKey) < 16 || strlen($idempotencyKey) > 100) {
+            $authenticatedUser = $request->user();
+            $userLocale = $authenticatedUser instanceof User ? $authenticatedUser->locale : null;
+            $locale = in_array($userLocale, ['ar', 'en'], true)
+                ? $userLocale
+                : strtolower((string) $request->getPreferredLanguage(['ar', 'en']));
+
             throw ValidationException::withMessages([
-                'Idempotency-Key' => ['A valid Idempotency-Key header is required.'],
+                'Idempotency-Key' => [__('checkout_errors.idempotency_header_invalid', [], $locale === 'ar' ? 'ar' : 'en')],
             ]);
         }
 
@@ -95,8 +101,13 @@ class CheckoutController extends Controller
         }
 
         if (! in_array($paymentMethod, $allowedMethods, true)) {
+            $userLocale = $user->locale;
+            $locale = in_array($userLocale, ['ar', 'en'], true)
+                ? $userLocale
+                : strtolower((string) $request->getPreferredLanguage(['ar', 'en']));
+
             throw ValidationException::withMessages([
-                'payment_method' => ['The selected payment method is not configured.'],
+                'payment_method' => [__('checkout_errors.payment_method_not_configured', [], $locale === 'ar' ? 'ar' : 'en')],
             ]);
         }
 
@@ -141,10 +152,15 @@ class CheckoutController extends Controller
                 ->first();
 
             if ($existing instanceof Order) {
+                $userLocale = $user->locale;
+                $locale = in_array($userLocale, ['ar', 'en'], true)
+                    ? $userLocale
+                    : strtolower((string) $request->getPreferredLanguage(['ar', 'en']));
+
                 abort_if(
                     ! hash_equals((string) $existing->checkout_request_hash, $requestHash),
                     409,
-                    'Idempotency key was already used for a different checkout request.',
+                    __('checkout_errors.idempotency_reuse_conflict', [], $locale === 'ar' ? 'ar' : 'en'),
                 );
 
                 return [$existing, false];

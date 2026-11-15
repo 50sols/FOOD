@@ -144,6 +144,46 @@ class FlashOfferBackendTest extends TestCase
         $this->assertDatabaseHas('flash_offer_events', ['flash_offer_id' => $offer->id, 'event' => 'reservation_released']);
     }
 
+    public function test_finite_selling_quantity_overflow_is_rejected_before_stock_writes(): void
+    {
+        [, $product] = $this->offer();
+        $service = app(FlashOfferService::class);
+
+        $snapshot = fn (): array => [
+            'reservations' => DB::table('flash_reservations')->count(),
+            'events' => DB::table('flash_offer_events')->count(),
+            'stock_movements' => DB::table('stock_movements')->count(),
+            'orders' => DB::table('orders')->count(),
+            'payments' => DB::table('payments')->count(),
+            'reserved_quantity' => (float) DB::table('inventories')
+                ->where('id', $this->inventoryId)
+                ->value('reserved_quantity'),
+        ];
+        $before = $snapshot();
+
+        // PHP_FLOAT_MAX is finite but multiplying it by the real offering's
+        // 10x conversion factor produces INF; never feed it to stock arithmetic.
+        $this->assertTrue(is_finite(PHP_FLOAT_MAX));
+        $this->assertFalse(is_finite(PHP_FLOAT_MAX * (float) $product->conversion_factor));
+
+        try {
+            $service->reserve($this->user->id, $product->id, PHP_FLOAT_MAX, 'customer', 'v2-overflow-3809');
+            $this->fail('An overflowed base quantity must be rejected before inventory allocation.');
+        } catch (HttpException $exception) {
+            $this->assertSame(422, $exception->getStatusCode());
+            $this->assertSame('Resolved base quantity must be greater than zero.', $exception->getMessage());
+        }
+        $this->assertSame($before, $snapshot(), 'Overflow rejection must not mutate inventory or financial records.');
+
+        // Valid finite base quantities still use the original reservation path.
+        $reservation = $service->reserve($this->user->id, $product->id, 1.0, 'customer', 'v2-finite-3809');
+        $this->assertSame(10.0, (float) $reservation->reserved_base_quantity);
+        $this->assertSame(10.0, (float) DB::table('inventories')
+            ->where('id', $this->inventoryId)->value('reserved_quantity'));
+        $this->assertSame($before['reservations'] + 1, DB::table('flash_reservations')->count());
+        $this->assertSame($before['events'] + 1, DB::table('flash_offer_events')->count());
+    }
+
     public function test_expiry_is_timestamp_authoritative_and_returns_inventory(): void
     {
         [, $product] = $this->offer(reservationSeconds: 30);
@@ -276,6 +316,37 @@ class FlashOfferBackendTest extends TestCase
             ->assertJsonPath('data.0.products.0.name', 'Flash Product')
             ->assertJsonPath('data.0.products.0.available_quantity', 2);
 
+        // Guard the public Customer route before commercial policy evaluates a
+        // finite JSON number whose 10x conversion would overflow to infinity.
+        $beforeOverflowHttp = [
+            'reservations' => DB::table('flash_reservations')->count(),
+            'events' => DB::table('flash_offer_events')->count(),
+            'stock_movements' => DB::table('stock_movements')->count(),
+            'orders' => DB::table('orders')->count(),
+            'payments' => DB::table('payments')->count(),
+            'reserved' => (float) DB::table('inventories')
+                ->where('id', $this->inventoryId)->value('reserved_quantity'),
+        ];
+        $this->withHeaders([
+            'X-FOODEX-Store-ID' => (string) $this->storeId,
+            'X-FOODEX-Customer-Domain' => 'b2c',
+        ])->postJson('/api/v1/flash-offers/products/'.$offerProduct->id.'/reserve', [
+            'store_id' => $this->storeId,
+            'channel' => 'customer',
+            'quantity' => PHP_FLOAT_MAX,
+            'idempotency_key' => 'v2-3809-http-overflow',
+        ])->assertUnprocessable()
+            ->assertJsonPath('message', 'Resolved base quantity must be greater than zero.');
+        $this->assertSame($beforeOverflowHttp, [
+            'reservations' => DB::table('flash_reservations')->count(),
+            'events' => DB::table('flash_offer_events')->count(),
+            'stock_movements' => DB::table('stock_movements')->count(),
+            'orders' => DB::table('orders')->count(),
+            'payments' => DB::table('payments')->count(),
+            'reserved' => (float) DB::table('inventories')
+                ->where('id', $this->inventoryId)->value('reserved_quantity'),
+        ]);
+
         $reserve = $this->withHeaders([
             'X-FOODEX-Store-ID' => (string) $this->storeId,
             'X-FOODEX-Customer-Domain' => 'b2c',
@@ -309,6 +380,56 @@ class FlashOfferBackendTest extends TestCase
             'address_id' => $address->id,
             'payment_method' => 'cash_on_delivery',
         ];
+
+        // Customer checkout must reject every missing required field in the
+        // authenticated actor's language, without consuming the reservation.
+        // Read the persisted default; the freshly created factory model may not
+        // hydrate the database's NOT NULL locale default into its attributes.
+        $originalLocale = (string) DB::table('users')->where('id', $this->user->getKey())->value('locale');
+        $beforeMissingField = [
+            'flash_reservations' => DB::table('flash_reservations')->count(),
+            'flash_offer_events' => DB::table('flash_offer_events')->count(),
+            'orders' => DB::table('orders')->count(),
+            'order_items' => DB::table('order_items')->count(),
+            'invoices' => DB::table('invoices')->count(),
+            'payments' => DB::table('payments')->count(),
+            'audit_logs' => DB::table('audit_logs')->count(),
+            'stock_movements' => DB::table('stock_movements')->count(),
+            'reserved_quantity' => (float) DB::table('inventories')
+                ->where('id', $this->inventoryId)->value('reserved_quantity'),
+        ];
+        foreach ([
+            ['ar', 'en-US', 'هذا الحقل مطلوب لإتمام شراء عرض فلاش للعميل.'],
+            ['en', 'ar-KW', 'This field is required for Customer Flash checkout.'],
+            ['fr', 'ar-KW', 'هذا الحقل مطلوب لإتمام شراء عرض فلاش للعميل.'],
+            ['fr', 'en-US', 'This field is required for Customer Flash checkout.'],
+        ] as [$actorLocale, $headerLocale, $message]) {
+            $this->user->forceFill(['locale' => $actorLocale])->save();
+            foreach (['store_id', 'address_id', 'payment_method'] as $missing) {
+                $invalidPayload = $confirmPayload;
+                unset($invalidPayload[$missing]);
+
+                $this->withHeaders([
+                    ...$confirmHeaders,
+                    'Accept-Language' => $headerLocale,
+                ])->postJson('/api/v1/flash-reservations/'.$reservationId.'/confirm', $invalidPayload)
+                    ->assertUnprocessable()
+                    ->assertJsonPath('errors.'.$missing.'.0', $message);
+
+                foreach ($beforeMissingField as $table => $count) {
+                    $actual = $table === 'reserved_quantity'
+                        ? (float) DB::table('inventories')->where('id', $this->inventoryId)->value('reserved_quantity')
+                        : DB::table($table)->count();
+                    $this->assertSame($count, $actual, $table.' must remain unchanged on rejection');
+                }
+                $this->assertDatabaseHas('flash_reservations', [
+                    'id' => $reservationId,
+                    'status' => 'active',
+                    'order_id' => null,
+                ]);
+            }
+        }
+        $this->user->forceFill(['locale' => $originalLocale])->save();
 
         $checkout = $this->withHeaders($confirmHeaders)
             ->postJson('/api/v1/flash-reservations/'.$reservationId.'/confirm', $confirmPayload)
@@ -382,6 +503,253 @@ class FlashOfferBackendTest extends TestCase
             ->assertOk()
             ->assertJsonPath('id', $orderId);
         $this->assertSame(1, DB::table('orders')->where('b2c_customer_id', $domainCustomer->id)->count());
+
+        $alternativeAddress = Address::query()->create([
+            'customer_id' => $legacyCustomer->id,
+            'b2c_customer_id' => $domainCustomer->id,
+            'label' => 'Alternate',
+            'line1' => 'Flash Street 2',
+            'city' => 'Kuwait City',
+            'country_code' => 'KW',
+        ]);
+        $unchanged = [
+            'orders' => DB::table('orders')->count(),
+            'order_items' => DB::table('order_items')->count(),
+            'invoices' => DB::table('invoices')->count(),
+            'payments' => DB::table('payments')->count(),
+            'audit' => DB::table('audit_logs')->count(),
+            'flash_reservations' => DB::table('flash_reservations')->count(),
+            'flash_events' => DB::table('flash_offer_events')->count(),
+            'stock_movements' => DB::table('stock_movements')->count(),
+            'quota_reservations' => DB::table('commercial_quota_reservations')->count(),
+            'inventory_reserved' => (float) DB::table('inventories')->where('id', $this->inventoryId)->value('reserved_quantity'),
+        ];
+
+        foreach ([
+            'ar' => 'تم ربط حجز العرض بالفعل بطلب شراء مختلف.',
+            'en' => 'Flash reservation is already attached to a different checkout request.',
+        ] as $locale => $message) {
+            $this->user->forceFill(['locale' => $locale])->saveQuietly();
+            app()->setLocale($locale);
+
+            $this->withHeaders([
+                ...$confirmHeaders,
+                'Accept-Language' => $locale === 'ar' ? 'en' : 'ar',
+            ])->postJson('/api/v1/flash-reservations/'.$reservationId.'/confirm', [
+                ...$confirmPayload,
+                'address_id' => $alternativeAddress->id,
+            ])
+                ->assertConflict()
+                ->assertJsonPath('message', $message);
+
+            $this->assertSame($unchanged, [
+                'orders' => DB::table('orders')->count(),
+                'order_items' => DB::table('order_items')->count(),
+                'invoices' => DB::table('invoices')->count(),
+                'payments' => DB::table('payments')->count(),
+                'audit' => DB::table('audit_logs')->count(),
+                'flash_reservations' => DB::table('flash_reservations')->count(),
+                'flash_events' => DB::table('flash_offer_events')->count(),
+                'stock_movements' => DB::table('stock_movements')->count(),
+                'quota_reservations' => DB::table('commercial_quota_reservations')->count(),
+                'inventory_reserved' => (float) DB::table('inventories')->where('id', $this->inventoryId)->value('reserved_quantity'),
+            ]);
+            $this->assertDatabaseHas('flash_reservations', [
+                'id' => $reservationId,
+                'status' => 'confirmed',
+                'order_id' => $orderId,
+            ]);
+            $this->assertDatabaseHas('orders', [
+                'id' => $orderId,
+                'address_id' => $address->id,
+            ]);
+        }
+
+        $secondReservation = app(FlashOfferService::class)->reserve(
+            $this->user->id,
+            $offerProduct->id,
+            1,
+            'customer',
+            'v2-3793-distinct-flash-reserve',
+        );
+        $this->assertNotSame($reservationId, (string) $secondReservation->id);
+
+        $beforeConflictingReuse = [
+            'orders' => DB::table('orders')->count(),
+            'order_items' => DB::table('order_items')->count(),
+            'invoices' => DB::table('invoices')->count(),
+            'payments' => DB::table('payments')->count(),
+            'audit_logs' => DB::table('audit_logs')->count(),
+            'flash_reservations' => DB::table('flash_reservations')->count(),
+            'flash_offer_events' => DB::table('flash_offer_events')->count(),
+            'stock_movements' => DB::table('stock_movements')->count(),
+            'quota_reservations' => DB::table('commercial_quota_reservations')->count(),
+            'inventory_reserved' => (float) DB::table('inventories')->where('id', $this->inventoryId)->value('reserved_quantity'),
+        ];
+        $existingRequestHash = (string) DB::table('orders')->where('id', $orderId)->value('checkout_request_hash');
+
+        foreach ([
+            'ar' => 'تم استخدام مفتاح منع التكرار مسبقًا لطلب إتمام شراء مختلف.',
+            'en' => 'Idempotency key was already used for a different checkout request.',
+        ] as $locale => $message) {
+            $this->user->forceFill(['locale' => $locale])->saveQuietly();
+            app()->setLocale($locale);
+
+            $this->withHeaders([
+                ...$confirmHeaders,
+                'Accept-Language' => $locale === 'ar' ? 'en' : 'ar',
+            ])->postJson('/api/v1/flash-reservations/'.$secondReservation->id.'/confirm', $confirmPayload)
+                ->assertConflict()
+                ->assertJsonPath('message', $message);
+
+            $this->assertSame($beforeConflictingReuse, [
+                'orders' => DB::table('orders')->count(),
+                'order_items' => DB::table('order_items')->count(),
+                'invoices' => DB::table('invoices')->count(),
+                'payments' => DB::table('payments')->count(),
+                'audit_logs' => DB::table('audit_logs')->count(),
+                'flash_reservations' => DB::table('flash_reservations')->count(),
+                'flash_offer_events' => DB::table('flash_offer_events')->count(),
+                'stock_movements' => DB::table('stock_movements')->count(),
+                'quota_reservations' => DB::table('commercial_quota_reservations')->count(),
+                'inventory_reserved' => (float) DB::table('inventories')->where('id', $this->inventoryId)->value('reserved_quantity'),
+            ]);
+            $this->assertDatabaseHas('flash_reservations', [
+                'id' => $secondReservation->id,
+                'status' => 'active',
+                'order_id' => null,
+            ]);
+            $this->assertDatabaseHas('flash_reservations', [
+                'id' => $reservationId,
+                'status' => 'confirmed',
+                'order_id' => $orderId,
+            ]);
+            $this->assertDatabaseHas('orders', [
+                'id' => $orderId,
+                'checkout_request_hash' => $existingRequestHash,
+                'address_id' => $address->id,
+            ]);
+        }
+    }
+
+    public function test_customer_flash_checkout_rejects_invalid_idempotency_header_in_both_locales_without_writes(): void
+    {
+        [, $offerProduct] = $this->offer();
+        $reservation = app(FlashOfferService::class)->reserve(
+            $this->user->id,
+            $offerProduct->id,
+            1,
+            'customer',
+            'v2-3761-flash-reservation',
+        );
+        Sanctum::actingAs($this->user);
+
+        $baseline = [
+            'orders' => DB::table('orders')->count(),
+            'order_items' => DB::table('order_items')->count(),
+            'invoices' => DB::table('invoices')->count(),
+            'payments' => DB::table('payments')->count(),
+            'audit' => DB::table('audit_logs')->count(),
+            'reservations' => DB::table('flash_reservations')->count(),
+            'events' => DB::table('flash_offer_events')->count(),
+            'inventory_reserved' => (float) DB::table('inventories')->where('id', $this->inventoryId)->value('reserved_quantity'),
+            'reservation_status' => DB::table('flash_reservations')->where('id', $reservation->id)->value('status'),
+        ];
+
+        foreach ([
+            'ar' => 'يجب تقديم مفتاح منع تكرار صالح في ترويسة الطلب.',
+            'en' => 'A valid Idempotency-Key header is required.',
+        ] as $locale => $message) {
+            $this->user->forceFill(['locale' => $locale])->save();
+            app()->setLocale($locale);
+
+            foreach (['', 'short', str_repeat('x', 101)] as $invalidKey) {
+                $this->withHeaders([
+                    'X-FOODEX-Store-ID' => (string) $this->storeId,
+                    'X-FOODEX-Customer-Domain' => 'b2c',
+                    'Accept-Language' => $locale,
+                    'Idempotency-Key' => $invalidKey,
+                ])->postJson('/api/v1/flash-reservations/'.$reservation->id.'/confirm', [
+                    'store_id' => $this->storeId,
+                    'channel' => 'customer',
+                    'address_id' => 1,
+                    'payment_method' => 'cash_on_delivery',
+                ])
+                    ->assertUnprocessable()
+                    ->assertJsonPath('errors.Idempotency-Key.0', $message);
+
+                $this->assertSame($baseline, [
+                    'orders' => DB::table('orders')->count(),
+                    'order_items' => DB::table('order_items')->count(),
+                    'invoices' => DB::table('invoices')->count(),
+                    'payments' => DB::table('payments')->count(),
+                    'audit' => DB::table('audit_logs')->count(),
+                    'reservations' => DB::table('flash_reservations')->count(),
+                    'events' => DB::table('flash_offer_events')->count(),
+                    'inventory_reserved' => (float) DB::table('inventories')->where('id', $this->inventoryId)->value('reserved_quantity'),
+                    'reservation_status' => DB::table('flash_reservations')->where('id', $reservation->id)->value('status'),
+                ]);
+            }
+        }
+    }
+
+    public function test_customer_flash_checkout_unconfigured_payment_method_is_bilingual_and_write_free(): void
+    {
+        [, $offerProduct] = $this->offer();
+        $reservation = app(FlashOfferService::class)->reserve(
+            $this->user->id,
+            $offerProduct->id,
+            1,
+            'customer',
+            'v2-3768-payment-method-reservation',
+        );
+        Sanctum::actingAs($this->user);
+
+        $baseline = [
+            'orders' => DB::table('orders')->count(),
+            'order_items' => DB::table('order_items')->count(),
+            'invoices' => DB::table('invoices')->count(),
+            'payments' => DB::table('payments')->count(),
+            'audit' => DB::table('audit_logs')->count(),
+            'reservations' => DB::table('flash_reservations')->count(),
+            'events' => DB::table('flash_offer_events')->count(),
+            'inventory_reserved' => (float) DB::table('inventories')->where('id', $this->inventoryId)->value('reserved_quantity'),
+            'reservation_status' => DB::table('flash_reservations')->where('id', $reservation->id)->value('status'),
+        ];
+
+        foreach ([
+            'ar' => 'طريقة الدفع المحددة غير مهيأة.',
+            'en' => 'The selected payment method is not configured.',
+        ] as $locale => $message) {
+            $this->user->forceFill(['locale' => $locale])->save();
+            app()->setLocale($locale);
+
+            $this->withHeaders([
+                'X-FOODEX-Store-ID' => (string) $this->storeId,
+                'X-FOODEX-Customer-Domain' => 'b2c',
+                'Accept-Language' => $locale === 'ar' ? 'en' : 'ar',
+                'Idempotency-Key' => 'v2-3768-flash-payment-method-'.$locale,
+            ])->postJson('/api/v1/flash-reservations/'.$reservation->id.'/confirm', [
+                'store_id' => $this->storeId,
+                'channel' => 'customer',
+                'address_id' => 1,
+                'payment_method' => 'unsupported_offline_payment',
+            ])
+                ->assertUnprocessable()
+                ->assertJsonPath('errors.payment_method.0', $message);
+
+            $this->assertSame($baseline, [
+                'orders' => DB::table('orders')->count(),
+                'order_items' => DB::table('order_items')->count(),
+                'invoices' => DB::table('invoices')->count(),
+                'payments' => DB::table('payments')->count(),
+                'audit' => DB::table('audit_logs')->count(),
+                'reservations' => DB::table('flash_reservations')->count(),
+                'events' => DB::table('flash_offer_events')->count(),
+                'inventory_reserved' => (float) DB::table('inventories')->where('id', $this->inventoryId)->value('reserved_quantity'),
+                'reservation_status' => DB::table('flash_reservations')->where('id', $reservation->id)->value('status'),
+            ]);
+        }
     }
 
     public function test_confirming_expired_reservation_commits_expiry_and_releases_inventory(): void

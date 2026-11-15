@@ -3,6 +3,7 @@
 namespace Tests\Feature;
 
 use App\Models\B2bAccount;
+use App\Models\B2cCustomer;
 use App\Models\Cart;
 use App\Models\Customer;
 use App\Models\User;
@@ -191,6 +192,89 @@ class CartDomainTest extends TestCase
             ->assertJsonPath('subtotal', 3);
     }
 
+    public function test_guest_cart_merge_selling_unit_conflict_is_bilingual_and_preserves_both_carts(): void
+    {
+        DB::table('product_selling_units')->insert([
+            'product_id' => $this->productId,
+            'unit_id' => null,
+            'code' => 'BAG-MERGE',
+            'name' => 'Bag',
+            'conversion_factor' => 3,
+            'price' => 4.5,
+            'sku' => 'CART-001-MERGE',
+            'is_base' => false,
+            'is_active' => true,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $guest = $this->postJson('/api/v1/cart/items', [
+            'store_id' => $this->b2cStoreId,
+            'product_id' => $this->productId,
+            'quantity' => 1,
+            'selling_unit_code' => 'BAG-MERGE',
+        ])->assertCreated();
+        $token = (string) $guest->headers->get('X-Guest-Token');
+        $guestCartId = (int) $guest->json('id');
+
+        Sanctum::actingAs($this->b2cUser);
+        $owned = $this->postJson('/api/v1/cart/items', [
+            'store_id' => $this->b2cStoreId,
+            'product_id' => $this->productId,
+            'quantity' => 1,
+        ])->assertCreated();
+        $ownedCartId = (int) $owned->json('id');
+
+        $before = [
+            'carts' => DB::table('carts')->count(),
+            'cart_items' => DB::table('cart_items')->count(),
+            'orders' => DB::table('orders')->count(),
+            'payments' => DB::table('payments')->count(),
+            'audit_logs' => DB::table('audit_logs')->count(),
+            'reserved_quantity' => (float) DB::table('inventories')
+                ->where('warehouse_id', $this->b2cWarehouseId)
+                ->where('product_id', $this->productId)
+                ->value('reserved_quantity'),
+        ];
+
+        foreach ([
+            'ar' => 'لا يمكن دمج سلتي المشتريات عند اختلاف وحدة بيع المنتج نفسه. احذف أحد السطرين المتعارضين أولًا.',
+            'en' => 'Cart merge requires one selling unit per product. Remove a conflicting line first.',
+        ] as $locale => $message) {
+            $this->b2cUser->forceFill(['locale' => $locale])->save();
+
+            $this->withHeaders([
+                'X-Guest-Token' => $token,
+                'Accept-Language' => $locale === 'ar' ? 'en' : 'ar',
+            ])->getJson("/api/v1/cart?store={$this->b2cStoreId}")
+                ->assertConflict()
+                ->assertJsonPath('message', $message);
+
+            $this->assertSame($before['carts'], DB::table('carts')->count());
+            $this->assertSame($before['cart_items'], DB::table('cart_items')->count());
+            $this->assertSame($before['orders'], DB::table('orders')->count());
+            $this->assertSame($before['payments'], DB::table('payments')->count());
+            $this->assertSame($before['audit_logs'], DB::table('audit_logs')->count());
+            $this->assertSame($before['reserved_quantity'], (float) DB::table('inventories')
+                ->where('warehouse_id', $this->b2cWarehouseId)
+                ->where('product_id', $this->productId)
+                ->value('reserved_quantity'));
+            $this->assertDatabaseHas('carts', ['id' => $guestCartId, 'guest_token' => $token]);
+            $this->assertDatabaseHas('cart_items', [
+                'cart_id' => $guestCartId,
+                'product_id' => $this->productId,
+                'selling_unit_code' => 'BAG-MERGE',
+                'quantity' => 3,
+            ]);
+            $this->assertDatabaseHas('cart_items', [
+                'cart_id' => $ownedCartId,
+                'product_id' => $this->productId,
+                'selling_unit_code' => null,
+                'quantity' => 1,
+            ]);
+        }
+    }
+
     public function test_carton_or_bag_uses_authoritative_price_and_base_stock(): void
     {
         DB::table('product_selling_units')->insert([
@@ -234,6 +318,67 @@ class CartDomainTest extends TestCase
                 'quantity' => 1,
             ])
             ->assertUnprocessable();
+    }
+
+    public function test_guest_cart_same_product_selling_unit_change_is_localized_and_read_only(): void
+    {
+        DB::table('product_selling_units')->insert([
+            'product_id' => $this->productId,
+            'unit_id' => null,
+            'code' => 'BAG-CONFLICT',
+            'name' => 'Bag conflict',
+            'conversion_factor' => 3,
+            'price' => 4.5,
+            'sku' => 'CART-001-BAG-CONFLICT',
+            'is_base' => false,
+            'is_active' => true,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $created = $this->postJson('/api/v1/cart/items', [
+            'store_id' => $this->b2cStoreId,
+            'product_id' => $this->productId,
+            'quantity' => 1,
+            'selling_unit_code' => 'BAG-CONFLICT',
+        ])->assertCreated();
+
+        $token = (string) $created->headers->get('X-Guest-Token');
+        $itemId = (int) $created->json('items.0.id');
+        $original = DB::table('cart_items')->where('id', $itemId)->first();
+        $counts = [
+            'carts' => DB::table('carts')->count(),
+            'cart_items' => DB::table('cart_items')->count(),
+            'orders' => DB::table('orders')->count(),
+            'audit_logs' => DB::table('audit_logs')->count(),
+            'stock_movements' => DB::table('stock_movements')->count(),
+        ];
+
+        foreach ([
+            'ar-KW' => 'احذف سطر المنتج الموجود قبل تغيير وحدة بيعه.',
+            'en-US' => 'Remove the existing product line before changing its selling unit.',
+        ] as $language => $message) {
+            $this->withHeaders([
+                'X-Guest-Token' => $token,
+                'Accept-Language' => $language,
+            ])->postJson('/api/v1/cart/items', [
+                'store_id' => $this->b2cStoreId,
+                'product_id' => $this->productId,
+                'quantity' => 1,
+            ])->assertUnprocessable()
+                ->assertJsonPath('errors.selling_unit_code.0', $message);
+
+            $this->assertEquals($original, DB::table('cart_items')->where('id', $itemId)->first());
+            foreach ($counts as $table => $count) {
+                $this->assertSame($count, DB::table($table)->count(), $table.' must remain unchanged');
+            }
+            $this->assertDatabaseHas('inventories', [
+                'warehouse_id' => $this->b2cWarehouseId,
+                'product_id' => $this->productId,
+                'quantity' => 5,
+                'reserved_quantity' => 0,
+            ]);
+        }
     }
 
     public function test_stale_selling_unit_remains_removable_during_cart_review_but_strict_checkout_fails(): void
@@ -288,6 +433,46 @@ class CartDomainTest extends TestCase
             ->assertJsonCount(0, 'items');
     }
 
+    public function test_authenticated_cart_without_store_context_reports_bilingual_422_and_does_not_create_records(): void
+    {
+        Sanctum::actingAs($this->b2cUser);
+
+        $cartCount = DB::table('carts')->count();
+        $itemCount = DB::table('cart_items')->count();
+        $orderCount = DB::table('orders')->count();
+
+        foreach ([
+            'ar' => ['en', 'يجب تحديد متجر عند بدء سلة المشتريات بعد تسجيل الدخول.'],
+            'en' => ['ar', 'A store is required when initializing an authenticated cart.'],
+        ] as $locale => [$languageHeader, $message]) {
+            $this->b2cUser->forceFill(['locale' => $locale])->save();
+
+            $this->withHeaders([
+                'X-Guest-Token' => '',
+                'Accept-Language' => $languageHeader,
+            ])->getJson('/api/v1/cart')
+                ->assertUnprocessable()
+                ->assertJsonValidationErrors(['store'])
+                ->assertJsonPath('errors.store.0', $message);
+
+            $this->assertSame($cartCount, DB::table('carts')->count());
+            $this->assertSame($itemCount, DB::table('cart_items')->count());
+            $this->assertSame($orderCount, DB::table('orders')->count());
+        }
+
+        // Explicit store selection remains the required, authorized success path.
+        $this->withHeaders(['X-Guest-Token' => '', 'Accept-Language' => 'en'])
+            ->getJson("/api/v1/cart?store={$this->b2cStoreId}")
+            ->assertOk()
+            ->assertJsonPath('store_id', $this->b2cStoreId)
+            ->assertJsonPath('channel', 'b2c')
+            ->assertJsonCount(0, 'items');
+
+        $this->assertSame($cartCount + 1, DB::table('carts')->count());
+        $this->assertSame($itemCount, DB::table('cart_items')->count());
+        $this->assertSame($orderCount, DB::table('orders')->count());
+    }
+
     public function test_authenticated_cart_items_are_customer_owned(): void
     {
         Sanctum::actingAs($this->b2cUser);
@@ -319,6 +504,59 @@ class CartDomainTest extends TestCase
             ->assertNotFound();
         $this->deleteJson("/api/v1/cart/items/{$itemId}")
             ->assertNotFound();
+    }
+
+    public function test_authenticated_b2c_guest_cart_merge_rejects_foreign_store_in_both_locales_without_writes(): void
+    {
+        $guest = $this->postJson('/api/v1/cart/items', [
+            'store_id' => $this->b2cStoreId,
+            'product_id' => $this->productId,
+            'quantity' => 1,
+        ])->assertCreated();
+        $token = (string) $guest->headers->get('X-Guest-Token');
+
+        $otherStoreId = (int) DB::table('stores')->insertGetId([
+            'store_type_id' => DB::table('store_types')->where('code', 'B2C')->value('id'),
+            'code' => 'CART-B2C-SECOND',
+            'name' => 'Another Retail Store',
+            'is_active' => true,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        B2cCustomer::query()->create([
+            'legacy_customer_id' => $this->b2cCustomer->id,
+            'store_id' => $otherStoreId,
+            'user_id' => $this->b2cUser->id,
+            'name' => $this->b2cCustomer->name,
+            'email' => $this->b2cUser->email,
+        ]);
+
+        Sanctum::actingAs($this->b2cUser);
+        $initialCarts = DB::table('carts')->count();
+        $initialItems = DB::table('cart_items')->count();
+
+        foreach ([
+            'ar' => 'سلة الضيف مرتبطة بمتجر آخر.',
+            'en' => 'The guest cart belongs to another store.',
+        ] as $locale => $message) {
+            $this->b2cUser->forceFill(['locale' => $locale])->save();
+
+            $this->withHeaders(['X-Guest-Token' => $token, 'Accept-Language' => $locale])
+                ->getJson("/api/v1/cart?store={$otherStoreId}")
+                ->assertConflict()
+                ->assertJsonPath('message', $message);
+
+            $this->assertSame($initialCarts, DB::table('carts')->count());
+            $this->assertSame($initialItems, DB::table('cart_items')->count());
+            $this->assertDatabaseHas('carts', [
+                'store_id' => $this->b2cStoreId,
+                'guest_token' => $token,
+            ]);
+            $this->assertDatabaseMissing('carts', [
+                'store_id' => $otherStoreId,
+                'guest_token' => $token,
+            ]);
+        }
     }
 
     public function test_b2b_customer_is_restricted_to_b2b_cart_channel(): void
@@ -354,9 +592,24 @@ class CartDomainTest extends TestCase
             'quantity' => 1,
         ])->assertNotFound();
 
-        $this->withHeader('X-Guest-Token', $guestToken)
-            ->getJson("/api/v1/cart?store={$this->b2bStoreId}")
-            ->assertConflict();
+        $initialCartCount = DB::table('carts')->count();
+        $initialItemCount = DB::table('cart_items')->count();
+
+        foreach ([
+            'ar' => 'لا يمكن دمج سلة ضيف B2C في سلة B2B.',
+            'en' => 'A B2C guest cart cannot be merged into a B2B cart.',
+        ] as $locale => $message) {
+            $b2bUser->forceFill(['locale' => $locale])->save();
+
+            $this->withHeaders(['X-Guest-Token' => $guestToken, 'Accept-Language' => $locale])
+                ->getJson("/api/v1/cart?store={$this->b2bStoreId}")
+                ->assertConflict()
+                ->assertJsonPath('message', $message);
+
+            $this->assertSame($initialCartCount, DB::table('carts')->count());
+            $this->assertSame($initialItemCount, DB::table('cart_items')->count());
+            $this->assertDatabaseMissing('carts', ['store_id' => $this->b2bStoreId]);
+        }
 
         $this->withHeader('X-Guest-Token', '')
             ->postJson('/api/v1/cart/items', [

@@ -217,7 +217,7 @@ final class MobileAppDownloadController extends Controller
         }
 
         if (! is_string($app) || ! array_key_exists($app, self::APPS)) {
-            abort(422, 'Unsupported FOODEX mobile application.');
+            abort(422, __('admin.mobile_apps.unsupported_app'));
         }
 
         return $app;

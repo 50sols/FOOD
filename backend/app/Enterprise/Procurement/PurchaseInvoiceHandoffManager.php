@@ -61,7 +61,9 @@ final class PurchaseInvoiceHandoffManager
         ])->validate();
 
         $perPage = max(10, min(100, $perPage));
-        $term = str_replace(['%', '_'], '', trim((string) ($validated['q'] ?? '')));
+        $term = trim((string) ($validated['q'] ?? ''));
+        // Preserve typed symbols; only the appended suffix '%' is a wildcard.
+        $literalPrefix = str_replace(['!', '%', '_'], ['!!', '!%', '!_'], $term).'%';
 
         return $this->visibleQuery($scope)
             ->when(
@@ -78,10 +80,10 @@ final class PurchaseInvoiceHandoffManager
             )
             ->when(
                 $term !== '',
-                fn (Builder $query): Builder => $query->where(function (Builder $nested) use ($term): void {
+                fn (Builder $query): Builder => $query->where(function (Builder $nested) use ($literalPrefix): void {
                     $nested
-                        ->where('invoice_number', 'like', $term.'%')
-                        ->orWhere('supplier_invoice_number', 'like', $term.'%');
+                        ->whereRaw("invoice_number LIKE ? ESCAPE '!'", [$literalPrefix])
+                        ->orWhereRaw("supplier_invoice_number LIKE ? ESCAPE '!'", [$literalPrefix]);
                 }),
             )
             ->orderByDesc('id')
