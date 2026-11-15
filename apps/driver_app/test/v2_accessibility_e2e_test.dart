@@ -101,4 +101,56 @@ void main() {
       },
     );
   }
+
+  for (final locale in const [Locale('ar'), Locale('en')]) {
+    testWidgets(
+        'Driver login remains accessible at 1.5x text in ${locale.languageCode}',
+        (tester) async {
+      final semantics = tester.ensureSemantics();
+      tester.view.physicalSize = const Size(390, 844);
+      tester.view.devicePixelRatio = 1;
+      tester.platformDispatcher.textScaleFactorTestValue = 1.5;
+      addTearDown(() {
+        tester.view.resetPhysicalSize();
+        tester.view.resetDevicePixelRatio();
+        tester.platformDispatcher.clearTextScaleFactorTestValue();
+      });
+
+      await tester.pumpWidget(
+        FoodexDriverApp(
+          locale: locale,
+          apiBaseUrl: 'https://example.invalid',
+          translationFetcher: (_) async => <String, String>{},
+        ),
+      );
+      await tester.pumpAndSettle();
+      final email = find.byKey(const Key('driver-login-email'));
+      final password = find.byKey(const Key('driver-login-password'));
+      expect(email, findsOneWidget);
+      expect(password, findsOneWidget);
+      expect(MediaQuery.textScalerOf(tester.element(email)).scale(16),
+          greaterThan(16));
+      expect(Directionality.of(tester.element(email)),
+          locale.languageCode == 'ar' ? TextDirection.rtl : TextDirection.ltr);
+      await tester.ensureVisible(password);
+      await tester.pump();
+      expect(tester.getSize(password).height, greaterThanOrEqualTo(44));
+      final label = tester.widget<TextField>(password).decoration!.labelText!;
+      expect(find.bySemanticsLabel(label), findsWidgets);
+      await tester.tap(password);
+      await tester.pump();
+      expect(
+        tester
+            .widget<EditableText>(find.descendant(
+              of: password,
+              matching: find.byType(EditableText),
+            ))
+            .focusNode
+            .hasFocus,
+        isTrue,
+      );
+      expect(tester.takeException(), isNull);
+      semantics.dispose();
+    });
+  }
 }
