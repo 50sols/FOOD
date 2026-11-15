@@ -10,4 +10,5 @@ return [
     'overlapping_primary_van' => 'Van already has an overlapping active primary assignment.',
     'overlapping_primary_territory' => 'Territory already has an overlapping active primary Van assignment.',
     'assignment_status_invalid' => 'Assignment status must be active or ended.',
+    'self_transfer_target' => 'Transfer target must be a different Van.',
 ];
