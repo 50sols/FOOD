@@ -104,6 +104,64 @@ def _read_json(path: Path) -> dict[str, Any]:
     return data
 
 
+def _validate_local_member_header(archive: zipfile.ZipFile, info: zipfile.ZipInfo) -> None:
+    """Reject different extraction metadata in LOCAL vs CENTRAL ZIP headers.
+
+    Python testzip() uses CENTRAL CRC/sizes. A cPanel/Windows unzip tool may
+    honor LOCAL values instead, even when SHA-256/manifest sidecars agree.
+    """
+    source = archive.fp
+    _require(source is not None and info.header_offset >= 0,
+             f"Missing local ZIP header: {info.filename!r}")
+    source.seek(info.header_offset)
+    header = source.read(30)
+    _require(len(header) == 30 and header[:4] == b"PK\\x03\\x04",
+             f"Invalid local ZIP header: {info.filename!r}")
+    flags = int.from_bytes(header[6:8], "little")
+    method = int.from_bytes(header[8:10], "little")
+    _require(flags == info.flag_bits,
+             f"Conflicting local ZIP flags: {info.filename!r}")
+    _require(method == info.compress_type,
+             f"Conflicting local ZIP method: {info.filename!r}")
+
+    crc = int.from_bytes(header[14:18], "little")
+    compressed = int.from_bytes(header[18:22], "little")
+    uncompressed = int.from_bytes(header[22:26], "little")
+    if flags & 0x0008:
+        # Data-descriptor entries may use zero LOCAL placeholders.
+        _require(crc in (0, info.CRC), f"Conflicting local ZIP CRC: {info.filename!r}")
+        _require(compressed in (0, info.compress_size) and
+                 uncompressed in (0, info.file_size),
+                 f"Conflicting local ZIP sizes: {info.filename!r}")
+    else:
+        _require(crc == info.CRC, f"Conflicting local ZIP CRC: {info.filename!r}")
+        _require(compressed == info.compress_size and uncompressed == info.file_size,
+                 f"Conflicting local ZIP sizes: {info.filename!r}")
+
+    name_size = int.from_bytes(header[26:28], "little")
+    extra_size = int.from_bytes(header[28:30], "little")
+    name_bytes = source.read(name_size)
+    _require(len(name_bytes) == name_size, f"Truncated local ZIP name: {info.filename!r}")
+    try:
+        local_name = name_bytes.decode("utf-8" if flags & 0x0800 else "cp437")
+    except UnicodeDecodeError as exc:
+        raise PackageContractError(f"Invalid local ZIP name encoding: {info.filename!r}") from exc
+    _require(local_name == info.filename, f"Conflicting local ZIP name: {info.filename!r}")
+    extra = source.read(extra_size)
+    _require(len(extra) == extra_size, f"Truncated local ZIP extra: {info.filename!r}")
+    offset = 0
+    while offset < len(extra):
+        _require(offset + 4 <= len(extra), f"Malformed local ZIP extra: {info.filename!r}")
+        field_id = int.from_bytes(extra[offset:offset + 2], "little")
+        length = int.from_bytes(extra[offset + 2:offset + 4], "little")
+        offset += 4
+        _require(length <= len(extra) - offset,
+                 f"Malformed local ZIP extra: {info.filename!r}")
+        _require(field_id != 0x7075,
+                 f"Ambiguous local Unicode Path ZIP extra: {info.filename!r}")
+        offset += length
+
+
 def _member_name(info: zipfile.ZipInfo) -> str:
     name = info.filename
     # A literal backslash can be a filename character on Linux, but is a
@@ -300,6 +358,7 @@ def validate_package(
                         "ZIP VERSION entry exceeds safe metadata size.",
                     )
                 name = _member_name(info)
+                _validate_local_member_header(archive, info)
                 portable_name = unicodedata.normalize("NFC", name).casefold()
                 _require(
                     name not in seen and portable_name not in portable_seen,
