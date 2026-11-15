@@ -104,12 +104,17 @@ final class FlashCheckoutService
 
             if ($locked->status === 'confirmed' && $locked->order_id !== null) {
                 $existing = Order::query()->whereKey((int) $locked->order_id)->firstOrFail();
+                $userLocale = $user->locale;
+                $locale = in_array($userLocale, ['ar', 'en'], true)
+                    ? $userLocale
+                    : strtolower((string) $request->getPreferredLanguage(['ar', 'en']));
+
                 abort_if(
                     (int) $existing->store_id !== $storeId
                     || (int) $existing->address_id !== $addressId
                     || (string) $existing->payment_method !== $paymentMethod,
                     409,
-                    'Flash reservation is already attached to a different checkout request.',
+                    __('flash_checkout.confirmed_request_mismatch', [], $locale === 'ar' ? 'ar' : 'en'),
                 );
 
                 return [$existing, false];
