@@ -253,7 +253,7 @@ final class FieldOperationsController extends Controller
             try {
                 $inventoryService->page($user, (int) $van->getKey());
                 $canViewVanWarehouseStock = true;
-            } catch (ModelNotFoundException | HttpExceptionInterface) {
+            } catch (ModelNotFoundException|HttpExceptionInterface) {
                 // A Van detail can remain readable when its assigned WMS
                 // warehouse or Inventory module is inaccessible.
             }
