@@ -411,8 +411,11 @@ class FlashOfferBackendTest extends TestCase
                 ->assertJsonPath('errors.flash_offer.0', $message)
                 ->assertDontSee('PRODUCT_INACTIVE', false);
 
-            $this->assertSame($beforePolicyReject, $policyRejectSnapshot(),
-                'Commercial policy denial must not write any Flash, inventory or finance state.');
+            $this->assertSame(
+                $beforePolicyReject,
+                $policyRejectSnapshot(),
+                'Commercial policy denial must not write any Flash, inventory or finance state.',
+            );
         }
 
         DB::table('products')->where('id', $this->productId)->update(['is_active' => true]);
