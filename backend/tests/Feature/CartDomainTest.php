@@ -583,6 +583,17 @@ class CartDomainTest extends TestCase
         $tierId = (int) DB::table('b2b_price_tiers')->insertGetId(['code' => 'CART-TIER', 'name' => 'Cart Tier', 'priority' => 1, 'created_at' => now(), 'updated_at' => now()]);
         B2bAccount::query()->create(['customer_id' => $b2bCustomer->id, 'price_tier_id' => $tierId, 'company_name' => 'Cart Buyer', 'status' => 'active']);
         DB::table('b2b_price_rules')->insert(['price_tier_id' => $tierId, 'store_id' => $this->b2bStoreId, 'product_id' => $this->b2bProductId, 'unit_price' => 2.500, 'minimum_quantity' => 1, 'is_active' => true, 'created_at' => now(), 'updated_at' => now()]);
+        // The source defaults to base-price mode. Explicitly activate tier
+        // pricing, otherwise a price rule is ignored and its minimum is 1.
+        DB::table('settings')->updateOrInsert(
+            ['store_id' => $this->b2bStoreId, 'key' => 'b2b.pricing_tiers_enabled'],
+            [
+                'value' => json_encode(true, JSON_THROW_ON_ERROR),
+                'is_secret' => false,
+                'created_at' => now(),
+                'updated_at' => now(),
+            ],
+        );
 
         Sanctum::actingAs($b2bUser);
 
@@ -618,6 +629,69 @@ class CartDomainTest extends TestCase
                 'quantity' => 1,
             ])->assertCreated()
             ->assertJsonPath('channel', 'b2b');
+
+        // After a permitted B2B cart creation, enforce the authoritative
+        // minimum and ordering increment on subsequent add/update requests.
+        DB::table('b2b_price_rules')
+            ->where('price_tier_id', $tierId)
+            ->where('store_id', $this->b2bStoreId)
+            ->where('product_id', $this->b2bProductId)
+            ->update(['minimum_quantity' => 3, 'ordering_increment' => 2]);
+
+        $b2bCartId = (int) DB::table('carts')->where('store_id', $this->b2bStoreId)->value('id');
+        $b2bItemId = (int) DB::table('cart_items')->where('cart_id', $b2bCartId)->value('id');
+        $beforeDenials = [
+            'carts' => DB::table('carts')->count(),
+            'cart_items' => DB::table('cart_items')->count(),
+            'orders' => DB::table('orders')->count(),
+            'payments' => DB::table('payments')->count(),
+            'audit_logs' => DB::table('audit_logs')->count(),
+            'stock_movements' => DB::table('stock_movements')->count(),
+        ];
+        $inventoryBefore = DB::table('inventories')
+            ->where('product_id', $this->b2bProductId)
+            ->first(['quantity', 'reserved_quantity']);
+
+        foreach ([
+            'ar' => ['en-US', 'يجب أن تستوفي الكمية الحد الأدنى للطلب بالجملة ومضاعفات الزيادة المحددة.'],
+            'en' => ['ar-KW', 'Quantity must meet the B2B minimum and ordering increment.'],
+        ] as $locale => [$contraryHeader, $expectedMessage]) {
+            $b2bUser->forceFill(['locale' => $locale])->save();
+
+            $this->withHeaders(['X-Guest-Token' => '', 'Accept-Language' => $contraryHeader])
+                ->postJson('/api/v1/cart/items', [
+                    'store_id' => $this->b2bStoreId,
+                    'product_id' => $this->b2bProductId,
+                    'quantity' => 1,
+                ])
+                ->assertConflict()
+                ->assertJsonPath('message', $expectedMessage);
+
+            $this->patchJson("/api/v1/cart/items/{$b2bItemId}", ['quantity' => 4])
+                ->assertConflict()
+                ->assertJsonPath('message', $expectedMessage);
+
+            foreach ($beforeDenials as $table => $expectedCount) {
+                $this->assertSame($expectedCount, DB::table($table)->count(), $table.' changed after a denied B2B cart mutation');
+            }
+            $this->assertDatabaseHas('cart_items', [
+                'id' => $b2bItemId,
+                'cart_id' => $b2bCartId,
+                'product_id' => $this->b2bProductId,
+                'quantity' => 1,
+            ]);
+            $this->assertEquals(
+                $inventoryBefore,
+                DB::table('inventories')->where('product_id', $this->b2bProductId)->first(['quantity', 'reserved_quantity']),
+            );
+        }
+
+        // A valid quantity is still accepted; the localization fix does not
+        // alter the B2B quantity rule, stock calculation or response payload.
+        $this->patchJson("/api/v1/cart/items/{$b2bItemId}", ['quantity' => 3])
+            ->assertOk()
+            ->assertJsonPath('channel', 'b2b')
+            ->assertJsonPath('items.0.quantity', 3);
     }
 
     public function test_cart_recalculates_price_and_inventory_availability(): void
