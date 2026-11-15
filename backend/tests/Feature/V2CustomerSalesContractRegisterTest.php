@@ -60,7 +60,7 @@ final class V2CustomerSalesContractRegisterTest extends TestCase
             ->assertForbidden();
 
         $this->actingAs($this->checker)
-            ->get(route('admin.sales-contracts.evidence', ['contract' => $contract->id]))
+            ->get(route('admin.sales-contracts.download', ['contract' => $contract->id]))
             ->assertOk()->assertHeader('Content-Type', 'application/pdf');
 
         $this->actingAs($this->checker)
@@ -137,7 +137,7 @@ final class V2CustomerSalesContractRegisterTest extends TestCase
             'updated_at' => now(),
         ]);
         $this->actingAs($retailActor)
-            ->get(route('admin.sales-contracts.evidence', ['contract' => $contract->id]))
+            ->get(route('admin.sales-contracts.download', ['contract' => $contract->id]))
             ->assertNotFound();
         $this->actingAs($retailActor)
             ->post(route('admin.sales-contracts.decision', ['contract' => $contract->id]), ['decision' => 'approve'])
@@ -145,7 +145,7 @@ final class V2CustomerSalesContractRegisterTest extends TestCase
 
         $roleless = User::factory()->create(['is_active' => true]);
         $this->actingAs($roleless)
-            ->get(route('admin.sales-contracts.evidence', ['contract' => $contract->id]))
+            ->get(route('admin.sales-contracts.download', ['contract' => $contract->id]))
             ->assertForbidden();
         $this->checker->update(['is_active' => false]);
         $this->actingAs($this->checker)
@@ -170,7 +170,7 @@ final class V2CustomerSalesContractRegisterTest extends TestCase
             ->post(route('admin.sales-contracts.decision', ['contract' => $contract->id]), ['decision' => 'approve'])
             ->assertStatus(409);
         $this->actingAs($this->checker)
-            ->get(route('admin.sales-contracts.evidence', ['contract' => $contract->id]))
+            ->get(route('admin.sales-contracts.download', ['contract' => $contract->id]))
             ->assertStatus(409);
         $this->assertDatabaseHas('customer_sales_contracts', ['id' => $contract->id, 'status' => 'pending']);
         $this->assertSame($before, DB::table('audit_logs')->count());
