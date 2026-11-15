@@ -39,7 +39,7 @@ class GuestCartController extends Controller
 
             if ($resolvedStoreId === null) {
                 throw ValidationException::withMessages([
-                    'store' => ['A store is required when initializing an authenticated cart.'],
+                    'store' => [$this->localizedCartMessage($request, 'smart_ordering_cart.authenticated_store_required')],
                 ]);
             }
 
