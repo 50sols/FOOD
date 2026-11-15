@@ -97,10 +97,12 @@ final class NotificationController extends Controller
 
     private function locale(Request $request, User $user): string
     {
-        $requestedLocale = $request->query('locale');
-        if ($requestedLocale === null) {
+        $query = $request->query();
+        if (! array_key_exists('locale', $query)) {
             return in_array($user->locale, ['ar', 'en'], true) ? $user->locale : 'ar';
         }
+
+        $requestedLocale = $query['locale'];
 
         // Query arrays must not be coerced to strings. Invalid explicit
         // locales are client errors, not a silently selected other language.
