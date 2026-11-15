@@ -235,9 +235,13 @@ final class FlashOfferController extends Controller
             );
 
             if (! $decision['allowed']) {
+                $locale = in_array($user->locale, ['ar', 'en'], true)
+                    ? (string) $user->locale
+                    : (string) $request->getPreferredLanguage(['ar', 'en']);
+
                 throw ValidationException::withMessages([
                     'flash_offer' => [
-                        'Commercial policy rejected Flash reservation: '.implode(',', $decision['reason_codes']),
+                        __('flash_checkout.commercial_policy_rejected', [], $locale === 'en' ? 'en' : 'ar'),
                     ],
                 ]);
             }
