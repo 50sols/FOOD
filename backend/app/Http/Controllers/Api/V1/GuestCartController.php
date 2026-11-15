@@ -98,7 +98,7 @@ class GuestCartController extends Controller
             $this->activeStoreForChannel((int) $cart->store_id, 'b2c');
 
             if ($storeId > 0 && (int) $cart->store_id !== $storeId) {
-                abort(409, $this->conflictMessage($request, 'smart_ordering_cart.guest_store_mismatch'));
+                abort(409, $this->localizedCartMessage($request, 'smart_ordering_cart.guest_store_mismatch'));
             }
         }
 
@@ -157,7 +157,7 @@ class GuestCartController extends Controller
                 ->first();
 
             if ($cart !== null && (int) $cart->store_id !== $storeId) {
-                abort(409, $this->conflictMessage($request, 'smart_ordering_cart.guest_store_mismatch'));
+                abort(409, $this->localizedCartMessage($request, 'smart_ordering_cart.guest_store_mismatch'));
             }
 
             if ($cart === null) {
@@ -309,7 +309,7 @@ class GuestCartController extends Controller
         if ($token === '') {
             if ($required) {
                 throw ValidationException::withMessages([
-                    'X-Guest-Token' => ['A guest cart token is required.'],
+                    'X-Guest-Token' => [$this->localizedCartMessage($request, 'smart_ordering_cart.guest_token_required')],
                 ]);
             }
 
@@ -318,14 +318,14 @@ class GuestCartController extends Controller
 
         if (strlen($token) < 16 || strlen($token) > 200) {
             throw ValidationException::withMessages([
-                'X-Guest-Token' => ['The guest cart token is invalid.'],
+                'X-Guest-Token' => [$this->localizedCartMessage($request, 'smart_ordering_cart.guest_token_invalid')],
             ]);
         }
 
         return $token;
     }
 
-    private function conflictMessage(Request $request, string $key): string
+    private function localizedCartMessage(Request $request, string $key): string
     {
         $actor = Auth::guard('sanctum')->user();
         $locale = $actor instanceof User && in_array($actor->locale, ['ar', 'en'], true)
@@ -369,13 +369,13 @@ class GuestCartController extends Controller
         string $channel,
         ?int $requestedStoreId = null,
     ): Cart {
-        abort_if($channel !== 'b2c', 409, $this->conflictMessage($request, 'smart_ordering_cart.guest_channel_mismatch'));
+        abort_if($channel !== 'b2c', 409, $this->localizedCartMessage($request, 'smart_ordering_cart.guest_channel_mismatch'));
 
         $guestCart = $this->guestCartForToken($token);
         $storeId = (int) $guestCart->store_id;
 
         if ($requestedStoreId !== null && $storeId !== $requestedStoreId) {
-            abort(409, $this->conflictMessage($request, 'smart_ordering_cart.guest_store_mismatch'));
+            abort(409, $this->localizedCartMessage($request, 'smart_ordering_cart.guest_store_mismatch'));
         }
 
         $this->activeStoreForChannel($storeId, 'b2c');
