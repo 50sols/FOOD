@@ -306,7 +306,7 @@ final class AssistantActionApprovalService
             'failure_code' => 'APPROVAL_EXPIRED',
         ])->save();
 
-        abort(409, 'Assistant action approval has expired.');
+        abort(409, __('assistant_action_errors.approval_expired'));
     }
 
     private function assertPayloadIntegrity(
