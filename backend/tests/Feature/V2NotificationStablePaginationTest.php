@@ -5,6 +5,7 @@ namespace Tests\Feature;
 use App\Models\Customer;
 use App\Models\Notification;
 use App\Models\User;
+use Carbon\CarbonInterface;
 use Database\Seeders\CoreReferenceSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Laravel\Sanctum\Sanctum;
@@ -87,7 +88,7 @@ class V2NotificationStablePaginationTest extends TestCase
         return $user;
     }
 
-    private function notification($publishedAt, int $sequence, ?int $recipientId = null): Notification
+    private function notification(CarbonInterface $publishedAt, int $sequence, ?int $recipientId = null): Notification
     {
         return Notification::query()->create([
             'channel' => 'in_app',
