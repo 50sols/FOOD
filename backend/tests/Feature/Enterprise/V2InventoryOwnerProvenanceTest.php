@@ -2,6 +2,8 @@
 
 namespace Tests\Feature\Enterprise;
 
+use App\Enterprise\Wms\InventoryAdjustmentService;
+use App\Enterprise\Wms\InventoryCountService;
 use App\Enterprise\Wms\InventoryOwnerProvenanceReadService;
 use App\Enterprise\Wms\UnknownInventoryOwnerProjection;
 use App\Enterprise\Wms\WarehouseTransferService;
@@ -399,6 +401,103 @@ final class V2InventoryOwnerProvenanceTest extends TestCase
         $this->assertSame('UNKNOWN', $destination['positions'][0]['owner_kind']);
         $this->assertDatabaseHas('inventories', ['id' => $stock['inventory_id'], 'quantity' => 8]);
         $this->assertDatabaseHas('inventories', ['id' => $target['target_inventory_id'], 'quantity' => 3]);
+    }
+
+    public function test_wms_adjustment_posts_current_unknown_title_once_and_replay_has_no_second_stock_mutation(): void
+    {
+        $this->seed(CoreReferenceSeeder::class);
+        $stock = $this->stock('ADJUST-UNKNOWN');
+        $actor = $this->inventoryActor($stock['store_id']);
+        $inventory = DB::table('inventories')->where('id', $stock['inventory_id'])
+            ->first(['warehouse_id', 'product_id']);
+        $service = app(InventoryAdjustmentService::class);
+
+        $movement = $service->post(
+            $actor, (int) $inventory->warehouse_id, (int) $inventory->product_id,
+            2.0, 'correction', 'p110_unknown_adjustment', 1102844,
+            'Verified stock correction, title still unknown',
+        );
+        $replay = $service->post(
+            $actor, (int) $inventory->warehouse_id, (int) $inventory->product_id,
+            2.0, 'correction', 'p110_unknown_adjustment', 1102844,
+            'Verified stock correction, title still unknown',
+        );
+
+        $this->assertSame($movement->getKey(), $replay->getKey());
+        $this->assertDatabaseHas('inventories', [
+            'id' => $stock['inventory_id'], 'quantity' => 12, 'reserved_quantity' => 3,
+        ]);
+        $this->assertDatabaseHas('enterprise_inventory_owner_positions', [
+            'inventory_id' => $stock['inventory_id'], 'owner_key' => 'UNKNOWN',
+            'quantity' => 12, 'reserved_quantity' => 3, 'certified_by' => null,
+        ]);
+        $this->assertSame(1, DB::table('enterprise_inventory_owner_positions')
+            ->where('inventory_id', $stock['inventory_id'])->count());
+        $snapshot = app(InventoryOwnerProvenanceReadService::class)
+            ->snapshot($actor, $stock['inventory_id']);
+        $this->assertSame('UNKNOWN', $snapshot['state']);
+        $this->assertFalse($snapshot['certified']);
+    }
+
+    public function test_wms_cycle_count_reconciles_unknown_title_in_same_inventory_transaction(): void
+    {
+        $this->seed(CoreReferenceSeeder::class);
+        $stock = $this->stock('COUNT-UNKNOWN');
+        $actor = $this->inventoryActor($stock['store_id']);
+        $warehouseId = (int) DB::table('inventories')->where('id', $stock['inventory_id'])
+            ->value('warehouse_id');
+        $service = app(InventoryCountService::class);
+
+        $count = $service->start($actor, $warehouseId, [$stock['inventory_id']], 'p110-count-unknown-title');
+        $service->complete($actor, $count->getKey(), [$stock['inventory_id'] => 12]);
+        $service->complete($actor, $count->getKey(), [$stock['inventory_id'] => 12]);
+
+        $this->assertDatabaseHas('inventories', [
+            'id' => $stock['inventory_id'], 'quantity' => 12, 'reserved_quantity' => 3,
+        ]);
+        $this->assertDatabaseHas('enterprise_inventory_owner_positions', [
+            'inventory_id' => $stock['inventory_id'], 'owner_key' => 'UNKNOWN',
+            'quantity' => 12, 'reserved_quantity' => 3, 'certified_at' => null,
+        ]);
+        $this->assertSame(1, DB::table('stock_movements')
+            ->where('reference_type', 'enterprise_inventory_count')
+            ->where('reference_id', $count->getKey())->count());
+        $snapshot = app(InventoryOwnerProvenanceReadService::class)
+            ->snapshot($actor, $stock['inventory_id']);
+        $this->assertSame('UNKNOWN', $snapshot['state']);
+        $this->assertFalse($snapshot['certified']);
+    }
+
+    public function test_wms_adjustment_never_reclassifies_an_unverified_owner_position(): void
+    {
+        $this->seed(CoreReferenceSeeder::class);
+        $stock = $this->stock('ADJUST-PRESERVE');
+        $actor = $this->inventoryActor($stock['store_id']);
+        $checker = User::query()->create([
+            'name' => 'Stock Title Checker',
+            'email' => 'p110-adjust-title-checker@example.test',
+            'password' => 'password',
+            'is_active' => true,
+        ]);
+        $this->position($stock['inventory_id'], 'FOODEX', null, 10, 3, $actor->id, $checker->id, true);
+        $inventory = DB::table('inventories')->where('id', $stock['inventory_id'])
+            ->first(['warehouse_id', 'product_id']);
+        app(InventoryAdjustmentService::class)->post(
+            $actor, (int) $inventory->warehouse_id, (int) $inventory->product_id,
+            -1.0, 'loss', 'p110_preserve_title', 1102845,
+            'Unverified title must not be reallocated',
+        );
+
+        $this->assertDatabaseHas('enterprise_inventory_owner_positions', [
+            'inventory_id' => $stock['inventory_id'], 'owner_key' => 'FOODEX',
+            'quantity' => 10, 'reserved_quantity' => 3,
+        ]);
+        $this->assertSame(0, DB::table('enterprise_inventory_owner_positions')
+            ->where('inventory_id', $stock['inventory_id'])->where('owner_key', 'UNKNOWN')->count());
+        $snapshot = app(InventoryOwnerProvenanceReadService::class)
+            ->snapshot($actor, $stock['inventory_id']);
+        $this->assertSame('STALE', $snapshot['state']);
+        $this->assertFalse($snapshot['certified']);
     }
 
     public function test_other_store_inventory_is_never_exposed_through_owner_read_service(): void
