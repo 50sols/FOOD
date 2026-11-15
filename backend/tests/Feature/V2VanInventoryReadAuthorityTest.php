@@ -536,6 +536,10 @@ final class V2VanInventoryReadAuthorityTest extends TestCase
     public function test_inconsistent_wms_balance_is_rejected_in_ar_and_en_without_fabricating_van_stock(): void
     {
         config()->set('security.mfa.enforce_privileged', false);
+        // Production error pages must not expose the protected SKU. Debug
+        // pages intentionally include query diagnostics, making a whole-page
+        // SKU assertion environment-dependent without changing HTTP 409.
+        config()->set('app.debug', false);
         $storeId = $this->store('B2B', 'P274-BALANCE-INTEGRITY');
         $warehouse = $this->warehouse($storeId, 'P274-BALANCE-WH');
         $this->enableEnterpriseWmsForStore($storeId);
