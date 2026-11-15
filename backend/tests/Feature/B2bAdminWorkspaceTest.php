@@ -707,6 +707,71 @@ class B2bAdminWorkspaceTest extends TestCase
         $this->assertSame(1, substr_count($html, '<section class="foodex-global-search foodex-global-search--header"'));
     }
 
+    public function test_arabic_wholesale_order_warehouse_guards_are_localized_and_do_not_write(): void
+    {
+        $this->assertWarehouseGuardLocale(
+            'ar',
+            'يلزم اختيار مستودع جملة صالح.',
+            'يجب أن يتبع المستودع عملية الجملة الرئيسية.',
+        );
+    }
+
+    public function test_english_wholesale_order_warehouse_guards_remain_unchanged_and_do_not_write(): void
+    {
+        $this->assertWarehouseGuardLocale(
+            'en',
+            'A valid Wholesale warehouse is required.',
+            'Warehouse must belong to the main Wholesale operation.',
+        );
+    }
+
+    private function assertWarehouseGuardLocale(string $locale, string $missingMessage, string $foreignMessage): void
+    {
+        $admin = $this->user('B2B_ADMIN', $locale);
+        $retailStore = (int) DB::table('stores')->insertGetId([
+            'store_type_id' => (int) DB::table('store_types')->where('code', 'B2C')->value('id'),
+            'code' => 'WAREHOUSE-LOCALE-FOREIGN-'.strtoupper($locale),
+            'name' => 'Foreign Retail Warehouse',
+            'is_active' => true,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        $foreignWarehouse = $this->warehouse($retailStore, 'WH-FOREIGN-'.$locale, 'Foreign Retail Warehouse');
+        $retailAdmin = $this->user('B2C_STORE_ADMIN', $locale);
+
+        $tables = ['orders', 'invoices', 'payments', 'inventories', 'audit_logs'];
+        $before = [];
+        foreach ($tables as $table) {
+            $before[$table] = DB::table($table)->count();
+        }
+
+        $contraryHeader = $locale === 'ar' ? 'en-US' : 'ar-KW';
+        $this->actingAs($admin)
+            ->withHeaders(['Accept-Language' => $contraryHeader])
+            ->postJson('/admin/b2b/orders', ['warehouse_id' => 0])
+            ->assertUnprocessable()
+            ->assertJsonPath('message', $missingMessage);
+
+        $this->actingAs($admin)
+            ->withHeaders(['Accept-Language' => $contraryHeader])
+            ->postJson('/admin/b2b/orders', ['warehouse_id' => $foreignWarehouse])
+            ->assertUnprocessable()
+            ->assertJsonPath('message', $foreignMessage);
+
+        $this->actingAs($retailAdmin)
+            ->postJson('/admin/b2b/orders', ['warehouse_id' => $foreignWarehouse])
+            ->assertForbidden();
+
+        $this->withoutMiddleware(\Illuminate\Auth\Middleware\Authenticate::class);
+        $this->app['auth']->guard('web')->logout();
+        $this->postJson('/admin/b2b/orders', ['warehouse_id' => $foreignWarehouse])
+            ->assertRedirect();
+
+        foreach ($tables as $table) {
+            $this->assertSame($before[$table], DB::table($table)->count(), $table.' must remain unchanged after rejected warehouse orders.');
+        }
+    }
+
     /** @return array{0:int,1:int} */
     private function b2bCustomer(string $name, ?string $email, ?string $phone = null): array
     {
