@@ -453,4 +453,107 @@ void main() {
     );
     expect(sent, 0);
   });
+
+  test('Van catalog rejects malformed stock and quantity increments', () async {
+    for (final field in [
+      'minimum_quantity',
+      'ordering_increment',
+      'available_quantity',
+    ]) {
+      for (final invalid in <Object?>[
+        'not-a-number',
+        'NaN',
+        'Infinity',
+        -1,
+      ]) {
+        final repository = _repository((request) async {
+          return http.Response(
+            jsonEncode({
+              'currency': 'EGP',
+              'data': [
+                {
+                  'id': 17,
+                  'name': 'Wholesale item',
+                  'sku': 'B2B-17',
+                  'unit_price': 9.5,
+                  'minimum_quantity': 1,
+                  'ordering_increment': 0.25,
+                  'available_quantity': 4,
+                  field: invalid,
+                },
+              ],
+              'meta': {'page': 1, 'per_page': 50, 'has_more': false},
+            }),
+            200,
+          );
+        });
+        await expectLater(
+          repository.catalog(_customer),
+          throwsA(isA<VanApiException>()),
+        );
+      }
+    }
+  });
+
+  test('Van catalog preserves absent stock and default quantity steps',
+      () async {
+    final repository = _repository((request) async {
+      return http.Response(
+        jsonEncode({
+          'currency': 'EGP',
+          'data': [
+            {
+              'id': 17,
+              'name': 'Wholesale item',
+              'sku': 'B2B-17',
+              'unit_price': 9.5,
+            },
+          ],
+          'meta': {'page': 1, 'per_page': 50, 'has_more': false},
+        }),
+        200,
+      );
+    });
+    final product = (await repository.catalog(_customer)).products.single;
+    expect(product.minimumQuantity, 1);
+    expect(product.orderingIncrement, 1);
+    expect(product.availableQuantity, isNull);
+  });
+
+  test('Van detail never displays malformed order-line quantity as zero',
+      () async {
+    for (final invalid in <Object?>[
+      null,
+      'not-a-number',
+      'NaN',
+      'Infinity',
+      -1,
+    ]) {
+      final repository = _repository((request) async {
+        return http.Response(
+          jsonEncode({
+            'data': {
+              ..._order(),
+              'items': [
+                {
+                  'name': 'Wholesale item',
+                  'sku': 'B2B-17',
+                  'quantity': invalid,
+                  'line_total': 50,
+                },
+              ],
+              'payments': <Object>[],
+              'collections': <Object>[],
+              'timeline': <Object>[],
+            },
+          }),
+          200,
+        );
+      });
+      await expectLater(
+        repository.order(501),
+        throwsA(isA<VanApiException>()),
+      );
+    }
+  });
 }

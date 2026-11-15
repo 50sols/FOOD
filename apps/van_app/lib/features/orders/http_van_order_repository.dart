@@ -35,9 +35,9 @@ class HttpVanOrderRepository implements VanOrderRepository {
         sku: _string(data['sku']),
         barcode: _nullableString(data['barcode']),
         unitPrice: _requiredMoney(data['unit_price']),
-        minimumQuantity: _double(data['minimum_quantity'], fallback: 1),
-        orderingIncrement: _double(data['ordering_increment'], fallback: 1),
-        availableQuantity: _nullableDouble(data['available_quantity']),
+        minimumQuantity: _positiveQuantityOrDefault(data['minimum_quantity']),
+        orderingIncrement: _positiveQuantityOrDefault(data['ordering_increment']),
+        availableQuantity: _optionalQuantity(data['available_quantity']),
         isAvailable: data['is_available'] != false,
         currency: currency.isEmpty ? 'KWD' : currency,
       );
@@ -233,7 +233,7 @@ class HttpVanOrderRepository implements VanOrderRepository {
         return VanOrderItemRecord(
           name: _string(item['name']),
           sku: _string(item['sku']),
-          quantity: _double(item['quantity']),
+          quantity: _requiredQuantity(item['quantity']),
           lineTotal: _requiredMoney(item['line_total']),
         );
       }).toList(growable: false),
@@ -514,11 +514,27 @@ class HttpVanOrderRepository implements VanOrderRepository {
     return amount;
   }
 
-  double _double(Object? value, {double fallback = 0}) {
-    if (value is num) {
-      return value.toDouble();
+  // Missing optional catalog values keep legacy defaults. Present but malformed
+  // inventory or line quantities must never become zero or unlimited stock.
+  double _positiveQuantityOrDefault(Object? value) =>
+      value == null ? 1 : _requiredQuantity(value, allowZero: false);
+
+  double? _optionalQuantity(Object? value) =>
+      value == null ? null : _requiredQuantity(value);
+
+  double _requiredQuantity(Object? value, {bool allowZero = true}) {
+    final quantity = value is num
+        ? value.toDouble()
+        : value is String
+            ? double.tryParse(value.trim())
+            : null;
+    if (quantity == null ||
+        !quantity.isFinite ||
+        quantity < 0 ||
+        (!allowZero && quantity == 0)) {
+      throw const VanApiException('Invalid Van quantity response.');
     }
-    return double.tryParse(value?.toString() ?? '') ?? fallback;
+    return quantity;
   }
 
   double? _nullableDouble(Object? value) {
