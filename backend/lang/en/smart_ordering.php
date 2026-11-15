@@ -3,6 +3,7 @@
 return [
     'branch_policy' => [
         'past_schedule' => 'Scheduled time cannot be in the past.',
+        'not_accepting_orders' => 'This branch is not accepting orders.',
         'delivery_zone_outside' => 'Delivery address is outside this branch service area.',
     ],
     'nav_title' => 'Smart Ordering',
