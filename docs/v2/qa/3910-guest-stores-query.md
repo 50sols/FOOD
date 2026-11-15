@@ -5,7 +5,7 @@ Parent: #2733; master: #2503; target base: `Foodex_V2` ONLY.
 ## Source / placement
 The existing public `GET /api/v1/stores` route in `backend/routes/api.php` serves guest Retail/B2C discovery. Reuse the exact route and `GuestStoreController::index`; no Dashboard/Sidebar/new screen or application navigation change. Preserve store-type join, active-store constraint, effective active service-zone matching, ordered results and 200 `data`/`meta` JSON.
 
-The previous `(string) $request->query(...)` converted untrusted array filters to PHP `Array` warnings before any validation, and implicit `integer()` parsing accepted malformed pagination. Validate the query bag before SQL and return field-specific 422 errors with stable AR/EN messages for invalid explicit parameters. Empty optional location filters remain ignored. `page` is validated before Laravel pagination resolves it. No SQL, schema or write semantics changed.
+The previous `(string) $request->query(...)` converted untrusted array filters to PHP `Array` warnings before any validation, and implicit `integer()` parsing accepted malformed pagination. Validate the query bag before SQL and return field-specific 422 errors with stable AR/EN messages for invalid explicit parameters. Empty optional location filters remain ignored; explicitly empty `page`/`per_page` are invalid instead of silently falling back to defaults. `page` is validated before Laravel pagination resolves it. No SQL, schema or write semantics changed.
 
 ## Scope / risk and acceptance
 - `REVIEW_RISK: HIGH` due to public request-parsing/data exposure surface, despite read-only change.

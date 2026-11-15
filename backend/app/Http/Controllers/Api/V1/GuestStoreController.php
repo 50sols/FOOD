@@ -19,8 +19,8 @@ class GuestStoreController extends Controller
             'country_code' => ['nullable', 'string', 'max:16'],
             'city' => ['nullable', 'string', 'max:150'],
             'area' => ['nullable', 'string', 'max:150'],
-            'per_page' => ['nullable', 'integer', 'min:1', 'max:100'],
-            'page' => ['nullable', 'integer', 'min:1'],
+            'per_page' => ['sometimes', 'required', 'integer', 'min:1', 'max:100'],
+            'page' => ['sometimes', 'required', 'integer', 'min:1'],
         ]);
 
         if ($validator->fails()) {

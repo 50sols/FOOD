@@ -38,7 +38,7 @@ final class V2GuestStoresMalformedQueryTest extends TestCase
             ->assertJsonPath('meta.current_page', 1)
             ->assertJsonPath('meta.total', 1);
 
-        $this->getJson('/api/v1/stores?country_code=&city=&area=&per_page=')
+        $this->getJson('/api/v1/stores?country_code=&city=&area=')
             ->assertOk()
             ->assertJsonPath('meta.per_page', 20)
             ->assertJsonPath('meta.total', 1);
@@ -62,11 +62,13 @@ final class V2GuestStoresMalformedQueryTest extends TestCase
             ['area%5Bx%5D=Hawalli', 'area'],
             ['per_page%5B%5D=1', 'per_page'],
             ['per_page=invalid', 'per_page'],
+            ['per_page=', 'per_page'],
             ['per_page=0', 'per_page'],
             ['per_page=101', 'per_page'],
             ['per_page=999999999999999999999999999', 'per_page'],
             ['page%5B%5D=1', 'page'],
             ['page=0', 'page'],
+            ['page=', 'page'],
             ['country_code='.str_repeat('X', 17), 'country_code'],
             ['city='.str_repeat('X', 151), 'city'],
             ['area='.str_repeat('X', 151), 'area'],
