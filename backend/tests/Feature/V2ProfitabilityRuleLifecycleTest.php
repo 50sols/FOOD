@@ -100,6 +100,21 @@ final class V2ProfitabilityRuleLifecycleTest extends TestCase
         ]))->assertOk()
             ->assertSee(__('commercial.profitability.statuses.reviewed_inactive'))
             ->assertSee(__('commercial.profitability.inactive_explanation'));
+
+        // Finance + Catalog authority, even SUPER_ADMIN, never defeats
+        // distinct-person maker/checker separation for a new revision.
+        $this->actingAs($checker)->put($route, $this->proposal((string) Str::uuid(), '8.88'))
+            ->assertSessionHasNoErrors();
+        $selfRevision = (int) DB::table('commercial_profitability_rule_revisions')
+            ->orderByDesc('revision')->value('id');
+        $this->actingAs($checker)->put($route, [
+            'profitability_action' => 'review',
+            'revision_id' => $selfRevision,
+            'decision' => 'review',
+        ])->assertForbidden();
+        $this->assertDatabaseHas('commercial_profitability_rule_revisions', [
+            'id' => $selfRevision, 'status' => 'DRAFT', 'reviewed_by' => null,
+        ]);
     }
 
     public function test_bilingual_review_and_rejection_states_are_visible_and_non_operational(): void
