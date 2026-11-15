@@ -397,7 +397,7 @@ class GuestCartController extends Controller
 
                 if ($targetItem->exists && trim((string) ($targetItem->selling_unit_code ?? ''))
                     !== trim((string) ($guestItem->selling_unit_code ?? ''))) {
-                    abort(409, 'Cart merge requires one selling unit per product. Remove a conflicting line first.');
+                    abort(409, $this->localizedCartMessage($request, 'smart_ordering_cart.merge_selling_unit_conflict'));
                 }
 
                 $quantity = ($targetItem->exists ? (float) $targetItem->quantity : 0.0)
