@@ -16,7 +16,7 @@ The existing managed entity picker is reused through the shared Dashboard Entity
 
 - `RefreshDatabase` + `CoreReferenceSeeder`, B2B manager and real wholesale Store→Catalog→Product / StoreProduct rows.
 - Literal punctuation fixture in a product **name** and a separate product **SKU**, with `%`, `_`, `!`, backslash; a normal decoy that must not appear in punctuation searches.
-- B2C foreign Retail product with matching text excluded by B2B selected-store/channel constraint; roleless and Retail actors denied by existing `catalog.view`/channel scope.
+- Foreign B2B store and B2C Retail store products with matching text excluded by the explicitly selected B2B store/channel constraints; roleless and Retail actors denied by existing `catalog.view`/channel scope.
 - Substring positive and negative matches across both columns, empty-query authorized results, no insert/update/audit rows caused by lookup requests.
 - Run focused `php artisan test --filter=test_b2b_sales_control_product_picker_matches_literal_symbols_without_widening_store_scope` from `backend/`, then exact final SHA Required CI including full Laravel, PHP syntax, Pint, PHPStan, security, AR/EN, MySQL/Redis and immutable Enterprise Performance, plus separate Repository Policy and V2 Isolation Gate.
 
