@@ -163,11 +163,15 @@ class B2bReportController extends Controller
             ->filter(static fn (string $currency): bool => preg_match('/^[A-Z]{3}$/', $currency) === 1)
             ->unique()
             ->values();
-        abort_if(
-            $currencies->count() > 1,
-            409,
-            'Purchase report contains mixed currencies and cannot be combined safely.',
-        );
+        if ($currencies->count() > 1) {
+            $actor = $request->user();
+            $userLocale = $actor instanceof User ? $actor->locale : null;
+            $locale = in_array($userLocale, ['ar', 'en'], true)
+                ? $userLocale
+                : $request->getPreferredLanguage(['ar', 'en']);
+
+            abort(409, __('b2b_report_errors.mixed_currency_purchases', [], $locale === 'ar' ? 'ar' : 'en'));
+        }
 
         $currency = $currencies->first()
             ?? app(B2bAccountLedgerService::class)->currencyFor($customer, $storeId);
