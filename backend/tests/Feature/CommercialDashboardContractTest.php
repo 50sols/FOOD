@@ -412,6 +412,22 @@ class CommercialDashboardContractTest extends TestCase
         $skuProductId = $addProduct('Widget Plain B', 'SKU-%_!\\-B');
         $decoyId = $addProduct('Widget ABC literal', 'SKU-NORMAL-C');
 
+        // A global B2B manager may have several Wholesale stores; selecting one
+        // must still never include the other store's matching products.
+        $outsideWholesaleStoreId = (int) DB::table('stores')->insertGetId([
+            'store_type_id' => DB::table('store_types')->where('code', 'B2B')->value('id'),
+            'code' => 'COMMERCIAL-B2B-OTHER',
+            'name' => 'Other Wholesale Store',
+            'is_active' => true,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        $outsideWholesaleProductId = $this->flashProduct($outsideWholesaleStoreId, 'b2b');
+        DB::table('products')->where('id', $outsideWholesaleProductId)->update([
+            'name' => 'Widget %_!\\ Foreign Wholesale',
+            'sku' => 'SKU-%_!\\-OTHER',
+        ]);
+
         [$retailManager, $retailStoreId] = $this->retailManager();
         $retailId = $this->flashProduct($retailStoreId);
         DB::table('products')->where('id', $retailId)->update([
