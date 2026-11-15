@@ -97,6 +97,70 @@ class DriverAssignmentLifecycleTest extends TestCase
             ->assertJsonPath('data.available_statuses.0', 'delivered')
             ->assertJsonPath('data.available_statuses.1', 'failed');
 
+        // Invalid collection/remittance headers are localized, and must not
+        // mutate any order, assignment, payment, custody, stock or audit rows.
+        $collectionGuardTables = [
+            'collection_accounts',
+            'collection_transactions',
+            'remittances',
+            'custody_ledger_entries',
+            'payments',
+            'orders',
+            'invoices',
+            'driver_assignments',
+            'order_status_history',
+            'stock_movements',
+            'inventory_reservations',
+            'audit_logs',
+        ];
+        $collectionHeaderMessages = [
+            'ar' => 'يجب أن يتكوّن مفتاح Idempotency-Key من 8 إلى 72 حرفًا، باستخدام الأحرف الإنجليزية والأرقام والنقطة والشرطة السفلية والنقطتين والشرطة فقط.',
+            'en' => 'Idempotency-Key must be 8-72 characters using letters, numbers, dot, underscore, colon or dash.',
+        ];
+        foreach ($collectionHeaderMessages as $locale => $message) {
+            $driverUser->forceFill(['locale' => $locale])->save();
+            $beforeInvalidHeaders = [];
+            foreach ($collectionGuardTables as $table) {
+                if (DB::getSchemaBuilder()->hasTable($table)) {
+                    $beforeInvalidHeaders[$table] = DB::table($table)->count();
+                }
+            }
+            foreach (['short', 'invalid key!', str_repeat('K', 73)] as $invalidKey) {
+                $headers = [
+                    'Idempotency-Key' => $invalidKey,
+                    'Accept-Language' => $locale === 'ar' ? 'en-US,en;q=0.9' : 'ar-KW,ar;q=0.9',
+                ];
+
+                $this->withHeaders($headers)
+                    ->postJson("/api/v1/driver/assignments/{$id}/collections", ['amount' => 1])
+                    ->assertUnprocessable()
+                    ->assertJsonPath('errors.idempotency_key.0', $message);
+
+                $this->withHeaders($headers)
+                    ->postJson('/api/v1/driver/wallet/remittances', [
+                        'collection_account_id' => 999999,
+                        'amount' => 1,
+                        'method' => 'bank_deposit',
+                    ])
+                    ->assertUnprocessable()
+                    ->assertJsonPath('errors.idempotency_key.0', $message);
+
+                foreach ($beforeInvalidHeaders as $table => $count) {
+                    $this->assertSame($count, DB::table($table)->count(), "Unexpected {$table} write for invalid Driver idempotency header");
+                }
+            }
+        }
+        $driverUser->forceFill(['locale' => 'zz'])->save();
+        $this->withHeaders(['Idempotency-Key' => 'short', 'Accept-Language' => 'en-US,en;q=0.9'])
+            ->postJson('/api/v1/driver/wallet/remittances', [
+                'collection_account_id' => 999999,
+                'amount' => 1,
+                'method' => 'bank_deposit',
+            ])
+            ->assertUnprocessable()
+            ->assertJsonPath('errors.idempotency_key.0', $collectionHeaderMessages['en']);
+        $driverUser->forceFill(['locale' => 'ar'])->save();
+
         $this->post(
             "/api/v1/driver/assignments/{$id}/status",
             [

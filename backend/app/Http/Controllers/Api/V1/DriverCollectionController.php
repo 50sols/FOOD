@@ -256,6 +256,10 @@ final class DriverCollectionController extends Controller
     private function idempotencyKey(Request $request): string
     {
         $key = trim((string) $request->header('Idempotency-Key', ''));
+        $actorLocale = $request->user()?->locale;
+        $locale = in_array($actorLocale, ['ar', 'en'], true)
+            ? $actorLocale
+            : ($request->getPreferredLanguage(['ar', 'en']) ?? 'ar');
         if (
             strlen($key) < 8
             || strlen($key) > 72
@@ -263,7 +267,7 @@ final class DriverCollectionController extends Controller
         ) {
             throw ValidationException::withMessages([
                 'idempotency_key' => [
-                    'Idempotency-Key must be 8-72 characters using letters, numbers, dot, underscore, colon or dash.',
+                    (string) __('driver_collection_errors.invalid_idempotency_header', [], $locale),
                 ],
             ]);
         }
