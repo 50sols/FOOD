@@ -20,10 +20,18 @@ For **Arabic RTL and English LTR**:
 
 1. Verify Finance is operationally **READY** and required AR read entitlement exists; absence of module certification is not a false-positive reason for denied HTTP.
 2. Store A and Store B both expose the **real Receivables Aging tab over authenticated HTTP 200**, including selected locale and text. Unassigned Store C remains HTTP **404**, even though the shared legal entity has Finance entitlement.
-3. Insert a **scoped** `finance.view` deny for Store A and verify Store A becomes HTTP **403** while independently permitted Store B stays **200**. No global permission, role expansion or arbitrary module grant is performed outside the disposable test database.
+3. Insert a **scoped** `finance.view` deny for Store A. Current implementation gives Store A **HTTP 404** (denied context is removed from visible store choices) while separately permitted Store B stays **HTTP 200**; unassigned Store C also stays **404**. Original #3894 acceptance demands **403 for assigned-denied Store A**, and that exact status requirement is **NOT MET**. No global permission, role expansion or real ledger mutation occurs.
 4. Verify no AR document, general ledger or finance journal mutation; existing user role assignments stay intact.
 
 The test does **not** replace #3217's 126-document SQL, posted allocation or currency isolation regressions. It does not claim to test live production persons, an exported historical identity or real browser/staging UAT.
+
+## Verified acceptance blocker — HTTP 403 versus 404
+
+- On isolated GCC, `php -d extension=pdo_sqlite -d memory_limit=1024M vendor/bin/phpunit tests/Feature/V2ReceivablesAgingMultiRoleScopeTest.php` passed **1 test / 33 assertions** after aligning `OrganizationHierarchyService::scopeForStore()`'s array contract; changed PHP file passed Laravel Pint. The local test key is disposable and is never committed.
+- `FinanceWorkbenchController::index()` first filters `contextOptions()` through `FinanceWorkbenchAccess::canRead()`. With two store roles, a scoped `finance.view` DENY at Store A removes only A from the choices. A subsequent explicit selection resolves to **404**, not the Issue's required **403**. This is not the same as a one-store actor, whose fully denied context produces **403**.
+- Correct source acceptance requires **403 for a genuinely assigned-but-denied store**, **404 for unassigned Store C**, **200 for independently authorized Store B**, AR/EN and no mutation. Any coordinated fix must preserve no cross-store disclosure and the existing Finance/Sidebar permission projection.
+- Shared `backend/app/Http/Controllers/Admin/FinanceWorkbenchController.php` is modified in active DRAFT PRs **#3309** and **#3212**. This worker owns **only the original test and QA document** and must not edit or override their shared source. Coordinate a source-safe change through the proper owner/handoff before restoring the strict `assertForbidden()` expectation.
+- **STATUS: SOURCE_INCOMPLETE / DRAFT / NO_MERGE / NO_CLOSURE** regardless of green isolated test or GitHub CI. Parent #2618 and master #2503 remain open.
 
 ## Surface classification
 
