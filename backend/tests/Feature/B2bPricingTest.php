@@ -139,6 +139,56 @@ class B2bPricingTest extends TestCase
             'minimum_quantity' => 2,
         ])->assertConflict();
 
+        // The existing deny path is invariant under locale; neither list nor
+        // write may mutate rules, audit, orders or inventory while tiers are off.
+        $persistedAdminLocale = (string) DB::table('users')
+            ->where('id', $admin->getKey())->value('locale');
+        $beforeDisabled = [];
+        foreach (['b2b_price_rules', 'settings', 'audit_logs', 'orders', 'payments', 'stock_movements'] as $table) {
+            $beforeDisabled[$table] = DB::table($table)->count();
+        }
+        $beforeReserved = (float) DB::table('inventories')->where('store_id', $storeId)->sum('reserved_quantity');
+        $mutation = [
+            'price_tier_id' => $tierId,
+            'store_id' => $storeId,
+            'product_id' => $productId,
+            'unit_price' => 3.000,
+            'minimum_quantity' => 2,
+        ];
+
+        foreach ([
+            ['ar', 'en-US', 'شرائح تسعير الجملة غير مفعّلة.'],
+            ['en', 'ar-KW', 'B2B pricing tiers are disabled.'],
+            ['fr', 'ar-KW', 'شرائح تسعير الجملة غير مفعّلة.'],
+            ['fr', 'en-US', 'B2B pricing tiers are disabled.'],
+        ] as [$actorLocale, $headerLocale, $message]) {
+            $admin->forceFill(['locale' => $actorLocale])->save();
+
+            $this->withHeader('Accept-Language', $headerLocale)
+                ->getJson('/api/v1/admin/b2b/prices')
+                ->assertConflict()
+                ->assertJsonPath('message', $message);
+            $this->withHeader('Accept-Language', $headerLocale)
+                ->putJson('/api/v1/admin/b2b/prices', $mutation)
+                ->assertConflict()
+                ->assertJsonPath('message', $message);
+
+            foreach ($beforeDisabled as $table => $count) {
+                $this->assertSame($count, DB::table($table)->count(), $table.' must be unchanged while tiers are disabled');
+            }
+            $this->assertSame(
+                $beforeReserved,
+                (float) DB::table('inventories')->where('store_id', $storeId)->sum('reserved_quantity'),
+            );
+            $this->assertDatabaseHas('b2b_price_rules', [
+                'price_tier_id' => $tierId,
+                'store_id' => $storeId,
+                'product_id' => $productId,
+                'unit_price' => 4.000,
+            ]);
+        }
+        $admin->forceFill(['locale' => $persistedAdminLocale])->save();
+
         $buyer = User::query()->create([
             'name' => 'Base Buyer',
             'email' => 'base-price-buyer@example.test',
