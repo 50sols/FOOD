@@ -189,8 +189,7 @@ class FieldOperationsUiFoundationTest extends TestCase
         $decoy = $review('AQ-DECOY-EXCLUDED', 'ReasonABCD-one', 'ZONE-OTHER');
         $countBefore = AddressQualityReview::query()->count();
 
-        $url = static fn (string $query, array $filters = []): string =>
-            '/admin/field-operations/address-quality?'.http_build_query(['q' => $query] + $filters);
+        $url = static fn (string $query, array $filters = []): string => '/admin/field-operations/address-quality?'.http_build_query(['q' => $query] + $filters);
 
         foreach (['en', 'ar'] as $locale) {
             $admin->forceFill(['locale' => $locale])->save();
