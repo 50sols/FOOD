@@ -841,7 +841,7 @@ final class FieldOperationsController extends Controller
         // A live assignment ID alone cannot authorize a Van visit. Bind the
         // selected assignment to an active Van and active Wholesale warehouse,
         // and never accept a client-supplied store that differs from custody.
-        abort_unless($assignment->van?->status === 'active', 404);
+        abort_unless($assignment->van?->getAttribute('status') === 'active', 404);
         $warehouse = DB::table('warehouses')
             ->join('stores', 'stores.id', '=', 'warehouses.store_id')
             ->join('store_types', 'store_types.id', '=', 'stores.store_type_id')
@@ -891,7 +891,7 @@ final class FieldOperationsController extends Controller
             'actor_user_id' => (int) $actorUserId,
             'customer_type' => (string) $data['customer_type'],
             'customer_id' => (int) $data['customer_id'],
-            'store_id' => $storeId === null ? null : (int) $storeId,
+            'store_id' => $storeId,
             'status' => 'planned',
             'idempotency_key' => 'admin-'.Str::uuid(),
             'planned_at' => $plannedAt,
