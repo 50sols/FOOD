@@ -43,6 +43,7 @@ final class FieldOperationsFinanceService
                         (string) ($record['status'] ?? '') !== 'active'
                         || (string) ($record['van_status'] ?? '') !== 'active'
                         || (int) $record['custody_entries'] === 0
+                        || (int) $record['currency_mismatch_entries'] > 0
                         || abs((float) $record['custody_balance']) > 0.0005
                         || (int) $record['pending_remittance_count'] > 0
                         || (int) $record['awaiting_reconciliation'] > 0
@@ -107,10 +108,12 @@ final class FieldOperationsFinanceService
     private function vanCloseout(array $storeIds, string $q, int $perPage): LengthAwarePaginator
     {
         $custody = DB::table('custody_ledger_entries')
-            ->select('collection_account_id')
-            ->selectRaw('COALESCE(SUM(amount), 0) as custody_balance')
+            ->join('collection_accounts as currency_accounts', 'currency_accounts.id', '=', 'custody_ledger_entries.collection_account_id')
+            ->select('custody_ledger_entries.collection_account_id')
+            ->selectRaw('COALESCE(SUM(custody_ledger_entries.amount), 0) as custody_balance')
             ->selectRaw('COUNT(*) as custody_entries')
-            ->groupBy('collection_account_id');
+            ->selectRaw('SUM(CASE WHEN UPPER(TRIM(custody_ledger_entries.currency)) = UPPER(TRIM(currency_accounts.currency)) THEN 0 ELSE 1 END) as currency_mismatch_entries')
+            ->groupBy('custody_ledger_entries.collection_account_id');
 
         $pending = DB::table('remittances')
             ->where('status', 'pending')
@@ -156,6 +159,7 @@ final class FieldOperationsFinanceService
                 'stores.name as store_name',
                 DB::raw('COALESCE(custody_totals.custody_balance, 0) as custody_balance'),
                 DB::raw('COALESCE(custody_totals.custody_entries, 0) as custody_entries'),
+                DB::raw('COALESCE(custody_totals.currency_mismatch_entries, 0) as currency_mismatch_entries'),
                 DB::raw('COALESCE(pending_totals.pending_remittance, 0) as pending_remittance'),
                 DB::raw('COALESCE(pending_totals.pending_remittance_count, 0) as pending_remittance_count'),
                 DB::raw('COALESCE(approved_totals.awaiting_reconciliation, 0) as awaiting_reconciliation'),
