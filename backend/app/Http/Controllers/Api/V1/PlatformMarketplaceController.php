@@ -292,8 +292,10 @@ final class PlatformMarketplaceController extends Controller
             ->all();
     }
 
-    /** @return list<array<string,mixed>> */
-    /** @param array<string, mixed> $filters */
+    /**
+     * @param array<string, mixed> $filters
+     * @return list<array<string, mixed>>
+     */
     private function retailPlacements(array $filters, int $platformStoreId): array
     {
         $countryCode = strtoupper(trim((string) ($filters['country_code'] ?? '')));
@@ -445,8 +447,10 @@ final class PlatformMarketplaceController extends Controller
         });
     }
 
-    /** @return list<array<string,mixed>> */
-    /** @param array<string, mixed> $filters */
+    /**
+     * @param array<string, mixed> $filters
+     * @return list<array<string, mixed>>
+     */
     private function products(array $filters, int $storeId): array
     {
         $search = trim((string) ($filters['q'] ?? ''));
