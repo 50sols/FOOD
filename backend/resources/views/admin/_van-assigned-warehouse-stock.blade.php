@@ -10,7 +10,7 @@
         <strong>{{ $vanWarehouseStock['warehouse_name'] }}</strong>
     </div>
     <div class="table-wrap">
-        <table class="foodex-ops-grid">
+        <table class="foodex-ops-grid" data-pagination-required="keyset-50">
             <caption>{{ __('van_inventory.inventory_table') }}</caption>
             <thead><tr>
                 <th scope="col">{{ __('van_inventory.product') }}</th>
