@@ -37,6 +37,98 @@ class EnterpriseRbacTest extends TestCase
             ->assertSee('dir="rtl"', false);
     }
 
+    public function test_security_user_search_is_literal_on_dashboard_and_admin_api_without_role_mutation(): void
+    {
+        $admin = $this->userWithGlobalRole('SUPER_ADMIN', 'en');
+        $denied = $this->userWithGlobalRole('B2B_ADMIN');
+        $target = User::factory()->create([
+            'name' => 'SEC_%!\\-Target',
+            'username' => 'USR_%!\\-Target',
+            'email' => 'security-literal-target@example.test',
+            'is_active' => true,
+        ]);
+        $decoy = User::factory()->create([
+            'name' => 'SECX-Other',
+            'username' => 'USR-OTHER',
+            'email' => 'security-literal-decoy@example.test',
+            'is_active' => true,
+        ]);
+        $leading = User::factory()->create([
+            'name' => '%Only-Symbol',
+            'email' => 'security-literal-leading@example.test',
+            'is_active' => true,
+        ]);
+        $symbolUsers = [];
+        foreach ([
+            '_' => '_Only-Symbol',
+            '!' => '!Only-Symbol',
+            '\\' => '\\Only-Symbol',
+        ] as $symbol => $name) {
+            $symbolUsers[$symbol] = User::factory()->create([
+                'name' => $name,
+                'email' => 'security-literal-symbol-'.ord($symbol).'@example.test',
+                'is_active' => true,
+            ]);
+        }
+        $userCount = DB::table('users')->count();
+        $roleAssignments = DB::table('role_user')->count();
+        $auditCount = AuditLog::query()->count();
+
+        foreach (['SEC_', 'SEC_%', 'SEC_%!', 'SEC_%!\\-'] as $q) {
+            $this->actingAs($admin)
+                ->get('/admin/security?section=users&q='.rawurlencode($q))
+                ->assertOk()
+                ->assertSee($target->email)
+                ->assertDontSee($decoy->email);
+        }
+
+        $this->actingAs($admin)
+            ->get('/admin/security?section=users&q='.rawurlencode('USR_%!\\-'))
+            ->assertOk()
+            ->assertSee($target->email)
+            ->assertDontSee($decoy->email);
+        $this->actingAs($admin)
+            ->get('/admin/security?section=users&q='.rawurlencode('SEC%'))
+            ->assertOk()
+            ->assertDontSee($target->email)
+            ->assertDontSee($decoy->email);
+
+        Sanctum::actingAs($admin);
+        foreach (['SEC_', 'SEC_%', 'SEC_%!', 'SEC_%!\\-'] as $q) {
+            $this->getJson('/api/v1/admin/security/users?q='.rawurlencode($q))
+                ->assertOk()
+                ->assertJsonPath('meta.total', 1)
+                ->assertJsonPath('data.0.id', $target->id);
+        }
+        foreach (['%', '_', '!', '\\'] as $symbol) {
+            $this->getJson('/api/v1/admin/security/users?q='.rawurlencode($symbol))
+                ->assertOk()
+                ->assertJsonPath('meta.total', 2);
+        }
+        $this->getJson('/api/v1/admin/security/users?q='.rawurlencode('SEC%'))
+            ->assertOk()
+            ->assertJsonPath('meta.total', 0);
+        $this->getJson('/api/v1/admin/security/users?q='.rawurlencode('SEC_%!').'&status=inactive')
+            ->assertOk()
+            ->assertJsonPath('meta.total', 0);
+        $this->getJson('/api/v1/admin/security/users?q='.rawurlencode('SEC_%!').'&per_page=1')
+            ->assertOk()
+            ->assertJsonPath('meta.per_page', 1)
+            ->assertJsonPath('meta.total', 1);
+
+        $this->actingAs($denied)
+            ->get('/admin/security?section=users&q='.rawurlencode('SEC_%!'))
+            ->assertForbidden();
+        Sanctum::actingAs($denied);
+        $this->getJson('/api/v1/admin/security/users?q='.rawurlencode('SEC_%!'))
+            ->assertForbidden();
+
+        $this->assertTrue($leading->exists);
+        $this->assertSame($userCount, DB::table('users')->count());
+        $this->assertSame($roleAssignments, DB::table('role_user')->count());
+        $this->assertSame($auditCount, AuditLog::query()->count());
+    }
+
     public function test_security_center_defaults_to_compact_users_tab_and_splits_governance_surfaces(): void
     {
         $admin = $this->userWithGlobalRole('SUPER_ADMIN', 'en');
