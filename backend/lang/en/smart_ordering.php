@@ -1,6 +1,10 @@
 <?php
 
 return [
+    'branch_policy' => [
+        'past_schedule' => 'Scheduled time cannot be in the past.',
+        'delivery_zone_outside' => 'Delivery address is outside this branch service area.',
+    ],
     'nav_title' => 'Smart Ordering',
     'title' => 'FOODEX Smart Ordering',
     'description' => 'Control restaurant site identity, runtime rollout, entitlements and atomic publishing.',
