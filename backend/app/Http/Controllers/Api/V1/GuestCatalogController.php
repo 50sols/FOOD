@@ -14,6 +14,8 @@ use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Facades\Validator;
+use Illuminate\Validation\ValidationException;
 
 class GuestCatalogController extends Controller
 {
@@ -297,10 +299,31 @@ class GuestCatalogController extends Controller
 
     private function validatedPerPage(Request $request, int $default = 20, int $max = 100): int
     {
-        $validated = $request->validate([
+        $validator = Validator::make($request->query(), [
             'page' => ['sometimes', 'required', 'integer', 'min:1'],
             'per_page' => ['sometimes', 'required', 'integer', 'min:1', 'max:'.$max],
         ]);
+
+        if ($validator->fails()) {
+            $locale = in_array(app()->getLocale(), ['ar', 'en'], true) ? app()->getLocale() : 'ar';
+
+            foreach ($request->getLanguages() as $preferredLanguage) {
+                $candidate = strtolower(substr((string) $preferredLanguage, 0, 2));
+                if (in_array($candidate, ['ar', 'en'], true)) {
+                    $locale = $candidate;
+                    break;
+                }
+            }
+
+            $errors = [];
+            foreach ($validator->errors()->keys() as $field) {
+                $errors[$field] = [__('guest_catalog_pagination.invalid_parameter', [], $locale)];
+            }
+
+            throw ValidationException::withMessages($errors);
+        }
+
+        $validated = $validator->validated();
 
         return isset($validated['per_page']) ? (int) $validated['per_page'] : $default;
     }

@@ -60,7 +60,10 @@ final class V2GuestCatalogMalformedPaginationTest extends TestCase
                 foreach ($invalid as [$query, $field]) {
                     $this->getJson($uri.'?'.$query, ['Accept-Language' => $locale])
                         ->assertUnprocessable()
-                        ->assertJsonValidationErrors($field);
+                        ->assertJsonValidationErrors($field)
+                        ->assertJsonPath('errors.'.$field.'.0', $locale === 'ar'
+                            ? 'معامل تقسيم الصفحات غير صالح.'
+                            : 'The pagination parameter is invalid.');
                 }
             }
         }
