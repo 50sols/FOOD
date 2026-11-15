@@ -20,8 +20,9 @@ class B2bReportingTest extends TestCase
     {
         $this->seed(CoreReferenceSeeder::class);
         [$user, $customer] = $this->buyer('v2-3785-buyer@example.test', 'active');
-        [, $foreignCustomer] = $this->buyer('v2-3785-foreign@example.test', 'active');
+        [$foreignUser, $foreignCustomer] = $this->buyer('v2-3785-foreign@example.test', 'active');
         $domain = app(CustomerDomainResolver::class)->b2b($user);
+        $foreignDomain = app(CustomerDomainResolver::class)->b2b($foreignUser);
         $typeId = (int) DB::table('store_types')->where('code', 'B2B')->value('id');
         $storeId = (int) DB::table('stores')->insertGetId([
             'store_type_id' => $typeId,
@@ -39,7 +40,10 @@ class B2bReportingTest extends TestCase
         DB::table('orders')->whereIn('id', [$kwdOrder, $egpOrder])
             ->update(['b2b_customer_id' => $domain->getKey()]);
         DB::table('orders')->where('id', $egpOrder)->update(['currency' => 'EGP']);
-        DB::table('orders')->where('id', $foreignOrder)->update(['currency' => 'USD']);
+        DB::table('orders')->where('id', $foreignOrder)->update([
+            'b2b_customer_id' => $foreignDomain->getKey(),
+            'currency' => 'USD',
+        ]);
 
         Sanctum::actingAs($user);
         foreach ([
