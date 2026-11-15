@@ -313,6 +313,89 @@ class VanFinanceSupportTest extends TestCase
         $this->assertSame($before['ledger'], DB::table('custody_ledger_entries')->count());
     }
 
+
+    public function test_closeout_balanced_ledger_still_requires_review_when_van_or_wallet_is_inactive(): void
+    {
+        $admin = $this->superAdmin();
+        $now = now();
+        $b2b = (int) DB::table('store_types')->where('code', 'B2B')->value('id');
+        $storeId = (int) DB::table('stores')->insertGetId([
+            'store_type_id' => $b2b,
+            'code' => 'P277-INACTIVE-WALLET',
+            'name' => 'P277 Inactive Wallet Store',
+            'is_active' => true,
+            'created_at' => $now,
+            'updated_at' => $now,
+        ]);
+        $vanId = (int) DB::table('vans')->insertGetId([
+            'public_id' => (string) Str::uuid(),
+            'code' => 'P277-INACTIVE-VAN',
+            'plate_number' => 'P277-300',
+            'status' => 'active',
+            'created_at' => $now,
+            'updated_at' => $now,
+        ]);
+        $accountId = (int) DB::table('collection_accounts')->insertGetId([
+            'actor_type' => 'van',
+            'actor_id' => $vanId,
+            'store_id' => $storeId,
+            'currency' => 'KWD',
+            'status' => 'active',
+            'custody_limit' => 100,
+            'created_at' => $now,
+            'updated_at' => $now,
+        ]);
+
+        DB::table('custody_ledger_entries')->insert([
+            [
+                'collection_account_id' => $accountId,
+                'entry_type' => 'collection',
+                'amount' => 25,
+                'currency' => 'KWD',
+                'reference_type' => 'collection_transaction',
+                'reference_id' => 1001,
+                'created_by' => $admin->id,
+                'created_at' => $now,
+                'updated_at' => $now,
+            ],
+            [
+                'collection_account_id' => $accountId,
+                'entry_type' => 'adjustment',
+                'amount' => -25,
+                'currency' => 'KWD',
+                'reference_type' => 'adjustment',
+                'reference_id' => 1002,
+                'created_by' => $admin->id,
+                'created_at' => $now,
+                'updated_at' => $now,
+            ],
+        ]);
+
+        $finance = app(FieldOperationsFinanceService::class);
+        $review = fn (): array => $finance->viewModel([$storeId], ['ops_tab' => 'closeout'])['rows'];
+        $this->assertSame('ledger_clear', $review()[0]['review_state']);
+
+        DB::table('collection_accounts')->where('id', $accountId)->update(['status' => 'suspended']);
+        $this->assertSame('needs_review', $review()[0]['review_state']);
+        $this->actingAs($admin)
+            ->get('/admin/van-finance-support?ops_tab=closeout')
+            ->assertOk()
+            ->assertSee('Financial review required')
+            ->assertDontSee('Financial ledger clear');
+
+        DB::table('collection_accounts')->where('id', $accountId)->update(['status' => 'active']);
+        DB::table('vans')->where('id', $vanId)->update(['status' => 'suspended']);
+        $this->assertSame('needs_review', $review()[0]['review_state']);
+        $this->actingAs($admin)
+            ->get('/admin/van-finance-support?ops_tab=closeout')
+            ->assertOk()
+            ->assertSee('Financial review required')
+            ->assertDontSee('Financial ledger clear');
+
+        $this->assertSame(2, DB::table('custody_ledger_entries')->where('collection_account_id', $accountId)->count());
+        $this->assertSame(0, DB::table('remittances')->where('collection_account_id', $accountId)->count());
+    }
+
     private function superAdmin(): User
     {
         $user = User::query()->create([
