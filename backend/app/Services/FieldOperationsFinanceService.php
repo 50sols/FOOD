@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use App\Enterprise\Search\LiteralLikePattern;
 use Illuminate\Pagination\LengthAwarePaginator;
 use Illuminate\Support\Facades\DB;
 
@@ -128,11 +129,12 @@ final class FieldOperationsFinanceService
             ->where('collection_accounts.actor_type', 'van')
             ->whereIn('collection_accounts.store_id', $storeIds)
             ->when($q !== '', function ($query) use ($q): void {
-                $query->where(function ($scope) use ($q): void {
-                    $scope->where('vans.code', 'like', '%'.$q.'%')
-                        ->orWhere('vans.plate_number', 'like', '%'.$q.'%')
-                        ->orWhere('stores.name', 'like', '%'.$q.'%')
-                        ->orWhere('collection_accounts.currency', 'like', '%'.$q.'%');
+                $literal = LiteralLikePattern::contains($q);
+                $query->where(function ($scope) use ($q, $literal): void {
+                    $scope->whereRaw("vans.code LIKE ? ESCAPE '!'", [$literal])
+                        ->orWhereRaw("vans.plate_number LIKE ? ESCAPE '!'", [$literal])
+                        ->orWhereRaw("stores.name LIKE ? ESCAPE '!'", [$literal])
+                        ->orWhereRaw("collection_accounts.currency LIKE ? ESCAPE '!'", [$literal]);
                 });
             })
             ->orderBy('collection_accounts.store_id')
@@ -176,11 +178,12 @@ final class FieldOperationsFinanceService
             ->whereIn('collection_accounts.store_id', $storeIds)
             ->when($status !== '', fn ($query) => $query->where('collection_accounts.status', $status))
             ->when($q !== '', function ($query) use ($q): void {
-                $query->where(function ($scope) use ($q): void {
-                    $scope->where('collection_accounts.actor_type', 'like', '%'.$q.'%')
-                        ->orWhere('collection_accounts.currency', 'like', '%'.$q.'%')
-                        ->orWhere('collection_accounts.status', 'like', '%'.$q.'%')
-                        ->orWhere('stores.name', 'like', '%'.$q.'%');
+                $literal = LiteralLikePattern::contains($q);
+                $query->where(function ($scope) use ($q, $literal): void {
+                    $scope->whereRaw("collection_accounts.actor_type LIKE ? ESCAPE '!'", [$literal])
+                        ->orWhereRaw("collection_accounts.currency LIKE ? ESCAPE '!'", [$literal])
+                        ->orWhereRaw("collection_accounts.status LIKE ? ESCAPE '!'", [$literal])
+                        ->orWhereRaw("stores.name LIKE ? ESCAPE '!'", [$literal]);
                     if (ctype_digit($q)) {
                         $scope->orWhere('collection_accounts.actor_id', (int) $q)
                             ->orWhere('collection_accounts.id', (int) $q);
@@ -215,13 +218,14 @@ final class FieldOperationsFinanceService
             ->whereIn('collection_accounts.store_id', $storeIds)
             ->when($status !== '', fn ($query) => $query->where('collection_transactions.status', $status))
             ->when($q !== '', function ($query) use ($q): void {
-                $query->where(function ($scope) use ($q): void {
-                    $scope->where('collection_transactions.idempotency_key', 'like', '%'.$q.'%')
-                        ->orWhere('collection_transactions.source', 'like', '%'.$q.'%')
-                        ->orWhere('collection_transactions.currency', 'like', '%'.$q.'%')
-                        ->orWhere('collection_accounts.actor_type', 'like', '%'.$q.'%')
-                        ->orWhere('stores.name', 'like', '%'.$q.'%')
-                        ->orWhere('payments.provider_reference', 'like', '%'.$q.'%');
+                $literal = LiteralLikePattern::contains($q);
+                $query->where(function ($scope) use ($q, $literal): void {
+                    $scope->whereRaw("collection_transactions.idempotency_key LIKE ? ESCAPE '!'", [$literal])
+                        ->orWhereRaw("collection_transactions.source LIKE ? ESCAPE '!'", [$literal])
+                        ->orWhereRaw("collection_transactions.currency LIKE ? ESCAPE '!'", [$literal])
+                        ->orWhereRaw("collection_accounts.actor_type LIKE ? ESCAPE '!'", [$literal])
+                        ->orWhereRaw("stores.name LIKE ? ESCAPE '!'", [$literal])
+                        ->orWhereRaw("payments.provider_reference LIKE ? ESCAPE '!'", [$literal]);
                     if (ctype_digit($q)) {
                         $scope->orWhere('collection_transactions.id', (int) $q)
                             ->orWhere('collection_accounts.actor_id', (int) $q);
@@ -272,13 +276,14 @@ final class FieldOperationsFinanceService
             ->when($reconciliation && $status === '', fn ($query) => $query->whereIn('remittances.status', ['pending', 'approved', 'rejected', 'reconciled']))
             ->when($status !== '', fn ($query) => $query->where('remittances.status', $status))
             ->when($q !== '', function ($query) use ($q): void {
-                $query->where(function ($scope) use ($q): void {
-                    $scope->where('remittances.idempotency_key', 'like', '%'.$q.'%')
-                        ->orWhere('remittances.reference', 'like', '%'.$q.'%')
-                        ->orWhere('remittances.method', 'like', '%'.$q.'%')
-                        ->orWhere('remittances.currency', 'like', '%'.$q.'%')
-                        ->orWhere('collection_accounts.actor_type', 'like', '%'.$q.'%')
-                        ->orWhere('stores.name', 'like', '%'.$q.'%');
+                $literal = LiteralLikePattern::contains($q);
+                $query->where(function ($scope) use ($q, $literal): void {
+                    $scope->whereRaw("remittances.idempotency_key LIKE ? ESCAPE '!'", [$literal])
+                        ->orWhereRaw("remittances.reference LIKE ? ESCAPE '!'", [$literal])
+                        ->orWhereRaw("remittances.method LIKE ? ESCAPE '!'", [$literal])
+                        ->orWhereRaw("remittances.currency LIKE ? ESCAPE '!'", [$literal])
+                        ->orWhereRaw("collection_accounts.actor_type LIKE ? ESCAPE '!'", [$literal])
+                        ->orWhereRaw("stores.name LIKE ? ESCAPE '!'", [$literal]);
                     if (ctype_digit($q)) {
                         $scope->orWhere('remittances.id', (int) $q)
                             ->orWhere('collection_accounts.actor_id', (int) $q);
