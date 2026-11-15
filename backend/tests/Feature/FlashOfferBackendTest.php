@@ -445,6 +445,65 @@ class FlashOfferBackendTest extends TestCase
         }
     }
 
+    public function test_customer_flash_checkout_unconfigured_payment_method_is_bilingual_and_write_free(): void
+    {
+        [, $offerProduct] = $this->offer();
+        $reservation = app(FlashOfferService::class)->reserve(
+            $this->user->id,
+            $offerProduct->id,
+            1,
+            'customer',
+            'v2-3768-payment-method-reservation',
+        );
+        Sanctum::actingAs($this->user);
+
+        $baseline = [
+            'orders' => DB::table('orders')->count(),
+            'order_items' => DB::table('order_items')->count(),
+            'invoices' => DB::table('invoices')->count(),
+            'payments' => DB::table('payments')->count(),
+            'audit' => DB::table('audit_logs')->count(),
+            'reservations' => DB::table('flash_reservations')->count(),
+            'events' => DB::table('flash_offer_events')->count(),
+            'inventory_reserved' => (float) DB::table('inventories')->where('id', $this->inventoryId)->value('reserved_quantity'),
+            'reservation_status' => DB::table('flash_reservations')->where('id', $reservation->id)->value('status'),
+        ];
+
+        foreach ([
+            'ar' => 'طريقة الدفع المحددة غير مهيأة.',
+            'en' => 'The selected payment method is not configured.',
+        ] as $locale => $message) {
+            $this->user->forceFill(['locale' => $locale])->save();
+            app()->setLocale($locale);
+
+            $this->withHeaders([
+                'X-FOODEX-Store-ID' => (string) $this->storeId,
+                'X-FOODEX-Customer-Domain' => 'b2c',
+                'Accept-Language' => $locale === 'ar' ? 'en' : 'ar',
+                'Idempotency-Key' => 'v2-3768-flash-payment-method-'.$locale,
+            ])->postJson('/api/v1/flash-reservations/'.$reservation->id.'/confirm', [
+                'store_id' => $this->storeId,
+                'channel' => 'customer',
+                'address_id' => 1,
+                'payment_method' => 'unsupported_offline_payment',
+            ])
+                ->assertUnprocessable()
+                ->assertJsonPath('errors.payment_method.0', $message);
+
+            $this->assertSame($baseline, [
+                'orders' => DB::table('orders')->count(),
+                'order_items' => DB::table('order_items')->count(),
+                'invoices' => DB::table('invoices')->count(),
+                'payments' => DB::table('payments')->count(),
+                'audit' => DB::table('audit_logs')->count(),
+                'reservations' => DB::table('flash_reservations')->count(),
+                'events' => DB::table('flash_offer_events')->count(),
+                'inventory_reserved' => (float) DB::table('inventories')->where('id', $this->inventoryId)->value('reserved_quantity'),
+                'reservation_status' => DB::table('flash_reservations')->where('id', $reservation->id)->value('status'),
+            ]);
+        }
+    }
+
     public function test_confirming_expired_reservation_commits_expiry_and_releases_inventory(): void
     {
         [, $product] = $this->offer(reservationSeconds: 30);
