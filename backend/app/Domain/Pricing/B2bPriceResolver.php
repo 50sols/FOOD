@@ -2,6 +2,7 @@
 
 namespace App\Domain\Pricing;
 
+use App\Domain\Pricing\QuantityPriceBreaks;
 use App\Models\B2bAccount;
 use App\Models\B2bCustomer;
 use App\Models\User;
@@ -14,7 +15,7 @@ class B2bPriceResolver
 {
     public function __construct(private readonly B2bPricingMode $pricingMode) {}
 
-    /** @return array{price: float, minimum_quantity: float, ordering_increment: float, pack_size: float, case_size: float|null, pack_label: string|null, retail_reference_price: float|null} */
+    /** @return array{price: float, quantity_price_breaks: list<array{minimum_quantity:float,unit_price:float}>, minimum_quantity: float, ordering_increment: float, pack_size: float, case_size: float|null, pack_label: string|null, retail_reference_price: float|null} */
     public function resolve(B2bCustomer $customer, int $storeId, int $productId): array
     {
         $key = $this->key($storeId, $productId);
@@ -38,7 +39,7 @@ class B2bPriceResolver
      * many recommendations can mark only those rows as pricing-blocked.
      *
      * @param  list<array{store_id:int,product_id:int}>  $targets
-     * @return array<string,array{price: float, minimum_quantity: float, ordering_increment: float, pack_size: float, case_size: float|null, pack_label: string|null, retail_reference_price: float|null}>
+     * @return array<string,array{price: float, quantity_price_breaks: list<array{minimum_quantity:float,unit_price:float}>, minimum_quantity: float, ordering_increment: float, pack_size: float, case_size: float|null, pack_label: string|null, retail_reference_price: float|null}>
      */
     public function resolveMany(B2bCustomer $customer, array $targets): array
     {
@@ -125,6 +126,7 @@ class B2bPriceResolver
                 'b2b_price_rules.store_id',
                 'b2b_price_rules.product_id',
                 'b2b_price_rules.unit_price',
+                'b2b_price_rules.quantity_price_breaks',
                 'b2b_price_rules.minimum_quantity',
                 'b2b_price_rules.ordering_increment',
                 'b2b_price_rules.pack_size',
@@ -137,6 +139,7 @@ class B2bPriceResolver
         foreach ($rules as $rule) {
             $resolved[$this->key((int) $rule->store_id, (int) $rule->product_id)] = [
                 'price' => (float) $rule->unit_price,
+                'quantity_price_breaks' => QuantityPriceBreaks::readBreaks($rule->quantity_price_breaks),
                 'minimum_quantity' => (float) $rule->minimum_quantity,
                 'ordering_increment' => max(0.001, (float) $rule->ordering_increment),
                 'pack_size' => max(0.001, (float) $rule->pack_size),
@@ -164,7 +167,7 @@ class B2bPriceResolver
 
     /**
      * @param  list<array{store_id:int,product_id:int}>  $targets
-     * @return array<string,array{price: float, minimum_quantity: float, ordering_increment: float, pack_size: float, case_size: float|null, pack_label: string|null, retail_reference_price: float|null}>
+     * @return array<string,array{price: float, quantity_price_breaks: list<array{minimum_quantity:float,unit_price:float}>, minimum_quantity: float, ordering_increment: float, pack_size: float, case_size: float|null, pack_label: string|null, retail_reference_price: float|null}>
      */
     private function platformFallbackMany(array $targets): array
     {
@@ -211,6 +214,7 @@ class B2bPriceResolver
         foreach ($fallbacks as $fallback) {
             $resolved[$this->key((int) $fallback->store_id, (int) $fallback->product_id)] = [
                 'price' => (float) $fallback->price,
+                'quantity_price_breaks' => [],
                 'minimum_quantity' => 1.0,
                 'ordering_increment' => 1.0,
                 'pack_size' => 1.0,
