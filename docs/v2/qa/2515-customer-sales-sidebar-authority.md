@@ -1,54 +1,59 @@
-# V2 P185 — Customer & Sales / Customer Service navigation authority
+# V2 P185 — Customer, Sales & Customer Service business domain
 
-- Issue: #2515; master #2503; source: Unified RBAC/ERP/Sidebar DOCX, Part 2 §4, P185 (check the canonical source-row mapping before final acceptance).
-- Integration: `Foodex_V2` only. No `main` merge, production deployment, tag or release.
-- Delivery classification: **bounded HTTP/RBAC characterization and source trace only**; the full P185 unified business-group acceptance is **NOT YET COMPLETE**.
+Issue: [#2515](https://github.com/walidatiyaai2025-gif/FOOD/issues/2515); parent #2503; source Unified RBAC/ERP/Sidebar discussion, Part 2 §4 (matrix key P185, actual DOCX P174). **Foodex_V2 only**.
 
-## Placement and business ownership
+## Source placement, authoritative contract and implementation
 
-- Domain/entity: Customer & Sales; customers, customer groups, order operations and support cases.
-- Personas: Wholesale Customer Service Manager (global B2B), Retail Store Admin (store-scoped B2C), roleless and inactive/explicitly denied actors.
-- Goal/workflow: discover authorized customers, customer groups and orders, then open the actual existing operational page.
-- Usage: frequent, primarily lists/details with store context. Placement choice: **reuse** established groups and workbenches before any new Sidebar group or duplicate route.
-- Current canonical Sidebar navigation owner: `backend/app/Support/AdminNavigation.php::groupsFor()`; current groups: `accounts`, `customer_service` and `operations`.
-- Existing navigation type: `SIDEBAR`; customer group detail workflows stay in their canonical parent pages.
-- Exact routes: `admin.b2b.customer-groups.index`, `admin.b2c.customer-groups.index`, `admin.customer-360.index`, `admin.operations.orders.index`; customer service workbench: `admin.erp.customer-service`.
-- Route/permission: customer groups require `customers.view` for GET and `customers.manage` for mutation; orders require `orders.view`. Customer 360 may use `customers.view` or B2B `b2b.accounts.view` depending on the canonical actor path. Platform/Super Admin visibility is not the authorization source.
-- Data scope: actual server-side `OperationalTenantScope`, channel B2B vs B2C and assigned Retail store; foreign stores denied, including direct HTTP requests. Explicit user DENY overrides Sidebar presentation settings.
-- Module/entitlement/readiness: these currently reused customer group routes are not independently enabled by an ERP module readiness flag; do **not** project unready ERP actions as authorized based on menu visibility.
-- AR/EN + RTL/LTR: existing `admin.nav_groups.accounts` translations are Arabic “العملاء والحسابات” and English “Customers & Accounts”; real HTTP customer groups use the Dashboard locale direction.
-- Discoverability: via existing Dashboard side navigation; desktop Sidebar and mobile-web off-canvas share `groupsFor()`. Back/fallback: retain canonical Accounts/Orders workbenches and Dashboard navigation; do not create a direct-URL-only entry.
-- Viewports and interaction acceptance: desktop, 1024/768 tablet, 320–430px mobile-web, keyboard and screen reader are deferred to the central real-runtime UX gate #2750; this code-only slice does **not** assert browser/a11y PASS.
+The target parent `العملاء والمبيعات وخدمة العملاء` owns the source sections P186 Customers, P192 Sales and P198 Customer Service & WhatsApp. Those **three existing functional subgroups** retain their canonical keys `accounts`, `sales`, `customer_service`, server-authorized routes, saved administrator order and the existing leaf ownership rules. The parent is a **non-link, AR/EN accessible business-domain heading** rendered in `admin._sidebar` around *only already-authorized, already-visible adjacent subgroups*. It never creates a route or exposes a hidden/unready child.
 
-## Automated regression introduced
+- Reuse → Extend → Compose → New Screen: **Compose existing groups**. No duplicate Sidebar key/route, controller, backend authorization policy, new menu module, new screen or persistence.
+- Arabic: `العملاء والمبيعات وخدمة العملاء`; English: `Customers, sales and customer service`. Paired `backend/lang/{ar,en}/v2_sidebar_domains.php` keys. The existing Dashboard layout supplies AR/RTL + EN/LTR direction.
+- P185 parent: `<section role="group" aria-labelledby="p185-domain-title-N" data-nav-domain="customer-sales-service">`. Visible `h2` is *not* an anchor/button or permission decision. Existing native `<details><summary>` wrappers retain keyboard and accessibility semantics for subgroups.
+- `accounts` contains canonical Customer 360 and authenticated Retail/Wholesale customer and group destinations; `sales` contains authorized ready Sales Quotations and commercial-exception approval destinations; `customer_service` exposes WhatsApp Inbox **only when the real module capability and HTTP authorization allow it**. Future P195 contracts/pricing and other unready business leaves are excluded until their separately owned implementation is ready.
+- The same `navGroups` list from `AdminNavigation::groupsFor()` and `AdminSidebarManager::apply()` drives the entire heading and children. There is no independent cosmetic RBAC, forced entitlement, disabled-module bypass or hidden direct-URL access.
+- The heading opens/closes only around contiguous visible domain subgroups. If an administrator reorders groups, separate accessible heading segments preserve saved ordering instead of reordering them or duplicating links. When none of the three subgroups is authorized, **no P185 heading renders**. CSS `:has` already used for P237 hides empty domain headings during client-side search filtering.
+- Existing group → page → optional child-page **three interactive levels remain unchanged**. The domain `h2` adds a noninteractive organizational label only, so no fourth navigation link depth is created.
 
-`backend/tests/Feature/V2CustomerSalesSidebarGroupAuthorityTest.php` covers:
+## Explicit route and security inventory
 
-1. Real Wholesale Customer Service Manager customer-group route and existing operations entry in AR/EN with direction and route existence.
-2. Retail Store Admin own-store allowed path; foreign-store and Wholesale direct requests forbidden/not found with no cross-channel navigation.
-3. Presentation visibility cannot override explicit `customers.view` DENY; original role grants are preserved.
-4. Roleless and inactive users cannot discover customer/sales operational entries; no rendered empty groups.
-
-These are real Laravel Feature HTTP tests against the existing routes; no mock route or fake success response. A denial may be 403 or 404 depending on whether the canonical controller intentionally obscures inaccessible store existence; do not present this limited negative assertion as uniform 403 acceptance.
-
-## P185 source acceptance gap — do not close this Issue
-
-The source requests one **“العملاء والمبيعات وخدمة العملاء”** parent business group. The existing `groupsFor()` splits the related destinations among `accounts`, `customer_service`, `operations` and Sales Control elsewhere. This new regression does not merge groups, change Sidebar IA or certify complete P185 child ordering. That structural discrepancy requires a separate, conflict-free follow-up on the **same #2515 branch/PR** once current shared-file owners are clear. In particular, active PR #3246 for #2523 already owns `AdminNavigation.php`, `config/admin_sidebar.php`, routes and Sales Quotations. Do not overwrite/recreate those changes from this lane. This PR should remain a **draft** until the P185 source hierarchy and runtime accessibility criteria are actually implemented and verified; do not close #2515 on the test-only delta.
-
-## Backend / Dashboard / apps impact matrix
-
-| Surface | Assessment | Evidence and follow-up |
+| Group | Canonical destination | Server-side authority / scope |
 |---|---|---|
-| Backend / Dashboard | Tests only. Existing navigation, route/controller/authorization left unchanged. | New Laravel Feature test exercises real navigation and HTTP. No permission or data mutation behavior introduced. |
-| Customer Flutter | Not affected by this delta. | No `apps/customer_app` or `backend/routes/api.php` modification; Customer B2B/B2C product/checkout and API contracts unchanged. |
-| Driver Flutter | Not affected by this delta. | No Driver app/API endpoint/status/dispatch changes; B2C → Driver remains unchanged. |
-| Van Flutter | Not affected by this delta. | No Van app/API endpoint/route/assignment change; B2B → Van remains unchanged. |
+| Customers | `admin.customer-360.index` | `customers.view` or `b2b.accounts.view` as determined by effective controller/tenant scope |
+| Customers | `admin.b2b.customer-groups.index` | `customers.view` + authorized Wholesale B2B store |
+| Customers | `admin.b2c.customer-groups.index`, `admin.b2c.module?module=customers` | `customers.view`, Retail Store A only; Store B and Wholesale cross-channel denied |
+| Sales | `admin.sales-quotations.index` | `orders.view` and existing B2B/B2C + store scope and quotation readiness |
+| Sales | `admin.commercial-exception-approvals.index` (when projected) | existing effective order/approval entitlement; no visibility grant |
+| Customer Service | `admin.whatsapp-inbox.index` | `whatsapp.inbox.view`, operational Inbox capability, permitted active store and existing customer-service role/scope |
 
-No new mobile-impact issue is needed for a test-only Dashboard characterization delta. If the eventual P185 UI/runtime changes alter any app/API contracts, reopen individual app impact assessments and link distinct V2 mobile issues.
+The group and each child are derived **after** the real authorization and operational readiness checks; direct HTTP controllers still deny foreign store / disabled module / unauthenticated or unprivileged actors. A hidden heading or presentation override never affects direct-URL authority.
 
-## Delivery and QA evidence
+## Automated acceptance evidence and security negatives
 
-- Local syntax validation of the corresponding PHP test content: `php -l` reported no syntax errors (PHP 8.4); full repository dependencies and GitHub Actions are not available in this working container.
-- Exact-head remote `Laravel / PHPStan / Pint / AR-EN / Repository Policy / V2 Isolation / Required CI` must be checked from GitHub PR; **not yet claimed green**.
-- Before merge, reconcile against current `Foodex_V2` and PR #3246, inspect all changed files, validate no shared ownership conflict and all required child jobs on last PR SHA.
-- Manual responsive/keyboard/a11y/staging acceptance is deferred to master #2503 and #2750 and is never claimed complete here.
+The resumed *original* issue branch and PR #3262 preserve four prior real Laravel HTTP negative scenarios and add three source-specific HTTP/DOM assertions in `backend/tests/Feature/V2CustomerSalesSidebarGroupAuthorityTest.php`:
+
+1. Wholesale Customer Service Manager in both Arabic and English: real B2B groups HTTP 200, route/channel admission, correct `dir`, one localized parent heading and existing Accounts/Sales subgroup semantics; both customer group and sales quotation links appear once, with no duplicate.
+2. Retail Store Admin: own-store B2C groups allowed; foreign Store B and wholesale direct-route denied (403/404), no B2B customer group link.
+3. Explicit `customers.view` DENY overrides legacy `admin_sidebar_role_visibility` force-show, without revoking the role's underlying grants.
+4. Inactive and roleless actors receive no unauthorized Customers/Order links; no empty subgroups.
+5. The P185 outer domain is a single accessible heading containing only already-authorized groups, preserving the current Customers and Sales pages under both locales.
+6. Retail Store A P185 domain renders one scoped Retail customer group and Sales link, never any foreign Wholesale group; foreign store request is rejected.
+7. WhatsApp capability disabled → no service subgroup; `INTERNAL_TEST` enabled → existing WhatsApp Inbox subgroup within the *same* parent heading; disabled again → real HTTP 404. No new API/role/messaging rule.
+
+Existing P186 (#2516), P192 (#2522), P198 (#2528) and source P381 (#2901) tests remain independently authoritative. Original P185 issue-scoped tests are preserved and extended instead of replaced. Source review must consider those tests and the existing responsive/sidebar-search CSS; exact-final-head PHP syntax, Pint, PHPStan, full Laravel, MySQL/Redis, localization, Repository Policy and V2 Isolation/terminal Required CI are a hard merge/closure gate. **Do not claim success without final run links.**
+
+## Per-app and dashboard impact
+
+- **Dashboard:** business-domain heading and two new AR/EN keys only. Responsive CSS and mobile-web off-canvas reuse the existing `.foodex-nav-domain` treatment. Existing keyboard/summary disclosure and local search semantics retained; manual browser/device/screen-reader UAT belongs to #2750/#2503.
+- **Backend/Admin:** no HTTP route, controller, DB migration, permission code, role, tenant/entitlement calculation, module readiness or user status changes. Existing HTTP negative tests validate these contracts.
+- **Customer Flutter:** not affected. No Customer API, DTO, app source, authentication/notification/deep-link or buying/checkout behavior modified.
+- **Driver Flutter:** not affected. No Driver API, GPS/collection/dispatch/status or B2C-only routing change.
+- **Van Flutter:** not affected. No Van API, B2B assignment, visits, territory, offline replay or fulfillment change.
+- B2B orders remain **Van ONLY**, B2C orders remain **Driver ONLY**.
+
+## Technical review, rollback and remaining V2-wide work
+
+**REVIEW_RISK: LOW (presentation + localization and automated tests, with no authorization/tenant/data/contract modifications)**. File-by-file review: `admin._sidebar` creates only a derived domain heading with safe unique HTML ids and no anchor; bilingual keys are paired; existing tests remain in place; P185 tests include actual authorized/denied routes. Failure modes: no domain when no groups authorized, no additional URL, no item duplication, no access escalation, saved sort order maintained, existing P237 domain remains unchanged. Rollback reverts only this markup and paired translations; no schema/data changes.
+
+**P185 grouping implementation** is separate from remaining unfinished **leaf business capabilities**, notably #2525 contracts/prices, and from the final owner/staging 177-node UX/a11y acceptance tracked in #2503/#2750. Completion of P185 heading must not mark any incomplete child business capability or P381 whole-tree final acceptance complete. `MANUAL_ACCEPTANCE: DEFERRED_TO_V2_FINAL`; owner has explicitly requested finish/closure subject to this policy, but that is not a claim that live staging UAT occurred.
+
+Original PR #3262 and branch `test/2515-v2-customer-sales-sidebar-authority` were reopened/restored from the preserved historical commit in response to the owner's 2026-11-15 directive. They remain the **only** PR/branch for #2515; reconciliation uses latest Foodex_V2 as first parent and the preserved original history as second parent. Never use `main`, tags, releases, APK/ZIP promotion or production deployment.
