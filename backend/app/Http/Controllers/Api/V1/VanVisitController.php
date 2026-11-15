@@ -30,13 +30,31 @@ final class VanVisitController extends Controller
             ->orderBy('customer_id')
             ->get();
 
+        // Collection history can include terminal visits, but only current
+        // actor-owned planned/started B2B visits authorize a new direct sale.
+        // Resolve the full eligibility matrix once, never N+1 per customer.
+        $saleEligible = VanVisit::query()
+            ->where('actor_user_id', $actor->getKey())
+            ->where('customer_type', 'b2b')
+            ->whereIn('status', ['planned', 'started'])
+            ->whereNotNull('store_id')
+            ->get(['customer_id', 'store_id'])
+            ->mapWithKeys(static fn (VanVisit $visit): array => [
+                (int) $visit->customer_id.':'.(int) $visit->store_id => true,
+            ]);
+
         $runtimeStoreId = $this->runtimeStoreId($request);
-        $data = $visits->map(function (VanVisit $visit) use ($runtimeStoreId): array {
-            return $this->customerPayload(
-                (string) $visit->customer_type,
-                (int) $visit->customer_id,
-                $runtimeStoreId ?? ($visit->store_id === null ? null : (int) $visit->store_id),
-            );
+        $data = $visits->map(function (VanVisit $visit) use ($runtimeStoreId, $saleEligible): array {
+            $type = (string) $visit->customer_type;
+            $customerId = (int) $visit->customer_id;
+            $storeId = $runtimeStoreId ?? ($visit->store_id === null ? null : (int) $visit->store_id);
+
+            return [
+                ...$this->customerPayload($type, $customerId, $storeId),
+                'can_direct_sell' => $type === 'b2b'
+                    && $storeId !== null
+                    && $saleEligible->has($customerId.':'.$storeId),
+            ];
         })->values();
 
         return response()->json(['data' => $data]);
@@ -111,7 +129,10 @@ final class VanVisitController extends Controller
 
         $type = (string) $validated['customer_type'];
         $customerId = (int) $validated['customer_id'];
-        $this->assertCustomerExists($type, $customerId);
+        $locale = in_array($actor->locale, ['ar', 'en'], true)
+            ? (string) $actor->locale
+            : (string) $request->getPreferredLanguage(['ar', 'en']);
+        $this->assertCustomerExists($type, $customerId, $locale === 'en' ? 'en' : 'ar');
 
         $visit = DB::transaction(function () use ($request, $validated, $actor, $type, $customerId): VanVisit {
             $existing = VanVisit::query()
@@ -228,7 +249,7 @@ final class VanVisitController extends Controller
         );
     }
 
-    private function assertCustomerExists(string $type, int $customerId): void
+    private function assertCustomerExists(string $type, int $customerId, string $locale): void
     {
         $exists = match ($type) {
             'b2b' => B2bCustomer::query()->whereKey($customerId)->exists(),
@@ -238,7 +259,7 @@ final class VanVisitController extends Controller
 
         if ($exists === false) {
             throw ValidationException::withMessages([
-                'customer_id' => ['The selected customer does not exist in the authoritative customer domain.'],
+                'customer_id' => [__('van_visit_customer_errors.customer_not_found', [], $locale)],
             ]);
         }
     }

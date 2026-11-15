@@ -6,6 +6,7 @@ use App\Models\Driver;
 use App\Models\Role;
 use App\Models\User;
 use App\Services\VanRegistryService;
+use App\Services\VanRuntimeContextResolver;
 use Database\Seeders\CoreReferenceSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
@@ -38,6 +39,10 @@ class AuthFoundationTest extends TestCase
             ->assertJsonPath('user.driver_scope', null);
 
         $token = $login->json('token');
+
+        // An omitted app remains compatible with legacy Customer clients
+        // without silently creating a privileged wildcard bearer token.
+        $this->assertSame(['app:customer'], $user->tokens()->firstOrFail()->abilities);
 
         $this->withToken($token)
             ->getJson('/api/v1/profile')
@@ -146,11 +151,18 @@ class AuthFoundationTest extends TestCase
 
         $registry = app(VanRegistryService::class);
         $van = $registry->createVan(['code' => 'AUTH-VAN-01']);
+        // Reproduce a pre-guard historical B2C assignment without using the
+        // now-protected production Van write path. Authentication must still
+        // refuse to promote a Retail-only Driver based on this stale row.
         $assignment = $registry->assign($user, $van, [
-            'driver_id' => $driver->id,
+            'representative_user_id' => $user->id,
             'assignment_type' => 'primary',
             'effective_from' => now()->subMinute(),
         ]);
+        $assignment->forceFill([
+            'driver_id' => $driver->id,
+            'representative_user_id' => null,
+        ])->save();
 
         $this->postJson('/api/v1/auth/login', [
             'email' => $user->email,
@@ -217,11 +229,56 @@ class AuthFoundationTest extends TestCase
 
         $registry = app(VanRegistryService::class);
         $van = $registry->createVan(['code' => 'AUTH-TOKEN-VAN']);
-        $registry->assign($user, $van, [
-            'driver_id' => $driver->id,
+        // Preserve the historical inconsistent Retail Driver Van link as a
+        // negative fixture. It cannot grant Van runtime, even to a dual-role user.
+        $legacyAssignment = $registry->assign($user, $van, [
+            'representative_user_id' => $user->id,
             'assignment_type' => 'primary',
             'effective_from' => now()->subMinute(),
         ]);
+        $legacyAssignment->forceFill([
+            'driver_id' => $driver->id,
+            'representative_user_id' => null,
+        ])->save();
+
+        // Explicit VAN_OPERATOR has a separate legitimate representative-only
+        // Van assignment. The Van token tests this authorized context, never
+        // the stale Retail-linked assignment above.
+        $operatorVan = $registry->createVan(['code' => 'AUTH-TOKEN-OPERATOR-VAN']);
+        $operatorAssignment = $registry->assign($user, $operatorVan, [
+            'representative_user_id' => $user->id,
+            'assignment_type' => 'primary',
+            'effective_from' => now()->subMinute(),
+        ]);
+        $context = app(VanRuntimeContextResolver::class)->resolve($user);
+        $this->assertSame($operatorAssignment->id, $context['selected']['assignment_id']);
+        $this->assertCount(1, $context['available']);
+        $this->assertDatabaseHas('van_assignments', ['id' => $legacyAssignment->id, 'driver_id' => $driver->id]);
+
+        // This account is genuinely eligible for both runtimes. An
+        // unspecified legacy login must still issue a Customer-only token,
+        // not the wildcard that Sanctum tokenCan treats as every app.
+        $legacyToken = $this->postJson('/api/v1/auth/login', [
+            'email' => $user->email,
+            'password' => 'correct-password',
+        ])->assertOk()->json('token');
+
+        $legacyAccessToken = $user->fresh()->tokens()->latest('id')->firstOrFail();
+        $this->assertSame(['app:customer'], $legacyAccessToken->abilities);
+        $this->assertFalse($legacyAccessToken->can('app:driver'));
+        $this->assertFalse($legacyAccessToken->can('app:van'));
+
+        $this->withToken($legacyToken)
+            ->getJson('/api/v1/driver/wallet')
+            ->assertForbidden();
+
+        $this->app['auth']->forgetGuards();
+
+        $this->withToken($legacyToken)
+            ->getJson('/api/v1/van/no-order-reasons')
+            ->assertForbidden();
+
+        $this->app['auth']->forgetGuards();
 
         $driverToken = $this->postJson('/api/v1/auth/login', [
             'email' => $user->email,

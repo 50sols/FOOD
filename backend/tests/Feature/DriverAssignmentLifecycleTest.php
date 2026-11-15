@@ -97,6 +97,73 @@ class DriverAssignmentLifecycleTest extends TestCase
             ->assertJsonPath('data.available_statuses.0', 'delivered')
             ->assertJsonPath('data.available_statuses.1', 'failed');
 
+        // Invalid collection/remittance headers are localized, and must not
+        // mutate any order, assignment, payment, custody, stock or audit rows.
+        $collectionGuardTables = [
+            'collection_accounts',
+            'collection_transactions',
+            'remittances',
+            'custody_ledger_entries',
+            'payments',
+            'orders',
+            'invoices',
+            'driver_assignments',
+            'order_status_history',
+            'stock_movements',
+            'inventory_reservations',
+            'audit_logs',
+        ];
+        $collectionHeaderMessages = [
+            'ar' => 'يجب أن يتكوّن مفتاح Idempotency-Key من 8 إلى 72 حرفًا، باستخدام الأحرف الإنجليزية والأرقام والنقطة والشرطة السفلية والنقطتين والشرطة فقط.',
+            'en' => 'Idempotency-Key must be 8-72 characters using letters, numbers, dot, underscore, colon or dash.',
+        ];
+        foreach ($collectionHeaderMessages as $locale => $message) {
+            $driverUser->forceFill(['locale' => $locale])->save();
+            $beforeInvalidHeaders = [];
+            foreach ($collectionGuardTables as $table) {
+                if (DB::getSchemaBuilder()->hasTable($table)) {
+                    $beforeInvalidHeaders[$table] = DB::table($table)->count();
+                }
+            }
+            foreach (['short', 'invalid key!', str_repeat('K', 73)] as $invalidKey) {
+                $headers = [
+                    'Idempotency-Key' => $invalidKey,
+                    'Accept-Language' => $locale === 'ar' ? 'en-US,en;q=0.9' : 'ar-KW,ar;q=0.9',
+                ];
+
+                $this->withHeaders($headers)
+                    ->postJson("/api/v1/driver/assignments/{$id}/collections", ['amount' => 1])
+                    ->assertUnprocessable()
+                    ->assertJsonPath('errors.idempotency_key.0', $message);
+
+                $this->withHeaders($headers)
+                    ->postJson('/api/v1/driver/wallet/remittances', [
+                        'collection_account_id' => 999999,
+                        'amount' => 1,
+                        'method' => 'bank_deposit',
+                    ])
+                    ->assertUnprocessable()
+                    ->assertJsonPath('errors.idempotency_key.0', $message);
+
+                foreach ($beforeInvalidHeaders as $table => $count) {
+                    $this->assertSame($count, DB::table($table)->count(), "Unexpected {$table} write for invalid Driver idempotency header");
+                }
+            }
+        }
+        $driverUser->forceFill(['locale' => 'zz'])->save();
+        $this->withHeaders(['Idempotency-Key' => 'short', 'Accept-Language' => 'en-US,en;q=0.9'])
+            ->postJson('/api/v1/driver/wallet/remittances', [
+                'collection_account_id' => 999999,
+                'amount' => 1,
+                'method' => 'bank_deposit',
+            ])
+            ->assertUnprocessable()
+            ->assertJsonPath('errors.idempotency_key.0', $collectionHeaderMessages['en']);
+        // Laravel's withHeaders persists across requests. Do not leak the
+        // invalid header into the original delivered/idempotent lifecycle.
+        $this->withoutHeaders(['Idempotency-Key', 'Accept-Language']);
+        $driverUser->forceFill(['locale' => 'ar'])->save();
+
         $this->post(
             "/api/v1/driver/assignments/{$id}/status",
             [
@@ -164,6 +231,77 @@ class DriverAssignmentLifecycleTest extends TestCase
             'idempotency_key' => 'delivery-complete-0001',
         ]);
         $this->assertDatabaseHas('audit_logs', ['event' => 'delivery.assignment.status_changed']);
+    }
+
+    public function test_retail_admin_inactive_driver_assignment_rejection_is_bilingual_and_has_no_writes(): void
+    {
+        $this->seed(CoreReferenceSeeder::class);
+        [$storeId, $order] = $this->order('b2c');
+        $order->update(['status' => 'ready']);
+
+        $admin = $this->roleUser('B2C_STORE_ADMIN', 'inactive-delivery-admin@example.test');
+        $roleId = (int) Role::query()->where('code', 'B2C_STORE_ADMIN')->value('id');
+        DB::table('user_store_roles')->insert([
+            'user_id' => $admin->id,
+            'store_id' => $storeId,
+            'role_id' => $roleId,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        $driverUser = $this->roleUser('B2C_DRIVER', 'inactive-delivery-driver@example.test');
+        $driver = Driver::query()->create([
+            'user_id' => $driverUser->id,
+            'store_id' => $storeId,
+            'driver_type' => 'b2c',
+            'is_available' => true,
+            'is_active' => false,
+        ]);
+
+        $baseline = [
+            'assignments' => DB::table('driver_assignments')->count(),
+            'orders' => DB::table('orders')->count(),
+            'order_items' => DB::table('order_items')->count(),
+            'status_history' => DB::table('order_status_history')->count(),
+            'delivery_proofs' => DB::table('delivery_proofs')->count(),
+            'stock_movements' => DB::table('stock_movements')->count(),
+            'audit_logs' => DB::table('audit_logs')->count(),
+            'notifications' => DB::table('notifications')->count(),
+            'payments' => DB::table('payments')->count(),
+            'reserved_stock' => (float) DB::table('inventories')->sum('reserved_quantity'),
+        ];
+
+        foreach ([
+            'ar' => 'يجب أن يكون السائق نشطًا قبل إسناد الطلب إليه.',
+            'en' => 'Driver must be active before assignment.',
+        ] as $locale => $message) {
+            $admin->forceFill(['locale' => $locale])->saveQuietly();
+            app()->setLocale($locale);
+            Sanctum::actingAs($admin);
+
+            $this->withHeaders([
+                'Accept-Language' => $locale === 'ar' ? 'en' : 'ar',
+            ])->postJson('/api/v1/admin/deliveries/assign', [
+                'driver_id' => $driver->id,
+                'order_id' => $order->id,
+            ])
+                ->assertConflict()
+                ->assertJsonPath('message', $message);
+
+            $this->assertSame($baseline, [
+                'assignments' => DB::table('driver_assignments')->count(),
+                'orders' => DB::table('orders')->count(),
+                'order_items' => DB::table('order_items')->count(),
+                'status_history' => DB::table('order_status_history')->count(),
+                'delivery_proofs' => DB::table('delivery_proofs')->count(),
+                'stock_movements' => DB::table('stock_movements')->count(),
+                'audit_logs' => DB::table('audit_logs')->count(),
+                'notifications' => DB::table('notifications')->count(),
+                'payments' => DB::table('payments')->count(),
+                'reserved_stock' => (float) DB::table('inventories')->sum('reserved_quantity'),
+            ]);
+            $this->assertDatabaseHas('orders', ['id' => $order->id, 'status' => 'ready']);
+            $this->assertDatabaseHas('drivers', ['id' => $driver->id, 'is_active' => false]);
+        }
     }
 
     public function test_retail_customer_support_can_assign_driver_without_driver_registry_permission(): void
@@ -1056,6 +1194,7 @@ class DriverAssignmentLifecycleTest extends TestCase
         $this->seed(CoreReferenceSeeder::class);
         [$storeId, $order] = $this->order('b2b');
         $admin = $this->roleUser('B2B_ADMIN', 'van-cutover-admin@example.test');
+        $admin->forceFill(['locale' => 'en'])->save();
         $driverUser = $this->roleUser('B2B_DRIVER', 'legacy-b2b-driver@example.test');
         $driver = Driver::query()->create([
             'user_id' => $driverUser->id,
@@ -1073,7 +1212,7 @@ class DriverAssignmentLifecycleTest extends TestCase
                 'driver_id' => $driver->id,
                 'order_id' => $order->id,
             ])->assertConflict()
-                ->assertSee('Wholesale orders require Van fulfillment.');
+                ->assertJsonPath('message', 'Wholesale orders must be fulfilled by a Van.');
 
             $this->assertDatabaseMissing('driver_assignments', [
                 'driver_id' => $driver->id,

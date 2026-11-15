@@ -319,6 +319,55 @@ class SmartOrderingCoreTest extends TestCase
         ]);
     }
 
+    public function test_paused_branch_rejection_is_localized_in_ar_en_without_checkout_writes(): void
+    {
+        $carts = [];
+        foreach (['ar', 'en'] as $locale) {
+            [$cart, $token] = $this->cart();
+            $this->addItem($cart, $token, 1);
+            $carts[$locale] = [$cart, $token];
+        }
+
+        $this->branch->update(['accepting_orders' => false]);
+
+        $before = [
+            'orders' => DB::table('orders')->count(),
+            'payments' => DB::table('payments')->count(),
+            'audit' => DB::table('audit_logs')->count(),
+            'cart_items' => DB::table('smart_ordering_cart_items')->count(),
+        ];
+
+        foreach ([
+            'ar' => 'هذا الفرع لا يستقبل طلبات جديدة حاليًا.',
+            'en' => 'This branch is not accepting orders.',
+        ] as $locale => $message) {
+            [$cart, $token] = $carts[$locale];
+            $originalCartStatus = DB::table('smart_ordering_carts')
+                ->where('public_id', $cart)
+                ->value('status');
+
+            app()->setLocale($locale);
+            $this->withHeaders(['Accept-Language' => $locale]);
+
+            $this->checkout($cart, $token, 'v2-paused-branch-'.$locale.'-0001', [
+                'fulfillment_mode' => 'pickup',
+            ])
+                ->assertConflict()
+                ->assertJsonPath('message', $message);
+
+            $this->assertSame($before['orders'], DB::table('orders')->count());
+            $this->assertSame($before['payments'], DB::table('payments')->count());
+            $this->assertSame($before['audit'], DB::table('audit_logs')->count());
+            $this->assertSame($before['cart_items'], DB::table('smart_ordering_cart_items')->count());
+            $this->assertSame(
+                $originalCartStatus,
+                DB::table('smart_ordering_carts')->where('public_id', $cart)->value('status'),
+            );
+        }
+
+        $this->assertFalse((bool) $this->branch->fresh()->accepting_orders);
+    }
+
     public function test_checkout_rejects_closed_branch_and_revalidates_operational_policy(): void
     {
         [$cart, $token] = $this->cart();
@@ -393,6 +442,213 @@ class SmartOrderingCoreTest extends TestCase
         ])->assertConflict();
     }
 
+    public function test_branch_policy_rejections_are_localized_for_arabic_and_english_without_checkout_writes(): void
+    {
+        DB::table('smart_ordering_delivery_zones')->insert([
+            'public_id' => (string) Str::uuid(),
+            'branch_id' => $this->branch->id,
+            'name' => 'Central Kuwait',
+            'center_latitude' => 29.3759000,
+            'center_longitude' => 47.9774000,
+            'radius_km' => 5,
+            'delivery_fee' => 0.750,
+            'minimum_order' => 0,
+            'is_active' => true,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $expected = [
+            'en' => [
+                'past' => 'Scheduled time cannot be in the past.',
+                'outside' => 'Delivery address is outside this branch service area.',
+            ],
+            'ar' => [
+                'past' => 'لا يمكن تحديد موعد في الماضي.',
+                'outside' => 'عنوان التوصيل خارج نطاق خدمة هذا الفرع.',
+            ],
+        ];
+
+        foreach ($expected as $locale => $messages) {
+            app()->setLocale($locale);
+
+            [$cart, $token] = $this->cart();
+            $this->addItem($cart, $token, 2);
+
+            $baseline = [
+                'orders' => DB::table('orders')->count(),
+                'payments' => DB::table('payments')->count(),
+                'audit' => DB::table('audit_logs')->count(),
+                'cart_status' => DB::table('smart_ordering_carts')->where('public_id', $cart)->value('status'),
+            ];
+
+            $this->withHeaders(['Accept-Language' => $locale]);
+            $this->checkout($cart, $token, 'v2-branch-past-'.$locale, [
+                'fulfillment_mode' => 'pickup',
+                'scheduled_for' => CarbonImmutable::now('Asia/Kuwait')->subHours(3)->format('Y-m-d H:i:s'),
+            ])
+                ->assertUnprocessable()
+                ->assertJsonValidationErrors(['scheduled_for'])
+                ->assertJsonPath('errors.scheduled_for.0', $messages['past']);
+
+            $this->checkout($cart, $token, 'v2-branch-zone-'.$locale, [
+                'fulfillment_mode' => 'delivery',
+                'delivery_address' => 'Outside branch zone',
+                'delivery_latitude' => 29.0,
+                'delivery_longitude' => 48.5,
+            ])
+                ->assertConflict()
+                ->assertJsonPath('message', $messages['outside']);
+
+            $this->assertSame($baseline['orders'], DB::table('orders')->count());
+            $this->assertSame($baseline['payments'], DB::table('payments')->count());
+            $this->assertSame($baseline['audit'], DB::table('audit_logs')->count());
+            $this->assertSame(
+                $baseline['cart_status'],
+                DB::table('smart_ordering_carts')->where('public_id', $cart)->value('status'),
+            );
+        }
+    }
+
+    public function test_scheduled_checkout_rejection_messages_are_bilingual_and_never_mutate_orders(): void
+    {
+        $expected = [
+            'en' => [
+                'disabled' => 'Scheduled orders are disabled for this branch.',
+                'window' => 'Scheduled time exceeds the branch pre-order window.',
+                'lead' => 'Pickup time is earlier than the branch preparation lead time.',
+            ],
+            'ar' => [
+                'disabled' => 'الطلبات المجدولة غير متاحة لهذا الفرع.',
+                'window' => 'الموعد المحدد يتجاوز فترة الحجز المسبق المسموحة لهذا الفرع.',
+                'lead' => 'موعد الاستلام أبكر من مدة التحضير المطلوبة لهذا الفرع.',
+            ],
+        ];
+
+        foreach ($expected as $locale => $messages) {
+            app()->setLocale($locale);
+            $this->withHeaders(['Accept-Language' => $locale]);
+
+            foreach (['disabled', 'window', 'lead'] as $scenario) {
+                $settings = match ($scenario) {
+                    'disabled' => ['allow_scheduled' => false, 'max_schedule_days' => 7, 'pickup_lead_minutes' => 0],
+                    'window' => ['allow_scheduled' => true, 'max_schedule_days' => 1, 'pickup_lead_minutes' => 0],
+                    'lead' => ['allow_scheduled' => true, 'max_schedule_days' => 7, 'pickup_lead_minutes' => 180],
+                };
+                $this->branch->update($settings);
+
+                $now = CarbonImmutable::now('Asia/Kuwait');
+                $scheduledAt = match ($scenario) {
+                    'window' => $now->addDays(3),
+                    'lead' => $now->addMinutes(30),
+                    default => $now->addHours(4),
+                };
+
+                [$cart, $token] = $this->cart();
+                $this->addItem($cart, $token, 1);
+
+                $before = [
+                    'orders' => DB::table('orders')->count(),
+                    'payments' => DB::table('payments')->count(),
+                    'audit' => DB::table('audit_logs')->count(),
+                    'items' => DB::table('smart_ordering_cart_items')->count(),
+                    'status' => DB::table('smart_ordering_carts')->where('public_id', $cart)->value('status'),
+                    'reserved' => DB::table('inventories')->where('product_id', $this->productId)->value('reserved_quantity'),
+                ];
+
+                $this->checkout($cart, $token, 'v2-schedule-policy-'.$locale.'-'.$scenario, [
+                    'fulfillment_mode' => 'pickup',
+                    'scheduled_for' => $scheduledAt->format('Y-m-d H:i:s'),
+                ])
+                    ->assertConflict()
+                    ->assertJsonPath('message', $messages[$scenario]);
+
+                $this->assertSame($before['orders'], DB::table('orders')->count());
+                $this->assertSame($before['payments'], DB::table('payments')->count());
+                $this->assertSame($before['audit'], DB::table('audit_logs')->count());
+                $this->assertSame($before['items'], DB::table('smart_ordering_cart_items')->count());
+                $this->assertSame($before['status'], DB::table('smart_ordering_carts')->where('public_id', $cart)->value('status'));
+                $this->assertEquals($before['reserved'], DB::table('inventories')->where('product_id', $this->productId)->value('reserved_quantity'));
+            }
+        }
+    }
+
+    public function test_holiday_and_branch_hours_checkout_rejections_are_bilingual_and_never_write_orders(): void
+    {
+        $expected = [
+            'en' => [
+                'holiday' => 'This branch is closed on the selected date.',
+                'closed_hours' => 'This branch is closed at the selected time.',
+                'outside_hours' => 'This branch is closed at the selected time.',
+            ],
+            'ar' => [
+                'holiday' => 'هذا الفرع مغلق في التاريخ المحدد.',
+                'closed_hours' => 'هذا الفرع مغلق في الوقت المحدد.',
+                'outside_hours' => 'هذا الفرع مغلق في الوقت المحدد.',
+            ],
+        ];
+
+        foreach ($expected as $locale => $messages) {
+            app()->setLocale($locale);
+            $this->withHeaders(['Accept-Language' => $locale]);
+
+            foreach (['holiday', 'closed_hours', 'outside_hours'] as $scenario) {
+                $scheduled = CarbonImmutable::now('Asia/Kuwait')->addDay()->startOfDay()->addHours(13);
+
+                DB::table('smart_ordering_branch_hours')
+                    ->where('branch_id', $this->branch->id)
+                    ->delete();
+
+                $this->branch->update([
+                    'allow_scheduled' => true,
+                    'max_schedule_days' => 7,
+                    'pickup_lead_minutes' => 0,
+                    'holiday_closed_dates' => $scenario === 'holiday'
+                        ? [$scheduled->format('Y-m-d')]
+                        : [],
+                ]);
+
+                if ($scenario !== 'holiday') {
+                    DB::table('smart_ordering_branch_hours')->insert([
+                        'branch_id' => $this->branch->id,
+                        'day_of_week' => $scheduled->dayOfWeek,
+                        'is_closed' => $scenario === 'closed_hours',
+                        'opens_at' => $scenario === 'outside_hours' ? '00:00:00' : null,
+                        'closes_at' => $scenario === 'outside_hours' ? '00:30:00' : null,
+                        'created_at' => now(),
+                        'updated_at' => now(),
+                    ]);
+                }
+
+                [$cart, $token] = $this->cart();
+                $this->addItem($cart, $token, 1);
+
+                $before = [
+                    'orders' => DB::table('orders')->count(),
+                    'payments' => DB::table('payments')->count(),
+                    'audit' => DB::table('audit_logs')->count(),
+                    'cart_items' => DB::table('smart_ordering_cart_items')->count(),
+                    'cart_status' => DB::table('smart_ordering_carts')->where('public_id', $cart)->value('status'),
+                    'reserved' => DB::table('inventories')->where('product_id', $this->productId)->value('reserved_quantity'),
+                ];
+
+                $this->checkout($cart, $token, 'v2-hours-'.$locale.'-'.$scenario, [
+                    'fulfillment_mode' => 'pickup',
+                    'scheduled_for' => $scheduled->format('Y-m-d H:i:s'),
+                ])
+                    ->assertConflict()
+                    ->assertJsonPath('message', $messages[$scenario]);
+
+                $this->assertSame($before['orders'], DB::table('orders')->count());
+                $this->assertSame($before['payments'], DB::table('payments')->count());
+                $this->assertSame($before['audit'], DB::table('audit_logs')->count());
+                $this->assertSame($before['cart_items'], DB::table('smart_ordering_cart_items')->count());
+                $this->assertSame($before['cart_status'], DB::table('smart_ordering_carts')->where('public_id', $cart)->value('status'));
+                $this->assertEquals($before['reserved'], DB::table('inventories')->where('product_id', $this->productId)->value('reserved_quantity'));
+            }
+        }
+    }
+
     public function test_dine_in_requires_valid_branch_table_token(): void
     {
         $tablePublicId = (string) Str::uuid();
@@ -440,6 +696,51 @@ class SmartOrderingCoreTest extends TestCase
         $this->assertDatabaseCount('orders', 1);
         $this->assertDatabaseCount('smart_ordering_order_contexts', 1);
         $this->assertDatabaseCount('payments', 1);
+    }
+
+    public function test_conflicting_checkout_idempotency_key_is_bilingual_and_creates_no_second_order(): void
+    {
+        foreach ([
+            'ar' => 'تم استخدام مفتاح منع التكرار لطلب إتمام شراء مختلف.',
+            'en' => 'Idempotency-Key was already used for a different checkout request.',
+        ] as $locale => $message) {
+            app()->setLocale($locale);
+            $this->withHeaders(['Accept-Language' => $locale]);
+
+            [$cart, $token] = $this->cart();
+            $this->addItem($cart, $token, 1);
+            $key = 'v2-3757-smart-checkout-conflict-'.$locale;
+
+            $this->checkout($cart, $token, $key, ['fulfillment_mode' => 'pickup'])
+                ->assertCreated();
+
+            $counts = [
+                'orders' => DB::table('orders')->count(),
+                'contexts' => DB::table('smart_ordering_order_contexts')->count(),
+                'events' => DB::table('smart_ordering_order_events')->count(),
+                'payments' => DB::table('payments')->count(),
+                'carts' => DB::table('smart_ordering_carts')->count(),
+                'cart_items' => DB::table('smart_ordering_cart_items')->count(),
+                'audit' => DB::table('audit_logs')->count(),
+            ];
+
+            $this->checkout($cart, $token, $key, [
+                'fulfillment_mode' => 'pickup',
+                'order_note' => 'A different checkout payload must conflict',
+            ])
+                ->assertConflict()
+                ->assertJsonPath('message', $message);
+
+            $this->assertSame($counts, [
+                'orders' => DB::table('orders')->count(),
+                'contexts' => DB::table('smart_ordering_order_contexts')->count(),
+                'events' => DB::table('smart_ordering_order_events')->count(),
+                'payments' => DB::table('payments')->count(),
+                'carts' => DB::table('smart_ordering_carts')->count(),
+                'cart_items' => DB::table('smart_ordering_cart_items')->count(),
+                'audit' => DB::table('audit_logs')->count(),
+            ]);
+        }
     }
 
     public function test_checkout_rejects_stale_sold_out_cart(): void

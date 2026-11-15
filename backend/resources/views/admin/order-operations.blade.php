@@ -417,7 +417,7 @@ $dashboardVisible = (bool) ($dashboardVisible ?? false);
 </section>
 @endif
 @php
-    $channelQuery=request()->except(['channel','store_id','driver_id','dispatch_status','exception','page','order']);
+    $channelQuery=request()->except(['channel','store_id','driver_id','dispatch_status','exception','origin','page','order']);
 @endphp
 @php
     $channelCodes=collect($availableChannels ?? [])->pluck('code');
@@ -430,6 +430,18 @@ $dashboardVisible = (bool) ($dashboardVisible ?? false);
 @foreach($availableChannels as $channelOption)
 <a class="status-tab" data-order-channel-tab="{{ $channelOption['code'] }}" href="{{ route('admin.operations.orders.index',array_merge($channelQuery,['channel'=>$channelOption['code']])) }}" @if($selectedChannel===$channelOption['code']) aria-current="page" @endif><span>{{ $channelOption['label'] }}</span></a>
 @endforeach
+</nav>
+@endif
+
+@if($selectedChannel==='b2b')
+<nav class="status-tabs" aria-label="{{ __('order_operations.filters.origin') }}" data-p275-van-direct-sale-navigation>
+    <a class="status-tab" data-p275-van-direct-sales-tab
+       href="{{ route('admin.operations.orders.index', array_merge(request()->except(['origin','page','order','edit','action_required']), ['channel'=>'b2b','origin'=>'van','action_required'=>0])) }}#order-tab-orders"
+       @if(request('origin')==='van') aria-current="page" @endif>{{ __('order_operations.filters.van_direct_sales') }}</a>
+    @if(request('origin')==='van')
+    <a class="status-tab" data-p275-van-direct-sales-reset
+       href="{{ route('admin.operations.orders.index', array_merge(request()->except(['origin','page','order','edit']), ['channel'=>'b2b','action_required'=>0])) }}#order-tab-orders">{{ __('order_operations.all') }}</a>
+    @endif
 </nav>
 @endif
 

@@ -153,6 +153,7 @@
         <dialog id="invoice-settlement-dialog">
             <form method="post" action="{{ route('admin.invoices.settle',['invoice'=>$model->id]) }}" class="correction">
                 @csrf
+                <input type="hidden" name="settlement_request_id" value="{{ (string) \Illuminate\Support\Str::uuid() }}">
                 <input name="amount" type="number" min="0.001" max="{{ number_format($amounts['outstanding_amount'],3,'.','') }}" step="0.001" value="{{ number_format($amounts['outstanding_amount'],3,'.','') }}" required>
                 <input name="reference" maxlength="120" placeholder="{{ $isAr?'مرجع الدفعة':'Payment reference' }}">
                 <input name="description" maxlength="500" placeholder="{{ $isAr?'ملاحظات':'Notes' }}">

@@ -37,7 +37,7 @@ final class BranchCapacityService
             abort_if(
                 $active >= $maximum,
                 409,
-                'This branch has reached its order capacity for the selected time.',
+                __('smart_ordering_capacity.branch_full'),
             );
         }
 
