@@ -36,7 +36,8 @@ class HttpVanOrderRepository implements VanOrderRepository {
         barcode: _nullableString(data['barcode']),
         unitPrice: _requiredMoney(data['unit_price']),
         minimumQuantity: _positiveQuantityOrDefault(data['minimum_quantity']),
-        orderingIncrement: _positiveQuantityOrDefault(data['ordering_increment']),
+        orderingIncrement:
+            _positiveQuantityOrDefault(data['ordering_increment']),
         availableQuantity: _optionalQuantity(data['available_quantity']),
         isAvailable: data['is_available'] != false,
         currency: currency.isEmpty ? 'KWD' : currency,
