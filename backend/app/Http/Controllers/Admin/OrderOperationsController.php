@@ -1428,6 +1428,9 @@ final class OrderOperationsController extends Controller
         AuditLogger $audit,
     ): RedirectResponse {
         $actor = $this->actor($request);
+        // The authenticated operator's selected language governs user-visible
+        // failure messages, independent of the server's default locale.
+        app()->setLocale(in_array($actor->locale, ['ar', 'en'], true) ? $actor->locale : 'ar');
         $model = $this->managedOrder($actor, $order, 'orders.manage');
 
         $assignment = DriverAssignment::query()
@@ -1436,12 +1439,20 @@ final class OrderOperationsController extends Controller
             ->latest('id')
             ->first();
 
-        abort_unless($assignment instanceof DriverAssignment, 409, 'Order has no active driver assignment.');
+        abort_unless(
+            $assignment instanceof DriverAssignment,
+            409,
+            $this->msg('لا يوجد تعيين سائق نشط لهذا الطلب.', 'Order has no active driver assignment.'),
+        );
 
         $driver = DB::table('drivers')
             ->where('id', $assignment->driver_id)
             ->first(['id', 'user_id']);
-        abort_unless($driver !== null && $driver->user_id !== null, 409, 'Assigned driver has no active app user.');
+        abort_unless(
+            $driver !== null && $driver->user_id !== null,
+            409,
+            $this->msg('السائق المعيّن غير مرتبط بحساب مستخدم للتطبيق.', 'Assigned driver has no active app user.'),
+        );
 
         $notification = Notification::query()->create([
             'channel' => 'both',
