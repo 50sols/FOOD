@@ -304,9 +304,21 @@ final class V2VanVisitsAuthorizedSidebarTest extends TestCase
             'created_at' => now(),
             'updated_at' => now(),
         ]);
+        // The positive planning route must use a real active Wholesale
+        // warehouse bound to this assignment. A warehouse-less assignment is
+        // now deliberately rejected by the P276 authorization guard.
+        $warehouseId = (int) DB::table('warehouses')->insertGetId([
+            'store_id' => $storeId,
+            'code' => 'P268-PLATFORM-WHOLESALE-WAREHOUSE',
+            'name' => 'P268 Platform Wholesale Warehouse',
+            'is_active' => true,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
         $assignmentId = (int) DB::table('van_assignments')->insertGetId([
             'public_id' => (string) Str::uuid(),
             'van_id' => $vanId,
+            'warehouse_id' => $warehouseId,
             'representative_user_id' => $operator->id,
             'status' => 'active',
             'effective_from' => now()->subDay(),
