@@ -161,6 +161,122 @@ class EnterpriseRbacTest extends TestCase
             ->assertDontSee('data-security-users-table', false);
     }
 
+    public function test_security_audit_explorer_filters_use_literal_search_without_widening_authorized_results(): void
+    {
+        $admin = $this->userWithGlobalRole('SUPER_ADMIN', 'en');
+        $denied = $this->userWithGlobalRole('B2B_ADMIN', 'en');
+        $targets = [];
+
+        foreach (['percent' => '%', 'underscore' => '_', 'bang' => '!', 'backslash' => '\\'] as $case => $symbol) {
+            $key = 'AUDIT_LITERAL_'.$case.'_';
+            $actor = User::factory()->create([
+                'name' => $key.$symbol.'Actor',
+                'email' => 'audit-literal-'.$case.'@example.test',
+                'locale' => 'en',
+                'is_active' => true,
+            ]);
+            $decoyActor = User::factory()->create([
+                'name' => $key.'XActor',
+                'email' => 'audit-decoy-'.$case.'@example.test',
+                'locale' => 'en',
+                'is_active' => true,
+            ]);
+            $target = AuditLog::query()->create([
+                'user_id' => $actor->getKey(),
+                'event' => $key.$symbol.'Event',
+                'auditable_type' => $key.$symbol.'Entity',
+                'auditable_id' => $actor->getKey(),
+                'after' => ['correlation' => $key.$symbol.'Trace'],
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+            AuditLog::query()->create([
+                'user_id' => $decoyActor->getKey(),
+                'event' => $key.'XEvent',
+                'auditable_type' => $key.'XEntity',
+                'auditable_id' => $decoyActor->getKey(),
+                'after' => ['correlation' => $key.'XTrace'],
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+            $targets[$case] = [
+                'id' => (int) $target->getKey(),
+                'actor' => $key.$symbol.'Actor',
+                'event' => $key.$symbol.'Event',
+                'entity' => $key.$symbol.'Entity',
+                'correlation' => $key.$symbol.'Trace',
+            ];
+        }
+
+        $counts = [
+            'audit' => AuditLog::query()->count(),
+            'users' => DB::table('users')->count(),
+            'roles' => DB::table('role_user')->count(),
+        ];
+
+        foreach ($targets as $case => $target) {
+            foreach ([
+                'audit_actor' => $target['actor'],
+                'audit_event' => $target['event'],
+                'audit_entity' => $target['entity'],
+                'audit_correlation' => $target['correlation'],
+            ] as $field => $value) {
+                $this->actingAs($admin)
+                    ->get('/admin/security?'.http_build_query([
+                        'section' => 'audit',
+                        $field => $value,
+                    ]))
+                    ->assertOk()
+                    ->assertViewHas('auditRows', static fn ($rows): bool => $rows->total() === 1
+                        && (int) $rows->items()[0]->id === $target['id']);
+            }
+        }
+
+        // Filters remain AND-composed, with their date range and page namespace.
+        $percent = $targets['percent'];
+        $filters = [
+            'section' => 'audit',
+            'audit_actor' => $percent['actor'],
+            'audit_event' => $percent['event'],
+            'audit_entity' => $percent['entity'],
+            'audit_correlation' => $percent['correlation'],
+            'audit_from' => now()->toDateString(),
+            'audit_to' => now()->toDateString(),
+        ];
+        $this->actingAs($admin)
+            ->get('/admin/security?'.http_build_query($filters))
+            ->assertOk()
+            ->assertSee('data-security-audit-explorer', false)
+            ->assertViewHas('auditRows', static fn ($rows): bool => $rows->total() === 1
+                && (int) $rows->items()[0]->id === $percent['id'])
+            ->assertViewHas('auditFilters', static fn (array $active): bool => $active['audit_actor'] === $percent['actor']
+                && $active['audit_event'] === $percent['event']
+                && $active['audit_entity'] === $percent['entity']
+                && $active['audit_correlation'] === $percent['correlation']);
+        $this->actingAs($admin)
+            ->get('/admin/security?'.http_build_query([...$filters, 'audit_page' => 2]))
+            ->assertOk()
+            ->assertViewHas('auditRows', static fn ($rows): bool => $rows->currentPage() === 2
+                && $rows->total() === 1
+                && str_contains((string) $rows->url(1), 'audit_event='));
+
+        $admin->forceFill(['locale' => 'ar'])->save();
+        $this->actingAs($admin)
+            ->get('/admin/security?'.http_build_query(['section' => 'audit', 'audit_event' => $percent['event']]))
+            ->assertOk()
+            ->assertSee('dir="rtl"', false)
+            ->assertViewHas('auditRows', static fn ($rows): bool => $rows->total() === 1);
+        $this->actingAs($denied)
+            ->get('/admin/security?'.http_build_query(['section' => 'audit', 'audit_event' => $percent['event']]))
+            ->assertForbidden();
+
+        $this->assertSame($counts, [
+            'audit' => AuditLog::query()->count(),
+            'users' => DB::table('users')->count(),
+            'roles' => DB::table('role_user')->count(),
+        ]);
+    }
+
     public function test_super_admin_can_create_customer_service_manager_from_security_center(): void
     {
         $admin = $this->userWithGlobalRole('SUPER_ADMIN', 'en');
