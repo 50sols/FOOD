@@ -23,6 +23,10 @@ void main() {
         final password = find.byKey(const Key('driver-login-password'));
         expect(email, findsOneWidget);
         expect(password, findsOneWidget);
+        final expectedDirection =
+            locale.languageCode == 'ar' ? TextDirection.rtl : TextDirection.ltr;
+        expect(Directionality.of(tester.element(email)), expectedDirection);
+        expect(Directionality.of(tester.element(password)), expectedDirection);
         await tester.ensureVisible(email);
         await tester.pump();
 
@@ -56,6 +60,22 @@ void main() {
         expect(passwordLabel, isNotNull);
         expect(passwordLabel!.trim(), isNotEmpty);
         expect(find.bySemanticsLabel(passwordLabel), findsWidgets);
+        await tester.tap(password);
+        await tester.pump();
+        final passwordInput = find.descendant(
+          of: password,
+          matching: find.byType(EditableText),
+        );
+        expect(
+          tester.widget<EditableText>(passwordInput).focusNode.hasFocus,
+          isTrue,
+        );
+        expect(tester.widget<TextField>(password).obscureText, isTrue);
+        await tester.enterText(password, 'non-production-password');
+        expect(
+          tester.widget<EditableText>(passwordInput).controller.text,
+          'non-production-password',
+        );
 
         final submit = find.byKey(const Key('driver-login-submit'));
         await tester.ensureVisible(submit);
