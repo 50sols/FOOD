@@ -810,5 +810,35 @@ class V2G006PackageProvenanceTest(unittest.TestCase):
             self.verify_first()
 
 
+    def test_case_aliased_migration_paths_cannot_pass_as_migration_free(self) -> None:
+        # The synthetic builder intentionally declares NO migrations for
+        # noncanonical case aliases, but recalculates the real archive SHA,
+        # Dashboard SHA, ordered file list and manifest consistently.
+        entries = [
+            ("VERSION", b"1.0.125", False),
+            (RUNTIME, b"<?php echo 'safe';", False),
+        ]
+        for forged in (
+            "BACKEND/DATABASE/MIGRATIONS/2026_11_15_test.php",
+            "backend/Database/Migrations/2026_11_15_test.php",
+            "Backend/database/migrations/2026_11_15_test.php",
+        ):
+            with self.subTest(forged=forged):
+                build_bundle(
+                    self.first, entries=entries + [(forged, b"<?php // migration", False)],
+                )
+                with self.assertRaisesRegex(
+                    PackageContractError, "Noncanonical migration ZIP member path",
+                ):
+                    self.verify_first()
+
+        # Real canonical migrations remain valid and must be declared.
+        build_bundle(
+            self.first, entries=entries + [(MIGRATION, b"<?php // migration", False)],
+        )
+        self.assertEqual("1.0.125", self.verify_first()["to"])
+
+
+
 if __name__ == "__main__":
     unittest.main()

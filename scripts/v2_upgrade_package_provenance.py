@@ -386,7 +386,18 @@ def validate_package(
         and delta.get("files_manifest") == list_path.name,
         "Manifest delta file count/list mismatch.",
     )
-    migration_paths = {name for name in seen if name.startswith("backend/database/migrations/")}
+    # The Laravel updater checks migrations after lowercasing ZIP entry names.
+    # A case-aliased path may resolve to the real migrations directory on
+    # case-insensitive hosts: never certify it as migration-free, even with a
+    # matching archive digest and self-consistent sidecars.
+    migration_paths = {
+        name for name in seen
+        if name.casefold().startswith("backend/database/migrations/")
+    }
+    _require(
+        all(name.startswith("backend/database/migrations/") for name in migration_paths),
+        "Noncanonical migration ZIP member path: case alias is forbidden.",
+    )
     _require(
         manifest.get("contains_migrations") is bool(migration_paths),
         "Manifest migration-presence flag disagrees with ZIP.",

@@ -184,3 +184,35 @@ The G006 offline **archive-integrity-only** verifier now checks physical local Z
 The issue-owned synthetic tests forge **five** real, SHA-256- and manifest-consistent ZIP header variants (flags, method, CRC, compressed size, uncompressed size) and a **local-only** Unicode Path alias to `backend/.env` with harmless CENTRAL metadata. Each forged archive is CRC-valid for Python, but the stricter G006 verifier must reject it. Existing legitimate historical v124→v125 and v125→v127 archive integrity checks remain required on exact final HEAD.
 
 The change is confined to this original G006 Python verifier, its unit tests and documentation. It is NOT a trusted publisher signature, safe runtime ZIP installer, historical populated MySQL upgrade, or backup/rollback/recovery validation. G006 #2747 and PR #3364 remain OPEN/DRAFT until the signed publisher identity, supported v124/v125/v127 data-preserving upgrade paths and full source acceptance pass. No Backend PHP, Dashboard, Customer/Driver/Van API or Flutter, AR/EN/RTL, `main`, release, tag, live cPanel or production change.
+
+
+## Case-aliased migration path integrity parity (2026-11-15)
+
+On the original #2747 branch, a real synthetic, SHA-256-consistent Update ZIP with
+`BACKEND/DATABASE/MIGRATIONS/...php` and matching manifest/checksum/file-list was
+**incorrectly accepted as migration-free** by the offline G006 verifier. Its
+`migration_paths` inventory used a case-sensitive prefix, while canonical
+Laravel `UpdatePackageValidator::validate` lowercases archive entries before
+checking for undeclared migrations. On a case-insensitive extraction host those
+names may resolve to the same executable migration directory.
+
+The offline verifier now detects every case-folded migration-directory prefix,
+**rejects any noncanonical casing before accepting the manifest**, and still
+requires canonical `backend/database/migrations/` filenames to appear exactly
+in the declared migration list. The new real-ZIP regression recomputes all
+package SHA/manifest sidecars for three forged aliases and also accepts a
+legitimate, explicitly declared canonical migration. This is not a checksum
+bypass; it is an independent migration-declaration classification gap.
+
+Cross-surface scope is limited to the original offline Python G006 verifier,
+its synthetic tests, and this QA note. No production Laravel code, routes,
+Dashboard, schema, Customer, Driver, or Van code/API were modified. Existing
+AR/EN and B2B/B2C authorization contracts are unchanged.
+
+**Whole G006 remains SOURCE-INCOMPLETE:** The offline verifier still does not
+authenticate release publisher signatures, execute an actual populated MySQL
+historical v124→v125→v127 upgrade, prove retained uploads/.env/secrets, or
+exercise interrupted migrations and verified backup/recovery. Keep original
+PR #3364 DRAFT and Issue #2747 OPEN until those obligations and new exact-head
+required CI are satisfied. Never merge this bounded security increment as
+complete source acceptance; no `main`, tags, production or release.
