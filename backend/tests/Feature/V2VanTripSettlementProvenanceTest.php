@@ -560,6 +560,57 @@ final class V2VanTripSettlementProvenanceTest extends TestCase
         ]);
     }
 
+    public function test_pending_remittance_requires_an_independent_checker_before_custody_is_deducted(): void
+    {
+        $maker = User::factory()->create(['is_active' => true]);
+        $checker = User::factory()->create(['is_active' => true]);
+        $storeId = $this->store('B2B', 'P272-REMITTANCE-MAKER-CHECKER');
+        $account = CollectionAccount::query()->create([
+            'actor_type' => 'van',
+            'actor_id' => 712,
+            'store_id' => $storeId,
+            'currency' => 'KWD',
+            'status' => 'active',
+        ]);
+
+        $service = app(CollectionCustodyService::class);
+        $service->collect($account, $maker, 'p272-sod-custody', 25, 'KWD', 'van_app');
+        $remittance = $service->submitRemittance(
+            $account, $maker, 'p272-sod-remittance', 10, 'KWD', 'cash',
+        );
+
+        try {
+            $service->approveRemittance($remittance, $maker);
+            $this->fail('The remittance maker must never approve their own custody deduction.');
+        } catch (ValidationException $exception) {
+            $this->assertArrayHasKey('reviewed_by', $exception->errors());
+        }
+
+        $this->assertDatabaseHas('remittances', [
+            'id' => $remittance->getKey(),
+            'status' => 'pending',
+            'submitted_by' => $maker->getKey(),
+            'reviewed_by' => null,
+        ]);
+        $this->assertDatabaseCount('custody_ledger_entries', 1);
+        $this->assertEqualsWithDelta(25.0, $service->custodyBalance($account), 0.0005);
+
+        // A genuinely distinct checker may approve exactly once; retries
+        // must not post another negative custody movement.
+        $approved = $service->approveRemittance($remittance, $checker);
+        $replayed = $service->approveRemittance($remittance, $checker);
+        $this->assertSame($approved->getKey(), $replayed->getKey());
+        $this->assertSame('approved', $approved->status);
+        $this->assertDatabaseHas('remittances', [
+            'id' => $remittance->getKey(),
+            'status' => 'approved',
+            'submitted_by' => $maker->getKey(),
+            'reviewed_by' => $checker->getKey(),
+        ]);
+        $this->assertDatabaseCount('custody_ledger_entries', 2);
+        $this->assertEqualsWithDelta(15.0, $service->custodyBalance($account), 0.0005);
+    }
+
     public function test_inactive_van_custody_account_cannot_submit_new_remittance_but_existing_replay_is_stable(): void
     {
         $actor = User::factory()->create(['is_active' => true]);
