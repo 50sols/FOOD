@@ -258,6 +258,50 @@ void main() {
       ),
     );
   });
+  test('live selector filters non-principal Wholesale rows without duplicate links',
+      () {
+    final selection = CustomerCommerceContextSwitcher.validatedSelection({
+      'entitlements': {
+        'direct_b2b': true,
+        'principal_wholesale_store_id': 7,
+        'retail_context_ids': <int>[],
+      },
+      'retail_stores': [
+        {'id': 22, 'name': 'Retail 22'},
+      ],
+      'wholesale_stores': [
+        {'id': 7, 'is_platform_principal': true},
+        {'id': 8, 'is_platform_principal': false},
+      ],
+    });
+
+    expect(selection['retail_stores'], hasLength(1));
+    final wholesale = selection['wholesale_stores'] as List;
+    expect(wholesale, hasLength(1));
+    expect((wholesale.single as Map)['id'], 7);
+  });
+
+  test('live selector rejects malformed channel rows before any store is shown',
+      () {
+    expect(
+      () => CustomerCommerceContextSwitcher.validatedSelection({
+        'entitlements': {
+          'direct_b2b': false,
+          'retail_context_ids': <int>[],
+        },
+        'retail_stores': [
+          {'id': 22, 'name': 'Retail 22'},
+          {'id': 22, 'name': 'Duplicate Retail 22'},
+        ],
+        'wholesale_stores': <Object>[],
+      }),
+      throwsA(isA<CustomerCommerceContextSwitchException>().having(
+        (error) => error.code,
+        'code',
+        'duplicate_retail_context',
+      )),
+    );
+  });
 }
 
 class _SelectorApi implements StorefrontApi {
