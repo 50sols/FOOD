@@ -241,8 +241,13 @@ final class VanFlashOfferController extends Controller
         $requested = $request->input('store_id');
         if ($requested === null) {
             if ($storeIds->count() !== 1) {
+                $actorLocale = strtolower(trim((string) $actor->locale));
+                $locale = in_array($actorLocale, ['ar', 'en'], true)
+                    ? $actorLocale
+                    : ($request->getPreferredLanguage(['ar', 'en']) ?? 'en');
+
                 throw ValidationException::withMessages([
-                    'store_id' => ['Store is required when the customer is in more than one assigned Van scope.'],
+                    'store_id' => [__('van_flash_scope_errors.store_required_for_multistore', [], $locale)],
                 ]);
             }
 

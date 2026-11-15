@@ -43,15 +43,25 @@ final class FlashCheckoutService
         string $idempotencyKey,
     ): array {
         if (strlen($idempotencyKey) < 16 || strlen($idempotencyKey) > 100) {
+            $userLocale = $user->locale;
+            $locale = in_array($userLocale, ['ar', 'en'], true)
+                ? $userLocale
+                : strtolower((string) $request->getPreferredLanguage(['ar', 'en']));
+
             throw ValidationException::withMessages([
-                'Idempotency-Key' => ['A valid Idempotency-Key header is required.'],
+                'Idempotency-Key' => [__('flash_checkout.idempotency_header_invalid', [], $locale === 'ar' ? 'ar' : 'en')],
             ]);
         }
 
         $allowedMethods = array_values((array) config('checkout.payment_methods', ['cash_on_delivery']));
         if (! in_array($paymentMethod, $allowedMethods, true)) {
+            $userLocale = $user->locale;
+            $locale = in_array($userLocale, ['ar', 'en'], true)
+                ? $userLocale
+                : strtolower((string) $request->getPreferredLanguage(['ar', 'en']));
+
             throw ValidationException::withMessages([
-                'payment_method' => ['The selected payment method is not configured.'],
+                'payment_method' => [__('flash_checkout.payment_method_not_configured', [], $locale === 'ar' ? 'ar' : 'en')],
             ]);
         }
 
@@ -94,12 +104,17 @@ final class FlashCheckoutService
 
             if ($locked->status === 'confirmed' && $locked->order_id !== null) {
                 $existing = Order::query()->whereKey((int) $locked->order_id)->firstOrFail();
+                $userLocale = $user->locale;
+                $locale = in_array($userLocale, ['ar', 'en'], true)
+                    ? $userLocale
+                    : strtolower((string) $request->getPreferredLanguage(['ar', 'en']));
+
                 abort_if(
                     (int) $existing->store_id !== $storeId
                     || (int) $existing->address_id !== $addressId
                     || (string) $existing->payment_method !== $paymentMethod,
                     409,
-                    'Flash reservation is already attached to a different checkout request.',
+                    __('flash_checkout.confirmed_request_mismatch', [], $locale === 'ar' ? 'ar' : 'en'),
                 );
 
                 return [$existing, false];
@@ -115,10 +130,15 @@ final class FlashCheckoutService
                 ->first();
 
             if ($existing instanceof Order) {
+                $userLocale = $user->locale;
+                $locale = in_array($userLocale, ['ar', 'en'], true)
+                    ? $userLocale
+                    : strtolower((string) $request->getPreferredLanguage(['ar', 'en']));
+
                 abort_if(
                     ! hash_equals((string) $existing->checkout_request_hash, $requestHash),
                     409,
-                    'Idempotency key was already used for a different checkout request.',
+                    __('flash_checkout.idempotency_reuse_conflict', [], $locale === 'ar' ? 'ar' : 'en'),
                 );
 
                 return [$existing, false];

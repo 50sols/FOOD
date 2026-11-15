@@ -71,14 +71,14 @@ final class AppPreviewTargetService
             abort_if(
                 $requestedStoreId !== null && $requestedStoreId !== $storeId,
                 422,
-                'Wholesale preview uses the canonical principal store.',
+                __('preview_targets.wholesale_principal_required'),
             );
             $this->tenantResolver->wholesale($actor, $storeId);
 
             return $storeId;
         }
 
-        abort_if($requestedStoreId === null, 422, 'Retail preview requires a store.');
+        abort_if($requestedStoreId === null, 422, __('preview_targets.retail_store_required'));
         $this->tenantResolver->retail($actor, $requestedStoreId, $supportAccess, $request);
 
         return $requestedStoreId;
@@ -100,7 +100,7 @@ final class AppPreviewTargetService
         if ($search !== '') {
             $matchingUserIds = User::query()
                 ->where('is_active', true)
-                ->where('name', 'like', '%'.$search.'%')
+                ->whereRaw("name LIKE ? ESCAPE '!'", [$this->literalNamePattern($search)])
                 ->pluck('id');
             if ($matchingUserIds->isEmpty()) {
                 return [];
@@ -116,7 +116,9 @@ final class AppPreviewTargetService
         $users = User::query()
             ->whereIn('id', $drivers->pluck('user_id')->filter()->all())
             ->where('is_active', true)
-            ->get(['id', 'name', 'locale'])
+            // Authorization below requires the actual account status, not a
+            // partially hydrated User with an implicitly false is_active.
+            ->get(['id', 'name', 'locale', 'is_active'])
             ->keyBy('id');
         $permission = "deliveries.{$channel}.execute";
 
@@ -142,6 +144,13 @@ final class AppPreviewTargetService
             })
             ->values()
             ->all();
+    }
+
+    private function literalNamePattern(string $search): string
+    {
+        // Use one portable explicit escape marker across SQLite and MySQL.
+        // All user-supplied search text is a literal, never a SQL wildcard.
+        return '%'.str_replace(['!', '%', '_'], ['!!', '!%', '!_'], $search).'%';
     }
 
     /** @return list<array<string,mixed>> */
@@ -193,7 +202,10 @@ final class AppPreviewTargetService
         return User::query()
             ->whereIn('id', $customerIds->all())
             ->where('is_active', true)
-            ->when($search !== '', fn ($query) => $query->where('name', 'like', '%'.$search.'%'))
+            ->when($search !== '', fn ($query) => $query->whereRaw(
+                "name LIKE ? ESCAPE '!'",
+                [$this->literalNamePattern($search)],
+            ))
             ->orderBy('name')
             ->limit(self::MAX_RESULTS)
             ->get(['id', 'name', 'locale'])

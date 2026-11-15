@@ -47,14 +47,19 @@ final class FinanceAssetService
             'category_id' => ['nullable', 'integer', 'min:1'],
             'q' => ['nullable', 'string', 'max:120'],
         ])->validate();
-        $term = str_replace(['%', '_'], '', trim((string) ($validated['q'] ?? '')));
+        $term = trim((string) ($validated['q'] ?? ''));
+        // Treat names and asset codes as literal prefixes, not SQL LIKE patterns.
+        // An explicit escape marker is portable across SQLite and MySQL/MariaDB.
+        $pattern = str_replace(['!', '%', '_'], ['!!', '!%', '!_'], $term).'%';
 
         return $this->assetQuery($scope)
             ->with('category')
             ->when($validated['status'] ?? null, fn ($query, string $status) => $query->where('status', $status))
             ->when($validated['category_id'] ?? null, fn ($query, mixed $id) => $query->where('category_id', (int) $id))
             ->when($term !== '', fn ($query) => $query->where(
-                fn ($nested) => $nested->where('asset_code', 'like', $term.'%')->orWhere('name', 'like', $term.'%'),
+                fn ($nested) => $nested
+                    ->whereRaw("asset_code LIKE ? ESCAPE '!'", [$pattern])
+                    ->orWhereRaw("name LIKE ? ESCAPE '!'", [$pattern]),
             ))
             ->orderBy('asset_code')
             ->paginate(max(10, min(100, $perPage)))

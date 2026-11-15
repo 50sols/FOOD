@@ -380,6 +380,60 @@ class VanDeliveryExecutionTest extends TestCase
         $this->assertDatabaseCount('order_van_execution_events', 0);
     }
 
+    public function test_van_execution_rejects_invalid_idempotency_headers_in_saved_actor_language_without_writes(): void
+    {
+        Storage::fake('public');
+
+        foreach (['ar', 'en'] as $locale) {
+            $actor = $this->vanActor();
+            $actor->forceFill(['locale' => $locale])->save();
+            [$order, $assignmentId] = $this->assignedB2bOrder($actor, 'HEADER-'.strtoupper($locale));
+            $base = '/api/v1/van/orders/'.$order->id.'/execution';
+            $oppositeLanguage = $locale === 'ar' ? 'en' : 'ar';
+
+            foreach ([null, 'tiny', 'invalid key', str_repeat('x', 129)] as $invalidKey) {
+                foreach (['transition', 'proof', 'fail', 'retry'] as $action) {
+                    $headers = [
+                        'Accept-Language' => $oppositeLanguage,
+                        'Idempotency-Key' => $invalidKey ?? '',
+                    ];
+
+                    if ($action === 'proof') {
+                        $response = $this->withHeaders($headers)->post(
+                            $base.'/proof',
+                            ['proof_image' => UploadedFile::fake()->image('invalid-header-proof.jpg', 20, 20)],
+                            ['Accept' => 'application/json'],
+                        );
+                    } else {
+                        $payload = match ($action) {
+                            'transition' => ['status' => 'accepted'],
+                            'fail' => ['failure_reason' => 'customer_no_answer'],
+                            'retry' => ['note' => 'Retry denied before execution'],
+                        };
+                        $response = $this->withHeaders($headers)->postJson($base.'/'.$action, $payload);
+                    }
+
+                    $response->assertUnprocessable()
+                        ->assertJsonPath(
+                            'errors.idempotency_key.0',
+                            __('van_delivery_execution_errors.idempotency_key_invalid', [], $locale),
+                        );
+                    $this->assertDatabaseHas('orders', [
+                        'id' => $order->id,
+                        'status' => 'pending',
+                        'channel' => 'b2b',
+                    ]);
+                    $this->assertDatabaseHas('order_van_execution_states', [
+                        'order_van_assignment_id' => $assignmentId,
+                        'status' => 'assigned',
+                    ]);
+                    $this->assertSame(0, DB::table('order_van_execution_events')->where('order_id', $order->id)->count());
+                    $this->assertSame(0, DB::table('payments')->where('order_id', $order->id)->count());
+                }
+            }
+        }
+    }
+
     private function transition(int $orderId, string $status, string $key)
     {
         return $this->withHeader('Idempotency-Key', $key)

@@ -89,15 +89,16 @@ final class SecurityController extends Controller
         $this->authorizeUserRead();
 
         $search = trim((string) $request->query('q', ''));
+        $literalSearch = '%'.str_replace(['!', '%', '_'], ['!!', '!%', '!_'], $search).'%';
         $status = (string) $request->query('status', 'all');
         $storeId = $request->integer('store_id') ?: null;
         $perPage = min(max($request->integer('per_page', 20), 1), 100);
 
         $users = User::query()
             ->with(['roles:id,code,name,is_active', 'storeRoleAssignments.role:id,code,name,is_active', 'storeRoleAssignments.store:id,code,name'])
-            ->when($search !== '', fn ($query) => $query->where(function ($nested) use ($search): void {
-                $nested->where('name', 'like', '%'.$search.'%')
-                    ->orWhere('email', 'like', '%'.$search.'%');
+            ->when($search !== '', fn ($query) => $query->where(function ($nested) use ($literalSearch): void {
+                $nested->whereRaw("name LIKE ? ESCAPE '!'", [$literalSearch])
+                    ->orWhereRaw("email LIKE ? ESCAPE '!'", [$literalSearch]);
             }))
             ->when($status === 'active', fn ($query) => $query->where('is_active', true))
             ->when($status === 'inactive', fn ($query) => $query->where('is_active', false))
