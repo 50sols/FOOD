@@ -358,6 +358,7 @@ return [
         'availability_recurrence' => 'Availability recurrence must be Fixed or Yearly.',
         'availability_yearly_fields' => 'Yearly availability requires valid start/end month and day values.',
         'sales_rule_invalid' => 'Targeting rule is invalid.',
+        'profitability_policy_unavailable' => 'Profitability rules require an approved margin policy and verified stock cost. No changes were saved.',
         'sales_rule_customer_scope' => 'Select a customer available in this store.',
         'sales_rule_group_scope' => 'Select an active customer group available to this store.',
         'sales_rule_subject_exclusive' => 'Choose either a customer or a customer group for one rule, not both.',

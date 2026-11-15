@@ -21,6 +21,9 @@ use Illuminate\Validation\ValidationException;
 
 final class CommercialDashboardController extends Controller
 {
+    // P229: unsupported margin/cost fields must never be silently accepted as quota rules.
+    private const PROFITABILITY_FIELD = '/(?:^|_)(?:profitability|profit|margin|cost_basis|stock_owner)(?:_|$)/i';
+
     public function __construct(
         private readonly AdminNavigation $navigation,
         private readonly AuditLogger $audit,
@@ -186,6 +189,8 @@ final class CommercialDashboardController extends Controller
             404,
         );
 
+        $this->rejectUnsupportedProfitabilityFields($request);
+
         $data = $request->validate([
             'status' => ['required', 'in:OPEN,RESTRICTED,CLOSED'],
             'hide_when_closed' => ['sometimes', 'boolean'],
@@ -330,6 +335,24 @@ final class CommercialDashboardController extends Controller
         return redirect()
             ->route('admin.commercial.sales-control', $returnParams)
             ->with('status', __('commercial.status.sales_control_saved'));
+    }
+
+    /**
+     * The P229 margin floor has no approved quote-time valuation and checker
+     * authority. Do not acknowledge invented profitability fields as saved.
+     */
+    private function rejectUnsupportedProfitabilityFields(Request $request): void
+    {
+        $errors = [];
+        foreach ($request->all() as $field => $_value) {
+            if (is_string($field) && preg_match(self::PROFITABILITY_FIELD, $field) === 1) {
+                $errors[$field] = [__('commercial.validation.profitability_policy_unavailable')];
+            }
+        }
+
+        if ($errors !== []) {
+            throw ValidationException::withMessages($errors);
+        }
     }
 
     public function flashOffers(Request $request): View|RedirectResponse
@@ -992,6 +1015,15 @@ final class CommercialDashboardController extends Controller
                 $errors["rules_json.$index"] = [__('commercial.validation.sales_rule_invalid')];
 
                 continue;
+            }
+
+            // These fields are not part of the canonical audience/quota rule
+            // contract. Without cost provenance, accepting them would falsely
+            // acknowledge a minimum-margin policy that is never enforced.
+            foreach ($rule as $field => $_value) {
+                if (is_string($field) && preg_match(self::PROFITABILITY_FIELD, $field) === 1) {
+                    $errors["rules_json.$index.$field"] = [__('commercial.validation.profitability_policy_unavailable')];
+                }
             }
 
             $customerId = isset($rule['customer_id']) && $rule['customer_id'] !== ''
