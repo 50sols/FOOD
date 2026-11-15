@@ -62,5 +62,6 @@ return [
         'hierarchy_missing' => 'The selected location is not mapped to an enterprise company.',
         'duplicate_code' => 'This code already exists in the selected company and location.',
         'reference_too_short' => 'The account reference must contain at least four letters or digits.',
+        'remittance_independent_checker' => 'Remittance approval requires a distinct, recorded maker and checker.',
     ],
 ];
