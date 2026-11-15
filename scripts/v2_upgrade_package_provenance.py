@@ -115,7 +115,7 @@ def _validate_local_member_header(archive: zipfile.ZipFile, info: zipfile.ZipInf
              f"Missing local ZIP header: {info.filename!r}")
     source.seek(info.header_offset)
     header = source.read(30)
-    _require(len(header) == 30 and header[:4] == b"PK\\x03\\x04",
+    _require(len(header) == 30 and header[:4] == b"PK\x03\x04",
              f"Invalid local ZIP header: {info.filename!r}")
     flags = int.from_bytes(header[6:8], "little")
     method = int.from_bytes(header[8:10], "little")
