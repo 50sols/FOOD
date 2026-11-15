@@ -164,6 +164,36 @@ def _validate_local_member_header(archive: zipfile.ZipFile, info: zipfile.ZipInf
                  f"Ambiguous local Unicode Path ZIP extra: {info.filename!r}")
         offset += length
 
+    if flags & 0x0008:
+        # A streamed ZIP stores CRC/sizes *after* compressed data. Python's
+        # ZipFile/testzip() reads only the CENTRAL directory and never checks
+        # the descriptor, while cPanel unzip implementations may consume it.
+        # Both signed and unsigned, 32-bit and ZIP64 forms are permitted when
+        # their real values agree with the already-validated central record.
+        _require(info.compress_size >= 0,
+                 f"Invalid compressed ZIP size: {info.filename!r}")
+        descriptor_at = source.tell() + info.compress_size
+        source.seek(descriptor_at)
+        signature = source.read(4) == b"PK\x07\x08"
+        source.seek(descriptor_at + (4 if signature else 0))
+        descriptor = source.read(20)
+        _require(len(descriptor) >= 12,
+                 f"Conflicting ZIP data descriptor: {info.filename!r}")
+        crc = int.from_bytes(descriptor[0:4], "little")
+        zip32_matches = (
+            int.from_bytes(descriptor[4:8], "little") == info.compress_size
+            and int.from_bytes(descriptor[8:12], "little") == info.file_size
+        )
+        zip64_matches = (
+            len(descriptor) >= 20
+            and int.from_bytes(descriptor[4:12], "little") == info.compress_size
+            and int.from_bytes(descriptor[12:20], "little") == info.file_size
+        )
+        _require(
+            crc == info.CRC and (zip32_matches or zip64_matches),
+            f"Conflicting ZIP data descriptor: {info.filename!r}",
+        )
+
 
 def _member_name(info: zipfile.ZipInfo) -> str:
     name = info.filename

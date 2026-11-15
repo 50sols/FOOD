@@ -258,3 +258,45 @@ complete source acceptance; no `main`, tags, production or release.
 **GCC after patch:** `py -3.9 -m py_compile` PASS; full offline G006 suite **42/42 PASS** (41 previously existing tests plus real ZIP ancestor-negative and safe positive); `git diff --check` PASS. The original published v1.0.125/v1.0.127 archive CI must independently pass on the exact new GitHub SHA; GCC synthetic tests do not establish historical source or publisher authenticity.
 
 **Scope / blockers:** scripts/v2_upgrade_package_provenance.py, existing dedicated Python test and this G006 QA note only. No Laravel service, database, Dashboard/Flutter/Customer/Driver/Van code or independent workers touched. Full G006 acceptance remains **BLOCKED** by cryptographic publisher-authenticated release provenance and populated supported-version MySQL upgrades preserving uploads, credentials, backups, failure recovery and rollback. PR #3364 stays DRAFT and #2747 stays OPEN even if exact-head CI is green. Foodex_V2 only; no main, release, tags, production.
+
+## Streaming ZIP data-descriptor integrity (Worker E, 2026-11-16)
+
+**Source defect:** With ZIP general-purpose flag bit 3, a non-seekable writer places
+a CRC/compressed-size/uncompressed-size data descriptor after the member payload.
+The historical G006 offline validator compared local versus central header fields,
+but did not read this post-data descriptor. Python `ZipFile.testzip()` checks
+central-directory metadata and returns success for a descriptor with forged
+CRC, compressed size, uncompressed size, or damaged optional signature.
+Matching manifest and SHA-256 sidecars therefore cannot attest to consistent
+portable extraction metadata across cPanel/Windows/Unix extractors.
+
+**Guard:** On each bit-3 member, seek exactly past its declared compressed payload,
+read the optional descriptor signature and the CRC/size fields, and compare them
+to the attested central directory. Standard 32-bit and ZIP64 size forms, with
+or without the optional descriptor signature, remain allowed when values match;
+a missing or inconsistent descriptor fails closed before the global CRC scan.
+Existing non-streamed ZIPs do not change.
+
+**Real ZIP regression:** A Python non-seekable writer produces a genuine three-file
+streaming Update ZIP with a positive valid descriptor, matching manifest,
+file list and SHA-256. Four modified descriptor fields (signature, CRC, compressed
+size, uncompressed size) each retain `ZipFile.testzip() == None` and valid
+sidecar checksums. Before the source change all four were UNSAFE_ACCEPT.
+After the guard each raises `PackageContractError: Conflicting ZIP data descriptor`.
+GCC Windows Python 3.9.13: original 42 tests passed; after the source fix all
+43 tests pass, `py_compile` and `git diff --check` pass. Hosted exact-head G006
+historical published-asset validation must be rechecked after commit.
+
+**Threat / risk:** HIGH, local/offline archive provenance and cross-extractor
+integrity. No archive extraction, signatures, operational database or live files
+are touched. Customer / Driver / Van: no runtime/API or compiled asset changes.
+Backend / Dashboard: no routes, RBAC, operations or UI strings changed.
+AR/EN and B2B/VAN-only / B2C/DRIVER-only remain unchanged.
+
+**G006 remains source-incomplete:** This incremental fix does not authenticate
+publisher signatures or trusted signing keys, execute a populated MySQL historical
+1.0.124 -> 1.0.125 -> 1.0.127 upgrade, verify preserved .env/uploads/data,
+or demonstrate backup/restore and interrupted migration recovery. Docker Engine
+on the connected GCC device was unavailable for an isolated MySQL container.
+No terminal full-source acceptance, production package, release, main merge,
+or issue closure is claimed.

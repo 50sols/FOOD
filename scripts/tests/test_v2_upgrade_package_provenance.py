@@ -135,6 +135,60 @@ class V2G006PackageProvenanceTest(unittest.TestCase):
             f"{digest}  FOODEX-Update.zip\n", encoding="utf-8",
         )
 
+    def test_streaming_zip_descriptor_must_match_central_metadata(self) -> None:
+        # Python's ZipFile CRC checks trust the CENTRAL record, not the
+        # streaming post-data descriptor a different extractor may consume.
+        from hashlib import sha256
+
+        class NonSeekableBuffer(io.BytesIO):
+            def seek(self, *args: object, **kwargs: object) -> int:
+                raise OSError("force a real streaming ZIP data descriptor")
+
+        def refresh(payload: bytes) -> None:
+            archive_path = self.first / "FOODEX-Update.zip"
+            archive_path.write_bytes(payload)
+            digest = sha256(payload).hexdigest()
+            manifest_path = self.first / "FOODEX-Update.json"
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            manifest["sha256"] = digest
+            manifest["dashboard_fields"]["sha256"] = digest
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            (self.first / "FOODEX-Update.sha256.txt").write_text(
+                f"{digest}  FOODEX-Update.zip\n", encoding="utf-8",
+            )
+
+        stream = NonSeekableBuffer()
+        with zipfile.ZipFile(stream, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+            for name, payload in (
+                ("VERSION", b"1.0.125"),
+                (RUNTIME, b"<?php // streaming runtime"),
+                (MIGRATION, b"<?php // streaming migration"),
+            ):
+                info = zipfile.ZipInfo(name)
+                info.external_attr = (stat.S_IFREG | 0o644) << 16
+                info.compress_type = zipfile.ZIP_DEFLATED
+                archive.writestr(info, payload)
+        original = stream.getvalue()
+        self.assertIn(b"PK\x07\x08", original)
+        refresh(original)
+        with zipfile.ZipFile(self.first / "FOODEX-Update.zip") as archive:
+            self.assertIsNone(archive.testzip())
+            self.assertTrue(archive.infolist()[0].flag_bits & 0x0008)
+        self.assertEqual(3, self.verify_first()["files"])
+
+        for offset in (0, 4, 8, 12):
+            with self.subTest(descriptor_corrupt_byte=offset):
+                mutated = bytearray(original)
+                descriptor = mutated.index(b"PK\x07\x08")
+                mutated[descriptor + offset] ^= 1
+                refresh(bytes(mutated))
+                with zipfile.ZipFile(self.first / "FOODEX-Update.zip") as archive:
+                    self.assertIsNone(archive.testzip())
+                with self.assertRaisesRegex(
+                    PackageContractError, "Conflicting ZIP data descriptor",
+                ):
+                    self.verify_first()
+
     def test_compiled_bootstrap_cache_files_never_ship_in_update_zip(self) -> None:
         # Dirty builds can package cached APP_KEY/DB_PASSWORD or stale route
         # tables; checksum-consistent sidecars and valid ZIP CRC do not turn
