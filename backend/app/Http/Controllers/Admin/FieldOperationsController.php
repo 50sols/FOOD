@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Admin;
 
 use App\Enterprise\Search\LiteralLikePattern;
+use App\Enterprise\Wms\VanInventoryReadService;
 use App\Http\Controllers\Api\V1\FleetLocationController;
 use App\Http\Controllers\Controller;
 use App\Models\AddressQualityReview;
@@ -34,6 +35,7 @@ use App\Services\VanRegistryService;
 use App\Services\VanVisitLifecycleService;
 use App\Support\AdminNavigation;
 use Illuminate\Contracts\View\View;
+use Illuminate\Database\Eloquent\ModelNotFoundException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
@@ -42,6 +44,7 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use Illuminate\Validation\Rule;
 use Illuminate\Validation\ValidationException;
+use Symfony\Component\HttpKernel\Exception\HttpExceptionInterface;
 
 final class FieldOperationsController extends Controller
 {
@@ -216,10 +219,45 @@ final class FieldOperationsController extends Controller
         return $this->render($request, 'vans', compact('vans', 'locations', 'warehouses', 'transferVans'));
     }
 
-    public function showVan(Request $request, Van $van): View
+    public function showVan(Request $request, Van $van, VanInventoryReadService $inventoryService): View
     {
         $user = $this->actor($request);
         $this->authorizeAny($user, ['drivers.b2b.view']);
+
+        // P274 reuses the existing Van detail route; the stock tab is a
+        // separate, server-authorized read. Fleet visibility alone cannot
+        // grant WMS inventory access or reveal a foreign assignment.
+        $inventoryTab = $request->query('tab') === 'warehouse-stock';
+        $vanWarehouseStock = null;
+        $canViewVanWarehouseStock = false;
+        if ($inventoryTab) {
+            $cursor = $request->query('stock_after');
+            abort_if(
+                $cursor !== null && (
+                    ! is_string($cursor)
+                    || ! ctype_digit($cursor)
+                    || strlen($cursor) > 18
+                    || (int) $cursor < 1
+                ),
+                422,
+            );
+            $vanWarehouseStock = $inventoryService->page(
+                $user,
+                (int) $van->getKey(),
+                $cursor === null ? null : (int) $cursor,
+            );
+            $canViewVanWarehouseStock = true;
+        } else {
+            // Visibility is a projection of the identical backend authority,
+            // not an independent hasPermission/UI-only security check.
+            try {
+                $inventoryService->page($user, (int) $van->getKey());
+                $canViewVanWarehouseStock = true;
+            } catch (ModelNotFoundException | HttpExceptionInterface) {
+                // A Van detail can remain readable when its assigned WMS
+                // warehouse or Inventory module is inaccessible.
+            }
+        }
 
         $van->load(['assignments' => fn ($query) => $query->orderByDesc('effective_from')]);
         $location = FleetCurrentLocation::query()
@@ -329,6 +367,9 @@ final class FieldOperationsController extends Controller
             'b2bOrders',
             'movementRows',
             'canViewFinanceLinks',
+            'inventoryTab',
+            'vanWarehouseStock',
+            'canViewVanWarehouseStock',
         ));
     }
 
