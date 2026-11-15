@@ -147,7 +147,7 @@ class B2bPricingTest extends TestCase
         foreach (['b2b_price_rules', 'settings', 'audit_logs', 'orders', 'payments', 'stock_movements'] as $table) {
             $beforeDisabled[$table] = DB::table($table)->count();
         }
-        $beforeReserved = (float) DB::table('inventories')->where('store_id', $storeId)->sum('reserved_quantity');
+        $beforeReserved = (float) DB::table('inventories')->sum('reserved_quantity');
         $mutation = [
             'price_tier_id' => $tierId,
             'store_id' => $storeId,
@@ -178,7 +178,7 @@ class B2bPricingTest extends TestCase
             }
             $this->assertSame(
                 $beforeReserved,
-                (float) DB::table('inventories')->where('store_id', $storeId)->sum('reserved_quantity'),
+                (float) DB::table('inventories')->sum('reserved_quantity'),
             );
             $this->assertDatabaseHas('b2b_price_rules', [
                 'price_tier_id' => $tierId,
