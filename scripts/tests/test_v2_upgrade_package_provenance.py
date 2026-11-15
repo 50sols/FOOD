@@ -161,7 +161,7 @@ class V2G006PackageProvenanceTest(unittest.TestCase):
 
         archive_path = self.first / "FOODEX-Update.zip"
         payload = bytearray(archive_path.read_bytes())
-        local = payload.index(b"PK\\x03\\x04")
+        local = payload.index(b"PK\x03\x04")
         value = int.from_bytes(payload[local + offset:local + offset + width], "little")
         payload[local + offset:local + offset + width] = (value ^ xor).to_bytes(width, "little")
         archive_path.write_bytes(payload)
@@ -172,7 +172,7 @@ class V2G006PackageProvenanceTest(unittest.TestCase):
         manifest["dashboard_fields"]["sha256"] = digest
         manifest_path.write_text(json.dumps(manifest))
         (self.first / "FOODEX-Update.sha256.txt").write_text(
-            f"{digest}  FOODEX-Update.zip\\n",
+            f"{digest}  FOODEX-Update.zip\n",
         )
 
     def test_checksum_valid_local_header_conflicts_reject_before_extraction(self) -> None:
@@ -198,7 +198,7 @@ class V2G006PackageProvenanceTest(unittest.TestCase):
         # use a LOCAL 0x7075 Unicode Path alias for backend/.env.
         from hashlib import sha256
 
-        alternate = b"\\x01" + (0).to_bytes(4, "little") + b"backend/.env"
+        alternate = b"\x01" + (0).to_bytes(4, "little") + b"backend/.env"
         extra = (0x7075).to_bytes(2, "little") + len(alternate).to_bytes(2, "little") + alternate
         self.first = build_bundle(
             self.first,
@@ -207,7 +207,7 @@ class V2G006PackageProvenanceTest(unittest.TestCase):
         )
         archive_path = self.first / "FOODEX-Update.zip"
         payload = bytearray(archive_path.read_bytes())
-        central = payload.rfind(b"PK\\x01\\x02")  # Last entry is RUNTIME.
+        central = payload.rfind(b"PK\x01\x02")  # Last entry is RUNTIME.
         self.assertGreaterEqual(central, 0)
         name_size = int.from_bytes(payload[central + 28:central + 30], "little")
         field_offset = central + 46 + name_size
@@ -221,7 +221,7 @@ class V2G006PackageProvenanceTest(unittest.TestCase):
         manifest["dashboard_fields"]["sha256"] = digest
         manifest_path.write_text(json.dumps(manifest))
         (self.first / "FOODEX-Update.sha256.txt").write_text(
-            f"{digest}  FOODEX-Update.zip\\n",
+            f"{digest}  FOODEX-Update.zip\n",
         )
         with zipfile.ZipFile(archive_path) as archive:
             self.assertIsNone(archive.testzip())
