@@ -393,6 +393,74 @@ class SmartOrderingCoreTest extends TestCase
         ])->assertConflict();
     }
 
+    public function test_branch_policy_rejections_are_localized_for_arabic_and_english_without_checkout_writes(): void
+    {
+        DB::table('smart_ordering_delivery_zones')->insert([
+            'public_id' => (string) Str::uuid(),
+            'branch_id' => $this->branch->id,
+            'name' => 'Central Kuwait',
+            'center_latitude' => 29.3759000,
+            'center_longitude' => 47.9774000,
+            'radius_km' => 5,
+            'delivery_fee' => 0.750,
+            'minimum_order' => 0,
+            'is_active' => true,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $expected = [
+            'en' => [
+                'past' => 'Scheduled time cannot be in the past.',
+                'outside' => 'Delivery address is outside this branch service area.',
+            ],
+            'ar' => [
+                'past' => 'لا يمكن تحديد موعد في الماضي.',
+                'outside' => 'عنوان التوصيل خارج نطاق خدمة هذا الفرع.',
+            ],
+        ];
+
+        foreach ($expected as $locale => $messages) {
+            app()->setLocale($locale);
+
+            [$cart, $token] = $this->cart();
+            $this->addItem($cart, $token, 2);
+
+            $baseline = [
+                'orders' => DB::table('orders')->count(),
+                'payments' => DB::table('payments')->count(),
+                'audit' => DB::table('audit_logs')->count(),
+                'cart_status' => DB::table('smart_ordering_carts')->where('public_id', $cart)->value('status'),
+            ];
+
+            $this->withHeaders(['Accept-Language' => $locale]);
+            $this->checkout($cart, $token, 'v2-branch-past-'.$locale, [
+                'fulfillment_mode' => 'pickup',
+                'scheduled_for' => CarbonImmutable::now('Asia/Kuwait')->subHours(3)->format('Y-m-d H:i:s'),
+            ])
+                ->assertUnprocessable()
+                ->assertJsonValidationErrors(['scheduled_for'])
+                ->assertJsonPath('errors.scheduled_for.0', $messages['past']);
+
+            $this->checkout($cart, $token, 'v2-branch-zone-'.$locale, [
+                'fulfillment_mode' => 'delivery',
+                'delivery_address' => 'Outside branch zone',
+                'delivery_latitude' => 29.0,
+                'delivery_longitude' => 48.5,
+            ])
+                ->assertConflict()
+                ->assertJsonPath('message', $messages['outside']);
+
+            $this->assertSame($baseline['orders'], DB::table('orders')->count());
+            $this->assertSame($baseline['payments'], DB::table('payments')->count());
+            $this->assertSame($baseline['audit'], DB::table('audit_logs')->count());
+            $this->assertSame(
+                $baseline['cart_status'],
+                DB::table('smart_ordering_carts')->where('public_id', $cart)->value('status'),
+            );
+        }
+    }
+
     public function test_dine_in_requires_valid_branch_table_token(): void
     {
         $tablePublicId = (string) Str::uuid();
