@@ -250,6 +250,10 @@ def _member_name(info: zipfile.ZipInfo) -> str:
     _require(
         not any(part == ".env" or part.startswith(".env.") for part in folded_parts)
         and "storage" not in folded_parts[:2]
+        # Never ship compiled Laravel bootstrap/config/route caches: a dirty
+        # build may embed APP_KEY, DB credentials or host-specific routes,
+        # and replacing the live cache during a ZIP update is unsafe.
+        and folded_parts[:3] != ["backend", "bootstrap", "cache"]
         # Historical update archives are code-only, never a source of user
         # uploads. Reject both exact directory-name files (which could
         # overwrite public/storage) and descendants on case-insensitive hosts.

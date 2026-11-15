@@ -135,6 +135,44 @@ class V2G006PackageProvenanceTest(unittest.TestCase):
             f"{digest}  FOODEX-Update.zip\n", encoding="utf-8",
         )
 
+    def test_compiled_bootstrap_cache_files_never_ship_in_update_zip(self) -> None:
+        # Dirty builds can package cached APP_KEY/DB_PASSWORD or stale route
+        # tables; checksum-consistent sidecars and valid ZIP CRC do not turn
+        # these host-specific runtime artifacts into safe update payloads.
+        for forbidden in (
+            "backend/bootstrap/cache/config.php",
+            "backend/bootstrap/cache/routes-v7.php",
+            "backend/Bootstrap/Cache/CONFIG.PHP",
+            "backend/bootstrap/cache",
+        ):
+            with self.subTest(path=forbidden):
+                self.first = build_bundle(
+                    self.first,
+                    entries=[
+                        ("VERSION", b"1.0.125", False),
+                        (RUNTIME, b"<?php // canonical runtime", False),
+                        (forbidden, b"<?php // APP_KEY=secret; DB_PASSWORD=secret", False),
+                    ],
+                )
+                with zipfile.ZipFile(self.first / "FOODEX-Update.zip") as archive:
+                    self.assertIsNone(archive.testzip())
+                with self.assertRaisesRegex(PackageContractError, "Private/non-runtime member"):
+                    self.verify_first()
+
+        # Normal Laravel bootstrap source, public compiled assets and
+        # the existing safe historical update contract remain valid.
+        self.first = build_bundle(
+            self.first,
+            entries=[
+                ("VERSION", b"1.0.125", False),
+                (RUNTIME, b"<?php // runtime", False),
+                ("backend/bootstrap/app.php", b"<?php // bootstrap source", False),
+                ("backend/bootstrap/providers.php", b"<?php // providers", False),
+                ("backend/public/build/assets/app.js", b"const asset = true;", False),
+            ],
+        )
+        self.assertEqual(5, self.verify_first()["files"])
+
     def test_checksum_valid_encrypted_zip_member_rejected_before_crc_scan(self) -> None:
         # ZIP local and central general-purpose bit 0 requests decryption.
         self._modify_zip_headers_and_refresh_digest(
