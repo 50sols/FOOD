@@ -39,6 +39,9 @@ class SmartOrderingCustomerGrowthTest extends TestCase
         [$store, $admin, $site] = $this->restaurant('LOYALTY-KEY-LOCALE');
         $customer = $this->customer($store, 'Locale Customer', '+96550000881');
         $actor = User::query()->findOrFail($customer['user_id']);
+        // The site middleware requires a public-menu entitlement and published
+        // revision before the loyalty route reaches its missing-key guard.
+        $this->enable($admin, $site, Module::PUBLIC_MENU);
         $this->enable($admin, $site, Module::LOYALTY);
         app(SmartOrderingSiteService::class)->updateRuntime($admin, $site, RuntimeState::ENABLED, true);
 
