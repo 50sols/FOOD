@@ -2,7 +2,6 @@
 
 namespace Tests\Feature;
 
-use App\Models\User;
 use App\Services\B2bCustomerService;
 use App\Services\WholesalePrincipal;
 use Database\Seeders\CoreReferenceSeeder;
