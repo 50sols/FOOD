@@ -1285,7 +1285,7 @@ final class CatalogManagementController extends Controller
         $this->authorizeCatalogAction($request, 'catalog.manage', (int) $owner->store_id, (string) $owner->channel);
         if ((int) $data['store_id'] !== (int) $owner->store_id) {
             throw ValidationException::withMessages([
-                'store_id' => ['A product can only be assigned inside its owning catalog store.'],
+                'store_id' => [$this->msg('لا يمكن ربط المنتج إلا بالمتجر المالك للكتالوج.', 'A product can only be assigned inside its owning catalog store.')],
             ]);
         }
 
@@ -2030,7 +2030,7 @@ final class CatalogManagementController extends Controller
         }
 
         if ($query->exists()) {
-            throw ValidationException::withMessages(['slug' => ['The slug has already been used in this catalog.']]);
+            throw ValidationException::withMessages(['slug' => [$this->msg('اسم الرابط مستخدم بالفعل في هذا الكتالوج.', 'The slug has already been used in this catalog.')]]);
         }
     }
 
