@@ -29,6 +29,11 @@ void main() {
         expect(Directionality.of(tester.element(password)), expectedDirection);
         await tester.ensureVisible(email);
         await tester.pump();
+        expect(
+          tester.getSize(email).height,
+          greaterThanOrEqualTo(44),
+          reason: 'Driver email must retain a 44dp touch target.',
+        );
 
         final emailLabel =
             tester.widget<TextField>(email).decoration?.labelText;
@@ -55,6 +60,11 @@ void main() {
 
         await tester.ensureVisible(password);
         await tester.pump();
+        expect(
+          tester.getSize(password).height,
+          greaterThanOrEqualTo(44),
+          reason: 'Driver password must retain a 44dp touch target.',
+        );
         final passwordLabel =
             tester.widget<TextField>(password).decoration?.labelText;
         expect(passwordLabel, isNotNull);
@@ -80,6 +90,11 @@ void main() {
         final submit = find.byKey(const Key('driver-login-submit'));
         await tester.ensureVisible(submit);
         await tester.pump();
+        expect(
+          tester.getSize(submit).height,
+          greaterThanOrEqualTo(44),
+          reason: 'Driver sign-in must retain a 44dp touch target.',
+        );
         expect(tester.widget<FilledButton>(submit).onPressed, isNotNull);
         expect(tester.getSemantics(submit).label.trim(), isNotEmpty);
         semantics.dispose();

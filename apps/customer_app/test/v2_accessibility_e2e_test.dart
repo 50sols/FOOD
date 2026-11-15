@@ -25,6 +25,11 @@ void main() {
       );
       await tester.ensureVisible(note);
       await tester.pump();
+      expect(
+        tester.getSize(note).height,
+        greaterThanOrEqualTo(44),
+        reason: 'Customer note input must retain a 44dp touch target.',
+      );
 
       final field = tester.widget<TextField>(note);
       final label = field.decoration?.labelText;
@@ -46,6 +51,11 @@ void main() {
       final export = find.byKey(const ValueKey('customer-diagnostics-export'));
       await tester.ensureVisible(export);
       await tester.pump();
+      expect(
+        tester.getSize(export).height,
+        greaterThanOrEqualTo(44),
+        reason: 'Customer export must retain a 44dp touch target.',
+      );
       expect(tester.widget<FilledButton>(export).onPressed, isNotNull);
       expect(tester.getSemantics(export).label.trim(), isNotEmpty);
       semantics.dispose();

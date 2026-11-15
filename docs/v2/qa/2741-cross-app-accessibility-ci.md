@@ -38,6 +38,12 @@ The original issue branch/PR is reused after the stale lease was released. The s
 
 **Verification state:** These new assertions require fresh exact-final-HEAD Flutter CI and review. Prior 14 Flutter passes and green CI refer only to the older `e484e752a22c1144f875f0225870a5df692905cb` commit, not automatically to these changes. The remaining publisher-signed synchronized APK/provenance requirement under #2749 is **unfulfilled**: never describe CI-only APKs as trusted publisher-signed releases, and do not close #2741 based on this bounded test increment.
 
+## 2026-11-15 successor: interactive touch-target regressions
+
+The original three AR/EN widget suites now assert **actual rendered control geometry** rather than inferring accessibility from labels alone: Customer diagnostics note/export and Driver email/password/sign-in must each measure at least 44 logical pixels high; Van email/password/sign-in must each measure at least 48 logical pixels high. Assertions run for both locales on the same real widgets already exercised by focus, semantics and editing tests. A regression that shrinks a touch target now fails the existing exact-head Android trio gate before CI APKs are produced. No minimum-size claim is made solely from source styles.
+
+**Verification:** This increment requires a new exact-final-HEAD Flutter/Repository Policy/V2 Isolation/Required CI/trio result. Prior success at `9dcec7cbe78177fe34b1b25a0676451d50178e47` does not certify the new assertions. No source/API route, authentication or production signing behavior was changed. Full screen-reader, text-scale, device journeys and authenticated publisher signatures remain outside this bounded increment and are NOT complete.
+
 ## Security and application impact
 
 - **Backend/API:** no controller, route, permission, token, ledger, database or business state delta.

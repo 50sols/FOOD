@@ -51,6 +51,11 @@ void main() {
 
         await tester.ensureVisible(email);
         await tester.pump();
+        expect(
+          tester.getSize(email).height,
+          greaterThanOrEqualTo(48),
+          reason: 'Van email must retain a 48dp touch target.',
+        );
         final hint = tester.widget<TextField>(email).decoration?.hintText;
         expect(
           hint,
@@ -72,6 +77,11 @@ void main() {
         await tester.ensureVisible(submit);
         await tester.pump();
         expect(tester.getSemantics(submit).label.trim(), isNotEmpty);
+        expect(
+          tester.getSize(submit).height,
+          greaterThanOrEqualTo(48),
+          reason: 'Van sign-in must retain a 48dp touch target.',
+        );
         await tester.tap(submit);
         await tester.pump();
         expect(
@@ -84,6 +94,11 @@ void main() {
         );
         expect(tester.widget<TextField>(password).obscureText, isTrue);
         await tester.ensureVisible(password);
+        expect(
+          tester.getSize(password).height,
+          greaterThanOrEqualTo(48),
+          reason: 'Van password must retain a 48dp touch target.',
+        );
         await tester.tap(password);
         await tester.pump();
         final passwordInput = find.descendant(
