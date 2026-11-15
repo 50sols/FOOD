@@ -138,6 +138,57 @@ final class V2CustomerSalesSidebarGroupAuthorityTest extends TestCase
         }
     }
 
+    public function test_p185_domain_heading_composes_only_server_authorized_groups_in_both_locales(): void
+    {
+        $this->store('B2B', 'P185-BUSINESS-DOMAIN');
+        $actor = $this->globalActor('CUSTOMER_SERVICE_MANAGER', 'p185-domain@example.test');
+
+        foreach (['ar' => 'rtl', 'en' => 'ltr'] as $locale => $direction) {
+            app()->setLocale($locale);
+            $actor->forceFill(['locale' => $locale])->save();
+
+            $response = $this->actingAs($actor->fresh())
+                ->get(route('admin.b2b.customer-groups.index', [], false))
+                ->assertOk()
+                ->assertSee('dir="'.$direction.'"', false)
+                ->assertSee('data-nav-domain="customer-sales-service"', false)
+                ->assertSee(__('v2_sidebar_domains.customer_sales_service'))
+                ->assertSee('data-nav-group="accounts"', false)
+                ->assertSee('data-nav-group="sales"', false);
+
+            $html = (string) $response->getContent();
+            $this->assertSame(1, substr_count($html, 'data-nav-domain="customer-sales-service"'));
+            $this->assertSame(1, substr_count($html, 'data-nav-item="customer_groups"'));
+            $this->assertSame(1, substr_count($html, 'data-nav-item="sales_quotations"'));
+            $this->assertMatchesRegularExpression(
+                '/<section[^>]*data-nav-domain="customer-sales-service"[^>]*>.*data-nav-group="accounts".*data-nav-group="sales".*<\\/section>/s',
+                $html,
+            );
+        }
+    }
+
+    public function test_p185_retail_domain_reuses_existing_scoped_links_and_does_not_offer_wholesale_links(): void
+    {
+        $own = $this->store('B2C', 'P185-DOMAIN-OWN');
+        $foreign = $this->store('B2C', 'P185-DOMAIN-FOREIGN');
+        $actor = $this->retailActor($own);
+
+        $response = $this->actingAs($actor)
+            ->get(route('admin.b2c.customer-groups.index', ['store_id' => $own], false))
+            ->assertOk()
+            ->assertSee('data-nav-domain="customer-sales-service"', false)
+            ->assertSee('data-nav-item="b2c_customer_groups"', false);
+
+        $html = (string) $response->getContent();
+        $this->assertSame(0, substr_count($html, 'data-nav-item="customer_groups"'));
+        $this->assertSame(1, substr_count($html, 'data-nav-item="b2c_customer_groups"'));
+        $this->assertSame(1, substr_count($html, 'data-nav-item="sales_quotations"'));
+
+        $this->actingAs($actor)->get(route('admin.b2c.customer-groups.index', [
+            'store_id' => $foreign,
+        ], false))->assertStatus(404);
+    }
+
     private function globalActor(string $roleCode, string $email): User
     {
         $actor = User::factory()->create(['is_active' => true, 'email' => $email, 'locale' => 'en']);
