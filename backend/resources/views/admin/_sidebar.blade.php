@@ -267,6 +267,16 @@ html[dir=ltr] .dashboard-layout:has(>.dashboard-sidebar.foodex-sidebar-collapsed
     const mobileOpenLabel = @json(__('admin.sidebar_open'));
     const mobileCloseLabel = @json(__('admin.sidebar_close'));
     const navigationLabel = @json(__('admin.navigation'));
+
+    // Storage access itself may throw SecurityError (privacy policies, blocked
+    // cookies, or embedded browsers). Preferences are presentation-only: a
+    // denied read/write must never abort authorized Sidebar initialization.
+    const readPreference = key => {
+        try { return localStorage.getItem(key); } catch { return null; }
+    };
+    const writePreference = (key, value) => {
+        try { localStorage.setItem(key, value); } catch { /* Native navigation remains usable. */ }
+    };
     const originalShellState = {
         role: shell.getAttribute('role'),
         ariaModal: shell.getAttribute('aria-modal'),
@@ -288,12 +298,12 @@ html[dir=ltr] .dashboard-layout:has(>.dashboard-sidebar.foodex-sidebar-collapsed
         if (!matchMedia('(max-width:767px)').matches) {
             toggle?.setAttribute('aria-expanded', expanded ? 'true' : 'false');
         }
-        if (persist) localStorage.setItem(stateKey, expanded ? '1' : '0');
+        if (persist) writePreference(stateKey, expanded ? '1' : '0');
     };
 
     const compactMedia = matchMedia('(max-width:1023px)');
     const mobileMedia = matchMedia('(max-width:767px)');
-    setExpanded(compactMedia.matches || (!defaultCollapsed && localStorage.getItem(stateKey) === '1'), false);
+    setExpanded(compactMedia.matches || (!defaultCollapsed && readPreference(stateKey) === '1'), false);
 
     const brand = shell.querySelector('.foodex-sidebar-brand');
     const bar = document.createElement('div');
@@ -421,7 +431,7 @@ html[dir=ltr] .dashboard-layout:has(>.dashboard-sidebar.foodex-sidebar-collapsed
         const mobile = mobileMedia.matches;
         document.body.classList.toggle('foodex-mobile-web', mobile);
         setDrawer(false, { restoreFocus: false });
-        setExpanded(compact ? true : localStorage.getItem(stateKey) === '1', false);
+        setExpanded(compact ? true : readPreference(stateKey) === '1', false);
     };
 
     launcher.addEventListener('click', () => setDrawer(!document.body.classList.contains('foodex-mobile-nav-open')));
@@ -480,7 +490,7 @@ html[dir=ltr] .dashboard-layout:has(>.dashboard-sidebar.foodex-sidebar-collapsed
     const groupStateKey = 'foodex.sidebar.groups.{{ $user->id ?? 'guest' }}';
     let savedGroupState = {};
     try {
-        const stored = JSON.parse(localStorage.getItem(groupStateKey) || 'null');
+        const stored = JSON.parse(readPreference(groupStateKey) || 'null');
         if (stored && typeof stored === 'object' && !Array.isArray(stored)) savedGroupState = stored;
     } catch {
         // Private browsing or a malformed historic preference cannot hide navigation.
@@ -503,7 +513,7 @@ html[dir=ltr] .dashboard-layout:has(>.dashboard-sidebar.foodex-sidebar-collapsed
             requestAnimationFrame(() => {
                 const next = { ...savedGroupState, [key]: group.open };
                 try {
-                    localStorage.setItem(groupStateKey, JSON.stringify(next));
+                    writePreference(groupStateKey, JSON.stringify(next));
                     savedGroupState = next;
                 } catch {
                     // Storage denied/full: native disclosure continues to work.
