@@ -71,14 +71,14 @@ final class AppPreviewTargetService
             abort_if(
                 $requestedStoreId !== null && $requestedStoreId !== $storeId,
                 422,
-                'Wholesale preview uses the canonical principal store.',
+                __('preview_targets.wholesale_principal_required'),
             );
             $this->tenantResolver->wholesale($actor, $storeId);
 
             return $storeId;
         }
 
-        abort_if($requestedStoreId === null, 422, 'Retail preview requires a store.');
+        abort_if($requestedStoreId === null, 422, __('preview_targets.retail_store_required'));
         $this->tenantResolver->retail($actor, $requestedStoreId, $supportAccess, $request);
 
         return $requestedStoreId;
