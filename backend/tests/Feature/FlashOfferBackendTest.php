@@ -443,6 +443,72 @@ class FlashOfferBackendTest extends TestCase
                 'address_id' => $address->id,
             ]);
         }
+
+        $secondReservation = app(FlashOfferService::class)->reserve(
+            $this->user->id,
+            $offerProduct->id,
+            1,
+            'customer',
+            'v2-3793-distinct-flash-reserve',
+        );
+        $this->assertNotSame($reservationId, (string) $secondReservation->id);
+
+        $beforeConflictingReuse = [
+            'orders' => DB::table('orders')->count(),
+            'order_items' => DB::table('order_items')->count(),
+            'invoices' => DB::table('invoices')->count(),
+            'payments' => DB::table('payments')->count(),
+            'audit_logs' => DB::table('audit_logs')->count(),
+            'flash_reservations' => DB::table('flash_reservations')->count(),
+            'flash_offer_events' => DB::table('flash_offer_events')->count(),
+            'stock_movements' => DB::table('stock_movements')->count(),
+            'quota_reservations' => DB::table('commercial_quota_reservations')->count(),
+            'inventory_reserved' => (float) DB::table('inventories')->where('id', $this->inventoryId)->value('reserved_quantity'),
+        ];
+        $existingRequestHash = (string) DB::table('orders')->where('id', $orderId)->value('checkout_request_hash');
+
+        foreach ([
+            'ar' => 'تم استخدام مفتاح منع التكرار مسبقًا لطلب إتمام شراء مختلف.',
+            'en' => 'Idempotency key was already used for a different checkout request.',
+        ] as $locale => $message) {
+            $this->user->forceFill(['locale' => $locale])->saveQuietly();
+            app()->setLocale($locale);
+
+            $this->withHeaders([
+                ...$confirmHeaders,
+                'Accept-Language' => $locale === 'ar' ? 'en' : 'ar',
+            ])->postJson('/api/v1/flash-reservations/'.$secondReservation->id.'/confirm', $confirmPayload)
+                ->assertConflict()
+                ->assertJsonPath('message', $message);
+
+            $this->assertSame($beforeConflictingReuse, [
+                'orders' => DB::table('orders')->count(),
+                'order_items' => DB::table('order_items')->count(),
+                'invoices' => DB::table('invoices')->count(),
+                'payments' => DB::table('payments')->count(),
+                'audit_logs' => DB::table('audit_logs')->count(),
+                'flash_reservations' => DB::table('flash_reservations')->count(),
+                'flash_offer_events' => DB::table('flash_offer_events')->count(),
+                'stock_movements' => DB::table('stock_movements')->count(),
+                'quota_reservations' => DB::table('commercial_quota_reservations')->count(),
+                'inventory_reserved' => (float) DB::table('inventories')->where('id', $this->inventoryId)->value('reserved_quantity'),
+            ]);
+            $this->assertDatabaseHas('flash_reservations', [
+                'id' => $secondReservation->id,
+                'status' => 'active',
+                'order_id' => null,
+            ]);
+            $this->assertDatabaseHas('flash_reservations', [
+                'id' => $reservationId,
+                'status' => 'confirmed',
+                'order_id' => $orderId,
+            ]);
+            $this->assertDatabaseHas('orders', [
+                'id' => $orderId,
+                'checkout_request_hash' => $existingRequestHash,
+                'address_id' => $address->id,
+            ]);
+        }
     }
 
     public function test_customer_flash_checkout_rejects_invalid_idempotency_header_in_both_locales_without_writes(): void
