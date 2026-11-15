@@ -7,6 +7,7 @@ use App\Http\Controllers\Api\V1\B2bPricingController;
 use App\Http\Controllers\Api\V1\DriverAssignmentController;
 use App\Http\Controllers\Api\V1\OrderController;
 use App\Http\Controllers\Controller;
+use App\Domain\Pricing\QuantityPriceBreaks;
 use App\Models\B2bAccount;
 use App\Models\B2bCustomer;
 use App\Models\Category;
@@ -1548,7 +1549,7 @@ class B2bWorkspaceController extends Controller
                     })->all(),
             ],
             'pricing' => [
-                'columns' => ['tier', 'sku', 'product', 'unit_price', 'minimum_quantity', 'status'],
+                'columns' => ['tier', 'sku', 'product', 'unit_price', 'minimum_quantity', 'status', 'actions'],
                 'rows' => DB::table('b2b_price_rules')
                     ->join('b2b_price_tiers', 'b2b_price_tiers.id', '=', 'b2b_price_rules.price_tier_id')
                     ->join('products', 'products.id', '=', 'b2b_price_rules.product_id')
@@ -1561,6 +1562,10 @@ class B2bWorkspaceController extends Controller
                     ->limit(100)
                     ->get([
                         'b2b_price_tiers.name as tier',
+                        'b2b_price_rules.price_tier_id',
+                        'b2b_price_rules.product_id',
+                        'b2b_price_rules.quantity_price_breaks',
+                        'b2b_price_rules.ordering_increment',
                         'products.sku',
                         'products.name as product',
                         'b2b_price_rules.unit_price',
@@ -1574,6 +1579,14 @@ class B2bWorkspaceController extends Controller
                         'unit_price' => number_format((float) $row->unit_price, 3).' EGP',
                         'minimum_quantity' => number_format((float) $row->minimum_quantity, 3),
                         'status' => (bool) $row->status,
+                        'actions' => [
+                            'tier_id' => (int) $row->price_tier_id,
+                            'product_id' => (int) $row->product_id,
+                            'unit_price' => (float) $row->unit_price,
+                            'minimum_quantity' => (float) $row->minimum_quantity,
+                            'ordering_increment' => (float) $row->ordering_increment,
+                            'breaks' => QuantityPriceBreaks::readBreaks($row->quantity_price_breaks),
+                        ],
                     ])->all(),
                 'tiers' => DB::table('b2b_price_tiers')
                     ->orderBy('priority')

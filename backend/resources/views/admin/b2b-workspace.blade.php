@@ -642,16 +642,92 @@
       </div>
       @endif
       @if($module==='pricing' && $user->hasPermission('b2b.pricing.manage'))
-      <form method="post" action="{{ route('admin.b2b.pricing.save') }}" class="links workspace-inline-form">
+      <form method="post" action="{{ route('admin.b2b.pricing.save') }}" class="links workspace-inline-form" data-v2-volume-pricing-form>
         @csrf
-        <select name="price_tier_id" required><option value="">{{ app()->getLocale()==='ar'?'شريحة السعر':'Price tier' }}</option>@foreach($moduleData['tiers'] as $tier)<option value="{{ $tier['id'] }}">{{ $tier['name'] }}</option>@endforeach</select>
-        <select name="product_id" required><option value="">{{ app()->getLocale()==='ar'?'المنتج':'Product' }}</option>@foreach($moduleData['products'] as $product)<option value="{{ $product['id'] }}">{{ $product['sku'] }} · {{ $product['name'] }}</option>@endforeach</select>
-        <input name="unit_price" type="number" min="0" step="0.001" placeholder="{{ app()->getLocale()==='ar'?'سعر الوحدة':'Unit price' }}" required>
-        <label>{{ __('commercial.quantity_tiers.minimum_quantity') }} <input name="minimum_quantity" type="number" min="0.001" step="0.001" value="{{ old('minimum_quantity') }}" placeholder="{{ __('commercial.quantity_tiers.minimum_quantity') }}" required></label>
-        <label>{{ __('commercial.quantity_tiers.ordering_increment') }} <input name="ordering_increment" type="number" min="0.001" step="0.001" value="{{ old('ordering_increment', 1) }}" placeholder="{{ __('commercial.quantity_tiers.ordering_increment') }}" required></label>
+        <label>{{ app()->getLocale()==='ar'?'شريحة السعر':'Price tier' }}
+          <select name="price_tier_id" required><option value="">{{ app()->getLocale()==='ar'?'اختر شريحة السعر':'Choose a price tier' }}</option>@foreach($moduleData['tiers'] as $tier)<option value="{{ $tier['id'] }}">{{ $tier['name'] }}</option>@endforeach</select>
+        </label>
+        <label>{{ app()->getLocale()==='ar'?'المنتج':'Product' }}
+          <select name="product_id" required><option value="">{{ app()->getLocale()==='ar'?'اختر المنتج':'Choose a product' }}</option>@foreach($moduleData['products'] as $product)<option value="{{ $product['id'] }}">{{ $product['sku'] }} · {{ $product['name'] }}</option>@endforeach</select>
+        </label>
+        <label>{{ app()->getLocale()==='ar'?'سعر الوحدة الأساسي':'Base unit price' }}
+          <input name="unit_price" type="number" min="0" step="0.001" required>
+        </label>
+        <label>{{ __('commercial.quantity_tiers.minimum_quantity') }}
+          <input name="minimum_quantity" type="number" min="0.001" step="0.001" value="{{ old('minimum_quantity') }}" required>
+        </label>
+        <label>{{ __('commercial.quantity_tiers.ordering_increment') }}
+          <input name="ordering_increment" type="number" min="0.001" step="0.001" value="{{ old('ordering_increment', 1) }}" required>
+        </label>
+        <fieldset style="width:100%;min-width:0">
+          <legend>{{ __('commercial.quantity_tiers.price_breaks') }}</legend>
+          <p class="muted">{{ __('commercial.quantity_tiers.breaks_help') }}</p>
+          <input type="hidden" name="replace_quantity_price_breaks" value="1">
+          <div data-v2-volume-break-list></div>
+          <button type="button" class="foodex-primary" data-v2-add-volume-break>{{ __('commercial.quantity_tiers.add_break') }}</button>
+          <span class="muted" data-v2-volume-edit-status role="status" aria-live="polite"></span>
+        </fieldset>
         <input type="hidden" name="is_active" value="1">
         <button class="foodex-primary" type="submit">{{ app()->getLocale()==='ar'?'حفظ قاعدة السعر':'Save price rule' }}</button>
       </form>
+      <template data-v2-volume-break-template>
+        <div data-v2-volume-break-row class="links workspace-inline-form" style="margin-block:8px">
+          <label>{{ __('commercial.quantity_tiers.break_minimum') }}
+            <input data-v2-break-quantity type="number" step="0.001" min="0.001" required>
+          </label>
+          <label>{{ __('commercial.quantity_tiers.break_price') }}
+            <input data-v2-break-price type="number" step="0.001" min="0" required>
+          </label>
+          <button type="button" class="foodex-primary" data-v2-remove-volume-break>{{ __('commercial.quantity_tiers.remove_break') }}</button>
+        </div>
+      </template>
+      <script>
+      document.addEventListener('DOMContentLoaded', () => {
+        const form = document.querySelector('[data-v2-volume-pricing-form]');
+        const template = document.querySelector('[data-v2-volume-break-template]');
+        if (!form || !template) return;
+        const list = form.querySelector('[data-v2-volume-break-list]');
+        const add = form.querySelector('[data-v2-add-volume-break]');
+        const status = form.querySelector('[data-v2-volume-edit-status]');
+        const reindex = () => {
+          list.querySelectorAll('[data-v2-volume-break-row]').forEach((row, i) => {
+            row.querySelector('[data-v2-break-quantity]').name = 'quantity_price_breaks[' + i + '][minimum_quantity]';
+            row.querySelector('[data-v2-break-price]').name = 'quantity_price_breaks[' + i + '][unit_price]';
+          });
+          add.disabled = list.querySelectorAll('[data-v2-volume-break-row]').length >= 12;
+        };
+        const append = (quantity = '', price = '') => {
+          if (list.children.length >= 12) return;
+          const row = template.content.firstElementChild.cloneNode(true);
+          row.querySelector('[data-v2-break-quantity]').value = quantity;
+          row.querySelector('[data-v2-break-price]').value = price;
+          row.querySelector('[data-v2-remove-volume-break]').addEventListener('click', () => { row.remove(); reindex(); });
+          list.appendChild(row);
+          reindex();
+        };
+        add.addEventListener('click', () => { append(); list.lastElementChild.querySelector('input').focus(); });
+        document.querySelectorAll('[data-v2-pricing-edit]').forEach(button => {
+          button.addEventListener('click', () => {
+            for (const [field, value] of Object.entries({
+              price_tier_id: button.dataset.tier,
+              product_id: button.dataset.product,
+              unit_price: button.dataset.price,
+              minimum_quantity: button.dataset.minimum,
+              ordering_increment: button.dataset.increment
+            })) {
+              form.elements.namedItem(field).value = value;
+            }
+            list.replaceChildren();
+            const breaks = JSON.parse(button.dataset.breaks || '[]');
+            breaks.forEach(item => append(item.minimum_quantity, item.unit_price));
+            reindex();
+            status.textContent = @json(__('commercial.quantity_tiers.loaded_rule'));
+            form.scrollIntoView({behavior:'smooth',block:'center'});
+            form.elements.namedItem('unit_price').focus();
+          });
+        });
+      });
+      </script>
       @endif
       @if($module==='orders' && $user->hasPermission('orders.manage'))
       @include('admin._dashboard-order-create',['channel'=>'b2b'])
@@ -662,6 +738,16 @@
         @if(in_array($column,['status','availability','active'],true) && is_bool($row[$column]))<span class="state {{ $row[$column]?'':'off' }}">{{ $row[$column]?(app()->getLocale()==='ar'?'نشط':'Active'):(app()->getLocale()==='ar'?'غير نشط':'Inactive') }}</span>
         @elseif($column==='status')<span class="badge {{ $row[$column] }}">{{ $workspaceStatusLabels[$row[$column]] ?? __('admin.b2b_workspace.unknown_status') }}</span>
         @elseif($column==='assignment_status'){{ $orderStateLabels[$row[$column]] ?? $row[$column] }}
+        @elseif($column==='actions' && $module==='pricing' && $user->hasPermission('b2b.pricing.manage') && is_array($row['actions'] ?? null))
+          <button type="button" class="foodex-primary" data-v2-pricing-edit
+            data-tier="{{ $row['actions']['tier_id'] }}"
+            data-product="{{ $row['actions']['product_id'] }}"
+            data-price="{{ $row['actions']['unit_price'] }}"
+            data-minimum="{{ $row['actions']['minimum_quantity'] }}"
+            data-increment="{{ $row['actions']['ordering_increment'] }}"
+            data-breaks="{{ json_encode($row['actions']['breaks'], JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) }}">
+            {{ __('commercial.quantity_tiers.edit_rule') }}
+          </button>
         @elseif($column==='actions' && in_array($module,['reports','finance'],true) && is_array($row['actions'] ?? null))
           <div class="links">@foreach($row['actions'] as $action)<a href="{{ $action['url'] }}">{{ $action['label'] }}</a>@endforeach</div>
         @elseif($column==='actions' && $module==='clients' && $user->hasPermission('b2b.accounts.manage'))
