@@ -1403,6 +1403,8 @@ final class FinanceWorkbenchController extends Controller
             'storeOpeningBalance', 'cancelOpeningBalance' => ['finance.manage', 'finance.opening_balances.manage'],
             'postOpeningBalance' => ['finance.post', 'finance.opening_balances.post'],
             'storeCreditTerm', 'updateCreditTermStatus' => ['finance.manage', 'finance.credit_terms.manage'],
+            'storeReceivableSettlement' => ['finance.manage', 'finance.ar.manage'],
+            'postReceivableSettlement' => ['finance.post', 'finance.ar.post'],
             'transitionBudget' => $request->input('action') === 'submit'
                     ? ['finance.manage', 'finance.foundation.manage']
                     : ['finance.approve', 'finance.approvals.approve'],
