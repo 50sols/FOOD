@@ -20,11 +20,16 @@ final class V2PreviewInvalidationMissingTokenLocaleTest extends TestCase
         foreach ([
             ['ar-KW,ar;q=0.9,en;q=0.5', 'en', 'يلزم توفير رمز معاينة صالح للوصول إلى المعاينة.'],
             ['en-US,en;q=0.9,ar;q=0.5', 'ar', 'Preview token is required.'],
+            ['fr-FR,fr;q=0.9', 'en', 'Preview token is required.'],
+            [null, 'en', 'Preview token is required.'],
         ] as [$acceptLanguage, $contraryAppLocale, $expectedMessage]) {
             app()->setLocale($contraryAppLocale);
 
             foreach ([null, '   ', " \t "] as $token) {
-                $headers = ['Accept-Language' => $acceptLanguage];
+                $headers = [];
+                if ($acceptLanguage !== null) {
+                    $headers['Accept-Language'] = $acceptLanguage;
+                }
                 if ($token !== null) {
                     $headers['X-Foodex-Preview-Token'] = $token;
                 }
