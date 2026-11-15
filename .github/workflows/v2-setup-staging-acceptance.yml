@@ -85,22 +85,20 @@ jobs:
           trap 'rm -rf "$stage"' EXIT
           mkdir -p "$stage/backend" Release
           rsync -a backend/ "$stage/backend/" \
-            --exclude='.env' \
+            --exclude='/.env' \
             --exclude='tests/' \
             --exclude='docs/' \
             --exclude='.phpunit.cache/' \
-            --exclude='storage/logs/*' \
-            --exclude='storage/app/private/*' \
-            --exclude='storage/app/public/*' \
-            --exclude='storage/app/system/*' \
-            --exclude='storage/framework/sessions/*' \
-            --exclude='storage/framework/cache/*' \
-            --exclude='storage/framework/views/*' \
-            --exclude='storage/framework/testing/*' \
-            --exclude='bootstrap/cache/*'
+            --exclude='/storage/' \
+            --exclude='/bootstrap/cache/' \
+            --exclude='/public/storage' \
+            --exclude='/public/uploads'
           # Preserve required empty Laravel directories without shipping
           # runtime sessions, cached secrets or compiled config/views.
           mkdir -p "$stage/backend/storage/app/public" \
+            "$stage/backend/storage/app/private" \
+            "$stage/backend/storage/app/system" \
+            "$stage/backend/storage/logs" \
             "$stage/backend/storage/framework/sessions" \
             "$stage/backend/storage/framework/cache/data" \
             "$stage/backend/storage/framework/views" \

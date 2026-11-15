@@ -210,6 +210,15 @@ def _member_target(member: zipfile.ZipInfo) -> tuple[str, str, bool]:
         f"Runtime session/cache/config file in Setup ZIP: {name!r}",
     )
 
+    # The entire Laravel storage tree is runtime state. A dirty build may
+    # contain a backup/tenant export directly under storage/app, or a new
+    # framework directory not covered by a narrower known-subdir blacklist.
+    # Empty directories are safe; no storage file can belong to clean Setup.
+    _require(
+        is_directory or folded_parts[:2] != ["backend", "storage"],
+        f"Runtime storage data in Setup ZIP: {name!r}",
+    )
+
     # Both central and local ZIP metadata must attest to one path only.
     _reject_ambiguous_extra_fields(member.extra, name)
 

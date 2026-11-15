@@ -321,14 +321,42 @@ jobs:
           composer validate --working-dir=backend --strict --no-check-publish
           composer install --working-dir=backend --no-dev --prefer-dist --optimize-autoloader --no-interaction --no-progress
           stage="$(mktemp -d)"
+          trap 'rm -rf "$stage"' EXIT
           mkdir -p "$stage/backend"
-          rsync -a backend/ "$stage/backend/"             --exclude='.env'             --exclude='tests/'             --exclude='docs/'             --exclude='.phpunit.cache/'             --exclude='storage/logs/*'             --exclude='storage/app/system/*'
-          rm -f "$stage/backend/bootstrap/cache/"*.php
+          # Storage and bootstrap caches are *runtime data*, not distributable
+          # source. Never copy user uploads, exports, sessions, backups, or
+          # generated configuration from a dirty build into signed Setup.
+          rsync -a backend/ "$stage/backend/" \
+            --exclude='/.env' \
+            --exclude='tests/' \
+            --exclude='docs/' \
+            --exclude='.phpunit.cache/' \
+            --exclude='/storage/' \
+            --exclude='/bootstrap/cache/' \
+            --exclude='/public/storage' \
+            --exclude='/public/uploads'
+          mkdir -p "$stage/backend/storage/app/public" \
+            "$stage/backend/storage/app/private" \
+            "$stage/backend/storage/app/system" \
+            "$stage/backend/storage/framework/cache/data" \
+            "$stage/backend/storage/framework/sessions" \
+            "$stage/backend/storage/framework/views" \
+            "$stage/backend/storage/framework/testing" \
+            "$stage/backend/storage/logs" \
+            "$stage/backend/bootstrap/cache"
           cp VERSION "$stage/VERSION"
           cp Release/INSTALL-FIRST.txt "$stage/INSTALL-FIRST.txt"
+          # zip updates existing archives: remove the old output first.
+          rm -f "$GITHUB_WORKSPACE/FOODEX-Laravel-Setup.zip"
           (cd "$stage" && zip -qr "$GITHUB_WORKSPACE/FOODEX-Laravel-Setup.zip" .)
           test -s FOODEX-Laravel-Setup.zip
-          test "$(unzip -Z1 FOODEX-Laravel-Setup.zip | grep -c '^backend/.env$' || true)" = "0"
+          # Validate the actual assembled artifact before upload/signing;
+          # this CI integrity check is not publisher authentication.
+          python3 scripts/v2_setup_staging_verify.py \
+            --zip FOODEX-Laravel-Setup.zip \
+            --version-file VERSION \
+            --source-commit "$(git rev-parse HEAD)" \
+            --evidence "$RUNNER_TEMP/setup-zip-integrity.json"
       - uses: actions/upload-artifact@v4
         with:
           name: release-laravel-setup-${{ github.sha }}
