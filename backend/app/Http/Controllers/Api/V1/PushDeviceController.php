@@ -117,7 +117,7 @@ final class PushDeviceController extends Controller
                 ->value('store_types.code'));
             abort_unless(in_array($storeChannel, ['b2b', 'b2c'], true), 404);
             if ($targetChannel !== 'all') {
-                abort_unless($targetChannel === $storeChannel, 422);
+                abort_unless($targetChannel === $storeChannel, 422, __('push_device_errors.store_channel_mismatch', [], $locale));
             }
         }
 
