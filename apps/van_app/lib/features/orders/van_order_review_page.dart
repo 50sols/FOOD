@@ -134,6 +134,22 @@ class _VanOrderReviewPageState extends State<VanOrderReviewPage> {
         idempotencyKey: idempotencyKey,
       );
       if (!mounted) return;
+      // The server may have accepted this operation while the operator
+      // switched store or edited the cart. Never present that old order as
+      // confirmation of the new draft, nor automatically resend it.
+      if (widget.draft.revision != revision) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              _text(
+                'An earlier draft may have been submitted. Check order history before submitting again.',
+                'ربما تم إرسال طلب من مسودة سابقة. راجع سجل الطلبات قبل الإرسال مجددًا.',
+              ),
+            ),
+          ),
+        );
+        return;
+      }
       widget.onSubmitted(order);
     } on VanSessionExpiredException {
       await widget.onSessionExpired();
