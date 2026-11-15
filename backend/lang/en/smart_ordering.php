@@ -5,6 +5,9 @@ return [
         'past_schedule' => 'Scheduled time cannot be in the past.',
         'not_accepting_orders' => 'This branch is not accepting orders.',
         'delivery_zone_outside' => 'Delivery address is outside this branch service area.',
+        'scheduling_disabled' => 'Scheduled orders are disabled for this branch.',
+        'scheduling_window' => 'Scheduled time exceeds the branch pre-order window.',
+        'pickup_lead_time' => 'Pickup time is earlier than the branch preparation lead time.',
     ],
     'checkout' => [
         'idempotency_conflict' => 'Idempotency-Key was already used for a different checkout request.',

@@ -69,14 +69,14 @@ final class BranchPolicyService
         }
 
         if ($requested !== null && trim($requested) !== '') {
-            abort_unless((bool) $branch->allow_scheduled, 409, 'Scheduled orders are disabled for this branch.');
+            abort_unless((bool) $branch->allow_scheduled, 409, __('smart_ordering.branch_policy.scheduling_disabled'));
 
             $maximum = $now->addDays(max(1, (int) $branch->max_schedule_days));
-            abort_if($scheduled->gt($maximum), 409, 'Scheduled time exceeds the branch pre-order window.');
+            abort_if($scheduled->gt($maximum), 409, __('smart_ordering.branch_policy.scheduling_window'));
 
             if ($mode === 'pickup') {
                 $minimumPickup = $now->addMinutes(max(0, (int) $branch->pickup_lead_minutes));
-                abort_if($scheduled->lt($minimumPickup), 409, 'Pickup time is earlier than the branch preparation lead time.');
+                abort_if($scheduled->lt($minimumPickup), 409, __('smart_ordering.branch_policy.pickup_lead_time'));
             }
         }
 
