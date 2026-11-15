@@ -45,7 +45,12 @@ final class StorefrontController extends Controller
                 'storefront_settings.header_address',
             ]);
 
-        abort_if($wholesale === null, 404, 'Main Wholesale store is not configured.');
+        $preferredLocale = strtolower((string) $request->getPreferredLanguage(['ar', 'en']));
+        abort_if(
+            $wholesale === null,
+            404,
+            (string) __('platform_marketplace.wholesale_store_missing', [], $preferredLocale === 'ar' ? 'ar' : 'en'),
+        );
 
         $retailStores = $this->retailStoreQuery($request)
             ->orderByDesc('stores.created_at')
