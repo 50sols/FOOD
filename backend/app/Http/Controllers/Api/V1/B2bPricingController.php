@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Api\V1;
 
 use App\Domain\Pricing\B2bPriceResolver;
+use App\Domain\Pricing\QuantityPriceBreaks;
 use App\Http\Controllers\Controller;
 use App\Models\B2bAccount;
 use App\Models\B2bPriceRule;
@@ -73,6 +74,10 @@ class B2bPricingController extends Controller
             'pack_label' => ['nullable', 'string', 'max:80'],
             'retail_reference_price' => ['nullable', 'numeric', 'gte:0'],
             'is_active' => ['sometimes', 'boolean'],
+            'quantity_price_breaks' => ['sometimes', 'array', 'max:12'],
+            'quantity_price_breaks.*.minimum_quantity' => ['required', 'numeric', 'gt:0'],
+            'quantity_price_breaks.*.unit_price' => ['required', 'numeric', 'gte:0'],
+            'replace_quantity_price_breaks' => ['sometimes', 'boolean'],
         ]);
         // Preserve the authorized multi-store B2B API contract while rejecting
         // another channel, inactive stores and explicit per-user store DENYs.
@@ -93,20 +98,60 @@ class B2bPricingController extends Controller
             ->exists();
         abort_unless($ownedProduct, 422, 'Product must belong to the selected B2B store catalog.');
 
-        $rule = B2bPriceRule::query()->updateOrCreate(
-            ['price_tier_id' => $data['price_tier_id'], 'store_id' => $data['store_id'], 'product_id' => $data['product_id']],
-            [
-                'unit_price' => $data['unit_price'],
-                'minimum_quantity' => $data['minimum_quantity'],
-                'ordering_increment' => $data['ordering_increment'] ?? 1,
-                'pack_size' => $data['pack_size'] ?? 1,
-                'case_size' => $data['case_size'] ?? null,
-                'pack_label' => $data['pack_label'] ?? null,
-                'retail_reference_price' => $data['retail_reference_price'] ?? null,
-                'is_active' => $data['is_active'] ?? true,
-            ],
-        );
-        app(AuditLogger::class)->record('b2b.price_rule.saved', $request->user(), $rule, null, $rule->toArray(), $request);
+        // Omitted breaks in legacy API requests preserve their existing contract.
+        // An explicit list or Dashboard replace flag atomically replaces the list.
+        $replaceBreaks = array_key_exists('quantity_price_breaks', $data)
+            || (bool) ($data['replace_quantity_price_breaks'] ?? false);
+        $breaks = $replaceBreaks
+            ? QuantityPriceBreaks::normalize(
+                $data['quantity_price_breaks'] ?? [],
+                (float) $data['minimum_quantity'],
+                (float) ($data['ordering_increment'] ?? 1),
+                (float) $data['unit_price'],
+            )
+            : null;
+
+        $rule = DB::transaction(function () use ($data, $request, $replaceBreaks, $breaks): B2bPriceRule {
+            // A legacy caller may omit the schedule but must not silently
+            // invalidate its saved breaks by changing base price, MOQ or increment.
+            // Lock before checking so a concurrent editor cannot change the
+            // schedule between validation and the audited write.
+            $current = B2bPriceRule::query()
+                ->where('price_tier_id', $data['price_tier_id'])
+                ->where('store_id', $data['store_id'])
+                ->where('product_id', $data['product_id'])
+                ->lockForUpdate()
+                ->first();
+            if (! $replaceBreaks && $current instanceof B2bPriceRule) {
+                QuantityPriceBreaks::normalize(
+                    QuantityPriceBreaks::readBreaks($current->quantity_price_breaks),
+                    (float) $data['minimum_quantity'],
+                    (float) ($data['ordering_increment'] ?? 1),
+                    (float) $data['unit_price'],
+                );
+            }
+
+            $rule = B2bPriceRule::query()->updateOrCreate(
+                ['price_tier_id' => $data['price_tier_id'], 'store_id' => $data['store_id'], 'product_id' => $data['product_id']],
+                [
+                    'unit_price' => $data['unit_price'],
+                    'minimum_quantity' => $data['minimum_quantity'],
+                    'ordering_increment' => $data['ordering_increment'] ?? 1,
+                    'pack_size' => $data['pack_size'] ?? 1,
+                    'case_size' => $data['case_size'] ?? null,
+                    'pack_label' => $data['pack_label'] ?? null,
+                    'retail_reference_price' => $data['retail_reference_price'] ?? null,
+                    'is_active' => $data['is_active'] ?? true,
+                ],
+            );
+            if ($replaceBreaks) {
+                $rule->quantity_price_breaks = $breaks;
+                $rule->save();
+            }
+            app(AuditLogger::class)->record('b2b.price_rule.saved', $request->user(), $rule, null, $rule->toArray(), $request);
+
+            return $rule;
+        });
 
         return response()->json(['data' => $rule], $rule->wasRecentlyCreated ? 201 : 200);
     }
@@ -214,6 +259,7 @@ class B2bPricingController extends Controller
             'base_wholesale_price' => (float) $row->base_wholesale_price,
             'account_price' => $pricing['price'],
             'unit_price' => $pricing['price'],
+            'quantity_price_breaks' => $pricing['quantity_price_breaks'],
             'retail_reference_price' => $pricing['retail_reference_price'],
             'minimum_quantity' => $pricing['minimum_quantity'],
             'minimum_order_quantity' => $pricing['minimum_quantity'],
@@ -347,6 +393,7 @@ class B2bPricingController extends Controller
                     'base_wholesale_price' => (float) $row->base_wholesale_price,
                     'unit_price' => $pricing['price'],
                     'account_price' => $pricing['price'],
+                    'quantity_price_breaks' => $pricing['quantity_price_breaks'],
                     'retail_reference_price' => $pricing['retail_reference_price'],
                     'minimum_quantity' => $pricing['minimum_quantity'],
                     'minimum_order_quantity' => $pricing['minimum_quantity'],
