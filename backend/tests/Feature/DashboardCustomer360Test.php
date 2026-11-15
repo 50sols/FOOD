@@ -438,6 +438,100 @@ class DashboardCustomer360Test extends TestCase
         ]);
     }
 
+    public function test_customer_360_address_location_rejections_use_operator_locale_without_writes(): void
+    {
+        $store = $this->store('B2C', 'ADDRESS-LOCALE', 'Address Locale Store');
+        $user = $this->customer('Address Locale Customer', 'address-locale@example.test', $store);
+        $platform = PlatformCustomer::query()->where('user_id', $user->id)->firstOrFail();
+        $admin = $this->retailAdmin($store);
+        $storeUrl = route('admin.customer-360.addresses.store', ['platformCustomer' => $platform->id]);
+        $pageUrl = route('admin.customer-360.show', ['platformCustomer' => $platform->id]).'#addresses';
+
+        $this->actingAs($admin)
+            ->post($storeUrl, [
+                'label' => 'Saved manual address',
+                'line1' => 'Original Street',
+                'city' => 'Cairo',
+                'country_code' => 'EG',
+                'location_source' => 'manual',
+            ])
+            ->assertRedirect();
+
+        $address = Address::query()->where('platform_customer_id', $platform->id)->firstOrFail();
+        $baselineAddressCount = DB::table('addresses')->count();
+        $baselineAuditCount = DB::table('audit_logs')->count();
+
+        foreach (['en', 'ar'] as $locale) {
+            $admin->forceFill(['locale' => $locale])->saveQuietly();
+            app()->setLocale($locale);
+            $this->actingAs($admin->fresh());
+
+            foreach (['map_pin', 'current_location'] as $source) {
+                $this->from($pageUrl)
+                    ->post($storeUrl, [
+                        'label' => 'Incomplete location',
+                        'line1' => 'Street without coordinates',
+                        'city' => 'Cairo',
+                        'country_code' => 'EG',
+                        'location_source' => $source,
+                    ])
+                    ->assertRedirect()
+                    ->assertSessionHasErrors([
+                        'latitude' => __('customer_address_location.coordinate_pair_required'),
+                        'longitude' => __('customer_address_location.coordinate_pair_required'),
+                    ]);
+            }
+
+            $this->from($pageUrl)
+                ->post($storeUrl, [
+                    'label' => 'Accuracy without location',
+                    'line1' => 'Street without coordinates',
+                    'city' => 'Cairo',
+                    'country_code' => 'EG',
+                    'location_source' => 'manual',
+                    'location_accuracy_meters' => 9.5,
+                ])
+                ->assertRedirect()
+                ->assertSessionHasErrors([
+                    'location_accuracy_meters' => __('customer_address_location.accuracy_pair_required'),
+                ]);
+
+            $this->from($pageUrl)
+                ->patch(route('admin.customer-360.addresses.update', [
+                    'platformCustomer' => $platform->id,
+                    'address' => $address->id,
+                ]), ['location_source' => 'map_pin'])
+                ->assertRedirect()
+                ->assertSessionHasErrors([
+                    'latitude' => __('customer_address_location.coordinate_pair_required'),
+                    'longitude' => __('customer_address_location.coordinate_pair_required'),
+                ]);
+
+            $this->assertSame($baselineAddressCount, DB::table('addresses')->count());
+            $this->assertSame($baselineAuditCount, DB::table('audit_logs')->count());
+            $this->assertDatabaseHas('addresses', [
+                'id' => $address->id,
+                'label' => 'Saved manual address',
+                'location_source' => 'manual',
+            ]);
+        }
+
+        $this->actingAs($admin->fresh())
+            ->patch(route('admin.customer-360.addresses.update', [
+                'platformCustomer' => $platform->id,
+                'address' => $address->id,
+            ]), [
+                'location_source' => 'map_pin',
+                'latitude' => 30.04442,
+                'longitude' => 31.235712,
+            ])
+            ->assertRedirect();
+        $this->assertDatabaseHas('addresses', [
+            'id' => $address->id,
+            'location_source' => 'map_pin',
+        ]);
+    }
+
     public function test_retail_admin_can_fully_manage_visible_customer_addresses_only(): void
     {
         $storeA = $this->store('B2C', 'ADDRESS-A', 'Address Store A');
