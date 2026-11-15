@@ -152,10 +152,15 @@ class CheckoutController extends Controller
                 ->first();
 
             if ($existing instanceof Order) {
+                $userLocale = $user->locale;
+                $locale = in_array($userLocale, ['ar', 'en'], true)
+                    ? $userLocale
+                    : strtolower((string) $request->getPreferredLanguage(['ar', 'en']));
+
                 abort_if(
                     ! hash_equals((string) $existing->checkout_request_hash, $requestHash),
                     409,
-                    'Idempotency key was already used for a different checkout request.',
+                    __('checkout_errors.idempotency_reuse_conflict', [], $locale === 'ar' ? 'ar' : 'en'),
                 );
 
                 return [$existing, false];
