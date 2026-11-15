@@ -193,7 +193,10 @@ class DriverAssignmentLifecycleTest extends TestCase
         $baseline = [
             'assignments' => DB::table('driver_assignments')->count(),
             'orders' => DB::table('orders')->count(),
+            'order_items' => DB::table('order_items')->count(),
             'status_history' => DB::table('order_status_history')->count(),
+            'delivery_proofs' => DB::table('delivery_proofs')->count(),
+            'stock_movements' => DB::table('stock_movements')->count(),
             'audit_logs' => DB::table('audit_logs')->count(),
             'notifications' => DB::table('notifications')->count(),
             'payments' => DB::table('payments')->count(),
@@ -220,7 +223,10 @@ class DriverAssignmentLifecycleTest extends TestCase
             $this->assertSame($baseline, [
                 'assignments' => DB::table('driver_assignments')->count(),
                 'orders' => DB::table('orders')->count(),
+                'order_items' => DB::table('order_items')->count(),
                 'status_history' => DB::table('order_status_history')->count(),
+                'delivery_proofs' => DB::table('delivery_proofs')->count(),
+                'stock_movements' => DB::table('stock_movements')->count(),
                 'audit_logs' => DB::table('audit_logs')->count(),
                 'notifications' => DB::table('notifications')->count(),
                 'payments' => DB::table('payments')->count(),
