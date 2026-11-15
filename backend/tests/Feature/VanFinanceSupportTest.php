@@ -313,7 +313,6 @@ class VanFinanceSupportTest extends TestCase
         $this->assertSame($before['ledger'], DB::table('custody_ledger_entries')->count());
     }
 
-
     public function test_closeout_balanced_ledger_still_requires_review_when_van_or_wallet_is_inactive(): void
     {
         $admin = $this->superAdmin();
