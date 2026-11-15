@@ -1056,6 +1056,7 @@ class DriverAssignmentLifecycleTest extends TestCase
         $this->seed(CoreReferenceSeeder::class);
         [$storeId, $order] = $this->order('b2b');
         $admin = $this->roleUser('B2B_ADMIN', 'van-cutover-admin@example.test');
+        $admin->forceFill(['locale' => 'en'])->save();
         $driverUser = $this->roleUser('B2B_DRIVER', 'legacy-b2b-driver@example.test');
         $driver = Driver::query()->create([
             'user_id' => $driverUser->id,
@@ -1073,7 +1074,7 @@ class DriverAssignmentLifecycleTest extends TestCase
                 'driver_id' => $driver->id,
                 'order_id' => $order->id,
             ])->assertConflict()
-                ->assertSee('Wholesale orders require Van fulfillment.');
+                ->assertJsonPath('message', 'Wholesale orders must be fulfilled by a Van.');
 
             $this->assertDatabaseMissing('driver_assignments', [
                 'driver_id' => $driver->id,
