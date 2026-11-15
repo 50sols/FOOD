@@ -350,6 +350,37 @@ final class CommercialDashboardController extends Controller
             }
         }
 
+        // The sales-control parser otherwise discards unsupported keys inside
+        // structured JSON. Inspect every nesting level in all four business
+        // builders before accepting or persisting any proposed configuration.
+        // Never interpret these values as real cost, stock title or margin.
+        foreach (['channels_json', 'selling_units_json', 'availability_windows_json', 'rules_json'] as $field) {
+            $raw = $request->input($field);
+            if (! is_string($raw)) {
+                continue;
+            }
+
+            $decoded = json_decode($raw, true);
+            if (! is_array($decoded)) {
+                continue; // Existing request JSON validation owns malformed documents.
+            }
+
+            // Iterative traversal avoids recursion over arbitrary client depth.
+            $pending = [[$decoded, $field]];
+            while ($pending !== []) {
+                [$node, $path] = array_pop($pending);
+                foreach ($node as $key => $value) {
+                    $keyPath = $path.'.'.$key;
+                    if (is_string($key) && preg_match(self::PROFITABILITY_FIELD, $key) === 1) {
+                        $errors[$keyPath] = [__('commercial.validation.profitability_policy_unavailable')];
+                    }
+                    if (is_array($value)) {
+                        $pending[] = [$value, $keyPath];
+                    }
+                }
+            }
+        }
+
         if ($errors !== []) {
             throw ValidationException::withMessages($errors);
         }

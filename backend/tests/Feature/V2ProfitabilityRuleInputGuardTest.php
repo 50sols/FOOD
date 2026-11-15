@@ -76,6 +76,77 @@ final class V2ProfitabilityRuleInputGuardTest extends TestCase
         $this->assertSame(0, DB::table('audit_logs')->where('event', 'commercial.product_policy.updated')->count());
     }
 
+    public function test_deeply_nested_unsupported_profitability_keys_cannot_be_silently_saved_by_any_builder(): void
+    {
+        [$actor, $storeId, $productId] = $this->scope();
+        $route = route('admin.commercial.sales-control.save', [
+            'store_id' => $storeId,
+            'product' => $productId,
+        ]);
+
+        $cases = [
+            ['channels_json', '[{"extensions":{"minMarginPct":18}}]', 'channels_json.0.extensions.minMarginPct'],
+            [
+                'selling_units_json',
+                '[{"code":"PIECE","name":"Piece","conversion_factor":1,"is_base":true,"is_active":true,"attributes":[{"stock_owner":"unverified"}]}]',
+                'selling_units_json.0.attributes.0.stock_owner',
+            ],
+            [
+                'availability_windows_json',
+                '[{"recurrence":"fixed","metadata":{"valuation":{"costBasis":"client-supplied"}}}]',
+                'availability_windows_json.0.metadata.valuation.costBasis',
+            ],
+            [
+                'rules_json',
+                '[{"channel":"van","constraints":{"nested":{"minimum_profit":"15"}}}]',
+                'rules_json.0.constraints.nested.minimum_profit',
+            ],
+        ];
+
+        foreach (['ar', 'en'] as $locale) {
+            $actor->forceFill(['locale' => $locale])->save();
+            foreach ($cases as [$field, $json, $errorKey]) {
+                $response = $this->actingAs($actor->fresh())
+                    ->from(route('admin.commercial.sales-control', ['store_id' => $storeId, 'product' => $productId]))
+                    ->put($route, $this->validForm([$field => $json]));
+
+                $response->assertRedirect()->assertSessionHasErrors([$errorKey]);
+                $this->assertSame(
+                    __('commercial.validation.profitability_policy_unavailable', [], $locale),
+                    session('errors')->first($errorKey),
+                );
+                $this->assertSame(0, DB::table('product_commercial_policies')->where('product_id', $productId)->count());
+                $this->assertSame(0, DB::table('product_commercial_rules')->where('product_id', $productId)->count());
+                $this->assertSame(0, DB::table('audit_logs')->where('event', 'commercial.product_policy.updated')->count());
+            }
+        }
+    }
+
+    public function test_valid_non_profitability_targeting_configuration_retains_existing_save_behavior(): void
+    {
+        [$actor, $storeId, $productId] = $this->scope();
+
+        $this->actingAs($actor)
+            ->put(route('admin.commercial.sales-control.save', [
+                'store_id' => $storeId,
+                'product' => $productId,
+            ]), $this->validForm([
+                'rules_json' => '[{"channel":"van","is_allowed":true}]',
+            ]))
+            ->assertRedirect()
+            ->assertSessionHasNoErrors();
+
+        $this->assertDatabaseHas('product_commercial_policies', [
+            'product_id' => $productId,
+            'status' => 'RESTRICTED',
+        ]);
+        $this->assertDatabaseHas('product_commercial_rules', [
+            'product_id' => $productId,
+            'channel' => 'van',
+        ]);
+        $this->assertSame(1, DB::table('audit_logs')->where('event', 'commercial.product_policy.updated')->count());
+    }
+
     /** @return array{User,int,int} */
     private function scope(): array
     {
