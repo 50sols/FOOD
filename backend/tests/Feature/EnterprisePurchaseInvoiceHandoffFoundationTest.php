@@ -368,6 +368,108 @@ final class EnterprisePurchaseInvoiceHandoffFoundationTest extends TestCase
         $this->assertSame($outboxCount, DB::table('enterprise_outbox_messages')->count());
     }
 
+    public function test_three_way_match_list_uses_literal_invoice_and_supplier_prefixes_without_writes(): void
+    {
+        $this->enableProcurement();
+        [$actor, $store, $context] = $this->scopedUser($this->allPermissions(), 'PMATCH-LIT-A');
+        [$foreignActor, $foreignStore, $foreignContext] = $this->scopedUser(
+            $this->allPermissions(),
+            'PMATCH-LIT-B',
+        );
+        [$roleless, , $rolelessContext] = $this->scopedUser([], 'PMATCH-LIT-NO-READ');
+        [, $warehouse] = $this->stockTarget($store, 'PMATCH-LIT-A-SKU');
+        [, $foreignWarehouse] = $this->stockTarget($foreignStore, 'PMATCH-LIT-B-SKU');
+        $receipt = $this->postedReceipt($actor, $context, $warehouse, 'PMATCH-LIT-A-SUP', 'PMATCH-LIT-A-SKU', 15);
+        $foreignReceipt = $this->postedReceipt(
+            $foreignActor, $foreignContext, $foreignWarehouse, 'PMATCH-LIT-B-SUP', 'PMATCH-LIT-B-SKU', 3,
+        );
+        $invoices = app(PurchaseInvoiceHandoffManager::class);
+        $completion = app(ProcurementCompletionManager::class);
+
+        // Create genuine draft purchase invoices from posted receipts. Replace
+        // only synthetic external reference fields to model legacy imports.
+        $make = function (
+            User $owner,
+            ResolvedTenantContext $scope,
+            EnterpriseGoodsReceipt $source,
+            string $number,
+            string $supplierReference,
+            string $supplierCode,
+        ) use ($invoices, $completion): int {
+            $invoice = $invoices->createFromPostedReceipt($owner, $scope, $source->id, [
+                'supplier_invoice_number' => 'MATCH-TEMP-'.bin2hex(random_bytes(8)),
+                'invoice_date' => '2026-10-16',
+                'lines' => [[
+                    'goods_receipt_line_id' => $source->lines()->firstOrFail()->id,
+                    'quantity' => 1,
+                ]],
+            ]);
+            DB::table('enterprise_purchase_invoices')->where('id', $invoice->id)->update([
+                'invoice_number' => $number,
+                'supplier_invoice_number' => $supplierReference,
+                'supplier_code' => $supplierCode,
+            ]);
+            $completion->syncMatchForInvoice((int) $invoice->id);
+
+            return (int) $invoice->id;
+        };
+
+        $numberId = $make($actor, $context, $receipt, '%!_MATCH-01', 'REF-01', 'SUP-01');
+        $supplierId = $make($actor, $context, $receipt, 'MATCH-02', 'VEND_%!\\-02', 'SUP-02');
+        $codeId = $make($actor, $context, $receipt, 'MATCH-03', 'REF-03', '_!%CODE-03');
+        $bangId = $make($actor, $context, $receipt, '!MATCH-04', 'REF-04', 'SUP-04');
+        $slashId = $make($actor, $context, $receipt, '\\MATCH-05', 'REF-05', 'SUP-05');
+        $decoyId = $make($actor, $context, $receipt, 'MATCH-PLAIN-06', 'REF-06', 'SUP-06');
+        $make($foreignActor, $foreignContext, $foreignReceipt, '%!_MATCH-FOREIGN', 'VEND_%!\\-FOREIGN', '_!%CODE-FOREIGN');
+        DB::table('enterprise_procurement_match_reviews')
+            ->where('purchase_invoice_id', $codeId)
+            ->update(['status' => 'pending']);
+
+        $before = [
+            'invoices' => DB::table('enterprise_purchase_invoices')->count(),
+            'lines' => DB::table('enterprise_purchase_invoice_lines')->count(),
+            'matches' => DB::table('enterprise_procurement_match_reviews')->count(),
+            'stock' => DB::table('stock_movements')->count(),
+            'audit' => DB::table('audit_logs')->count(),
+            'outbox' => DB::table('enterprise_outbox_messages')->count(),
+        ];
+        $matching = fn (string $q, array $extra = []): array => $completion
+            ->paginateMatches($actor, $context, ['q' => $q] + $extra)
+            ->getCollection()->pluck('purchase_invoice_id')->map(fn ($id): int => (int) $id)->all();
+
+        $this->assertSame([$numberId], $matching('%!_'));
+        $this->assertSame([$supplierId], $matching('VEND_%!\\'));
+        $this->assertSame([$codeId], $matching('_!%CODE'));
+        $this->assertSame([$numberId], $matching('%'));
+        $this->assertSame([$codeId], $matching('_'));
+        $this->assertSame([$bangId], $matching('!'));
+        $this->assertSame([$slashId], $matching('\\'));
+        $this->assertSame([], $matching('MATCH%'));
+        $this->assertSame([$decoyId], $matching('MATCH-PLAIN'));
+        $this->assertSame([$codeId], $matching('_!%CODE', ['status' => 'pending']));
+        $this->assertSame([], $matching('_!%CODE', ['status' => 'auto_approved']));
+        $this->assertSame([$numberId], $matching('%!_', ['status' => 'auto_approved']));
+        $this->assertCount(6, $matching(''));
+        $this->assertSame(10, $completion->paginateMatches($actor, $context, [], 1)->perPage());
+        $this->assertSame(100, $completion->paginateMatches($actor, $context, [], 1000)->perPage());
+
+        try {
+            $completion->paginateMatches($roleless, $rolelessContext, ['q' => '%']);
+            $this->fail('A roleless actor must not read three-way match reviews.');
+        } catch (HttpExceptionInterface $exception) {
+            $this->assertSame(403, $exception->getStatusCode());
+        }
+
+        $this->assertSame($before, [
+            'invoices' => DB::table('enterprise_purchase_invoices')->count(),
+            'lines' => DB::table('enterprise_purchase_invoice_lines')->count(),
+            'matches' => DB::table('enterprise_procurement_match_reviews')->count(),
+            'stock' => DB::table('stock_movements')->count(),
+            'audit' => DB::table('audit_logs')->count(),
+            'outbox' => DB::table('enterprise_outbox_messages')->count(),
+        ]);
+    }
+
     public function test_draft_cancel_is_retry_safe_and_handed_off_invoice_is_immutable(): void
     {
         $this->enableProcurement();
