@@ -9,6 +9,7 @@ use App\Enterprise\Modules\ModuleLifecycleManager;
 use App\Enterprise\Modules\ModuleRegistry;
 use App\Enterprise\Modules\ModuleState;
 use App\Enterprise\Organization\OrganizationHierarchyService;
+use App\Http\Controllers\Admin\FinanceWorkbenchController;
 use App\Models\Customer;
 use App\Models\Permission;
 use App\Models\Role;
@@ -209,10 +210,10 @@ final class V2FinancialReportsSidebarAuthorityTest extends TestCase
         // The authenticated HTTP tests cover authorization. The underlying
         // exporter is separately exercised with untrusted report-row strings.
         $method = new \ReflectionMethod(
-            \App\Http\Controllers\Admin\FinanceWorkbenchController::class,
+            FinanceWorkbenchController::class,
             'downloadFinancialCsv',
         );
-        $response = $method->invoke(app(\App\Http\Controllers\Admin\FinanceWorkbenchController::class), 'reports', [
+        $response = $method->invoke(app(FinanceWorkbenchController::class), 'reports', [
             'report' => [
                 'code' => 'fixed_assets',
                 'lines' => [
@@ -234,7 +235,7 @@ final class V2FinancialReportsSidebarAuthorityTest extends TestCase
 
         // Accounting statements store milli-units. An exported value of
         // 1234567 must be 1234.567, never 1234567 currency units.
-        $statementResponse = $method->invoke(app(\App\Http\Controllers\Admin\FinanceWorkbenchController::class), 'statements', [
+        $statementResponse = $method->invoke(app(FinanceWorkbenchController::class), 'statements', [
             'statement' => ['lines' => [
                 [
                     'code' => '1200', 'name' => 'Receivables', 'type' => 'asset',
