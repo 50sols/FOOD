@@ -2894,6 +2894,13 @@ void main() {
         'blocked': true
       },
       {
+        'name': 'missing signed quote grand total',
+        'total': null,
+        'power': 100.0,
+        'method': 'cash_on_delivery',
+        'blocked': true
+      },
+      {
         'name': 'missing credit',
         'total': 25.0,
         'power': null,
@@ -5624,6 +5631,7 @@ class _FakeWholesaleCommerceApi implements WholesaleCommerceApi {
         'currency': 'KWD',
         'subtotal': 25.5,
         'grand_total': 25.5,
+        'quote': {'grand_total': 25.5},
         'items': [
           {'name': 'Bulk Water', 'quantity': 2},
         ],

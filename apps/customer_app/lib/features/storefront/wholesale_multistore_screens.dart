@@ -7163,6 +7163,17 @@ class _WholesaleCheckoutDesignScreenState
 
     final payload = _latestCheckoutPayload;
     if (payload != null) {
+      final cartQuote = payload.cart['quote'] is Map
+          ? Map<String, dynamic>.from(payload.cart['quote'] as Map)
+          : <String, dynamic>{};
+      final quote = appliedQuote ?? cartQuote;
+      final verifiedGrandTotal = _verifiedCheckoutMoney(quote['grand_total']);
+      if (verifiedGrandTotal == null) return;
+      if (paymentMethod == 'account_credit') {
+        final power =
+            _verifiedCheckoutMoney(payload.options['purchasing_power']);
+        if (power == null || verifiedGrandTotal > power + .0001) return;
+      }
       // Never replace a malformed server-owned minimum with the legacy
       // fallback when deciding whether a Wholesale order can be submitted.
       final minimum = _verifiedCheckoutMoney(
@@ -7358,11 +7369,10 @@ class _WholesaleCheckoutDesignScreenState
                     ? Map<String, dynamic>.from(cart['quote'] as Map)
                     : <String, dynamic>{};
                 final effectiveQuote = appliedQuote ?? cartQuote;
-                final grandTotal = _verifiedCheckoutMoney(
-                  effectiveQuote['grand_total'] ??
-                      cart['grand_total'] ??
-                      cart['subtotal'],
-                );
+                // A cart subtotal is not an authoritative final quote:
+                // it excludes possible discounts, taxes and delivery charges.
+                final grandTotal =
+                    _verifiedCheckoutMoney(effectiveQuote['grand_total']);
                 final purchasingPower =
                     _verifiedCheckoutMoney(data['purchasing_power']);
                 final hasUnavailable = cart['has_unavailable_items'] == true ||
