@@ -68,7 +68,9 @@ class CollectionCustodyRemittanceLifecycleTest extends TestCase
         $service->collect($account, $actor, 'collection-reconcile-seed', 30, 'KWD', 'test');
         $pending = $service->submitRemittance($account, $actor, 'remit-reconcile-1', 12, 'KWD', 'cash');
 
-        $approved = $service->approveRemittance($pending, $actor);
+        // Submission and custody approval are distinct financial duties.
+        $checker = User::factory()->create();
+        $approved = $service->approveRemittance($pending, $checker);
         $balanceAfterApproval = $service->custodyBalance($account);
         $reconciled = $service->reconcileRemittance($approved, $actor);
         $reconciledAgain = $service->reconcileRemittance($reconciled, $actor);
