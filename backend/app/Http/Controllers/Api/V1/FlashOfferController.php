@@ -219,6 +219,8 @@ final class FlashOfferController extends Controller
             [$customer] = $customers->forStore($user, (int) $offer->store_id, $request);
             $legacyCustomerId = $customers->legacyId($customer);
             $baseQuantity = round((float) $data['quantity'] * (float) $offerProduct->conversion_factor, 3);
+            // The commercial policy must never receive INF from a finite JSON quantity.
+            abort_if(! is_finite($baseQuantity) || $baseQuantity <= 0, 422, 'Resolved base quantity must be greater than zero.');
             $decision = $commercialPolicy->evaluate(
                 (int) $offerProduct->product_id,
                 $legacyCustomerId,

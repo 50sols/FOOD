@@ -129,7 +129,10 @@ final class VanVisitController extends Controller
 
         $type = (string) $validated['customer_type'];
         $customerId = (int) $validated['customer_id'];
-        $this->assertCustomerExists($type, $customerId);
+        $locale = in_array($actor->locale, ['ar', 'en'], true)
+            ? (string) $actor->locale
+            : (string) $request->getPreferredLanguage(['ar', 'en']);
+        $this->assertCustomerExists($type, $customerId, $locale === 'en' ? 'en' : 'ar');
 
         $visit = DB::transaction(function () use ($request, $validated, $actor, $type, $customerId): VanVisit {
             $existing = VanVisit::query()
@@ -246,7 +249,7 @@ final class VanVisitController extends Controller
         );
     }
 
-    private function assertCustomerExists(string $type, int $customerId): void
+    private function assertCustomerExists(string $type, int $customerId, string $locale): void
     {
         $exists = match ($type) {
             'b2b' => B2bCustomer::query()->whereKey($customerId)->exists(),
@@ -256,7 +259,7 @@ final class VanVisitController extends Controller
 
         if ($exists === false) {
             throw ValidationException::withMessages([
-                'customer_id' => ['The selected customer does not exist in the authoritative customer domain.'],
+                'customer_id' => [__('van_visit_customer_errors.customer_not_found', [], $locale)],
             ]);
         }
     }

@@ -91,7 +91,9 @@ final class FlashOfferService
             $this->assertReservable($offer, $channel, $userId);
 
             $baseQuantity = round($sellingQuantity * (float) $offerProduct->conversion_factor, 3);
-            if ($baseQuantity <= 0) {
+            // Even finite input may overflow to INF after selling-unit conversion.
+            // Reject before allocating inventory or persisting a reservation.
+            if (! is_finite($baseQuantity) || $baseQuantity <= 0) {
                 throw new HttpException(422, 'Resolved base quantity must be greater than zero.');
             }
 

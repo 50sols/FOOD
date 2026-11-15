@@ -144,6 +144,46 @@ class FlashOfferBackendTest extends TestCase
         $this->assertDatabaseHas('flash_offer_events', ['flash_offer_id' => $offer->id, 'event' => 'reservation_released']);
     }
 
+    public function test_finite_selling_quantity_overflow_is_rejected_before_stock_writes(): void
+    {
+        [, $product] = $this->offer();
+        $service = app(FlashOfferService::class);
+
+        $snapshot = fn (): array => [
+            'reservations' => DB::table('flash_reservations')->count(),
+            'events' => DB::table('flash_offer_events')->count(),
+            'stock_movements' => DB::table('stock_movements')->count(),
+            'orders' => DB::table('orders')->count(),
+            'payments' => DB::table('payments')->count(),
+            'reserved_quantity' => (float) DB::table('inventories')
+                ->where('id', $this->inventoryId)
+                ->value('reserved_quantity'),
+        ];
+        $before = $snapshot();
+
+        // PHP_FLOAT_MAX is finite but multiplying it by the real offering's
+        // 10x conversion factor produces INF; never feed it to stock arithmetic.
+        $this->assertTrue(is_finite(PHP_FLOAT_MAX));
+        $this->assertFalse(is_finite(PHP_FLOAT_MAX * (float) $product->conversion_factor));
+
+        try {
+            $service->reserve($this->user->id, $product->id, PHP_FLOAT_MAX, 'customer', 'v2-overflow-3809');
+            $this->fail('An overflowed base quantity must be rejected before inventory allocation.');
+        } catch (HttpException $exception) {
+            $this->assertSame(422, $exception->getStatusCode());
+            $this->assertSame('Resolved base quantity must be greater than zero.', $exception->getMessage());
+        }
+        $this->assertSame($before, $snapshot(), 'Overflow rejection must not mutate inventory or financial records.');
+
+        // Valid finite base quantities still use the original reservation path.
+        $reservation = $service->reserve($this->user->id, $product->id, 1.0, 'customer', 'v2-finite-3809');
+        $this->assertSame(10.0, (float) $reservation->reserved_base_quantity);
+        $this->assertSame(10.0, (float) DB::table('inventories')
+            ->where('id', $this->inventoryId)->value('reserved_quantity'));
+        $this->assertSame($before['reservations'] + 1, DB::table('flash_reservations')->count());
+        $this->assertSame($before['events'] + 1, DB::table('flash_offer_events')->count());
+    }
+
     public function test_expiry_is_timestamp_authoritative_and_returns_inventory(): void
     {
         [, $product] = $this->offer(reservationSeconds: 30);
@@ -275,6 +315,37 @@ class FlashOfferBackendTest extends TestCase
             ->assertJsonPath('data.0.products.0.id', (int) $offerProduct->id)
             ->assertJsonPath('data.0.products.0.name', 'Flash Product')
             ->assertJsonPath('data.0.products.0.available_quantity', 2);
+
+        // Guard the public Customer route before commercial policy evaluates a
+        // finite JSON number whose 10x conversion would overflow to infinity.
+        $beforeOverflowHttp = [
+            'reservations' => DB::table('flash_reservations')->count(),
+            'events' => DB::table('flash_offer_events')->count(),
+            'stock_movements' => DB::table('stock_movements')->count(),
+            'orders' => DB::table('orders')->count(),
+            'payments' => DB::table('payments')->count(),
+            'reserved' => (float) DB::table('inventories')
+                ->where('id', $this->inventoryId)->value('reserved_quantity'),
+        ];
+        $this->withHeaders([
+            'X-FOODEX-Store-ID' => (string) $this->storeId,
+            'X-FOODEX-Customer-Domain' => 'b2c',
+        ])->postJson('/api/v1/flash-offers/products/'.$offerProduct->id.'/reserve', [
+            'store_id' => $this->storeId,
+            'channel' => 'customer',
+            'quantity' => PHP_FLOAT_MAX,
+            'idempotency_key' => 'v2-3809-http-overflow',
+        ])->assertUnprocessable()
+            ->assertJsonPath('message', 'Resolved base quantity must be greater than zero.');
+        $this->assertSame($beforeOverflowHttp, [
+            'reservations' => DB::table('flash_reservations')->count(),
+            'events' => DB::table('flash_offer_events')->count(),
+            'stock_movements' => DB::table('stock_movements')->count(),
+            'orders' => DB::table('orders')->count(),
+            'payments' => DB::table('payments')->count(),
+            'reserved' => (float) DB::table('inventories')
+                ->where('id', $this->inventoryId)->value('reserved_quantity'),
+        ]);
 
         $reserve = $this->withHeaders([
             'X-FOODEX-Store-ID' => (string) $this->storeId,
