@@ -285,6 +285,15 @@ final class CollectionCustodyService
                 throw ValidationException::withMessages(['status' => ['Only pending remittances can be approved.']]);
             }
 
+            // The person submitting custody funds must not also approve the
+            // posting that deducts them. Reject missing legacy maker identity
+            // as well; neither a route check nor Super Admin status waives SoD.
+            if ($locked->submitted_by === null || (int) $locked->submitted_by === (int) $actor->getKey()) {
+                throw ValidationException::withMessages([
+                    'reviewed_by' => ['Remittance approval requires a distinct, recorded maker and checker.'],
+                ]);
+            }
+
             $account = CollectionAccount::query()->whereKey($locked->collection_account_id)->lockForUpdate()->firstOrFail();
             $this->assertAccountCurrency($account, (string) $locked->currency);
 
