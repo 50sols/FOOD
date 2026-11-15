@@ -4,12 +4,11 @@ namespace Tests\Feature;
 
 use App\Models\User;
 use App\Services\B2cCustomerService;
-use App\Services\PdfDocumentFactory;
+use App\Services\InvoiceService;
 use Database\Seeders\CoreReferenceSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Laravel\Sanctum\Sanctum;
-use Mockery;
 use Tests\TestCase;
 
 class V2CustomerInvoiceStoreContextTest extends TestCase
@@ -75,10 +74,11 @@ class V2CustomerInvoiceStoreContextTest extends TestCase
 
     public function test_owned_pdf_failure_is_localized_and_does_not_reveal_runtime_details_or_mutate_invoices(): void
     {
-        $pdf = Mockery::mock(PdfDocumentFactory::class);
-        $pdf->shouldReceive('create')
-            ->andThrow(new \RuntimeException('INTERNAL_SECRET_SENTINEL'));
-        $this->app->instance(PdfDocumentFactory::class, $pdf);
+        // The renderer and its PDF factory are final. Laravel's method
+        // binding injects a deterministic failure into the real HTTP route.
+        $this->app->bindMethod(InvoiceService::class.'@renderPdf', static function (): string {
+            throw new \RuntimeException('INTERNAL_SECRET_SENTINEL');
+        });
 
         foreach ([
             ['en', 'en', 'ar', 'خدمة إنشاء ملف الفاتورة بصيغة PDF غير متاحة مؤقتًا.'],
