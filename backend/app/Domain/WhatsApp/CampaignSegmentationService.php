@@ -32,11 +32,12 @@ final class CampaignSegmentationService
 
         $search = trim((string) ($segment['search'] ?? ''));
         if ($search !== '') {
-            $like = '%'.str_replace(['%', '_'], ['\\%', '\\_'], $search).'%';
+            // Explicit escape syntax works on both SQLite and MySQL/MariaDB.
+            $like = '%'.str_replace(['!', '%', '_'], ['!!', '!%', '!_'], $search).'%';
             $query->where(function (Builder $builder) use ($like): void {
-                $builder->where('pc.name', 'like', $like)
-                    ->orWhere('pc.phone', 'like', $like)
-                    ->orWhere('pc.email', 'like', $like);
+                $builder->whereRaw("pc.name LIKE ? ESCAPE '!'", [$like])
+                    ->orWhereRaw("pc.phone LIKE ? ESCAPE '!'", [$like])
+                    ->orWhereRaw("pc.email LIKE ? ESCAPE '!'", [$like]);
             });
         }
 

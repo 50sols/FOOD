@@ -25,8 +25,12 @@ final class DatabaseTranslationLoader implements Loader
                 return $lines;
             }
 
+            // Translation groups are literal namespaces, never SQL LIKE patterns.
+            // Escape operator characters in the group and leave only the final
+            // percentage as the intentional prefix wildcard.
+            $groupPrefix = str_replace(['!', '%', '_'], ['!!', '!%', '!_'], (string) $group.'.').'%';
             $rows = DB::table('translations')
-                ->where('key', 'like', $group.'.%')
+                ->whereRaw("key LIKE ? ESCAPE '!'", [$groupPrefix])
                 ->pluck($locale, 'key');
 
             foreach ($rows as $key => $value) {

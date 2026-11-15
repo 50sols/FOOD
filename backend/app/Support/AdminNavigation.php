@@ -87,6 +87,13 @@ class AdminNavigation
             || $this->enterpriseWorkspaces->availableWorkspaceKeys($user) !== [];
         $useCustomerServiceDashboardProfile = $this->usesCustomerServiceDashboardProfile($user);
 
+        // P298 is presentation-only: derive both financial child destinations once
+        // from the existing permission, store, entitlement and readiness decision.
+        // Do not advertise Payables through an independent Sidebar eligibility policy.
+        $financeDocumentItems = $canAccessPlatformErp && ! $useCustomerServiceDashboardProfile
+            ? $this->receivablesNavigationItems($user)
+            : [];
+
         // Business-first order: enter a channel, define stores/catalog/accounts, execute operations,
         // then marketing/reporting. Administration stays last and never invents cross-channel links.
         $groups = [
@@ -179,6 +186,7 @@ class AdminNavigation
             // target children retain their canonical ready-only domain owners.
             $this->group('sales', 'admin.nav_groups.sales', '▤', [
                 $this->routeItemScoped($user, 'sales_quotations', 'sales_quotations.title', 'admin.sales-quotations.index', 'orders.view'),
+                $this->commercialExceptionApprovalsItem($user, isset($channels['b2b'])),
             ]),
             $this->group('customer_service', 'admin.nav_groups.customer_service', '◉', [
                 // The canonical Inbox route accepts authorized store-scoped Retail support
@@ -251,11 +259,16 @@ class AdminNavigation
             ]),
             // P285 reuses the already authorized Finance AR/AP tabs, never a
             // duplicate ledger or a newly exposed unready financial workflow.
-            $this->group('receivables', 'admin.nav_groups.receivables', '¤',
-                $canAccessPlatformErp && ! $useCustomerServiceDashboardProfile
-                    ? $this->receivablesNavigationItems($user)
-                    : []
-            ),
+            $this->group('receivables', 'admin.nav_groups.receivables', '¤', array_values(array_filter(
+                $financeDocumentItems,
+                static fn (array $item): bool => $item['key'] === 'erp_receivables',
+            ))),
+            // P298 Supplier Settlements is a parent of the already-authorized
+            // Accounts Payable Finance Workbench tab. No invented payment route.
+            $this->group('supplier_settlements', 'admin.nav_groups.supplier_settlements', '¤', array_values(array_filter(
+                $financeDocumentItems,
+                static fn (array $item): bool => $item['key'] === 'erp_payables',
+            ))),
             $this->group('analytics', 'admin.nav_groups.analytics', '▥', [
                 $this->routeItem($user, 'reports_center', 'reports.title', 'admin.reports.index', 'reports.view'),
                 $hideRetailWorkspaces ? null : $this->module($user, $channels, 'b2c', 'reports', 'admin.b2c_workspace.modules.reports', 'reports.view'),
@@ -589,9 +602,13 @@ class AdminNavigation
             return false;
         }
 
+        // Mobile-only identities are not ERP/Dashboard principals. Having a
+        // historical global B2B Driver, Retail Driver or Van runtime role must
+        // not expose ERP Center/My Work links that management HTTP denies.
         return $user->roles()
             ->where('roles.is_active', true)
             ->where('roles.scope', 'global')
+            ->whereNotIn('roles.code', ['B2B_DRIVER', 'B2C_DRIVER', 'VAN_OPERATOR'])
             ->exists();
     }
 
@@ -899,6 +916,75 @@ class AdminNavigation
         }
 
         return $this->routeItemOpen('order_operations', 'admin.order_management', 'admin.operations.orders.index');
+    }
+
+    /**
+     * P197: canonical pending customer-service concessions, not a new ledger.
+     * The Sales Sidebar projects the same three-permission intersection
+     * for one store/channel as the Orders controller's pending review mode.
+     *
+     * @return array{key:string,label:string,route:string,params:array<string,string>,permission:?string}|null
+     */
+    private function commercialExceptionApprovalsItem(User $user, bool $hasWholesaleChannel): ?array
+    {
+        if (! $user->is_active || ! Route::has('admin.operations.orders.index')) {
+            return null;
+        }
+
+        // Sidebar rendering is read-only: creating the Wholesale principal here
+        // would recreate a store after a full data reset. Reuse the already
+        // memoized Super Admin decision instead of running the tenant-scope
+        // role probe once for each of the three required permissions.
+        $scope = $this->isSuperAdmin($user) ? null : app(OperationalTenantScope::class);
+        $permissions = ['orders.view', 'orders.customer_service_discount', 'orders.approve'];
+        foreach (['b2b', 'b2c'] as $channel) {
+            if ($channel === 'b2b' && ! $hasWholesaleChannel) {
+                continue;
+            }
+
+            if ($scope === null) {
+                // OperationalTenantScope authorizes active Super Admins for
+                // existing active stores; selecting one must not create it.
+                $eligible = DB::table('stores')
+                    ->join('store_types', 'store_types.id', '=', 'stores.store_type_id')
+                    ->where('stores.is_active', true)
+                    ->where('store_types.code', strtoupper($channel))
+                    ->orderBy('stores.id')
+                    ->limit(1)
+                    ->pluck('stores.id')
+                    ->map(static fn ($id): int => (int) $id)
+                    ->all();
+            } else {
+                $eligible = null;
+                foreach ($permissions as $permission) {
+                    $stores = $scope->allowedStoreIds($user, $permission, $channel);
+                    $eligible = $eligible === null ? $stores : array_values(array_intersect($eligible, $stores));
+                    if ($eligible === []) {
+                        break;
+                    }
+                }
+            }
+            if ($eligible === []) {
+                continue;
+            }
+
+            sort($eligible, SORT_NUMERIC);
+
+            return [
+                'key' => 'commercial_exception_approvals',
+                'label' => 'admin.commercial_exception_approvals',
+                'route' => 'admin.operations.orders.index',
+                'params' => [
+                    'channel' => $channel,
+                    'store_id' => (string) $eligible[0],
+                    'discount_view' => 'pending',
+                    'action_required' => '0',
+                ],
+                'permission' => null,
+            ];
+        }
+
+        return null;
     }
 
     /** @return array{key:string,label:string,route:string,params:array<string,string>,permission:?string}|null */

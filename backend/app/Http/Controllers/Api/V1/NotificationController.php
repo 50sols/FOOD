@@ -20,7 +20,8 @@ final class NotificationController extends Controller
         $locale = $this->locale($request, $user);
 
         $page = $audience->apply(Notification::query(), $user)
-            ->latest('published_at')
+            ->orderByDesc('published_at')
+            ->orderByDesc('id')
             ->paginate(min(max((int) $request->query('per_page', 20), 1), 100));
 
         $items = [];

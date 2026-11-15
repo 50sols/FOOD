@@ -546,6 +546,15 @@ async function runCore({ github, context, core, nowMs }) {
     const labelNames = issue.labels.map(label => typeof label === 'string' ? label : label.name).filter(Boolean);
     const linkedPr = prByIssue.get(issue.number) || null;
 
+    // A human/review gate is an explicit Issue decision, not an expiring
+    // worker lease. Preserve it before stale-green/failed CI, branch probes,
+    // comment parsing, and status replacement can manufacture a handoff.
+    // Only an authorized actor removing the gate can re-enable the watchdog.
+    if (labelNames.some(label => label.startsWith('gate:'))) {
+      core.info(`#${issue.number}: explicit review/human gate; skip watchdog reconciliation`);
+      continue;
+    }
+
     // Read only the newest comment page. Worker state is append-only and the
     // newest state marker wins; old history does not need to be paginated.
     const comments = await latestIssueComments(github, owner, repo, issue);
