@@ -24,3 +24,15 @@ P277 asks for **route/trip closeout and settlement**, which cannot be proven usi
 - Pending interactive runtime checks: AR/EN, desktop/tablet/mobile 320–1280px and screen reader/keyboard. No release, main or production claim.
 
 **Acceptance status:** bounded financial read-side implemented; full operational trip closeout **NOT YET COMPLETE**. Keep #2607 open.
+
+## 2026-11-15 — literal search regression on original P277 draft (unmerged)
+
+The existing finance support search input `ops_q` was passed as a raw SQL `LIKE` pattern in four authorized read tabs: wallets, collections, remittances and the pending closeout review. A typed percent (`%`) or underscore (`_`) therefore broadened matches instead of searching for those characters. This is a **query correctness and scope-bound results problem**, not evidence of SQL injection or of a new authorization bypass.
+
+The original issue-owned `FieldOperationsFinanceService` now reuses `App\\Enterprise\\Search\\LiteralLikePattern::contains` and bound `LIKE ? ESCAPE '!'` for all 20 fixed-column predicates. The escape marker encodes `!`, `%`, `_`, preserving a typed backslash. The query remains grouped beneath the existing `whereIn(collection_accounts.store_id, authorizedStoreIds)`; numeric account/transaction ID search, status predicates, pagination and result order are unchanged. No money, remittance, visit or ledger mutation has been added.
+
+The original `VanFinanceSupportTest` includes a real `RefreshDatabase` seeded fixture with distinct percent/underscore/exclamation/backslash tokens, authorized B2B stores, wildcard decoys and a separate foreign B2B store. All four read tabs must return only the exact in-scope match and preserve collection, remittance and custody-ledger counts; the authenticated Super Admin closeout GET must filter the decoy. This does not claim that a Super Admin is forbidden from seeing a legitimate foreign store; the store-bound test uses explicit authorized store IDs.
+
+**Affected surfaces:** Backend service + existing Dashboard GET only. **Customer:** no API/Flutter change. **Driver:** no API/Flutter change. **Van:** no API/Flutter change; no new trip settlement endpoint. Existing AR/EN markup, authorization and B2B=VAN/B2C=DRIVER contracts are unchanged.
+
+**Required next gates:** final-head Pint/PHPStan/security/AR-EN, real Laravel regression, MySQL/Redis package/recovery, Repository Policy, V2 Isolation and terminal Required CI; risk HIGH (financial/scoped reads) requires a line-by-line COMMENTED technical audit. All results must be collected against the latest exact original PR head. No merge or issue closure is permitted while the full P277 trip provenance, stock, remittance maker/checker and Van parity remain unimplemented.
