@@ -7176,6 +7176,13 @@ class _WholesaleCheckoutDesignScreenState
               couponData['code']?.toString().trim().isNotEmpty == true
           ? couponData['code'].toString().trim().toUpperCase()
           : code;
+      // A quote for another promotion must not replace the coupon explicitly
+      // requested by the buyer or enable credit using an unrelated discount.
+      if (confirmedCode != code) {
+        throw const WholesaleCommerceException(
+          'Coupon quote did not confirm the requested coupon.',
+        );
+      }
       coupon.value = coupon.value.copyWith(
         text: confirmedCode,
         selection: TextSelection.collapsed(offset: confirmedCode.length),

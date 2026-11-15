@@ -3146,6 +3146,85 @@ void main() {
     );
   }
 
+  // MOB-C03: an asynchronous server quote may not silently switch the
+  // coupon a customer requested to a different confirmed promotion.
+  for (final language in <String>['ar', 'en']) {
+    testWidgets(
+      'MOB-C03 rejects mismatched server-confirmed coupon $language',
+      (tester) async {
+        tester.view.physicalSize = const Size(900, 1900);
+        tester.view.devicePixelRatio = 1;
+        addTearDown(() {
+          tester.view.resetPhysicalSize();
+          tester.view.resetDevicePixelRatio();
+        });
+        final commerce = _QuoteC13WholesaleCommerceApi(cartValue: {
+          'store_id': 7,
+          'currency': 'EGP',
+          'minimum_order_egp': 0.0,
+          'has_unavailable_items': false,
+          'quote': {'grand_total': 150.0, 'currency': 'EGP'},
+          'items': [
+            {
+              'id': 21,
+              'product': {'id': 201, 'name': 'Coupon Item', 'sku': 'CP-201'},
+              'quantity': 1.0,
+              'unit_price_snapshot': 150.0,
+              'line_total': 150.0,
+              'is_available': true,
+            }
+          ],
+        });
+        final deferredQuote = Completer<Object?>();
+        commerce.deferredQuote = deferredQuote;
+        final storefront = _C13CheckoutStorefrontApi({
+          'store_id': 7,
+          'minimum_order_egp': 0.0,
+          'addresses': [
+            {'id': 1, 'label': 'Warehouse', 'line1': '1 Street'},
+          ],
+          'payment_methods': ['account_credit'],
+          'purchasing_power': 100.0,
+          'currency': 'EGP',
+        });
+        await tester.pumpWidget(FoodexCustomerApp(
+          session: b2b,
+          locale: Locale(language),
+          initialRoute: '/b2b/checkout?store_id=7',
+          storefrontApi: storefront,
+          wholesaleCommerceApi: commerce,
+        ));
+        await _pumpCustomerFrames(tester);
+        final couponField = find.byKey(const ValueKey('b2b-checkout-coupon'));
+        await tester.ensureVisible(couponField);
+        await tester.enterText(couponField, 'SAVE');
+        await tester.pump();
+        final apply = find.byKey(const ValueKey('b2b-checkout-apply-coupon'));
+        await tester.ensureVisible(apply);
+        await tester.tap(apply);
+        await tester.pump();
+        expect(commerce.quoteCalls, 1);
+        deferredQuote.complete({
+          'grand_total': 50.0,
+          'currency': 'EGP',
+          'coupon': {'code': 'OTHER'},
+        });
+        await _pumpCustomerFrames(tester);
+
+        expect(find.byKey(const ValueKey('b2b-checkout-coupon-applied')),
+            findsNothing);
+        expect(find.byKey(const ValueKey('b2b-checkout-insufficient-credit')),
+            findsOneWidget);
+        final submit = tester.widget<InkWell>(find.descendant(
+          of: find.byKey(const ValueKey('b2b-checkout-submit')),
+          matching: find.byType(InkWell),
+        ));
+        expect(submit.onTap, isNull);
+        expect(commerce.checkoutCalls, 0);
+      },
+    );
+  }
+
   // MOB-C03: a confirmed coupon quote must not outlive a cart refresh.
   for (final language in <String>['ar', 'en']) {
     testWidgets(
