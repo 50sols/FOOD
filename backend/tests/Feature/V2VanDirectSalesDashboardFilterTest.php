@@ -149,6 +149,22 @@ final class V2VanDirectSalesDashboardFilterTest extends TestCase
             'dashboard',
         );
 
+        $foreignStoreId = (int) DB::table('stores')->insertGetId([
+            'store_type_id' => DB::table('store_types')->where('code', 'B2B')->value('id'),
+            'code' => 'P275-FOREIGN-DETAIL',
+            'name' => 'P275 Foreign Detail Wholesale',
+            'is_active' => true,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        $foreignVanOrderId = $this->order(
+            $foreignStoreId,
+            (int) $customer->legacy_customer_id,
+            (int) $customer->getKey(),
+            'P275-FOREIGN-VAN-DETAIL-2003',
+            'van',
+        );
+
         $actor = $this->superAdmin('p275-origin-detail@example.test');
 
         // Selecting a genuine Van-created order through its filtered grid
@@ -160,6 +176,12 @@ final class V2VanDirectSalesDashboardFilterTest extends TestCase
         // A crafted detail ID must not break the Van-only source boundary.
         $this->actingAs($actor)
             ->get("/admin/operations/orders?channel=b2b&origin=van&action_required=0&order={$dashboardOrderId}")
+            ->assertNotFound();
+
+        // Even a genuine Van-origin order must stay within the actor's
+        // existing effective Wholesale store scope.
+        $this->actingAs($actor)
+            ->get("/admin/operations/orders?channel=b2b&origin=van&action_required=0&order={$foreignVanOrderId}")
             ->assertNotFound();
 
         // The same order is still reachable in the ordinary authorized B2B
@@ -179,7 +201,7 @@ final class V2VanDirectSalesDashboardFilterTest extends TestCase
             ->get("/admin/operations/orders?channel=b2b&origin=van&order={$vanOrderId}")
             ->assertForbidden();
 
-        $this->assertDatabaseCount('orders', 2);
+        $this->assertDatabaseCount('orders', 3);
     }
 
     private function retailStore(string $code): int
