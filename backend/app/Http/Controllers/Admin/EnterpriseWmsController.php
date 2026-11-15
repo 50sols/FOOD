@@ -44,6 +44,27 @@ final class EnterpriseWmsController extends Controller
         'reports',
     ];
 
+    /**
+     * Warehouse transfers are warehouse-to-warehouse only. Unrecognized Van
+     * identity/target metadata must not silently pass as a successful Van load.
+     * The real physical custody lifecycle is a separate P258 acceptance gate.
+     *
+     * @var array<string, array<int, string>>
+     */
+    private const UNSUPPORTED_VAN_TRANSFER_FIELDS = [
+        'van_id' => ['missing'],
+        'source_van_id' => ['missing'],
+        'target_van_id' => ['missing'],
+        'destination_van_id' => ['missing'],
+        'van_assignment_id' => ['missing'],
+        'van_trip_id' => ['missing'],
+        'van_load_id' => ['missing'],
+        'source_type' => ['missing'],
+        'target_type' => ['missing'],
+        'destination_type' => ['missing'],
+        'metadata' => ['missing'],
+    ];
+
     public function __construct(
         private readonly WarehouseScope $warehouseScope,
         private readonly WarehouseTransferService $transfers,
@@ -231,7 +252,7 @@ final class EnterpriseWmsController extends Controller
         // P258: a warehouse-to-warehouse transfer cannot load a van.
         // Reject a forged van target until the dedicated van-stock lifecycle exists.
         $data = $request->validate([
-            'van_id' => ['missing'],
+            ...self::UNSUPPORTED_VAN_TRANSFER_FIELDS,
             'store_id' => ['required', 'integer', 'min:1'],
             'source_warehouse_id' => ['required', 'integer', 'min:1'],
             'target_warehouse_id' => ['required', 'integer', 'different:source_warehouse_id'],
@@ -258,7 +279,7 @@ final class EnterpriseWmsController extends Controller
         $actor = $this->actor($request);
         // P258: normal warehouse transfer transitions never authorize van stock loading.
         $data = $request->validate([
-            'van_id' => ['missing'],
+            ...self::UNSUPPORTED_VAN_TRANSFER_FIELDS,
             'store_id' => ['required', 'integer', 'min:1'],
         ]);
         $this->assertStore($actor, (int) $data['store_id'], 'inventory.manage');
@@ -274,7 +295,7 @@ final class EnterpriseWmsController extends Controller
         $actor = $this->actor($request);
         // P258: normal warehouse transfer transitions never authorize van stock loading.
         $data = $request->validate([
-            'van_id' => ['missing'],
+            ...self::UNSUPPORTED_VAN_TRANSFER_FIELDS,
             'store_id' => ['required', 'integer', 'min:1'],
         ]);
         $this->assertStore($actor, (int) $data['store_id'], 'inventory.manage');

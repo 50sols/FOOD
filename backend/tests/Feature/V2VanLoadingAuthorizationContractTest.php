@@ -8,6 +8,7 @@ use App\Models\User;
 use App\Services\WholesalePrincipal;
 use Database\Seeders\CoreReferenceSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Routing\Middleware\ThrottleRequests;
 use Illuminate\Support\Facades\DB;
 use Tests\Feature\Enterprise\Concerns\EnablesEnterpriseWms;
 use Tests\TestCase;
@@ -24,6 +25,9 @@ final class V2VanLoadingAuthorizationContractTest extends TestCase
     protected function setUp(): void
     {
         parent::setUp();
+        // The adversarial matrix exercises many repeated HTTP denials; keep
+        // authentication and RBAC active, but isolate unrelated rate limiting.
+        $this->withoutMiddleware(ThrottleRequests::class);
         $this->seed(CoreReferenceSeeder::class);
 
         // Test-only readiness grant for the actual module version.
@@ -50,30 +54,48 @@ final class V2VanLoadingAuthorizationContractTest extends TestCase
             'request_key' => 'P258-NOT-A-VAN-LOAD',
         ];
 
-        // Even an explicit null/zero must not turn an ordinary WMS transfer
-        // into a purported Van load. Reject the supplied field, not only
-        // positive integer IDs, across both supported user locales.
+        // These endpoints authorize warehouse transfers, not Van loading.
+        // Reject explicit IDs, alternate target/source identifiers, Van trip
+        // metadata and nested aliases before any warehouse mutation or audit.
+        $forgedVanTargets = [
+            ['van_id' => 987654],
+            ['van_id' => null],
+            ['van_id' => 0],
+            ['van_id' => 'forged-van'],
+            ['source_van_id' => 987654],
+            ['target_van_id' => 987654],
+            ['destination_van_id' => 987654],
+            ['van_assignment_id' => 987654],
+            ['van_trip_id' => 987654],
+            ['van_load_id' => 987654],
+            ['source_type' => 'van'],
+            ['target_type' => 'van'],
+            ['destination_type' => 'van'],
+            ['metadata' => ['van_id' => 987654]],
+            ['metadata' => ['target_van_id' => null]],
+        ];
         foreach (['en', 'ar'] as $locale) {
             $actor->forceFill(['locale' => $locale])->save();
             app()->setLocale($locale);
 
-            foreach ([987654, null, 0, 'forged-van'] as $forgedVanTarget) {
+            foreach ($forgedVanTargets as $vanPayload) {
+                $rejectedField = array_key_first($vanPayload);
                 $this->actingAs($actor->fresh())
                     ->post(route('admin.erp.wms.transfers.store'), [
                         ...$payload,
-                        'van_id' => $forgedVanTarget,
+                        ...$vanPayload,
                     ])
                     ->assertRedirect()
-                    ->assertSessionHasErrors(['van_id']);
+                    ->assertSessionHasErrors([$rejectedField]);
 
                 foreach (['dispatch', 'receive'] as $transition) {
                     $this->actingAs($actor->fresh())
                         ->post(route('admin.erp.wms.transfers.'.$transition, 999999), [
                             'store_id' => $storeId,
-                            'van_id' => $forgedVanTarget,
+                            ...$vanPayload,
                         ])
                         ->assertRedirect()
-                        ->assertSessionHasErrors(['van_id']);
+                        ->assertSessionHasErrors([$rejectedField]);
                 }
             }
         }
