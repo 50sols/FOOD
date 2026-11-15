@@ -762,10 +762,9 @@ class B2bAdminWorkspaceTest extends TestCase
             ->postJson('/admin/b2b/orders', ['warehouse_id' => $foreignWarehouse])
             ->assertForbidden();
 
-        $this->withoutMiddleware(\Illuminate\Auth\Middleware\Authenticate::class);
         $this->app['auth']->guard('web')->logout();
-        $this->postJson('/admin/b2b/orders', ['warehouse_id' => $foreignWarehouse])
-            ->assertRedirect();
+        $guestResponse = $this->postJson('/admin/b2b/orders', ['warehouse_id' => $foreignWarehouse]);
+        $this->assertContains($guestResponse->getStatusCode(), [302, 401]);
 
         foreach ($tables as $table) {
             $this->assertSame($before[$table], DB::table($table)->count(), $table.' must remain unchanged after rejected warehouse orders.');
