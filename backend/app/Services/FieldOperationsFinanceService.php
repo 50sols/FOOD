@@ -130,7 +130,7 @@ final class FieldOperationsFinanceService
             ->whereIn('collection_accounts.store_id', $storeIds)
             ->when($q !== '', function ($query) use ($q): void {
                 $literal = LiteralLikePattern::contains($q);
-                $query->where(function ($scope) use ($q, $literal): void {
+                $query->where(function ($scope) use ($literal): void {
                     $scope->whereRaw("vans.code LIKE ? ESCAPE '!'", [$literal])
                         ->orWhereRaw("vans.plate_number LIKE ? ESCAPE '!'", [$literal])
                         ->orWhereRaw("stores.name LIKE ? ESCAPE '!'", [$literal])
