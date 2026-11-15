@@ -352,6 +352,17 @@ final class B2bAccountLedgerContractTest extends TestCase
         }
         $this->assertSame(1, DB::table('customer_account_ledger_entries')->count());
 
+        $this->app->setLocale('ar');
+        try {
+            $ledger->settleInvoice($customer, $other, 30, 'EGP', $user, null, null, $key);
+            $this->fail('The same key must not switch invoices in Arabic either.');
+        } catch (ValidationException $e) {
+            $this->assertSame(__('invoice_errors.settlement_request_id_conflict'), $e->errors()['settlement_request_id'][0]);
+            $this->assertStringContainsString('مُعرّف', $e->errors()['settlement_request_id'][0]);
+        }
+        $this->app->setLocale('en');
+        $this->assertSame(1, DB::table('customer_account_ledger_entries')->count());
+
         $fullKey = 'dd672165-7a5c-41e2-b131-287ee7920ba7';
         $full = $ledger->settleInvoice($customer, $invoice, 50, 'EGP', $user, 'RETRY-B', null, $fullKey);
         $this->assertSame(0.0, $full['outstanding_after']);

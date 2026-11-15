@@ -234,7 +234,7 @@ final class B2bAccountLedgerService
     ): array {
         if ($settlementRequestId !== null && ! Str::isUuid($settlementRequestId)) {
             throw ValidationException::withMessages([
-                'settlement_request_id' => ['A valid settlement request ID is required.'],
+                'settlement_request_id' => [__('invoice_errors.settlement_request_id_invalid')],
             ]);
         }
 
@@ -265,7 +265,7 @@ final class B2bAccountLedgerService
                         || round((float) $existing->debit, 3) !== 0.0
                         || strtoupper((string) $existing->currency) !== strtoupper($currency)) {
                         throw ValidationException::withMessages([
-                            'settlement_request_id' => ['Settlement request ID was used for a different transaction.'],
+                            'settlement_request_id' => [__('invoice_errors.settlement_request_id_conflict')],
                         ]);
                     }
 

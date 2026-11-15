@@ -4,7 +4,7 @@ Linked parent #2620, master #2503. Original P290 PR #3316 already merged into Fo
 
 Authority: existing invoice GET/POST and Customer360 scope/`finance.manage` checks unchanged. Channel B2B only. No access by B2C retail, cross-store, roleless, disabled module beyond existing effective checks.
 
-Request identity: fresh server-generated UUID embedded in each rendered invoice/Customer360 settle form; Customer360 JS copies distinct row UUID to modal when invoice selected. Browser/network resend reuses request identity, while a fresh page has a fresh one.
+Request identity: fresh server-generated UUID embedded in each rendered invoice/Customer360 settle form; Customer360 modal receives a server-generated UUID at render; opening an invoice may replace it with browser crypto.randomUUID where supported, preserving it for a duplicate form submit. The original invoice table row is not changed. Browser/network resend reuses request identity, while a fresh page has a fresh one.
 
 Storage: nullable uuid `customer_account_ledger_entries.settlement_request_id` and composite unique with B2B customer. Existing rows and other ledger operations remain null-compatible. Under invoice row lock, a matching identity is read-only; verify exact invoice, store, source, amount/currency and customer before returning original ledger entry. Wrong-body reuse throws validation, no ledger write. No duplicate audit `invoice.settled` on replay. The database constraint provides final concurrent different-invoice protection; it may return DB constraint failure instead of 422 in simultaneous malicious races, but will never create two ledger records.
 
