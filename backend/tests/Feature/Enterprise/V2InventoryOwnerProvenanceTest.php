@@ -94,9 +94,39 @@ final class V2InventoryOwnerProvenanceTest extends TestCase
                 'evidence_reference' => 'TEST-TITLE-001',
                 'certified_at' => now(),
             ]);
-        $verified = $service->snapshot($actor, $stock['inventory_id']);
-        $this->assertSame('CERTIFIED', $verified['state']);
-        $this->assertTrue($verified['certified']);
+        // A self-described document and a second user are NOT independent
+        // verification of legal ownership. This must remain fail-closed.
+        $untrusted = $service->snapshot($actor, $stock['inventory_id']);
+        $this->assertSame('UNVERIFIED', $untrusted['state']);
+        $this->assertFalse($untrusted['certified']);
+        $this->assertFalse($untrusted['positions'][0]['certified']);
+    }
+
+    public function test_supplier_title_cannot_be_certified_from_forged_evidence_and_distinct_checker_ids(): void
+    {
+        $this->seed(CoreReferenceSeeder::class);
+        $stock = $this->stock('FORGED-TITLE');
+        $actor = $this->inventoryActor($stock['store_id']);
+        $checker = User::query()->create([
+            'name' => 'Separate But Unverified Checker',
+            'email' => 'checker-unverified@example.test',
+            'password' => 'password',
+            'is_active' => true,
+        ]);
+        $supplierId = $this->supplier($stock['store_id']);
+
+        // All database fields can look internally consistent while evidence
+        // is nothing more than attacker-controlled free-text metadata.
+        $this->position($stock['inventory_id'], 'SUPPLIER', $supplierId, 10, 3, $actor->id, $checker->id, true);
+        $snapshot = app(InventoryOwnerProvenanceReadService::class)->snapshot($actor, $stock['inventory_id']);
+
+        $this->assertSame('UNVERIFIED', $snapshot['state']);
+        $this->assertFalse($snapshot['certified']);
+        $this->assertSame('SUPPLIER', $snapshot['positions'][0]['owner_kind']);
+        $this->assertSame($supplierId, $snapshot['positions'][0]['supplier_id']);
+        $this->assertFalse($snapshot['positions'][0]['certified']);
+        $this->assertSame('10.000', $snapshot['quantity']);
+        $this->assertSame('3.000', $snapshot['reserved_quantity']);
     }
 
     public function test_mixed_supplier_and_foodex_positions_are_stale_after_any_unaccounted_stock_change(): void
@@ -116,9 +146,12 @@ final class V2InventoryOwnerProvenanceTest extends TestCase
 
         $service = app(InventoryOwnerProvenanceReadService::class);
         $snapshot = $service->snapshot($actor, $stock['inventory_id']);
-        $this->assertSame('CERTIFIED', $snapshot['state']);
+        $this->assertSame('UNVERIFIED', $snapshot['state']);
+        $this->assertFalse($snapshot['certified']);
         $this->assertSame(2, count($snapshot['positions']));
         $this->assertSame($supplierId, $snapshot['positions'][1]['supplier_id']);
+        $this->assertFalse($snapshot['positions'][0]['certified']);
+        $this->assertFalse($snapshot['positions'][1]['certified']);
 
         DB::table('inventories')->where('id', $stock['inventory_id'])
             ->update(['quantity' => 11, 'updated_at' => now()->addMinute()]);
