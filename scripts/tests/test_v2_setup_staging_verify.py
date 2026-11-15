@@ -37,6 +37,9 @@ class V2SetupStagingVerifierTest(unittest.TestCase):
         with zipfile.ZipFile(self.archive, "w", compression=zipfile.ZIP_DEFLATED) as archive:
             for name, payload in all_files.items():
                 member = zipfile.ZipInfo(name)
+                # ZipInfo normalizes backslashes on Windows: preserve hostile
+                # names to test the same on-disk member across hosts.
+                member.filename = name
                 member.external_attr = (mode.get(name, stat.S_IFREG | 0o644)
                                         if mode else stat.S_IFREG | 0o644) << 16
                 archive.writestr(member, payload)
@@ -198,6 +201,28 @@ class V2SetupStagingVerifierTest(unittest.TestCase):
                 with zipfile.ZipFile(self.archive) as archive:
                     self.assertIsNone(archive.testzip())
                 with self.assertRaisesRegex(SetupZipError, "Conflicting local/central Setup ZIP " + reason):
+                    self.verify()
+
+    def test_reserved_general_purpose_flags_fail_even_when_zipfile_crc_passes(self) -> None:
+        # Matching CENTRAL and LOCAL flags can still be unportable: Python
+        # ignores these unsupported bits, but shared-host unzip tools need not.
+        for unsupported_bit in (0x0010, 0x2000):
+            with self.subTest(unsupported_bit=hex(unsupported_bit)):
+                self.pack()
+                payload = bytearray(self.archive.read_bytes())
+                local = payload.index(b"PK\x03\x04")
+                central = payload.index(b"PK\x01\x02")
+                for flag_offset in (local + 6, central + 8):
+                    flags = int.from_bytes(payload[flag_offset:flag_offset + 2], "little")
+                    payload[flag_offset:flag_offset + 2] = (
+                        flags | unsupported_bit
+                    ).to_bytes(2, "little")
+                self.archive.write_bytes(payload)
+                with zipfile.ZipFile(self.archive) as archive:
+                    self.assertIsNone(archive.testzip())
+                with self.assertRaisesRegex(
+                    SetupZipError, "Unsupported Setup ZIP general-purpose flags"
+                ):
                     self.verify()
 
     def test_crc_valid_conflicting_local_header_crc_or_sizes_fail_closed(self) -> None:

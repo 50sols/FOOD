@@ -178,6 +178,12 @@ def _member_target(member: zipfile.ZipInfo) -> tuple[str, str, bool]:
     _require(file_type in ((0, stat.S_IFDIR) if is_directory else (0, stat.S_IFREG)),
              f"Non-regular Setup ZIP member: {name!r}")
     _require(member.flag_bits & 0x1 == 0, f"Encrypted Setup ZIP entry: {name!r}")
+    # Restrict general-purpose ZIP flags to portable, explicitly supported features.
+    # ZipFile.testzip() ignores reserved/encrypted-directory flags that some
+    # cPanel/shared-host extractors may interpret differently during extraction.
+    supported_flags = 0x080E  # DEFLATE levels, data descriptor, UTF-8 filenames
+    _require(member.flag_bits & ~supported_flags == 0,
+             f"Unsupported Setup ZIP general-purpose flags: {name!r}")
     # The web installer must be extractable by ordinary cPanel/shared-host ZIP
     # handlers. Python can read BZIP2/LZMA entries that typical hosting unzip
     # tools may reject, so do not certify a nonportable one-ZIP installer.
