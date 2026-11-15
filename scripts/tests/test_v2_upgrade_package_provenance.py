@@ -154,6 +154,80 @@ class V2G006PackageProvenanceTest(unittest.TestCase):
         with self.assertRaisesRegex(PackageContractError, "Unsupported ZIP compression"):
             self.verify_first()
 
+    def _mutate_local_metadata_and_refresh_digest(
+        self, offset: int, width: int, *, xor: int = 1,
+    ) -> None:
+        from hashlib import sha256
+
+        archive_path = self.first / "FOODEX-Update.zip"
+        payload = bytearray(archive_path.read_bytes())
+        local = payload.index(b"PK\\x03\\x04")
+        value = int.from_bytes(payload[local + offset:local + offset + width], "little")
+        payload[local + offset:local + offset + width] = (value ^ xor).to_bytes(width, "little")
+        archive_path.write_bytes(payload)
+        digest = sha256(payload).hexdigest()
+        manifest_path = self.first / "FOODEX-Update.json"
+        manifest = json.loads(manifest_path.read_text())
+        manifest["sha256"] = digest
+        manifest["dashboard_fields"]["sha256"] = digest
+        manifest_path.write_text(json.dumps(manifest))
+        (self.first / "FOODEX-Update.sha256.txt").write_text(
+            f"{digest}  FOODEX-Update.zip\\n",
+        )
+
+    def test_checksum_valid_local_header_conflicts_reject_before_extraction(self) -> None:
+        # Unlike other unzip implementations, Python CRC uses CENTRAL
+        # metadata. These genuine malformed ZIPs still pass ZipFile.testzip().
+        for offset, width, reason in (
+            (6, 2, "flags"),
+            (8, 2, "method"),
+            (14, 4, "CRC"),
+            (18, 4, "sizes"),
+            (22, 4, "sizes"),
+        ):
+            with self.subTest(offset=offset, reason=reason):
+                self.first = build_bundle(self.first)
+                self._mutate_local_metadata_and_refresh_digest(offset, width)
+                with zipfile.ZipFile(self.first / "FOODEX-Update.zip") as archive:
+                    self.assertIsNone(archive.testzip())
+                with self.assertRaisesRegex(PackageContractError, "Conflicting local ZIP " + reason):
+                    self.verify_first()
+
+    def test_local_only_unicode_path_alias_rejected_despite_valid_central_crc(self) -> None:
+        # Python trusts a harmless CENTRAL extra but another extractor may
+        # use a LOCAL 0x7075 Unicode Path alias for backend/.env.
+        from hashlib import sha256
+
+        alternate = b"\\x01" + (0).to_bytes(4, "little") + b"backend/.env"
+        extra = (0x7075).to_bytes(2, "little") + len(alternate).to_bytes(2, "little") + alternate
+        self.first = build_bundle(
+            self.first,
+            entries=[("VERSION", b"1.0.125", False), (RUNTIME, b"<?php", False)],
+            runtime_extra=extra,
+        )
+        archive_path = self.first / "FOODEX-Update.zip"
+        payload = bytearray(archive_path.read_bytes())
+        central = payload.rfind(b"PK\\x01\\x02")  # Last entry is RUNTIME.
+        self.assertGreaterEqual(central, 0)
+        name_size = int.from_bytes(payload[central + 28:central + 30], "little")
+        field_offset = central + 46 + name_size
+        self.assertEqual(0x7075, int.from_bytes(payload[field_offset:field_offset + 2], "little"))
+        payload[field_offset:field_offset + 2] = (0x5455).to_bytes(2, "little")
+        archive_path.write_bytes(payload)
+        digest = sha256(payload).hexdigest()
+        manifest_path = self.first / "FOODEX-Update.json"
+        manifest = json.loads(manifest_path.read_text())
+        manifest["sha256"] = digest
+        manifest["dashboard_fields"]["sha256"] = digest
+        manifest_path.write_text(json.dumps(manifest))
+        (self.first / "FOODEX-Update.sha256.txt").write_text(
+            f"{digest}  FOODEX-Update.zip\\n",
+        )
+        with zipfile.ZipFile(archive_path) as archive:
+            self.assertIsNone(archive.testzip())
+        with self.assertRaisesRegex(PackageContractError, "Ambiguous local Unicode Path"):
+            self.verify_first()
+
     def test_metadata_sidecars_are_bounded_before_json_or_list_parsing(self) -> None:
         # Small real fixtures and tiny patched limits reproduce resource
         # exhaustion defenses without constructing dangerous large files.
