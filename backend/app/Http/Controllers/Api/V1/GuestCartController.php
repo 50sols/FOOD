@@ -381,7 +381,7 @@ class GuestCartController extends Controller
         $this->activeStoreForChannel($storeId, 'b2c');
         $target = $this->customerCart($customer, $storeId, 'b2c');
 
-        DB::transaction(function () use ($guestCart, $target, $storeId): void {
+        DB::transaction(function () use ($guestCart, $request, $target, $storeId): void {
             $guestItems = CartItem::query()
                 ->where('cart_id', $guestCart->getKey())
                 ->lockForUpdate()
