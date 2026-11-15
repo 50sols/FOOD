@@ -8,6 +8,7 @@ use App\Models\Invoice;
 use App\Models\Product;
 use App\Models\User;
 use App\Services\CustomerDomainResolver;
+use App\Services\ReportExportService;
 use Database\Seeders\CoreReferenceSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
@@ -344,6 +345,58 @@ class B2bFinanceTest extends TestCase
         [$pending] = $this->buyer('finance-pending@example.test', 'pending');
         Sanctum::actingAs($pending);
         $this->getJson('/api/v1/b2b/account-statement')->assertForbidden();
+    }
+
+    public function test_b2b_statement_export_renderer_failure_uses_selected_ar_en_and_keeps_data_intact(): void
+    {
+        $this->seed(CoreReferenceSeeder::class);
+        [$user] = $this->buyer('statement-export-error@example.test', 'active');
+        Sanctum::actingAs($user);
+
+        // Resolve the authorized account before taking snapshots. The real
+        // request is retained; only the final renderer is replaced.
+        $this->getJson('/api/v1/b2b/account-statement')->assertOk();
+        $this->app->instance(ReportExportService::class, new class
+        {
+            /** @param  array<string, mixed>  $report */
+            public function build(array $report, string $format, string $locale): array
+            {
+                throw new \RuntimeException('Private renderer path must never appear in the response.');
+            }
+        });
+
+        $arabic = 'تصدير المستند غير متاح مؤقتًا.';
+        $english = 'Document export is temporarily unavailable.';
+        foreach ([
+            ['ar', 'en', null, $arabic],
+            ['en', 'ar', null, $english],
+            ['ar', 'ar', 'en', $english],
+            ['en', 'en', 'ar', $arabic],
+            ['fr', 'ar', null, $english],
+        ] as [$savedLocale, $acceptLanguage, $explicitLocale, $expected]) {
+            $user->forceFill(['locale' => $savedLocale])->save();
+            Sanctum::actingAs($user->fresh());
+
+            $tables = ['orders', 'invoices', 'payments', 'stock_movements', 'audit_logs'];
+            $before = [];
+            foreach ($tables as $table) {
+                $before[$table] = DB::table($table)->count();
+            }
+
+            $url = '/api/v1/b2b/account-statement/export?format=xlsx';
+            if ($explicitLocale !== null) {
+                $url .= '&locale='.$explicitLocale;
+            }
+            $this->withHeader('Accept-Language', $acceptLanguage)
+                ->getJson($url)
+                ->assertStatus(503)
+                ->assertJsonPath('message', $expected)
+                ->assertDontSee('Private renderer path must never appear in the response.');
+
+            foreach ($tables as $table) {
+                $this->assertSame($before[$table], DB::table($table)->count(), $table.' mutated on failed export');
+            }
+        }
     }
 
     private function buyer(string $email, string $status): array
