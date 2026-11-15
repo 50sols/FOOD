@@ -40,7 +40,9 @@ final class FieldOperationsFinanceService
                 $record = (array) $row;
                 if ($tab === 'closeout') {
                     $record['review_state'] = (
-                        (int) $record['custody_entries'] === 0
+                        (string) ($record['status'] ?? '') !== 'active'
+                        || (string) ($record['van_status'] ?? '') !== 'active'
+                        || (int) $record['custody_entries'] === 0
                         || abs((float) $record['custody_balance']) > 0.0005
                         || (float) $record['pending_remittance'] > 0.0005
                         || (int) $record['awaiting_reconciliation'] > 0
@@ -149,6 +151,7 @@ final class FieldOperationsFinanceService
                 'collection_accounts.store_id',
                 'collection_accounts.currency',
                 'collection_accounts.status',
+                'vans.status as van_status',
                 'stores.name as store_name',
                 DB::raw('COALESCE(custody_totals.custody_balance, 0) as custody_balance'),
                 DB::raw('COALESCE(custody_totals.custody_entries, 0) as custody_entries'),
