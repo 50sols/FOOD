@@ -101,7 +101,12 @@ final class InventoryOwnerProvenanceReadService
                 && (int) $row->proposed_by !== (int) $row->certified_by
                 && $row->certified_at !== null
                 && trim((string) $row->evidence_type) !== ''
-                && trim((string) $row->evidence_reference) !== '';
+                && trim((string) $row->evidence_reference) !== ''
+                // These two columns are untrusted descriptions, not a link to
+                // an independently verified, immutable legal-title document.
+                // Until the canonical provenance authority is implemented,
+                // recorded maker/checker metadata must never certify title.
+                && self::hasAuthoritativeTitleProof();
 
             // The source balance must still be the balance that was certified.
             // Ordinary inventory writers do not yet update ownership partitions.
@@ -157,6 +162,16 @@ final class InventoryOwnerProvenanceReadService
             'certified' => $certified,
             'positions' => $positions,
         ];
+    }
+
+    /**
+     * Fail closed until P110 has a real verified, immutable legal-title source.
+     * The current read-model table has no such source FK or attestation gate;
+     * free-text evidence_type/evidence_reference can be written arbitrarily.
+     */
+    private static function hasAuthoritativeTitleProof(): bool
+    {
+        return false;
     }
 
     private static function millis(mixed $value): int
