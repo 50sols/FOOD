@@ -208,6 +208,15 @@ final class CollectionCustodyService
         }
 
         return DB::transaction(function () use ($account, $actor, $idempotencyKey, $amount, $currency, $method, $reference, $note): Remittance {
+            // Serialize new pending remittances for this account on a single
+            // authoritative row. Lock before checking pending reservations so
+            // simultaneous distinct keys cannot over-reserve the same custody.
+            $lockedAccount = CollectionAccount::query()
+                ->whereKey($account->getKey())
+                ->lockForUpdate()
+                ->firstOrFail();
+            $this->assertAccountCurrency($lockedAccount, $currency);
+
             $existing = Remittance::query()
                 ->where('idempotency_key', $idempotencyKey)
                 ->lockForUpdate()
@@ -235,7 +244,15 @@ final class CollectionCustodyService
                 return $existing;
             }
 
-            if ($amount > $this->availableToRemit($account)) {
+            // Existing exact-key replays may still retrieve their original
+            // receipt, but a disabled account cannot initiate a new remittance.
+            if ((string) $lockedAccount->status !== 'active') {
+                throw ValidationException::withMessages([
+                    'collection_account_id' => ['Inactive collection account cannot submit a new remittance.'],
+                ]);
+            }
+
+            if ($amount > $this->availableToRemit($lockedAccount)) {
                 throw ValidationException::withMessages(['amount' => ['Remittance exceeds available custody.']]);
             }
 

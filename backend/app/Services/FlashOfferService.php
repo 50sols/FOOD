@@ -49,7 +49,9 @@ final class FlashOfferService
         string $channel,
         string $idempotencyKey,
     ): FlashReservation {
-        if ($sellingQuantity <= 0) {
+        // NaN bypasses <= 0, while +INF can taint allocation and stock calculations.
+        // Reject non-finite values before idempotency replay lookup or DB writes.
+        if (! is_finite($sellingQuantity) || $sellingQuantity <= 0) {
             throw new HttpException(422, 'Selling quantity must be greater than zero.');
         }
 
@@ -89,7 +91,9 @@ final class FlashOfferService
             $this->assertReservable($offer, $channel, $userId);
 
             $baseQuantity = round($sellingQuantity * (float) $offerProduct->conversion_factor, 3);
-            if ($baseQuantity <= 0) {
+            // Even finite input may overflow to INF after selling-unit conversion.
+            // Reject before allocating inventory or persisting a reservation.
+            if (! is_finite($baseQuantity) || $baseQuantity <= 0) {
                 throw new HttpException(422, 'Resolved base quantity must be greater than zero.');
             }
 

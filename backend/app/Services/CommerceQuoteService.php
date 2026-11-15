@@ -63,7 +63,12 @@ final class CommerceQuoteService
             ->all();
 
         if ($strict && $items === []) {
-            abort(409, 'The cart is empty.');
+            $actorLocale = $user?->locale;
+            $locale = in_array($actorLocale, ['ar', 'en'], true)
+                ? $actorLocale
+                : request()->getPreferredLanguage(['ar', 'en']);
+
+            abort(409, __('checkout_errors.quote_cart_empty', [], $locale === 'ar' ? 'ar' : 'en'));
         }
 
         $smartOrderingPromotionId = $channel === 'b2c'

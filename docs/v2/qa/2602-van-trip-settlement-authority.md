@@ -158,3 +158,33 @@ Driver: no public API/Flutter changes. Van: no public API or Flutter payload
 change; invalid duplicate invoice lines now fail closed in the backend.
 No production, main or release artifacts. Full P272 trip-session, stock and
 maker/checker settlement acceptance remains open.
+
+## Serialized custody reservations and inactive-account denial (follow-up, NOT P272 closure)
+
+On the original #2602 issue branch, `CollectionCustodyService::submitRemittance`
+now obtains a database `FOR UPDATE` lock on the authoritative collection
+account **inside** the remittance transaction, before searching for an
+idempotent submission and calculating available custody. Separate pending
+remittances for the same account are thus serialized on MySQL/MariaDB rather
+than relying solely on an unlocked aggregate, which could accept competing
+requests that each observed the same available balance. The locked account's
+current currency is rechecked, and a non-active account cannot create a new
+pending remittance. An exact existing-key replay remains a read-only
+acknowledgement even if the account was subsequently deactivated.
+
+The focused `V2VanTripSettlementProvenanceTest` regression covers the
+inactive-account rejection with zero new remittance/ledger writes, valid
+idempotent replay, later reactivation, the entire remaining balance
+reservation, and rejection of additional over-reservation. This is a
+transactional source guard; the test does **not** simulate two independent
+MySQL concurrent connections and cannot alone certify concurrency under all
+production isolation settings. Exact-head full MySQL/Redis and Laravel CI
+must still be checked.
+
+Customer/Driver/Van UI and public payload contracts, Dashboard pages, AR/EN
+copy and dispatch remain unchanged; this is a service-level fail-closed
+financial invariant. Real P272 trip ID, stock provenance, independent
+maker/checker, trip settlement posting, reconciled returns and Van offline
+flows are still missing. Keep #3332 DRAFT and #2602 OPEN until the complete
+source acceptance and final-head checks succeed. No main, tags, releases or
+production changes.

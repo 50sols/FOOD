@@ -1434,7 +1434,10 @@ final class ProcurementCompletionManager
             'q' => ['nullable', 'string', 'max:120'],
             'status' => ['nullable', Rule::in(self::MATCH_STATUSES)],
         ])->validate();
-        $term = str_replace(['%', '_'], '', trim((string) ($validated['q'] ?? '')));
+        $term = trim((string) ($validated['q'] ?? ''));
+        // Preserve literal operator text; only the intentional trailing %
+        // anchors a prefix search against fixed, parameter-bound columns.
+        $prefix = str_replace(['!', '%', '_'], ['!!', '!%', '!_'], $term).'%';
 
         return DB::table('enterprise_purchase_invoices as invoices')
             ->leftJoin('enterprise_procurement_match_reviews as match_reviews', 'match_reviews.purchase_invoice_id', '=', 'invoices.id')
@@ -1447,10 +1450,10 @@ final class ProcurementCompletionManager
             )
             ->when(
                 $term !== '',
-                fn ($query) => $query->where(function ($search) use ($term): void {
-                    $search->where('invoices.invoice_number', 'like', $term.'%')
-                        ->orWhere('invoices.supplier_invoice_number', 'like', $term.'%')
-                        ->orWhere('invoices.supplier_code', 'like', $term.'%');
+                fn ($query) => $query->where(function ($search) use ($prefix): void {
+                    $search->whereRaw("invoices.invoice_number LIKE ? ESCAPE '!'", [$prefix])
+                        ->orWhereRaw("invoices.supplier_invoice_number LIKE ? ESCAPE '!'", [$prefix])
+                        ->orWhereRaw("invoices.supplier_code LIKE ? ESCAPE '!'", [$prefix]);
                 }),
             )
             ->select([

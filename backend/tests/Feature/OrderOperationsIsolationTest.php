@@ -780,6 +780,280 @@ class OrderOperationsIsolationTest extends TestCase
             ->assertSee('31.2357120');
     }
 
+    public function test_driver_reminder_409_is_localized_for_missing_assignment_and_inactive_app_user(): void
+    {
+        Queue::fake();
+
+        $store = $this->store('OPS-REMINDER-409-A');
+        $foreign = $this->store('OPS-REMINDER-409-B');
+        $admin = $this->storeAdmin($store, 'ops-reminder-409@example.test');
+        $buyer = app(B2cCustomerService::class)->create($store, ['name' => 'Reminder Failure Buyer']);
+        $otherBuyer = app(B2cCustomerService::class)->create($foreign, ['name' => 'Foreign Reminder Buyer']);
+        $order = $this->order(
+            $store,
+            (int) $buyer->legacy_customer_id,
+            (int) $buyer->id,
+            'OPS-REMINDER-409-001',
+        );
+        $foreignOrder = $this->order(
+            $foreign,
+            (int) $otherBuyer->legacy_customer_id,
+            (int) $otherBuyer->id,
+            'OPS-REMINDER-409-002',
+        );
+
+        $inactiveDriverUser = User::query()->create([
+            'name' => 'Inactive Reminder Driver',
+            'email' => 'ops-reminder-inactive-driver@example.test',
+            'password' => 'password',
+            'is_active' => false,
+        ]);
+        $driverId = (int) DB::table('drivers')->insertGetId([
+            'user_id' => $inactiveDriverUser->id,
+            'store_id' => $store,
+            'driver_type' => 'b2c',
+            'is_available' => false,
+            'is_active' => true,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        $assignedOrder = $this->order(
+            $store,
+            (int) $buyer->legacy_customer_id,
+            (int) $buyer->id,
+            'OPS-REMINDER-409-003',
+        );
+        DB::table('driver_assignments')->insert([
+            'driver_id' => $driverId,
+            'order_id' => $assignedOrder,
+            'store_id' => $store,
+            'assignment_type' => 'b2c',
+            'status' => 'assigned',
+            'assigned_at' => now(),
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $notificationsBefore = DB::table('notifications')->count();
+        $auditBefore = DB::table('audit_logs')
+            ->where('event', 'operations.order.driver_reminder_sent')->count();
+
+        foreach ([
+            'ar' => 'لا يوجد تعيين سائق نشط لهذا الطلب.',
+            'en' => 'Order has no active driver assignment.',
+        ] as $locale => $message) {
+            $admin->locale = $locale;
+            $admin->save();
+
+            $this->actingAs($admin)
+                ->postJson("/admin/operations/orders/{$order}/remind-driver")
+                ->assertStatus(409)
+                ->assertJsonPath('message', $message);
+
+            $this->actingAs($admin)
+                ->postJson("/admin/operations/orders/{$assignedOrder}/remind-driver")
+                ->assertStatus(409)
+                ->assertJsonPath(
+                    'message',
+                    $locale === 'ar'
+                        ? 'السائق المعيّن ليس لديه حساب تطبيق نشط.'
+                        : 'Assigned driver has no active app user.',
+                );
+
+            $this->actingAs($admin)
+                ->postJson("/admin/operations/orders/{$foreignOrder}/remind-driver")
+                ->assertNotFound();
+        }
+
+        $this->assertDatabaseHas('orders', ['id' => $order, 'status' => 'pending']);
+        $this->assertDatabaseMissing('driver_assignments', ['order_id' => $order]);
+        $this->assertDatabaseHas('driver_assignments', [
+            'order_id' => $assignedOrder,
+            'driver_id' => $driverId,
+            'status' => 'assigned',
+        ]);
+        $this->assertDatabaseHas('users', ['id' => $inactiveDriverUser->id, 'is_active' => false]);
+        $this->assertSame($notificationsBefore, DB::table('notifications')->count());
+        $this->assertSame(
+            $auditBefore,
+            DB::table('audit_logs')->where('event', 'operations.order.driver_reminder_sent')->count(),
+        );
+        Queue::assertNotPushed(DispatchPushNotification::class);
+    }
+
+    public function test_driver_reminder_never_notifies_wholesale_or_foreign_store_targets(): void
+    {
+        Queue::fake();
+
+        $retail = $this->store('OPS-REM-SCOPE-RETAIL');
+        $foreign = $this->store('OPS-REM-SCOPE-FOREIGN');
+        $admin = $this->storeAdmin($retail, 'ops-rem-scope-admin@example.test');
+        $customer = app(B2cCustomerService::class)->create($retail, ['name' => 'Scoped Reminder Buyer']);
+        $retailOrder = $this->order(
+            $retail,
+            (int) $customer->legacy_customer_id,
+            (int) $customer->id,
+            'OPS-REM-SCOPE-1001',
+        );
+
+        $foreignUser = User::query()->create([
+            'name' => 'Foreign Reminder Driver',
+            'email' => 'ops-rem-scope-foreign@example.test',
+            'password' => 'password',
+            'is_active' => true,
+        ]);
+        $foreignDriver = (int) DB::table('drivers')->insertGetId([
+            'user_id' => $foreignUser->id,
+            'store_id' => $foreign,
+            'driver_type' => 'b2c',
+            'is_available' => true,
+            'is_active' => true,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        $localUser = User::query()->create([
+            'name' => 'Local Reminder Driver',
+            'email' => 'ops-rem-scope-local@example.test',
+            'password' => 'password',
+            'is_active' => true,
+        ]);
+        $localDriver = (int) DB::table('drivers')->insertGetId([
+            'user_id' => $localUser->id,
+            'store_id' => $retail,
+            'driver_type' => 'b2b',
+            'is_available' => true,
+            'is_active' => true,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        $assignment = (int) DB::table('driver_assignments')->insertGetId([
+            'driver_id' => $foreignDriver,
+            'order_id' => $retailOrder,
+            'store_id' => $retail,
+            'assignment_type' => 'b2c',
+            'status' => 'assigned',
+            'assigned_at' => now(),
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $wholesaleStore = app(WholesalePrincipal::class)->storeId();
+        $wholesaleCustomer = app(B2bCustomerService::class)->create([
+            'name' => 'Historic Wholesale Reminder Buyer',
+        ]);
+        $wholesaleOrder = (int) DB::table('orders')->insertGetId([
+            'store_id' => $wholesaleStore,
+            'customer_id' => (int) $wholesaleCustomer->legacy_customer_id,
+            'b2b_customer_id' => (int) $wholesaleCustomer->getKey(),
+            'order_number' => 'OPS-REM-SCOPE-B2B',
+            'channel' => 'b2b',
+            'status' => 'pending',
+            'currency' => 'KWD',
+            'subtotal' => 10,
+            'discount_total' => 0,
+            'delivery_total' => 0,
+            'grand_total' => 10,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        $wholesaleDriverUser = User::query()->create([
+            'name' => 'Legacy Wholesale Driver',
+            'email' => 'ops-rem-scope-wholesale@example.test',
+            'password' => 'password',
+            'is_active' => true,
+        ]);
+        $wholesaleDriver = (int) DB::table('drivers')->insertGetId([
+            'user_id' => $wholesaleDriverUser->id,
+            'store_id' => $wholesaleStore,
+            'driver_type' => 'b2b',
+            'is_available' => true,
+            'is_active' => true,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        DB::table('driver_assignments')->insert([
+            'driver_id' => $wholesaleDriver,
+            'order_id' => $wholesaleOrder,
+            'store_id' => $wholesaleStore,
+            'assignment_type' => 'b2b',
+            'status' => 'assigned',
+            'assigned_at' => now(),
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        $super = User::query()->create([
+            'name' => 'Wholesale Reminder Platform Admin',
+            'email' => 'ops-rem-scope-platform@example.test',
+            'password' => 'password',
+            'locale' => 'en',
+            'is_active' => true,
+        ]);
+        $super->roles()->attach(Role::query()->where('code', 'SUPER_ADMIN')->firstOrFail());
+
+        $notificationsBefore = DB::table('notifications')->count();
+        $reminderAuditsBefore = DB::table('audit_logs')
+            ->where('event', 'operations.order.driver_reminder_sent')->count();
+
+        // A historical Wholesale assignment cannot enable B2B Driver delivery.
+        $this->actingAs($super)
+            ->postJson("/admin/operations/orders/{$wholesaleOrder}/remind-driver")
+            ->assertNotFound();
+
+        foreach ([
+            'ar' => 'تعيين السائق غير صالح لهذا الطلب بالتجزئة.',
+            'en' => 'Driver assignment is not valid for this Retail order.',
+        ] as $locale => $message) {
+            $admin->locale = $locale;
+            $admin->save();
+
+            // FK-valid assignment references a B2C Driver from another store.
+            $this->actingAs($admin)
+                ->postJson("/admin/operations/orders/{$retailOrder}/remind-driver")
+                ->assertStatus(409)->assertJsonPath('message', $message);
+
+            // A same-store profile marked B2B cannot serve Retail.
+            DB::table('driver_assignments')->where('id', $assignment)->update(['driver_id' => $localDriver]);
+            $this->actingAs($admin)
+                ->postJson("/admin/operations/orders/{$retailOrder}/remind-driver")
+                ->assertStatus(409)->assertJsonPath('message', $message);
+
+            // A correct-channel driver is still ineligible when deactivated.
+            DB::table('drivers')->where('id', $localDriver)
+                ->update(['driver_type' => 'b2c', 'is_active' => false]);
+            $this->actingAs($admin)
+                ->postJson("/admin/operations/orders/{$retailOrder}/remind-driver")
+                ->assertStatus(409)->assertJsonPath('message', $message);
+
+            DB::table('drivers')->where('id', $localDriver)->update(['is_active' => true]);
+            DB::table('driver_assignments')->where('id', $assignment)
+                ->update(['assignment_type' => 'b2b']);
+            $this->actingAs($admin)
+                ->postJson("/admin/operations/orders/{$retailOrder}/remind-driver")
+                ->assertStatus(409)->assertJsonPath('message', $message);
+
+            DB::table('driver_assignments')->where('id', $assignment)
+                ->update(['assignment_type' => 'b2c', 'store_id' => $foreign]);
+            $this->actingAs($admin)
+                ->postJson("/admin/operations/orders/{$retailOrder}/remind-driver")
+                ->assertStatus(409)->assertJsonPath('message', $message);
+
+            // Restore the forged profile/assignment fixtures for next locale.
+            DB::table('driver_assignments')->where('id', $assignment)
+                ->update(['driver_id' => $foreignDriver, 'store_id' => $retail]);
+            DB::table('drivers')->where('id', $localDriver)
+                ->update(['driver_type' => 'b2b', 'is_active' => true]);
+        }
+
+        $this->assertDatabaseHas('orders', ['id' => $retailOrder, 'channel' => 'b2c', 'status' => 'pending']);
+        $this->assertDatabaseHas('orders', ['id' => $wholesaleOrder, 'channel' => 'b2b', 'status' => 'pending']);
+        $this->assertSame($notificationsBefore, DB::table('notifications')->count());
+        $this->assertSame(
+            $reminderAuditsBefore,
+            DB::table('audit_logs')->where('event', 'operations.order.driver_reminder_sent')->count(),
+        );
+        Queue::assertNotPushed(DispatchPushNotification::class);
+    }
+
     public function test_driver_reminder_is_actionable_persisted_and_queued(): void
     {
         Queue::fake();

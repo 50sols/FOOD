@@ -55,6 +55,12 @@ final class PushDeviceController extends Controller
             'locale' => ['nullable', 'in:ar,en'],
         ]);
 
+        $locale = isset($data['locale'])
+            ? (string) $data['locale']
+            : ($user instanceof User && in_array($user->locale, ['ar', 'en'], true)
+                ? (string) $user->locale
+                : 'ar');
+
         // An authenticated app session must not register another app's device.
         // Guest Customer registration uses the separate anonymous route.
         if ($user instanceof User) {
@@ -65,7 +71,11 @@ final class PushDeviceController extends Controller
 
         if ($user === null) {
             abort_unless($data['app'] === 'customer', 401);
-            abort_if(empty($data['install_id']), 422, 'install_id is required for anonymous Customer devices.');
+            abort_if(
+                empty($data['install_id']),
+                422,
+                __('push_device_errors.anonymous_install_id_required', [], (string) ($data['locale'] ?? 'ar')),
+            );
         } elseif ($data['app'] === 'driver') {
             $driverChannel = strtolower((string) DB::table('drivers')
                 ->where('user_id', $user->id)
@@ -76,7 +86,7 @@ final class PushDeviceController extends Controller
                 && $user->tokenCan('app:driver')
                 && $user->hasRole('B2C_DRIVER')
                 && $user->hasPermission('deliveries.b2c.execute');
-            abort_unless($allowed, 403, 'Only authorized Retail (B2C) drivers may register Driver App push devices.');
+            abort_unless($allowed, 403, __('push_device_errors.driver_access_denied', [], $locale));
         } elseif ($data['app'] === 'van') {
             if (! $user->hasPermission('van.login')) {
                 $context = $this->vanRuntimeContexts->resolve($user);
@@ -84,7 +94,7 @@ final class PushDeviceController extends Controller
                     $context['selected'] !== null
                         && $this->vanRuntimeContexts->canUseRuntime($user, $context['selected']),
                     403,
-                    'Van App access is not enabled for this account.',
+                    __('push_device_errors.van_access_denied', [], $locale),
                 );
             }
         } else {
@@ -107,13 +117,9 @@ final class PushDeviceController extends Controller
                 ->value('store_types.code'));
             abort_unless(in_array($storeChannel, ['b2b', 'b2c'], true), 404);
             if ($targetChannel !== 'all') {
-                abort_unless($targetChannel === $storeChannel, 422);
+                abort_unless($targetChannel === $storeChannel, 422, __('push_device_errors.store_channel_mismatch', [], $locale));
             }
         }
-
-        $locale = isset($data['locale'])
-            ? (string) $data['locale']
-            : ($user instanceof User ? (string) $user->locale : 'ar');
 
         $installId = isset($data['install_id']) && trim((string) $data['install_id']) !== ''
             ? trim((string) $data['install_id'])

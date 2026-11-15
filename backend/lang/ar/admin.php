@@ -425,6 +425,7 @@ return [
         'download_apk' => 'تحميل APK',
         'download_from_server' => 'تحميل مباشر من سيرفر FOODEX',
         'preparing' => 'يجري تجهيز ملف APK على سيرفر FOODEX.',
+        'unsupported_app' => 'تطبيق FOODEX المطلوب غير مدعوم.',
         'server_copy' => 'نسخة السيرفر',
         'version' => 'الإصدار',
         'progress' => 'تقدم التجهيز',

@@ -24,6 +24,7 @@ return [
     'priority' => 'Priority',
     'starts_at' => 'Starts at',
     'ends_at' => 'Ends at',
+    'ends_after_start' => 'End time must be after start time.',
     'duration_minutes' => 'Or duration in minutes',
     'dismissible' => 'Dismissible',
     'active' => 'Active',

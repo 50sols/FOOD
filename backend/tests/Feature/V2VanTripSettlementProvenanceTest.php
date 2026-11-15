@@ -559,4 +559,63 @@ final class V2VanTripSettlementProvenanceTest extends TestCase
             'updated_at' => now(),
         ]);
     }
+    public function test_inactive_van_custody_account_cannot_submit_new_remittance_but_existing_replay_is_stable(): void
+    {
+        $actor = User::factory()->create(['is_active' => true]);
+        $storeId = $this->store('B2B', 'P272-LOCKED-CUSTODY-ACCOUNT');
+        $account = CollectionAccount::query()->create([
+            'actor_type' => 'van',
+            'actor_id' => 511,
+            'store_id' => $storeId,
+            'currency' => 'KWD',
+            'status' => 'active',
+        ]);
+        $service = app(CollectionCustodyService::class);
+        $service->collect($account, $actor, 'p272-lock-collection', 30, 'KWD', 'van_app');
+
+        $first = $service->submitRemittance(
+            $account, $actor, 'p272-lock-remittance', 20, 'KWD', 'cash',
+        );
+        $account->forceFill(['status' => 'inactive'])->save();
+
+        // A matching retry is only an acknowledgement of a previously
+        // recorded submission, never a fresh custody reservation.
+        $same = $service->submitRemittance(
+            $account, $actor, 'p272-lock-remittance', 20, 'KWD', 'cash',
+        );
+        $this->assertSame($first->getKey(), $same->getKey());
+
+        try {
+            $service->submitRemittance(
+                $account, $actor, 'p272-lock-new-denied', 1, 'KWD', 'cash',
+            );
+            $this->fail('An inactive custody account must not submit new remittances.');
+        } catch (ValidationException $exception) {
+            $this->assertArrayHasKey('collection_account_id', $exception->errors());
+        }
+
+        $this->assertDatabaseMissing('remittances', ['idempotency_key' => 'p272-lock-new-denied']);
+        $this->assertDatabaseCount('remittances', 1);
+        $this->assertDatabaseCount('custody_ledger_entries', 1);
+
+        // Reactivated custody remains bounded by the already pending amount.
+        $account->forceFill(['status' => 'active'])->save();
+        $second = $service->submitRemittance(
+            $account, $actor, 'p272-lock-remaining', 10, 'KWD', 'cash',
+        );
+        $this->assertSame('pending', $second->status);
+
+        try {
+            $service->submitRemittance(
+                $account, $actor, 'p272-lock-over-reserve', 1, 'KWD', 'cash',
+            );
+            $this->fail('Pending remittances must not reserve beyond available custody.');
+        } catch (ValidationException $exception) {
+            $this->assertArrayHasKey('amount', $exception->errors());
+        }
+
+        $this->assertDatabaseCount('remittances', 2);
+        $this->assertDatabaseCount('custody_ledger_entries', 1);
+    }
+
 }

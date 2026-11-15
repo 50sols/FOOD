@@ -354,7 +354,14 @@ final class RetailStoreProvisioningController extends Controller
                 ->where('is_active', true)
                 ->first();
 
-            abort_unless($primaryOwner instanceof User, 422, 'Primary owner must be an active user.');
+            abort_unless(
+                $primaryOwner instanceof User,
+                422,
+                $this->msg(
+                    'يجب أن يكون المالك الرئيسي مستخدمًا نشطًا.',
+                    'Primary owner must be an active user.',
+                ),
+            );
         }
 
         $before = $store->only([

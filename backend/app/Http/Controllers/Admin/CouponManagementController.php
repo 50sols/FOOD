@@ -36,8 +36,6 @@ final class CouponManagementController extends Controller
     public function index(Request $request): View
     {
         $actor = $this->authorizeAccess($request, 'coupons.view');
-        App::setLocale(in_array($actor->locale, ['ar', 'en'], true) ? $actor->locale : 'ar');
-
         $search = trim((string) $request->query('q', ''));
         $channel = strtolower(trim((string) $request->query('channel', '')));
         $status = trim((string) $request->query('status', ''));
@@ -132,7 +130,7 @@ final class CouponManagementController extends Controller
     public function destroy(Request $request, MarketingCoupon $coupon): RedirectResponse
     {
         $actor = $this->authorizeCoupon($request, $coupon, 'coupons.manage');
-        abort_if((int) $coupon->used_count > 0 || $coupon->redemptions()->exists(), 409, 'Used coupons cannot be deleted; deactivate them instead.');
+        abort_if((int) $coupon->used_count > 0 || $coupon->redemptions()->exists(), 409, __('coupons.used_cannot_delete'));
         $before = $coupon->toArray();
         $id = (int) $coupon->id;
         $coupon->delete();
@@ -145,6 +143,8 @@ final class CouponManagementController extends Controller
     {
         $actor = $request->user();
         abort_unless($actor instanceof User, 401);
+
+        App::setLocale(in_array($actor->locale, ['ar', 'en'], true) ? $actor->locale : 'ar');
 
         if (! $actor->hasPermission($permission)) {
             // The canonical scope evaluator applies user-level global/store DENYs,
@@ -260,7 +260,7 @@ final class CouponManagementController extends Controller
         }
 
         if ($query->exists()) {
-            throw ValidationException::withMessages(['code' => ['Coupon code already exists in this business scope.']]);
+            throw ValidationException::withMessages(['code' => [__('coupons.code_exists')]]);
         }
     }
 
@@ -288,7 +288,7 @@ final class CouponManagementController extends Controller
         ]);
 
         if ($data['discount_type'] === 'percentage' && (float) ($data['discount_value'] ?? 0) > 100) {
-            throw ValidationException::withMessages(['discount_value' => ['Percentage discount cannot exceed 100.']]);
+            throw ValidationException::withMessages(['discount_value' => [__('coupons.percentage_exceeds_max')]]);
         }
 
         return $data;

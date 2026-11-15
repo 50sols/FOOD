@@ -32,6 +32,33 @@ class VanOrderControllerTest extends TestCase
             ->assertNotFound();
     }
 
+    public function test_van_order_routes_reject_retail_customer_type_without_mutating_financial_or_audit_data(): void
+    {
+        $this->vanActor();
+
+        $orderCount = DB::table('orders')->count();
+        $auditCount = DB::table('audit_logs')->count();
+
+        foreach (['catalog', 'order-options'] as $endpoint) {
+            foreach (['', '?store_id=7'] as $query) {
+                $this->getJson("/api/v1/van/customers/b2c/999/{$endpoint}{$query}")
+                    ->assertNotFound();
+            }
+        }
+
+        foreach (['order-quote', 'orders'] as $endpoint) {
+            foreach ([[], ['store_id' => 7]] as $fields) {
+                $this->postJson("/api/v1/van/customers/b2c/999/{$endpoint}", [
+                    ...$fields,
+                    'items' => [['product_id' => 1, 'quantity' => 1]],
+                ])->assertNotFound();
+            }
+        }
+
+        $this->assertSame($orderCount, DB::table('orders')->count());
+        $this->assertSame($auditCount, DB::table('audit_logs')->count());
+    }
+
     public function test_van_b2b_catalog_uses_platform_customer_base_price_fallback_and_explicit_tier_override(): void
     {
         $actor = $this->vanActor();
@@ -215,11 +242,44 @@ class VanOrderControllerTest extends TestCase
             'status' => 'planned',
         ]);
 
-        $this->postJson('/api/v1/van/customers/b2b/999/orders', [
-            'store_id' => 7,
-        ])
-            ->assertUnprocessable()
-            ->assertJsonValidationErrors(['Idempotency-Key']);
+        $baseline = [
+            'orders' => DB::table('orders')->count(),
+            'order_items' => DB::table('order_items')->count(),
+            'invoices' => DB::table('invoices')->count(),
+            'payments' => DB::table('payments')->count(),
+            'audit_logs' => DB::table('audit_logs')->count(),
+            'stock_movements' => DB::table('stock_movements')->count(),
+            'reserved_stock' => (float) DB::table('inventories')->sum('reserved_quantity'),
+        ];
+
+        foreach ([
+            'ar' => 'يجب تقديم مفتاح صالح لمنع تكرار الطلب في الترويسة.',
+            'en' => 'A valid Idempotency-Key header is required.',
+        ] as $locale => $message) {
+            $actor->forceFill(['locale' => $locale])->saveQuietly();
+            app()->setLocale($locale);
+
+            foreach (['', 'short', str_repeat('k', 101)] as $invalidKey) {
+                $this->withHeaders([
+                    'Idempotency-Key' => $invalidKey,
+                    'Accept-Language' => $locale === 'ar' ? 'en' : 'ar',
+                ])->postJson('/api/v1/van/customers/b2b/999/orders', [
+                    'store_id' => 7,
+                ])
+                    ->assertUnprocessable()
+                    ->assertJsonPath('errors.Idempotency-Key.0', $message);
+
+                $this->assertSame($baseline, [
+                    'orders' => DB::table('orders')->count(),
+                    'order_items' => DB::table('order_items')->count(),
+                    'invoices' => DB::table('invoices')->count(),
+                    'payments' => DB::table('payments')->count(),
+                    'audit_logs' => DB::table('audit_logs')->count(),
+                    'stock_movements' => DB::table('stock_movements')->count(),
+                    'reserved_stock' => (float) DB::table('inventories')->sum('reserved_quantity'),
+                ]);
+            }
+        }
     }
 
     public function test_van_order_feed_is_empty_without_actor_customer_scope(): void

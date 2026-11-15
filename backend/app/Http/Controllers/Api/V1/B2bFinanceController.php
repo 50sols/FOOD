@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Api\V1;
 
+use App\Enterprise\Search\LiteralLikePattern;
 use App\Http\Controllers\Controller;
 use App\Models\B2bAccount;
 use App\Models\B2bCustomer;
@@ -55,18 +56,19 @@ class B2bFinanceController extends Controller
             ->when($filters['from'] ?? null, fn ($query, string $from) => $query->whereDate('issued_at', '>=', $from))
             ->when($filters['to'] ?? null, fn ($query, string $to) => $query->whereDate('issued_at', '<=', $to))
             ->when($search !== '', function ($query) use ($search): void {
-                $needle = '%'.addcslashes($search, '%_\\').'%';
+                // Keep typed %, _, ! and backslashes literal across SQLite/MySQL.
+                $needle = LiteralLikePattern::contains($search);
                 $displayId = DisplayNumber::referenceId($search);
 
                 $query->where(function ($nested) use ($needle, $displayId): void {
                     if ($displayId !== null) {
                         $nested->where('id', $displayId)
-                            ->orWhere('invoice_number', 'like', $needle);
+                            ->orWhereRaw("invoice_number LIKE ? ESCAPE '!'", [$needle]);
 
                         return;
                     }
 
-                    $nested->where('invoice_number', 'like', $needle);
+                    $nested->whereRaw("invoice_number LIKE ? ESCAPE '!'", [$needle]);
                 });
             })
             ->latest('issued_at')
@@ -175,9 +177,20 @@ class B2bFinanceController extends Controller
         );
 
         try {
-            $content = $invoices->renderPdf($invoice, $locale);
+            // Container dispatch permits deterministic HTTP failure regression tests
+            // without replacing the final InvoiceService or PDF factory.
+            $content = (string) app()->call([$invoices, 'renderPdf'], [
+                'invoice' => $invoice,
+                'locale' => $locale,
+            ]);
         } catch (\RuntimeException) {
-            abort(503, 'PDF generation is temporarily unavailable.');
+            $savedLocale = $request->user()?->locale;
+            $errorLocale = $validated['locale']
+                ?? (in_array($savedLocale, ['ar', 'en'], true)
+                    ? $savedLocale
+                    : $request->getPreferredLanguage(['ar', 'en']));
+
+            abort(503, __('invoice_errors.pdf_generation_unavailable', [], $errorLocale === 'ar' ? 'ar' : 'en'));
         }
 
         return response($content, 200, [
@@ -288,7 +301,7 @@ class B2bFinanceController extends Controller
         try {
             $export = $exports->build($report, $format, $locale);
         } catch (\RuntimeException) {
-            abort(503, 'Document export is temporarily unavailable.');
+            abort(503, __('b2b_statement_export_errors.temporarily_unavailable', [], $locale));
         }
 
         app(AuditLogger::class)->record('b2b.finance.statement_exported', $request->user(), $customer, null, [

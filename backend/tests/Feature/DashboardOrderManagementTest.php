@@ -93,6 +93,61 @@ class DashboardOrderManagementTest extends TestCase
         $this->assertSame(0.0, (float) DB::table('inventories')->where('id', $inventory)->value('reserved_quantity'));
     }
 
+    public function test_b2c_dashboard_quote_and_order_localize_unconfigured_payment_method_without_writes(): void
+    {
+        $store = $this->store('B2C', 'ORDER-PAYMENT-LOCALE');
+        [$product, $inventory] = $this->product($store, 'b2c', 'ORDER-PAYMENT-LOCALE-SKU', 5.500, 10);
+        $admin = $this->storeAdmin($store, 'payment-locale-admin@example.test');
+        $customer = app(B2cCustomerService::class)->create($store, [
+            'name' => 'Payment Locale Retail Buyer',
+            'email' => 'payment-locale-buyer@example.test',
+        ]);
+
+        $payload = [
+            'store_id' => $store,
+            'customer_id' => $customer->id,
+            'payment_method' => 'unsupported_offline_payment',
+            'items' => [['product_id' => $product, 'quantity' => 1]],
+        ];
+        $baseline = [
+            'orders' => DB::table('orders')->count(),
+            'order_items' => DB::table('order_items')->count(),
+            'invoices' => DB::table('invoices')->count(),
+            'payments' => DB::table('payments')->count(),
+            'audit_logs' => DB::table('audit_logs')->count(),
+            'stock_movements' => DB::table('stock_movements')->count(),
+            'reserved_quantity' => (float) DB::table('inventories')->where('id', $inventory)->value('reserved_quantity'),
+        ];
+
+        foreach ([
+            'ar' => 'طريقة الدفع المحددة غير مهيأة.',
+            'en' => 'The selected payment method is not configured.',
+        ] as $locale => $message) {
+            $admin->forceFill(['locale' => $locale])->saveQuietly();
+            app()->setLocale($locale);
+
+            foreach (['/admin/b2c/orders/quote', '/admin/b2c/orders'] as $uri) {
+                $this->actingAs($admin)->withHeaders([
+                    'Accept-Language' => $locale === 'ar' ? 'en' : 'ar',
+                ])->postJson($uri, $payload)
+                    ->assertUnprocessable()
+                    ->assertJsonPath('errors.payment_method.0', $message);
+
+                $this->assertSame($baseline, [
+                    'orders' => DB::table('orders')->count(),
+                    'order_items' => DB::table('order_items')->count(),
+                    'invoices' => DB::table('invoices')->count(),
+                    'payments' => DB::table('payments')->count(),
+                    'audit_logs' => DB::table('audit_logs')->count(),
+                    'stock_movements' => DB::table('stock_movements')->count(),
+                    'reserved_quantity' => (float) DB::table('inventories')->where('id', $inventory)->value('reserved_quantity'),
+                ]);
+            }
+        }
+
+        $this->assertDatabaseCount('orders', 0);
+    }
+
     public function test_b2c_manual_order_rejects_foreign_store_product_and_customer_ids(): void
     {
         $storeA = $this->store('B2C', 'ORDER-A');
