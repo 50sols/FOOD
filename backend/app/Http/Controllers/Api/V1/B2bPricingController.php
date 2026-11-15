@@ -42,7 +42,7 @@ class B2bPricingController extends Controller
         abort_unless(
             $this->pricingMode->tiersEnabled($storeId),
             409,
-            'B2B pricing tiers are disabled.',
+            $this->tiersDisabledMessage($request, $user),
         );
 
         $rules = B2bPriceRule::query()
@@ -78,7 +78,7 @@ class B2bPricingController extends Controller
         // another channel, inactive stores and explicit per-user store DENYs.
         $storeId = (int) $data['store_id'];
         $this->tenantScope->assertStore($user, $storeId, 'b2b.pricing.manage', 'b2b');
-        abort_unless($this->pricingMode->tiersEnabled($storeId), 409, 'B2B pricing tiers are disabled.');
+        abort_unless($this->pricingMode->tiersEnabled($storeId), 409, $this->tiersDisabledMessage($request, $user));
 
         $ownedProduct = DB::table('products')
             ->join('catalogs', 'catalogs.id', '=', 'products.catalog_id')
@@ -367,6 +367,15 @@ class B2bPricingController extends Controller
             'currency' => 'EGP',
             'pricing_tiers_enabled' => $tiersEnabled,
         ]);
+    }
+
+    private function tiersDisabledMessage(Request $request, User $user): string
+    {
+        $locale = in_array($user->locale, ['ar', 'en'], true)
+            ? (string) $user->locale
+            : (string) $request->getPreferredLanguage(['ar', 'en']);
+
+        return __('b2b_pricing_errors.tiers_disabled', [], $locale === 'en' ? 'en' : 'ar');
     }
 
     private function assetUrl(mixed $path): ?string
