@@ -319,6 +319,55 @@ class SmartOrderingCoreTest extends TestCase
         ]);
     }
 
+    public function test_paused_branch_rejection_is_localized_in_ar_en_without_checkout_writes(): void
+    {
+        $carts = [];
+        foreach (['ar', 'en'] as $locale) {
+            [$cart, $token] = $this->cart();
+            $this->addItem($cart, $token, 1);
+            $carts[$locale] = [$cart, $token];
+        }
+
+        $this->branch->update(['accepting_orders' => false]);
+
+        $before = [
+            'orders' => DB::table('orders')->count(),
+            'payments' => DB::table('payments')->count(),
+            'audit' => DB::table('audit_logs')->count(),
+            'cart_items' => DB::table('smart_ordering_cart_items')->count(),
+        ];
+
+        foreach ([
+            'ar' => 'هذا الفرع لا يستقبل طلبات جديدة حاليًا.',
+            'en' => 'This branch is not accepting orders.',
+        ] as $locale => $message) {
+            [$cart, $token] = $carts[$locale];
+            $originalCartStatus = DB::table('smart_ordering_carts')
+                ->where('public_id', $cart)
+                ->value('status');
+
+            app()->setLocale($locale);
+            $this->withHeaders(['Accept-Language' => $locale]);
+
+            $this->checkout($cart, $token, 'v2-paused-branch-'.$locale.'-0001', [
+                'fulfillment_mode' => 'pickup',
+            ])
+                ->assertConflict()
+                ->assertJsonPath('message', $message);
+
+            $this->assertSame($before['orders'], DB::table('orders')->count());
+            $this->assertSame($before['payments'], DB::table('payments')->count());
+            $this->assertSame($before['audit'], DB::table('audit_logs')->count());
+            $this->assertSame($before['cart_items'], DB::table('smart_ordering_cart_items')->count());
+            $this->assertSame(
+                $originalCartStatus,
+                DB::table('smart_ordering_carts')->where('public_id', $cart)->value('status'),
+            );
+        }
+
+        $this->assertFalse((bool) $this->branch->fresh()->accepting_orders);
+    }
+
     public function test_checkout_rejects_closed_branch_and_revalidates_operational_policy(): void
     {
         [$cart, $token] = $this->cart();
