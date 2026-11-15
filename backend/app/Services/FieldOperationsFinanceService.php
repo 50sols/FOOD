@@ -44,7 +44,7 @@ final class FieldOperationsFinanceService
                         || (string) ($record['van_status'] ?? '') !== 'active'
                         || (int) $record['custody_entries'] === 0
                         || abs((float) $record['custody_balance']) > 0.0005
-                        || (float) $record['pending_remittance'] > 0.0005
+                        || (int) $record['pending_remittance_count'] > 0
                         || (int) $record['awaiting_reconciliation'] > 0
                     ) ? 'needs_review' : 'ledger_clear';
                 }
@@ -116,6 +116,7 @@ final class FieldOperationsFinanceService
             ->where('status', 'pending')
             ->select('collection_account_id')
             ->selectRaw('COALESCE(SUM(amount), 0) as pending_remittance')
+            ->selectRaw('COUNT(*) as pending_remittance_count')
             ->groupBy('collection_account_id');
 
         $approved = DB::table('remittances')
@@ -156,6 +157,7 @@ final class FieldOperationsFinanceService
                 DB::raw('COALESCE(custody_totals.custody_balance, 0) as custody_balance'),
                 DB::raw('COALESCE(custody_totals.custody_entries, 0) as custody_entries'),
                 DB::raw('COALESCE(pending_totals.pending_remittance, 0) as pending_remittance'),
+                DB::raw('COALESCE(pending_totals.pending_remittance_count, 0) as pending_remittance_count'),
                 DB::raw('COALESCE(approved_totals.awaiting_reconciliation, 0) as awaiting_reconciliation'),
             ])
             ->paginate($perPage, ['*'], 'ops_page');

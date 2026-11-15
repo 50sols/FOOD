@@ -374,6 +374,26 @@ class VanFinanceSupportTest extends TestCase
         $review = fn (): array => $finance->viewModel([$storeId], ['ops_tab' => 'closeout'])['rows'];
         $this->assertSame('ledger_clear', $review()[0]['review_state']);
 
+        // A malformed/legacy pending remittance still blocks financial clearance,
+        // even if zero or negative amounts would be hidden by the SUM alone.
+        $pendingId = (int) DB::table('remittances')->insertGetId([
+            'collection_account_id' => $accountId,
+            'idempotency_key' => 'P277-UNSAFE-PENDING',
+            'amount' => 0,
+            'currency' => 'KWD',
+            'method' => 'cash',
+            'reference' => 'P277-UNSAFE-REF',
+            'status' => 'pending',
+            'submitted_by' => $admin->id,
+            'created_at' => $now,
+            'updated_at' => $now,
+        ]);
+        $this->assertSame('needs_review', $review()[0]['review_state']);
+        DB::table('remittances')->where('id', $pendingId)->update(['amount' => -5]);
+        $this->assertSame('needs_review', $review()[0]['review_state']);
+        DB::table('remittances')->where('id', $pendingId)->delete();
+        $this->assertSame('ledger_clear', $review()[0]['review_state']);
+
         DB::table('collection_accounts')->where('id', $accountId)->update(['status' => 'suspended']);
         $this->assertSame('needs_review', $review()[0]['review_state']);
         $this->actingAs($admin)
