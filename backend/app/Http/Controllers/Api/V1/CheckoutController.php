@@ -58,8 +58,14 @@ class CheckoutController extends Controller
         $idempotencyKey = trim((string) $request->header('Idempotency-Key', ''));
 
         if (strlen($idempotencyKey) < 16 || strlen($idempotencyKey) > 100) {
+            $authenticatedUser = $request->user();
+            $userLocale = $authenticatedUser instanceof User ? $authenticatedUser->locale : null;
+            $locale = in_array($userLocale, ['ar', 'en'], true)
+                ? $userLocale
+                : strtolower((string) $request->getPreferredLanguage(['ar', 'en']));
+
             throw ValidationException::withMessages([
-                'Idempotency-Key' => ['A valid Idempotency-Key header is required.'],
+                'Idempotency-Key' => [__('checkout_errors.idempotency_header_invalid', [], $locale === 'ar' ? 'ar' : 'en')],
             ]);
         }
 
