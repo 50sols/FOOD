@@ -19,6 +19,10 @@ void main() {
 
       final note = find.byKey(const ValueKey('customer-diagnostics-note'));
       expect(note, findsOneWidget);
+      expect(
+        Directionality.of(tester.element(note)),
+        locale.languageCode == 'ar' ? TextDirection.rtl : TextDirection.ltr,
+      );
       await tester.ensureVisible(note);
       await tester.pump();
 
