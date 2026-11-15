@@ -8,8 +8,8 @@ use App\Models\User;
 use App\Services\TranslationCatalog;
 use Database\Seeders\CoreReferenceSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
-use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Arr;
+use Illuminate\Support\Facades\DB;
 use Tests\TestCase;
 
 class TranslationCenterTest extends TestCase
