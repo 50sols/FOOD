@@ -84,7 +84,7 @@ final class BranchPolicyService
             (array) $branch->holiday_closed_dates,
             static fn (string $value): bool => $value !== '',
         ));
-        abort_if(in_array($scheduled->format('Y-m-d'), $closedDates, true), 409, 'This branch is closed on the selected date.');
+        abort_if(in_array($scheduled->format('Y-m-d'), $closedDates, true), 409, __('smart_ordering.branch_policy.holiday_closed'));
 
         $hours = DB::table('smart_ordering_branch_hours')
             ->where('branch_id', (int) $branch->getKey())
@@ -95,7 +95,7 @@ final class BranchPolicyService
             return $scheduled;
         }
 
-        abort_if((bool) $hours->is_closed, 409, 'This branch is closed at the selected time.');
+        abort_if((bool) $hours->is_closed, 409, __('smart_ordering.branch_policy.outside_business_hours'));
 
         if ($hours->opens_at === null || $hours->closes_at === null) {
             return $scheduled;
@@ -111,7 +111,7 @@ final class BranchPolicyService
             }
         }
 
-        abort_unless($scheduled->betweenIncluded($opens, $closes), 409, 'This branch is closed at the selected time.');
+        abort_unless($scheduled->betweenIncluded($opens, $closes), 409, __('smart_ordering.branch_policy.outside_business_hours'));
 
         return $scheduled;
     }
