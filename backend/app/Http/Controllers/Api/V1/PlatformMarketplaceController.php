@@ -293,7 +293,7 @@ final class PlatformMarketplaceController extends Controller
     }
 
     /**
-     * @param array<string, mixed> $filters
+     * @param  array<string, mixed>  $filters
      * @return list<array<string, mixed>>
      */
     private function retailPlacements(array $filters, int $platformStoreId): array
@@ -448,7 +448,7 @@ final class PlatformMarketplaceController extends Controller
     }
 
     /**
-     * @param array<string, mixed> $filters
+     * @param  array<string, mixed>  $filters
      * @return list<array<string, mixed>>
      */
     private function products(array $filters, int $storeId): array
