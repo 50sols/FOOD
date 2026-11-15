@@ -271,7 +271,6 @@ final class V2InventoryOwnerProvenanceTest extends TestCase
         $stock = $this->stock('ROLLBACK-PROJECTION');
         $inventory = Inventory::query()->findOrFail($stock['inventory_id']);
 
-        $rolledBack = false;
         try {
             DB::transaction(function () use ($inventory): void {
                 $inventory->forceFill(['quantity' => 15])->save();
@@ -279,10 +278,10 @@ final class V2InventoryOwnerProvenanceTest extends TestCase
                 throw new \RuntimeException('simulated movement failure');
             });
         } catch (\RuntimeException $exception) {
-            $rolledBack = true;
             $this->assertSame('simulated movement failure', $exception->getMessage());
         }
-        $this->assertTrue($rolledBack);
+        // If no exception occurs, the committed stock/position assertions
+        // below still fail. A real rollback must preserve both together.
 
         $this->assertSame(10.0, (float) DB::table('inventories')
             ->where('id', $stock['inventory_id'])->value('quantity'));
