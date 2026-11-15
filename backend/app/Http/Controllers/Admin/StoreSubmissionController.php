@@ -157,7 +157,7 @@ final class StoreSubmissionController extends Controller
 
         if (! $reviewer instanceof StoreReviewerAccount && empty($data['reviewer_secret'])) {
             throw ValidationException::withMessages([
-                'reviewer_secret' => ['A reviewer secret is required when creating the reviewer persona.'],
+                'reviewer_secret' => [__('mobile_settings.reviewer_secret_required')],
             ]);
         }
 
@@ -182,7 +182,7 @@ final class StoreSubmissionController extends Controller
                     ->value('store_types.code'));
                 if ($channel !== '' && $storeChannel !== $channel) {
                     throw ValidationException::withMessages([
-                        'reviewer_store_id' => ['The selected store does not belong to the selected business channel.'],
+                        'reviewer_store_id' => [__('mobile_settings.reviewer_store_channel_mismatch')],
                     ]);
                 }
                 $context['store_id'] = $storeId;
