@@ -433,7 +433,10 @@ final class BusinessManagementController extends Controller
             abort_unless(
                 $storeId === app(WholesalePrincipal::class)->storeId(),
                 422,
-                'Wholesale drivers must belong to the principal Wholesale store.',
+                $this->msg(
+                    'يجب أن يتبع سائق الجملة متجر الجملة الرئيسي.',
+                    'Wholesale drivers must belong to the principal Wholesale store.',
+                ),
             );
         }
         $ability = $data['driver_type'] === 'b2b' ? 'drivers.b2b.manage' : 'drivers.b2c.manage';
@@ -489,7 +492,10 @@ final class BusinessManagementController extends Controller
             abort_unless(
                 $storeId === app(WholesalePrincipal::class)->storeId(),
                 422,
-                'Wholesale drivers must belong to the principal Wholesale store.',
+                $this->msg(
+                    'يجب أن يتبع سائق الجملة متجر الجملة الرئيسي.',
+                    'Wholesale drivers must belong to the principal Wholesale store.',
+                ),
             );
         }
         $ability = $data['driver_type'] === 'b2b' ? 'drivers.b2b.manage' : 'drivers.b2c.manage';

@@ -36,18 +36,17 @@ final class CouponManagementController extends Controller
     public function index(Request $request): View
     {
         $actor = $this->authorizeAccess($request, 'coupons.view');
-        App::setLocale(in_array($actor->locale, ['ar', 'en'], true) ? $actor->locale : 'ar');
-
         $search = trim((string) $request->query('q', ''));
         $channel = strtolower(trim((string) $request->query('channel', '')));
         $status = trim((string) $request->query('status', ''));
+        $literalSearch = '%'.str_replace(['!', '%', '_'], ['!!', '!%', '!_'], $search).'%';
 
         $coupons = $this->visibleCoupons($actor)
             ->with(['store:id,name'])
-            ->when($search !== '', fn (Builder $query) => $query->where(function (Builder $nested) use ($search): void {
-                $nested->where('code', 'like', '%'.$search.'%')
-                    ->orWhere('name_ar', 'like', '%'.$search.'%')
-                    ->orWhere('name_en', 'like', '%'.$search.'%');
+            ->when($search !== '', fn (Builder $query) => $query->where(function (Builder $nested) use ($literalSearch): void {
+                $nested->whereRaw("code LIKE ? ESCAPE '!'", [$literalSearch])
+                    ->orWhereRaw("name_ar LIKE ? ESCAPE '!'", [$literalSearch])
+                    ->orWhereRaw("name_en LIKE ? ESCAPE '!'", [$literalSearch]);
             }))
             ->when(in_array($channel, ['b2b', 'b2c'], true), fn (Builder $query) => $query->where('channel', $channel))
             ->when($status === 'active', fn (Builder $query) => $query->where('is_active', true))
@@ -131,7 +130,7 @@ final class CouponManagementController extends Controller
     public function destroy(Request $request, MarketingCoupon $coupon): RedirectResponse
     {
         $actor = $this->authorizeCoupon($request, $coupon, 'coupons.manage');
-        abort_if((int) $coupon->used_count > 0 || $coupon->redemptions()->exists(), 409, 'Used coupons cannot be deleted; deactivate them instead.');
+        abort_if((int) $coupon->used_count > 0 || $coupon->redemptions()->exists(), 409, __('coupons.used_cannot_delete'));
         $before = $coupon->toArray();
         $id = (int) $coupon->id;
         $coupon->delete();
@@ -144,6 +143,8 @@ final class CouponManagementController extends Controller
     {
         $actor = $request->user();
         abort_unless($actor instanceof User, 401);
+
+        App::setLocale(in_array($actor->locale, ['ar', 'en'], true) ? $actor->locale : 'ar');
 
         if (! $actor->hasPermission($permission)) {
             // The canonical scope evaluator applies user-level global/store DENYs,
@@ -259,7 +260,7 @@ final class CouponManagementController extends Controller
         }
 
         if ($query->exists()) {
-            throw ValidationException::withMessages(['code' => ['Coupon code already exists in this business scope.']]);
+            throw ValidationException::withMessages(['code' => [__('coupons.code_exists')]]);
         }
     }
 
@@ -287,7 +288,7 @@ final class CouponManagementController extends Controller
         ]);
 
         if ($data['discount_type'] === 'percentage' && (float) ($data['discount_value'] ?? 0) > 100) {
-            throw ValidationException::withMessages(['discount_value' => ['Percentage discount cannot exceed 100.']]);
+            throw ValidationException::withMessages(['discount_value' => [__('coupons.percentage_exceeds_max')]]);
         }
 
         return $data;

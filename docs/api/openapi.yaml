@@ -1483,6 +1483,29 @@ paths:
       summary: Create or update an approved B2B price rule
       security:
         - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [price_tier_id, store_id, product_id, unit_price, minimum_quantity]
+              properties:
+                price_tier_id: { type: integer, minimum: 1 }
+                store_id: { type: integer, minimum: 1 }
+                product_id: { type: integer, minimum: 1 }
+                unit_price: { type: number, minimum: 0, multipleOf: 0.001 }
+                minimum_quantity: { type: number, exclusiveMinimum: 0, multipleOf: 0.001 }
+                ordering_increment: { type: number, exclusiveMinimum: 0, multipleOf: 0.001 }
+                quantity_price_breaks:
+                  type: array
+                  maxItems: 12
+                  description: Omission retains an existing compatible schedule; incompatible changes to base price, MOQ or increment return HTTP 422 until a replacement list is supplied. Explicit [] clears the schedule.
+                  items:
+                    $ref: "#/components/schemas/B2bQuantityPriceBreak"
+                replace_quantity_price_breaks:
+                  type: boolean
+                  description: When true, replace the schedule with the supplied list or an empty list.
       responses:
         "200":
           description: B2B price rule updated
@@ -2422,6 +2445,10 @@ paths:
     post:
       tags: [Push Devices]
       summary: Register or refresh an authenticated user's push device
+      description: >-
+        The bearer token must have the app:customer, app:driver or app:van
+        ability matching the requested app. The separate Customer guest
+        registration route does not require a bearer token.
       operationId: registerPushDevice
       security:
         - bearerAuth: []
@@ -2699,11 +2726,46 @@ paths:
         "409": { description: Retry is not allowed from the current execution state }
         "422": { $ref: "#/components/responses/ValidationError" }
 
+  /van/customers:
+    get:
+      tags: [Van Fulfillment]
+      summary: List Van visit customers for collection, with current direct-sale eligibility
+      description: Historical/closed visit customers remain visible for collection. The can_direct_sell flag is true only for an actor-owned planned or started Wholesale visit in the selected Van store; it never grants HTTP sale authority by itself.
+      operationId: listVanVisitCustomers
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Customer history with server-authoritative direct-sale eligibility
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      type: object
+                      required: [type, id, name, store_id, can_direct_sell]
+                      properties:
+                        type: { type: string, enum: [b2b, b2c] }
+                        id: { type: integer }
+                        name: { type: string }
+                        phone: { type: [string, "null"] }
+                        email: { type: [string, "null"] }
+                        store_id: { type: [integer, "null"] }
+                        can_direct_sell:
+                          type: boolean
+                          description: True only for an actor-owned planned/started B2B visit in the current seller store; absent/false must disable Van checkout.
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
   /van/customers/{type}/{customer}/catalog:
     get:
       tags: [Van Fulfillment]
       summary: Get authorized B2B Van direct-sale catalog for a visited customer
-      description: Requires effective Van assignment, B2B customer type and an actor-owned visit at the current seller store. Legacy B2C or another store's visits return 404.
+      description: Requires effective Van assignment, B2B customer type and an actor-owned planned or started visit at the current seller store. Completed/closed, B2C and other-store visits return 404.
       operationId: getVanDirectSaleCatalog
       security:
         - bearerAuth: []
@@ -4210,6 +4272,20 @@ components:
           type: string
           format: date-time
 
+    B2bQuantityPriceBreak:
+      type: object
+      description: Whole-line (all-units) account-tier price applied at or above its base-unit threshold.
+      required: [minimum_quantity, unit_price]
+      properties:
+        minimum_quantity:
+          type: number
+          exclusiveMinimum: 0
+          multipleOf: 0.001
+        unit_price:
+          type: number
+          minimum: 0
+          multipleOf: 0.001
+
     B2bProduct:
       allOf:
         - $ref: "#/components/schemas/ProductSummary"
@@ -4219,6 +4295,12 @@ components:
             account_price:
               type: number
               multipleOf: 0.001
+            quantity_price_breaks:
+              type: array
+              description: Additive, account-scoped, non-increasing unit-price thresholds; empty for legacy flat pricing. Checkout totals are calculated by the server.
+              maxItems: 12
+              items:
+                $ref: "#/components/schemas/B2bQuantityPriceBreak"
             minimum_order_quantity:
               type: number
               minimum: 0

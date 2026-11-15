@@ -188,14 +188,23 @@ html[dir=ltr] .dashboard-layout:has(>.dashboard-sidebar.foodex-sidebar-collapsed
     @include('admin._sidebar-context-picker')
 
     <nav class="foodex-nav" aria-label="{{ __('admin.navigation') }}" data-foodex-nav>
-        {{-- P237's business-domain heading composes only the groups already authorized
-             by AdminNavigation. Saved group ordering is preserved, not replaced. --}}
+        {{-- P185/P237 business-domain headings compose ONLY groups already projected
+             by the canonical server authorizer. They never grant routes or override
+             an administrator's saved group ordering. Empty groups are absent. --}}
+        @php($p185DomainKeys = ['accounts', 'sales', 'customer_service'])
         @php($p237DomainKeys = ['procurement', 'inventory', 'warehouses'])
         @php($p237OrderedGroups = array_values($navGroups))
         @foreach($p237OrderedGroups as $navIndex => $group)
+            @php($p185Member = in_array($group['key'], $p185DomainKeys, true))
+            @php($p185Before = $navIndex > 0 && in_array($p237OrderedGroups[$navIndex - 1]['key'], $p185DomainKeys, true))
+            @php($p185After = $navIndex + 1 < count($p237OrderedGroups) && in_array($p237OrderedGroups[$navIndex + 1]['key'], $p185DomainKeys, true))
             @php($p237Member = in_array($group['key'], $p237DomainKeys, true))
             @php($p237Before = $navIndex > 0 && in_array($p237OrderedGroups[$navIndex - 1]['key'], $p237DomainKeys, true))
             @php($p237After = $navIndex + 1 < count($p237OrderedGroups) && in_array($p237OrderedGroups[$navIndex + 1]['key'], $p237DomainKeys, true))
+            @if($p185Member && ! $p185Before)
+                <section class="foodex-nav-domain" role="group" aria-labelledby="p185-domain-title-{{ $navIndex }}" data-nav-domain="customer-sales-service">
+                    <h2 id="p185-domain-title-{{ $navIndex }}" class="foodex-nav-domain-title">{{ __('v2_sidebar_domains.customer_sales_service') }}</h2>
+            @endif
             @if($p237Member && ! $p237Before)
                 <section class="foodex-nav-domain" role="group" aria-labelledby="p237-domain-title-{{ $navIndex }}" data-nav-domain="procurement-inventory">
                     <h2 id="p237-domain-title-{{ $navIndex }}" class="foodex-nav-domain-title">{{ __('v2_sidebar_domains.procurement_inventory') }}</h2>
@@ -229,6 +238,9 @@ html[dir=ltr] .dashboard-layout:has(>.dashboard-sidebar.foodex-sidebar-collapsed
                 </div>
             </details>
             @if($p237Member && ! $p237After)
+                </section>
+            @endif
+            @if($p185Member && ! $p185After)
                 </section>
             @endif
         @endforeach

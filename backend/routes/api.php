@@ -216,16 +216,16 @@ Route::prefix('v1')->group(function (): void {
                 ->whereNumber('visit');
             Route::get('/no-order-reasons', [VanVisitController::class, 'noOrderReasons']);
             Route::get('/customers/{type}/{customer}/catalog', [VanOrderController::class, 'catalog'])
-                ->whereIn('type', ['b2b', 'b2c'])
+                ->where('type', 'b2b')
                 ->whereNumber('customer');
             Route::get('/customers/{type}/{customer}/order-options', [VanOrderController::class, 'options'])
-                ->whereIn('type', ['b2b', 'b2c'])
+                ->where('type', 'b2b')
                 ->whereNumber('customer');
             Route::post('/customers/{type}/{customer}/order-quote', [VanOrderController::class, 'quote'])
-                ->whereIn('type', ['b2b', 'b2c'])
+                ->where('type', 'b2b')
                 ->whereNumber('customer');
             Route::post('/customers/{type}/{customer}/orders', [VanOrderController::class, 'store'])
-                ->whereIn('type', ['b2b', 'b2c'])
+                ->where('type', 'b2b')
                 ->whereNumber('customer');
             Route::get('/orders', [VanOrderController::class, 'index']);
             Route::get('/orders/{order}', [VanOrderController::class, 'show'])->whereNumber('order');

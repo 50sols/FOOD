@@ -149,10 +149,12 @@ final class CommercialDashboardController extends Controller
             ->where('store_products.store_id', $storeId)
             ->where('catalogs.channel', 'b2b')
             ->when($term !== '', function ($query) use ($term): void {
-                $like = '%'.$term.'%';
-                $query->where(function ($search) use ($like): void {
-                    $search->where('products.name', 'like', $like)
-                        ->orWhere('products.sku', 'like', $like);
+                // Search the operator's text literally; only the outer % anchors
+                // are wildcards. Explicit ! escaping works across SQL drivers.
+                $literal = '%'.str_replace(['!', '%', '_'], ['!!', '!%', '!_'], $term).'%';
+                $query->where(function ($search) use ($literal): void {
+                    $search->whereRaw("products.name LIKE ? ESCAPE '!'", [$literal])
+                        ->orWhereRaw("products.sku LIKE ? ESCAPE '!'", [$literal]);
                 });
             })
             ->orderBy('products.name')

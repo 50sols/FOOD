@@ -438,6 +438,100 @@ class DashboardCustomer360Test extends TestCase
         ]);
     }
 
+    public function test_customer_360_address_location_rejections_use_operator_locale_without_writes(): void
+    {
+        $store = $this->store('B2C', 'ADDRESS-LOCALE', 'Address Locale Store');
+        $user = $this->customer('Address Locale Customer', 'address-locale@example.test', $store);
+        $platform = PlatformCustomer::query()->where('user_id', $user->id)->firstOrFail();
+        $admin = $this->retailAdmin($store);
+        $storeUrl = route('admin.customer-360.addresses.store', ['platformCustomer' => $platform->id]);
+        $pageUrl = route('admin.customer-360.show', ['platformCustomer' => $platform->id]).'#addresses';
+
+        $this->actingAs($admin)
+            ->post($storeUrl, [
+                'label' => 'Saved manual address',
+                'line1' => 'Original Street',
+                'city' => 'Cairo',
+                'country_code' => 'EG',
+                'location_source' => 'manual',
+            ])
+            ->assertRedirect();
+
+        $address = Address::query()->where('platform_customer_id', $platform->id)->firstOrFail();
+        $baselineAddressCount = DB::table('addresses')->count();
+        $baselineAuditCount = DB::table('audit_logs')->count();
+
+        foreach (['en', 'ar'] as $locale) {
+            $admin->forceFill(['locale' => $locale])->saveQuietly();
+            app()->setLocale($locale);
+            $this->actingAs($admin->fresh());
+
+            foreach (['map_pin', 'current_location'] as $source) {
+                $this->from($pageUrl)
+                    ->post($storeUrl, [
+                        'label' => 'Incomplete location',
+                        'line1' => 'Street without coordinates',
+                        'city' => 'Cairo',
+                        'country_code' => 'EG',
+                        'location_source' => $source,
+                    ])
+                    ->assertRedirect()
+                    ->assertSessionHasErrors([
+                        'latitude' => __('customer_address_location.coordinate_pair_required'),
+                        'longitude' => __('customer_address_location.coordinate_pair_required'),
+                    ]);
+            }
+
+            $this->from($pageUrl)
+                ->post($storeUrl, [
+                    'label' => 'Accuracy without location',
+                    'line1' => 'Street without coordinates',
+                    'city' => 'Cairo',
+                    'country_code' => 'EG',
+                    'location_source' => 'manual',
+                    'location_accuracy_meters' => 9.5,
+                ])
+                ->assertRedirect()
+                ->assertSessionHasErrors([
+                    'location_accuracy_meters' => __('customer_address_location.accuracy_pair_required'),
+                ]);
+
+            $this->from($pageUrl)
+                ->patch(route('admin.customer-360.addresses.update', [
+                    'platformCustomer' => $platform->id,
+                    'address' => $address->id,
+                ]), ['location_source' => 'map_pin'])
+                ->assertRedirect()
+                ->assertSessionHasErrors([
+                    'latitude' => __('customer_address_location.coordinate_pair_required'),
+                    'longitude' => __('customer_address_location.coordinate_pair_required'),
+                ]);
+
+            $this->assertSame($baselineAddressCount, DB::table('addresses')->count());
+            $this->assertSame($baselineAuditCount, DB::table('audit_logs')->count());
+            $this->assertDatabaseHas('addresses', [
+                'id' => $address->id,
+                'label' => 'Saved manual address',
+                'location_source' => 'manual',
+            ]);
+        }
+
+        $this->actingAs($admin->fresh())
+            ->patch(route('admin.customer-360.addresses.update', [
+                'platformCustomer' => $platform->id,
+                'address' => $address->id,
+            ]), [
+                'location_source' => 'map_pin',
+                'latitude' => 30.04442,
+                'longitude' => 31.235712,
+            ])
+            ->assertRedirect();
+        $this->assertDatabaseHas('addresses', [
+            'id' => $address->id,
+            'location_source' => 'map_pin',
+        ]);
+    }
+
     public function test_retail_admin_can_fully_manage_visible_customer_addresses_only(): void
     {
         $storeA = $this->store('B2C', 'ADDRESS-A', 'Address Store A');
@@ -732,6 +826,123 @@ class DashboardCustomer360Test extends TestCase
         ]);
     }
 
+    public function test_finance_invoice_picker_treats_sql_wildcards_and_backslash_as_literal_scoped_text(): void
+    {
+        $retailStoreId = $this->store('B2C', 'PICKER-LITERAL-OWNER', 'Literal Owner');
+        $owner = User::query()->create([
+            'name' => 'Literal Finance Owner',
+            'email' => 'literal-finance-owner@example.test',
+            'password' => 'password123',
+            'locale' => 'en',
+            'is_active' => true,
+        ]);
+        $tierId = (int) DB::table('b2b_price_tiers')->where('code', 'STANDARD')->value('id');
+        $domain = app(RetailWholesaleAccountService::class)->ensureForStore(
+            Store::query()->findOrFail($retailStoreId),
+            $tierId,
+            $owner,
+        );
+        $platform = PlatformCustomer::query()->where('user_id', $owner->id)->firstOrFail();
+        $wholesaleStoreId = app(WholesalePrincipal::class)->storeId();
+
+        $invoiceNumber = 'FIN_%!\-A';
+        $invoice = function (int $customerId, int $legacyId, int $b2bId, string $number, string $currency = 'EGP', string $status = 'issued') use ($wholesaleStoreId): int {
+            return (int) DB::table('invoices')->insertGetId([
+                'store_id' => $wholesaleStoreId,
+                'customer_id' => $legacyId,
+                'platform_customer_id' => $customerId,
+                'b2b_customer_id' => $b2bId,
+                'b2c_customer_id' => null,
+                'invoice_number' => $number,
+                'status' => $status,
+                'channel' => 'b2b',
+                'currency' => $currency,
+                'total' => 25,
+                'issued_at' => now(),
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+        };
+
+        $targetId = $invoice($platform->id, $platform->legacy_customer_id, $domain->id, $invoiceNumber);
+        $decoyId = $invoice($platform->id, $platform->legacy_customer_id, $domain->id, 'FINX-OTHER');
+        // A cancelled currency-mismatched invoice must remain outside the picker, without
+        // corrupting the active EGP account ledger into a mixed-currency 409.
+        $invoice($platform->id, $platform->legacy_customer_id, $domain->id, 'FIN_%!-FOREIGN-CURRENCY', 'KWD', 'cancelled');
+
+        $otherStoreId = $this->store('B2C', 'PICKER-LITERAL-FOREIGN', 'Literal Foreign');
+        $otherOwner = User::query()->create([
+            'name' => 'Foreign Literal Owner',
+            'email' => 'foreign-literal-owner@example.test',
+            'password' => 'password123',
+            'locale' => 'en',
+            'is_active' => true,
+        ]);
+        $otherDomain = app(RetailWholesaleAccountService::class)->ensureForStore(
+            Store::query()->findOrFail($otherStoreId),
+            $tierId,
+            $otherOwner,
+        );
+        $otherPlatform = PlatformCustomer::query()->where('user_id', $otherOwner->id)->firstOrFail();
+        $invoice($otherPlatform->id, $otherPlatform->legacy_customer_id, $otherDomain->id, 'FIN_%!\\-B');
+
+        $before = DB::table('invoices')->count();
+        $ledgerBefore = DB::table('customer_account_ledger_entries')->count();
+        $super = $this->globalAdmin('SUPER_ADMIN');
+        foreach (['FIN_', '%', '_', '!', '\\', 'FIN_%!'] as $term) {
+            $this->actingAs($super)
+                ->getJson(route('admin.customer-360.finance-invoices', [
+                    'platformCustomer' => $platform->id,
+                    'q' => $term,
+                ]))
+                ->assertOk()
+                ->assertJsonCount(1, 'results')
+                ->assertJsonPath('results.0.id', $targetId)
+                ->assertJsonPath('results.0.internal_number', $invoiceNumber);
+        }
+
+        $this->actingAs($super)
+            ->getJson(route('admin.customer-360.finance-invoices', [
+                'platformCustomer' => $platform->id,
+                'q' => 'FIN',
+            ]))
+            ->assertOk()
+            ->assertJsonCount(2, 'results')
+            ->assertJsonPath('results.0.id', $decoyId)
+            ->assertJsonPath('results.1.id', $targetId);
+
+        $this->actingAs($super)
+            ->getJson(route('admin.customer-360.finance-invoices', [
+                'platformCustomer' => $platform->id,
+                'q' => 'FIN_%! missing',
+                'selected_id' => $targetId,
+            ]))
+            ->assertOk()
+            ->assertJsonCount(0, 'results')
+            ->assertJsonPath('selected.id', $targetId);
+
+        $super->forceFill(['locale' => 'ar'])->save();
+        $this->actingAs($super)
+            ->getJson(route('admin.customer-360.finance-invoices', [
+                'platformCustomer' => $platform->id,
+                'q' => '%',
+            ]))
+            ->assertOk()
+            ->assertJsonCount(1, 'results')
+            ->assertJsonPath('results.0.internal_number', $invoiceNumber);
+
+        $this->actingAs($this->retailAdmin($retailStoreId))
+            ->getJson(route('admin.customer-360.finance-invoices', [
+                'platformCustomer' => $platform->id,
+                'q' => '%',
+            ]))
+            // Retail roles cannot see this Wholesale identity; deny without leaking its existence.
+            ->assertNotFound();
+
+        $this->assertSame($before, DB::table('invoices')->count());
+        $this->assertSame($ledgerBefore, DB::table('customer_account_ledger_entries')->count());
+    }
+
     public function test_customer_360_manual_finance_entry_uses_authoritative_ledger_currency_and_precision(): void
     {
         $retailStoreId = $this->store('B2C', 'FINANCE-CURRENCY-OWNER', 'Finance Currency Owner');
@@ -807,6 +1018,107 @@ class DashboardCustomer360Test extends TestCase
             'b2b_customer_id' => $domain->id,
             'reference' => 'FORGED-SERVICE-CURRENCY',
         ]);
+    }
+
+    public function test_customer_360_list_search_treats_special_characters_as_literal_under_store_authority(): void
+    {
+        $storeA = $this->store('B2C', 'SEARCH-RETAIL-A', 'Search Retail A');
+        $storeB = $this->store('B2C', 'SEARCH-RETAIL-B', 'Search Retail B');
+
+        $fixtures = [
+            ['name' => 'عرض 100% خاص', 'email' => 'literal-percent@example.test', 'store' => $storeA],
+            ['name' => 'عرض 1000 خاص', 'email' => 'wildcard-percent@example.test', 'store' => $storeA],
+            ['name' => 'Client_A', 'email' => 'literal-underscore@example.test', 'store' => $storeA],
+            ['name' => 'ClientXA', 'email' => 'wildcard-underscore@example.test', 'store' => $storeA],
+            ['name' => 'Important! Buyer', 'email' => 'literal-exclamation@example.test', 'store' => $storeA],
+            ['name' => 'Flower Market', 'email' => 'flowers@example.test', 'store' => $storeA],
+            ['name' => 'سوق الزهور', 'email' => 'arabic@example.test', 'store' => $storeA],
+            ['name' => 'Email Special', 'email' => 'email-special@example.test', 'store' => $storeA],
+            ['name' => 'Email Lookalike', 'email' => 'email-lookalike@example.test', 'store' => $storeA],
+            ['name' => 'Phone Special', 'email' => 'phone-special@example.test', 'store' => $storeA],
+            ['name' => 'Phone Lookalike', 'email' => 'phone-lookalike@example.test', 'store' => $storeA],
+            ['name' => 'Foreign%Name', 'email' => 'foreign-percent@example.test', 'store' => $storeB],
+        ];
+
+        $ids = [];
+        foreach ($fixtures as $fixture) {
+            $user = $this->customer($fixture['name'], $fixture['email'], $fixture['store']);
+            $ids[] = (int) PlatformCustomer::query()->where('user_id', $user->id)->value('id');
+        }
+
+        // Existing domain-level validation should not be loosened merely to test literal
+        // SQL matching. Populate synthetic historic snapshot values at the read-model layer.
+        DB::table('platform_customers')->where('id', $ids[7])->update(['email' => 'vip_%@example.test']);
+        DB::table('platform_customers')->where('id', $ids[8])->update(['email' => 'vipX0@example.test']);
+        DB::table('platform_customers')->where('id', $ids[9])->update(['phone' => '+20100778_8']);
+        DB::table('platform_customers')->where('id', $ids[10])->update(['phone' => '+20100778X8']);
+
+        $admin = $this->globalAdmin('SUPER_ADMIN');
+        $retailAdmin = $this->retailAdmin($storeA);
+        $countBefore = PlatformCustomer::query()->count();
+        $auditBefore = DB::table('audit_logs')->count();
+
+        foreach ([
+            ['q' => '100%', 'locale' => 'ar', 'expected' => [$ids[0]]],
+            ['q' => 'Client_', 'locale' => 'en', 'expected' => [$ids[2]]],
+            ['q' => 'Important!', 'locale' => 'en', 'expected' => [$ids[4]]],
+            ['q' => 'Flower', 'locale' => 'en', 'expected' => [$ids[5]]],
+            ['q' => 'الزهور', 'locale' => 'ar', 'expected' => [$ids[6]]],
+            ['q' => 'vip_%', 'locale' => 'en', 'expected' => [$ids[7]]],
+            ['q' => '778_8', 'locale' => 'en', 'expected' => [$ids[9]]],
+            ['q' => 'Foreign%Name', 'locale' => 'ar', 'expected' => []],
+            ['q' => 'Missing%_!', 'locale' => 'en', 'expected' => []],
+        ] as $case) {
+            $retailAdmin->forceFill(['locale' => $case['locale']])->save();
+            $page = $this->actingAs($retailAdmin)
+                ->get(route('admin.customer-360.index', ['q' => $case['q']]))
+                ->assertOk()
+                ->viewData('customers');
+
+            $actual = $page->getCollection()->pluck('id')->map(static fn ($id): int => (int) $id)->all();
+            $this->assertSame($case['expected'], $actual, 'Customer 360 scoped literal q='.$case['q']);
+        }
+
+        $superPage = $this->actingAs($admin)
+            ->get(route('admin.customer-360.index', ['q' => 'Foreign%Name']))
+            ->assertOk()->viewData('customers');
+        $this->assertSame([$ids[11]], $superPage->getCollection()->pluck('id')->all());
+
+        $roleless = User::query()->create([
+            'name' => 'No Customer Permission',
+            'email' => 'customer-360-literal-denied@example.test',
+            'password' => 'password123',
+            'locale' => 'en',
+            'is_active' => true,
+        ]);
+        $this->actingAs($roleless)->get(route('admin.customer-360.index', ['q' => '100%']))
+            ->assertForbidden();
+
+        $this->assertSame($countBefore, PlatformCustomer::query()->count());
+        $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+    }
+
+    public function test_customer_360_literal_search_preserves_25_row_pagination_and_query(): void
+    {
+        $store = $this->store('B2C', 'SEARCH-PAGE', 'Search Pagination');
+        for ($index = 0; $index < 26; $index++) {
+            $this->customer('Batch! Customer '.$index, 'batch-literal-'.$index.'@example.test', $store);
+        }
+        $admin = $this->retailAdmin($store);
+
+        $first = $this->actingAs($admin)
+            ->get(route('admin.customer-360.index', ['q' => 'Batch!']))
+            ->assertOk()->viewData('customers');
+        $this->assertSame(26, $first->total());
+        $this->assertCount(25, $first->items());
+        parse_str((string) parse_url((string) $first->nextPageUrl(), PHP_URL_QUERY), $query);
+        $this->assertSame('Batch!', $query['q'] ?? null);
+
+        $second = $this->actingAs($admin)
+            ->get(route('admin.customer-360.index', ['q' => 'Batch!', 'page' => 2]))
+            ->assertOk()->viewData('customers');
+        $this->assertSame(26, $second->total());
+        $this->assertCount(1, $second->items());
     }
 
     private function customer(string $name, string $email, int $storeId): User

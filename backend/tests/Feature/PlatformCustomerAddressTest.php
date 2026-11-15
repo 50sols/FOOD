@@ -221,6 +221,84 @@ class PlatformCustomerAddressTest extends TestCase
             ->assertJsonPath('addresses.0.id', $wholesaleId);
     }
 
+    public function test_location_semantic_errors_use_customer_locale_without_address_or_audit_writes(): void
+    {
+        $user = $this->registerPlatformCustomer(
+            'address-location-locale@example.test',
+            '+201000001117',
+        );
+
+        $created = $this->postJson('/api/v1/profile/addresses', [
+            'label' => 'Saved manual location',
+            'line1' => 'Street 4',
+            'city' => 'Cairo',
+            'country_code' => 'EG',
+            'location_source' => 'manual',
+        ])->assertCreated();
+
+        $addressId = (int) $created->json('id');
+        $originalAddressCount = DB::table('addresses')->count();
+        $originalAuditCount = DB::table('audit_logs')->count();
+
+        foreach (['en', 'ar'] as $locale) {
+            $user->forceFill(['locale' => $locale])->save();
+            Sanctum::actingAs($user->fresh());
+            app()->setLocale($locale);
+
+            foreach (['map_pin', 'current_location'] as $source) {
+                $this->withHeader('Accept-Language', $locale)
+                    ->postJson('/api/v1/profile/addresses', [
+                        'label' => 'Incomplete location',
+                        'line1' => 'Street 5',
+                        'city' => 'Cairo',
+                        'country_code' => 'EG',
+                        'location_source' => $source,
+                    ])
+                    ->assertUnprocessable()
+                    ->assertJsonPath('errors.latitude.0', __('customer_address_location.coordinate_pair_required'))
+                    ->assertJsonPath('errors.longitude.0', __('customer_address_location.coordinate_pair_required'));
+            }
+
+            $this->withHeader('Accept-Language', $locale)
+                ->postJson('/api/v1/profile/addresses', [
+                    'label' => 'Accuracy without coordinates',
+                    'line1' => 'Street 6',
+                    'city' => 'Cairo',
+                    'country_code' => 'EG',
+                    'location_source' => 'manual',
+                    'location_accuracy_meters' => 8.5,
+                ])
+                ->assertUnprocessable()
+                ->assertJsonPath('errors.location_accuracy_meters.0', __('customer_address_location.accuracy_pair_required'));
+
+            $this->withHeader('Accept-Language', $locale)
+                ->patchJson("/api/v1/profile/addresses/{$addressId}", [
+                    'location_source' => 'current_location',
+                ])
+                ->assertUnprocessable()
+                ->assertJsonPath('errors.latitude.0', __('customer_address_location.coordinate_pair_required'))
+                ->assertJsonPath('errors.longitude.0', __('customer_address_location.coordinate_pair_required'));
+
+            $this->assertSame($originalAddressCount, DB::table('addresses')->count());
+            $this->assertSame($originalAuditCount, DB::table('audit_logs')->count());
+            $this->assertDatabaseHas('addresses', [
+                'id' => $addressId,
+                'location_source' => 'manual',
+            ]);
+        }
+
+        $this->patchJson("/api/v1/profile/addresses/{$addressId}", [
+            'location_source' => 'current_location',
+            'latitude' => 30.04442,
+            'longitude' => 31.235712,
+            'location_accuracy_meters' => 6.4,
+        ])
+            ->assertOk()
+            ->assertJsonPath('location_source', 'current_location')
+            ->assertJsonPath('latitude', 30.04442)
+            ->assertJsonPath('longitude', 31.235712);
+    }
+
     public function test_geographic_location_sources_require_real_coordinate_pairs(): void
     {
         $this->registerPlatformCustomer(
@@ -330,6 +408,60 @@ class PlatformCustomerAddressTest extends TestCase
 
         $this->deleteJson("/api/v1/profile/addresses/{$foreignAddressId}")
             ->assertNotFound();
+    }
+
+    public function test_unsupported_customer_address_domain_is_localized_and_never_mutates_data(): void
+    {
+        $user = $this->registerPlatformCustomer(
+            'invalid-customer-address-domain@example.test',
+            '+201000001199',
+        );
+        $arabic = 'قناة البيع المحددة لعنوان العميل غير مدعومة.';
+        $english = 'Unsupported customer address commerce channel.';
+
+        foreach ([
+            ['ar', 'en', $arabic],
+            ['en', 'ar', $english],
+            ['fr', 'en', $english],
+            ['fr', 'ar', $arabic],
+        ] as [$storedLocale, $acceptLanguage, $expected]) {
+            $user->forceFill(['locale' => $storedLocale])->save();
+            Sanctum::actingAs($user->fresh());
+
+            $tables = ['addresses', 'audit_logs', 'orders', 'invoices', 'payments', 'stock_movements'];
+            $before = [];
+            foreach ($tables as $table) {
+                $before[$table] = DB::table($table)->count();
+            }
+
+            $headers = [
+                'X-FOODEX-Customer-Domain' => 'unsupported',
+                'Accept-Language' => $acceptLanguage,
+            ];
+            $this->withHeaders($headers)
+                ->getJson('/api/v1/profile/addresses')
+                ->assertStatus(400)
+                ->assertJsonPath('message', $expected);
+
+            $this->withHeaders($headers)
+                ->postJson('/api/v1/profile/addresses', [
+                    'label' => 'Should never save',
+                    'line1' => 'Untrusted address',
+                    'city' => 'Cairo',
+                    'country_code' => 'EG',
+                ])
+                ->assertStatus(400)
+                ->assertJsonPath('message', $expected);
+
+            foreach ($tables as $table) {
+                $this->assertSame($before[$table], DB::table($table)->count(), $table.' mutated after invalid domain');
+            }
+        }
+
+        $this->withHeaders(['X-FOODEX-Customer-Domain' => 'b2c'])
+            ->getJson('/api/v1/profile/addresses')
+            ->assertOk()
+            ->assertJsonCount(0, 'data');
     }
 
     private function registerPlatformCustomer(string $email, string $phone): User

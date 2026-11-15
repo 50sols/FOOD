@@ -43,11 +43,13 @@ final class CampaignAudienceService
 
         $q = trim((string) ($filters['q'] ?? ''));
         if ($q !== '') {
-            $like = '%'.str_replace(['%', '_'], ['\\%', '\\_'], $q).'%';
-            $query->where(function ($builder) use ($like): void {
-                $builder->where('pc.name', 'like', $like)
-                    ->orWhere('pc.phone', 'like', $like)
-                    ->orWhere('pc.email', 'like', $like);
+            // Treat audience searches as literal text across SQLite and MySQL/MariaDB.
+            // A declared ! escape is portable; implicit backslash escaping is not.
+            $literalPattern = '%'.str_replace(['!', '%', '_'], ['!!', '!%', '!_'], $q).'%';
+            $query->where(function ($builder) use ($literalPattern): void {
+                $builder->whereRaw("pc.name LIKE ? ESCAPE '!'", [$literalPattern])
+                    ->orWhereRaw("pc.phone LIKE ? ESCAPE '!'", [$literalPattern])
+                    ->orWhereRaw("pc.email LIKE ? ESCAPE '!'", [$literalPattern]);
             });
         }
 

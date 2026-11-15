@@ -651,11 +651,11 @@ final class CustomerServiceCaseManager
         $query = $this->visibleCustomersQuery($storeIds);
         $term = trim((string) $search);
         if ($term !== '') {
-            $needle = '%'.addcslashes($term, '%_\\').'%';
+            $needle = '%'.str_replace(['!', '%', '_'], ['!!', '!%', '!_'], $term).'%';
             $query->where(function ($searchQuery) use ($needle): void {
-                $searchQuery->where('pc.name', 'like', $needle)
-                    ->orWhere('pc.email', 'like', $needle)
-                    ->orWhere('pc.phone', 'like', $needle);
+                $searchQuery->whereRaw("pc.name LIKE ? ESCAPE '!'", [$needle])
+                    ->orWhereRaw("pc.email LIKE ? ESCAPE '!'", [$needle])
+                    ->orWhereRaw("pc.phone LIKE ? ESCAPE '!'", [$needle]);
             });
         }
 
@@ -846,15 +846,15 @@ final class CustomerServiceCaseManager
         }
         $q = trim((string) ($filters['q'] ?? ''));
         if ($q !== '') {
-            $needle = '%'.addcslashes($q, '%_\\').'%';
+            $needle = '%'.str_replace(['!', '%', '_'], ['!!', '!%', '!_'], $q).'%';
             $query->where(function ($search) use ($needle): void {
-                $search->where('cases.subject', 'like', $needle)
-                    ->orWhere('customers.name', 'like', $needle)
-                    ->orWhere('customers.email', 'like', $needle)
-                    ->orWhere('customers.phone', 'like', $needle)
-                    ->orWhere('cases.contact_phone', 'like', $needle)
-                    ->orWhere('orders.order_number', 'like', $needle)
-                    ->orWhere('invoices.invoice_number', 'like', $needle);
+                $search->whereRaw("cases.subject LIKE ? ESCAPE '!'", [$needle])
+                    ->orWhereRaw("customers.name LIKE ? ESCAPE '!'", [$needle])
+                    ->orWhereRaw("customers.email LIKE ? ESCAPE '!'", [$needle])
+                    ->orWhereRaw("customers.phone LIKE ? ESCAPE '!'", [$needle])
+                    ->orWhereRaw("cases.contact_phone LIKE ? ESCAPE '!'", [$needle])
+                    ->orWhereRaw("orders.order_number LIKE ? ESCAPE '!'", [$needle])
+                    ->orWhereRaw("invoices.invoice_number LIKE ? ESCAPE '!'", [$needle]);
             });
         }
     }
