@@ -73,6 +73,23 @@ final class V2VanLoadingAuthorizationContractTest extends TestCase
             ['destination_type' => 'van'],
             ['metadata' => ['van_id' => 987654]],
             ['metadata' => ['target_van_id' => null]],
+            // Alias spellings must not escape Laravel's exact-key "missing"
+            // validator and be reported as an accepted warehouse transfer.
+            ['vanId' => 987654],
+            ['vanID' => 987654],
+            ['Van-ID' => 987654],
+            ['VAN_ID' => 987654],
+            ['sourceVanId' => 987654],
+            ['targetVanId' => 987654],
+            ['destinationVanId' => 987654],
+            ['vanAssignmentId' => 987654],
+            ['vanTripId' => 987654],
+            ['vanLoadId' => 987654],
+            ['sourceType' => 'van'],
+            ['targetType' => 'van'],
+            ['destinationType' => 'van'],
+            ['metaData' => ['vanId' => 987654]],
+            ['meta-data' => ['targetVanId' => 987654]],
         ];
         foreach (['en', 'ar'] as $locale) {
             $actor->forceFill(['locale' => $locale])->save();
