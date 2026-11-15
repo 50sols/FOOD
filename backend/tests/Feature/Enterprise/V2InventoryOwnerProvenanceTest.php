@@ -126,6 +126,8 @@ final class V2InventoryOwnerProvenanceTest extends TestCase
         $this->assertSame('STALE', $changed['state']);
         $this->assertFalse($changed['certified']);
         $this->assertSame('11.000', $changed['quantity']);
+        $this->assertFalse($changed['positions'][0]['certified']);
+        $this->assertFalse($changed['positions'][1]['certified']);
     }
 
     public function test_foreign_store_supplier_cannot_be_certified_as_local_legal_title(): void
@@ -148,6 +150,8 @@ final class V2InventoryOwnerProvenanceTest extends TestCase
         $this->assertSame('UNKNOWN', $snapshot['state']);
         $this->assertFalse($snapshot['certified']);
         $this->assertNull($snapshot['positions'][1]['supplier_id']);
+        $this->assertFalse($snapshot['positions'][0]['certified']);
+        $this->assertFalse($snapshot['positions'][1]['certified']);
     }
 
     public function test_other_store_inventory_is_never_exposed_through_owner_read_service(): void

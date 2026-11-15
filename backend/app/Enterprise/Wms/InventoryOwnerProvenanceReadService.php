@@ -137,6 +137,15 @@ final class InventoryOwnerProvenanceReadService
             : ($unknown ? 'UNKNOWN'
                 : ($certified ? 'CERTIFIED' : 'UNVERIFIED'));
 
+        // Never expose a per-owner positive certification when the aggregate
+        // inventory is stale, incomplete or includes unproven legal title.
+        if (! $certified) {
+            foreach ($positions as &$position) {
+                $position['certified'] = false;
+            }
+            unset($position);
+        }
+
         return [
             'inventory_id' => $inventoryId,
             'store_id' => (int) $warehouse->store_id,
