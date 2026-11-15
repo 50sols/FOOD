@@ -100,13 +100,6 @@ class VanCollectionControllerTest extends TestCase
             'inventory_reservations',
             'audit_logs',
         ];
-        $beforeInvalid = [];
-        foreach ($guardedTables as $table) {
-            if (DB::getSchemaBuilder()->hasTable($table)) {
-                $beforeInvalid[$table] = DB::table($table)->count();
-            }
-        }
-
         $invalidHeaderMessage = [
             'en' => 'Idempotency-Key must be 8-72 characters using letters, numbers, dot, underscore, colon or dash.',
             'ar' => 'يجب أن يتكوّن مفتاح Idempotency-Key من 8 إلى 72 حرفًا، باستخدام الأحرف الإنجليزية والأرقام والنقطة والشرطة السفلية والنقطتين والشرطة فقط.',
@@ -114,6 +107,12 @@ class VanCollectionControllerTest extends TestCase
 
         foreach ($invalidHeaderMessage as $locale => $message) {
             $actor->forceFill(['locale' => $locale])->save();
+            $beforeInvalid = [];
+            foreach ($guardedTables as $table) {
+                if (DB::getSchemaBuilder()->hasTable($table)) {
+                    $beforeInvalid[$table] = DB::table($table)->count();
+                }
+            }
 
             foreach (['short', 'invalid key!', str_repeat('A', 73)] as $invalidKey) {
                 $headers = [
@@ -147,6 +146,12 @@ class VanCollectionControllerTest extends TestCase
 
         // Unsupported saved locale uses the supported Accept-Language negotiation.
         $actor->forceFill(['locale' => 'zz'])->save();
+        $beforeInvalid = [];
+        foreach ($guardedTables as $table) {
+            if (DB::getSchemaBuilder()->hasTable($table)) {
+                $beforeInvalid[$table] = DB::table($table)->count();
+            }
+        }
         $this->withHeaders(['Idempotency-Key' => 'short', 'Accept-Language' => 'en-US,en;q=0.9'])
             ->postJson('/api/v1/van/remittances', [
                 'collection_account_id' => 999999,
