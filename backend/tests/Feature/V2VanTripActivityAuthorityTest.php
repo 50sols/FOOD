@@ -270,7 +270,6 @@ final class V2VanTripActivityAuthorityTest extends TestCase
         $this->assertDatabaseCount('van_visits', 1);
     }
 
-
     public function test_planned_visit_rejects_inactive_or_cross_channel_assignment_provenance_before_writing(): void
     {
         $admin = $this->superAdmin();
