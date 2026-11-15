@@ -99,7 +99,7 @@ final class CartService
 
         abort_unless(hash_equals((string) $cart->token_hash, hash('sha256', $token)), 404);
         $expiresAt = $cart->expires_at === null ? null : CarbonImmutable::parse((string) $cart->expires_at);
-        abort_if($expiresAt?->isPast() === true, 410, 'Cart expired.');
+        abort_if($expiresAt?->isPast() === true, 410, __('smart_ordering_cart.expired'));
 
         return $cart;
     }
