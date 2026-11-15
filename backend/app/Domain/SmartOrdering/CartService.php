@@ -35,9 +35,9 @@ final class CartService
 
         $site = $branch->site()->firstOrFail();
         $published = $this->revisions->published($site);
-        abort_unless($published !== null, 409, 'Smart Ordering has no published revision.');
+        abort_unless($published !== null, 409, __('smart_ordering_cart.no_published_revision'));
         if ($revisionPublicId !== null && ! hash_equals((string) $published->public_id, $revisionPublicId)) {
-            abort(409, 'Requested Smart Ordering revision is stale or unpublished.');
+            abort(409, __('smart_ordering_cart.stale_or_unpublished_revision'));
         }
 
         $trustedAttribution = null;
