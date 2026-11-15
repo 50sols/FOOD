@@ -21,6 +21,7 @@ use App\Support\ResolvedTenantContext;
 use App\Support\TenantContextResolver;
 use Database\Seeders\CoreReferenceSeeder;
 use Illuminate\Database\Eloquent\ModelNotFoundException;
+use Illuminate\Database\Events\QueryExecuted;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
@@ -136,6 +137,82 @@ final class V2ReceivableSettlementWorkbenchTest extends TestCase
             ['store_id' => $store->id],
         )->assertSessionHasErrors('collection_source');
         $this->assertDatabaseCount('enterprise_finance_journals', 1);
+    }
+
+    public function test_draft_allocation_checks_and_writes_share_a_document_transaction_with_safe_retries(): void
+    {
+        $fixture = $this->fixture('P303-ATOMIC-DRAFT');
+        $ar = app(AccountsReceivableService::class);
+        $context = app(TenantContextResolver::class)->retail($fixture['maker'], $fixture['store']->id);
+        $baseTransactionLevel = DB::transactionLevel();
+        $documentQueries = [];
+        $allocationInserts = [];
+
+        // The seeded Retail fixture is already wrapped in RefreshDatabase's
+        // outer test transaction. An additional level is required so that the
+        // document lock, idempotency lookup, draft write and audit are atomic.
+        DB::listen(function (QueryExecuted $event) use (&$documentQueries, &$allocationInserts): void {
+            $sql = strtolower(ltrim($event->sql));
+            if (str_starts_with($sql, 'select') && str_contains($sql, 'enterprise_ar_documents')) {
+                $documentQueries[] = ['sql' => $sql, 'level' => DB::transactionLevel()];
+            }
+            if (str_starts_with($sql, 'insert') && str_contains($sql, 'enterprise_ar_allocations')) {
+                $allocationInserts[] = DB::transactionLevel();
+            }
+        });
+
+        $payload = [
+            'idempotency_key' => 'p303-atomic-draft-001',
+            'allocation_date' => '2027-01-12',
+            'amount' => '20.000',
+            'settlement_account_id' => $fixture['cash_account_id'],
+            'reference' => 'UNVERIFIED-NOT-A-RECEIPT',
+        ];
+
+        $draft = $ar->createAllocation($fixture['maker'], $context, $fixture['document']->id, $payload);
+        $this->assertSame('draft', $draft->status);
+        $this->assertNotEmpty($documentQueries);
+        $this->assertContains($baseTransactionLevel + 1, array_column($documentQueries, 'level'));
+        $this->assertContains($baseTransactionLevel + 1, $allocationInserts);
+        if (DB::getDriverName() === 'mysql') {
+            $this->assertTrue(
+                collect($documentQueries)->contains(
+                    fn (array $query): bool => str_contains($query['sql'], 'for update')
+                        && $query['level'] > $baseTransactionLevel,
+                ),
+                'MySQL must lock the AR document within the draft transaction.',
+            );
+        }
+        $this->assertSame($baseTransactionLevel, DB::transactionLevel());
+
+        $retry = $ar->createAllocation($fixture['maker'], $context, $fixture['document']->id, $payload);
+        $this->assertSame($draft->id, $retry->id);
+
+        try {
+            $ar->createAllocation(
+                $fixture['maker'],
+                $context,
+                $fixture['document']->id,
+                [...$payload, 'amount' => '21.000'],
+            );
+            $this->fail('A conflicting idempotency replay must be rejected.');
+        } catch (ValidationException $exception) {
+            $this->assertArrayHasKey('idempotency_key', $exception->errors());
+        }
+
+        $this->assertSame($baseTransactionLevel, DB::transactionLevel());
+        $this->assertDatabaseCount('enterprise_ar_allocations', 1);
+        $this->assertSame('20.000', (string) $draft->fresh()->amount);
+        $this->assertSame('draft', $draft->fresh()->status);
+        $this->assertNull($draft->fresh()->journal_id);
+        $this->assertDatabaseCount('enterprise_finance_journals', 1);
+        $this->assertSame(
+            1,
+            DB::table('audit_logs')
+                ->where('event', 'enterprise.finance.ar_allocation_created')
+                ->where('auditable_id', $draft->id)
+                ->count(),
+        );
     }
 
     public function test_posted_legacy_allocation_cannot_be_replayed_as_verified_collection(): void
@@ -393,6 +470,7 @@ final class V2ReceivableSettlementWorkbenchTest extends TestCase
     private function userForStore(Store $store, string $code): User
     {
         $role = Role::query()->where('code', 'B2C_STORE_ADMIN')->firstOrFail();
+        /** @var User $user */
         $user = User::factory()->create([
             'email' => strtolower($code).'@example.test',
             'is_active' => true,

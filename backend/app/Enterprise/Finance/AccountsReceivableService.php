@@ -410,69 +410,85 @@ final class AccountsReceivableService
             'reference' => ['nullable', 'string', 'max:180'],
         ])->validate();
 
-        $document = $this->documentQuery($scope, $context)->whereKey($documentId)->firstOrFail();
-        if ($document->status !== 'posted') {
-            throw ValidationException::withMessages([
-                'status' => ['Only posted AR documents can receive allocations.'],
-            ]);
-        }
-
-        $this->assertPostingAccount($scope, (int) $data['settlement_account_id']);
-        $amount = $this->formatMills($this->toMills($data['amount']));
-        if ($this->toMills($amount) < 1) {
-            throw ValidationException::withMessages([
-                'amount' => ['Allocation amount must be greater than zero.'],
-            ]);
-        }
-
-        $allocationDate = CarbonImmutable::parse((string) $data['allocation_date'])->toDateString();
-        $idempotencyKey = trim((string) $data['idempotency_key']);
-        $reference = $this->trimNullable($data['reference'] ?? null);
-        $requestHash = hash('sha256', json_encode([
-            'allocation_date' => $allocationDate,
-            'amount' => $amount,
-            'settlement_account_id' => (int) $data['settlement_account_id'],
-            'reference' => $reference,
-        ], JSON_THROW_ON_ERROR));
-
-        $existing = EnterpriseAccountsReceivableAllocation::query()
-            ->where('ar_document_id', $document->id)
-            ->where('idempotency_key', $idempotencyKey)
-            ->first();
-
-        if ($existing instanceof EnterpriseAccountsReceivableAllocation) {
-            $this->assertRequestHash($existing->request_hash, $requestHash);
-
-            return $existing;
-        }
-
-        if ($this->toMills($amount) > $this->toMills($this->outstandingAmount($document))) {
-            throw ValidationException::withMessages([
-                'amount' => ['Allocation exceeds the outstanding AR amount.'],
-            ]);
-        }
-
-        $allocation = EnterpriseAccountsReceivableAllocation::query()->create([
-            'ar_document_id' => $document->id,
-            'idempotency_key' => $idempotencyKey,
-            'request_hash' => $requestHash,
-            'allocation_date' => $allocationDate,
-            'amount' => $amount,
-            'settlement_account_id' => (int) $data['settlement_account_id'],
-            'reference' => $reference,
-            'status' => 'draft',
-            'created_by' => $actor->id,
-        ]);
-
-        $this->audit->record(
-            'enterprise.finance.ar_allocation_created',
+        // One authoritative row lock for all draft idempotency and outstanding
+        // checks on this receivable. Keep the draft, its audit entry and retry
+        // identity atomic; the database unique constraint remains the last
+        // defense against duplicate requests.
+        return DB::transaction(function () use (
             $actor,
-            $allocation,
-            null,
-            $allocation->toArray(),
-        );
+            $context,
+            $scope,
+            $documentId,
+            $data,
+        ): EnterpriseAccountsReceivableAllocation {
+            $document = $this->documentQuery($scope, $context)
+                ->whereKey($documentId)
+                ->lockForUpdate()
+                ->firstOrFail();
 
-        return $allocation->refresh();
+            if ($document->status !== 'posted') {
+                throw ValidationException::withMessages([
+                    'status' => ['Only posted AR documents can receive allocations.'],
+                ]);
+            }
+
+            $this->assertPostingAccount($scope, (int) $data['settlement_account_id']);
+            $amount = $this->formatMills($this->toMills($data['amount']));
+            if ($this->toMills($amount) < 1) {
+                throw ValidationException::withMessages([
+                    'amount' => ['Allocation amount must be greater than zero.'],
+                ]);
+            }
+
+            $allocationDate = CarbonImmutable::parse((string) $data['allocation_date'])->toDateString();
+            $idempotencyKey = trim((string) $data['idempotency_key']);
+            $reference = $this->trimNullable($data['reference'] ?? null);
+            $requestHash = hash('sha256', json_encode([
+                'allocation_date' => $allocationDate,
+                'amount' => $amount,
+                'settlement_account_id' => (int) $data['settlement_account_id'],
+                'reference' => $reference,
+            ], JSON_THROW_ON_ERROR));
+
+            $existing = EnterpriseAccountsReceivableAllocation::query()
+                ->where('ar_document_id', $document->id)
+                ->where('idempotency_key', $idempotencyKey)
+                ->first();
+
+            if ($existing instanceof EnterpriseAccountsReceivableAllocation) {
+                $this->assertRequestHash($existing->request_hash, $requestHash);
+
+                return $existing;
+            }
+
+            if ($this->toMills($amount) > $this->toMills($this->outstandingAmount($document))) {
+                throw ValidationException::withMessages([
+                    'amount' => ['Allocation exceeds the outstanding AR amount.'],
+                ]);
+            }
+
+            $allocation = EnterpriseAccountsReceivableAllocation::query()->create([
+                'ar_document_id' => $document->id,
+                'idempotency_key' => $idempotencyKey,
+                'request_hash' => $requestHash,
+                'allocation_date' => $allocationDate,
+                'amount' => $amount,
+                'settlement_account_id' => (int) $data['settlement_account_id'],
+                'reference' => $reference,
+                'status' => 'draft',
+                'created_by' => $actor->id,
+            ]);
+
+            $this->audit->record(
+                'enterprise.finance.ar_allocation_created',
+                $actor,
+                $allocation,
+                null,
+                $allocation->toArray(),
+            );
+
+            return $allocation->refresh();
+        }, 3);
     }
 
     public function postAllocation(
