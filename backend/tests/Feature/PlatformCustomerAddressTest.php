@@ -410,6 +410,60 @@ class PlatformCustomerAddressTest extends TestCase
             ->assertNotFound();
     }
 
+    public function test_unsupported_customer_address_domain_is_localized_and_never_mutates_data(): void
+    {
+        $user = $this->registerPlatformCustomer(
+            'invalid-customer-address-domain@example.test',
+            '+201000001199',
+        );
+        $arabic = 'قناة البيع المحددة لعنوان العميل غير مدعومة.';
+        $english = 'Unsupported customer address commerce channel.';
+
+        foreach ([
+            ['ar', 'en', $arabic],
+            ['en', 'ar', $english],
+            ['fr', 'en', $english],
+            ['fr', 'ar', $arabic],
+        ] as [$storedLocale, $acceptLanguage, $expected]) {
+            $user->forceFill(['locale' => $storedLocale])->save();
+            Sanctum::actingAs($user->fresh());
+
+            $tables = ['addresses', 'audit_logs', 'orders', 'invoices', 'payments', 'stock_movements'];
+            $before = [];
+            foreach ($tables as $table) {
+                $before[$table] = DB::table($table)->count();
+            }
+
+            $headers = [
+                'X-FOODEX-Customer-Domain' => 'unsupported',
+                'Accept-Language' => $acceptLanguage,
+            ];
+            $this->withHeaders($headers)
+                ->getJson('/api/v1/profile/addresses')
+                ->assertStatus(400)
+                ->assertJsonPath('message', $expected);
+
+            $this->withHeaders($headers)
+                ->postJson('/api/v1/profile/addresses', [
+                    'label' => 'Should never save',
+                    'line1' => 'Untrusted address',
+                    'city' => 'Cairo',
+                    'country_code' => 'EG',
+                ])
+                ->assertStatus(400)
+                ->assertJsonPath('message', $expected);
+
+            foreach ($tables as $table) {
+                $this->assertSame($before[$table], DB::table($table)->count(), $table.' mutated after invalid domain');
+            }
+        }
+
+        $this->withHeaders(['X-FOODEX-Customer-Domain' => 'b2c'])
+            ->getJson('/api/v1/profile/addresses')
+            ->assertOk()
+            ->assertJsonCount(0, 'data');
+    }
+
     private function registerPlatformCustomer(string $email, string $phone): User
     {
         $this->postJson('/api/v1/auth/register', [
