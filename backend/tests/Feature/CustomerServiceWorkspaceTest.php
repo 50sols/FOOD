@@ -6,6 +6,7 @@ use App\Models\Permission;
 use App\Models\PlatformCustomer;
 use App\Models\Role;
 use App\Models\User;
+use App\Services\CustomerServiceCaseManager;
 use Database\Seeders\CoreReferenceSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
@@ -224,6 +225,142 @@ class CustomerServiceWorkspaceTest extends TestCase
         }
 
         return $result;
+    }
+
+    public function test_customer_service_picker_and_case_list_use_literal_scoped_search(): void
+    {
+        $storeA = $this->store('B2C', 'V2-CS-3643-A');
+        $storeB = $this->store('B2C', 'V2-CS-3643-B');
+        $actor = $this->storeUser($storeA, ['customers.view', 'customers.manage']);
+        $foreignActor = $this->storeUser($storeB, ['customers.view', 'customers.manage']);
+
+        $matching = $this->customer($storeA, 'b2c', 'Service Q%_! Customer');
+        $decoy = $this->customer($storeA, 'b2c', 'Service QABC! Customer');
+        $foreign = $this->customer($storeB, 'b2c', 'Foreign Q%_! Customer');
+        $slash = $this->customer($storeA, 'b2c', 'Slash Customer');
+        $email = $this->customer($storeA, 'b2c', 'Email Contact Literal');
+        $phone = $this->customer($storeA, 'b2c', 'Phone Contact Literal');
+        $arabic = $this->customer($storeA, 'b2c', 'Arabic Customer');
+
+        DB::table('platform_customers')->where('id', $email->id)
+            ->update(['email' => 'service%_!@example.test']);
+        DB::table('platform_customers')->where('id', $phone->id)
+            ->update(['phone' => '777%_!123']);
+        DB::table('platform_customers')->where('id', $slash->id)
+            ->update(['name' => 'Slash'.chr(92).'Customer']);
+        DB::table('platform_customers')->where('id', $arabic->id)
+            ->update(['name' => 'عميل عربي مميز']);
+
+        $cases = app(CustomerServiceCaseManager::class);
+        $create = static function (User $user, int $storeId, int $customerId, string $subject) use ($cases): void {
+            $cases->createCase($user, [
+                'store_id' => $storeId,
+                'platform_customer_id' => $customerId,
+                'type' => 'complaint',
+                'priority' => 'high',
+                'queue' => 'general',
+                'subject' => $subject,
+            ]);
+        };
+        $create($actor, $storeA, $matching->id, 'Incident %_! literal');
+        $create($actor, $storeA, $decoy->id, 'Incident ABC! lookalike');
+        $create($actor, $storeA, $slash->id, 'Backslash'.chr(92).' incident');
+        $create($actor, $storeA, $email->id, 'Email-linked incident');
+        $create($actor, $storeA, $phone->id, 'Phone-linked incident');
+        $create($actor, $storeA, $arabic->id, 'شكوى عربية للعميل');
+        $create($foreignActor, $storeB, $foreign->id, 'Incident %_! foreign');
+
+        $beforeCases = DB::table('customer_service_cases')->count();
+        $beforeCustomers = DB::table('platform_customers')->count();
+        $beforeAudit = DB::table('audit_logs')->count();
+
+        foreach ([
+            ['q' => 'Q%_!', 'locale' => 'en', 'customer' => [$matching->id], 'subject' => ['Incident %_! literal']],
+            ['q' => chr(92), 'locale' => 'en', 'customer' => [$slash->id], 'subject' => ['Backslash'.chr(92).' incident']],
+            ['q' => 'service%_!', 'locale' => 'en', 'customer' => [$email->id], 'subject' => ['Email-linked incident']],
+            ['q' => '777%_!', 'locale' => 'ar', 'customer' => [$phone->id], 'subject' => ['Phone-linked incident']],
+            ['q' => 'عميل عربي', 'locale' => 'ar', 'customer' => [$arabic->id], 'subject' => ['شكوى عربية للعميل']],
+            ['q' => 'absent%_!', 'locale' => 'en', 'customer' => [], 'subject' => []],
+        ] as $case) {
+            $actor->forceFill(['locale' => $case['locale']])->save();
+            $response = $this->actingAs($actor->fresh())
+                ->get(route('admin.erp.customer-service', [
+                    'q' => $case['q'],
+                    'customer_q' => $case['q'],
+                    'store_id' => $storeA,
+                    'status' => 'open',
+                ]))
+                ->assertOk();
+
+            $ids = $response->viewData('customerOptions')->pluck('id')
+                ->map(static fn ($id): int => (int) $id)->all();
+            $expected = array_map('intval', $case['customer']);
+            sort($ids);
+            sort($expected);
+            $this->assertSame($expected, $ids);
+            $this->assertSame(
+                $case['subject'],
+                $response->viewData('cases')->getCollection()->pluck('subject')->all(),
+            );
+        }
+
+        $this->assertSame($beforeCases, DB::table('customer_service_cases')->count());
+        $this->assertSame($beforeCustomers, DB::table('platform_customers')->count());
+        $this->assertSame($beforeAudit, DB::table('audit_logs')->count());
+
+        $this->actingAs($actor->fresh())
+            ->get(route('admin.erp.customer-service', ['store_id' => $storeB, 'q' => 'Q%_!']))
+            ->assertNotFound();
+        $roleless = User::factory()->create(['is_active' => true]);
+        $this->actingAs($roleless)
+            ->get(route('admin.erp.customer-service', ['q' => 'Q%_!']))
+            ->assertForbidden();
+    }
+
+    public function test_customer_service_literal_case_search_preserves_pagination_and_filters(): void
+    {
+        $store = $this->store('B2C', 'V2-CS-3643-PAGE');
+        $actor = $this->storeUser($store, ['customers.view', 'customers.manage']);
+        $customer = $this->customer($store, 'b2c', 'Case Page Client');
+        $cases = app(CustomerServiceCaseManager::class);
+
+        for ($i = 0; $i < 26; $i++) {
+            $cases->createCase($actor, [
+                'store_id' => $store,
+                'platform_customer_id' => $customer->id,
+                'type' => 'complaint',
+                'priority' => 'high',
+                'queue' => 'general',
+                'subject' => 'Batch! Case '.(string) $i,
+            ]);
+        }
+        $cases->createCase($actor, [
+            'store_id' => $store,
+            'platform_customer_id' => $customer->id,
+            'type' => 'complaint',
+            'priority' => 'high',
+            'subject' => 'BatchX Case decoy',
+        ]);
+        $beforeAudit = DB::table('audit_logs')->count();
+        $filters = ['q' => 'Batch!', 'store_id' => $store, 'status' => 'open'];
+
+        $first = $this->actingAs($actor)
+            ->get(route('admin.erp.customer-service', $filters))
+            ->assertOk()->viewData('cases');
+
+        $this->assertSame(26, $first->total());
+        $this->assertCount(25, $first->items());
+        parse_str((string) parse_url((string) $first->nextPageUrl(), PHP_URL_QUERY), $query);
+        $this->assertSame('Batch!', $query['q'] ?? null);
+        $this->assertSame((string) $store, $query['store_id'] ?? null);
+        $this->assertSame('open', $query['status'] ?? null);
+
+        $second = $this->actingAs($actor)
+            ->get(route('admin.erp.customer-service', [...$filters, 'page' => 2]))
+            ->assertOk()->viewData('cases');
+        $this->assertSame(26, $second->total());
+        $this->assertCount(1, $second->items());
+        $this->assertSame($beforeAudit, DB::table('audit_logs')->count());
     }
 
     private function store(string $channel, string $code): int

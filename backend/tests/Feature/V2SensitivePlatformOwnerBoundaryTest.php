@@ -65,11 +65,13 @@ final class V2SensitivePlatformOwnerBoundaryTest extends TestCase
 
         $this->actingAs($superAdmin)
             ->put(route('admin.security.users.roles', $ordinaryUser), [
+                'change_reason' => 'Regression fixture approved RBAC access change',
                 'global_role_ids' => [$ownerRole->getKey()],
             ])->assertForbidden();
 
         $this->actingAs($superAdmin)
             ->put(route('admin.security.users.roles', $owner), [
+                'change_reason' => 'Regression fixture approved RBAC access change',
                 'global_role_ids' => [],
             ])->assertForbidden();
 
@@ -81,6 +83,7 @@ final class V2SensitivePlatformOwnerBoundaryTest extends TestCase
 
         $this->actingAs($superAdmin)
             ->put(route('admin.security.users.permissions', $owner), [
+                'change_reason' => 'Regression fixture approved RBAC access change',
                 'scope_type' => 'global',
                 'permission_ids' => [],
             ])->assertForbidden();
@@ -183,6 +186,8 @@ final class V2SensitivePlatformOwnerBoundaryTest extends TestCase
             ->patch(route('admin.security.users.status', $ordinaryUser), [
                 'is_active' => false,
                 'reason' => 'V2 role boundary acceptance',
+                'impact_reviewed' => true,
+                'confirm_email' => $ordinaryUser->email,
             ])->assertRedirect();
 
         $this->assertFalse($ordinaryUser->fresh()->is_active);

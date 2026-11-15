@@ -55,7 +55,9 @@ final class PurchaseReturnManager
         ])->validate();
 
         $perPage = max(10, min(100, $perPage));
-        $term = str_replace(['%', '_'], '', trim((string) ($validated['q'] ?? '')));
+        $term = trim((string) ($validated['q'] ?? ''));
+        // Preserve literal user-entered return-number symbols across SQL drivers.
+        $literalPrefix = str_replace(['!', '%', '_'], ['!!', '!%', '!_'], $term).'%';
 
         return $this->visibleQuery($scope)
             ->when(
@@ -68,7 +70,7 @@ final class PurchaseReturnManager
             )
             ->when(
                 $term !== '',
-                fn (Builder $query): Builder => $query->where('return_number', 'like', $term.'%'),
+                fn (Builder $query): Builder => $query->whereRaw("return_number LIKE ? ESCAPE '!'", [$literalPrefix]),
             )
             ->orderByDesc('id')
             ->paginate($perPage)

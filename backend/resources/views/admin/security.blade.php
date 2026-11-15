@@ -5,6 +5,12 @@
 <title>{{ __('admin.security.title') }} · FOODEX</title>
 <style>
 :root{color:#17202a;background:#f5f7fa}*{box-sizing:border-box}body{margin:0}.page{max-width:1500px;margin:auto;padding:28px}.top,.head,.row{display:flex;gap:14px;justify-content:space-between;align-items:flex-start}.top{margin-bottom:22px}.muted{color:var(--foodex-muted);line-height:1.55}.back,.card,.panel{background:#fff;border:1px solid #e2e8f0;border-radius:16px}.back{padding:10px 14px;text-decoration:none;color:#0f172a}.panel{padding:22px;margin-bottom:22px;box-shadow:0 14px 35px rgba(15,23,42,.05)}.card{padding:16px;margin-top:12px}.filters,.checks,.actions{display:flex;flex-wrap:wrap;gap:9px}.filters{margin:16px 0}.checks{margin:10px 0}.actions{align-items:center}input,select,textarea,button{font:inherit}input[type=text],input[type=search],select,textarea{border:1px solid var(--foodex-border);border-radius:10px;padding:9px 11px;background:#fff}textarea{width:100%;min-height:65px}.grow{flex:1;min-width:240px}.btn{border:0;border-radius:10px;padding:9px 13px;font-weight:750;cursor:pointer}.primary{background:#0f172a;color:#fff}.danger{background:#fff1f2;color:#9f1239}.success{background:#ecfdf5;color:#065f46}.secondary{background:#eef2ff;color:#3730a3}.badge{display:inline-block;border-radius:999px;padding:4px 8px;font-size:.75rem;background:#e2e8f0;margin:3px}.active{background:#dcfce7;color:#166534}.inactive{background:#fee2e2;color:#991b1b}.system{background:#e0e7ff;color:#3730a3}details{margin-top:12px}summary{cursor:pointer;font-weight:800}.store{border:1px dashed var(--foodex-border);border-radius:12px;padding:10px;margin:8px 0}.permissions{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:8px}.permission-group{border:0;border-top:1px solid #e2e8f0;padding:10px 0 0;min-width:0}.permission-group legend{font-weight:800;padding:0}.permission-group-tools{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin:8px 0}.permission-group-tools .btn{padding:6px 9px}.permission-search{display:grid;gap:5px;margin:12px 0}.permission-search input{width:100%}.permission-option{display:flex;gap:8px;align-items:flex-start;padding:7px 4px;border-radius:8px}.permission-option input{margin-top:4px}.permission-code{display:block;color:#64748b;margin-top:2px;overflow-wrap:anywhere}.permission-impact{display:grid;gap:4px;margin:12px 0}.assignment-store>summary{padding:4px 0}.job-role-meta{display:grid;gap:5px;margin-top:6px}.job-role-tags{display:flex;flex-wrap:wrap;gap:5px}.job-role-responsibilities{margin:8px 0 0;padding-inline-start:20px}.role-unavailable{opacity:.72}.role-unavailable .badge{background:var(--foodex-orange-soft);color:var(--foodex-ink)}.security-tabs{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:18px}.security-tab{display:inline-flex;align-items:center;min-height:42px;padding:9px 14px;border:1px solid var(--foodex-border);border-radius:12px;background:#fff;color:var(--foodex-ink);font-weight:800;text-decoration:none}.security-tab[aria-current="page"]{background:var(--foodex-green);border-color:var(--foodex-green);color:#fff}.security-users-head-actions{display:flex;flex-wrap:wrap;align-items:center;gap:8px}.security-users-head-actions .primary,.security-create-form .primary{background:var(--foodex-green);color:#fff}.security-create-form{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;min-width:min(720px,90vw);padding-top:12px}.security-create-form label{display:grid;gap:6px;font-weight:700}.security-create-form input,.security-create-form select{width:100%;border:1px solid var(--foodex-border);border-radius:10px;padding:9px 11px;background:#fff}.security-create-form .span-2{grid-column:1/-1}.security-user-table-wrap{overflow-x:auto}.security-user-table{width:100%;border-collapse:collapse;min-width:920px}.security-user-table th,.security-user-table td{padding:12px 10px;border-bottom:1px solid var(--foodex-border);text-align:start;vertical-align:middle}.security-user-table th{font-size:.82rem;color:var(--foodex-muted);background:var(--foodex-background)}.security-user-identity{display:grid;gap:3px;min-width:220px}.security-user-role-list{display:flex;flex-wrap:wrap;gap:4px;max-width:420px}.security-user-actions{display:flex;flex-wrap:wrap;gap:7px;align-items:center}.security-user-actions details{margin:0}.security-user-actions summary{list-style:none}.security-user-actions summary::-webkit-details-marker{display:none}.security-modal-stack{display:grid;gap:12px;min-width:min(760px,90vw);padding-top:12px}.notice,.errors{padding:12px 14px;border-radius:12px;margin-bottom:14px}.notice{background:#f0fdf4}.errors{background:#fff1f2}.role-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(330px,1fr));gap:12px}.role-search-controls{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin:14px 0}.role-search-controls label{font-weight:750}.role-search-controls input{flex:1;min-width:210px;max-width:470px}.role-grid [hidden],.role-search-empty[hidden]{display:none!important}.note{background:#f8fafc;padding:12px;border-radius:12px;color:#475569}.pager{margin-top:14px}@media(max-width:760px){.page{padding:12px}.top,.head,.row{flex-direction:column}.role-grid{grid-template-columns:1fr}.panel{padding:14px}.card{padding:12px}.filters{display:grid;grid-template-columns:minmax(0,1fr);width:100%}.grow{min-width:0;width:100%}.checks{display:grid;grid-template-columns:minmax(0,1fr)}.actions{align-items:stretch}.actions form{max-width:100%}.permissions{grid-template-columns:1fr}.security-create-form{grid-template-columns:1fr;min-width:0}.security-create-form .span-2{grid-column:auto}.security-tabs{overflow-x:auto;flex-wrap:nowrap;padding-bottom:4px}.security-tab{white-space:nowrap}}
+/* #2806 — reuse shared portal-based row actions; keep native dialogs as no-JS fallback. */
+.security-user-actions [data-v2-user-action-menu][hidden]{display:none!important}
+.security-user-actions[data-v2-actions-ready="1"]>.foodex-operational-dialog-host>button[data-foodex-dialog-open]{display:none!important}
+.security-user-actions [data-v2-user-action-menu]>summary{min-width:44px;min-height:44px;background:var(--foodex-action-green);border-color:var(--foodex-action-green);color:#fff}
+.security-user-actions [data-v2-user-action-menu]>summary:hover{background:var(--foodex-action-green-hover);color:#fff}
+.security-user-actions .foodex-ops-menu button{min-height:44px;white-space:normal;text-align:start}
 </style>
     @include('admin._brand-components')
 </head>
@@ -49,6 +55,12 @@ $roleLabel = static function ($role): string {
 <summary class="btn primary">{{ __('admin.security.create_user') }}</summary>
 <form method="post" action="{{ route('admin.security.users.store') }}" class="security-create-form" data-security-create-user>
 @csrf
+<label class="span-2">{{ __('admin.security.account_scope_title') }}
+<select name="account_scope" required aria-describedby="v2-account-scope-hint">
+<option value="global" @selected(old('account_scope','global')==='global')>{{ __('admin.security.account_scope_global') }}</option>
+<option value="store" @selected(old('account_scope')==='store')>{{ __('admin.security.account_scope_store') }}</option>
+<option value="mixed" @selected(old('account_scope')==='mixed')>{{ __('admin.security.account_scope_mixed') }}</option>
+</select><span id="v2-account-scope-hint" class="muted">{{ __('admin.security.account_scope_hint') }}</span></label>
 <label>{{ __('admin.security.user_name') }}<input name="name" value="{{ old('name') }}" required maxlength="120" autocomplete="name"></label>
 <label>{{ __('admin.security.username') }}<input name="username" value="{{ old('username') }}" maxlength="80" autocomplete="username" placeholder="{{ __('admin.security.username_optional') }}"></label>
 <label>{{ __('admin.security.email') }}<input type="email" name="email" value="{{ old('email') }}" required maxlength="190" autocomplete="email"></label>
@@ -87,7 +99,7 @@ $roleLabel = static function ($role): string {
 <span class="badge">{{ $users->total() }} {{ __('admin.security.users') }}</span>
 </div>
 </div>
-<form method="get" class="filters"><input type="hidden" name="section" value="users"><input class="grow" type="text" name="q" value="{{ $search }}" placeholder="{{ __('admin.security.search_users') }}"><select name="status"><option value="all" @selected($statusFilter==='all')>{{ __('admin.security.all_statuses') }}</option><option value="active" @selected($statusFilter==='active')>{{ __('admin.security.active') }}</option><option value="inactive" @selected($statusFilter==='inactive')>{{ __('admin.security.inactive') }}</option></select><button class="btn primary foodex-filter-action">{{ __('admin.security.filter') }}</button></form>
+<form method="get" class="filters"><input type="hidden" name="section" value="users"><input class="grow" type="text" name="q" value="{{ $search }}" placeholder="{{ __('admin.security.search_users') }}"><select name="status"><option value="all" @selected($statusFilter==='all')>{{ __('admin.security.all_statuses') }}</option><option value="active" @selected($statusFilter==='active')>{{ __('admin.security.active') }}</option><option value="inactive" @selected($statusFilter==='inactive')>{{ __('admin.security.inactive') }}</option></select><select name="assignment" aria-label="{{ __('admin.security.assignment_filter') }}"><option value="all" @selected($assignmentFilter==='all')>{{ __('admin.security.all_assignments') }}</option><option value="roleless" @selected($assignmentFilter==='roleless')>{{ __('admin.security.roleless_accounts') }}</option></select><button class="btn primary foodex-filter-action">{{ __('admin.security.filter') }}</button></form>
 
 <div class="security-user-table-wrap">
 <table class="security-user-table foodex-table" data-security-users-table>
@@ -95,20 +107,71 @@ $roleLabel = static function ($role): string {
 <tbody>
 @forelse($users as $managedUser)
 <tr>
-<td><div class="security-user-identity"><strong>{{ $managedUser->name }}</strong><span class="muted">{{ $managedUser->email }}</span><span class="muted">{{ __('admin.security.username') }}: {{ $managedUser->username ?: '—' }}</span></div></td>
+<td><div class="security-user-identity">
+<strong>{{ $managedUser->name }}</strong>
+<span class="muted">{{ $managedUser->email }}</span>
+<span class="muted">{{ __('admin.security.username') }}: {{ $managedUser->username ?: '—' }}</span>
+@if((bool) $managedUser->is_platform_customer)
+<span class="muted" data-v2-account-scope="customer">{{ __('admin.security.account_scope_customer') }}</span>
+@elseif($managedUser->roles->isNotEmpty() && $managedUser->storeRoleAssignments->isNotEmpty())
+<span class="muted" data-v2-account-scope="mixed">{{ __('admin.security.account_scope_mixed') }}</span>
+@elseif($managedUser->storeRoleAssignments->isNotEmpty())
+<span class="muted" data-v2-account-scope="store">{{ __('admin.security.account_scope_store') }}</span>
+@elseif($managedUser->roles->isNotEmpty())
+<span class="muted" data-v2-account-scope="global">{{ __('admin.security.account_scope_global') }}</span>
+@else
+<span class="muted" data-v2-account-scope="unassigned">{{ __('admin.security.account_scope_unassigned') }}</span>
+@endif
+</div></td>
 <td><div class="security-user-role-list">
 @foreach($managedUser->roles as $role)<span class="badge">{{ $roleLabel($role) }}</span>@endforeach
 @foreach($managedUser->storeRoleAssignments as $a)<span class="badge">{{ $a->store?->name }} · {{ $roleLabel($a->role) }}</span>@endforeach
-@if($managedUser->roles->isEmpty() && $managedUser->storeRoleAssignments->isEmpty())<span class="muted">—</span>@endif
+@if($managedUser->roles->isEmpty() && $managedUser->storeRoleAssignments->isEmpty())
+<span class="badge" data-roleless-classification="{{ $managedUser->is_platform_customer ? 'customer' : 'review' }}">{{ $managedUser->is_platform_customer ? __('admin.security.roleless_customer') : __('admin.security.roleless_review') }}</span>
+@endif
 </div></td>
 <td>
 <span class="badge {{ $managedUser->is_active?'active':'inactive' }}">{{ $managedUser->is_active?__('admin.security.active'):__('admin.security.inactive') }}</span>
 <span class="badge {{ $mfaByUser->has($managedUser->id)?'active':'inactive' }}">{{ $mfaByUser->has($managedUser->id)?__('security_governance.mfa_admin.enabled'):__('security_governance.mfa_admin.missing') }}</span>
 </td>
-<td><div class="security-user-actions">
+<td><div class="security-user-actions" data-v2-user-action-row>
+@canany(['users.roles.manage', 'users.status.manage'])
+<details class="foodex-ops-actions" data-v2-user-action-menu hidden>
+<summary aria-label="{{ __('admin.security.actions') }}: {{ $managedUser->name }}" title="{{ __('admin.security.actions') }}">⋮</summary>
+<div class="foodex-ops-menu">
 @can('users.roles.manage')
-<details data-foodex-operational-modal><summary class="btn secondary">{{ __('admin.security.manage') }}</summary>
+<button type="button" data-v2-open-user-dialog="manage">{{ __('admin.security.manage') }}</button>
+@endcan
+@can('users.status.manage')
+<button type="button" data-v2-open-user-dialog="status" class="{{ $managedUser->is_active ? 'danger' : '' }}">{{ $managedUser->is_active ? __('admin.security.deactivate') : __('admin.security.activate') }}</button>
+@endcan
+</div>
+</details>
+@endcanany
+@can('users.roles.manage')
+<details data-foodex-operational-modal data-v2-user-dialog="manage"><summary class="btn secondary">{{ __('admin.security.manage') }}</summary>
 <div class="security-modal-stack">
+
+@if(auth()->user()->hasRole('SUPER_ADMIN') && ! $managedUser->isPlatformOwner() && ! $managedUser->hasRole('SUPER_ADMIN') && ! $managedUser->is_platform_customer)
+<details class="card" data-security-edit-profile="{{ $managedUser->id }}">
+<summary>{{ __('admin.security.edit_user_profile') }}</summary>
+<form method="post" action="{{ route('admin.security.users.profile', $managedUser) }}" class="security-create-form" data-security-profile-form>
+@csrf @method('patch')
+<label>{{ __('admin.security.user_name') }}<input name="name" value="{{ $managedUser->name }}" required maxlength="120" autocomplete="name"></label>
+<label>{{ __('admin.security.username') }}<input name="username" value="{{ $managedUser->username }}" maxlength="80" autocomplete="username"></label>
+<label>{{ __('admin.security.email') }}<input type="email" name="email" value="{{ $managedUser->email }}" required maxlength="190" autocomplete="email"></label>
+<label>{{ __('admin.security.locale') }}<select name="locale" required>
+<option value="ar" @selected($managedUser->locale==='ar')>{{ __('admin.security.locale_ar') }}</option>
+<option value="en" @selected($managedUser->locale==='en')>{{ __('admin.security.locale_en') }}</option>
+</select></label>
+<p class="muted span-2">{{ __('admin.security.edit_user_roles_note') }}</p>
+<label class="span-2">{{ __('admin.security.edit_user_change_reason') }}
+<textarea name="change_reason" required minlength="8" maxlength="500" autocomplete="off" placeholder="{{ __('admin.security.edit_user_change_reason_hint') }}"></textarea>
+</label>
+<div class="span-2 actions"><button class="btn primary" type="submit">{{ __('admin.security.save_user_profile') }}</button></div>
+</form>
+</details>
+@endif
 @include('admin._security-role-assignment-picker', [
     'managedUser' => $managedUser,
     'globalRoles' => $globalRoles,
@@ -145,6 +208,10 @@ $roleLabel = static function ($role): string {
                 'permissionStates' => $userPermissionStatesByUser->get((int) $managedUser->id, [])['global'] ?? [],
                 'showPermissionScopeRule' => false,
             ])
+            <div class="note" role="status">{{ __('security_permissions.sod_change_warning') }}</div>
+            <label class="permission-change-reason">{{ __('security_permissions.change_reason') }}
+                <textarea name="change_reason" required minlength="8" maxlength="500" autocomplete="off" placeholder="{{ __('security_permissions.change_reason_hint') }}">{{ old('change_reason') }}</textarea>
+            </label>
             <button class="btn primary" type="submit">{{ __('security_permissions.user_permissions_save') }}</button>
             <button class="btn primary" style="min-height:44px;background:var(--foodex-green);color:#fff" type="submit" name="inherit" value="1"
                     onclick="return confirm('{{ __('security_permissions.user_permissions_inherit_confirm') }}')"
@@ -169,6 +236,10 @@ $roleLabel = static function ($role): string {
                 'permissionStates' => ($userPermissionStatesByUser->get((int) $managedUser->id, [])['stores'] ?? [])[(int) $permissionStore->id] ?? [],
                 'showPermissionScopeRule' => false,
             ])
+            <div class="note" role="status">{{ __('security_permissions.sod_change_warning') }}</div>
+            <label class="permission-change-reason">{{ __('security_permissions.change_reason') }}
+                <textarea name="change_reason" required minlength="8" maxlength="500" autocomplete="off" placeholder="{{ __('security_permissions.change_reason_hint') }}">{{ old('change_reason') }}</textarea>
+            </label>
             <button class="btn primary" type="submit">{{ __('security_permissions.user_permissions_save') }}</button>
             <button class="btn primary" style="min-height:44px;background:var(--foodex-green);color:#fff" type="submit" name="inherit" value="1"
                     onclick="return confirm('{{ __('security_permissions.user_permissions_inherit_confirm') }}')"
@@ -196,11 +267,29 @@ $roleLabel = static function ($role): string {
 @endcan
 @can('users.status.manage')
 @if($managedUser->is_active)
-<details data-foodex-operational-modal><summary class="btn danger">{{ __('admin.security.deactivate') }}</summary>
-<form method="post" action="{{ route('admin.security.users.status',$managedUser) }}" class="security-modal-stack" onsubmit="return confirm('{{ __('admin.security.confirm_deactivate') }}')">@csrf @method('patch')<input type="hidden" name="is_active" value="0"><input type="text" name="reason" maxlength="500" placeholder="{{ __('admin.security.optional_reason') }}"><button class="btn danger">{{ __('admin.security.deactivate') }}</button></form>
+<details data-foodex-operational-modal data-v2-user-dialog="status"><summary class="btn danger">{{ __('admin.security.deactivate') }}</summary>
+<form method="post" action="{{ route('admin.security.users.status',$managedUser) }}" class="security-modal-stack" onsubmit="return confirm(@js(__('admin.security.confirm_deactivate')))">
+@csrf @method('patch')
+<input type="hidden" name="is_active" value="0">
+<p class="note" role="note">{{ __('admin.security.lifecycle_impact_archive', ['global' => $managedUser->roles->count(), 'store' => $managedUser->storeRoleAssignments->count()]) }}</p>
+<label>{{ __('admin.security.lifecycle_reason_label') }} <input type="text" name="reason" minlength="8" maxlength="500" required></label>
+<label><input type="checkbox" name="impact_reviewed" value="1" required> {{ __('admin.security.lifecycle_impact_acknowledge') }}</label>
+<label>{{ __('admin.security.lifecycle_confirm_email', ['email' => $managedUser->email]) }} <input type="email" name="confirm_email" required autocomplete="off"></label>
+<button class="btn danger" type="submit">{{ __('admin.security.deactivate') }}</button>
+</form>
 </details>
 @else
-<form method="post" action="{{ route('admin.security.users.status',$managedUser) }}" onsubmit="return confirm('{{ __('admin.security.confirm_activate') }}')">@csrf @method('patch')<input type="hidden" name="is_active" value="1"><button class="btn success">{{ __('admin.security.activate') }}</button></form>
+<details data-foodex-operational-modal data-v2-user-dialog="status"><summary class="btn success">{{ __('admin.security.activate') }}</summary>
+<form method="post" action="{{ route('admin.security.users.status',$managedUser) }}" class="security-modal-stack" onsubmit="return confirm(@js(__('admin.security.confirm_activate')))">
+@csrf @method('patch')
+<input type="hidden" name="is_active" value="1">
+<p class="note" role="note">{{ __('admin.security.lifecycle_impact_restore', ['global' => $managedUser->roles->count(), 'store' => $managedUser->storeRoleAssignments->count()]) }}</p>
+<label>{{ __('admin.security.lifecycle_reason_label') }} <input type="text" name="reason" minlength="8" maxlength="500" required></label>
+<label><input type="checkbox" name="impact_reviewed" value="1" required> {{ __('admin.security.lifecycle_impact_acknowledge') }}</label>
+<label>{{ __('admin.security.lifecycle_confirm_email', ['email' => $managedUser->email]) }} <input type="email" name="confirm_email" required autocomplete="off"></label>
+<button class="btn success" type="submit">{{ __('admin.security.activate') }}</button>
+</form>
+</details>
 @endif
 @endcan
 </div></td>
@@ -238,6 +327,93 @@ $roleLabel = static function ($role): string {
 
 @if($securitySection==='roles')
 <section class="panel"><div class="head"><div><h2>{{ __('admin.security.roles_title') }}</h2><div class="muted">{{ __('admin.security.roles_description') }}</div></div><span class="badge">{{ $roles->count() }} {{ __('admin.security.roles') }}</span></div>
+@if($permissionRoleAudit !== null)
+<section class="card" data-v2-permission-role-inventory aria-labelledby="v2-permission-inventory-title">
+<h3 id="v2-permission-inventory-title">{{ __('admin.security.permission_audit.title') }}</h3>
+<p class="muted">{{ __('admin.security.permission_audit.historical', ['permissions' => 146, 'relations' => 773]) }}</p>
+<div class="role-grid">
+<div class="card" data-v2-permission-count><strong>{{ __('admin.security.permission_audit.permissions') }}</strong><p class="foodex-number">{{ $permissionRoleAudit['permission_count'] }} · {{ __('admin.security.permission_audit.delta') }} {{ $permissionRoleAudit['permission_count'] - 146 }}</p></div>
+<div class="card" data-v2-role-relation-count><strong>{{ __('admin.security.permission_audit.relations') }}</strong><p class="foodex-number">{{ $permissionRoleAudit['relation_count'] }} · {{ __('admin.security.permission_audit.delta') }} {{ $permissionRoleAudit['relation_count'] - 773 }}</p></div>
+<div class="card"><strong>{{ __('admin.security.permission_audit.active_relations') }}</strong><p class="foodex-number">{{ $permissionRoleAudit['active_role_relation_count'] }}</p></div>
+<div class="card"><strong>{{ __('admin.security.permission_audit.unused') }}</strong><p class="foodex-number">{{ $permissionRoleAudit['unused_count'] }}</p></div>
+</div>
+<div class="security-user-table-wrap">
+<table class="security-user-table foodex-table" data-pagination-exempt="bounded-permission-namespace-inventory">
+<caption>{{ __('admin.security.permission_audit.namespace_caption') }}</caption>
+<thead><tr><th scope="col">{{ __('admin.security.permission_audit.namespace') }}</th><th scope="col">{{ __('admin.security.permission_audit.permissions') }}</th><th scope="col">{{ __('admin.security.permission_audit.relations') }}</th></tr></thead>
+<tbody>
+@foreach($permissionRoleAudit['namespaces'] as $namespace)
+<tr><th scope="row">{{ $permissionGroupLabels[$namespace['code']] ?? $namespace['code'] }}</th><td>{{ $namespace['permissions'] }}</td><td>{{ $namespace['relations'] }}</td></tr>
+@endforeach
+</tbody>
+</table>
+</div>
+<p class="muted">{{ __('admin.security.permission_audit.caveat') }}</p>
+</section>
+@endif
+@if($roleAssignmentAudit !== null)
+<section class="card" data-v2-role-assignment-audit aria-labelledby="v2-role-assignment-title">
+<h3 id="v2-role-assignment-title">{{ __('admin.security.assignment_audit.title') }}</h3>
+<div data-v2-role-registry-audit aria-label="{{ __('admin.security.assignment_audit.registry_title') }}">
+<h4>{{ __('admin.security.assignment_audit.registry_title') }}</h4>
+<p class="muted">{{ __('admin.security.assignment_audit.registry_historical', ['registered' => 48, 'assigned' => 21]) }}</p>
+<div class="role-grid">
+<div class="card" data-v2-role-registry-total><strong>{{ __('admin.security.assignment_audit.registry_registered') }}</strong><p class="foodex-number">{{ $roleAssignmentAudit['role_registry_total'] }} · {{ __('admin.security.assignment_audit.delta') }} {{ $roleAssignmentAudit['role_registry_total'] - 48 }}</p></div>
+<div class="card" data-v2-role-registry-assigned><strong>{{ __('admin.security.assignment_audit.registry_assigned') }}</strong><p class="foodex-number">{{ $roleAssignmentAudit['role_registry_assigned'] }} · {{ __('admin.security.assignment_audit.delta') }} {{ $roleAssignmentAudit['role_registry_assigned'] - 21 }}</p></div>
+<div class="card"><strong>{{ __('admin.security.assignment_audit.registry_unassigned') }}</strong><p class="foodex-number">{{ $roleAssignmentAudit['role_registry_unassigned'] }}</p></div>
+<div class="card"><strong>{{ __('admin.security.assignment_audit.registry_active') }}</strong><p class="foodex-number">{{ $roleAssignmentAudit['role_registry_active_assigned'] }}</p></div>
+</div>
+<p class="muted">{{ __('admin.security.assignment_audit.registry_distinction') }}</p>
+</div>
+
+<p class="muted">{{ __('admin.security.assignment_audit.historical', ['global' => 31, 'store' => 3]) }}</p>
+<div class="role-grid">
+<div class="card" data-v2-global-assignments><strong>{{ __('admin.security.assignment_audit.global') }}</strong><p class="foodex-number">{{ $roleAssignmentAudit['global_assignments'] }} · {{ __('admin.security.assignment_audit.delta') }} {{ $roleAssignmentAudit['global_assignments'] - 31 }}</p></div>
+<div class="card" data-v2-store-assignments><strong>{{ __('admin.security.assignment_audit.store') }}</strong><p class="foodex-number">{{ $roleAssignmentAudit['store_assignments'] }} · {{ __('admin.security.assignment_audit.delta') }} {{ $roleAssignmentAudit['store_assignments'] - 3 }}</p></div>
+<div class="card"><strong>{{ __('admin.security.assignment_audit.users') }}</strong><p class="foodex-number">{{ $roleAssignmentAudit['assigned_users'] }}</p></div>
+<div class="card"><strong>{{ __('admin.security.assignment_audit.stores') }}</strong><p class="foodex-number">{{ $roleAssignmentAudit['distinct_stores'] }}</p></div>
+</div>
+<h4>{{ __('admin.security.assignment_audit.scope_check') }}</h4>
+<div class="role-grid">
+<div class="card"><strong>{{ __('admin.security.assignment_audit.wrong_global_scope') }}</strong><p class="foodex-number">{{ $roleAssignmentAudit['invalid_global_scope'] }}</p></div>
+<div class="card"><strong>{{ __('admin.security.assignment_audit.wrong_store_scope') }}</strong><p class="foodex-number">{{ $roleAssignmentAudit['invalid_store_scope'] }}</p></div>
+<div class="card"><strong>{{ __('admin.security.assignment_audit.inactive_roles') }}</strong><p class="foodex-number">{{ $roleAssignmentAudit['inactive_role_links'] }}</p></div>
+<div class="card"><strong>{{ __('admin.security.assignment_audit.inactive_stores') }}</strong><p class="foodex-number">{{ $roleAssignmentAudit['inactive_store_links'] }}</p></div>
+</div>
+@if($roleAssignmentAudit['invalid_global_scope'] + $roleAssignmentAudit['invalid_store_scope'] + $roleAssignmentAudit['inactive_role_links'] + $roleAssignmentAudit['inactive_store_links'] > 0)
+<p class="notice" role="status" data-v2-assignment-anomalies>{{ __('admin.security.assignment_audit.anomaly_warning') }}</p>
+@endif
+<h4>{{ __('admin.security.assignment_audit.by_role') }}</h4>
+@if($roleAssignmentAudit['roles'] === [])
+<p class="muted" role="status">{{ __('admin.security.assignment_audit.no_assignments') }}</p>
+@else
+<div class="role-grid" data-v2-assignment-role-breakdown>
+@foreach($roleAssignmentAudit['roles'] as $assignmentRole)
+<div class="card">
+<strong>{{ \Illuminate\Support\Facades\Lang::has('admin.role_names.'.$assignmentRole['code']) ? __('admin.role_names.'.$assignmentRole['code']) : $assignmentRole['name'] }}</strong>
+<div class="muted">{{ __('admin.security.assignment_audit.global') }}: {{ $assignmentRole['global'] }} · {{ __('admin.security.assignment_audit.store') }}: {{ $assignmentRole['store'] }}</div>
+</div>
+@endforeach
+</div>
+@endif
+<h4>{{ __('admin.security.assignment_audit.by_store') }}</h4>
+@if($roleAssignmentAudit['stores'] === [])
+<p class="muted" role="status">{{ __('admin.security.assignment_audit.no_store_assignments') }}</p>
+@else
+<div class="role-grid" data-v2-assignment-store-breakdown>
+@foreach($roleAssignmentAudit['stores'] as $assignmentStore)
+<div class="card">
+<strong>{{ $assignmentStore['name'] }}</strong>
+<div class="muted">{{ __('admin.security.assignment_audit.store') }}: {{ $assignmentStore['assignments'] }} · {{ $assignmentStore['active'] ? __('admin.security.active') : __('admin.security.inactive') }}</div>
+</div>
+@endforeach
+</div>
+@endif
+<p class="muted">{{ __('admin.security.assignment_audit.caveat') }}</p>
+</section>
+@endif
+
+
 @can('roles.manage')
 <details class="card" data-foodex-operational-modal><summary>{{ __('admin.security.create_role') }}</summary><form method="post" action="{{ route('admin.security.roles.store') }}">@csrf
 <div class="filters"><input class="grow" name="code" required maxlength="50" pattern="[A-Z][A-Z0-9_]{2,49}" placeholder="CUSTOM_ROLE"><input class="grow" name="name" required maxlength="120" placeholder="{{ __('admin.security.role_name') }}"><select name="scope"><option value="global">{{ __('admin.security.scope_global') }}</option><option value="store">{{ __('admin.security.scope_store') }}</option></select><label><input type="hidden" name="is_active" value="0"><input type="checkbox" name="is_active" value="1" checked> {{ __('admin.security.active') }}</label></div><textarea name="description" placeholder="{{ __('admin.security.role_description') }}"></textarea>
@@ -301,6 +477,7 @@ $roleLabel = static function ($role): string {
 @endif
 @else
 <div class="job-role-tags"><span class="badge">{{ __('job_roles.custom') }}</span></div>
+@include('admin._security-custom-role-details', ['role' => $role, 'roleApprovalLimits' => $roleApprovalLimits, 'permissionLabels' => $permissionLabels])
 @endif
 <div class="muted">{{ __('admin.security.assignments_count') }}: {{ (int)$role->users_count+(int)$role->store_assignments_count }}</div>
 </div>
@@ -318,6 +495,10 @@ $roleLabel = static function ($role): string {
     'privilegedPermissionCodes' => $privilegedPermissionCodes,
 ])
 @endif
+<div class="note" role="status">{{ __('security_permissions.sod_change_warning') }}</div>
+<label class="permission-change-reason">{{ __('security_permissions.change_reason') }}
+    <textarea name="change_reason" required minlength="8" maxlength="500" autocomplete="off" placeholder="{{ __('security_permissions.change_reason_hint') }}">{{ old('change_reason') }}</textarea>
+</label>
 <button class="btn primary">{{ __('admin.security.save_role') }}</button></form>
 @else
 @if($role->archived_at)
@@ -340,6 +521,33 @@ $roleLabel = static function ($role): string {
 <div class="note">{{ __('admin.security.server_authoritative') }}</div>
 @endif
 @include('admin._security-interaction-runtime')
+<script id="v2-user-action-menu-runtime">
+document.addEventListener('DOMContentLoaded', () => {
+    // The shared modal enhancer has already converted each existing details
+    // dialog into a button + accessible dialog host by this point.
+    document.querySelectorAll('[data-v2-user-action-row]').forEach((row) => {
+        const menu = row.querySelector('[data-v2-user-action-menu]');
+        if (!(menu instanceof HTMLDetailsElement)) return;
+        const actions = [...menu.querySelectorAll('button[data-v2-open-user-dialog]')];
+        if (!actions.length) return;
+        const dialogs = [...row.querySelectorAll('[data-v2-user-dialog]')];
+        const bindings = actions.map((action) => {
+            const host = dialogs.find((dialog) => dialog.dataset.v2UserDialog === action.dataset.v2OpenUserDialog);
+            const trigger = host?.querySelector('button[data-foodex-dialog-open]');
+            return { action, trigger };
+        });
+        if (bindings.some(({ trigger }) => !(trigger instanceof HTMLButtonElement))) return;
+        bindings.forEach(({ action, trigger }) => {
+            action.addEventListener('click', () => {
+                menu.open = false;
+                trigger.click();
+            });
+        });
+        row.dataset.v2ActionsReady = '1';
+        menu.hidden = false;
+    });
+});
+</script>
 </main>
 </div>
 </body></html>

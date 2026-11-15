@@ -68,7 +68,7 @@ final class GeneralLedgerService
             'date_to' => ['nullable', 'date', 'after_or_equal:date_from'],
         ])->validate();
 
-        $term = $this->safePrefix((string) ($validated['q'] ?? ''));
+        $term = trim((string) ($validated['q'] ?? ''));
         $perPage = max(10, min(100, $perPage));
 
         return $this->journalQuery($scope)
@@ -90,7 +90,7 @@ final class GeneralLedgerService
             )
             ->when(
                 $term !== '',
-                fn (Builder $query): Builder => $query->where('journal_number', 'like', $term.'%'),
+                fn (Builder $query): Builder => $query->whereRaw("journal_number LIKE ? ESCAPE '!'", [$this->literalPrefixPattern($term)]),
             )
             ->orderByDesc('entry_date')
             ->orderByDesc('id')
@@ -672,9 +672,9 @@ final class GeneralLedgerService
         return intdiv($mills, 1000).'.'.str_pad((string) ($mills % 1000), 3, '0', STR_PAD_LEFT);
     }
 
-    private function safePrefix(string $term): string
+    private function literalPrefixPattern(string $term): string
     {
-        return str_replace(['%', '_'], '', trim($term));
+        return str_replace(['!', '%', '_'], ['!!', '!%', '!_'], $term).'%';
     }
 
     private function trimNullable(mixed $value): ?string

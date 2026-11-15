@@ -2,6 +2,7 @@
 
 namespace Tests\Feature;
 
+use App\Enterprise\Modules\ModuleRegistry;
 use App\Enums\StoreBusinessProfile;
 use App\Models\Role;
 use App\Models\User;
@@ -10,6 +11,7 @@ use App\Support\AdminNavigation;
 use Database\Seeders\CoreReferenceSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
+use Tests\Feature\Enterprise\Concerns\EnablesEnterpriseWms;
 use Tests\TestCase;
 
 /**
@@ -18,6 +20,7 @@ use Tests\TestCase;
  */
 final class V2InventoryWarehouseSidebarPersonaContractTest extends TestCase
 {
+    use EnablesEnterpriseWms;
     use RefreshDatabase;
 
     protected function setUp(): void
@@ -163,6 +166,142 @@ final class V2InventoryWarehouseSidebarPersonaContractTest extends TestCase
         $this->actingAs($roleless)
             ->get(route('admin.b2b.module', ['module' => 'inventory'], false))
             ->assertForbidden();
+    }
+
+    public function test_certified_warehouse_personas_reach_real_wms_tabs_with_scoped_read_and_manage_authority(): void
+    {
+        $principal = app(WholesalePrincipal::class);
+        $storeId = (int) $principal->storeId();
+        $warehouseId = (int) $principal->warehouseId();
+        $targetWarehouseId = (int) DB::table('warehouses')->insertGetId([
+            'store_id' => $storeId,
+            'code' => 'P2713-TARGET',
+            'name' => 'P2713 Transfer Target',
+            'is_active' => true,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        // A local fixture may attest this exact manifest version. This must
+        // never change the default runtime certification in production.
+        $this->enableEnterpriseWmsForStore($storeId);
+        config()->set(
+            'enterprise_module_readiness.certified_versions.inventory_wms',
+            app(ModuleRegistry::class)->manifest('inventory_wms')->version,
+        );
+
+        foreach (['WAREHOUSE_MANAGER' => true, 'INVENTORY_CONTROLLER' => false] as $code => $mayManage) {
+            $actor = $this->globalRoleUser($code);
+            $this->assertTrue($actor->hasPermission('inventory.view'), $code);
+            $this->assertSame($mayManage, $actor->hasPermission('inventory.manage'), $code);
+            $this->assertFalse($actor->hasPermission('finance.manage'), $code);
+            $this->assertFalse($actor->hasPermission('orders.dispatch'), $code);
+
+            $items = $this->visibleItems($actor);
+            $this->assertArrayHasKey('b2b_inventory', $items, $code);
+            $this->assertArrayHasKey('erp_wms', $items, $code);
+            $this->assertSame('admin.erp.wms.index', $items['erp_wms']['route']);
+            $this->assertSame('warehouses', $items['erp_wms']['params']['tab']);
+            $this->assertSame((string) $storeId, $items['erp_wms']['params']['store_id']);
+
+            foreach (['ar' => 'rtl', 'en' => 'ltr'] as $locale => $direction) {
+                app()->setLocale($locale);
+                $actor->forceFill(['locale' => $locale])->save();
+
+                foreach (['warehouses', 'counts', 'transfers', 'reports'] as $tab) {
+                    $this->actingAs($actor->fresh())
+                        ->get(route('admin.erp.wms.index', [
+                            'store_id' => $storeId,
+                            'warehouse_id' => $warehouseId,
+                            'tab' => $tab,
+                        ], false))
+                        ->assertOk()
+                        ->assertSee('dir="'.$direction.'"', false)
+                        ->assertSee(__('enterprise_wms.tabs.'.$tab));
+                }
+            }
+
+            $countResponse = $this->actingAs($actor->fresh())->post(
+                route('admin.erp.wms.counts.store', [], false),
+                [
+                    'store_id' => $storeId,
+                    'warehouse_id' => $warehouseId,
+                    'inventory_ids' => [999999999],
+                    'request_key' => 'P2713-COUNT-'.$code,
+                ],
+            );
+            if ($mayManage) {
+                $countResponse->assertRedirect()->assertSessionHasErrors(['inventory_ids']);
+            } else {
+                // A scoped warehouse may be intentionally masked as 404.
+                $this->assertContains($countResponse->getStatusCode(), [403, 404]);
+            }
+
+            $transferResponse = $this->actingAs($actor->fresh())->post(
+                route('admin.erp.wms.transfers.store', [], false),
+                [
+                    'store_id' => $storeId,
+                    'source_warehouse_id' => $warehouseId,
+                    'target_warehouse_id' => $targetWarehouseId,
+                    'product_id' => 999999999,
+                    'quantity' => 2,
+                    'request_key' => 'P2713-TRANSFER-'.$code,
+                ],
+            );
+            if ($mayManage) {
+                $transferResponse->assertRedirect()->assertSessionHasErrors(['lines']);
+            } else {
+                $this->assertContains($transferResponse->getStatusCode(), [403, 404]);
+            }
+        }
+
+        $this->assertDatabaseCount('enterprise_inventory_counts', 0);
+        $this->assertDatabaseCount('enterprise_warehouse_transfers', 0);
+        $this->assertDatabaseCount('stock_movements', 0);
+    }
+
+    public function test_wms_navigation_selects_an_entitled_retail_store_not_a_dead_default_store(): void
+    {
+        $storeA = $this->retailStore('P2713-WMS-UNENTITLED');
+        $storeB = $this->retailStore('P2713-WMS-ENTITLED');
+        $this->enableEnterpriseWmsForStore($storeB);
+        config()->set(
+            'enterprise_module_readiness.certified_versions.inventory_wms',
+            app(ModuleRegistry::class)->manifest('inventory_wms')->version,
+        );
+
+        $actor = User::factory()->create(['is_active' => true, 'locale' => 'en']);
+        $this->grantPlatformErpAccess($actor);
+        $roleId = Role::query()->where('code', 'RETAIL_INVENTORY')->firstOrFail()->id;
+        foreach ([$storeA, $storeB] as $storeId) {
+            DB::table('user_store_roles')->insert([
+                'user_id' => $actor->id,
+                'store_id' => $storeId,
+                'role_id' => $roleId,
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+        }
+
+        $items = $this->visibleItems($actor->fresh());
+        $this->assertArrayHasKey('erp_wms', $items);
+        $this->assertSame((string) $storeB, $items['erp_wms']['params']['store_id']);
+        $this->assertSame('warehouses', $items['erp_wms']['params']['tab']);
+
+        $this->actingAs($actor->fresh())
+            ->get(route('admin.erp.wms.index', [
+                'tab' => 'warehouses',
+                'store_id' => $storeB,
+            ], false))
+            ->assertOk();
+        $this->actingAs($actor->fresh())
+            ->get(route('admin.erp.wms.index', [
+                'tab' => 'warehouses',
+                'store_id' => $storeA,
+            ], false))
+            ->assertNotFound();
+
+        $this->assertDatabaseCount('stock_movements', 0);
     }
 
     private function globalRoleUser(string $code): User

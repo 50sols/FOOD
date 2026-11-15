@@ -24,6 +24,8 @@ final class ReportController extends Controller
         $user = $request->user();
         abort_unless($user instanceof User, 401);
 
+        $this->assertReportScopeBeforeValidation($user, 'reports.view');
+
         $report = (string) $request->query('report', 'orders');
         $validated = $request->validate([
             ...$this->rules(),
@@ -62,6 +64,8 @@ final class ReportController extends Controller
     {
         $user = $request->user();
         abort_unless($user instanceof User, 401);
+
+        $this->assertReportScopeBeforeValidation($user, 'reports.view');
         abort_unless(in_array($entity, ['products', 'customers'], true), 404);
 
         $validated = $request->validate([
@@ -88,6 +92,8 @@ final class ReportController extends Controller
         }
 
         $term = trim((string) ($validated['q'] ?? ''));
+        // Escape user input as literal text. Binding alone does not escape SQL LIKE wildcards.
+        $literalLike = '%'.str_replace(['!', '%', '_'], ['!!', '!%', '!_'], $term).'%';
         $page = max(1, (int) ($validated['page'] ?? 1));
         $pageSize = 25;
 
@@ -113,12 +119,11 @@ final class ReportController extends Controller
                     ->when(! $superAdmin && $storeId === null, fn (Builder $query) => $query->whereIn('store_id', $allowedStoreIds));
 
             $rows = $query
-                ->when($term !== '', function (Builder $query) use ($term): void {
-                    $like = '%'.$term.'%';
-                    $query->where(function (Builder $search) use ($like): void {
-                        $search->where('name', 'like', $like)
-                            ->orWhere('phone', 'like', $like)
-                            ->orWhere('email', 'like', $like);
+                ->when($term !== '', function (Builder $query) use ($literalLike): void {
+                    $query->where(function (Builder $search) use ($literalLike): void {
+                        $search->whereRaw("name LIKE ? ESCAPE '!'", [$literalLike])
+                            ->orWhereRaw("phone LIKE ? ESCAPE '!'", [$literalLike])
+                            ->orWhereRaw("email LIKE ? ESCAPE '!'", [$literalLike]);
                     });
                 })
                 ->orderBy('name')
@@ -150,12 +155,11 @@ final class ReportController extends Controller
             ->when(! $superAdmin && $storeId === null, fn (Builder $query) => $query->whereIn('catalogs.store_id', $allowedStoreIds))
             ->when($channel !== null, fn (Builder $query) => $query->where('catalogs.channel', $channel))
             ->when($categoryId !== null, fn (Builder $query) => $query->where('products.category_id', $categoryId))
-            ->when($term !== '', function (Builder $query) use ($term): void {
-                $like = '%'.$term.'%';
-                $query->where(function (Builder $search) use ($like): void {
-                    $search->where('products.name', 'like', $like)
-                        ->orWhere('products.sku', 'like', $like)
-                        ->orWhere('products.barcode', 'like', $like);
+            ->when($term !== '', function (Builder $query) use ($literalLike): void {
+                $query->where(function (Builder $search) use ($literalLike): void {
+                    $search->whereRaw("products.name LIKE ? ESCAPE '!'", [$literalLike])
+                        ->orWhereRaw("products.sku LIKE ? ESCAPE '!'", [$literalLike])
+                        ->orWhereRaw("products.barcode LIKE ? ESCAPE '!'", [$literalLike]);
                 });
             })
             ->orderBy('products.name')
@@ -199,9 +203,11 @@ final class ReportController extends Controller
         $user = $request->user();
         abort_unless($user instanceof User, 401);
 
+        $this->assertReportScopeBeforeValidation($user, 'reports.export');
+
         $validated = $request->validate([
             ...$this->rules(),
-            'report' => ['required', 'in:orders,products,customers,operations,sales_exceptions,field_operations'],
+            'report' => ['required', 'in:orders,channels,products,customers,operations,sales_exceptions,field_operations'],
             'format' => ['required', 'in:xlsx,docx,pdf'],
         ]);
 
@@ -231,6 +237,23 @@ final class ReportController extends Controller
             'X-FOODEX-Export-Limit' => (string) ManagementReportService::EXPORT_LIMIT,
             'Cache-Control' => 'private, no-store',
         ]);
+    }
+
+    /**
+     * Authorize before filter validation so unentitled actors receive a real
+     * 403 rather than report-specific validation redirects. An effective
+     * global grant remains valid before the wholesale principal is first
+     * materialized; scoped Retail grants use the canonical tenant resolver.
+     * The deeper report service still enforces channel and store ownership.
+     */
+    private function assertReportScopeBeforeValidation(User $user, string $permission): void
+    {
+        abort_unless(
+            $user->hasRole('SUPER_ADMIN')
+                || $user->hasPermission($permission)
+                || app(OperationalTenantScope::class)->allowedStoreIds($user, $permission) !== [],
+            403,
+        );
     }
 
     /** @return array<string, list<string>> */

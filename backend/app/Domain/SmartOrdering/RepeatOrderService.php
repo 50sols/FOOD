@@ -37,7 +37,15 @@ final class RepeatOrderService
             ->first(['id', 'status']);
 
         abort_unless($order !== null, 404);
-        abort_unless(in_array(strtolower((string) $order->status), ['completed', 'delivered'], true), 409, 'Only completed orders can be repeated.');
+        if (! in_array(strtolower((string) $order->status), ['completed', 'delivered'], true)) {
+            $actor = request()->user();
+            $savedLocale = $actor instanceof User ? $actor->locale : null;
+            $locale = in_array($savedLocale, ['ar', 'en'], true)
+                ? $savedLocale
+                : request()->getPreferredLanguage(['ar', 'en']);
+
+            abort(409, __('smart_ordering_repeat_errors.order_not_completed', [], $locale === 'ar' ? 'ar' : 'en'));
+        }
 
         $itemsQuery = DB::table('order_items')
             ->where('order_id', $sourceOrderId)

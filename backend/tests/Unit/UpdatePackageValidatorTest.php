@@ -14,8 +14,13 @@ class UpdatePackageValidatorTest extends TestCase
     protected function setUp(): void
     {
         parent::setUp();
+
         $this->packagePath = tempnam(sys_get_temp_dir(), 'foodex-update-');
-        file_put_contents($this->packagePath, 'signed release payload');
+        if (! class_exists(\ZipArchive::class)) {
+            $this->markTestSkipped('The ZIP extension is required for package validation.');
+        }
+
+        $this->createZipPackage(['release-notes.txt']);
     }
 
     protected function tearDown(): void
@@ -30,6 +35,100 @@ class UpdatePackageValidatorTest extends TestCase
         $result = (new UpdatePackageValidator)->validate($manifest, '1.1.0', $this->packagePath);
         $this->assertSame('1.2.0', $result['target_version']);
         $this->assertTrue($result['contains_migrations']);
+    }
+
+    public function test_matching_checksum_does_not_authorize_a_non_zip_update_package(): void
+    {
+        file_put_contents($this->packagePath, 'This is not a ZIP archive.');
+
+        $manifest = new UpdatePackageManifest(
+            '1.2.0',
+            '1.0.0',
+            hash_file('sha256', $this->packagePath),
+            'Invalid release',
+            false,
+        );
+
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('not a readable ZIP archive');
+
+        (new UpdatePackageValidator)->validate($manifest, '1.1.0', $this->packagePath);
+    }
+
+    public function test_truncated_zip_is_rejected_even_when_manifest_hash_matches(): void
+    {
+        $this->createZipPackage(['backend/app/Example.php']);
+        $contents = file_get_contents($this->packagePath);
+        $this->assertIsString($contents);
+        $this->assertGreaterThan(30, strlen($contents));
+        file_put_contents($this->packagePath, substr($contents, 0, 24));
+
+        $manifest = new UpdatePackageManifest(
+            '1.2.0',
+            '1.0.0',
+            hash_file('sha256', $this->packagePath),
+            'Truncated release',
+            false,
+        );
+
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('not a readable ZIP archive');
+
+        (new UpdatePackageValidator)->validate($manifest, '1.1.0', $this->packagePath);
+    }
+
+    public function test_migration_zip_cannot_bypass_database_backup_when_manifest_flag_is_false(): void
+    {
+        $this->createZipPackage(['backend/database/migrations/2026_11_13_000000_test.php']);
+
+        $manifest = new UpdatePackageManifest(
+            '1.2.0',
+            '1.0.0',
+            hash_file('sha256', $this->packagePath),
+            'Migration bundle',
+            false,
+        );
+
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('contains migrations');
+
+        (new UpdatePackageValidator)->validate($manifest, '1.1.0', $this->packagePath);
+    }
+
+    public function test_backslash_migration_paths_cannot_bypass_backup_declaration(): void
+    {
+        $this->createZipPackage(['backend\database\migrations\2026_11_13_000000_test.php']);
+
+        $manifest = new UpdatePackageManifest(
+            '1.2.0',
+            '1.0.0',
+            hash_file('sha256', $this->packagePath),
+            'Windows path migration bundle',
+            false,
+        );
+
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('contains migrations');
+
+        (new UpdatePackageValidator)->validate($manifest, '1.1.0', $this->packagePath);
+    }
+
+    public function test_migration_zip_with_declared_database_backup_passes_validator(): void
+    {
+        $this->createZipPackage(['backend/database/migrations/2026_11_13_000000_test.php']);
+
+        $manifest = new UpdatePackageManifest(
+            '1.2.0',
+            '1.0.0',
+            hash_file('sha256', $this->packagePath),
+            'Migration bundle',
+            true,
+        );
+
+        $result = (new UpdatePackageValidator)->validate($manifest, '1.1.0', $this->packagePath);
+
+        $this->assertTrue($result['contains_migrations']);
+        $this->assertSame('1.2.0', $result['target_version']);
     }
 
     public function test_legacy_compact_installed_version_is_normalized_for_upgrade_comparison(): void
@@ -69,5 +168,26 @@ class UpdatePackageValidatorTest extends TestCase
         $manifest = new UpdatePackageManifest('1.1.0', '1.0.0', hash_file('sha256', $this->packagePath), 'Release', false);
         $this->expectException(InvalidArgumentException::class);
         (new UpdatePackageValidator)->validate($manifest, '1.1.0', $this->packagePath);
+    }
+
+    /**
+     * @param  array<int, string>  $paths
+     */
+    private function createZipPackage(array $paths): void
+    {
+        if (! class_exists(\ZipArchive::class)) {
+            $this->markTestSkipped('The ZIP extension is required.');
+        }
+
+        $zip = new \ZipArchive;
+        $this->assertTrue(
+            $zip->open($this->packagePath, \ZipArchive::CREATE | \ZipArchive::OVERWRITE) === true,
+        );
+
+        foreach ($paths as $path) {
+            $this->assertTrue($zip->addFromString($path, '<?php // migration fixture'));
+        }
+
+        $this->assertTrue($zip->close());
     }
 }

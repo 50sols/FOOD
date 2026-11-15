@@ -20,6 +20,7 @@ use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Validator;
 use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
 use Symfony\Component\HttpFoundation\Response;
@@ -30,7 +31,20 @@ class GuestCartController extends Controller
     {
         $user = $this->apiUser($request);
         $token = $this->guestToken($request, false);
-        $storeId = $request->integer('store');
+
+        // A supplied store selector must never silently coerce to 0 and
+        // fall back to an existing guest token's store context.
+        $storeQuery = Validator::make($request->query(), [
+            'store' => ['sometimes', 'required', 'integer', 'min:1'],
+        ]);
+
+        if ($storeQuery->fails()) {
+            throw ValidationException::withMessages([
+                'store' => [$this->localizedCartMessage($request, 'guest_cart_store_query.invalid_store')],
+            ]);
+        }
+
+        $storeId = (int) ($storeQuery->validated()['store'] ?? 0);
 
         if ($user instanceof User) {
             $resolvedStoreId = $storeId > 0
@@ -39,7 +53,7 @@ class GuestCartController extends Controller
 
             if ($resolvedStoreId === null) {
                 throw ValidationException::withMessages([
-                    'store' => ['A store is required when initializing an authenticated cart.'],
+                    'store' => [$this->localizedCartMessage($request, 'smart_ordering_cart.authenticated_store_required')],
                 ]);
             }
 
@@ -47,7 +61,7 @@ class GuestCartController extends Controller
 
             $cart = $token === null
                 ? null
-                : $this->mergeGuestCart($token, $customer, $channel, $storeId > 0 ? $storeId : null);
+                : $this->mergeGuestCart($request, $token, $customer, $channel, $storeId > 0 ? $storeId : null);
 
             if ($cart === null) {
                 $this->activeStoreForChannel($resolvedStoreId, $channel);
@@ -98,7 +112,7 @@ class GuestCartController extends Controller
             $this->activeStoreForChannel((int) $cart->store_id, 'b2c');
 
             if ($storeId > 0 && (int) $cart->store_id !== $storeId) {
-                abort(409, 'Guest cart belongs to another store.');
+                abort(409, $this->localizedCartMessage($request, 'smart_ordering_cart.guest_store_mismatch'));
             }
         }
 
@@ -145,7 +159,7 @@ class GuestCartController extends Controller
 
             $cart = $token === null
                 ? $this->customerCart($customer, $storeId, $channel)
-                : $this->mergeGuestCart($token, $customer, $channel, $storeId);
+                : $this->mergeGuestCart($request, $token, $customer, $channel, $storeId);
         } else {
             $this->activeStoreForChannel($storeId, 'b2c');
 
@@ -157,7 +171,7 @@ class GuestCartController extends Controller
                 ->first();
 
             if ($cart !== null && (int) $cart->store_id !== $storeId) {
-                abort(409, 'Guest cart belongs to another store.');
+                abort(409, $this->localizedCartMessage($request, 'smart_ordering_cart.guest_store_mismatch'));
             }
 
             if ($cart === null) {
@@ -176,7 +190,7 @@ class GuestCartController extends Controller
         $pricing = null;
         if ($user instanceof User && $channel === 'b2b') {
             $pricing = app(B2bPriceResolver::class)->resolve($customer, $storeId, $productId);
-            $this->assertB2bQuantity($quantity, $pricing);
+            $this->assertB2bQuantity($request, $quantity, $pricing);
             $state['price'] = $pricing['price'];
         }
 
@@ -187,14 +201,14 @@ class GuestCartController extends Controller
 
         if ($item->exists && trim((string) ($item->selling_unit_code ?? '')) !== $sellingUnitCode) {
             throw ValidationException::withMessages([
-                'selling_unit_code' => ['Remove the existing product line before changing its selling unit.'],
+                'selling_unit_code' => [$this->localizedCartMessage($request, 'smart_ordering_cart.existing_line_selling_unit_conflict')],
             ]);
         }
 
         $newQuantity = ($item->exists ? (float) $item->quantity : 0.0) + $quantity;
         if ($user instanceof User && $channel === 'b2b') {
             abort_unless(is_array($pricing), 500, 'B2B pricing context is unavailable.');
-            $this->assertB2bQuantity($newQuantity, $pricing);
+            $this->assertB2bQuantity($request, $newQuantity, $pricing);
         }
         $this->assertQuantityAvailable($state['available_quantity'], $newQuantity);
 
@@ -255,7 +269,7 @@ class GuestCartController extends Controller
         if ((string) $cart->channel === 'b2b' && $cart->b2b_customer_id !== null) {
             $customer = B2bCustomer::query()->findOrFail((int) $cart->b2b_customer_id);
             $pricing = app(B2bPriceResolver::class)->resolve($customer, (int) $cart->store_id, (int) $cartItem->product_id);
-            $this->assertB2bQuantity($quantity, $pricing);
+            $this->assertB2bQuantity($request, $quantity, $pricing);
             $state['price'] = $pricing['price'];
         }
         $this->assertQuantityAvailable($state['available_quantity'], $quantity);
@@ -309,7 +323,7 @@ class GuestCartController extends Controller
         if ($token === '') {
             if ($required) {
                 throw ValidationException::withMessages([
-                    'X-Guest-Token' => ['A guest cart token is required.'],
+                    'X-Guest-Token' => [$this->localizedCartMessage($request, 'smart_ordering_cart.guest_token_required')],
                 ]);
             }
 
@@ -318,11 +332,21 @@ class GuestCartController extends Controller
 
         if (strlen($token) < 16 || strlen($token) > 200) {
             throw ValidationException::withMessages([
-                'X-Guest-Token' => ['The guest cart token is invalid.'],
+                'X-Guest-Token' => [$this->localizedCartMessage($request, 'smart_ordering_cart.guest_token_invalid')],
             ]);
         }
 
         return $token;
+    }
+
+    private function localizedCartMessage(Request $request, string $key): string
+    {
+        $actor = Auth::guard('sanctum')->user();
+        $locale = $actor instanceof User && in_array($actor->locale, ['ar', 'en'], true)
+            ? $actor->locale
+            : ($request->getPreferredLanguage(['ar', 'en']) ?? 'ar');
+
+        return __($key, [], $locale);
     }
 
     private function guestCartForToken(string $token): Cart
@@ -353,24 +377,25 @@ class GuestCartController extends Controller
     }
 
     private function mergeGuestCart(
+        Request $request,
         string $token,
         B2bCustomer|B2cCustomer $customer,
         string $channel,
         ?int $requestedStoreId = null,
     ): Cart {
-        abort_if($channel !== 'b2c', 409, 'A B2C guest cart cannot be merged into a B2B cart.');
+        abort_if($channel !== 'b2c', 409, $this->localizedCartMessage($request, 'smart_ordering_cart.guest_channel_mismatch'));
 
         $guestCart = $this->guestCartForToken($token);
         $storeId = (int) $guestCart->store_id;
 
         if ($requestedStoreId !== null && $storeId !== $requestedStoreId) {
-            abort(409, 'Guest cart belongs to another store.');
+            abort(409, $this->localizedCartMessage($request, 'smart_ordering_cart.guest_store_mismatch'));
         }
 
         $this->activeStoreForChannel($storeId, 'b2c');
         $target = $this->customerCart($customer, $storeId, 'b2c');
 
-        DB::transaction(function () use ($guestCart, $target, $storeId): void {
+        DB::transaction(function () use ($guestCart, $request, $target, $storeId): void {
             $guestItems = CartItem::query()
                 ->where('cart_id', $guestCart->getKey())
                 ->lockForUpdate()
@@ -386,7 +411,7 @@ class GuestCartController extends Controller
 
                 if ($targetItem->exists && trim((string) ($targetItem->selling_unit_code ?? ''))
                     !== trim((string) ($guestItem->selling_unit_code ?? ''))) {
-                    abort(409, 'Cart merge requires one selling unit per product. Remove a conflicting line first.');
+                    abort(409, $this->localizedCartMessage($request, 'smart_ordering_cart.merge_selling_unit_conflict'));
                 }
 
                 $quantity = ($targetItem->exists ? (float) $targetItem->quantity : 0.0)
@@ -533,12 +558,12 @@ class GuestCartController extends Controller
     }
 
     /** @param array{minimum_quantity: float, ordering_increment: float} $pricing */
-    private function assertB2bQuantity(float $quantity, array $pricing): void
+    private function assertB2bQuantity(Request $request, float $quantity, array $pricing): void
     {
         abort_unless(
             $this->isValidB2bQuantity($quantity, $pricing),
             409,
-            'Quantity must meet the B2B minimum and ordering increment.',
+            $this->localizedCartMessage($request, 'smart_ordering_cart.b2b_quantity_minimum_increment'),
         );
     }
 

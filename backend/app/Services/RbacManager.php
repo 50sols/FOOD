@@ -8,6 +8,7 @@ use App\Models\User;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
+use Illuminate\Validation\Rule;
 use Illuminate\Validation\ValidationException;
 
 final class RbacManager
@@ -45,6 +46,17 @@ final class RbacManager
         );
     }
 
+    /**
+     * @param  array<string, mixed>  $snapshot
+     * @return array<string, mixed>
+     */
+    private function auditedChangeSnapshot(Request $request, array $snapshot): array
+    {
+        $reason = trim((string) $request->input('change_reason', ''));
+
+        return $reason === '' ? $snapshot : [...$snapshot, 'change_reason' => $reason];
+    }
+
     public function setUserActive(User $actor, User $target, bool $active, ?string $reason, Request $request): User
     {
         abort_if($target->isPlatformOwner(), 403, 'Platform Owner status is internally managed.');
@@ -56,9 +68,45 @@ final class RbacManager
             throw ValidationException::withMessages(['is_active' => [__('admin.security.errors.last_super_admin')]]);
         }
 
-        $before = $this->userSnapshot($target);
+        // P073: a status change is not an implicit archive/restore approval.
+        // Both impact acknowledgement and account-specific typed confirmation
+        // are validated server-side, including for direct API clients.
+        if ((bool) $target->is_active !== $active) {
+            if ($reason === null || mb_strlen(trim($reason)) < 8) {
+                throw ValidationException::withMessages([
+                    'reason' => [__('admin.security.lifecycle_reason_required')],
+                ]);
+            }
 
-        DB::transaction(function () use ($target, $actor, $active, $reason): void {
+            $request->validate([
+                'impact_reviewed' => ['required', 'accepted'],
+                'confirm_email' => ['required', 'string', 'max:190', Rule::in([(string) $target->email])],
+            ]);
+        }
+
+        // The audit and lifecycle mutation form one DB transaction. A failed
+        // audit write must not leave an untraceable archive or revoked session.
+        return DB::transaction(function () use ($target, $actor, $active, $reason, $request): User {
+            if (! $active) {
+                // Lock the same persistent row as role demotions before re-reading
+                // the live Super Admin count. Two independent offboarding requests
+                // must never both pass the last-admin preflight on stale snapshots.
+                $this->lockSuperAdminRoleForMutation();
+                $target->refresh();
+                if ($this->isLastActiveSuperAdmin($target)) {
+                    throw ValidationException::withMessages(['is_active' => [__('admin.security.errors.last_super_admin')]]);
+                }
+            }
+
+            // The archival transition cannot strand active Driver or Van work.
+            // This is checked at the canonical mutation boundary, not only in UI.
+            if (! $active && (bool) $target->is_active && $this->hasOpenOperationalAssignments($target)) {
+                throw ValidationException::withMessages([
+                    'is_active' => [__('admin.security.errors.open_operational_assignments')],
+                ]);
+            }
+
+            $before = $this->userSnapshot($target);
             $target->forceFill([
                 'is_active' => $active,
                 'deactivated_at' => $active ? null : now(),
@@ -71,12 +119,19 @@ final class RbacManager
                 $target->tokens()->delete();
                 $this->securitySessions->revokeForUser($target, $actor);
             }
+
+            $fresh = $target->refresh();
+            $after = $this->userSnapshot($fresh);
+            if ($reason !== null && trim($reason) !== '') {
+                // Reactivation clears the account's deactivation_reason, but the
+                // restoration reason remains in the committed audit history.
+                $after['change_reason'] = trim($reason);
+                $after['impact_reviewed'] = $request->boolean('impact_reviewed');
+            }
+            $this->audit->record('user.status_changed', $actor, $fresh, $before, $after, $request);
+
+            return $fresh;
         });
-
-        $fresh = $target->refresh();
-        $this->audit->record('user.status_changed', $actor, $fresh, $before, $this->userSnapshot($fresh), $request);
-
-        return $fresh;
     }
 
     /**
@@ -198,7 +253,17 @@ final class RbacManager
 
         $before = $this->userSnapshot($target);
 
-        DB::transaction(function () use ($target, $globalRoleIds, $storeRoles, $assignmentsChanged): void {
+        DB::transaction(function () use ($target, $globalRoleIds, $storeRoles, $assignmentsChanged, $newHasSuperAdmin): void {
+            if (! $newHasSuperAdmin) {
+                // Both role removal and account deactivation synchronize on the
+                // same DB row, then recheck against the committed state.
+                $this->lockSuperAdminRoleForMutation();
+                $target->refresh();
+                if ($this->isLastActiveSuperAdmin($target)) {
+                    throw ValidationException::withMessages(['global_role_ids' => [__('admin.security.errors.last_super_admin_role')]]);
+                }
+            }
+
             $target->roles()->sync($globalRoleIds);
             $target->storeRoleAssignments()->delete();
 
@@ -229,7 +294,7 @@ final class RbacManager
         $fresh = $target->refresh()->load(['roles', 'storeRoleAssignments.role', 'storeRoleAssignments.store']);
         $this->finalizePermissionMutation($actor, $fresh, 'user.roles_changed', $request);
         $fresh = $target->refresh()->load(['roles', 'storeRoleAssignments.role', 'storeRoleAssignments.store']);
-        $this->audit->record('user.roles_changed', $actor, $fresh, $before, $this->userSnapshot($fresh), $request);
+        $this->audit->record('user.roles_changed', $actor, $fresh, $before, $this->auditedChangeSnapshot($request, $this->userSnapshot($fresh)), $request);
 
         return $fresh;
     }
@@ -314,6 +379,18 @@ final class RbacManager
 
         $scopeKey = $scopeType === 'global' ? 'global' : 'store:'.$storeId;
         $baselineCodes = collect($target->inheritedPermissionCodes($storeId));
+        if (! $inheritFromRole) {
+            $sensitiveEscalations = $selectedPermissions->pluck('code')
+                ->filter(static fn (string $code): bool => SensitivePermissionOverridePolicy::requiresIndependentApproval($code)
+                    && ! $baselineCodes->contains($code));
+
+            if ($sensitiveEscalations->isNotEmpty()) {
+                throw ValidationException::withMessages([
+                    'permission_ids' => [__('security_permissions.sensitive_override_requires_independent_approval')],
+                ]);
+            }
+        }
+
         // Explicit INHERIT removes only manageable overrides in this scope.
         // Role/module/readiness authority remains the live baseline, not a copied grant set.
         $selectedIdSet = $inheritFromRole
@@ -381,7 +458,7 @@ final class RbacManager
             $actor,
             $fresh,
             $before,
-            $this->userSnapshot($fresh),
+            $this->auditedChangeSnapshot($request, $this->userSnapshot($fresh)),
             $request,
         );
 
@@ -486,7 +563,7 @@ final class RbacManager
         $fresh = $role->refresh()->load('permissions');
         $this->finalizePermissionMutation($actor, $fresh, 'role.updated', $request);
         $fresh = $role->refresh()->load('permissions');
-        $this->audit->record('role.updated', $actor, $fresh, $before, $this->roleSnapshot($fresh), $request);
+        $this->audit->record('role.updated', $actor, $fresh, $before, $this->auditedChangeSnapshot($request, $this->roleSnapshot($fresh)), $request);
 
         return $fresh;
     }
@@ -567,6 +644,63 @@ final class RbacManager
         });
 
         $this->finalizePermissionMutation($actor, null, 'role.archived', $request);
+    }
+
+    /**
+     * Open operational custody must be reassigned or finished before archiving
+     * an identity. Only live assignments count; historical completed work and
+     * closed visits remain retained for audit without blocking offboarding.
+     */
+    private function hasOpenOperationalAssignments(User $target): bool
+    {
+        $userId = (int) $target->getKey();
+
+        $activeDriverWork = DB::table('driver_assignments')
+            ->join('drivers', 'drivers.id', '=', 'driver_assignments.driver_id')
+            ->where('drivers.user_id', $userId)
+            ->whereNull('driver_assignments.completed_at')
+            ->whereNotIn('driver_assignments.status', ['unassigned', 'reassigned', 'cancelled', 'delivered', 'failed'])
+            ->exists();
+
+        if ($activeDriverWork) {
+            return true;
+        }
+
+        $activeVanCustody = DB::table('van_assignments')
+            ->leftJoin('drivers', 'drivers.id', '=', 'van_assignments.driver_id')
+            ->where('van_assignments.status', 'active')
+            ->where(function ($query): void {
+                $query->whereNull('van_assignments.effective_until')
+                    ->orWhere('van_assignments.effective_until', '>', now());
+            })
+            ->where(function ($query) use ($userId): void {
+                $query->where('van_assignments.representative_user_id', $userId)
+                    ->orWhere('drivers.user_id', $userId);
+            })
+            ->exists();
+
+        if ($activeVanCustody) {
+            return true;
+        }
+
+        return DB::table('van_visits')
+            ->where('actor_user_id', $userId)
+            ->whereIn('status', ['planned', 'started'])
+            ->whereNull('closed_at')
+            ->exists();
+    }
+
+    /**
+     * Serialize all mutations capable of removing a SUPER_ADMIN identity.
+     * This must be called inside the same transaction as the live recheck and
+     * write. SQLite serializes test writes; MySQL/MariaDB use FOR UPDATE.
+     */
+    private function lockSuperAdminRoleForMutation(): void
+    {
+        Role::query()
+            ->where('code', 'SUPER_ADMIN')
+            ->lockForUpdate()
+            ->first(['id']);
     }
 
     public function isLastActiveSuperAdmin(User $target): bool

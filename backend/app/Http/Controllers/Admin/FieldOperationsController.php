@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Admin;
 
+use App\Enterprise\Search\LiteralLikePattern;
 use App\Http\Controllers\Api\V1\FleetLocationController;
 use App\Http\Controllers\Controller;
 use App\Models\AddressQualityReview;
@@ -257,6 +258,7 @@ final class FieldOperationsController extends Controller
             )
             ->where('order_van_assignments.van_id', $van->id)
             ->where('orders.channel', 'b2b')
+            ->whereIn('orders.store_id', $this->b2bStoreIds($user))
             ->orderByRaw("CASE WHEN order_van_assignments.status = 'active' THEN 0 ELSE 1 END")
             ->orderByDesc('order_van_assignments.assigned_at')
             ->limit(50)
@@ -294,6 +296,26 @@ final class FieldOperationsController extends Controller
             }, 'invoice_id')
             ->get();
 
+        // P265: operational movements are immutable Van delivery execution
+        // transitions, NOT a GPS track (fleet_current_locations holds only
+        // each actor's latest heartbeat). Limit source rows and tenant scope
+        // in SQL before rendering the existing Van detail page.
+        $movementRows = DB::table('order_van_execution_events as event')
+            ->join('orders', 'orders.id', '=', 'event.order_id')
+            ->where('event.van_id', $van->getKey())
+            ->where('orders.channel', 'b2b')
+            ->whereIn('orders.store_id', $this->b2bStoreIds($user))
+            ->orderByDesc('event.captured_at')
+            ->orderByDesc('event.id')
+            ->limit(50)
+            ->get([
+                'event.id',
+                'event.from_status',
+                'event.to_status',
+                'event.captured_at',
+                'orders.order_number',
+            ]);
+
         $canViewFinanceLinks = $user->hasRole('SUPER_ADMIN') || $user->hasPermission('finance.view');
 
         return $this->render($request, 'van-detail', compact(
@@ -305,6 +327,7 @@ final class FieldOperationsController extends Controller
             'representativeNames',
             'territoryNames',
             'b2bOrders',
+            'movementRows',
             'canViewFinanceLinks',
         ));
     }
@@ -504,29 +527,51 @@ final class FieldOperationsController extends Controller
         $user = $this->actor($request);
         $this->authorizeAll($user, ['customers.view', 'drivers.b2b.view']);
 
-        $latestIds = DB::table('van_visits')
+        // P267: field customers are B2B Van relationships, never Retail Driver
+        // customers. Scope before selecting the latest visit: a newer visit
+        // from another store must not suppress this store's own relationship.
+        $allowedB2bStores = $this->b2bStoreIds($user);
+        $canReadAllWholesale = $user->hasRole('SUPER_ADMIN') || $user->hasRole('B2B_ADMIN')
+            || $user->hasRole('OPERATIONS') || $user->hasRole('FINANCE');
+        $visibleVisits = VanVisit::query()->where('customer_type', 'b2b')
+            ->where(function ($query) use ($allowedB2bStores, $canReadAllWholesale): void {
+                $query->whereIn('store_id', $allowedB2bStores);
+                if ($canReadAllWholesale) {
+                    $query->orWhereNull('store_id');
+                }
+            });
+
+        $latestIds = (clone $visibleVisits)
             ->selectRaw('MAX(id) AS id')
-            ->groupBy('customer_type', 'customer_id')
+            ->groupBy('customer_id', 'store_id')
             ->pluck('id');
 
-        $relationships = VanVisit::query()
+        $relationships = (clone $visibleVisits)
             ->with('actor')
             ->whereIn('id', $latestIds)
             ->orderByDesc('updated_at')
             ->paginate(30);
 
         $actorIds = $relationships->getCollection()->pluck('actor_user_id')->unique()->values();
+        // The assignment registry is global and carries no direct store_id.
+        // Resolve its store through the authoritative warehouse before showing
+        // van/territory data; never select an actor's foreign-store assignment.
         $assignmentsByActor = VanAssignment::query()
             ->with('van')
-            ->where('status', 'active')
-            ->whereIn('representative_user_id', $actorIds)
-            ->orderByDesc('effective_from')
+            ->join('warehouses', 'warehouses.id', '=', 'van_assignments.warehouse_id')
+            ->where('van_assignments.status', 'active')
+            ->whereIn('warehouses.store_id', $allowedB2bStores)
+            ->whereIn('van_assignments.representative_user_id', $actorIds)
+            ->select('van_assignments.*', 'warehouses.store_id as assignment_store_id')
+            ->orderByDesc('van_assignments.effective_from')
             ->get()
             ->groupBy('representative_user_id');
 
         $canFinance = $user->hasRole('SUPER_ADMIN') || $user->hasPermission('finance.view');
         $relationships->setCollection($relationships->getCollection()->map(function (VanVisit $visit) use ($assignmentsByActor, $canFinance): VanVisit {
-            $assignment = $assignmentsByActor->get($visit->actor_user_id)?->first();
+            $assignment = $assignmentsByActor->get($visit->actor_user_id)?->first(
+                fn (VanAssignment $candidate): bool => (int) $candidate->getAttribute('assignment_store_id') === (int) $visit->store_id,
+            );
             $visit->setAttribute('customer_display', $this->customerDisplay((string) $visit->customer_type, (int) $visit->customer_id));
             $visit->setRelation('servingAssignment', $assignment);
             $visit->setAttribute(
@@ -547,7 +592,19 @@ final class FieldOperationsController extends Controller
         $user = $this->actor($request);
         $this->authorizeAll($user, ['drivers.b2b.view', 'customers.view']);
 
-        $visits = VanVisit::query()->with(['actor', 'noOrderReason'])->orderByDesc('created_at')->paginate(30);
+        // B2B Van visits are disjoint from Retail/Driver delivery and records.
+        $allowedB2bStores = $this->b2bStoreIds($user);
+        $canReadAllWholesale = $user->hasRole('SUPER_ADMIN') || $user->hasRole('B2B_ADMIN')
+            || $user->hasRole('OPERATIONS') || $user->hasRole('FINANCE');
+        $visibleVisits = VanVisit::query()->where('customer_type', 'b2b')
+            ->where(function ($query) use ($allowedB2bStores, $canReadAllWholesale): void {
+                $query->whereIn('store_id', $allowedB2bStores);
+                if ($canReadAllWholesale) {
+                    $query->orWhereNull('store_id');
+                }
+            });
+
+        $visits = (clone $visibleVisits)->with(['actor', 'noOrderReason'])->orderByDesc('created_at')->paginate(30);
         $visits->setCollection($visits->getCollection()->map(function (VanVisit $visit): VanVisit {
             $visit->setAttribute('customer_display', $this->customerDisplay((string) $visit->customer_type, (int) $visit->customer_id));
             $reason = $visit->noOrderReason;
@@ -563,7 +620,31 @@ final class FieldOperationsController extends Controller
 
             return $visit;
         }));
-        $assignments = $this->registry->effectiveAssignments();
+        // A per-store actor has no authorized B2B customer-to-store creation mapping.
+        // Do not even load the global Van assignment selector for a forbidden form.
+        $canCreateVisit = $canReadAllWholesale;
+        $assignments = $canCreateVisit ? $this->registry->effectiveAssignments()->load('van') : collect();
+        // Van visits are B2B-only. Even an existing active Van assignment
+        // must not select a Retail/B2C driver as its operator.
+        $eligibleDriverIds = DB::table('drivers')
+            ->where('driver_type', 'b2b')
+            ->where('is_active', true)
+            ->whereIn('id', $assignments->pluck('driver_id')->filter()->values())
+            ->pluck('id')
+            ->map(static fn ($id): int => (int) $id)
+            ->all();
+        $assignments = $assignments
+            ->filter(static fn (VanAssignment $assignment): bool => $assignment->driver_id === null
+                || in_array((int) $assignment->driver_id, $eligibleDriverIds, true))
+            ->values();
+        // Lookup labels are names, not raw internal user/driver IDs.
+        $representativeLabels = DB::table('users')
+            ->whereIn('id', $assignments->pluck('representative_user_id')->filter()->values())
+            ->pluck('name', 'id');
+        $driverLabels = DB::table('drivers')
+            ->join('users', 'users.id', '=', 'drivers.user_id')
+            ->whereIn('drivers.id', $assignments->pluck('driver_id')->filter()->values())
+            ->pluck('users.name', 'drivers.id');
         $reasons = VanNoOrderReason::query()
             ->where('is_active', true)
             ->orderBy('sort_order')
@@ -575,36 +656,29 @@ final class FieldOperationsController extends Controller
                 );
             });
 
-        $visitCustomers = DB::table('b2b_customers')
-            ->orderBy('name')
-            ->limit(300)
-            ->get(['id', 'name', 'email'])
-            ->map(static fn (object $row): object => (object) [
-                'type' => 'b2b',
-                'id' => (int) $row->id,
-                'label' => (string) ($row->name ?: $row->email ?: 'B2B customer'),
-                'store_id' => null,
-            ])
-            ->concat(
-                DB::table('b2c_customers')
-                    ->orderBy('name')
-                    ->limit(300)
-                    ->get(['id', 'store_id', 'name', 'email'])
-                    ->map(static fn (object $row): object => (object) [
-                        'type' => 'b2c',
-                        'id' => (int) $row->id,
-                        'label' => (string) ($row->name ?: $row->email ?: 'B2C customer'),
-                        'store_id' => (int) $row->store_id,
-                    ]),
-            )
-            ->values();
+        // Per-store B2B customer ownership is not exposed by the global directory.
+        $visitCustomers = $canReadAllWholesale
+            ? DB::table('b2b_customers')
+                ->orderBy('name')
+                ->limit(300)
+                ->get(['id', 'name', 'email'])
+                ->map(static fn (object $row): object => (object) [
+                    'type' => 'b2b',
+                    'id' => (int) $row->id,
+                    'label' => (string) ($row->name ?: $row->email ?: 'B2B customer'),
+                    'store_id' => null,
+                ])
+            : collect();
 
         $visitStores = DB::table('stores')
-            ->where('is_active', true)
-            ->orderBy('name')
-            ->get(['id', 'code', 'name']);
+            ->join('store_types', 'store_types.id', '=', 'stores.store_type_id')
+            ->where('stores.is_active', true)
+            ->where('store_types.code', 'B2B')
+            ->whereIn('stores.id', $allowedB2bStores)
+            ->orderBy('stores.name')
+            ->get(['stores.id', 'stores.code', 'stores.name']);
 
-        $visitRoutes = VanVisit::query()
+        $visitRoutes = (clone $visibleVisits)
             ->get(['metadata'])
             ->flatMap(static function (VanVisit $visit): array {
                 $rawMetadata = $visit->getAttribute('metadata');
@@ -617,10 +691,12 @@ final class FieldOperationsController extends Controller
                 ];
             })
             ->merge(
-                FleetCurrentLocation::query()
-                    ->where('actor_type', 'van')
-                    ->whereNotNull('route_key')
-                    ->pluck('route_key'),
+                $canReadAllWholesale
+                    ? FleetCurrentLocation::query()
+                        ->where('actor_type', 'van')
+                        ->whereNotNull('route_key')
+                        ->pluck('route_key')
+                    : collect(),
             )
             ->filter()
             ->unique()
@@ -628,6 +704,8 @@ final class FieldOperationsController extends Controller
             ->values();
 
         $visitOrders = DB::table('orders')
+            ->where('channel', 'b2b')
+            ->whereIn('store_id', $allowedB2bStores)
             ->orderByDesc('created_at')
             ->limit(300)
             ->get(['id', 'order_number', 'status', 'store_id']);
@@ -640,6 +718,9 @@ final class FieldOperationsController extends Controller
             'visitStores',
             'visitRoutes',
             'visitOrders',
+            'canCreateVisit',
+            'representativeLabels',
+            'driverLabels',
         ));
     }
 
@@ -648,17 +729,38 @@ final class FieldOperationsController extends Controller
         $user = $this->actor($request);
         $this->authorizeAll($user, ['drivers.b2b.manage', 'customers.view']);
 
+        // A store-scoped operator has no authoritative B2B customer-to-store
+        // ownership mapping. Do not allow arbitrary customer IDs in create.
+        $platformWide = $user->hasRole('SUPER_ADMIN') || $user->hasRole('B2B_ADMIN')
+            || $user->hasRole('OPERATIONS') || $user->hasRole('FINANCE');
+        abort_unless($platformWide, 403);
+
         $data = $request->validate([
             'assignment_id' => ['required', 'integer', 'exists:van_assignments,id'],
-            'customer_type' => ['required', Rule::in(['b2b', 'b2c'])],
+            'customer_type' => ['required', Rule::in(['b2b'])],
             'customer_id' => ['required', 'integer', 'min:1'],
             'planned_at' => ['nullable', 'date'],
             'store_id' => ['nullable', 'integer', 'exists:stores,id'],
             'route_key' => ['nullable', 'string', 'max:128'],
         ]);
 
+        if (isset($data['store_id'])) {
+            abort_unless(in_array((int) $data['store_id'], $this->b2bStoreIds($user), true), 404);
+        }
+
         $assignment = VanAssignment::query()->with('van')->findOrFail((int) $data['assignment_id']);
         abort_unless($assignment->status === 'active', 422, 'Only an active Van assignment can receive a planned visit.');
+        if ($assignment->driver_id !== null) {
+            // A crafted assignment_id cannot bring a B2C Driver into a B2B Van visit.
+            abort_unless(
+                DB::table('drivers')
+                    ->where('id', (int) $assignment->driver_id)
+                    ->where('driver_type', 'b2b')
+                    ->where('is_active', true)
+                    ->exists(),
+                404,
+            );
+        }
 
         $plannedAt = isset($data['planned_at']) ? Carbon::parse((string) $data['planned_at']) : now();
         abort_if($plannedAt->lt($assignment->effective_from), 422, 'Visit is before assignment start.');
@@ -704,11 +806,26 @@ final class FieldOperationsController extends Controller
         $user = $this->actor($request);
         $this->authorizeAll($user, ['drivers.b2b.manage', 'customers.view']);
 
+        abort_unless($visit->customer_type === 'b2b', 404);
+        if ($visit->store_id === null) {
+            abort_unless(
+                $user->hasRole('SUPER_ADMIN') || $user->hasRole('B2B_ADMIN')
+                    || $user->hasRole('OPERATIONS') || $user->hasRole('FINANCE'),
+                404,
+            );
+        } else {
+            abort_unless(in_array((int) $visit->store_id, $this->b2bStoreIds($user), true), 404);
+        }
+
         $data = $request->validate([
             'status' => ['required', 'string'],
             'order_id' => ['nullable', 'integer', 'exists:orders,id'],
             'no_order_reason_id' => ['nullable', 'integer', 'exists:van_no_order_reasons,id'],
         ]);
+
+        if (isset($data['order_id'])) {
+            abort_unless(DB::table('orders')->where('id', $data['order_id'])->where('channel', 'b2b')->exists(), 404);
+        }
 
         $this->visitLifecycle->transition(
             $visit,
@@ -803,6 +920,19 @@ final class FieldOperationsController extends Controller
             'country_code' => ['required', 'string', 'min:2', 'max:3'],
         ]);
 
+        // A crafted request must not graft a geography node into another country.
+        if (isset($data['parent_id'])) {
+            $parent = GeographyNode::query()->find((int) $data['parent_id']);
+            if ($data['type'] === 'country'
+                || $parent === null
+                || ! $parent->is_active
+                || strtoupper((string) $parent->country_code) !== strtoupper((string) $data['country_code'])) {
+                throw ValidationException::withMessages([
+                    'parent_id' => [__('field_operations.invalid_geography_selection')],
+                ]);
+            }
+        }
+
         GeographyNode::query()->create([...$data, 'country_code' => strtoupper((string) $data['country_code']), 'is_active' => true]);
 
         return back()->with('status', __('admin.field_operations.saved'));
@@ -827,9 +957,80 @@ final class FieldOperationsController extends Controller
             'notes' => ['nullable', 'string', 'max:2000'],
         ]);
 
+        $country = GeographyNode::query()->whereKey((int) $data['country_node_id'])
+            ->where('type', 'country')
+            ->where('is_active', true)
+            ->whereNull('parent_id')
+            ->first();
+
+        if ($country === null) {
+            throw ValidationException::withMessages([
+                'country_node_id' => [__('field_operations.invalid_geography_selection')],
+            ]);
+        }
+
+        $previous = $country;
+        foreach ([
+            'governorate_node_id' => 'governorate',
+            'city_node_id' => 'city',
+            'district_node_id' => 'district',
+        ] as $field => $expectedType) {
+            if (! isset($data[$field])) {
+                continue;
+            }
+
+            $node = GeographyNode::query()->find((int) $data[$field]);
+            if ($node === null
+                || ! $node->is_active
+                || $node->type !== $expectedType
+                || strtoupper((string) $node->country_code) !== strtoupper((string) $country->country_code)
+                || ! $this->geographyDescendsFrom($node, $previous)) {
+                throw ValidationException::withMessages([
+                    $field => [__('field_operations.invalid_geography_selection')],
+                ]);
+            }
+
+            $previous = $node;
+        }
+
+        if (isset($data['default_warehouse_id'])) {
+            $warehouseStoreId = DB::table('warehouses')
+                ->where('id', (int) $data['default_warehouse_id'])
+                ->where('is_active', true)
+                ->value('store_id');
+
+            if ($warehouseStoreId === null
+                || ! in_array((int) $warehouseStoreId, $this->b2bStoreIds($user), true)) {
+                throw ValidationException::withMessages([
+                    'default_warehouse_id' => [__('field_operations.invalid_territory_warehouse')],
+                ]);
+            }
+        }
+
         ServiceTerritory::query()->create($data);
 
         return back()->with('status', __('admin.field_operations.saved'));
+    }
+
+    private function geographyDescendsFrom(GeographyNode $node, GeographyNode $ancestor): bool
+    {
+        $seen = [];
+
+        while ((int) $node->id !== (int) $ancestor->id) {
+            if ($node->parent_id === null || isset($seen[$node->id])) {
+                return false;
+            }
+
+            $seen[$node->id] = true;
+            $parent = GeographyNode::query()->find((int) $node->parent_id);
+            if ($parent === null || ! $parent->is_active) {
+                return false;
+            }
+
+            $node = $parent;
+        }
+
+        return true;
     }
 
     public function storeGeometry(Request $request, ServiceTerritory $territory): RedirectResponse
@@ -858,11 +1059,16 @@ final class FieldOperationsController extends Controller
             'status' => ['nullable', Rule::in(['unmapped', 'confirmed', 'rejected'])],
             'q' => ['nullable', 'string', 'max:150'],
         ]);
+        $term = trim((string) ($filters['q'] ?? ''));
+        $needle = LiteralLikePattern::contains($term);
         $reviews = AddressQualityReview::query()->with('events')
             ->when(isset($filters['status']), fn ($q) => $q->where('status', $filters['status']))
-            ->when(isset($filters['q']), function ($q) use ($filters): void {
-                $needle = '%'.str_replace(['%', '_'], ['\\%', '\\_'], (string) $filters['q']).'%';
-                $q->where(fn ($s) => $s->where('public_id', 'like', $needle)->orWhere('territory_key', 'like', $needle)->orWhere('reason', 'like', $needle));
+            ->when($term !== '', function ($query) use ($needle): void {
+                $query->where(function ($search) use ($needle): void {
+                    $search->whereRaw("public_id LIKE ? ESCAPE '!'", [$needle])
+                        ->orWhereRaw("territory_key LIKE ? ESCAPE '!'", [$needle])
+                        ->orWhereRaw("reason LIKE ? ESCAPE '!'", [$needle]);
+                });
             })
             ->orderByDesc('created_at')
             ->paginate(25)
@@ -937,7 +1143,16 @@ final class FieldOperationsController extends Controller
         $user = $this->actor($request);
         $this->authorizeAny($user, ['territories.manage', 'field_ops.manage']);
 
-        $policies = RoutingPolicy::query()->with('rules')->orderBy('code')->orderByDesc('version')->paginate(25);
+        // Store-limited routing operators may inspect only policies they created.
+        // Policies are globally versioned (they have no store_id column), so a
+        // global listing would disclose other operators' B2B routing decisions.
+        $policies = RoutingPolicy::query()
+            ->with('rules')
+            ->when(! $this->isGlobalRoutingActor($user), fn ($query) => $query->where('created_by', $user->id))
+            ->orderBy('code')
+            ->orderByDesc('version')
+            ->paginate(25)
+            ->withQueryString();
         $routingTerritories = ServiceTerritory::query()
             ->where('status', 'active')
             ->orderBy('name_en')
@@ -988,6 +1203,8 @@ final class FieldOperationsController extends Controller
         ]);
 
         $rules = $this->structuredRoutingRules($user, $data);
+        $this->assertRoutingRulesInScope($user, $rules, 'rules');
+        $this->assertRoutingPolicyCodeInScope($user, (string) $data['code'], 'code');
 
         $this->routing->createDraft($user, (string) $data['code'], (string) $data['mode'], $rules, $data['reason'] ?? null, $data['effective_from'] ?? null, $data['effective_until'] ?? null);
 
@@ -998,6 +1215,21 @@ final class FieldOperationsController extends Controller
     {
         $user = $this->actor($request);
         $this->authorizeAny($user, ['territories.manage', 'field_ops.manage']);
+        // Route-model binding is not an ownership grant. Protect all three
+        // actions, including simulation, against a guessed global policy ID.
+        if (! $this->isGlobalRoutingActor($user)) {
+            abort_unless(
+                (int) $routingPolicy->created_by === (int) $user->id
+                    && $this->routingRulesFitStores(
+                        $routingPolicy->loadMissing('rules')->rules->map(fn ($rule): array => [
+                            'conditions' => (array) $rule->conditions,
+                        ])->all(),
+                        $this->b2bStoreIds($user),
+                    ),
+                404,
+            );
+            $this->assertRoutingPolicyCodeInScope($user, (string) $routingPolicy->code, 'code', true);
+        }
 
         if ($action === 'publish') {
             $this->routing->publish($user, $routingPolicy);
@@ -1108,6 +1340,116 @@ final class FieldOperationsController extends Controller
             },
             'featureFlags' => $this->featureFlags->snapshot(),
         ]);
+    }
+
+    private function isGlobalRoutingActor(User $user): bool
+    {
+        return $user->hasRole('SUPER_ADMIN')
+            || $user->hasRole('B2B_ADMIN')
+            || $user->hasRole('OPERATIONS')
+            || $user->hasRole('FINANCE');
+    }
+
+    /**
+     * A store-limited actor cannot create a rule without an exact owned B2B
+     * store selector. Any unscoped condition would apply to all stores.
+     *
+     * @param  array<int, array<string, mixed>>  $rules
+     * @param  list<int>  $storeIds
+     */
+    private function routingRulesFitStores(array $rules, array $storeIds): bool
+    {
+        if ($rules === [] || $storeIds === []) {
+            return false;
+        }
+
+        foreach ($rules as $rule) {
+            $conditions = (array) ($rule['conditions'] ?? []);
+            $storeId = $conditions['store_id'] ?? null;
+            if (! is_int($storeId) || ! in_array($storeId, $storeIds, true)) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /**
+     * Numeric coordinate selectors are allowed in store-limited *drafts*
+     * for the existing route-builder workflow. They cannot be activated
+     * without an exact owned store selector (enforced on publish/rollback).
+     *
+     * @param  array<int, array<string, mixed>>  $rules
+     * @param  list<int>  $storeIds
+     */
+    private function routingRulesFitDraftScope(array $rules, array $storeIds): bool
+    {
+        if ($rules === [] || $storeIds === []) {
+            return false;
+        }
+
+        foreach ($rules as $rule) {
+            $conditions = (array) ($rule['conditions'] ?? []);
+            $storeId = $conditions['store_id'] ?? null;
+            if (is_int($storeId) && in_array($storeId, $storeIds, true)) {
+                continue;
+            }
+
+            if (array_key_exists('latitude', $conditions) && is_float($conditions['latitude'])) {
+                continue;
+            }
+            if (array_key_exists('longitude', $conditions) && is_float($conditions['longitude'])) {
+                continue;
+            }
+
+            return false;
+        }
+
+        return true;
+    }
+
+    /** @param array<int, array<string, mixed>> $rules */
+    private function assertRoutingRulesInScope(User $user, array $rules, string $field): void
+    {
+        if ($this->isGlobalRoutingActor($user)) {
+            return;
+        }
+
+        if (! $this->routingRulesFitDraftScope($rules, $this->b2bStoreIds($user))) {
+            throw ValidationException::withMessages([
+                $field => [__('field_operations.routing_value_unavailable')],
+            ]);
+        }
+    }
+
+    private function assertRoutingPolicyCodeInScope(User $user, string $code, string $field, bool $conceal = false): void
+    {
+        if ($this->isGlobalRoutingActor($user)) {
+            return;
+        }
+
+        // Code/version is a global namespace: a scoped operator must not
+        // shadow or retire another user's published policy via a new version.
+        $policies = RoutingPolicy::query()->with('rules')->where('code', $code)->get();
+        foreach ($policies as $policy) {
+            $authorized = (int) $policy->created_by === (int) $user->id
+                && $this->routingRulesFitStores(
+                    $policy->rules->map(fn ($rule): array => [
+                        'conditions' => (array) $rule->conditions,
+                    ])->all(),
+                    $this->b2bStoreIds($user),
+                );
+
+            if (! $authorized) {
+                if ($conceal) {
+                    abort(404);
+                }
+
+                throw ValidationException::withMessages([
+                    $field => [__('field_operations.routing_value_unavailable')],
+                ]);
+            }
+        }
     }
 
     /** @param array<string, mixed> $data */
@@ -1462,6 +1804,12 @@ final class FieldOperationsController extends Controller
     /** @return list<int> */
     private function b2bStoreIds(User $user): array
     {
+        // Fleet Managers and Dispatch Supervisors use the canonical B2B
+        // operational scope, honoring per-store/global DENY without Retail access.
+        if ($user->hasRole('FLEET_MANAGER') || $user->hasRole('DISPATCH_SUPERVISOR')) {
+            return app(OperationalTenantScope::class)->allowedStoreIds($user, 'drivers.b2b.view', 'B2B');
+        }
+
         $query = DB::table('stores')
             ->join('store_types', 'store_types.id', '=', 'stores.store_type_id')
             ->where('stores.is_active', true)

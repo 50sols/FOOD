@@ -23,7 +23,7 @@ final class VanCommercialPolicyController extends Controller
     ): JsonResponse {
         $actor = $this->actor($request);
         $storeId = $this->assertCustomerScope($request, $actor, $type, $customer);
-        $legacyCustomerId = $this->legacyCustomerId($type, $customer);
+        $legacyCustomerId = $this->legacyCustomerId($type, $customer, $actor);
 
         $data = $request->validate([
             'product_id' => ['required', 'integer', 'min:1'],
@@ -123,7 +123,7 @@ final class VanCommercialPolicyController extends Controller
         if ($requested === null) {
             if ($storeIds->count() !== 1) {
                 throw ValidationException::withMessages([
-                    'store_id' => ['Store is required when the customer is in more than one assigned Van scope.'],
+                    'store_id' => [__('van_commercial_quote_errors.multiple_visit_stores', [], $this->validationLocale($actor))],
                 ]);
             }
 
@@ -136,7 +136,7 @@ final class VanCommercialPolicyController extends Controller
         return $storeId;
     }
 
-    private function legacyCustomerId(string $type, int $customer): int
+    private function legacyCustomerId(string $type, int $customer, User $actor): int
     {
         $legacyId = match ($type) {
             'b2b' => B2bCustomer::query()->whereKey($customer)->value('legacy_customer_id'),
@@ -146,10 +146,15 @@ final class VanCommercialPolicyController extends Controller
 
         if ($legacyId === null) {
             throw ValidationException::withMessages([
-                'customer_id' => ['The selected customer is not linked to the canonical commercial customer domain.'],
+                'customer_id' => [__('van_commercial_quote_errors.unmapped_customer', [], $this->validationLocale($actor))],
             ]);
         }
 
         return (int) $legacyId;
+    }
+
+    private function validationLocale(User $actor): string
+    {
+        return in_array($actor->locale, ['ar', 'en'], true) ? $actor->locale : 'ar';
     }
 }

@@ -117,6 +117,44 @@ final class AssistantSafeActionsTest extends TestCase
         $this->assertDatabaseCount('enterprise_purchase_requests', 0);
     }
 
+    public function test_tampered_assistant_approval_payload_is_rejected_in_arabic_and_english_without_execution(): void
+    {
+        [$actor, $store] = $this->scopedUser();
+        config(['assistant.security.write_actions_enabled' => true]);
+
+        $service = app(AssistantActionApprovalService::class);
+        foreach ([
+            'en' => 'Assistant action payload changed after preview.',
+            'ar' => 'تغيّرت بيانات إجراء المساعد بعد المعاينة.',
+        ] as $locale => $message) {
+            app()->setLocale($locale);
+            $input = $this->input($store);
+            $input['payload']['reason'] = 'Tampered assistant payload '.$locale;
+            $approval = $service->create($actor, $input, $locale);
+            $approval = $service->approve($actor, $approval, (string) $approval->payload_hash, true);
+
+            $tampered = (array) $approval->payload;
+            $tampered['lines'][0]['quantity'] = 999;
+            $approval->forceFill(['payload' => $tampered])->save();
+
+            $beforeAuditCount = DB::table('audit_logs')->count();
+            try {
+                $service->execute($actor, $approval->fresh());
+                $this->fail('A tampered approval payload must not be executed.');
+            } catch (HttpException $exception) {
+                $this->assertSame(409, $exception->getStatusCode());
+                $this->assertSame($message, $exception->getMessage());
+            }
+
+            $this->assertDatabaseHas('assistant_action_approvals', [
+                'id' => $approval->id,
+                'status' => AssistantActionApprovalService::STATUS_APPROVED,
+            ]);
+            $this->assertDatabaseCount('enterprise_purchase_requests', 0);
+            $this->assertSame($beforeAuditCount, DB::table('audit_logs')->count());
+        }
+    }
+
     public function test_expired_approval_and_write_kill_switch_fail_closed(): void
     {
         [$actor, $store] = $this->scopedUser();
@@ -147,6 +185,40 @@ final class AssistantSafeActionsTest extends TestCase
         }
 
         $this->assertDatabaseCount('enterprise_purchase_requests', 0);
+    }
+
+    public function test_expired_assistant_action_rejection_uses_arabic_and_english_without_purchase_or_approval_writes(): void
+    {
+        [$actor, $store] = $this->scopedUser();
+        $service = app(AssistantActionApprovalService::class);
+
+        foreach ([
+            'en' => 'Assistant action approval has expired.',
+            'ar' => 'انتهت صلاحية الموافقة على إجراء المساعد.',
+        ] as $locale => $message) {
+            app()->setLocale($locale);
+            $input = $this->input($store);
+            $input['payload']['reason'] = 'Expired approval locale '.$locale;
+            $approval = $service->create($actor, $input, $locale);
+            $approval->forceFill(['expires_at' => now()->subMinute()])->save();
+
+            $beforeAuditCount = DB::table('audit_logs')->count();
+
+            try {
+                $service->approve($actor, $approval->fresh(), (string) $approval->payload_hash, true);
+                $this->fail('An expired action must never be approved.');
+            } catch (HttpException $exception) {
+                $this->assertSame(409, $exception->getStatusCode());
+                $this->assertSame($message, $exception->getMessage());
+            }
+
+            $this->assertDatabaseCount('enterprise_purchase_requests', 0);
+            $this->assertSame($beforeAuditCount, DB::table('audit_logs')->count());
+            $this->assertDatabaseMissing('assistant_action_approvals', [
+                'id' => $approval->id,
+                'status' => AssistantActionApprovalService::STATUS_APPROVED,
+            ]);
+        }
     }
 
     /** @return array<string,mixed> */

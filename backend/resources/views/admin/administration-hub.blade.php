@@ -151,9 +151,25 @@ html[dir=ltr] .main{grid-column:2}
 <div class="actions" data-security-navigation>
 <a class="action" href="{{ route('admin.security.index') }}">{{ __('admin.administration_hub.open') }}</a>
 <a class="action secondary" data-security-audit-entry href="{{ route('admin.security.index', ['section' => 'audit']) }}">{{ __('admin.security.tabs.audit') }}</a>
+@if($canUserLifecycle)
+<a class="action secondary" data-v2-user-lifecycle-entry="inactive" href="{{ route('admin.security.index', ['section' => 'users', 'status' => 'inactive']) }}">{{ __('admin.administration_hub.inactive_users') }}</a>
+@endif
 </div>
 @else<span class="restricted">{{ __('admin.administration_hub.restricted') }}</span>@endif
 </article>
+@if($canSecurity)
+<article class="card utility-card" data-admin-card="security-governance">
+<div>
+<h3>{{ __('security_governance.dashboard.title') }}</h3>
+<p class="muted">{{ __('security_governance.dashboard.description') }}</p>
+</div>
+<nav class="actions" data-security-governance-navigation aria-label="{{ __('security_governance.dashboard.title') }}">
+<a class="action" data-security-governance-entry="governance" href="{{ route('admin.security.index', ['section' => 'governance']) }}">{{ __('admin.security.tabs.governance') }}</a>
+<a class="action secondary" data-security-governance-entry="sessions" href="{{ route('admin.security.index', ['section' => 'sessions']) }}">{{ __('admin.security.tabs.sessions') }}</a>
+<a class="action secondary" data-security-governance-entry="audit" href="{{ route('admin.security.index', ['section' => 'audit']) }}">{{ __('admin.security.tabs.audit') }}</a>
+</nav>
+</article>
+@endif
 @if($canSystemUpdate)
 <article class="card utility-card" data-admin-card="system-updates">
 <div><h3>{{ __('admin.system_update_surface.title') }}</h3><p class="muted">{{ __('admin.system_update_surface.dashboard_description') }}</p></div>

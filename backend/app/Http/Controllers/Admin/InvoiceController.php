@@ -42,9 +42,20 @@ final class InvoiceController extends Controller
         $locale = (string) ($validated['locale'] ?? $user->locale ?? 'en');
 
         try {
-            $content = $invoices->renderPdf($model, $locale);
+            // Resolve through the container so real HTTP tests can inject a
+            // failing renderer without relaxing invoice authorization.
+            $content = (string) app()->call([$invoices, 'renderPdf'], [
+                'invoice' => $model,
+                'locale' => $locale,
+            ]);
         } catch (\RuntimeException) {
-            abort(503, 'PDF generation is temporarily unavailable.');
+            $requestedLocale = $validated['locale'] ?? null;
+            $preferredLocale = $requestedLocale
+                ?? (in_array($user->locale, ['ar', 'en'], true)
+                    ? $user->locale
+                    : $request->getPreferredLanguage(['ar', 'en']));
+
+            abort(503, __('invoice_errors.pdf_generation_unavailable', [], $preferredLocale === 'ar' ? 'ar' : 'en'));
         }
 
         return response($content, 200, [
@@ -70,6 +81,7 @@ final class InvoiceController extends Controller
             'amount' => ['required', 'numeric', 'gt:0'],
             'reference' => ['nullable', 'string', 'max:120'],
             'description' => ['nullable', 'string', 'max:500'],
+            'settlement_request_id' => ['nullable', 'uuid'],
         ]);
 
         $result = $ledger->settleInvoice(
@@ -80,8 +92,11 @@ final class InvoiceController extends Controller
             $user,
             $validated['reference'] ?? null,
             $validated['description'] ?? null,
+            $validated['settlement_request_id'] ?? null,
         );
-        $audit->record('invoice.settled', $user, $model, null, $result, $request);
+        if (! $result['replayed']) {
+            $audit->record('invoice.settled', $user, $model, null, $result, $request);
+        }
 
         return redirect()
             ->route('admin.invoices.show', ['invoice' => $model->getKey()])
@@ -119,8 +134,10 @@ final class InvoiceController extends Controller
     {
         [$storeId, $channel] = $this->scope($invoice);
 
+        // An invoice without a verified store and channel is not a global
+        // invoice. Do not convert broken provenance into a broad finance grant.
         if ($storeId === null || $channel === null) {
-            return $user->hasRole('SUPER_ADMIN') || $user->hasPermission($permission);
+            return false;
         }
 
         return in_array(
@@ -133,18 +150,47 @@ final class InvoiceController extends Controller
     /** @return array{0:?int,1:?string} */
     private function scope(Invoice $invoice): array
     {
-        if ($invoice->store_id !== null && in_array(strtolower((string) $invoice->channel), ['b2b', 'b2c'], true)) {
-            return [(int) $invoice->store_id, strtolower((string) $invoice->channel)];
-        }
+        $storeId = $invoice->store_id === null ? null : (int) $invoice->store_id;
+        $channel = strtolower(trim((string) $invoice->channel));
 
-        if ($invoice->order_id === null) {
+        if ($channel !== '' && ! in_array($channel, ['b2b', 'b2c'], true)) {
             return [null, null];
         }
 
-        $order = DB::table('orders')->where('id', $invoice->order_id)->first(['store_id', 'channel']);
+        if ($invoice->order_id !== null) {
+            $order = DB::table('orders')
+                ->where('id', $invoice->order_id)
+                ->first(['store_id', 'channel']);
 
-        return $order === null
-            ? [null, null]
-            : [(int) $order->store_id, strtolower((string) $order->channel)];
+            // A broken or conflicting order reference must never be masked by
+            // the invoice's more permissive snapshot fields.
+            if ($order === null
+                || ($storeId !== null && $storeId !== (int) $order->store_id)
+                || ($channel !== '' && $channel !== strtolower((string) $order->channel))) {
+                return [null, null];
+            }
+
+            $storeId = (int) $order->store_id;
+            $channel = strtolower((string) $order->channel);
+        }
+
+        if ($storeId === null || $storeId <= 0) {
+            return [null, null];
+        }
+
+        // Older invoices may have a store but no channel. Infer the missing
+        // channel only from authoritative store master data, never from the
+        // actor's roles, invoice snapshots or a caller-supplied parameter.
+        $storeChannel = strtolower((string) DB::table('stores')
+            ->join('store_types', 'stores.store_type_id', '=', 'store_types.id')
+            ->where('stores.id', $storeId)
+            ->value('store_types.code'));
+
+        if (! in_array($storeChannel, ['b2b', 'b2c'], true)
+            || ($channel !== '' && $channel !== $storeChannel)) {
+            return [null, null];
+        }
+
+        return [$storeId, $storeChannel];
     }
 }

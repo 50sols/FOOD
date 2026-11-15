@@ -3,6 +3,7 @@
 namespace App\Models;
 
 use App\Services\BuiltInJobRoleCatalog;
+use App\Services\SensitivePermissionOverridePolicy;
 use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Relations\BelongsToMany;
@@ -135,6 +136,12 @@ class User extends Authenticatable
 
     public function hasPermission(string $permissionCode, ?int $storeId = null): bool
     {
+        // Deactivation revokes effective authorization even when historical
+        // role assignments or direct overrides remain for the audit trail.
+        if (! $this->is_active) {
+            return false;
+        }
+
         if ($this->hasRole('SUPER_ADMIN')) {
             return true;
         }
@@ -159,6 +166,14 @@ class User extends Authenticatable
         if ($globalEffect === 'deny' || $storeEffect === 'deny') {
             return false;
         }
+        // A legacy direct ALLOW cannot activate a sensitive function.
+        // Only the assigned role may supply its base permission; separate
+        // Gate/SoD/operational approval checks still apply to every action.
+        if (SensitivePermissionOverridePolicy::requiresIndependentApproval($permissionCode)
+            && ($globalEffect === 'allow' || $storeEffect === 'allow')) {
+            return $this->hasInheritedPermission($permissionCode, $storeId);
+        }
+
         if ($storeEffect === 'allow') {
             return $this->permissionFitsStoreChannel($permissionCode, (string) $this->storeChannel($storeId))
                 && $this->hasPermissionScopeContext($storeId);
@@ -279,6 +294,13 @@ class User extends Authenticatable
     /** @return list<string> */
     public function effectivePermissionCodes(?int $storeId = null): array
     {
+        // Stored role and per-user override rows remain available for audit,
+        // but a deactivated identity has no effective authorization. Keep this
+        // projection aligned with hasPermission() and tenant-scope checks.
+        if (! $this->is_active) {
+            return [];
+        }
+
         if ($this->hasRole('SUPER_ADMIN')) {
             return array_keys((array) config('permissions.abilities', []));
         }
@@ -295,6 +317,12 @@ class User extends Authenticatable
             if ($effect === 'deny') {
                 $codes = $codes->reject(fn ($candidate): bool => $candidate === $code);
 
+                continue;
+            }
+
+            if (SensitivePermissionOverridePolicy::requiresIndependentApproval($code)) {
+                // Preserve role inheritance, but never turn a sensitive
+                // legacy user ALLOW into effective authority.
                 continue;
             }
 

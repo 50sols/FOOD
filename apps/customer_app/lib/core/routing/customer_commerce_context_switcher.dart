@@ -53,18 +53,38 @@ class CustomerCommerceContextSwitcher {
     CustomerSession session,
   ) async {
     _requirePlatformSession(session);
+    return targetsFromSelection(await storefrontApi.selection());
+  }
 
-    final payload = await storefrontApi.selection();
+  /// The same server-selector decoder is used by the live store selector and
+  /// programmatic context switches. Decode everything before exposing any
+  /// candidate so malformed rows cannot be converted into storefront links.
+  static List<CustomerCommerceSwitchTarget> targetsFromSelection(
+    Map<String, dynamic> payload,
+  ) {
     final entitlements = _map(payload['entitlements']);
     final principalId =
         _positiveInt(entitlements['principal_wholesale_store_id']);
-    final wholesaleRows = _rows(payload['wholesale_stores']);
-    final retailRows = _rows(payload['retail_stores']);
+    final wholesaleRows = _rows(payload['wholesale_stores'], 'wholesale');
+    final retailRows = _rows(payload['retail_stores'], 'retail');
+
+    // A principal marker without the corresponding authoritative entitlement
+    // ID must never mint a locally selectable Wholesale commerce context.
+    if (wholesaleRows.isNotEmpty && principalId == null) {
+      throw const CustomerCommerceContextSwitchException(
+        'principal_wholesale_contract_mismatch',
+      );
+    }
 
     CustomerCommerceSwitchTarget? principal;
     for (final row in wholesaleRows) {
       final storeId = _positiveInt(row['id']);
-      if (storeId == null || row['is_platform_principal'] != true) {
+      if (storeId == null) {
+        throw const CustomerCommerceContextSwitchException(
+          'wholesale_store_id_invalid',
+        );
+      }
+      if (row['is_platform_principal'] != true) {
         continue;
       }
       if (principalId != null && storeId != principalId) {
@@ -105,8 +125,15 @@ class CustomerCommerceContextSwitcher {
     final seenRetail = <int>{};
     for (final row in retailRows) {
       final storeId = _positiveInt(row['id'] ?? row['store_id']);
-      if (storeId == null || !seenRetail.add(storeId)) {
-        continue;
+      if (storeId == null) {
+        throw const CustomerCommerceContextSwitchException(
+          'retail_store_id_invalid',
+        );
+      }
+      if (!seenRetail.add(storeId)) {
+        throw const CustomerCommerceContextSwitchException(
+          'duplicate_retail_context',
+        );
       }
       targets.add(
         CustomerCommerceSwitchTarget(
@@ -121,6 +148,36 @@ class CustomerCommerceContextSwitcher {
     }
 
     return List<CustomerCommerceSwitchTarget>.unmodifiable(targets);
+  }
+
+  /// Keep existing public store card metadata, but admit only exactly
+  /// validated server-authorized identities to the signed-in selector UI.
+  /// Retail discovery is public: an allowed Retail row does not by itself
+  /// confer purchasing permission; the destination HTTP guard still applies.
+  static Map<String, dynamic> validatedSelection(
+    Map<String, dynamic> payload,
+  ) {
+    final targets = targetsFromSelection(payload);
+    final retailIds = targets
+        .where((target) => target.context.isRetail)
+        .map((target) => target.context.storeId)
+        .toSet();
+    final principalIds = targets
+        .where((target) => target.isPrincipalWholesale)
+        .map((target) => target.context.storeId)
+        .toSet();
+
+    return <String, dynamic>{
+      ...payload,
+      'retail_stores': (payload['retail_stores'] as List)
+          .where((row) => retailIds
+              .contains(_positiveInt((row as Map)['id'] ?? row['store_id'])))
+          .toList(growable: false),
+      'wholesale_stores': (payload['wholesale_stores'] as List)
+          .where(
+              (row) => principalIds.contains(_positiveInt((row as Map)['id'])))
+          .toList(growable: false),
+    };
   }
 
   Future<CustomerCommerceSwitchResult> switchTo({
@@ -163,23 +220,41 @@ class CustomerCommerceContextSwitcher {
   }
 
   static void _requirePlatformSession(CustomerSession session) {
-    if (!session.isAuthenticated || !session.platformWide) {
+    if (!session.isAuthenticated ||
+        !session.platformWide ||
+        session.accessToken?.trim().isNotEmpty != true) {
       throw const CustomerCommerceContextSwitchException(
         'platform_customer_session_required',
       );
     }
   }
 
-  static List<Map<String, dynamic>> _rows(Object? raw) {
-    if (raw is! List) return const <Map<String, dynamic>>[];
-    return raw
-        .whereType<Map>()
-        .map((row) => Map<String, dynamic>.from(row))
-        .toList(growable: false);
+  static List<Map<String, dynamic>> _rows(Object? raw, String scope) {
+    if (raw is! List) {
+      throw CustomerCommerceContextSwitchException(
+        '${scope}_selector_rows_invalid',
+      );
+    }
+    final rows = <Map<String, dynamic>>[];
+    for (final row in raw) {
+      if (row is! Map || row.keys.any((key) => key is! String)) {
+        throw CustomerCommerceContextSwitchException(
+          '${scope}_selector_rows_invalid',
+        );
+      }
+      rows.add(Map<String, dynamic>.from(row));
+    }
+    return List<Map<String, dynamic>>.unmodifiable(rows);
   }
 
-  static Map<String, dynamic> _map(Object? raw) =>
-      raw is Map ? Map<String, dynamic>.from(raw) : const <String, dynamic>{};
+  static Map<String, dynamic> _map(Object? raw) {
+    if (raw is! Map || raw.keys.any((key) => key is! String)) {
+      throw const CustomerCommerceContextSwitchException(
+        'selector_entitlements_invalid',
+      );
+    }
+    return Map<String, dynamic>.from(raw);
+  }
 
   static int? _positiveInt(Object? raw) {
     final value = raw is int ? raw : int.tryParse(raw?.toString() ?? '');

@@ -6,7 +6,12 @@ use App\Http\Controllers\Controller;
 use App\Models\AdminMfaCredential;
 use App\Models\AdminSecuritySession;
 use App\Models\EnterpriseApprovalLimit;
+use App\Models\EnterpriseBusinessUnit;
+use App\Models\EnterpriseCompany;
 use App\Models\EnterpriseDelegation;
+use App\Models\EnterpriseLegalEntity;
+use App\Models\EnterpriseOrganization;
+use App\Models\EnterpriseRoleDataScope;
 use App\Models\EnterpriseSsoIdentity;
 use App\Models\EnterpriseWorkflowRequest;
 use App\Models\Permission;
@@ -20,6 +25,7 @@ use App\Services\AuditLogger;
 use App\Services\BuiltInJobRoleCatalog;
 use App\Services\DemoDataManager;
 use App\Services\RbacManager;
+use App\Services\RoleAssignmentAudit;
 use Database\Seeders\ProductDemoSeeder;
 use Illuminate\Contracts\View\View;
 use Illuminate\Http\RedirectResponse;
@@ -35,7 +41,7 @@ use Symfony\Component\HttpFoundation\StreamedResponse;
 
 final class SecurityController extends Controller
 {
-    public function index(Request $request, DemoDataManager $demoData, BuiltInJobRoleCatalog $jobRoles): View
+    public function index(Request $request, DemoDataManager $demoData, BuiltInJobRoleCatalog $jobRoles, RoleAssignmentAudit $assignmentAudit): View
     {
         Gate::authorize('security.view');
         $this->useActorLocale($request);
@@ -49,11 +55,16 @@ final class SecurityController extends Controller
             ]);
         }
         $search = trim((string) $request->query('q', ''));
+        $literalSearch = '%'.str_replace(['!', '%', '_'], ['!!', '!%', '!_'], $search).'%';
         $status = (string) $request->query('status', 'all');
+        $assignment = (string) $request->query('assignment', 'all');
         $section = (string) $request->query('section', 'users');
 
         if (! in_array($status, ['all', 'active', 'inactive'], true)) {
             $status = 'all';
+        }
+        if (! in_array($assignment, ['all', 'roleless'], true)) {
+            $assignment = 'all';
         }
         if (! in_array($section, ['users', 'roles', 'governance', 'sessions', 'audit'], true)) {
             $section = 'users';
@@ -61,13 +72,18 @@ final class SecurityController extends Controller
 
         $users = User::query()
             ->with(['roles:id,code,name,is_active', 'storeRoleAssignments.role:id,code,name,is_active', 'storeRoleAssignments.store:id,code,name'])
-            ->when($search !== '', fn ($query) => $query->where(function ($nested) use ($search): void {
-                $nested->where('name', 'like', '%'.$search.'%')
-                    ->orWhere('username', 'like', '%'.$search.'%')
-                    ->orWhere('email', 'like', '%'.$search.'%');
+            ->when($search !== '', fn ($query) => $query->where(function ($nested) use ($literalSearch): void {
+                $nested->whereRaw("name LIKE ? ESCAPE '!'", [$literalSearch])
+                    ->orWhereRaw("username LIKE ? ESCAPE '!'", [$literalSearch])
+                    ->orWhereRaw("email LIKE ? ESCAPE '!'", [$literalSearch]);
             }))
             ->when($status === 'active', fn ($query) => $query->where('is_active', true))
             ->when($status === 'inactive', fn ($query) => $query->where('is_active', false))
+            // T015R05: distinguish genuinely roleless identities without inventing grants.
+            // Both global and store assignments count; do not treat customers as staff defects.
+            ->when($assignment === 'roleless', fn ($query) => $query
+                ->whereDoesntHave('roles')
+                ->whereDoesntHave('storeRoleAssignments'))
             ->orderBy('name')
             ->paginate(15)
             ->withQueryString();
@@ -78,6 +94,64 @@ final class SecurityController extends Controller
             ->orderByDesc('is_system')
             ->orderBy('code')
             ->get();
+
+        // P098: show stored, active role approval ceilings without inferring
+        // effective user access or a store assignment from the role itself.
+        $roleApprovalLimits = $section === 'roles'
+            ? EnterpriseApprovalLimit::query()
+                ->whereIn('role_id', $roles->pluck('id'))
+                ->where('is_active', true)
+                ->orderBy('permission_code')
+                ->orderBy('currency')
+                ->get()
+                ->groupBy('role_id')
+            : collect();
+
+        // Role data-scope grants are separately governed in Enterprise Security.
+        // Resolve only referenced entity labels, preserving orphaned historical
+        // IDs as unavailable rather than presenting them as live authority.
+        $roleDataScopeRows = $section === 'roles'
+            ? EnterpriseRoleDataScope::query()
+                ->whereIn('role_id', $roles->pluck('id'))
+                ->where('is_active', true)
+                ->orderBy('scope_type')
+                ->get()
+            : collect();
+        $roleDataScopes = $roleDataScopeRows->groupBy('role_id');
+        $roleDataScopeNames = collect();
+        foreach ([
+            'organization' => EnterpriseOrganization::class,
+            'company' => EnterpriseCompany::class,
+            'legal_entity' => EnterpriseLegalEntity::class,
+            'business_unit' => EnterpriseBusinessUnit::class,
+            'store' => Store::class,
+        ] as $scopeType => $modelClass) {
+            $ids = $roleDataScopeRows->where('scope_type', $scopeType)
+                ->pluck('scope_id')
+                ->filter()
+                ->unique()
+                ->all();
+            if ($ids === []) {
+                continue;
+            }
+
+            $modelClass::query()->whereIn('id', $ids)->where('is_active', true)->get(['id', 'name'])
+                ->each(fn ($record) => $roleDataScopeNames->put($scopeType.':'.$record->id, (string) $record->name));
+        }
+
+        // Store names are read from actual role assignments; no inferred store
+        // ownership or per-user effective authorization is implied.
+        $roleAssignedStores = $section === 'roles'
+            ? DB::table('user_store_roles')
+                ->join('stores', 'stores.id', '=', 'user_store_roles.store_id')
+                ->whereIn('user_store_roles.role_id', $roles->pluck('id'))
+                ->select('user_store_roles.role_id', 'stores.code as store_code', 'stores.name as store_name')
+                ->selectRaw('COUNT(*) as assignments_count')
+                ->groupBy('user_store_roles.role_id', 'stores.id', 'stores.code', 'stores.name')
+                ->orderBy('stores.name')
+                ->get()
+                ->groupBy('role_id')
+            : collect();
 
         $stores = Store::query()
             ->select('stores.*')
@@ -449,9 +523,52 @@ final class SecurityController extends Controller
             ->get();
         $audit = $this->auditExplorer($request);
 
+        // T015R04: raw global/store assignment rows are visible to Super Admin only.
+        $roleAssignmentAudit = $section === 'roles' && $isSuperAdmin
+            ? $assignmentAudit->snapshot()
+            : null;
+
+        // T015R03: source-to-current audit is restricted to Super Admin.
+        // The pivot records grants as stored; it cannot represent effective ALLOW/DENY,
+        // tenant, module readiness or financial SoD decisions by itself.
+        $permissionRoleAudit = null;
+        if ($section === 'roles' && $isSuperAdmin) {
+            $catalogCodes = Permission::query()->orderBy('code')->pluck('code');
+            $linkedCodes = DB::table('permission_role')
+                ->join('permissions', 'permissions.id', '=', 'permission_role.permission_id')
+                ->pluck('permissions.code');
+            $linkedByNamespace = $linkedCodes->groupBy(
+                static fn (string $code): string => Str::before($code, '.'),
+            );
+
+            $permissionRoleAudit = [
+                'permission_count' => $catalogCodes->count(),
+                'relation_count' => $linkedCodes->count(),
+                'unused_count' => Permission::query()->whereDoesntHave('roles')->count(),
+                'active_role_relation_count' => DB::table('permission_role')
+                    ->join('roles', 'roles.id', '=', 'permission_role.role_id')
+                    ->where('roles.is_active', true)
+                    ->whereNull('roles.archived_at')
+                    ->count(),
+                'namespaces' => $catalogCodes->groupBy(
+                    static fn (string $code): string => Str::before($code, '.'),
+                )->map(static fn ($codes, string $namespace): array => [
+                    'code' => $namespace,
+                    'permissions' => $codes->count(),
+                    'relations' => $linkedByNamespace->get($namespace, collect())->count(),
+                ])->values()->all(),
+            ];
+        }
+
         return view('admin.security', [
             'users' => $users,
             'roles' => $roles,
+            'roleApprovalLimits' => $roleApprovalLimits,
+            'roleAssignedStores' => $roleAssignedStores,
+            'roleDataScopes' => $roleDataScopes,
+            'roleDataScopeNames' => $roleDataScopeNames,
+            'permissionRoleAudit' => $permissionRoleAudit,
+            'roleAssignmentAudit' => $roleAssignmentAudit,
             'globalRoles' => $globalRoles,
             'grantableStoreRolesByStore' => $grantableStoreRolesByStore,
             'jobRoleMeta' => $jobRoleMeta,
@@ -483,6 +600,7 @@ final class SecurityController extends Controller
             ],
             'search' => $search,
             'statusFilter' => $status,
+            'assignmentFilter' => $assignment,
             'securitySection' => $section,
             'demoSummary' => $demoData->summary(),
             'governance' => $governance,
@@ -585,6 +703,8 @@ final class SecurityController extends Controller
             'locale' => ['required', Rule::in(['ar', 'en'])],
             'role_id' => ['nullable', 'integer', 'exists:roles,id', 'required_without:store_role_assignment'],
             'store_role_assignment' => ['nullable', 'string', 'regex:/^[1-9][0-9]*:[1-9][0-9]*$/'],
+            // Optional for pre-existing API/automation clients; required by the new Dashboard selector.
+            'account_scope' => ['sometimes', Rule::in(['global', 'store', 'mixed'])],
             'is_active' => ['required', 'boolean'],
         ]);
 
@@ -594,6 +714,20 @@ final class SecurityController extends Controller
         if (! empty($validated['store_role_assignment'])) {
             [$storeId, $storeRoleId] = array_map('intval', explode(':', $validated['store_role_assignment'], 2));
             $storeRoles[] = ['store_id' => $storeId, 'role_id' => $storeRoleId];
+        }
+
+        // Account type/channel is a projection of canonical role assignments,
+        // never a new stored grant. Existing integration clients without this
+        // field retain their validated role/store assignment semantics.
+        if (isset($validated['account_scope'])) {
+            $hasGlobal = $globalRoleIds !== [];
+            $hasStore = $storeRoles !== [];
+            $actualScope = $hasGlobal && $hasStore ? 'mixed' : ($hasGlobal ? 'global' : 'store');
+            if ($actualScope !== $validated['account_scope']) {
+                throw ValidationException::withMessages([
+                    'account_scope' => [__('admin.security.account_scope_mismatch')],
+                ]);
+            }
         }
 
         DB::transaction(function () use ($validated, $actor, $globalRoleIds, $storeRoles, $request, $rbac, $audit): void {
@@ -636,6 +770,82 @@ final class SecurityController extends Controller
             ->with('status', __('admin.security.user_created'));
     }
 
+    /**
+     * Identity-only edit: role and channel/store authority remain exclusively
+     * with the canonical audited RbacManager role assignment endpoints.
+     */
+    public function updateUserProfile(
+        Request $request,
+        User $user,
+        AuditLogger $audit,
+        AdminSessionRegistry $sessions,
+    ): RedirectResponse {
+        Gate::authorize('users.roles.manage');
+        $actor = $this->actor($request);
+
+        // Identity takeover is too sensitive for delegated role managers; owner,
+        // SUPER_ADMIN and consumer identities have their own governance paths.
+        abort_unless($actor->hasRole('SUPER_ADMIN'), 403);
+        abort_if(
+            $user->isPlatformOwner() || $user->hasRole('SUPER_ADMIN') || (bool) $user->is_platform_customer,
+            403,
+        );
+
+        $validated = $request->validate([
+            'name' => ['required', 'string', 'max:120'],
+            'username' => ['nullable', 'string', 'max:80', 'regex:/^[A-Za-z0-9._-]+$/', Rule::unique('users', 'username')->ignore($user->id)],
+            'email' => ['required', 'email', 'max:190', Rule::unique('users', 'email')->ignore($user->id)],
+            'locale' => ['required', Rule::in(['ar', 'en'])],
+            'change_reason' => ['required', 'string', 'min:8', 'max:500'],
+        ]);
+
+        $before = [
+            'name' => $user->name,
+            'username' => $user->username,
+            'email' => $user->email,
+            'locale' => $user->locale,
+        ];
+        $username = trim((string) ($validated['username'] ?? ''));
+        $email = strtolower(trim((string) $validated['email']));
+        $emailChanged = $email !== strtolower((string) $user->email);
+        $usernameChanged = ($username === '' ? null : strtolower($username)) !== $user->username;
+        $loginChanged = $emailChanged || $usernameChanged;
+
+        DB::transaction(function () use ($user, $actor, $request, $audit, $sessions, $validated, $before, $username, $email, $emailChanged, $loginChanged): void {
+            $user->fill([
+                'name' => trim((string) $validated['name']),
+                'username' => $username === '' ? null : strtolower($username),
+                'email' => $email,
+                'locale' => (string) $validated['locale'],
+            ]);
+            // A changed email or username invalidates old login sessions.
+            if ($loginChanged) {
+                $user->forceFill(['remember_token' => Str::random(60)]);
+            }
+            if ($emailChanged) {
+                $user->forceFill(['email_verified_at' => null]);
+            }
+            $user->save();
+
+            if ($loginChanged) {
+                $user->tokens()->delete();
+                $sessions->revokeForUser($user, $actor);
+            }
+
+            $audit->record('user.profile_updated', $actor, $user, $before, [
+                'name' => $user->name,
+                'username' => $user->username,
+                'email' => $user->email,
+                'locale' => $user->locale,
+                'change_reason' => trim((string) $validated['change_reason']),
+                'reverify_email' => $emailChanged,
+                'login_sessions_revoked' => $loginChanged,
+            ], $request);
+        }, 3);
+
+        return back()->with('status', __('admin.security.user_profile_saved'));
+    }
+
     public function updateUserStatus(Request $request, User $user, RbacManager $rbac): RedirectResponse
     {
         Gate::authorize('users.status.manage');
@@ -670,6 +880,7 @@ final class SecurityController extends Controller
             'store_role_ids' => ['nullable', 'array'],
             'store_role_ids.*' => ['array'],
             'store_role_ids.*.*' => ['integer', 'exists:roles,id'],
+            'change_reason' => ['required', 'string', 'min:8', 'max:500'],
         ]);
 
         $storeRoles = [];
@@ -702,6 +913,7 @@ final class SecurityController extends Controller
             'permission_ids' => ['nullable', 'array'],
             'permission_ids.*' => ['integer', 'exists:permissions,id'],
             'inherit' => ['sometimes', 'boolean'],
+            'change_reason' => ['required', 'string', 'min:8', 'max:500'],
         ]);
 
         $inheritFromRole = (bool) ($validated['inherit'] ?? false);
@@ -839,6 +1051,13 @@ final class SecurityController extends Controller
     ): StreamedResponse {
         Gate::authorize('security.view');
         $actor = $this->actor($request);
+
+        // Effective access contains every user's identity, role and permission inventory.
+        // A delegated security.view grant cannot authorize a platform-wide export.
+        if ($report === 'effective-access') {
+            abort_unless($actor->hasRole('SUPER_ADMIN'), 403);
+        }
+
         $rows = $this->governanceReportRows($report, $policy);
 
         DB::table('audit_logs')->insert([
@@ -931,6 +1150,10 @@ final class SecurityController extends Controller
             'permission_ids' => ['nullable', 'array'],
             'permission_ids.*' => ['integer', 'distinct', 'exists:permissions,id'],
         ];
+
+        if (! $includeCode) {
+            $rules['change_reason'] = ['required', 'string', 'min:8', 'max:500'];
+        }
 
         if ($includeCode) {
             $rules['code'] = ['required', 'string', 'max:50', 'regex:/^[A-Z][A-Z0-9_]{2,49}$/', Rule::unique('roles', 'code')];
@@ -1108,17 +1331,22 @@ final class SecurityController extends Controller
                 'actors.email as actor_email',
             ]);
 
+        // Treat audit filter input as literal text across SQLite/MySQL SQL modes.
+        // Only the outer % operators implement intentional substring matching.
+        $literalContains = static fn (string $value): string => '%'
+            .str_replace(['!', '%', '_'], ['!!', '!%', '!_'], $value).'%';
+
         if ($filters['audit_actor'] !== '') {
-            $needle = '%'.$filters['audit_actor'].'%';
+            $needle = $literalContains($filters['audit_actor']);
             $query->where(fn ($nested) => $nested
-                ->where('actors.name', 'like', $needle)
-                ->orWhere('actors.email', 'like', $needle));
+                ->whereRaw("actors.name LIKE ? ESCAPE '!'", [$needle])
+                ->orWhereRaw("actors.email LIKE ? ESCAPE '!'", [$needle]));
         }
         if ($filters['audit_event'] !== '') {
-            $query->where('audit.event', 'like', '%'.$filters['audit_event'].'%');
+            $query->whereRaw("audit.event LIKE ? ESCAPE '!'", [$literalContains($filters['audit_event'])]);
         }
         if ($filters['audit_entity'] !== '') {
-            $query->where('audit.auditable_type', 'like', '%'.$filters['audit_entity'].'%');
+            $query->whereRaw("audit.auditable_type LIKE ? ESCAPE '!'", [$literalContains($filters['audit_entity'])]);
         }
         if ($filters['audit_from'] !== '') {
             $query->whereDate('audit.created_at', '>=', $filters['audit_from']);
@@ -1127,7 +1355,10 @@ final class SecurityController extends Controller
             $query->whereDate('audit.created_at', '<=', $filters['audit_to']);
         }
         if ($filters['audit_correlation'] !== '') {
-            $query->where('audit.after', 'like', '%'.$filters['audit_correlation'].'%');
+            // audit.after stores JSON text: a literal backslash in a value is
+            // serialized as two backslashes before the LIKE pattern is applied.
+            $serializedCorrelation = str_replace('\\', '\\\\', $filters['audit_correlation']);
+            $query->whereRaw("audit.after LIKE ? ESCAPE '!'", [$literalContains($serializedCorrelation)]);
         }
 
         return [

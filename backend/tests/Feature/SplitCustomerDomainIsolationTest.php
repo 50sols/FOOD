@@ -107,7 +107,7 @@ class SplitCustomerDomainIsolationTest extends TestCase
             null,
             'ISO-B2B-ORDER',
         );
-        $this->order(
+        $retailOrder = $this->order(
             $retailStore,
             'b2c',
             $retailCustomer->legacy_customer_id,
@@ -118,13 +118,32 @@ class SplitCustomerDomainIsolationTest extends TestCase
 
         Sanctum::actingAs($retailUser);
         $this->getJson('/api/v1/b2b/orders')->assertForbidden();
+        // Non-platform Retail customers must not receive their B2C list
+        // labelled as Wholesale just because the query says channel=b2b.
+        $this->getJson('/api/v1/orders?store='.$retailStore.'&channel=b2c')
+            ->assertOk()
+            ->assertJsonPath('meta.scope', 'b2c')
+            ->assertJsonPath('meta.total', 1)
+            ->assertJsonPath('data.0.id', $retailOrder);
+        $this->getJson('/api/v1/orders?store='.$retailStore.'&channel=b2b')
+            ->assertNotFound();
 
         Sanctum::actingAs($wholesaleUser);
         $this->getJson('/api/v1/b2b/orders')
             ->assertOk()
             ->assertJsonCount(1, 'data')
             ->assertJsonPath('data.0.id', $b2bOrder);
+        $this->getJson('/api/v1/b2b/orders?channel=b2b')
+            ->assertOk()
+            ->assertJsonPath('meta.scope', 'b2b')
+            ->assertJsonPath('meta.total', 1)
+            ->assertJsonPath('data.0.id', $b2bOrder);
+        $this->getJson('/api/v1/b2b/orders?channel=b2c')
+            ->assertNotFound();
         $this->getJson('/api/v1/orders?store='.$retailStore)->assertNotFound();
+
+        // Contradictory read requests cannot mutate canonical order history.
+        $this->assertDatabaseCount('orders', 2);
     }
 
     private function store(string $channel, string $code): int

@@ -49,14 +49,15 @@ final class FinancePlanningService
             'q' => ['nullable', 'string', 'max:120'],
             'status' => ['nullable', Rule::in(['active', 'inactive'])],
         ])->validate();
-        $term = str_replace(['%', '_'], '', trim((string) ($validated['q'] ?? '')));
+        $term = trim((string) ($validated['q'] ?? ''));
+        $prefix = str_replace(['!', '%', '_'], ['!!', '!%', '!_'], $term).'%';
 
         return $this->profitCenterQuery($scope)
             ->when($validated['status'] ?? null, fn ($query, string $status) => $query->where('status', $status))
-            ->when($term !== '', function ($query) use ($term): void {
+            ->when($term !== '', function ($query) use ($prefix): void {
                 $query->where(fn ($nested) => $nested
-                    ->where('code', 'like', $term.'%')
-                    ->orWhere('name', 'like', $term.'%'));
+                    ->whereRaw("code LIKE ? ESCAPE '!'", [$prefix])
+                    ->orWhereRaw("name LIKE ? ESCAPE '!'", [$prefix]));
             })
             ->orderBy('code')
             ->paginate(max(10, min(100, $perPage)))

@@ -119,6 +119,108 @@ class EnterpriseTreasuryPaymentFoundationTest extends TestCase
         }
     }
 
+    public function test_payment_number_and_reference_prefix_search_are_literal_scoped_and_read_only(): void
+    {
+        [$store, $actor, $context] = $this->fixture('PAY-LIT-A', 'pay-lit-a@example.test');
+        [$foreignStore, $foreignActor, $foreignContext] = $this->fixture(
+            'PAY-LIT-B', 'pay-lit-b@example.test',
+        );
+        $this->enableTreasury($actor, $context);
+        $this->enableTreasury($foreignActor, $foreignContext);
+        $cashbox = $this->cashbox($store);
+        $foreignCashbox = $this->cashbox($foreignStore);
+        $service = app(TreasuryPaymentService::class);
+        $sequence = 0;
+
+        $newPayment = function (
+            User $user,
+            ResolvedTenantContext $tenant,
+            EnterpriseCashbox $target,
+            string $number,
+            string $reference,
+        ) use ($service, &$sequence): int {
+            $sequence++;
+            $payment = $service->createDraft($user, $tenant, [
+                'idempotency_key' => 'pay-literal-'.$sequence,
+                'target_type' => EnterpriseTreasuryPayment::TARGET_CASHBOX,
+                'target_id' => $target->id,
+                'amount' => '1.000',
+                'value_date' => '2026-10-16',
+                'reference' => $reference,
+            ]);
+            DB::table('enterprise_treasury_payments')
+                ->where('id', $payment->id)
+                ->update(['payment_number' => $number]);
+
+            return (int) $payment->id;
+        };
+
+        $target = $newPayment($actor, $context, $cashbox, 'PAY_%!\\-A', 'REF_%!\\-A');
+        $decoy = $newPayment($actor, $context, $cashbox, 'PAYX-OTHER', 'OTHER-REF');
+        $referenceOnly = $newPayment(
+            $actor, $context, $cashbox, 'OTHER-PAYMENT', 'REF_%!\\-ONLY',
+        );
+        $leading = [];
+        foreach ([
+            '%' => '%P-001',
+            '_' => '_U-001',
+            '!' => '!B-001',
+            '\\' => '\\S-001',
+        ] as $symbol => $number) {
+            $leading[$symbol] = $newPayment(
+                $actor, $context, $cashbox, $number, 'OTHER-REF-'.$number,
+            );
+        }
+        $foreign = $newPayment(
+            $foreignActor, $foreignContext, $foreignCashbox,
+            'PAY_%!\\-FOREIGN', 'REF_%!\\-FOREIGN',
+        );
+
+        $count = DB::table('enterprise_treasury_payments')->count();
+        $auditCount = DB::table('audit_logs')->count();
+        $outboxCount = DB::table('enterprise_outbox_messages')->count();
+        $search = fn (string $q): array => $service->paginatePayments(
+            $actor, $context, ['q' => $q],
+        )->getCollection()->pluck('id')->all();
+
+        foreach (['PAY_', 'PAY_%', 'PAY_%!', 'PAY_%!\\-'] as $prefix) {
+            $this->assertSame([$target], $search($prefix), 'Payment prefix: '.$prefix);
+        }
+        foreach ($leading as $symbol => $id) {
+            $this->assertSame([$id], $search($symbol), 'Literal payment symbol: '.$symbol);
+        }
+        $this->assertSame([$decoy, $target], $search('PAY'));
+        $this->assertSame([], $search('PAY%'));
+        $this->assertSame([$referenceOnly], $search('REF_%!\\-O'));
+        $this->assertSame([$referenceOnly, $target], $search('REF_%!\\-'));
+        $this->assertSame(1, $service->paginatePayments(
+            $foreignActor, $foreignContext, ['q' => 'PAY_%!'],
+        )->total());
+        $this->assertNotContains($foreign, $search('PAY'));
+        $this->assertSame(0, $service->paginatePayments(
+            $actor, $context, ['q' => 'PAY', 'status' => EnterpriseTreasuryPayment::STATUS_POSTED],
+        )->total());
+        $this->assertSame(0, $service->paginatePayments(
+            $actor, $context, ['q' => 'PAY', 'target_type' => EnterpriseTreasuryPayment::TARGET_BANK_ACCOUNT],
+        )->total());
+        $this->assertSame(0, $service->paginatePayments(
+            $actor, $context, ['q' => 'PAY', 'value_date_from' => '2026-10-17'],
+        )->total());
+        $this->assertSame(10, $service->paginatePayments($actor, $context, [], 1)->perPage());
+
+        $roleless = User::factory()->create(['is_active' => true]);
+        try {
+            $service->paginatePayments($roleless, $context, ['q' => 'PAY_%!']);
+            $this->fail('Roleless actors must not read Treasury payments.');
+        } catch (HttpException $exception) {
+            $this->assertSame(403, $exception->getStatusCode());
+        }
+
+        $this->assertSame($count, DB::table('enterprise_treasury_payments')->count());
+        $this->assertSame($auditCount, DB::table('audit_logs')->count());
+        $this->assertSame($outboxCount, DB::table('enterprise_outbox_messages')->count());
+    }
+
     public function test_disabled_treasury_performs_no_payment_table_query_work(): void
     {
         [$store, $actor, $context] = $this->fixture('PAY-OFF', 'off@example.test');

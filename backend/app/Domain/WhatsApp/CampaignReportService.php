@@ -166,11 +166,12 @@ final class CampaignReportService
 
         $q = trim((string) ($filters['q'] ?? ''));
         if ($q !== '') {
-            $like = '%'.str_replace(['%', '_'], ['\\%', '\\_'], $q).'%';
-            $query->where(function ($builder) use ($like): void {
-                $builder->where('pc.name', 'like', $like)
-                    ->orWhere('r.phone', 'like', $like)
-                    ->orWhere('pc.email', 'like', $like);
+            // Match literal human query text on both paginated report and export.
+            $literalPattern = '%'.str_replace(['!', '%', '_'], ['!!', '!%', '!_'], $q).'%';
+            $query->where(function ($builder) use ($literalPattern): void {
+                $builder->whereRaw("pc.name LIKE ? ESCAPE '!'", [$literalPattern])
+                    ->orWhereRaw("r.phone LIKE ? ESCAPE '!'", [$literalPattern])
+                    ->orWhereRaw("pc.email LIKE ? ESCAPE '!'", [$literalPattern]);
             });
         }
         $sendStatus = trim((string) ($filters['send_status'] ?? ''));
@@ -299,11 +300,12 @@ final class CampaignReportService
 
         $q = trim((string) ($filters['q'] ?? ''));
         if ($q !== '') {
-            $like = '%'.str_replace(['%', '_'], ['\\%', '\\_'], $q).'%';
-            $query->where(function ($builder) use ($like): void {
-                $builder->where('pc.name', 'like', $like)
-                    ->orWhere('r.phone', 'like', $like)
-                    ->orWhere('pc.email', 'like', $like);
+            // Match literal human query text on both paginated report and export.
+            $literalPattern = '%'.str_replace(['!', '%', '_'], ['!!', '!%', '!_'], $q).'%';
+            $query->where(function ($builder) use ($literalPattern): void {
+                $builder->whereRaw("pc.name LIKE ? ESCAPE '!'", [$literalPattern])
+                    ->orWhereRaw("r.phone LIKE ? ESCAPE '!'", [$literalPattern])
+                    ->orWhereRaw("pc.email LIKE ? ESCAPE '!'", [$literalPattern]);
             });
         }
         foreach ([

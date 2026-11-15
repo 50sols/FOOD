@@ -2,6 +2,7 @@
 
 namespace Tests\Feature;
 
+use App\Models\AuditLog;
 use App\Models\Permission;
 use App\Models\Role;
 use App\Models\User;
@@ -36,6 +37,98 @@ class EnterpriseRbacTest extends TestCase
             ->assertSee('dir="rtl"', false);
     }
 
+    public function test_security_user_search_is_literal_on_dashboard_and_admin_api_without_role_mutation(): void
+    {
+        $admin = $this->userWithGlobalRole('SUPER_ADMIN', 'en');
+        $denied = $this->userWithGlobalRole('B2B_ADMIN');
+        $target = User::factory()->create([
+            'name' => 'SEC_%!\\-Target',
+            'username' => 'USR_%!\\-Target',
+            'email' => 'security-literal-target@example.test',
+            'is_active' => true,
+        ]);
+        $decoy = User::factory()->create([
+            'name' => 'SECX-Other',
+            'username' => 'USR-OTHER',
+            'email' => 'security-literal-decoy@example.test',
+            'is_active' => true,
+        ]);
+        $leading = User::factory()->create([
+            'name' => '%Only-Symbol',
+            'email' => 'security-literal-leading@example.test',
+            'is_active' => true,
+        ]);
+        $symbolUsers = [];
+        foreach ([
+            '_' => '_Only-Symbol',
+            '!' => '!Only-Symbol',
+            '\\' => '\\Only-Symbol',
+        ] as $symbol => $name) {
+            $symbolUsers[$symbol] = User::factory()->create([
+                'name' => $name,
+                'email' => 'security-literal-symbol-'.ord($symbol).'@example.test',
+                'is_active' => true,
+            ]);
+        }
+        $userCount = DB::table('users')->count();
+        $roleAssignments = DB::table('role_user')->count();
+        $auditCount = AuditLog::query()->count();
+
+        foreach (['SEC_', 'SEC_%', 'SEC_%!', 'SEC_%!\\-'] as $q) {
+            $this->actingAs($admin)
+                ->get('/admin/security?section=users&q='.rawurlencode($q))
+                ->assertOk()
+                ->assertSee($target->email)
+                ->assertDontSee($decoy->email);
+        }
+
+        $this->actingAs($admin)
+            ->get('/admin/security?section=users&q='.rawurlencode('USR_%!\\-'))
+            ->assertOk()
+            ->assertSee($target->email)
+            ->assertDontSee($decoy->email);
+        $this->actingAs($admin)
+            ->get('/admin/security?section=users&q='.rawurlencode('SEC%'))
+            ->assertOk()
+            ->assertDontSee($target->email)
+            ->assertDontSee($decoy->email);
+
+        Sanctum::actingAs($admin);
+        foreach (['SEC_', 'SEC_%', 'SEC_%!', 'SEC_%!\\-'] as $q) {
+            $this->getJson('/api/v1/admin/security/users?q='.rawurlencode($q))
+                ->assertOk()
+                ->assertJsonPath('meta.total', 1)
+                ->assertJsonPath('data.0.id', $target->id);
+        }
+        foreach (['%', '_', '!', '\\'] as $symbol) {
+            $this->getJson('/api/v1/admin/security/users?q='.rawurlencode($symbol))
+                ->assertOk()
+                ->assertJsonPath('meta.total', 2);
+        }
+        $this->getJson('/api/v1/admin/security/users?q='.rawurlencode('SEC%'))
+            ->assertOk()
+            ->assertJsonPath('meta.total', 0);
+        $this->getJson('/api/v1/admin/security/users?q='.rawurlencode('SEC_%!').'&status=inactive')
+            ->assertOk()
+            ->assertJsonPath('meta.total', 0);
+        $this->getJson('/api/v1/admin/security/users?q='.rawurlencode('SEC_%!').'&per_page=1')
+            ->assertOk()
+            ->assertJsonPath('meta.per_page', 1)
+            ->assertJsonPath('meta.total', 1);
+
+        $this->actingAs($denied)
+            ->get('/admin/security?section=users&q='.rawurlencode('SEC_%!'))
+            ->assertForbidden();
+        Sanctum::actingAs($denied);
+        $this->getJson('/api/v1/admin/security/users?q='.rawurlencode('SEC_%!'))
+            ->assertForbidden();
+
+        $this->assertTrue($leading->exists);
+        $this->assertSame($userCount, DB::table('users')->count());
+        $this->assertSame($roleAssignments, DB::table('role_user')->count());
+        $this->assertSame($auditCount, AuditLog::query()->count());
+    }
+
     public function test_security_center_defaults_to_compact_users_tab_and_splits_governance_surfaces(): void
     {
         $admin = $this->userWithGlobalRole('SUPER_ADMIN', 'en');
@@ -66,6 +159,122 @@ class EnterpriseRbacTest extends TestCase
             ->assertOk()
             ->assertSee('data-security-audit-explorer', false)
             ->assertDontSee('data-security-users-table', false);
+    }
+
+    public function test_security_audit_explorer_filters_use_literal_search_without_widening_authorized_results(): void
+    {
+        $admin = $this->userWithGlobalRole('SUPER_ADMIN', 'en');
+        $denied = $this->userWithGlobalRole('B2B_ADMIN', 'en');
+        $targets = [];
+
+        foreach (['percent' => '%', 'underscore' => '_', 'bang' => '!', 'backslash' => '\\'] as $case => $symbol) {
+            $key = 'AUDIT_LITERAL_'.$case.'_';
+            $actor = User::factory()->create([
+                'name' => $key.$symbol.'Actor',
+                'email' => 'audit-literal-'.$case.'@example.test',
+                'locale' => 'en',
+                'is_active' => true,
+            ]);
+            $decoyActor = User::factory()->create([
+                'name' => $key.'XActor',
+                'email' => 'audit-decoy-'.$case.'@example.test',
+                'locale' => 'en',
+                'is_active' => true,
+            ]);
+            $target = AuditLog::query()->create([
+                'user_id' => $actor->getKey(),
+                'event' => $key.$symbol.'Event',
+                'auditable_type' => $key.$symbol.'Entity',
+                'auditable_id' => $actor->getKey(),
+                'after' => ['correlation' => $key.$symbol.'Trace'],
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+            AuditLog::query()->create([
+                'user_id' => $decoyActor->getKey(),
+                'event' => $key.'XEvent',
+                'auditable_type' => $key.'XEntity',
+                'auditable_id' => $decoyActor->getKey(),
+                'after' => ['correlation' => $key.'XTrace'],
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+            $targets[$case] = [
+                'id' => (int) $target->getKey(),
+                'actor' => $key.$symbol.'Actor',
+                'event' => $key.$symbol.'Event',
+                'entity' => $key.$symbol.'Entity',
+                'correlation' => $key.$symbol.'Trace',
+            ];
+        }
+
+        $counts = [
+            'audit' => AuditLog::query()->count(),
+            'users' => DB::table('users')->count(),
+            'roles' => DB::table('role_user')->count(),
+        ];
+
+        foreach ($targets as $case => $target) {
+            foreach ([
+                'audit_actor' => $target['actor'],
+                'audit_event' => $target['event'],
+                'audit_entity' => $target['entity'],
+                'audit_correlation' => $target['correlation'],
+            ] as $field => $value) {
+                $this->actingAs($admin)
+                    ->get('/admin/security?'.http_build_query([
+                        'section' => 'audit',
+                        $field => $value,
+                    ]))
+                    ->assertOk()
+                    ->assertViewHas('auditRows', static fn ($rows): bool => $rows->total() === 1
+                        && (int) $rows->items()[0]->id === $target['id']);
+            }
+        }
+
+        // Filters remain AND-composed, with their date range and page namespace.
+        $percent = $targets['percent'];
+        $filters = [
+            'section' => 'audit',
+            'audit_actor' => $percent['actor'],
+            'audit_event' => $percent['event'],
+            'audit_entity' => $percent['entity'],
+            'audit_correlation' => $percent['correlation'],
+            'audit_from' => now()->toDateString(),
+            'audit_to' => now()->toDateString(),
+        ];
+        $this->actingAs($admin)
+            ->get('/admin/security?'.http_build_query($filters))
+            ->assertOk()
+            ->assertSee('data-security-audit-explorer', false)
+            ->assertViewHas('auditRows', static fn ($rows): bool => $rows->total() === 1
+                && (int) $rows->items()[0]->id === $percent['id'])
+            ->assertViewHas('auditFilters', static fn (array $active): bool => $active['audit_actor'] === $percent['actor']
+                && $active['audit_event'] === $percent['event']
+                && $active['audit_entity'] === $percent['entity']
+                && $active['audit_correlation'] === $percent['correlation']);
+        $this->actingAs($admin)
+            ->get('/admin/security?'.http_build_query([...$filters, 'audit_page' => 2]))
+            ->assertOk()
+            ->assertViewHas('auditRows', static fn ($rows): bool => $rows->currentPage() === 2
+                && $rows->total() === 1
+                && str_contains((string) $rows->url(1), 'audit_event='));
+
+        $admin->forceFill(['locale' => 'ar'])->save();
+        $this->actingAs($admin)
+            ->get('/admin/security?'.http_build_query(['section' => 'audit', 'audit_event' => $percent['event']]))
+            ->assertOk()
+            ->assertSee('dir="rtl"', false)
+            ->assertViewHas('auditRows', static fn ($rows): bool => $rows->total() === 1);
+        $this->actingAs($denied)
+            ->get('/admin/security?'.http_build_query(['section' => 'audit', 'audit_event' => $percent['event']]))
+            ->assertForbidden();
+
+        $this->assertSame($counts, [
+            'audit' => AuditLog::query()->count(),
+            'users' => DB::table('users')->count(),
+            'roles' => DB::table('role_user')->count(),
+        ]);
     }
 
     public function test_super_admin_can_create_customer_service_manager_from_security_center(): void
@@ -205,6 +414,8 @@ class EnterpriseRbacTest extends TestCase
             ->patch("/admin/security/users/{$target->id}/status", [
                 'is_active' => false,
                 'reason' => 'Contract ended',
+                'impact_reviewed' => true,
+                'confirm_email' => $target->email,
             ])
             ->assertRedirect();
 
@@ -322,6 +533,7 @@ class EnterpriseRbacTest extends TestCase
         $this->actingAs($admin)
             ->put(route('admin.security.users.permissions', $target), [
                 'scope_type' => 'global',
+                'change_reason' => 'Reviewed access adjustment under P084',
                 'permission_ids' => $selected,
             ])
             ->assertRedirect()
@@ -357,6 +569,87 @@ class EnterpriseRbacTest extends TestCase
         ]);
     }
 
+    public function test_permission_change_without_a_review_reason_is_rejected_without_mutation(): void
+    {
+        $admin = $this->userWithGlobalRole('SUPER_ADMIN');
+        $target = $this->userWithGlobalRole('CUSTOMER_SERVICE_SUPERVISOR');
+        $dispatch = Permission::query()->where('code', 'orders.dispatch')->firstOrFail();
+
+        $selected = Permission::query()
+            ->whereIn('code', $target->inheritedPermissionCodes())
+            ->where('id', '!=', $dispatch->id)
+            ->pluck('id')
+            ->all();
+
+        $this->actingAs($admin)
+            ->from('/admin/security?section=users')
+            ->put(route('admin.security.users.permissions', $target), [
+                'scope_type' => 'global',
+                'permission_ids' => $selected,
+            ])
+            ->assertRedirect('/admin/security?section=users')
+            ->assertSessionHasErrors('change_reason');
+
+        $this->assertTrue($target->fresh()->hasPermission('orders.dispatch'));
+        $this->assertDatabaseMissing('user_permission_overrides', [
+            'user_id' => $target->id,
+            'permission_id' => $dispatch->id,
+            'effect' => 'deny',
+        ]);
+        $this->assertSame(0, AuditLog::query()
+            ->where('event', 'user.permissions_changed')
+            ->where('auditable_id', $target->id)->count());
+    }
+
+    public function test_reviewed_permission_change_records_reason_and_diff_and_revokes_effective_access(): void
+    {
+        $admin = $this->userWithGlobalRole('SUPER_ADMIN', 'en');
+        $target = $this->userWithGlobalRole('CUSTOMER_SERVICE_SUPERVISOR', 'en');
+        $dispatch = Permission::query()->where('code', 'orders.dispatch')->firstOrFail();
+
+        $selected = Permission::query()
+            ->whereIn('code', $target->inheritedPermissionCodes())
+            ->where('id', '!=', $dispatch->id)
+            ->pluck('id')
+            ->all();
+
+        $this->actingAs($admin)
+            ->get('/admin/security?section=users&q='.urlencode($target->email))
+            ->assertOk()
+            ->assertSee('Reason for the permission change')
+            ->assertSee('Separation of duties');
+
+        $reason = 'Remove dispatch authority following SoD access review';
+        $this->actingAs($admin)
+            ->put(route('admin.security.users.permissions', $target), [
+                'scope_type' => 'global',
+                'permission_ids' => $selected,
+                'change_reason' => $reason,
+            ])
+            ->assertRedirect()
+            ->assertSessionHasNoErrors();
+
+        $this->assertFalse($target->fresh()->hasPermission('orders.dispatch'));
+        $audit = AuditLog::query()->where('event', 'user.permissions_changed')
+            ->where('auditable_id', $target->id)->latest('id')->firstOrFail();
+
+        $this->assertSame($reason, $audit->after['change_reason']);
+        $this->assertSame($target->id, $audit->before['id']);
+        $this->assertContains('CUSTOMER_SERVICE_SUPERVISOR', $audit->after['global_roles']);
+        $this->assertContains(
+            ['code' => 'orders.dispatch', 'scope' => 'global', 'effect' => 'deny'],
+            $audit->after['permission_overrides'],
+        );
+
+        $admin->forceFill(['locale' => 'ar'])->save();
+        $this->actingAs($admin->fresh())
+            ->get('/admin/security?section=users&q='.urlencode($target->email))
+            ->assertOk()
+            ->assertSee('سبب تغيير الصلاحيات')
+            ->assertSee('فصل المهام')
+            ->assertSee('dir="rtl"', false);
+    }
+
     public function test_super_admin_can_customize_final_user_permissions_without_mutating_role(): void
     {
         $admin = $this->userWithGlobalRole('SUPER_ADMIN');
@@ -378,6 +671,7 @@ class EnterpriseRbacTest extends TestCase
         $this->actingAs($admin)
             ->put(route('admin.security.users.permissions', $target), [
                 'scope_type' => 'global',
+                'change_reason' => 'Reviewed access adjustment under P084',
                 'permission_ids' => $selected,
             ])
             ->assertRedirect()
@@ -513,6 +807,7 @@ class EnterpriseRbacTest extends TestCase
         $this->actingAs($admin)
             ->put(route('admin.security.users.permissions', $target), [
                 'scope_type' => 'store',
+                'change_reason' => 'Reviewed access adjustment under P084',
                 'store_id' => $storeA,
                 'permission_ids' => $selected,
             ])
@@ -556,6 +851,7 @@ class EnterpriseRbacTest extends TestCase
             ->from('/admin/security?section=users')
             ->put(route('admin.security.users.permissions', $target), [
                 'scope_type' => 'store',
+                'change_reason' => 'Reviewed access adjustment under P084',
                 'store_id' => $storeId,
                 'permission_ids' => [$systemUpdate->id],
             ])
@@ -593,6 +889,7 @@ class EnterpriseRbacTest extends TestCase
             ->from('/admin/security?section=users')
             ->put(route('admin.security.users.permissions', $target), [
                 'scope_type' => 'global',
+                'change_reason' => 'Reviewed access adjustment under P084',
                 'permission_ids' => [$platformManage->id],
             ])
             ->assertRedirect('/admin/security?section=users')
@@ -655,6 +952,164 @@ class EnterpriseRbacTest extends TestCase
             [],
             Request::create('/test', 'PUT'),
         );
+    }
+
+    public function test_user_role_assignment_requires_review_reason_and_audits_role_diff(): void
+    {
+        $admin = $this->userWithGlobalRole('SUPER_ADMIN');
+        $target = $this->userWithGlobalRole('CUSTOMER_SERVICE_AGENT');
+        $supervisor = Role::query()->where('code', 'CUSTOMER_SERVICE_SUPERVISOR')->firstOrFail();
+
+        $this->actingAs($admin)
+            ->from('/admin/security?section=users')
+            ->put(route('admin.security.users.roles', $target), [
+                'global_role_ids' => [$supervisor->id],
+            ])
+            ->assertRedirect('/admin/security?section=users')
+            ->assertSessionHasErrors('change_reason');
+
+        $this->assertTrue($target->fresh()->hasRole('CUSTOMER_SERVICE_AGENT'));
+
+        $reason = 'Reassign staff role after supervisor approval';
+        $this->actingAs($admin)
+            ->put(route('admin.security.users.roles', $target), [
+                'global_role_ids' => [$supervisor->id],
+                'change_reason' => $reason,
+            ])
+            ->assertRedirect()
+            ->assertSessionHasNoErrors();
+
+        $this->assertTrue($target->fresh()->hasRole('CUSTOMER_SERVICE_SUPERVISOR'));
+        $this->assertFalse($target->fresh()->hasRole('CUSTOMER_SERVICE_AGENT'));
+        $audit = AuditLog::query()->where('event', 'user.roles_changed')
+            ->where('auditable_id', $target->id)->latest('id')->firstOrFail();
+        $this->assertContains('CUSTOMER_SERVICE_AGENT', $audit->before['global_roles']);
+        $this->assertContains('CUSTOMER_SERVICE_SUPERVISOR', $audit->after['global_roles']);
+        $this->assertSame($reason, $audit->after['change_reason']);
+    }
+
+    public function test_custom_role_edit_requires_reason_and_audits_permission_diff(): void
+    {
+        $admin = $this->userWithGlobalRole('SUPER_ADMIN');
+        $role = Role::query()->create([
+            'code' => 'P084_CUSTOM_AUDIT_ROLE',
+            'name' => 'Audit role before',
+            'scope' => 'global',
+            'is_system' => false,
+            'is_active' => true,
+        ]);
+        $view = Permission::query()->where('code', 'reports.view')->firstOrFail();
+        $role->permissions()->attach($view->id);
+        $export = Permission::query()->where('code', 'reports.export')->firstOrFail();
+
+        $requestData = [
+            'name' => 'Audit role after',
+            'scope' => 'global',
+            'is_active' => true,
+            'permission_ids' => [$view->id, $export->id],
+        ];
+
+        $this->actingAs($admin)
+            ->from('/admin/security?section=roles')
+            ->patch(route('admin.security.roles.update', $role), $requestData)
+            ->assertRedirect('/admin/security?section=roles')
+            ->assertSessionHasErrors('change_reason');
+
+        $this->assertSame('Audit role before', $role->fresh()->name);
+        $this->assertFalse($role->fresh()->permissions->contains('code', 'reports.export'));
+
+        $reason = 'Reviewed reporting role access boundary';
+        $this->actingAs($admin)
+            ->patch(route('admin.security.roles.update', $role), [
+                ...$requestData,
+                'change_reason' => $reason,
+            ])
+            ->assertRedirect()
+            ->assertSessionHasNoErrors();
+
+        $this->assertSame('Audit role after', $role->fresh()->name);
+        $audit = AuditLog::query()->where('event', 'role.updated')
+            ->where('auditable_id', $role->id)->latest('id')->firstOrFail();
+        $this->assertContains('reports.view', $audit->before['permissions']);
+        $this->assertNotContains('reports.export', $audit->before['permissions']);
+        $this->assertContains('reports.export', $audit->after['permissions']);
+        $this->assertSame($reason, $audit->after['change_reason']);
+    }
+
+    public function test_security_api_role_mutations_reject_missing_reason_without_side_effects(): void
+    {
+        $admin = $this->userWithGlobalRole('SUPER_ADMIN');
+        $role = Role::query()->create([
+            'code' => 'P084_API_AUDIT_ROLE',
+            'name' => 'API role before',
+            'scope' => 'global',
+            'is_system' => false,
+            'is_active' => true,
+        ]);
+        $target = $this->userWithGlobalRole('CUSTOMER_SERVICE_AGENT');
+        $agent = Role::query()->where('code', 'CUSTOMER_SERVICE_AGENT')->firstOrFail();
+
+        Sanctum::actingAs($admin);
+        $this->patchJson("/api/v1/admin/security/roles/{$role->id}", [
+            'name' => 'API role after',
+            'scope' => 'global',
+            'is_active' => true,
+            'permission_ids' => [],
+        ])->assertUnprocessable()->assertJsonValidationErrors('change_reason');
+
+        $this->putJson("/api/v1/admin/security/users/{$target->id}/roles", [
+            'global_role_ids' => [(int) $agent->id],
+            'store_roles' => [],
+        ])->assertUnprocessable()->assertJsonValidationErrors('change_reason');
+
+        $this->assertSame('API role before', $role->fresh()->name);
+        $this->assertTrue($target->fresh()->hasRole('CUSTOMER_SERVICE_AGENT'));
+        $this->assertSame(0, AuditLog::query()->where('event', 'role.updated')
+            ->where('auditable_id', $role->id)->count());
+
+        $this->patchJson("/api/v1/admin/security/roles/{$role->id}", [
+            'name' => 'API role after',
+            'scope' => 'global',
+            'is_active' => true,
+            'permission_ids' => [],
+            'change_reason' => 'Approved edit to limited API role',
+        ])->assertOk()->assertJsonPath('data.name', 'API role after');
+        $this->assertSame('Approved edit to limited API role', AuditLog::query()
+            ->where('event', 'role.updated')
+            ->where('auditable_id', $role->id)->latest('id')->firstOrFail()->after['change_reason']);
+    }
+
+    public function test_security_permission_revocation_fails_closed_on_next_authorized_http_read(): void
+    {
+        $admin = $this->userWithGlobalRole('SUPER_ADMIN');
+        $operator = User::factory()->create(['is_active' => true]);
+        $role = Role::query()->create([
+            'code' => 'P084_DYNAMIC_SECURITY_READ',
+            'name' => 'Security read test role',
+            'scope' => 'global',
+            'is_system' => false,
+            'is_active' => true,
+        ]);
+        $view = Permission::query()->where('code', 'security.view')->firstOrFail();
+        $role->permissions()->attach($view->id);
+        $operator->roles()->attach($role);
+
+        $this->actingAs($operator)->get('/admin/security?section=users')->assertOk();
+
+        $this->actingAs($admin)
+            ->patch(route('admin.security.roles.update', $role), [
+                'name' => $role->name,
+                'scope' => 'global',
+                'is_active' => true,
+                'permission_ids' => [],
+                'change_reason' => 'Remove security read scope after review',
+            ])
+            ->assertRedirect()
+            ->assertSessionHasNoErrors();
+
+        $this->actingAs($operator->fresh())
+            ->get('/admin/security?section=users')
+            ->assertForbidden();
     }
 
     public function test_security_api_enforces_permission_and_exposes_effective_permissions(): void

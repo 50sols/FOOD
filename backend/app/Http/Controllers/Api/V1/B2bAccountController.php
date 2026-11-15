@@ -30,7 +30,7 @@ class B2bAccountController extends Controller
             ->paginate($perPage);
 
         return response()->json([
-            'data' => collect($accounts->items())->map(fn (B2bAccount $account) => $this->resource($account))->all(),
+            'data' => collect($accounts->items())->map(fn (B2bAccount $account) => $this->resource($account, $request))->all(),
             'meta' => [
                 'current_page' => $accounts->currentPage(),
                 'per_page' => $accounts->perPage(),
@@ -92,7 +92,7 @@ class B2bAccountController extends Controller
             $request,
         );
 
-        return response()->json(['data' => $this->resource($account)], 201);
+        return response()->json(['data' => $this->resource($account, $request)], 201);
     }
 
     public function updateStatus(Request $request, B2bAccount $account): JsonResponse
@@ -112,13 +112,13 @@ class B2bAccountController extends Controller
             abort_unless(
                 $data['status'] === $expectedStatus,
                 422,
-                'Retail-linked Wholesale account status is controlled by the Retail store status.',
+                __('b2b_account_mapping_errors.retail_status_managed', [], $this->locale($request)),
             );
         }
 
         $before = $account->status;
         $customer = $account->b2bCustomer()->with('user')->first();
-        abort_unless($customer instanceof B2bCustomer, 409, 'B2B customer domain mapping is incomplete.');
+        abort_unless($customer instanceof B2bCustomer, 409, __('b2b_account_mapping_errors.customer_link_missing', [], $this->locale($request)));
 
         DB::transaction(function () use ($account, $customer, $data): void {
             $account->update(['status' => $data['status']]);
@@ -136,13 +136,22 @@ class B2bAccountController extends Controller
 
         $account->load('b2bCustomer.user');
 
-        return response()->json(['data' => $this->resource($account)]);
+        return response()->json(['data' => $this->resource($account, $request)]);
     }
 
-    private function resource(B2bAccount $account): array
+    private function locale(Request $request): string
+    {
+        $saved = $request->user()?->locale;
+
+        return in_array($saved, ['ar', 'en'], true)
+            ? $saved
+            : ($request->getPreferredLanguage(['ar', 'en']) ?? 'ar');
+    }
+
+    private function resource(B2bAccount $account, Request $request): array
     {
         $customer = $account->b2bCustomer;
-        abort_unless($customer instanceof B2bCustomer, 409, 'B2B customer domain mapping is incomplete.');
+        abort_unless($customer instanceof B2bCustomer, 409, __('b2b_account_mapping_errors.customer_link_missing', [], $this->locale($request)));
 
         return [
             'id' => (int) $account->id,
