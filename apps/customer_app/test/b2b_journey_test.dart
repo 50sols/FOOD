@@ -2914,6 +2914,38 @@ void main() {
         'method': 'account_credit',
         'blocked': false
       },
+      {
+        'name': 'missing EGP order minimum',
+        'total': 25.0,
+        'power': 100.0,
+        'method': 'cash_on_delivery',
+        'minimum': null,
+        'blocked': true
+      },
+      {
+        'name': 'negative EGP order minimum',
+        'total': 25.0,
+        'power': 100.0,
+        'method': 'cash_on_delivery',
+        'minimum': -1.0,
+        'blocked': true
+      },
+      {
+        'name': 'nonfinite EGP order minimum',
+        'total': 25.0,
+        'power': 100.0,
+        'method': 'cash_on_delivery',
+        'minimum': double.nan,
+        'blocked': true
+      },
+      {
+        'name': 'infinite EGP order minimum',
+        'total': 25.0,
+        'power': 100.0,
+        'method': 'cash_on_delivery',
+        'minimum': double.infinity,
+        'blocked': true
+      },
     ];
     for (final scenario in cases) {
       testWidgets(
@@ -2928,7 +2960,8 @@ void main() {
           final commerce = _C13WholesaleCommerceApi(cartValue: {
             'store_id': 7,
             'currency': 'EGP',
-            'minimum_order_egp': 0.0,
+            'minimum_order_egp':
+                scenario.containsKey('minimum') ? scenario['minimum'] : 0.0,
             'subtotal': 25.0,
             'has_unavailable_items': false,
             'quote': {
@@ -2954,7 +2987,8 @@ void main() {
             'store_id': 7,
             'store_name': 'Wholesale Store',
             'customer_name': 'Acme Buyer',
-            'minimum_order_egp': 0.0,
+            'minimum_order_egp':
+                scenario.containsKey('minimum') ? scenario['minimum'] : 0.0,
             'addresses': [
               {
                 'id': 1,

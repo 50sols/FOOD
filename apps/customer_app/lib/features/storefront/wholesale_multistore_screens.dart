@@ -7163,23 +7163,31 @@ class _WholesaleCheckoutDesignScreenState
 
     final payload = _latestCheckoutPayload;
     if (payload != null) {
-      final minimum = doubleValue(
+      // Never replace a malformed server-owned minimum with the legacy
+      // fallback when deciding whether a Wholesale order can be submitted.
+      final minimum = _verifiedCheckoutMoney(
         payload.options['minimum_order_egp'] ??
             payload.cart['minimum_order_egp'],
-        1500,
       );
-      final remaining = _wholesaleMinimumRemaining(
-        payload.cart,
-        quoteOverride: appliedQuote,
-        minimumOverride: minimum,
-      );
-      if (remaining > 0.0001) {
-        await _showWholesaleMinimumPopup(
-          context,
-          minimum: minimum,
-          remaining: remaining,
+      final cartCurrency =
+          (appliedQuote?['currency'] ?? payload.cart['currency'] ?? 'EGP')
+              .toString()
+              .toUpperCase();
+      if (cartCurrency == 'EGP' && minimum == null) return;
+      if (minimum != null) {
+        final remaining = _wholesaleMinimumRemaining(
+          payload.cart,
+          quoteOverride: appliedQuote,
+          minimumOverride: minimum,
         );
-        return;
+        if (remaining > 0.0001) {
+          await _showWholesaleMinimumPopup(
+            context,
+            minimum: minimum,
+            remaining: remaining,
+          );
+          return;
+        }
       }
     }
 
@@ -7383,16 +7391,26 @@ class _WholesaleCheckoutDesignScreenState
                   }
                 }
 
-                final minimum = doubleValue(
+                // The EGP minimum is a server-owned commercial policy:
+                // an invalid/missing value must not enable checkout.
+                final minimum = _verifiedCheckoutMoney(
                   data['minimum_order_egp'] ?? cart['minimum_order_egp'],
-                  1500,
                 );
-                final minimumMissing = _wholesaleMinimumRemaining(
-                  cart,
-                  quoteOverride: appliedQuote,
-                  minimumOverride: minimum,
-                );
+                final quoteCurrency =
+                    (effectiveQuote['currency'] ?? cart['currency'] ?? 'EGP')
+                        .toString()
+                        .toUpperCase();
+                final minimumUnavailable =
+                    quoteCurrency == 'EGP' && minimum == null;
+                final minimumMissing = minimumUnavailable
+                    ? 0.0
+                    : _wholesaleMinimumRemaining(
+                        cart,
+                        quoteOverride: appliedQuote,
+                        minimumOverride: minimum,
+                      );
                 final financialUnavailable = grandTotal == null ||
+                    minimumUnavailable ||
                     (paymentMethod == 'account_credit' &&
                         purchasingPower == null);
                 final creditInsufficient = paymentMethod == 'account_credit' &&
