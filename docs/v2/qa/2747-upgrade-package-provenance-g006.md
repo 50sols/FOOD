@@ -371,3 +371,19 @@ No dynamic branch ref, other worker file, runtime updater, release package or
 production environment is altered. The real-MySQL job is **not** accepted
 until the next exact-head run reaches terminal SUCCESS; do not downgrade
 preflight security to hide a missing file.
+
+### Second CI attempt: correctly enter historical Git worktree
+
+On `62b4644a351af92c8587c732dba83a05918761e0`, the new
+[historical-MySQL job](https://github.com/walidatiyaai2025-gif/FOOD/actions/runs/43770539838)
+successfully checked exact candidate/tag SHAs, created disposable MySQL,
+downloaded and verified both published release archives, and prepared
+detached v125/v127 worktrees. It then exited before the first archive
+preflight message. The checked-in historical harness uses
+`repo_root="$(git rev-parse --show-toplevel)"` and compares its root VERSION
+to the historical tag. Calling `bash /absolute/path/to/tag-125/script` from
+the G006 candidate worktree silently made its `repo_root` point at the wrong
+checkout. The workflow now executes each harness **from its own detached
+historical worktree** in a subshell, so `repo_root` and VERSION resolve to
+the intended immutable tag. Do not count the aborted attempt as a successful
+historical DB upgrade; require terminal green on the new exact PR HEAD.

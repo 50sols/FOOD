@@ -188,7 +188,14 @@ jobs:
               cp "$GITHUB_WORKSPACE/scripts/ci-127-upgrade.sh" "$target/scripts/"
             fi
           done
-          bash "$base/tag-125/scripts/ci-125-recovery-upgrade.sh"
-          bash "$base/tag-127/scripts/ci-127-upgrade.sh"
+          # Historical shell harness derives root from its current directory.
+          (
+            cd "$base/tag-125"
+            bash scripts/ci-125-recovery-upgrade.sh
+          )
+          (
+            cd "$base/tag-127"
+            bash scripts/ci-127-upgrade.sh
+          )
           echo "PASS: two real pinned historical ZIPs exercised on nonempty MySQL, with interrupted migrations, retry, .env and upload retention."
           echo "NOT PROVEN: continuous same-DB chain, trusted publisher signature, full Update Center recovery, production upgrade."
