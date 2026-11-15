@@ -159,6 +159,9 @@ class DriverAssignmentLifecycleTest extends TestCase
             ])
             ->assertUnprocessable()
             ->assertJsonPath('errors.idempotency_key.0', $collectionHeaderMessages['en']);
+        // Laravel's withHeaders persists across requests. Do not leak the
+        // invalid header into the original delivered/idempotent lifecycle.
+        $this->withoutHeaders(['Idempotency-Key', 'Accept-Language']);
         $driverUser->forceFill(['locale' => 'ar'])->save();
 
         $this->post(
