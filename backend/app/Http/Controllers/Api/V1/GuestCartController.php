@@ -381,7 +381,7 @@ class GuestCartController extends Controller
         $this->activeStoreForChannel($storeId, 'b2c');
         $target = $this->customerCart($customer, $storeId, 'b2c');
 
-        DB::transaction(function () use ($guestCart, $target, $storeId): void {
+        DB::transaction(function () use ($guestCart, $request, $target, $storeId): void {
             $guestItems = CartItem::query()
                 ->where('cart_id', $guestCart->getKey())
                 ->lockForUpdate()
@@ -397,7 +397,7 @@ class GuestCartController extends Controller
 
                 if ($targetItem->exists && trim((string) ($targetItem->selling_unit_code ?? ''))
                     !== trim((string) ($guestItem->selling_unit_code ?? ''))) {
-                    abort(409, 'Cart merge requires one selling unit per product. Remove a conflicting line first.');
+                    abort(409, $this->localizedCartMessage($request, 'smart_ordering_cart.merge_selling_unit_conflict'));
                 }
 
                 $quantity = ($targetItem->exists ? (float) $targetItem->quantity : 0.0)

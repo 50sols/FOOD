@@ -192,6 +192,89 @@ class CartDomainTest extends TestCase
             ->assertJsonPath('subtotal', 3);
     }
 
+    public function test_guest_cart_merge_selling_unit_conflict_is_bilingual_and_preserves_both_carts(): void
+    {
+        DB::table('product_selling_units')->insert([
+            'product_id' => $this->productId,
+            'unit_id' => null,
+            'code' => 'BAG-MERGE',
+            'name' => 'Bag',
+            'conversion_factor' => 3,
+            'price' => 4.5,
+            'sku' => 'CART-001-MERGE',
+            'is_base' => false,
+            'is_active' => true,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $guest = $this->postJson('/api/v1/cart/items', [
+            'store_id' => $this->b2cStoreId,
+            'product_id' => $this->productId,
+            'quantity' => 1,
+            'selling_unit_code' => 'BAG-MERGE',
+        ])->assertCreated();
+        $token = (string) $guest->headers->get('X-Guest-Token');
+        $guestCartId = (int) $guest->json('id');
+
+        Sanctum::actingAs($this->b2cUser);
+        $owned = $this->postJson('/api/v1/cart/items', [
+            'store_id' => $this->b2cStoreId,
+            'product_id' => $this->productId,
+            'quantity' => 1,
+        ])->assertCreated();
+        $ownedCartId = (int) $owned->json('id');
+
+        $before = [
+            'carts' => DB::table('carts')->count(),
+            'cart_items' => DB::table('cart_items')->count(),
+            'orders' => DB::table('orders')->count(),
+            'payments' => DB::table('payments')->count(),
+            'audit_logs' => DB::table('audit_logs')->count(),
+            'reserved_quantity' => (float) DB::table('inventories')
+                ->where('warehouse_id', $this->b2cWarehouseId)
+                ->where('product_id', $this->productId)
+                ->value('reserved_quantity'),
+        ];
+
+        foreach ([
+            'ar' => 'لا يمكن دمج سلتي المشتريات عند اختلاف وحدة بيع المنتج نفسه. احذف أحد السطرين المتعارضين أولًا.',
+            'en' => 'Cart merge requires one selling unit per product. Remove a conflicting line first.',
+        ] as $locale => $message) {
+            $this->b2cUser->forceFill(['locale' => $locale])->save();
+
+            $this->withHeaders([
+                'X-Guest-Token' => $token,
+                'Accept-Language' => $locale === 'ar' ? 'en' : 'ar',
+            ])->getJson("/api/v1/cart?store={$this->b2cStoreId}")
+                ->assertConflict()
+                ->assertJsonPath('message', $message);
+
+            $this->assertSame($before['carts'], DB::table('carts')->count());
+            $this->assertSame($before['cart_items'], DB::table('cart_items')->count());
+            $this->assertSame($before['orders'], DB::table('orders')->count());
+            $this->assertSame($before['payments'], DB::table('payments')->count());
+            $this->assertSame($before['audit_logs'], DB::table('audit_logs')->count());
+            $this->assertSame($before['reserved_quantity'], (float) DB::table('inventories')
+                ->where('warehouse_id', $this->b2cWarehouseId)
+                ->where('product_id', $this->productId)
+                ->value('reserved_quantity'));
+            $this->assertDatabaseHas('carts', ['id' => $guestCartId, 'guest_token' => $token]);
+            $this->assertDatabaseHas('cart_items', [
+                'cart_id' => $guestCartId,
+                'product_id' => $this->productId,
+                'selling_unit_code' => 'BAG-MERGE',
+                'quantity' => 3,
+            ]);
+            $this->assertDatabaseHas('cart_items', [
+                'cart_id' => $ownedCartId,
+                'product_id' => $this->productId,
+                'selling_unit_code' => null,
+                'quantity' => 1,
+            ]);
+        }
+    }
+
     public function test_carton_or_bag_uses_authoritative_price_and_base_stock(): void
     {
         DB::table('product_selling_units')->insert([
