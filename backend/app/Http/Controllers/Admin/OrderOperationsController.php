@@ -1432,6 +1432,9 @@ final class OrderOperationsController extends Controller
         // failure messages, independent of the server's default locale.
         app()->setLocale(in_array($actor->locale, ['ar', 'en'], true) ? $actor->locale : 'ar');
         $model = $this->managedOrder($actor, $order, 'orders.manage');
+        // B2B fulfillment is Van-only; even legacy B2B driver assignments
+        // must never be actionable from the Retail Driver reminder endpoint.
+        abort_unless((string) $model->channel === 'b2c', 404);
 
         $assignment = DriverAssignment::query()
             ->where('order_id', $model->getKey())
@@ -1445,10 +1448,38 @@ final class OrderOperationsController extends Controller
             $this->msg('لا يوجد تعيين سائق نشط لهذا الطلب.', 'Order has no active driver assignment.'),
         );
 
+        // A foreign-store/Wholesale assignment can be FK-valid in legacy data:
+        // require both assignment and driver profile to match this Retail order.
+        $validRetailTarget = $this->msg(
+            'تعيين السائق غير صالح لهذا الطلب بالتجزئة.',
+            'Driver assignment is not valid for this Retail order.',
+        );
+        abort_unless(
+            (string) $assignment->assignment_type === 'b2c'
+                && (int) $assignment->store_id === (int) $model->store_id,
+            409,
+            $validRetailTarget,
+        );
+
         $driver = DB::table('drivers')
             ->leftJoin('users as driver_user', 'driver_user.id', '=', 'drivers.user_id')
             ->where('drivers.id', $assignment->driver_id)
-            ->first(['drivers.id', 'drivers.user_id', 'driver_user.is_active as app_user_is_active']);
+            ->first([
+                'drivers.id',
+                'drivers.user_id',
+                'drivers.store_id',
+                'drivers.driver_type',
+                'drivers.is_active',
+                'driver_user.is_active as app_user_is_active',
+            ]);
+        abort_unless(
+            $driver !== null
+                && (string) $driver->driver_type === 'b2c'
+                && (int) $driver->store_id === (int) $model->store_id
+                && (bool) $driver->is_active,
+            409,
+            $validRetailTarget,
+        );
         abort_unless(
             $driver !== null && $driver->user_id !== null && (bool) $driver->app_user_is_active,
             409,
