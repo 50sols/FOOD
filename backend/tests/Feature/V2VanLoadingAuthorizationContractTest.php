@@ -48,29 +48,35 @@ final class V2VanLoadingAuthorizationContractTest extends TestCase
             'product_id' => 1,
             'quantity' => 2,
             'request_key' => 'P258-NOT-A-VAN-LOAD',
-            'van_id' => 987654,
         ];
 
-        $this->actingAs($actor)
-            ->post(route('admin.erp.wms.transfers.store'), $payload)
-            ->assertRedirect()
-            ->assertSessionHasErrors(['van_id']);
+        // Even an explicit null/zero must not turn an ordinary WMS transfer
+        // into a purported Van load. Reject the supplied field, not only
+        // positive integer IDs, across both supported user locales.
+        foreach (['en', 'ar'] as $locale) {
+            $actor->forceFill(['locale' => $locale])->save();
+            app()->setLocale($locale);
 
-        $this->actingAs($actor)
-            ->post(route('admin.erp.wms.transfers.dispatch', 999999), [
-                'store_id' => $storeId,
-                'van_id' => 987654,
-            ])
-            ->assertRedirect()
-            ->assertSessionHasErrors(['van_id']);
+            foreach ([987654, null, 0, 'forged-van'] as $forgedVanTarget) {
+                $this->actingAs($actor->fresh())
+                    ->post(route('admin.erp.wms.transfers.store'), [
+                        ...$payload,
+                        'van_id' => $forgedVanTarget,
+                    ])
+                    ->assertRedirect()
+                    ->assertSessionHasErrors(['van_id']);
 
-        $this->actingAs($actor)
-            ->post(route('admin.erp.wms.transfers.receive', 999999), [
-                'store_id' => $storeId,
-                'van_id' => 987654,
-            ])
-            ->assertRedirect()
-            ->assertSessionHasErrors(['van_id']);
+                foreach (['dispatch', 'receive'] as $transition) {
+                    $this->actingAs($actor->fresh())
+                        ->post(route('admin.erp.wms.transfers.'.$transition, 999999), [
+                            'store_id' => $storeId,
+                            'van_id' => $forgedVanTarget,
+                        ])
+                        ->assertRedirect()
+                        ->assertSessionHasErrors(['van_id']);
+                }
+            }
+        }
 
         $this->assertSame(0, DB::table('enterprise_warehouse_transfers')->count());
         $this->assertSame(0, DB::table('enterprise_warehouse_transfer_lines')->count());
