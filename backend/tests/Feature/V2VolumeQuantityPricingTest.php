@@ -214,6 +214,65 @@ final class V2VolumeQuantityPricingTest extends TestCase
         ]);
     }
 
+    public function test_editing_volume_breaks_preserves_existing_pack_reference_and_inactive_status(): void
+    {
+        [$storeId, $productId, $tierId] = $this->catalog();
+        $this->pricingMode($storeId, true);
+        $manager = $this->actor('B2B_ADMIN', 'volume-pack-editor@example.test');
+        Sanctum::actingAs($manager);
+
+        $original = [
+            ...$this->rule($storeId, $productId, $tierId),
+            'pack_size' => 12,
+            'case_size' => 24,
+            'pack_label' => 'Case of 12',
+            'retail_reference_price' => 15.5,
+            'is_active' => false,
+        ];
+        $this->putJson('/api/v1/admin/b2b/prices', $original)->assertCreated();
+
+        $this->actingAs($manager)
+            ->get('/admin/b2b/pricing-approvals')
+            ->assertOk()
+            ->assertSee('data-v2-pricing-edit', false)
+            ->assertSee('data-pack-size="12"', false)
+            ->assertSee('data-case-size="24"', false)
+            ->assertSee('data-pack-label="Case of 12"', false)
+            ->assertSee('data-retail-reference="15.5"', false)
+            ->assertSee('data-active="0"', false);
+
+        // The Dashboard edit form must round-trip metadata that the volume
+        // pricing editor does not otherwise expose as mutable controls.
+        $this->actingAs($manager)
+            ->post(route('admin.b2b.pricing.save'), [
+                ...$original,
+                'quantity_price_breaks' => [['minimum_quantity' => 10, 'unit_price' => 7.5]],
+                'replace_quantity_price_breaks' => '1',
+            ])
+            ->assertRedirect()
+            ->assertSessionHasNoErrors();
+
+        $this->assertDatabaseHas('b2b_price_rules', [
+            'store_id' => $storeId,
+            'product_id' => $productId,
+            'price_tier_id' => $tierId,
+            'unit_price' => 10,
+            'pack_size' => 12,
+            'case_size' => 24,
+            'pack_label' => 'Case of 12',
+            'retail_reference_price' => 15.5,
+            'is_active' => false,
+        ]);
+        $saved = DB::table('b2b_price_rules')
+            ->where('store_id', $storeId)
+            ->where('product_id', $productId)
+            ->value('quantity_price_breaks');
+        $this->assertEquals(
+            [['minimum_quantity' => 10, 'unit_price' => 7.5]],
+            json_decode((string) $saved, true, 512, JSON_THROW_ON_ERROR),
+        );
+    }
+
     /** @return array{int,int,int} */
     private function catalog(): array
     {
