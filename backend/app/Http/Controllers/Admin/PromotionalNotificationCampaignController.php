@@ -38,7 +38,6 @@ final class PromotionalNotificationCampaignController extends Controller
     {
         $actor = $this->authorizeAccess($request, 'notifications.view');
         $canManage = $this->canAccess($actor, 'notifications.manage');
-        App::setLocale(in_array($actor->locale, ['ar', 'en'], true) ? $actor->locale : 'ar');
         $search = trim((string) $request->query('q', ''));
         $status = trim((string) $request->query('status', ''));
 
@@ -303,6 +302,7 @@ final class PromotionalNotificationCampaignController extends Controller
         $actor = $request->user();
         abort_unless($actor instanceof User, 401);
         abort_unless($this->canAccess($actor, $permission), 403);
+        App::setLocale(in_array($actor->locale, ['ar', 'en'], true) ? $actor->locale : 'ar');
 
         return $actor;
     }
@@ -395,26 +395,26 @@ final class PromotionalNotificationCampaignController extends Controller
 
         if ($audience === 'customer' && in_array($app, ['driver', 'van'], true)) {
             throw ValidationException::withMessages([
-                'app' => ['Customer campaigns cannot target operations apps.'],
+                'app' => [__('notifications.campaign_customer_app_mismatch')],
             ]);
         }
 
         if ($audience === 'driver' && in_array($app, ['customer', 'van'], true)) {
             throw ValidationException::withMessages([
-                'app' => ['Driver campaigns cannot target Customer or Van apps.'],
+                'app' => [__('notifications.campaign_driver_app_mismatch')],
             ]);
         }
 
         if ($audience === 'van' && in_array($app, ['customer', 'driver'], true)) {
             throw ValidationException::withMessages([
-                'app' => ['Van campaigns cannot target Customer or Driver apps.'],
+                'app' => [__('notifications.campaign_van_app_mismatch')],
             ]);
         }
 
         if (($audience === 'van' || $app === 'van')
             && ($data['target_channel'] ?? 'all') === 'b2c') {
             throw ValidationException::withMessages([
-                'target_channel' => ['Van notifications are available for Wholesale/B2B operations only.'],
+                'target_channel' => [__('notifications.campaign_van_requires_wholesale')],
             ]);
         }
     }
