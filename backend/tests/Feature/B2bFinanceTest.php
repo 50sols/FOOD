@@ -7,6 +7,7 @@ use App\Models\Customer;
 use App\Models\Invoice;
 use App\Models\Product;
 use App\Models\User;
+use App\Services\CustomerDomainResolver;
 use Database\Seeders\CoreReferenceSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
@@ -213,6 +214,121 @@ class B2bFinanceTest extends TestCase
         $this->getJson('/api/v1/b2b/account-statement')->assertOk()->assertJsonPath('data.total_debits', 12.5)->assertJsonPath('data.total_credits', 5)->assertJsonPath('data.balance', -7.5);
         $this->assertDatabaseHas('audit_logs', ['event' => 'b2b.finance.invoice_viewed']);
         $this->assertDatabaseHas('audit_logs', ['event' => 'b2b.finance.statement_viewed']);
+    }
+
+    public function test_approved_wholesale_invoice_search_matches_literal_symbols_without_cross_account_leakage(): void
+    {
+        $this->seed(CoreReferenceSeeder::class);
+        [$actor, $legacy] = $this->buyer('literal-invoices-owner@example.test', 'active');
+        [$other, $foreignLegacy] = $this->buyer('literal-invoices-foreign@example.test', 'active');
+        [$pending] = $this->buyer('literal-invoices-pending@example.test', 'pending');
+
+        $resolver = app(CustomerDomainResolver::class);
+        $ownerProfile = $resolver->b2b($actor);
+        $foreignProfile = $resolver->b2b($other);
+
+        $storeType = (int) DB::table('store_types')->where('code', 'B2B')->value('id');
+        $retailType = (int) DB::table('store_types')->where('code', 'B2C')->value('id');
+        $store = static fn (string $code, int $type): int => (int) DB::table('stores')->insertGetId([
+            'store_type_id' => $type,
+            'code' => $code,
+            'name' => $code,
+            'is_active' => true,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        $wholesaleStore = $store('B2B-LITERAL-INVOICES', $storeType);
+        $otherWholesaleStore = $store('B2B-LITERAL-SECOND', $storeType);
+        $retailStore = $store('B2C-LITERAL-EXCLUSION', $retailType);
+
+        $make = static fn (
+            int $b2bCustomerId, int $legacyCustomerId, int $storeId,
+            string $invoiceNumber, string $channel = 'b2b',
+        ): Invoice => Invoice::query()->create([
+            'customer_id' => $legacyCustomerId,
+            'b2b_customer_id' => $b2bCustomerId,
+            'store_id' => $storeId,
+            'channel' => $channel,
+            'invoice_number' => $invoiceNumber,
+            'status' => 'issued',
+            'currency' => 'KWD',
+            'total' => 10,
+            'issued_at' => now(),
+        ]);
+        $target = $make($ownerProfile->id, $legacy->id, $wholesaleStore, 'INV_%!\\-A');
+        $decoy = $make($ownerProfile->id, $legacy->id, $wholesaleStore, 'INVX-OTHER');
+        $leading = [];
+        foreach (['%' => '%LEAD', '_' => '_LEAD', '!' => '!LEAD', '\\' => '\\LEAD'] as $symbol => $number) {
+            $leading[$symbol] = $make(
+                $ownerProfile->id, $legacy->id, $wholesaleStore, $number,
+            )->id;
+        }
+        $foreign = $make(
+            $foreignProfile->id, $foreignLegacy->id,
+            $wholesaleStore, 'INV_%!\\-FOREIGN',
+        );
+        $retail = $make(
+            $ownerProfile->id, $legacy->id, $retailStore, 'INV_%!\\-RETAIL', 'b2c',
+        );
+
+        $invoiceCount = Invoice::query()->count();
+        $paymentCount = DB::table('payments')->count();
+        Sanctum::actingAs($actor);
+        $endpoint = '/api/v1/b2b/invoices?q=';
+        foreach (['INV_', 'INV_%', 'INV_%!', 'INV_%!\\-'] as $q) {
+            $this->getJson($endpoint.rawurlencode($q))
+                ->assertOk()
+                ->assertJsonPath('meta.total', 1)
+                ->assertJsonPath('data.0.id', $target->id)
+                ->assertJsonPath('filters.q', $q);
+        }
+        $this->getJson($endpoint.rawurlencode('INV'))
+            ->assertOk()
+            ->assertJsonPath('meta.total', 2);
+        $this->getJson($endpoint.rawurlencode('INV%'))
+            ->assertOk()
+            ->assertJsonPath('meta.total', 0);
+        foreach (['%', '_', '!', '\\'] as $symbol) {
+            $this->getJson($endpoint.rawurlencode($symbol))
+                ->assertOk()
+                ->assertJsonPath('meta.total', 2);
+        }
+        $this->getJson($endpoint.rawurlencode('#'.$target->id))
+            ->assertOk()
+            ->assertJsonPath('meta.total', 1)
+            ->assertJsonPath('data.0.id', $target->id);
+        $this->getJson($endpoint.rawurlencode('INV_%!').'&store_id='.$otherWholesaleStore)
+            ->assertOk()
+            ->assertJsonPath('meta.total', 0);
+        $this->getJson($endpoint.rawurlencode('INV_%!').'&store_id='.$wholesaleStore)
+            ->assertOk()
+            ->assertJsonPath('meta.total', 1);
+        $this->getJson($endpoint.rawurlencode('INV_%!').'&from=2035-01-01')
+            ->assertOk()
+            ->assertJsonPath('meta.total', 0);
+        $this->getJson($endpoint.rawurlencode('INV_%!').'&status=paid')
+            ->assertOk()
+            ->assertJsonPath('meta.total', 0);
+        $this->getJson($endpoint.rawurlencode('%').'&per_page=1')
+            ->assertOk()
+            ->assertJsonPath('meta.total', 2)
+            ->assertJsonPath('meta.per_page', 1);
+        $this->getJson($endpoint.rawurlencode('INV_%!').'&per_page=51')
+            ->assertUnprocessable();
+
+        $this->assertNotSame($target->id, $foreign->id);
+        $this->assertNotSame($target->id, $retail->id);
+        Sanctum::actingAs($other);
+        $this->getJson($endpoint.rawurlencode('INV_%!'))
+            ->assertOk()
+            ->assertJsonPath('meta.total', 1)
+            ->assertJsonPath('data.0.id', $foreign->id);
+        Sanctum::actingAs($pending);
+        $this->getJson($endpoint.rawurlencode('INV_%!'))->assertForbidden();
+
+        $this->assertSame($invoiceCount, Invoice::query()->count());
+        $this->assertSame($paymentCount, DB::table('payments')->count());
+        $this->assertDatabaseHas('audit_logs', ['event' => 'b2b.finance.invoices_viewed']);
     }
 
     public function test_invoice_ownership_and_account_approval_are_enforced(): void

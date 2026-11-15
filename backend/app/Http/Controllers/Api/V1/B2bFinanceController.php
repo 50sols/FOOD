@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Api\V1;
 
+use App\Enterprise\Search\LiteralLikePattern;
 use App\Http\Controllers\Controller;
 use App\Models\B2bAccount;
 use App\Models\B2bCustomer;
@@ -55,18 +56,19 @@ class B2bFinanceController extends Controller
             ->when($filters['from'] ?? null, fn ($query, string $from) => $query->whereDate('issued_at', '>=', $from))
             ->when($filters['to'] ?? null, fn ($query, string $to) => $query->whereDate('issued_at', '<=', $to))
             ->when($search !== '', function ($query) use ($search): void {
-                $needle = '%'.addcslashes($search, '%_\\').'%';
+                // Keep typed %, _, ! and backslashes literal across SQLite/MySQL.
+                $needle = LiteralLikePattern::contains($search);
                 $displayId = DisplayNumber::referenceId($search);
 
                 $query->where(function ($nested) use ($needle, $displayId): void {
                     if ($displayId !== null) {
                         $nested->where('id', $displayId)
-                            ->orWhere('invoice_number', 'like', $needle);
+                            ->orWhereRaw("invoice_number LIKE ? ESCAPE '!'", [$needle]);
 
                         return;
                     }
 
-                    $nested->where('invoice_number', 'like', $needle);
+                    $nested->whereRaw("invoice_number LIKE ? ESCAPE '!'", [$needle]);
                 });
             })
             ->latest('issued_at')
