@@ -2021,6 +2021,8 @@ paths:
                 $ref: "#/components/schemas/NotificationCollection"
         "401":
           $ref: "#/components/responses/Unauthenticated"
+        "422":
+          $ref: "#/components/responses/ValidationError"
 
   /notifications/{notification}:
     get:
@@ -2043,6 +2045,8 @@ paths:
           $ref: "#/components/responses/Unauthenticated"
         "404":
           $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/ValidationError"
 
   /notifications/{notification}/read:
     post:
@@ -3140,7 +3144,7 @@ components:
     Locale:
       in: query
       name: locale
-      description: Requested localized notification content. Falls back to the authenticated user's locale.
+      description: Optional scalar ar/en. Missing uses the authenticated user's supported locale; invalid explicit values return HTTP 422.
       schema:
         type: string
         enum: [ar, en]
