@@ -559,6 +559,51 @@ class SmartOrderingCoreTest extends TestCase
         $this->assertDatabaseCount('payments', 1);
     }
 
+    public function test_conflicting_checkout_idempotency_key_is_bilingual_and_creates_no_second_order(): void
+    {
+        foreach ([
+            'ar' => 'تم استخدام مفتاح منع التكرار لطلب إتمام شراء مختلف.',
+            'en' => 'Idempotency-Key was already used for a different checkout request.',
+        ] as $locale => $message) {
+            app()->setLocale($locale);
+            $this->withHeaders(['Accept-Language' => $locale]);
+
+            [$cart, $token] = $this->cart();
+            $this->addItem($cart, $token, 1);
+            $key = 'v2-3757-smart-checkout-conflict-'.$locale;
+
+            $this->checkout($cart, $token, $key, ['fulfillment_mode' => 'pickup'])
+                ->assertCreated();
+
+            $counts = [
+                'orders' => DB::table('orders')->count(),
+                'contexts' => DB::table('smart_ordering_order_contexts')->count(),
+                'events' => DB::table('smart_ordering_order_events')->count(),
+                'payments' => DB::table('payments')->count(),
+                'carts' => DB::table('smart_ordering_carts')->count(),
+                'cart_items' => DB::table('smart_ordering_cart_items')->count(),
+                'audit' => DB::table('audit_logs')->count(),
+            ];
+
+            $this->checkout($cart, $token, $key, [
+                'fulfillment_mode' => 'pickup',
+                'order_note' => 'A different checkout payload must conflict',
+            ])
+                ->assertConflict()
+                ->assertJsonPath('message', $message);
+
+            $this->assertSame($counts, [
+                'orders' => DB::table('orders')->count(),
+                'contexts' => DB::table('smart_ordering_order_contexts')->count(),
+                'events' => DB::table('smart_ordering_order_events')->count(),
+                'payments' => DB::table('payments')->count(),
+                'carts' => DB::table('smart_ordering_carts')->count(),
+                'cart_items' => DB::table('smart_ordering_cart_items')->count(),
+                'audit' => DB::table('audit_logs')->count(),
+            ]);
+        }
+    }
+
     public function test_checkout_rejects_stale_sold_out_cart(): void
     {
         [$cart, $token] = $this->cart();
