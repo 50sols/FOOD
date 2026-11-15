@@ -452,6 +452,7 @@ class _Wallet implements VanWalletRepository {
           id: 42,
           name: 'Al Noor Market',
           storeId: 7,
+          canDirectSell: true,
         ),
       ];
   @override
