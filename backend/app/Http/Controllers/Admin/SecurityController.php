@@ -55,6 +55,7 @@ final class SecurityController extends Controller
             ]);
         }
         $search = trim((string) $request->query('q', ''));
+        $literalSearch = '%'.str_replace(['!', '%', '_'], ['!!', '!%', '!_'], $search).'%';
         $status = (string) $request->query('status', 'all');
         $assignment = (string) $request->query('assignment', 'all');
         $section = (string) $request->query('section', 'users');
@@ -71,10 +72,10 @@ final class SecurityController extends Controller
 
         $users = User::query()
             ->with(['roles:id,code,name,is_active', 'storeRoleAssignments.role:id,code,name,is_active', 'storeRoleAssignments.store:id,code,name'])
-            ->when($search !== '', fn ($query) => $query->where(function ($nested) use ($search): void {
-                $nested->where('name', 'like', '%'.$search.'%')
-                    ->orWhere('username', 'like', '%'.$search.'%')
-                    ->orWhere('email', 'like', '%'.$search.'%');
+            ->when($search !== '', fn ($query) => $query->where(function ($nested) use ($literalSearch): void {
+                $nested->whereRaw("name LIKE ? ESCAPE '!'", [$literalSearch])
+                    ->orWhereRaw("username LIKE ? ESCAPE '!'", [$literalSearch])
+                    ->orWhereRaw("email LIKE ? ESCAPE '!'", [$literalSearch]);
             }))
             ->when($status === 'active', fn ($query) => $query->where('is_active', true))
             ->when($status === 'inactive', fn ($query) => $query->where('is_active', false))
@@ -1330,17 +1331,22 @@ final class SecurityController extends Controller
                 'actors.email as actor_email',
             ]);
 
+        // Treat audit filter input as literal text across SQLite/MySQL SQL modes.
+        // Only the outer % operators implement intentional substring matching.
+        $literalContains = static fn (string $value): string => '%'
+            .str_replace(['!', '%', '_'], ['!!', '!%', '!_'], $value).'%';
+
         if ($filters['audit_actor'] !== '') {
-            $needle = '%'.$filters['audit_actor'].'%';
+            $needle = $literalContains($filters['audit_actor']);
             $query->where(fn ($nested) => $nested
-                ->where('actors.name', 'like', $needle)
-                ->orWhere('actors.email', 'like', $needle));
+                ->whereRaw("actors.name LIKE ? ESCAPE '!'", [$needle])
+                ->orWhereRaw("actors.email LIKE ? ESCAPE '!'", [$needle]));
         }
         if ($filters['audit_event'] !== '') {
-            $query->where('audit.event', 'like', '%'.$filters['audit_event'].'%');
+            $query->whereRaw("audit.event LIKE ? ESCAPE '!'", [$literalContains($filters['audit_event'])]);
         }
         if ($filters['audit_entity'] !== '') {
-            $query->where('audit.auditable_type', 'like', '%'.$filters['audit_entity'].'%');
+            $query->whereRaw("audit.auditable_type LIKE ? ESCAPE '!'", [$literalContains($filters['audit_entity'])]);
         }
         if ($filters['audit_from'] !== '') {
             $query->whereDate('audit.created_at', '>=', $filters['audit_from']);
@@ -1349,7 +1355,10 @@ final class SecurityController extends Controller
             $query->whereDate('audit.created_at', '<=', $filters['audit_to']);
         }
         if ($filters['audit_correlation'] !== '') {
-            $query->where('audit.after', 'like', '%'.$filters['audit_correlation'].'%');
+            // audit.after stores JSON text: a literal backslash in a value is
+            // serialized as two backslashes before the LIKE pattern is applied.
+            $serializedCorrelation = str_replace('\\', '\\\\', $filters['audit_correlation']);
+            $query->whereRaw("audit.after LIKE ? ESCAPE '!'", [$literalContains($serializedCorrelation)]);
         }
 
         return [

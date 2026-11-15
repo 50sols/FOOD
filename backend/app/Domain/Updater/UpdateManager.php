@@ -17,238 +17,408 @@ final class UpdateManager
         private readonly AuditLogger $auditLogger,
     ) {}
 
+    /**
+     * Share ZIP update's process-safe lock with manual backup and recovery,
+     * preventing maintenance or database rollback from overlapping a deploy.
+     *
+     * @template TResult
+     *
+     * @param  callable(): TResult  $operation
+     * @return TResult
+     */
+    public function withExclusiveExecutionLock(callable $operation): mixed
+    {
+        $lock = $this->acquireExecutionLock();
+
+        try {
+            return $operation();
+        } finally {
+            flock($lock, LOCK_UN);
+            fclose($lock);
+        }
+    }
+
     public function execute(
         UpdatePackageManifest $manifest,
         string $currentVersion,
         string $packagePath,
         ?User $actor = null,
     ): UpdateHistory {
-        $history = UpdateHistory::query()->create([
-            'actor_id' => $actor?->getKey(),
-            'from_version' => $currentVersion,
-            'to_version' => $manifest->targetVersion,
-            'status' => 'running',
-            'environment' => (string) app()->environment(),
-            'operation_reason' => 'system_update',
-            'backup_status' => 'pending',
-            'rollback_status' => 'not_required',
-            'maintenance_mode_remained' => false,
-            'package_hash' => strtolower($manifest->sha256),
-            'release_notes' => $manifest->releaseNotes,
-            'started_at' => now(),
-            'execution_evidence' => [
-                'package_integrity' => 'pending',
-                'preflight' => 'pending',
-                'backup_files' => 'pending',
-                'backup_database' => $manifest->containsMigrations ? 'pending' : 'not_required',
-                'migrations' => $manifest->containsMigrations ? 'pending' : 'not_required',
-                'health_check' => 'pending',
-                'rollback_files' => 'not_required',
-                'rollback_database' => 'not_required',
-                'rollback_health_check' => 'not_required',
-            ],
-        ]);
-
-        $stage = 'validate_package';
-        $fileBackup = null;
-        $databaseBackup = null;
-        $maintenanceMode = false;
+        $lock = $this->acquireExecutionLock();
 
         try {
-            $this->validator->validate($manifest, $currentVersion, $packagePath);
-            $this->checkpoint($history, ['package_integrity' => 'passed']);
-
-            $stage = 'preflight';
-            $this->runtime->preflight($manifest, $packagePath);
-            $this->checkpoint($history, ['preflight' => 'passed']);
-
-            $stage = 'backup_files';
-            $fileBackup = $this->runtime->backupFiles($packagePath);
-            $this->checkpoint($history, [
-                'backup_files' => 'passed',
-                'file_backup' => $this->backupDescriptor($fileBackup),
-            ], [
-                'file_backup_reference' => $fileBackup,
-                'backup_status' => 'partial',
-            ]);
-
-            $stage = 'backup_database';
-            $databaseBackup = $this->runtime->backupDatabase($manifest->containsMigrations);
-            if ($databaseBackup !== null) {
-                $stage = 'verify_database_backup';
-                $this->runtime->verifyDatabaseBackup($databaseBackup);
-            }
-            $this->checkpoint($history, [
-                'backup_database' => $databaseBackup !== null ? 'passed' : 'not_required',
-                'backup_verification' => $databaseBackup !== null ? 'passed' : 'not_required',
-                'database_backup' => $this->backupDescriptor($databaseBackup),
-            ], [
-                'database_backup_reference' => $databaseBackup,
-                'backup_status' => 'available',
-            ]);
-
-            $stage = 'maintenance_mode';
-            $this->runtime->enterMaintenanceMode();
-            $maintenanceMode = true;
-            $this->checkpoint($history, ['maintenance_mode' => 'entered']);
-
-            $stage = 'extract_release';
-            $this->runtime->extractRelease($packagePath);
-            $this->checkpoint($history, ['release_activation' => 'passed']);
-
-            if ($manifest->containsMigrations) {
-                $stage = 'run_migrations';
-                $this->runtime->runMigrations();
-                $this->checkpoint($history, ['migrations' => 'passed']);
-            }
-
-            $stage = 'clear_and_rebuild_cache';
-            $this->runtime->rebuildCaches();
-            $this->checkpoint($history, ['cache_rebuild' => 'passed']);
-
-            $stage = 'health_check';
-            $this->runtime->healthCheck();
-            $this->checkpoint($history, ['health_check' => 'passed'], [
-                'health_verified_at' => now(),
-            ]);
-
-            $stage = 'exit_maintenance_mode';
-            $this->runtime->exitMaintenanceMode();
-            $maintenanceMode = false;
-            $this->checkpoint($history, ['maintenance_mode' => 'exited']);
-
-            SystemVersion::query()->updateOrCreate(
-                ['version' => $manifest->targetVersion],
-                ['installed_at' => now(), 'package_hash' => strtolower($manifest->sha256)],
-            );
-
-            $this->checkpoint($history, ['result' => 'success'], [
-                'status' => 'success',
-                'failure_reason' => null,
-                'failed_stage' => null,
+            $history = UpdateHistory::query()->create([
+                'actor_id' => $actor?->getKey(),
+                'from_version' => $currentVersion,
+                'to_version' => $manifest->targetVersion,
+                'status' => 'running',
+                'environment' => (string) app()->environment(),
+                'operation_reason' => 'system_update',
+                'backup_status' => 'pending',
                 'rollback_status' => 'not_required',
                 'maintenance_mode_remained' => false,
-                'finished_at' => now(),
+                'package_hash' => strtolower($manifest->sha256),
+                'release_notes' => $manifest->releaseNotes,
+                'started_at' => now(),
+                'execution_evidence' => [
+                    'package_integrity' => 'pending',
+                    'preflight' => 'pending',
+                    'backup_files' => 'pending',
+                    'backup_database' => 'pending',
+                    'migrations' => $manifest->containsMigrations ? 'pending' : 'not_required',
+                    'health_check' => 'pending',
+                    'rollback_files' => 'not_required',
+                    'rollback_database' => 'not_required',
+                    'rollback_health_check' => 'not_required',
+                ],
             ]);
 
-            $this->auditLogger->record(
-                'updater.completed',
-                $actor,
-                $history,
-                ['version' => $currentVersion],
-                [
-                    'version' => $manifest->targetVersion,
-                    'backup_status' => $history->backup_status,
-                    'health_verified' => $history->health_verified_at !== null,
-                ],
-            );
+            $stage = 'validate_package';
+            $fileBackup = null;
+            $databaseBackup = null;
+            $maintenanceMode = false;
+            $releaseMutationStarted = false;
+            $databaseMutationStarted = false;
 
-            return $history->refresh();
-        } catch (Throwable $exception) {
-            $exceptionSummary = $this->exceptionSummary($exception);
-            $reason = "Update failed during [{$stage}]. Cause: {$exceptionSummary}. Rollback was attempted.";
-            $rollbackSucceeded = true;
-            $rollbackAttempted = false;
-            $rollbackEvidence = [];
+            try {
+                $this->validator->validate($manifest, $currentVersion, $packagePath);
+                $this->checkpoint($history, ['package_integrity' => 'passed']);
 
-            if ($fileBackup !== null) {
-                $rollbackAttempted = true;
-                try {
-                    $this->runtime->rollbackFiles($fileBackup);
-                    $rollbackEvidence['rollback_files'] = 'passed';
-                } catch (Throwable) {
-                    $rollbackSucceeded = false;
-                    $rollbackEvidence['rollback_files'] = 'failed';
+                $stage = 'preflight';
+                $this->runtime->preflight($manifest, $packagePath);
+                $this->checkpoint($history, ['preflight' => 'passed']);
+
+                $stage = 'backup_files';
+                $fileBackup = $this->runtime->backupFiles($packagePath);
+                $this->checkpoint($history, [
+                    'backup_files' => 'passed',
+                    'file_backup' => $this->backupDescriptor($fileBackup),
+                ], [
+                    'file_backup_reference' => $fileBackup,
+                    'backup_status' => 'partial',
+                ]);
+
+                $stage = 'backup_database';
+                // Cache rebuild reconciles persisted job-role grants even when
+                // this ZIP declares no migrations. Every update must therefore
+                // have a verified database snapshot before files are activated.
+                $databaseBackup = $this->runtime->backupDatabase(true);
+                if ($databaseBackup === null) {
+                    throw new RuntimeException('Database backup is required for every system update.');
                 }
-            }
 
-            if ($databaseBackup !== null) {
-                $rollbackAttempted = true;
-                try {
-                    $this->runtime->rollbackDatabase($databaseBackup);
-                    $rollbackEvidence['rollback_database'] = 'passed';
-                } catch (Throwable) {
-                    $rollbackSucceeded = false;
-                    $rollbackEvidence['rollback_database'] = 'failed';
+                $stage = 'verify_database_backup';
+                $this->runtime->verifyDatabaseBackup($databaseBackup);
+                $this->checkpoint($history, [
+                    'backup_database' => 'passed',
+                    'backup_verification' => 'passed',
+                    'database_backup' => $this->backupDescriptor($databaseBackup),
+                ], [
+                    'database_backup_reference' => $databaseBackup,
+                    'backup_status' => 'available',
+                ]);
+
+                $stage = 'maintenance_mode';
+                $this->runtime->enterMaintenanceMode();
+                $maintenanceMode = true;
+                $this->checkpoint($history, ['maintenance_mode' => 'entered']);
+
+                $stage = 'extract_release';
+                // Extraction can partially replace files before throwing.
+                $releaseMutationStarted = true;
+                $this->runtime->extractRelease($packagePath);
+                $this->checkpoint($history, ['release_activation' => 'passed']);
+
+                if ($manifest->containsMigrations) {
+                    $stage = 'run_migrations';
+                    // A failed migration can already have changed live tables.
+                    $databaseMutationStarted = true;
+                    $this->runtime->runMigrations();
+                    $this->checkpoint($history, ['migrations' => 'passed']);
                 }
-            }
 
-            if ($rollbackAttempted && $rollbackSucceeded) {
-                try {
-                    $this->runtime->healthCheck();
-                    $rollbackEvidence['rollback_health_check'] = 'passed';
-                } catch (Throwable) {
-                    $rollbackSucceeded = false;
-                    $rollbackEvidence['rollback_health_check'] = 'failed';
+                $stage = 'clear_and_rebuild_cache';
+                // Cache rebuild also reconciles persisted job-role grants.
+                $databaseMutationStarted = true;
+                $this->runtime->rebuildCaches();
+                $this->checkpoint($history, ['cache_rebuild' => 'passed']);
+
+                $stage = 'health_check';
+                $this->runtime->healthCheck();
+                $this->checkpoint($history, ['health_check' => 'passed'], [
+                    'health_verified_at' => now(),
+                ]);
+
+                $stage = 'exit_maintenance_mode';
+                $this->runtime->exitMaintenanceMode();
+                $maintenanceMode = false;
+                $this->checkpoint($history, ['maintenance_mode' => 'exited']);
+
+                $stage = 'record_version';
+                SystemVersion::query()->updateOrCreate(
+                    ['version' => $manifest->targetVersion],
+                    ['installed_at' => now(), 'package_hash' => strtolower($manifest->sha256)],
+                );
+
+                $stage = 'record_success';
+                $this->checkpoint($history, ['result' => 'success'], [
+                    'status' => 'success',
+                    'failure_reason' => null,
+                    'failed_stage' => null,
+                    'rollback_status' => 'not_required',
+                    'maintenance_mode_remained' => false,
+                    'finished_at' => now(),
+                ]);
+
+                $stage = 'audit_completion';
+                $this->auditLogger->record(
+                    'updater.completed',
+                    $actor,
+                    $history,
+                    ['version' => $currentVersion],
+                    [
+                        'version' => $manifest->targetVersion,
+                        'backup_status' => $history->backup_status,
+                        'health_verified' => $history->health_verified_at !== null,
+                    ],
+                );
+
+                return $history->refresh();
+            } catch (Throwable $exception) {
+                $exceptionSummary = $this->exceptionSummary($exception);
+                $reason = "Update failed during [{$stage}]. Cause: {$exceptionSummary}.";
+                $rollbackSucceeded = true;
+                $rollbackAttempted = false;
+                $rollbackEvidence = [];
+                $rollbackSafe = true;
+
+                // A late version/history/audit failure can occur after the site
+                // has already left maintenance mode. Never roll live files or
+                // database back while users can write new data.
+                if ($releaseMutationStarted && ! $maintenanceMode) {
+                    try {
+                        $this->runtime->enterMaintenanceMode();
+                        $maintenanceMode = true;
+                        $rollbackEvidence['maintenance_mode'] = 'reentered_for_rollback';
+                    } catch (Throwable) {
+                        $rollbackSafe = false;
+                        $rollbackSucceeded = false;
+                        $rollbackEvidence['maintenance_mode'] = 'reentry_failed';
+                        $rollbackEvidence['rollback_files'] = 'skipped_unsafe';
+                        $rollbackEvidence['rollback_database'] = $databaseMutationStarted
+                            ? 'skipped_unsafe'
+                            : 'not_required';
+                    }
                 }
-            }
 
-            if ($maintenanceMode && $rollbackSucceeded) {
-                try {
-                    $this->runtime->exitMaintenanceMode();
-                    $maintenanceMode = false;
-                    $rollbackEvidence['maintenance_mode'] = 'exited_after_rollback';
-                } catch (Throwable) {
-                    $maintenanceMode = true;
-                    $rollbackEvidence['maintenance_mode'] = 'exit_failed';
+                // Never restore backups onto untouched live state after a
+                // failed preflight or failed backup integrity check.
+                if ($rollbackSafe && $releaseMutationStarted && $fileBackup !== null) {
+                    $rollbackAttempted = true;
+                    try {
+                        $this->runtime->rollbackFiles($fileBackup);
+                        $rollbackEvidence['rollback_files'] = 'passed';
+                    } catch (Throwable) {
+                        $rollbackSucceeded = false;
+                        $rollbackEvidence['rollback_files'] = 'failed';
+                    }
                 }
-            }
 
-            if (! $rollbackSucceeded) {
-                $reason .= ' Rollback is incomplete; manual recovery is required.';
-            }
+                if ($rollbackSafe && $databaseMutationStarted && $databaseBackup !== null) {
+                    $rollbackAttempted = true;
+                    try {
+                        $this->runtime->rollbackDatabase($databaseBackup);
+                        $rollbackEvidence['rollback_database'] = 'passed';
+                    } catch (Throwable) {
+                        $rollbackSucceeded = false;
+                        $rollbackEvidence['rollback_database'] = 'failed';
+                    }
+                }
 
-            if ($maintenanceMode) {
-                $reason .= ' Maintenance mode remains enabled.';
-            }
+                if ($rollbackAttempted && $rollbackSucceeded) {
+                    try {
+                        $this->runtime->healthCheck();
+                        $rollbackEvidence['rollback_health_check'] = 'passed';
+                    } catch (Throwable) {
+                        $rollbackSucceeded = false;
+                        $rollbackEvidence['rollback_health_check'] = 'failed';
+                    }
+                }
 
-            $failureKey = match ($stage) {
-                'validate_package' => 'package_integrity',
-                'preflight' => 'preflight',
-                'backup_files' => 'backup_files',
-                'backup_database', 'verify_database_backup' => 'backup_database',
-                'run_migrations' => 'migrations',
-                'health_check' => 'health_check',
-                default => 'execution',
-            };
+                if ($maintenanceMode && $rollbackSucceeded) {
+                    try {
+                        $this->runtime->exitMaintenanceMode();
+                        $maintenanceMode = false;
+                        $rollbackEvidence['maintenance_mode'] = 'exited_after_rollback';
+                    } catch (Throwable) {
+                        $maintenanceMode = true;
+                        $rollbackEvidence['maintenance_mode'] = 'exit_failed';
+                    }
+                }
 
-            $this->checkpoint($history, array_merge(
-                [
-                    $failureKey => 'failed',
-                    'result' => 'failed',
-                    'failure_stage' => $stage,
-                    'failure_cause' => $exceptionSummary,
-                    'failure_exception' => class_basename($exception),
-                ],
-                $rollbackEvidence,
-            ), [
-                'status' => 'failed',
-                'backup_status' => ($fileBackup !== null || $databaseBackup !== null) ? 'available' : 'not_created',
-                'failed_stage' => $stage,
-                'rollback_status' => $rollbackAttempted
-                    ? ($rollbackSucceeded ? 'succeeded' : 'incomplete')
-                    : 'not_required',
-                'maintenance_mode_remained' => $maintenanceMode,
-                'failure_reason' => $reason,
-                'finished_at' => now(),
-            ]);
+                if ($rollbackAttempted) {
+                    $reason .= ' Rollback was attempted.';
+                }
 
-            $this->auditLogger->record(
-                'updater.failed',
-                $actor,
-                $history,
-                ['version' => $currentVersion],
-                [
-                    'target_version' => $manifest->targetVersion,
-                    'stage' => $stage,
-                    'cause' => $exceptionSummary,
-                    'exception' => class_basename($exception),
-                    'rollback_status' => $history->rollback_status,
+                if (! $rollbackSafe) {
+                    $reason .= ' Rollback was skipped because maintenance mode could not be re-entered.';
+                }
+
+                if (! $rollbackSucceeded) {
+                    $reason .= ' Rollback is incomplete; manual recovery is required.';
+                }
+
+                if ($maintenanceMode) {
+                    $reason .= ' Maintenance mode remains enabled.';
+                }
+
+                $failureKey = match ($stage) {
+                    'validate_package' => 'package_integrity',
+                    'preflight' => 'preflight',
+                    'backup_files' => 'backup_files',
+                    'backup_database', 'verify_database_backup' => 'backup_database',
+                    'run_migrations' => 'migrations',
+                    'health_check' => 'health_check',
+                    default => 'execution',
+                };
+
+                $this->checkpoint($history, array_merge(
+                    [
+                        $failureKey => 'failed',
+                        'result' => 'failed',
+                        'failure_stage' => $stage,
+                        'failure_cause' => $exceptionSummary,
+                        'failure_exception' => class_basename($exception),
+                    ],
+                    $rollbackEvidence,
+                ), [
+                    'status' => 'failed',
+                    'backup_status' => ($fileBackup !== null || $databaseBackup !== null) ? 'available' : 'not_created',
+                    'failed_stage' => $stage,
+                    'rollback_status' => ! $rollbackSafe
+                        ? 'incomplete'
+                        : ($rollbackAttempted
+                            ? ($rollbackSucceeded ? 'succeeded' : 'incomplete')
+                            : 'not_required'),
                     'maintenance_mode_remained' => $maintenanceMode,
-                ],
-            );
+                    'failure_reason' => $reason,
+                    'finished_at' => now(),
+                ]);
 
-            throw new RuntimeException($reason, 0, $exception);
+                $this->auditLogger->record(
+                    'updater.failed',
+                    $actor,
+                    $history,
+                    ['version' => $currentVersion],
+                    [
+                        'target_version' => $manifest->targetVersion,
+                        'stage' => $stage,
+                        'cause' => $exceptionSummary,
+                        'exception' => class_basename($exception),
+                        'rollback_status' => $history->rollback_status,
+                        'maintenance_mode_remained' => $maintenanceMode,
+                    ],
+                );
+
+                throw new RuntimeException($reason, 0, $exception);
+            }
+        } finally {
+            flock($lock, LOCK_UN);
+            fclose($lock);
+        }
+    }
+
+    /**
+     * Use a non-blocking filesystem lock so a second request cannot start
+     * package validation, backups or any update history mutations.
+     *
+     * @return resource
+     */
+    private function acquireExecutionLock()
+    {
+        $path = (string) config(
+            'foodex.updater_execution_lock',
+            storage_path('app/private/updates/execution.lock'),
+        );
+
+        if ($path === '' || ! str_starts_with($path, '/')) {
+            throw new RuntimeException('Updater execution lock path is invalid.');
+        }
+
+        for ($candidate = $path; ; $candidate = dirname($candidate)) {
+            clearstatcache(true, $candidate);
+
+            if (is_link($candidate)) {
+                throw new RuntimeException('Updater execution lock path cannot be a symbolic link.');
+            }
+
+            if (dirname($candidate) === $candidate) {
+                break;
+            }
+        }
+
+        $directory = dirname($path);
+        if (! is_dir($directory) && ! @mkdir($directory, 0750, true) && ! is_dir($directory)) {
+            throw new RuntimeException('Updater execution lock directory is unavailable.');
+        }
+
+        // Never open a known symbolic link, including a dangling link.
+        clearstatcache(true, $path);
+        if (is_link($path)) {
+            throw new RuntimeException('Updater execution lock path cannot be a symbolic link.');
+        }
+
+        $lock = @fopen($path, 'c+b');
+        if ($lock === false) {
+            throw new RuntimeException('Updater execution lock could not be opened.');
+        }
+
+        // Verify the opened inode, not just the previously checked path.
+        // A hard link passes is_link(), and an atomic path replacement may
+        // otherwise let two requests flock unrelated inodes.
+        $held = false;
+
+        try {
+            $this->assertExecutionLockIdentity($path, $lock);
+
+            if (! flock($lock, LOCK_EX | LOCK_NB)) {
+                throw new RuntimeException('Another system update is already running.');
+            }
+
+            $held = true;
+            $this->assertExecutionLockIdentity($path, $lock);
+            @chmod($path, 0600);
+            $this->assertExecutionLockIdentity($path, $lock);
+
+            return $lock;
+        } catch (Throwable $exception) {
+            if ($held) {
+                @flock($lock, LOCK_UN);
+            }
+
+            fclose($lock);
+
+            throw $exception;
+        }
+    }
+
+    /**
+     * @param  resource  $lock
+     */
+    private function assertExecutionLockIdentity(string $path, $lock): void
+    {
+        clearstatcache(true, $path);
+        $opened = fstat($lock);
+        $current = @lstat($path);
+
+        if ($opened === false || $current === false
+            || ($opened['mode'] & 0170000) !== 0100000
+            || ($current['mode'] & 0170000) !== 0100000
+            || $opened['nlink'] !== 1
+            || $current['nlink'] !== 1
+            || $opened['dev'] !== $current['dev']
+            || $opened['ino'] !== $current['ino']) {
+            throw new RuntimeException('Updater execution lock path is not an exclusive regular file.');
         }
     }
 
@@ -261,6 +431,10 @@ final class UpdateManager
         while ($current !== null && $depth < 3) {
             $message = trim(preg_replace('/\s+/', ' ', $current->getMessage()) ?? '');
             if ($message !== '') {
+                // Exception text is persisted to UpdateHistory and audit entries.
+                // Redact credentials BEFORE retaining any diagnostic details.
+                $message = $this->redactSecrets($message);
+
                 // Do not expose absolute server paths in UI/audit-visible failure text.
                 $message = preg_replace(
                     '#(?<![A-Za-z0-9._-])/(?:[^\s:()]+/)+[^\s:()]+#',
@@ -286,6 +460,40 @@ final class UpdateManager
         return $parts !== []
             ? implode(' | Caused by: ', $parts)
             : class_basename($exception);
+    }
+
+    /**
+     * Updater failures are shown in the Admin update history and stored in
+     * execution evidence. Never persist credential values copied from an
+     * underlying SQL/HTTP/provider exception.
+     */
+    private function redactSecrets(string $message): string
+    {
+        $patterns = [
+            '#\b([a-z][a-z0-9+.-]*://)[^/\s@]+@#i' => '$1[REDACTED]@',
+            // Exception messages have already been collapsed to one line.
+            // Schemes such as Token, Digest or custom credentials can have
+            // additional space- or comma-separated fields; masking only the
+            // first token would persist the remainder to updater audit/history.
+            // Fail closed on the entire Authorization tail, regardless of scheme.
+            '/\b(Authorization\s*[:=]\s*)[^\r\n]*/i' => '$1[REDACTED]',
+            '/\b(Bearer\s+)\S+/i' => '$1[REDACTED]',
+            '/\b((?:(?:DB|MAIL|REDIS|SMTP|AWS|STRIPE|PAYMENT)_)?(?:PASSWORD|PASS|TOKEN|SECRET|API_KEY|APP_KEY|ACCESS_KEY|PRIVATE_KEY))\s*([=:])\s*(?:"[^"]*"|\x27[^\x27]*\x27|[^\s,;)\]}]+)/i' => '$1$2[REDACTED]',
+        ];
+
+        foreach ($patterns as $pattern => $replacement) {
+            $redacted = preg_replace($pattern, $replacement, $message);
+
+            if (! is_string($redacted)) {
+                // Fail closed if a regex ever fails (e.g. invalid UTF-8 or
+                // processing limit); never fall back to the original secret.
+                return '[sensitive error details redacted]';
+            }
+
+            $message = $redacted;
+        }
+
+        return $message;
     }
 
     /**

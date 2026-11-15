@@ -5,6 +5,7 @@ namespace Tests\Feature;
 use App\Exceptions\SelfStorePurchaseNotAllowed;
 use App\Models\User;
 use App\Services\CustomerDomainResolver;
+use App\Services\WholesalePrincipal;
 use Database\Seeders\CoreReferenceSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
@@ -429,6 +430,135 @@ class PlatformCustomerMarketplaceTest extends TestCase
             'channel' => 'b2c',
             'b2c_customer_id' => $b2c->id,
         ]);
+    }
+
+    public function test_platform_wholesale_guest_search_matches_literal_name_sku_barcode_without_retail_leak(): void
+    {
+        [$wholesaleStore, $retailStore, $existingWholesaleProduct, $retailProduct] = $this->marketplaceFixture();
+        // The public storefront's configured principal and the inventory
+        // availability service must resolve the same canonical B2B store.
+        DB::table('stores')->where('id', $wholesaleStore)->update(['code' => WholesalePrincipal::STORE_CODE]);
+        config(['foodex.platform_wholesale_store_code' => WholesalePrincipal::STORE_CODE]);
+        $original = DB::table('products')->where('id', $existingWholesaleProduct)->first();
+        $this->assertNotNull($original);
+        $otherCategory = (int) DB::table('categories')->insertGetId([
+            'catalog_id' => $original->catalog_id,
+            'name' => 'Second Wholesale Category',
+            'slug' => 'wholesale-literal-second-category',
+            'is_active' => true,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $fixtures = [
+            'percent' => ['name' => 'سعر 100% خاص', 'sku' => 'W-PCT-100', 'barcode' => 'PCT-100', 'category_id' => $original->category_id],
+            'underscore' => ['name' => 'Price 1000 special', 'sku' => 'SKU_TEST', 'barcode' => 'TAG-X', 'category_id' => $otherCategory],
+            'bang' => ['name' => 'Flag! pack', 'sku' => 'W-BANG', 'barcode' => 'TAG_%', 'category_id' => $original->category_id],
+            'lookalike' => ['name' => 'Wildcard lookalike', 'sku' => 'SKUXTEST', 'barcode' => 'TAGxy7', 'category_id' => $otherCategory],
+            'arabic' => ['name' => 'قهوة تجريبية', 'sku' => 'W-ARABIC', 'barcode' => 'AR-TEST', 'category_id' => $original->category_id],
+        ];
+        $ids = [];
+        foreach ($fixtures as $key => $fixture) {
+            $ids[$key] = (int) DB::table('products')->insertGetId([
+                'catalog_id' => $original->catalog_id,
+                'category_id' => $fixture['category_id'],
+                'unit_id' => $original->unit_id,
+                'name' => $fixture['name'],
+                'sku' => $fixture['sku'],
+                'barcode' => $fixture['barcode'],
+                'is_active' => true,
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+            DB::table('store_products')->insert([
+                'store_id' => $wholesaleStore,
+                'product_id' => $ids[$key],
+                'price' => 9.500,
+                'is_active' => true,
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+        }
+
+        // The source query must still enforce the active principal Wholesale
+        // catalog, not return a Retail product even if the text matches.
+        $productCount = DB::table('products')->count();
+        $priceCount = DB::table('store_products')->count();
+        $auditCount = DB::table('audit_logs')->count();
+        foreach ([
+            ['q' => '100%', 'locale' => 'ar', 'expected' => [$ids['percent']]],
+            ['q' => 'SKU_', 'locale' => 'en', 'expected' => [$ids['underscore']]],
+            ['q' => 'TAG_%', 'locale' => 'en', 'expected' => [$ids['bang']]],
+            ['q' => '!', 'locale' => 'en', 'expected' => [$ids['bang']]],
+            ['q' => 'قهوة', 'locale' => 'ar', 'expected' => [$ids['arabic']]],
+            ['q' => 'Price', 'locale' => 'en', 'expected' => [$ids['underscore']]],
+            ['q' => 'Wholesale Product', 'locale' => 'en', 'expected' => [$existingWholesaleProduct]],
+            ['q' => 'Retail Product', 'locale' => 'en', 'expected' => []],
+            ['q' => 'not%_matching', 'locale' => 'en', 'expected' => []],
+            ['q' => 'SKU_', 'locale' => 'en', 'category_id' => $original->category_id, 'expected' => []],
+            ['q' => 'SKU_', 'locale' => 'en', 'category_id' => $otherCategory, 'expected' => [$ids['underscore']]],
+        ] as $case) {
+            app()->setLocale($case['locale']);
+            $url = '/api/v1/platform/storefront?'.http_build_query([
+                'q' => $case['q'],
+                'category_id' => $case['category_id'] ?? null,
+            ], '', '&', PHP_QUERY_RFC3986);
+            $response = $this->getJson($url)
+                ->assertOk()
+                ->assertJsonPath('store.id', $wholesaleStore)
+                ->assertJsonPath('store.channel', 'b2b');
+            $actualIds = array_map('intval', array_column($response->json('products.data'), 'id'));
+            $expected = array_map('intval', $case['expected']);
+            sort($actualIds);
+            sort($expected);
+            $this->assertSame($expected, $actualIds, 'Literal platform search: '.$case['q']);
+        }
+
+        $this->assertNotSame($retailStore, $wholesaleStore);
+        $this->assertNotContains($retailProduct, $ids);
+        $this->assertSame($productCount, DB::table('products')->count());
+        $this->assertSame($priceCount, DB::table('store_products')->count());
+        $this->assertSame($auditCount, DB::table('audit_logs')->count());
+    }
+
+    public function test_platform_wholesale_literal_search_keeps_the_existing_hundred_product_cap(): void
+    {
+        [$wholesaleStore, , $existingProduct] = $this->marketplaceFixture();
+        // The public storefront's configured principal and the inventory
+        // availability service must resolve the same canonical B2B store.
+        DB::table('stores')->where('id', $wholesaleStore)->update(['code' => WholesalePrincipal::STORE_CODE]);
+        config(['foodex.platform_wholesale_store_code' => WholesalePrincipal::STORE_CODE]);
+        $original = DB::table('products')->where('id', $existingProduct)->first();
+        $this->assertNotNull($original);
+
+        for ($index = 0; $index < 101; $index++) {
+            $id = (int) DB::table('products')->insertGetId([
+                'catalog_id' => $original->catalog_id,
+                'category_id' => $original->category_id,
+                'unit_id' => $original->unit_id,
+                'name' => 'Bulk!_Item '.str_pad((string) $index, 3, '0', STR_PAD_LEFT),
+                'sku' => 'LITERAL-BULK-'.str_pad((string) $index, 3, '0', STR_PAD_LEFT),
+                'is_active' => true,
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+            DB::table('store_products')->insert([
+                'store_id' => $wholesaleStore,
+                'product_id' => $id,
+                'price' => 10.000,
+                'is_active' => true,
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+        }
+
+        $response = $this->getJson('/api/v1/platform/storefront?q=Bulk%21_')
+            ->assertOk()
+            ->assertJsonPath('store.channel', 'b2b')
+            ->assertJsonCount(100, 'products.data');
+        foreach ($response->json('products.data') as $row) {
+            $this->assertStringContainsString('Bulk!_Item', $row['name']);
+        }
     }
 
     /** @return array{0:int,1:int,2:int,3:int} */

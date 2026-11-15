@@ -43,7 +43,12 @@ class AppPreviewSessionController extends Controller
             $token = $request->input('preview_token');
         }
 
-        abort_unless(is_string($token), 401, 'Preview token is required.');
+        $preferredLocale = strtolower((string) $request->getPreferredLanguage(['ar', 'en']));
+        abort_unless(
+            is_string($token),
+            401,
+            (string) __('preview_session.token_required', [], $preferredLocale === 'ar' ? 'ar' : 'en'),
+        );
 
         $session = $sessions->resolve($token, $request);
 

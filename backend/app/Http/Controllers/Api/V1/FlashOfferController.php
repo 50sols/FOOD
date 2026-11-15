@@ -219,6 +219,8 @@ final class FlashOfferController extends Controller
             [$customer] = $customers->forStore($user, (int) $offer->store_id, $request);
             $legacyCustomerId = $customers->legacyId($customer);
             $baseQuantity = round((float) $data['quantity'] * (float) $offerProduct->conversion_factor, 3);
+            // The commercial policy must never receive INF from a finite JSON quantity.
+            abort_if(! is_finite($baseQuantity) || $baseQuantity <= 0, 422, 'Resolved base quantity must be greater than zero.');
             $decision = $commercialPolicy->evaluate(
                 (int) $offerProduct->product_id,
                 $legacyCustomerId,
@@ -294,10 +296,14 @@ final class FlashOfferController extends Controller
         ]);
 
         if (($data['channel'] ?? null) === 'customer' || isset($data['address_id'])) {
+            $locale = in_array($user->locale, ['ar', 'en'], true)
+                ? (string) $user->locale
+                : (string) $request->getPreferredLanguage(['ar', 'en']);
+
             foreach (['store_id', 'address_id', 'payment_method'] as $required) {
                 if (! isset($data[$required]) || trim((string) $data[$required]) === '') {
                     throw ValidationException::withMessages([
-                        $required => ['This field is required for Customer Flash checkout.'],
+                        $required => [__('flash_checkout.customer_required_field', [], $locale === 'en' ? 'en' : 'ar')],
                     ]);
                 }
             }

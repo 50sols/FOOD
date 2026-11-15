@@ -2,6 +2,12 @@
 
 Read `AGENTS.md` first. These conventions help an agent choose the expected implementation shape quickly.
 
+## FOODEX V2 worker coordination
+
+- The owner-approved V2 capacity ceiling is `MAX_ACTIVE_V2_WORKERS=12`, defined canonically in `docs/v2/V2_WORKER_CAPACITY.json` with the admission protocol in `docs/v2/V2_WORKER_CAPACITY.md` and `docs/v2/V2_ISOLATION_GOVERNANCE.md`.
+- Before a new V2 worker claim, count independently verified current active/waiting leases and any active coordinator, validate disjoint Issue/file fences, fail closed on unknown state, and recheck after claiming. Do not invent live workers, weaken CI, or allow `main` merges or deployment.
+- The configuration reserves capacity; it does not run GitHub Actions or ChatGPT worker sessions. The historical independent six-lane #1034 mission limit remains scoped to that mission only.
+
 ## Branch / task
 - Use the existing Issue-defined branch when one exists.
 - New work: create/claim an atomic Issue before a branch.

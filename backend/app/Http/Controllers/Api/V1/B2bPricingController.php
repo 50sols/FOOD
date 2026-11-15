@@ -11,6 +11,7 @@ use App\Services\AuditLogger;
 use App\Services\B2bPricingMode;
 use App\Services\CommercialPolicyService;
 use App\Services\CustomerDomainResolver;
+use App\Services\OperationalTenantScope;
 use App\Services\ProductAvailabilityService;
 use App\Services\WholesaleAppCatalogPolicy;
 use App\Services\WholesalePrincipal;
@@ -25,19 +26,23 @@ class B2bPricingController extends Controller
         private readonly ProductAvailabilityService $availability,
         private readonly B2bPriceResolver $prices,
         private readonly B2bPricingMode $pricingMode,
+        private readonly OperationalTenantScope $tenantScope,
         private readonly WholesalePrincipal $principal,
         private readonly WholesaleAppCatalogPolicy $appCatalog,
     ) {}
 
     public function index(Request $request): JsonResponse
     {
+        $user = $request->user();
+        abort_unless($user instanceof User, 401);
         Gate::authorize('b2b.pricing.view');
 
         $storeId = $this->principal->storeId();
+        $this->tenantScope->assertStore($user, $storeId, 'b2b.pricing.view', 'b2b');
         abort_unless(
             $this->pricingMode->tiersEnabled($storeId),
             409,
-            'B2B pricing tiers are disabled.',
+            $this->tiersDisabledMessage($request, $user),
         );
 
         $rules = B2bPriceRule::query()
@@ -53,6 +58,8 @@ class B2bPricingController extends Controller
 
     public function upsert(Request $request): JsonResponse
     {
+        $user = $request->user();
+        abort_unless($user instanceof User, 401);
         Gate::authorize('b2b.pricing.manage');
         $data = $request->validate([
             'price_tier_id' => ['required', 'integer', 'exists:b2b_price_tiers,id'],
@@ -67,7 +74,11 @@ class B2bPricingController extends Controller
             'retail_reference_price' => ['nullable', 'numeric', 'gte:0'],
             'is_active' => ['sometimes', 'boolean'],
         ]);
-        abort_unless($this->pricingMode->tiersEnabled((int) $data['store_id']), 409, 'B2B pricing tiers are disabled.');
+        // Preserve the authorized multi-store B2B API contract while rejecting
+        // another channel, inactive stores and explicit per-user store DENYs.
+        $storeId = (int) $data['store_id'];
+        $this->tenantScope->assertStore($user, $storeId, 'b2b.pricing.manage', 'b2b');
+        abort_unless($this->pricingMode->tiersEnabled($storeId), 409, $this->tiersDisabledMessage($request, $user));
 
         $ownedProduct = DB::table('products')
             ->join('catalogs', 'catalogs.id', '=', 'products.catalog_id')
@@ -263,10 +274,11 @@ class B2bPricingController extends Controller
             ->where('stores.is_active', true)
             ->where('store_types.code', 'B2B')
             ->when($search !== '', fn ($query) => $query->where(function ($query) use ($search): void {
-                $like = '%'.$search.'%';
-                $query->where('products.name', 'like', $like)
-                    ->orWhere('products.sku', 'like', $like)
-                    ->orWhere('products.barcode', 'like', $like);
+                // Treat Customer search as literal text on SQLite and MySQL.
+                $like = '%'.str_replace(['!', '%', '_'], ['!!', '!%', '!_'], $search).'%';
+                $query->whereRaw("products.name LIKE ? ESCAPE '!'", [$like])
+                    ->orWhereRaw("products.sku LIKE ? ESCAPE '!'", [$like])
+                    ->orWhereRaw("products.barcode LIKE ? ESCAPE '!'", [$like]);
             }))
             ->when($categoryId !== null, fn ($query) => $query->where('products.category_id', $categoryId))
             ->when($brandId !== null, fn ($query) => $query->where('products.brand_id', $brandId));
@@ -355,6 +367,15 @@ class B2bPricingController extends Controller
             'currency' => 'EGP',
             'pricing_tiers_enabled' => $tiersEnabled,
         ]);
+    }
+
+    private function tiersDisabledMessage(Request $request, User $user): string
+    {
+        $locale = in_array($user->locale, ['ar', 'en'], true)
+            ? (string) $user->locale
+            : (string) $request->getPreferredLanguage(['ar', 'en']);
+
+        return __('b2b_pricing_errors.tiers_disabled', [], $locale === 'en' ? 'en' : 'ar');
     }
 
     private function assetUrl(mixed $path): ?string

@@ -32,6 +32,33 @@ class VanOrderControllerTest extends TestCase
             ->assertNotFound();
     }
 
+    public function test_van_order_routes_reject_retail_customer_type_without_mutating_financial_or_audit_data(): void
+    {
+        $this->vanActor();
+
+        $orderCount = DB::table('orders')->count();
+        $auditCount = DB::table('audit_logs')->count();
+
+        foreach (['catalog', 'order-options'] as $endpoint) {
+            foreach (['', '?store_id=7'] as $query) {
+                $this->getJson("/api/v1/van/customers/b2c/999/{$endpoint}{$query}")
+                    ->assertNotFound();
+            }
+        }
+
+        foreach (['order-quote', 'orders'] as $endpoint) {
+            foreach ([[], ['store_id' => 7]] as $fields) {
+                $this->postJson("/api/v1/van/customers/b2c/999/{$endpoint}", [
+                    ...$fields,
+                    'items' => [['product_id' => 1, 'quantity' => 1]],
+                ])->assertNotFound();
+            }
+        }
+
+        $this->assertSame($orderCount, DB::table('orders')->count());
+        $this->assertSame($auditCount, DB::table('audit_logs')->count());
+    }
+
     public function test_van_b2b_catalog_uses_platform_customer_base_price_fallback_and_explicit_tier_override(): void
     {
         $actor = $this->vanActor();
@@ -121,6 +148,88 @@ class VanOrderControllerTest extends TestCase
             ->assertJsonPath('data.0.ordering_increment', 2);
     }
 
+    public function test_van_b2b_catalog_search_matches_literal_wildcards_without_cross_store_results(): void
+    {
+        $actor = $this->vanActor();
+        $wholesaleStoreId = $this->store('B2B', 'V2-LITERAL-VAN-WHOLESALE');
+        $retailStoreId = $this->store('B2C', 'V2-LITERAL-VAN-RETAIL');
+        $literalProductId = $this->product($wholesaleStoreId, 'V2-LIT-A%!_B', 12.5);
+        $sourceProduct = DB::table('products')->where('id', $literalProductId)->firstOrFail();
+        $warehouseId = (int) DB::table('warehouses')
+            ->where('store_id', $wholesaleStoreId)->value('id');
+
+        $plainProductId = (int) DB::table('products')->insertGetId([
+            'catalog_id' => $sourceProduct->catalog_id,
+            'unit_id' => $sourceProduct->unit_id,
+            'sku' => 'V2-LIT-AABB',
+            'barcode' => '116800000002',
+            'name' => 'Another Van Catalog Product',
+            'is_active' => true,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        DB::table('store_products')->insert([
+            'store_id' => $wholesaleStoreId,
+            'product_id' => $plainProductId,
+            'price' => 15.0,
+            'is_active' => true,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        DB::table('inventories')->insert([
+            'warehouse_id' => $warehouseId,
+            'product_id' => $plainProductId,
+            'quantity' => 100,
+            'reserved_quantity' => 0,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        config(['foodex.platform_wholesale_store_code' => 'V2-LITERAL-VAN-WHOLESALE']);
+        $buyer = app(PlatformCustomerService::class)->register([
+            'name' => 'Van Literal Search Buyer',
+            'email' => 'van-literal-search@example.test',
+            'phone' => '+201000003563',
+            'password' => 'Password123!',
+            'locale' => 'ar',
+            'store_id' => $retailStoreId,
+        ]);
+        $customer = B2bCustomer::query()->where('user_id', $buyer->id)->firstOrFail();
+
+        VanVisit::query()->create([
+            'actor_user_id' => $actor->id,
+            'customer_type' => 'b2b',
+            'customer_id' => $customer->id,
+            'store_id' => $wholesaleStoreId,
+            'status' => 'planned',
+        ]);
+
+        $catalogUrl = '/api/v1/van/customers/b2b/'.$customer->id
+            .'/catalog?store_id='.$wholesaleStoreId.'&q=';
+
+        // A typed wildcard or escape marker is literal, never an operator.
+        foreach (['%', '_', '!', '%!_'] as $needle) {
+            $this->getJson($catalogUrl.rawurlencode($needle))
+                ->assertOk()
+                ->assertJsonCount(1, 'data')
+                ->assertJsonPath('data.0.id', $literalProductId)
+                ->assertJsonPath('meta.returned', 1)
+                ->assertJsonPath('meta.has_more', false);
+        }
+
+        // Ordinary case-insensitive substring search remains supported.
+        $this->getJson($catalogUrl.rawurlencode('V2-LIT-A'))
+            ->assertOk()
+            ->assertJsonCount(2, 'data')
+            ->assertJsonPath('meta.returned', 2);
+
+        // The same caller cannot switch to the Retail store even with a
+        // valid query; the established Van store/visit guard still applies.
+        $this->getJson('/api/v1/van/customers/b2b/'.$customer->id
+            .'/catalog?store_id='.$retailStoreId.'&q='.rawurlencode('%'))
+            ->assertNotFound();
+    }
+
     public function test_van_order_creation_requires_idempotency_key_before_checkout(): void
     {
         $actor = $this->vanActor();
@@ -133,11 +242,44 @@ class VanOrderControllerTest extends TestCase
             'status' => 'planned',
         ]);
 
-        $this->postJson('/api/v1/van/customers/b2b/999/orders', [
-            'store_id' => 7,
-        ])
-            ->assertUnprocessable()
-            ->assertJsonValidationErrors(['Idempotency-Key']);
+        $baseline = [
+            'orders' => DB::table('orders')->count(),
+            'order_items' => DB::table('order_items')->count(),
+            'invoices' => DB::table('invoices')->count(),
+            'payments' => DB::table('payments')->count(),
+            'audit_logs' => DB::table('audit_logs')->count(),
+            'stock_movements' => DB::table('stock_movements')->count(),
+            'reserved_stock' => (float) DB::table('inventories')->sum('reserved_quantity'),
+        ];
+
+        foreach ([
+            'ar' => 'يجب تقديم مفتاح صالح لمنع تكرار الطلب في الترويسة.',
+            'en' => 'A valid Idempotency-Key header is required.',
+        ] as $locale => $message) {
+            $actor->forceFill(['locale' => $locale])->saveQuietly();
+            app()->setLocale($locale);
+
+            foreach (['', 'short', str_repeat('k', 101)] as $invalidKey) {
+                $this->withHeaders([
+                    'Idempotency-Key' => $invalidKey,
+                    'Accept-Language' => $locale === 'ar' ? 'en' : 'ar',
+                ])->postJson('/api/v1/van/customers/b2b/999/orders', [
+                    'store_id' => 7,
+                ])
+                    ->assertUnprocessable()
+                    ->assertJsonPath('errors.Idempotency-Key.0', $message);
+
+                $this->assertSame($baseline, [
+                    'orders' => DB::table('orders')->count(),
+                    'order_items' => DB::table('order_items')->count(),
+                    'invoices' => DB::table('invoices')->count(),
+                    'payments' => DB::table('payments')->count(),
+                    'audit_logs' => DB::table('audit_logs')->count(),
+                    'stock_movements' => DB::table('stock_movements')->count(),
+                    'reserved_stock' => (float) DB::table('inventories')->sum('reserved_quantity'),
+                ]);
+            }
+        }
     }
 
     public function test_van_order_feed_is_empty_without_actor_customer_scope(): void

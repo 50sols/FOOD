@@ -101,6 +101,9 @@ class B2bWorkspaceController extends Controller
         App::setLocale(in_array($user->locale, ['ar', 'en'], true) ? $user->locale : 'ar');
 
         $principalStoreId = $this->principal->storeId();
+        if ($module === 'pricing') {
+            $this->operationalScope->assertStore($user, $principalStoreId, 'b2b.pricing.view', 'b2b');
+        }
         $pricingTiersEnabled = $this->pricingMode->tiersEnabled($principalStoreId);
         abort_if($module === 'pricing' && ! $pricingTiersEnabled, 404);
 
@@ -257,10 +260,16 @@ class B2bWorkspaceController extends Controller
             ->where('id', $warehouseId)
             ->where('is_active', true)
             ->first(['id', 'store_id']);
-        abort_unless($warehouse !== null, 422, 'A valid Wholesale warehouse is required.');
+        abort_unless($warehouse !== null, 422, $this->msg(
+            'يلزم اختيار مستودع جملة صالح.',
+            'A valid Wholesale warehouse is required.',
+        ));
 
         $storeId = $this->principal->storeId();
-        abort_unless((int) $warehouse->store_id === $storeId, 422, 'Warehouse must belong to the main Wholesale operation.');
+        abort_unless((int) $warehouse->store_id === $storeId, 422, $this->msg(
+            'يجب أن يتبع المستودع عملية الجملة الرئيسية.',
+            'Warehouse must belong to the main Wholesale operation.',
+        ));
         $this->operationalScope->assertStore($actor, $storeId, 'orders.manage', 'b2b');
 
         $order = $orders->create($request, $actor, 'b2b', $storeId);

@@ -355,6 +355,105 @@ final class EnterpriseOpeningBalanceFoundationTest extends TestCase
         );
     }
 
+    public function test_opening_balance_batch_prefix_search_is_literal_scoped_and_read_only(): void
+    {
+        $local = $this->fixture('OB-LIT-A');
+        $foreign = $this->fixture('OB-LIT-B', true);
+        $scope = $local['maker_context']->enterpriseScope;
+        $this->assertNotNull($scope);
+        $service = app(OpeningBalanceService::class);
+        $counter = 0;
+        $newBatch = function (string $number) use ($scope, $local, &$counter): int {
+            $counter++;
+
+            return (int) DB::table('enterprise_finance_opening_balance_batches')->insertGetId([
+                'organization_id' => $scope->organizationId,
+                'company_id' => $scope->companyId,
+                'legal_entity_id' => $scope->legalEntityId,
+                'fiscal_period_id' => $local['period_id'],
+                'batch_number' => $number,
+                'idempotency_key' => 'ob-lit-'.$counter,
+                'request_hash' => hash('sha256', 'ob-lit-'.$counter),
+                'entry_date' => '2027-01-01',
+                'description' => 'Literal scoped opening balance search',
+                'status' => 'draft',
+                'total_debit' => 1,
+                'total_credit' => 1,
+                'created_by' => $local['maker']->id,
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+        };
+
+        $target = $newBatch('OB_%!\\-A');
+        $decoy = $newBatch('OBX-OTHER');
+        $leading = [];
+        foreach ([
+            '%' => '%B-001',
+            '_' => '_B-001',
+            '!' => '!B-001',
+            '\\' => '\\B-001',
+        ] as $symbol => $number) {
+            $leading[$symbol] = $newBatch($number);
+        }
+        $foreignBatch = $service->createDraft(
+            $foreign['maker'],
+            $foreign['maker_context'],
+            $this->payload($foreign, 'ob-lit-foreign'),
+        );
+        DB::table('enterprise_finance_opening_balance_batches')
+            ->where('id', $foreignBatch->id)
+            ->update(['batch_number' => 'OB_%!\\-FOREIGN']);
+
+        $before = DB::table('enterprise_finance_opening_balance_batches')->count();
+        $auditBefore = DB::table('audit_logs')->count();
+        $journalBefore = DB::table('enterprise_finance_journals')->count();
+        $ledgerBefore = DB::table('enterprise_finance_ledger_entries')->count();
+        $search = fn (string $q): array => $service->paginate(
+            $local['maker'], $local['maker_context'], ['q' => $q],
+        )->getCollection()->pluck('id')->all();
+
+        foreach (['OB_', 'OB_%', 'OB_%!', 'OB_%!\\-'] as $prefix) {
+            $this->assertSame([$target], $search($prefix), 'Literal batch prefix: '.$prefix);
+        }
+        foreach ($leading as $symbol => $id) {
+            $this->assertSame([$id], $search($symbol), 'Symbol prefix widened: '.$symbol);
+        }
+        $this->assertSame([$decoy, $target], $search('OB'));
+        $this->assertSame([], $search('OB%'));
+        $this->assertSame(1, $service->paginate(
+            $foreign['maker'], $foreign['maker_context'], ['q' => 'OB_%!'],
+        )->total());
+        $this->assertNotContains($foreignBatch->id, $search('OB'));
+        $this->assertSame(0, $service->paginate(
+            $local['maker'], $local['maker_context'], ['q' => 'OB', 'status' => 'posted'],
+        )->total());
+        $this->assertSame(0, $service->paginate(
+            $local['maker'], $local['maker_context'], [
+                'q' => 'OB', 'fiscal_period_id' => $foreign['period_id'],
+            ],
+        )->total());
+        $this->assertSame(0, $service->paginate(
+            $local['maker'], $local['maker_context'], ['q' => 'OB', 'date_from' => '2027-01-02'],
+        )->total());
+        $this->assertSame(10, $service->paginate(
+            $local['maker'], $local['maker_context'], [], 1,
+        )->perPage());
+
+        $roleless = User::factory()->create(['is_active' => true]);
+        try {
+            $service->paginate($roleless, $local['maker_context'], ['q' => 'OB_%!']);
+            $this->fail('Roleless actor cannot read opening-balance batches.');
+        } catch (HttpException $exception) {
+            $this->assertSame(403, $exception->getStatusCode());
+        }
+
+        $this->assertSame($before, DB::table('enterprise_finance_opening_balance_batches')->count());
+        $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+        $this->assertSame($journalBefore, DB::table('enterprise_finance_journals')->count());
+        $this->assertSame($ledgerBefore, DB::table('enterprise_finance_ledger_entries')->count());
+    }
+
     public function test_unentitled_finance_performs_no_opening_balance_table_query_work(): void
     {
         $store = $this->createRetailStore('OB-NO-ENT');

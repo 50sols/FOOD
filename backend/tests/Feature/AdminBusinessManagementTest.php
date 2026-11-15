@@ -173,6 +173,98 @@ class AdminBusinessManagementTest extends TestCase
         $this->actingAs($user)->get('/admin/business')->assertForbidden();
     }
 
+    public function test_wrong_wholesale_principal_store_is_bilingual_and_rejected_before_driver_writes(): void
+    {
+        $admin = $this->superAdmin();
+        $typeId = (int) DB::table('store_types')->where('code', 'B2C')->value('id');
+        $this->assertGreaterThan(0, $typeId);
+
+        $retailStoreId = (int) DB::table('stores')->insertGetId([
+            'store_type_id' => $typeId,
+            'code' => 'DRIVER-PRINCIPAL-RETAIL',
+            'name' => 'Driver Principal Retail',
+            'is_active' => true,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $this->actingAs($admin)->post('/admin/business/drivers', [
+            'store_id' => $retailStoreId,
+            'name' => 'Existing Retail Driver',
+            'email' => 'existing-retail-driver@example.test',
+            'password' => 'StrongPass123!',
+            'driver_type' => 'b2c',
+            'is_available' => 1,
+            'is_active' => 1,
+        ])->assertSessionHasNoErrors();
+
+        $driver = DB::table('drivers')->where('store_id', $retailStoreId)->first();
+        $this->assertNotNull($driver);
+        $usersBefore = DB::table('users')->count();
+        $driversBefore = DB::table('drivers')->count();
+        $roleLinksBefore = DB::table('role_user')->count();
+        $auditBefore = DB::table('audit_logs')->count();
+
+        foreach ([
+            'ar' => 'يجب أن يتبع سائق الجملة متجر الجملة الرئيسي.',
+            'en' => 'Wholesale drivers must belong to the principal Wholesale store.',
+        ] as $locale => $error) {
+            $admin->forceFill(['locale' => $locale])->save();
+
+            $this->actingAs($admin)->postJson('/admin/business/drivers', [
+                'store_id' => $retailStoreId,
+                'name' => 'Invalid Wholesale Driver',
+                'email' => 'invalid-wholesale-'.$locale.'@example.test',
+                'password' => 'StrongPass123!',
+                'driver_type' => 'b2b',
+                'is_available' => 1,
+                'is_active' => 1,
+            ])->assertUnprocessable()->assertJsonPath('message', $error);
+
+            $this->actingAs($admin)
+                ->patchJson('/admin/business/drivers/'.$driver->id, [
+                    'store_id' => $retailStoreId,
+                    'driver_type' => 'b2b',
+                    'is_available' => 1,
+                    'is_active' => 1,
+                ])
+                ->assertUnprocessable()
+                ->assertJsonPath('message', $error);
+
+            $this->assertSame($usersBefore, DB::table('users')->count());
+            $this->assertSame($driversBefore, DB::table('drivers')->count());
+            $this->assertSame($roleLinksBefore, DB::table('role_user')->count());
+            $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+            $this->assertDatabaseHas('drivers', [
+                'id' => $driver->id,
+                'user_id' => $driver->user_id,
+                'store_id' => $retailStoreId,
+                'driver_type' => 'b2c',
+            ]);
+        }
+
+        $unprivileged = User::query()->create([
+            'name' => 'Unprivileged Driver',
+            'email' => 'unprivileged-driver@example.test',
+            'password' => 'unused-password',
+            'locale' => 'ar',
+            'is_active' => true,
+        ]);
+        $unprivileged->roles()->attach(
+            Role::query()->where('code', 'B2C_DRIVER')->firstOrFail(),
+        );
+        $this->actingAs($unprivileged)->postJson('/admin/business/drivers', [
+            'store_id' => $retailStoreId,
+            'name' => 'Forbidden Wholesale Driver',
+            'email' => 'forbidden-wholesale@example.test',
+            'password' => 'StrongPass123!',
+            'driver_type' => 'b2b',
+        ])->assertForbidden();
+
+        $this->assertSame($driversBefore, DB::table('drivers')->count());
+        $this->assertDatabaseMissing('users', ['email' => 'forbidden-wholesale@example.test']);
+    }
+
     private function superAdmin(): User
     {
         $user = User::query()->create([

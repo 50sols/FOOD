@@ -50,7 +50,8 @@ final class PurchaseOrderManager
         ])->validate();
 
         $perPage = max(10, min(100, $perPage));
-        $term = str_replace(['%', '_'], '', trim((string) ($validated['q'] ?? '')));
+        $term = trim((string) ($validated['q'] ?? ''));
+        $pattern = str_replace(['!', '%', '_'], ['!!', '!%', '!_'], $term).'%';
 
         return $this->visibleQuery($scope)
             ->with('supplier:id,code,name_en,name_ar,status')
@@ -60,7 +61,7 @@ final class PurchaseOrderManager
             )
             ->when(
                 $term !== '',
-                fn (Builder $query): Builder => $query->where('order_number', 'like', $term.'%'),
+                fn (Builder $query): Builder => $query->whereRaw("order_number LIKE ? ESCAPE '!'", [$pattern]),
             )
             ->orderByDesc('id')
             ->paginate($perPage)
