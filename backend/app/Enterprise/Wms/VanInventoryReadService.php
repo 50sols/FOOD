@@ -25,7 +25,7 @@ final class VanInventoryReadService
      * Read the stock of the current primary Van assignment, never the Van's
      * historical home warehouse or a caller-provided warehouse identifier.
      *
-     * @return array{van_id:int,warehouse_id:int,store_id:int,rows:Collection,next_cursor:?int}
+     * @return array{van_id:int,warehouse_id:int,warehouse_name:string,store_id:int,rows:Collection,next_cursor:?int}
      */
     public function page(User $actor, int $vanId, ?int $afterInventoryId = null): array
     {
@@ -139,6 +139,7 @@ final class VanInventoryReadService
         return [
             'van_id' => $vanId,
             'warehouse_id' => (int) $warehouse->getKey(),
+            'warehouse_name' => (string) $warehouse->name,
             'store_id' => $storeId,
             'rows' => $rows,
             'next_cursor' => $hasMore ? (int) $rows->last()['inventory_id'] : null,
