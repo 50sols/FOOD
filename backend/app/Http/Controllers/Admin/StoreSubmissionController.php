@@ -265,7 +265,7 @@ final class StoreSubmissionController extends Controller
 
         if (! is_string($secret) || $secret === '') {
             throw ValidationException::withMessages([
-                'reviewer' => ['Reviewer secret is not configured.'],
+                'reviewer' => [__('mobile_settings.reviewer_test_secret_missing')],
             ]);
         }
 
