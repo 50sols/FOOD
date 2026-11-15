@@ -2,6 +2,7 @@
 
 namespace Tests\Feature;
 
+use App\Models\FleetCurrentLocation;
 use App\Models\Role;
 use App\Models\User;
 use App\Models\VanAssignment;
@@ -75,6 +76,36 @@ final class V2VanTripActivityAuthorityTest extends TestCase
             ->assertOk()
             ->assertSee('data-trip-route="V2-P276-SELECTED"', false)
             ->assertDontSee('data-trip-route="V2-P276-OTHER"', false);
+    }
+
+    public function test_trip_route_selector_ignores_unrelated_live_fleet_route_keys(): void
+    {
+        $admin = $this->superAdmin();
+        $this->recordVisit($admin, 'b2b', 'V2-P276-AUTHORIZED-VISIT-ROUTE');
+
+        // Live GPS is not a source of authority for the B2B visit-derived
+        // trip tab. A forged/unassigned Retail location must not appear here.
+        FleetCurrentLocation::query()->create([
+            'actor_type' => 'van',
+            'actor_id' => 991276,
+            'route_key' => 'V2-P276-FOREIGN-LIVE-ROUTE',
+            'store_id' => 987654,
+            'channel' => 'b2c',
+            'latitude' => 29.3375000,
+            'longitude' => 47.9900000,
+            'captured_at' => now(),
+            'received_at' => now(),
+            'source_app' => 'van',
+        ]);
+
+        $this->actingAs($admin)
+            ->get(route('admin.field-operations.visits', ['trip_view' => 'trips']))
+            ->assertOk()
+            ->assertSee('value="V2-P276-AUTHORIZED-VISIT-ROUTE"', false)
+            ->assertDontSee('V2-P276-FOREIGN-LIVE-ROUTE');
+
+        $this->assertDatabaseCount('van_visits', 1);
+        $this->assertDatabaseCount('fleet_current_locations', 1);
     }
 
     public function test_forged_metadata_van_id_without_authorized_warehouse_assignment_never_exposes_van_code(): void

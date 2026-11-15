@@ -718,7 +718,9 @@ final class FieldOperationsController extends Controller
                 ];
             })
             ->merge(
-                $canReadAllWholesale
+                // Live GPS route keys may belong to another channel or have no
+                // authorized B2B visit. Never offer them as Van *trip* filters.
+                $canReadAllWholesale && $tripView === 'visits'
                     ? FleetCurrentLocation::query()
                         ->where('actor_type', 'van')
                         ->whereNotNull('route_key')
