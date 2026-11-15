@@ -1549,13 +1549,19 @@ final class OrderOperationsController extends Controller
             in_array(strtolower((string) $model->status), ['delivered', 'completed'], true)
                 && $targetStatus === 'cancelled',
             409,
-            'Delivered orders cannot be cancelled.',
+            $this->msg(
+                'لا يمكن إلغاء الطلبات التي تم تسليمها.',
+                'Delivered orders cannot be cancelled.',
+            ),
         );
 
         abort_if(
             in_array($targetStatus, ['confirmed', 'preparing', 'ready'], true),
             409,
-            'Confirmation and preparation steps are automatic when fulfillment is assigned.',
+            $this->msg(
+                'تُنفَّذ خطوات تأكيد الطلب وتجهيزه تلقائيًا عند إسناد جهة التنفيذ.',
+                'Confirmation and preparation steps are automatic when fulfillment is assigned.',
+            ),
         );
 
         $request->merge(['store_id' => (int) $model->store_id]);
