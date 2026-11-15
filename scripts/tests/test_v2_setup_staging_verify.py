@@ -200,6 +200,24 @@ class V2SetupStagingVerifierTest(unittest.TestCase):
                 with self.assertRaisesRegex(SetupZipError, "Conflicting local/central Setup ZIP " + reason):
                     self.verify()
 
+    def test_crc_valid_conflicting_local_header_crc_or_sizes_fail_closed(self) -> None:
+        # Python reads integrity fields from CENTRAL metadata and accepts
+        # these CRC-valid ZIPs, but hosting extractors may trust LOCAL values.
+        for offset, field in ((14, "CRC"), (18, "sizes"), (22, "sizes")):
+            with self.subTest(local_header_offset=offset):
+                self.pack()
+                payload = bytearray(self.archive.read_bytes())
+                local = payload.index(b"PK\x03\x04")
+                original = int.from_bytes(payload[local + offset:local + offset + 4], "little")
+                payload[local + offset:local + offset + 4] = (original ^ 1).to_bytes(4, "little")
+                self.archive.write_bytes(payload)
+                with zipfile.ZipFile(self.archive) as archive:
+                    self.assertIsNone(archive.testzip())
+                with self.assertRaisesRegex(
+                    SetupZipError, "Conflicting local/central Setup ZIP " + field
+                ):
+                    self.verify()
+
     def test_unicode_path_alias_in_only_local_zip_header_is_rejected(self) -> None:
         # Central extra metadata is harmless after rewriting its field ID,
         # but the *local* entry retains a Unicode Path override that another
