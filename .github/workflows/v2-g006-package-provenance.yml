@@ -90,3 +90,100 @@ jobs:
             --upgrade-125-127 "$RUNNER_TEMP/g006/v127" \
             --source-125 "$SOURCE_125" --source-127 "$SOURCE_127"
           echo 'Historical archive-integrity evidence only; no signature authentication or MySQL upgrade performed.'
+
+  verify-real-historical-mysql-upgrades:
+    name: Real pinned v124-to-v125 and v125-to-v127 ZIP MySQL recovery
+    needs: verify-published-historical-bytes
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: foodex_ci_only
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -uroot -pfoodex_ci_only --silent"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=10
+    steps:
+      - name: Checkout the exact G006 candidate and historic tags
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Install isolated PHP and historical Composer tooling
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          extensions: pdo_mysql, mysqli, mbstring, zip, bcmath, intl, gd, fileinfo, openssl
+          coverage: none
+          tools: composer:v2
+      - name: Verify the pinned source chain and create disposable MySQL databases
+        shell: bash
+        env:
+          CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
+          test "$(git rev-parse 'v1.0.125^{commit}')" = '1a4d2ba341424c816040a7185a9ab1df59c3d574'
+          test "$(git rev-parse 'v1.0.127^{commit}')" = 'a75d3780a8cf1eeb702781adbb17a5dcfd7d8130'
+          php -r '
+          $dbh = new PDO("mysql:host=127.0.0.1;port=3306", "root", "foodex_ci_only", [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]);
+          foreach (["foodex_recovery_125", "foodex_upgrade_127"] as $name) {
+              $dbh->exec("CREATE DATABASE `" . $name . "` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci");
+          }
+          '
+      - name: Download historical released ZIPs read-only with pinned checksums
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          base="$RUNNER_TEMP/g006-historical-mysql"
+          mkdir -p "$base/assets-125" "$base/assets-127"
+          for v in 125 127; do
+            gh release download "v1.0.$v" -R "$GITHUB_REPOSITORY" \
+              -p FOODEX-Update.zip -p FOODEX-Update.json \
+              -p FOODEX-Update.sha256.txt -p FOODEX-Update.files.txt \
+              --dir "$base/assets-$v"
+          done
+          printf '%s  %s\n' 'b4fd85f983469c754c50cbb2b3d3f6d6474545863d4ea41a7b3728cce36cfb52' "$base/assets-125/FOODEX-Update.zip" | sha256sum -c -
+          printf '%s  %s\n' 'fd7c801c333c902d5d6704283eba75de24c7aeae46bcbbe6ebaac6e5dc6fdf46' "$base/assets-127/FOODEX-Update.zip" | sha256sum -c -
+          python3 scripts/v2_upgrade_package_provenance.py \
+            --upgrade-124-125 "$base/assets-125" \
+            --upgrade-125-127 "$base/assets-127" \
+            --source-125 1a4d2ba341424c816040a7185a9ab1df59c3d574 \
+            --source-127 a75d3780a8cf1eeb702781adbb17a5dcfd7d8130
+      - name: Apply real published ZIPs on populated historical MySQL installs
+        shell: bash
+        run: |
+          set -euo pipefail
+          base="$RUNNER_TEMP/g006-historical-mysql"
+          cleanup() {
+            git worktree remove --force "$base/tag-125" >/dev/null 2>&1 || true
+            git worktree remove --force "$base/tag-127" >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+          for v in 125 127; do
+            target="$base/tag-$v"
+            git worktree add --detach "$target" "v1.0.$v"
+            test "$(tr -d '[:space:]' < "$target/VERSION")" = "1.0.$v"
+            mkdir -p "$target/dist/update"
+            cp "$base/assets-$v/FOODEX-Update.zip" "$base/assets-$v/FOODEX-Update.json" "$target/dist/update/"
+            cp "$GITHUB_WORKSPACE/scripts/verify-recovery-update-manifest.py" "$target/scripts/"
+            if [ "$v" = 125 ]; then
+              cp "$GITHUB_WORKSPACE/scripts/ci-125-recovery-upgrade.sh" "$target/scripts/"
+            else
+              cp "$GITHUB_WORKSPACE/scripts/ci-127-upgrade.sh" "$target/scripts/"
+            fi
+          done
+          bash "$base/tag-125/scripts/ci-125-recovery-upgrade.sh"
+          bash "$base/tag-127/scripts/ci-127-upgrade.sh"
+          echo "PASS: two real pinned historical ZIPs exercised on nonempty MySQL, with interrupted migrations, retry, .env and upload retention."
+          echo "NOT PROVEN: continuous same-DB chain, trusted publisher signature, full Update Center recovery, production upgrade."

@@ -300,3 +300,52 @@ or demonstrate backup/restore and interrupted migration recovery. Docker Engine
 on the connected GCC device was unavailable for an isolated MySQL container.
 No terminal full-source acceptance, production package, release, main merge,
 or issue closure is claimed.
+
+## Rehearse the original published ZIPs on nonempty disposable MySQL (2026-11-16)
+
+**New source-backed acceptance job:** `.github/workflows/v2-g006-package-provenance.yml`
+now runs `verify-real-historical-mysql-upgrades` **after** the actual-release ZIP
+provenance/lineage job succeeds, using a private-to-the-run GitHub-hosted Ubuntu
+runner, MySQL 8.0 service, PHP 8.3 and Composer CLI in CI only (never a
+production-host terminal requirement). It downloads the exact already-published
+unmodified v1.0.125 and v1.0.127 update assets with read-only GitHub access,
+rechecks the pinned SHA-256 bytes and validates both archive contents with the
+same fail-closed G006 verifier before executing any archive.
+
+Two historical **independent edge tests**, not a fabricated single continuous
+upgrade, then run against disposable, independently created MySQL databases:
+
+- Actual 1.0.124 → 1.0.125: a detached v1.0.124 installation and real release
+  ZIP are exercised by the checked-in historical `ci-125-recovery-upgrade.sh`
+  harness. It seeds owner/order/customer/discount audit records, reproduces a
+  partially applied historical migration with missing migration ledger row,
+  applies the *published* 125 ZIP, verifies preserved data, upload-file and
+  `.env` hashes and idempotent migration retry.
+- Actual 1.0.125 → 1.0.127: a detached v1.0.125 baseline and real published
+  127 release ZIP are exercised by `ci-127-upgrade.sh` with populated owner,
+  B2B order, assignment/discount audit and an upload marker, then verifies
+  replay-safe migrations, recovered permission/owner registration, unaffected
+  records and unchanged `.env`/upload markers.
+
+Original Git tag refs must equal the separately pinned historical source
+commits; the test harness scripts are copied from the exact G006 candidate
+into disposable detached tag worktrees, not modified on any release tag.
+Each test runs with test-only MySQL credentials inside the temporary CI
+environment. The complete runner/worktree/databases are disposable and no
+private account, production upload or real server credential is used. The
+workflow does **not** publish a new Setup ZIP, Update ZIP, tag or release.
+Customer/Driver/Van Flutter, Backend runtime, API, RBAC, Dashboard and AR/EN
+user-facing contracts are untouched by this CI/QA-only source increment.
+
+**Acceptance accounting:** Successful local YAML parse, Bash syntax checks
+and the 43 existing GCC Python ZIP-unit tests are only preflight. Mark the
+two real historical MySQL edge rehearsals as passed **only if the new GitHub
+Actions job concludes SUCCESS on the exact committed PR HEAD**; log any
+failure and fix on the same original issue branch. Even green CI does not
+prove a **continuous same-database 124→125→127 chain**, cryptographic
+publisher identity/signature/trust-anchor verification, reversible database
+migrations, a real Admin Update Center backup/restore under interrupted file
+apply, or signed frozen-final-V2 ZIP deployment. These remain explicit G006,
+G005 and P112 source blockers before PR #3364 can become Ready or Issue
+#2747 can close. Never mark a backup/recovery scenario successful without
+an actual restore/consistency assertion.
