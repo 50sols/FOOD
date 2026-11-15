@@ -65,7 +65,11 @@ final class PushDeviceController extends Controller
 
         if ($user === null) {
             abort_unless($data['app'] === 'customer', 401);
-            abort_if(empty($data['install_id']), 422, 'install_id is required for anonymous Customer devices.');
+            abort_if(
+                empty($data['install_id']),
+                422,
+                __('push_device_errors.anonymous_install_id_required', [], (string) ($data['locale'] ?? 'ar')),
+            );
         } elseif ($data['app'] === 'driver') {
             $driverChannel = strtolower((string) DB::table('drivers')
                 ->where('user_id', $user->id)
