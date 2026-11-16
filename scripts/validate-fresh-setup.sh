@@ -519,6 +519,28 @@ wizard_post() {
       --data-urlencode "installer_token=$installer_token" "$@" \
       "http://127.0.0.1:8099/install/step/$step" || true)"
     [[ "$status" == "302" ]] && return 0
+    if [[ "$step" == "11" && "$status" == "000" ]]; then
+      echo "::error::Web installer step 11 lost its HTTP response; refusing to replay because MySQL DDL may have partially committed."
+      FRESH_INSTALL_LOG="$fresh/backend/storage/logs/laravel.log" python3 - <<'PY'
+import os
+import re
+from pathlib import Path
+
+log = Path(os.environ["FRESH_INSTALL_LOG"])
+lines = log.read_text(encoding="utf-8", errors="replace").splitlines() if log.is_file() else []
+failures = [line for line in lines if "Installer migration failed" in line]
+if failures:
+    raw = failures[-1]
+    state = re.search(r'"sqlstate":"([A-Z0-9]{5}|unknown)"', raw)
+    migration = re.search(r'"migration":"([0-9]{4}_[0-9]{2}_[0-9]{2}_[0-9]{6}_[a-z0-9_]+|unknown)"', raw)
+    print("::error::G004 first-attempt migration failure: SQLSTATE=" +
+          (state.group(1) if state else "unknown") + ", migration=" +
+          (migration.group(1) if migration else "unknown"))
+else:
+    print("::error::G004 first-attempt response was ambiguous and no redacted migration diagnostic was written.")
+PY
+      return 1
+    fi
     if [[ "$status" != "000" ]]; then
       echo "::error::Web installer step $step returned HTTP $status, expected 302"
       tail -n 100 "$fresh/backend/storage/logs/laravel.log" 2>/dev/null || true
