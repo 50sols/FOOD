@@ -34,7 +34,50 @@
 
 @include('admin._security-governance-dashboard',['securitySection'=>$securitySection])
 
+
 @if($securitySection==='users')
+@if($deletionPreview !== null)
+<section class="panel" data-v2-user-deletion-impact role="region" aria-labelledby="v2-user-deletion-impact-title">
+<div class="head">
+    <div>
+        <h2 id="v2-user-deletion-impact-title">{{ __('v2_user_deletion.title') }} — {{ $deletionPreview['user']->name }}</h2>
+        <p class="muted">{{ $deletionPreview['user']->email }}</p>
+        <p class="muted">{{ __('v2_user_deletion.description') }}</p>
+    </div>
+    <a class="back" href="{{ route('admin.security.index', ['section' => 'users', 'status' => 'inactive']) }}">{{ __('v2_user_deletion.back') }}</a>
+</div>
+@if(! $deletionPreview['assessment']['eligible'])
+    <div class="errors" role="alert" data-v2-user-deletion-blocked>
+        <strong>{{ __('v2_user_deletion.blocked') }}</strong>
+        <ul>
+        @foreach($deletionPreview['assessment']['reasons'] as $reason)
+            <li>{{ __('v2_user_deletion.'.$reason) }}</li>
+        @endforeach
+        </ul>
+    </div>
+@else
+    <div class="notice" role="status" data-v2-user-deletion-eligible>{{ __('v2_user_deletion.allowed') }}</div>
+    <form method="post" action="{{ route('admin.security.users.destroy', $deletionPreview['user']) }}" class="security-create-form" data-v2-user-deletion-form>
+        @csrf
+        @method('delete')
+        <label class="span-2">{{ __('v2_user_deletion.reason') }}
+            <textarea name="reason" required minlength="8" maxlength="500" autocomplete="off" placeholder="{{ __('v2_user_deletion.reason_hint') }}">{{ old('reason') }}</textarea>
+        </label>
+        <label>{{ __('v2_user_deletion.confirm_email') }}
+            <input type="email" name="confirm_email" required autocomplete="off" maxlength="190">
+        </label>
+        <label>{{ __('v2_user_deletion.confirm_delete') }}
+            <input name="confirm_delete" required autocomplete="off" pattern="DELETE" placeholder="DELETE">
+        </label>
+        <label class="span-2" style="display:flex;gap:8px;align-items:center">
+            <input type="checkbox" name="impact_reviewed" value="1" required style="width:auto">
+            {{ __('v2_user_deletion.review') }}
+        </label>
+        <div class="span-2 actions"><button class="btn primary" type="submit">{{ __('v2_user_deletion.submit') }}</button></div>
+    </form>
+@endif
+</section>
+@endif
 @php
 $roleLabel = static function ($role): string {
     if (! $role) {
@@ -144,6 +187,11 @@ $roleLabel = static function ($role): string {
 @endcan
 @can('users.status.manage')
 <button type="button" data-v2-open-user-dialog="status" class="{{ $managedUser->is_active ? 'danger' : '' }}">{{ $managedUser->is_active ? __('admin.security.deactivate') : __('admin.security.activate') }}</button>
+@endcan
+@can('users.delete')
+@if(auth()->user()->hasRole('SUPER_ADMIN') && ! $managedUser->is_active)
+<a class="btn secondary" data-v2-user-deletion-preview href="{{ route('admin.security.index', ['section' => 'users', 'status' => 'inactive', 'deletion_preview' => $managedUser->getKey()]) }}">{{ __('v2_user_deletion.preview') }}</a>
+@endif
 @endcan
 </div>
 </details>

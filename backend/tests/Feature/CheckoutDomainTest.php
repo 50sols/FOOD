@@ -622,6 +622,75 @@ class CheckoutDomainTest extends TestCase
         $this->assertDatabaseCount('orders', 0);
     }
 
+    public function test_checkout_missing_and_empty_carts_are_localized_and_write_nothing(): void
+    {
+        $persistedLocale = (string) DB::table('users')
+            ->where('id', $this->user->getKey())->value('locale');
+
+        foreach (['missing', 'empty'] as $cartState) {
+            if ($cartState === 'empty') {
+                $this->addCartItem(1);
+                $cartId = (int) DB::table('carts')
+                    ->where('store_id', $this->storeId)
+                    ->where('b2c_customer_id', $this->domainCustomer->getKey())
+                    ->value('id');
+                $this->assertGreaterThan(0, $cartId);
+                DB::table('cart_items')->where('cart_id', $cartId)->delete();
+                $this->assertDatabaseHas('carts', ['id' => $cartId]);
+                $this->assertDatabaseMissing('cart_items', ['cart_id' => $cartId]);
+            }
+
+            $before = [];
+            foreach ([
+                'carts', 'cart_items', 'orders', 'order_items', 'invoices',
+                'payments', 'audit_logs', 'notifications', 'stock_movements',
+            ] as $table) {
+                $before[$table] = DB::table($table)->count();
+            }
+            $beforeCart = DB::table('carts')
+                ->where('store_id', $this->storeId)
+                ->where('b2c_customer_id', $this->domainCustomer->getKey())
+                ->first();
+            $beforeInventory = DB::table('inventories')
+                ->where('warehouse_id', $this->warehouseId)
+                ->where('product_id', $this->productId)
+                ->first(['quantity', 'reserved_quantity']);
+
+            foreach ([
+                ['ar', 'en-US', 'لا توجد سلة تسوق مسجلة لهذا المتجر.', 'سلة التسوق فارغة.'],
+                ['en', 'ar-KW', 'No authenticated cart exists for this store.', 'The cart is empty.'],
+                ['fr', 'ar-KW', 'لا توجد سلة تسوق مسجلة لهذا المتجر.', 'سلة التسوق فارغة.'],
+                ['fr', 'en-US', 'No authenticated cart exists for this store.', 'The cart is empty.'],
+            ] as $case => [$actorLocale, $headerLocale, $missingMessage, $emptyMessage]) {
+                $this->user->forceFill(['locale' => $actorLocale])->saveQuietly();
+
+                $this->withHeaders([
+                    'Idempotency-Key' => 'v2-3874-checkout-'.$cartState.'-'.$case.'-safe',
+                    'Accept-Language' => $headerLocale,
+                    'X-FOODEX-Customer-Domain' => 'b2c',
+                ])->postJson('/api/v1/checkout', [
+                    'store_id' => $this->storeId,
+                    'address_id' => $this->address->id,
+                    'payment_method' => 'cash_on_delivery',
+                ])->assertConflict()
+                    ->assertJsonPath('message', $cartState === 'missing' ? $missingMessage : $emptyMessage);
+
+                foreach ($before as $table => $count) {
+                    $this->assertSame($count, DB::table($table)->count(), $table.' changed after denied checkout');
+                }
+                $this->assertEquals($beforeCart, DB::table('carts')
+                    ->where('store_id', $this->storeId)
+                    ->where('b2c_customer_id', $this->domainCustomer->getKey())
+                    ->first());
+                $this->assertEquals($beforeInventory, DB::table('inventories')
+                    ->where('warehouse_id', $this->warehouseId)
+                    ->where('product_id', $this->productId)
+                    ->first(['quantity', 'reserved_quantity']));
+            }
+        }
+        $this->user->forceFill(['locale' => $persistedLocale])->saveQuietly();
+    }
+
     public function test_checkout_rechecks_stock_inside_transaction_and_preserves_cart_on_conflict(): void
     {
         $this->addCartItem(4);

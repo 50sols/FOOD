@@ -40,6 +40,7 @@ final class RetailWholesaleProductMappingController extends Controller
         $retailProductId = (int) $data['retail_product_id'];
         $factor = round((float) $data['quantity_conversion_factor'], 3);
         $actor = $this->authorizeRetailMapping($request, $storeId);
+        $locale = $this->locale($request, $actor);
 
         $sourceIsWholesale = DB::table('products')
             ->join('catalogs', 'catalogs.id', '=', 'products.catalog_id')
@@ -47,13 +48,14 @@ final class RetailWholesaleProductMappingController extends Controller
             ->join('store_types', 'store_types.id', '=', 'stores.store_type_id')
             ->where('products.id', $sourceProduct)
             ->where('catalogs.channel', 'b2b')
+            ->where('catalogs.is_active', true)
             ->where('store_types.code', 'B2B')
             ->where('stores.is_active', true)
             ->exists();
 
         if (! $sourceIsWholesale) {
             throw ValidationException::withMessages([
-                'source_product' => ['The source product must belong to an active wholesale catalog.'],
+                'source_product' => [__('retail_wholesale_mapping_errors.source_wholesale_required', [], $locale)],
             ]);
         }
 
@@ -66,7 +68,7 @@ final class RetailWholesaleProductMappingController extends Controller
 
         if (! $targetIsRetailTenant) {
             throw ValidationException::withMessages([
-                'retail_product_id' => ['The retail product must belong to the selected retail store.'],
+                'retail_product_id' => [__('retail_wholesale_mapping_errors.target_store_required', [], $locale)],
             ]);
         }
 
@@ -96,6 +98,15 @@ final class RetailWholesaleProductMappingController extends Controller
             'retail_product_id' => (int) $row->retail_product_id,
             'quantity_conversion_factor' => (float) $row->quantity_conversion_factor,
         ]);
+    }
+
+    private function locale(Request $request, User $actor): string
+    {
+        $saved = $actor->locale;
+
+        return in_array($saved, ['ar', 'en'], true)
+            ? $saved
+            : ($request->getPreferredLanguage(['ar', 'en']) ?? 'ar');
     }
 
     private function authorizeRetailMapping(Request $request, int $storeId): User

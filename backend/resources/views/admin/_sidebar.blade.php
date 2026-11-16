@@ -188,14 +188,23 @@ html[dir=ltr] .dashboard-layout:has(>.dashboard-sidebar.foodex-sidebar-collapsed
     @include('admin._sidebar-context-picker')
 
     <nav class="foodex-nav" aria-label="{{ __('admin.navigation') }}" data-foodex-nav>
-        {{-- P237's business-domain heading composes only the groups already authorized
-             by AdminNavigation. Saved group ordering is preserved, not replaced. --}}
+        {{-- P185/P237 business-domain headings compose ONLY groups already projected
+             by the canonical server authorizer. They never grant routes or override
+             an administrator's saved group ordering. Empty groups are absent. --}}
+        @php($p185DomainKeys = ['accounts', 'sales', 'customer_service'])
         @php($p237DomainKeys = ['procurement', 'inventory', 'warehouses'])
         @php($p237OrderedGroups = array_values($navGroups))
         @foreach($p237OrderedGroups as $navIndex => $group)
+            @php($p185Member = in_array($group['key'], $p185DomainKeys, true))
+            @php($p185Before = $navIndex > 0 && in_array($p237OrderedGroups[$navIndex - 1]['key'], $p185DomainKeys, true))
+            @php($p185After = $navIndex + 1 < count($p237OrderedGroups) && in_array($p237OrderedGroups[$navIndex + 1]['key'], $p185DomainKeys, true))
             @php($p237Member = in_array($group['key'], $p237DomainKeys, true))
             @php($p237Before = $navIndex > 0 && in_array($p237OrderedGroups[$navIndex - 1]['key'], $p237DomainKeys, true))
             @php($p237After = $navIndex + 1 < count($p237OrderedGroups) && in_array($p237OrderedGroups[$navIndex + 1]['key'], $p237DomainKeys, true))
+            @if($p185Member && ! $p185Before)
+                <section class="foodex-nav-domain" role="group" aria-labelledby="p185-domain-title-{{ $navIndex }}" data-nav-domain="customer-sales-service">
+                    <h2 id="p185-domain-title-{{ $navIndex }}" class="foodex-nav-domain-title">{{ __('v2_sidebar_domains.customer_sales_service') }}</h2>
+            @endif
             @if($p237Member && ! $p237Before)
                 <section class="foodex-nav-domain" role="group" aria-labelledby="p237-domain-title-{{ $navIndex }}" data-nav-domain="procurement-inventory">
                     <h2 id="p237-domain-title-{{ $navIndex }}" class="foodex-nav-domain-title">{{ __('v2_sidebar_domains.procurement_inventory') }}</h2>
@@ -231,6 +240,9 @@ html[dir=ltr] .dashboard-layout:has(>.dashboard-sidebar.foodex-sidebar-collapsed
             @if($p237Member && ! $p237After)
                 </section>
             @endif
+            @if($p185Member && ! $p185After)
+                </section>
+            @endif
         @endforeach
     </nav>
     <p class="foodex-sidebar-search-empty" data-foodex-nav-search-empty role="status" aria-live="polite" hidden>{{ __('sidebar_admin.search_empty') }}</p>
@@ -255,6 +267,16 @@ html[dir=ltr] .dashboard-layout:has(>.dashboard-sidebar.foodex-sidebar-collapsed
     const mobileOpenLabel = @json(__('admin.sidebar_open'));
     const mobileCloseLabel = @json(__('admin.sidebar_close'));
     const navigationLabel = @json(__('admin.navigation'));
+
+    // Storage access itself may throw SecurityError (privacy policies, blocked
+    // cookies, or embedded browsers). Preferences are presentation-only: a
+    // denied read/write must never abort authorized Sidebar initialization.
+    const readPreference = key => {
+        try { return localStorage.getItem(key); } catch { return null; }
+    };
+    const writePreference = (key, value) => {
+        try { localStorage.setItem(key, value); } catch { /* Native navigation remains usable. */ }
+    };
     const originalShellState = {
         role: shell.getAttribute('role'),
         ariaModal: shell.getAttribute('aria-modal'),
@@ -276,12 +298,12 @@ html[dir=ltr] .dashboard-layout:has(>.dashboard-sidebar.foodex-sidebar-collapsed
         if (!matchMedia('(max-width:767px)').matches) {
             toggle?.setAttribute('aria-expanded', expanded ? 'true' : 'false');
         }
-        if (persist) localStorage.setItem(stateKey, expanded ? '1' : '0');
+        if (persist) writePreference(stateKey, expanded ? '1' : '0');
     };
 
     const compactMedia = matchMedia('(max-width:1023px)');
     const mobileMedia = matchMedia('(max-width:767px)');
-    setExpanded(compactMedia.matches || (!defaultCollapsed && localStorage.getItem(stateKey) === '1'), false);
+    setExpanded(compactMedia.matches || (!defaultCollapsed && readPreference(stateKey) === '1'), false);
 
     const brand = shell.querySelector('.foodex-sidebar-brand');
     const bar = document.createElement('div');
@@ -409,7 +431,7 @@ html[dir=ltr] .dashboard-layout:has(>.dashboard-sidebar.foodex-sidebar-collapsed
         const mobile = mobileMedia.matches;
         document.body.classList.toggle('foodex-mobile-web', mobile);
         setDrawer(false, { restoreFocus: false });
-        setExpanded(compact ? true : localStorage.getItem(stateKey) === '1', false);
+        setExpanded(compact ? true : readPreference(stateKey) === '1', false);
     };
 
     launcher.addEventListener('click', () => setDrawer(!document.body.classList.contains('foodex-mobile-nav-open')));
@@ -468,7 +490,7 @@ html[dir=ltr] .dashboard-layout:has(>.dashboard-sidebar.foodex-sidebar-collapsed
     const groupStateKey = 'foodex.sidebar.groups.{{ $user->id ?? 'guest' }}';
     let savedGroupState = {};
     try {
-        const stored = JSON.parse(localStorage.getItem(groupStateKey) || 'null');
+        const stored = JSON.parse(readPreference(groupStateKey) || 'null');
         if (stored && typeof stored === 'object' && !Array.isArray(stored)) savedGroupState = stored;
     } catch {
         // Private browsing or a malformed historic preference cannot hide navigation.
@@ -491,7 +513,7 @@ html[dir=ltr] .dashboard-layout:has(>.dashboard-sidebar.foodex-sidebar-collapsed
             requestAnimationFrame(() => {
                 const next = { ...savedGroupState, [key]: group.open };
                 try {
-                    localStorage.setItem(groupStateKey, JSON.stringify(next));
+                    writePreference(groupStateKey, JSON.stringify(next));
                     savedGroupState = next;
                 } catch {
                     // Storage denied/full: native disclosure continues to work.

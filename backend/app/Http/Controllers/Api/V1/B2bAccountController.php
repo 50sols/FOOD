@@ -112,7 +112,7 @@ class B2bAccountController extends Controller
             abort_unless(
                 $data['status'] === $expectedStatus,
                 422,
-                'Retail-linked Wholesale account status is controlled by the Retail store status.',
+                __('b2b_account_mapping_errors.retail_status_managed', [], $this->locale($request)),
             );
         }
 
