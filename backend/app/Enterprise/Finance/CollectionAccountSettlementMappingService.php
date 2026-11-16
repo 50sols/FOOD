@@ -42,6 +42,53 @@ final class CollectionAccountSettlementMappingService
     }
 
     /**
+     * Validate the existing collection-to-clearing-account form without
+     * persisting a proposal, audit event, payment or journal. This is only a
+     * current preflight: Save takes its own locks and revalidates every rule.
+     *
+     * @param array<string, mixed> $attributes
+     */
+    public function testProposal(User $actor, ResolvedTenantContext $context, array $attributes): void
+    {
+        $scope = $this->authorizedScope($actor, $context, 'finance.manage', 'finance.ar.manage');
+        $data = $this->validatedProposalInput($attributes);
+        $storeId = $context->requiresStore();
+        $collectionId = (int) $data['collection_account_id'];
+        $financeId = (int) $data['finance_account_id'];
+
+        $collection = CollectionAccount::query()
+            ->whereKey($collectionId)
+            ->where('store_id', $storeId)
+            ->firstOrFail();
+        $this->assertCollectionAccount($collection, $context);
+        $this->assertFinanceAccount($scope, $financeId);
+
+        // Preview also refuses a request UUID belonging to another maker or
+        // different canonical mapping. Save repeats this under row locks.
+        $previous = EnterpriseFinanceCollectionAccountMapping::query()
+            ->where('request_id', $data['request_id'])
+            ->first();
+        if ($previous !== null) {
+            $canonical = [
+                'collection_account_id' => $collectionId,
+                'finance_account_id' => $financeId,
+                'organization_id' => $scope->organizationId,
+                'company_id' => $scope->companyId,
+                'legal_entity_id' => $scope->legalEntityId,
+                'store_id' => $storeId,
+                'currency_code' => strtoupper((string) $collection->currency),
+            ];
+            $digest = hash('sha256', json_encode($canonical, JSON_THROW_ON_ERROR));
+            if ((int) $previous->proposed_by !== (int) $actor->id
+                || ! hash_equals((string) $previous->content_sha256, $digest)) {
+                throw ValidationException::withMessages([
+                    'request_id' => [__('finance_workbench.receivables.mapping_request_conflict')],
+                ]);
+            }
+        }
+    }
+
+    /**
      * A proposal is a mapping configuration, not proof of cash, cleared
      * custody, an AR invoice posting, or TreasuryReceiptPosted lineage.
      *
@@ -51,11 +98,7 @@ final class CollectionAccountSettlementMappingService
     {
         $scope = $this->authorizedScope($actor, $context, 'finance.manage', 'finance.ar.manage');
 
-        $data = Validator::make($attributes, [
-            'request_id' => ['required', 'uuid'],
-            'collection_account_id' => ['required', 'integer', 'min:1'],
-            'finance_account_id' => ['required', 'integer', 'min:1'],
-        ])->validate();
+        $data = $this->validatedProposalInput($attributes);
         $storeId = $context->requiresStore();
         $collectionId = (int) $data['collection_account_id'];
         $financeId = (int) $data['finance_account_id'];
@@ -253,6 +296,18 @@ final class CollectionAccountSettlementMappingService
 
             return $mapping->refresh();
         }, 3);
+    }
+
+    /** @param array<string, mixed> $attributes
+     *  @return array<string, mixed>
+     */
+    private function validatedProposalInput(array $attributes): array
+    {
+        return Validator::make($attributes, [
+            'request_id' => ['required', 'uuid'],
+            'collection_account_id' => ['required', 'integer', 'min:1'],
+            'finance_account_id' => ['required', 'integer', 'min:1'],
+        ])->validate();
     }
 
     private function authorizedScope(
