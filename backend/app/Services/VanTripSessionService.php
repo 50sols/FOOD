@@ -42,6 +42,7 @@ final class VanTripSessionService
                 abort_unless((int) $replayed->started_by_user_id === (int) $actor->id, 409);
                 $this->tenantScope->assertStore($actor, (int) $replayed->store_id, 'drivers.b2b.manage', 'b2b');
                 $this->tenantScope->assertStore($actor, (int) $replayed->store_id, 'customers.view', 'b2b');
+                $this->assertImmutableTripStartEvidence($replayed);
 
                 return $replayed;
             }
@@ -99,6 +100,7 @@ final class VanTripSessionService
                     && (int) $existing->started_by_user_id === (int) $actor->id,
                     409,
                 );
+                $this->assertImmutableTripStartEvidence($existing);
 
                 return $existing;
             }
@@ -139,6 +141,7 @@ final class VanTripSessionService
             // another privileged user may not end a peer's trip by guessing
             // its public ID, until audited transfer authority exists.
             abort_unless((int) $trip->started_by_user_id === (int) $actor->id, 409);
+            $this->assertImmutableTripStartEvidence($trip);
 
             if ($trip->status === 'ended') {
                 abort_unless($trip->end_key === $key && (int) $trip->ended_by_user_id === (int) $actor->id, 409);
@@ -239,18 +242,35 @@ final class VanTripSessionService
                 404,
             );
 
-            // An orphan/corrupted trip row without the recorded immutable
-            // start event is not reliable custody provenance.
-            abort_unless(DB::table('van_trip_session_events')
-                ->where('van_trip_session_id', $trip->id)
-                ->where('sequence', 1)
-                ->where('kind', 'started')
-                ->where('actor_user_id', $trip->started_by_user_id)
-                ->where('idempotency_key', $trip->start_key)
-                ->exists(), 409);
+            // An orphan/corrupted trip row without immutable start evidence
+            // cannot authorize custody activity or masquerade as a replay.
+            $this->assertImmutableTripStartEvidence($trip);
 
             return $trip;
         }, 3);
+    }
+
+    /**
+     * A row or an idempotency key alone is not trusted evidence of a Van
+     * trip. Require the original immutable start event and the unreleased
+     * physical Van reservation for both replay and operational completion.
+     *
+     * This does not prove stock ownership or authorize financial closeout.
+     */
+    private function assertImmutableTripStartEvidence(VanTripSession $trip): void
+    {
+        abort_unless(
+            (int) $trip->van_id > 0
+            && (int) $trip->reserved_van_id === (int) $trip->van_id,
+            409,
+        );
+        abort_unless(DB::table('van_trip_session_events')
+            ->where('van_trip_session_id', $trip->id)
+            ->where('sequence', 1)
+            ->where('kind', 'started')
+            ->where('actor_user_id', $trip->started_by_user_id)
+            ->where('idempotency_key', $trip->start_key)
+            ->exists(), 409);
     }
 
     private function assertValidKey(string $key): void

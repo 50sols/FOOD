@@ -351,6 +351,55 @@ final class V2VanTripSessionIdentityTest extends TestCase
         $this->assertDatabaseCount('stock_movements', 0);
     }
 
+    public function test_replay_and_operational_end_reject_unaudited_or_unreserved_trip_identity(): void
+    {
+        [$actor, $assignment] = $this->fixture();
+        $service = app(VanTripSessionService::class);
+        $trip = $service->start($actor, (int) $assignment->id, 'P276-audited-start-0001');
+
+        // A valid looking trip row is not itself proof of an authorized
+        // start. Retry must not trust forged/missing first-event provenance.
+        DB::table('van_trip_session_events')
+            ->where('van_trip_session_id', $trip->id)
+            ->where('sequence', 1)
+            ->update(['kind' => 'tampered']);
+        $this->expectHttpConflict(fn () => $service->start(
+            $actor, (int) $assignment->id, 'P276-audited-start-0001'
+        ));
+        $this->expectHttpConflict(fn () => $service->endOperationalTrip(
+            $actor, $trip->public_id, 'P276-audited-end-0001'
+        ));
+
+        DB::table('van_trip_session_events')
+            ->where('van_trip_session_id', $trip->id)
+            ->where('sequence', 1)
+            ->update(['kind' => 'started']);
+        DB::table('van_trip_sessions')->where('id', $trip->id)
+            ->update(['reserved_van_id' => null]);
+
+        // An erased physical reservation cannot be treated as the same
+        // immutable accepted start or a safe operational completion.
+        $this->expectHttpConflict(fn () => $service->start(
+            $actor, (int) $assignment->id, 'P276-audited-start-0001'
+        ));
+        $this->expectHttpConflict(fn () => $service->endOperationalTrip(
+            $actor, $trip->public_id, 'P276-audited-end-0001'
+        ));
+
+        DB::table('van_trip_sessions')->where('id', $trip->id)
+            ->update(['reserved_van_id' => $trip->van_id]);
+        $this->assertSame($trip->id, $service->start(
+            $actor, (int) $assignment->id, 'P276-audited-start-0001'
+        )->id);
+        $this->assertSame('ended', $service->endOperationalTrip(
+            $actor, $trip->public_id, 'P276-audited-end-0001'
+        )->status);
+
+        $this->assertDatabaseCount('van_trip_sessions', 1);
+        $this->assertDatabaseCount('van_trip_session_events', 2);
+        $this->assertDatabaseCount('stock_movements', 0);
+    }
+
     /** @return array{User, VanAssignment} */
     private function fixture(): array
     {
