@@ -1115,6 +1115,9 @@ final class FinanceWorkbenchController extends Controller
                         ->where('custody.status', 'active')
                         ->where('receipt.type', 'collection')
                         ->where('receipt.status', 'posted')
+                        // Preview only the source emitted by the correct
+                        // Driver/Van channel; service revalidates under locks.
+                        ->where('receipt.source', $context->isRetail() ? 'driver_app' : 'van_app')
                         ->where('receipt.currency', (string) $settlementDocument->currency_code)
                         ->where('payment.status', 'paid')
                         ->where('payment.provider', 'field_collection')
