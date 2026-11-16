@@ -24,7 +24,7 @@ final class InventoryOwnerProvenanceReadService
      *   inventory_id:int,store_id:int,warehouse_id:int,product_id:int,
      *   quantity:string,reserved_quantity:string,state:string,
      *   certified:bool,positions:list<array{
-     *     owner_kind:string,supplier_id:?int,quantity:string,
+     *     owner_kind:string,supplier_id:?int,supplier_name:?string,quantity:string,
      *     reserved_quantity:string,certified:bool
      *   }>
      * }
@@ -74,6 +74,7 @@ final class InventoryOwnerProvenanceReadService
                 'positions' => [[
                     'owner_kind' => 'UNKNOWN',
                     'supplier_id' => null,
+                    'supplier_name' => null,
                     'quantity' => self::decimal($quantity),
                     'reserved_quantity' => self::decimal($reserved),
                     'certified' => false,
@@ -87,6 +88,16 @@ final class InventoryOwnerProvenanceReadService
         $unknown = $rows->isEmpty();
         $positions = [];
 
+        // Tenant-scoped supplier identity is for display and validation only:
+        // a supplier record/name is not proof of legal title. Load the names
+        // in one bounded query, not one unscoped lookup per owner partition.
+        $supplierIds = $rows->pluck('supplier_id')->filter(fn ($id) => $id !== null)
+            ->map(fn ($id) => (int) $id)->unique()->values()->all();
+        $suppliers = $supplierIds === [] ? collect() : DB::table('enterprise_suppliers')
+            ->where('store_id', (int) $warehouse->store_id)
+            ->whereIn('id', $supplierIds)
+            ->get(['id', 'name_en', 'name_ar'])->keyBy('id');
+
         foreach ($rows as $row) {
             $kind = (string) $row->owner_kind;
             $supplierId = $row->supplier_id === null ? null : (int) $row->supplier_id;
@@ -95,10 +106,7 @@ final class InventoryOwnerProvenanceReadService
                 'FOODEX' => $row->owner_key === 'FOODEX' && $supplierId === null,
                 'SUPPLIER' => $supplierId !== null && $supplierId > 0
                     && $row->owner_key === 'SUPPLIER:'.$supplierId
-                    && DB::table('enterprise_suppliers')
-                        ->where('id', $supplierId)
-                        ->where('store_id', (int) $warehouse->store_id)
-                        ->exists(),
+                    && $suppliers->has($supplierId),
                 default => false,
             };
 
@@ -132,9 +140,15 @@ final class InventoryOwnerProvenanceReadService
                 && $lineReserved <= $lineQuantity;
             $unknown = $unknown || $kind === 'UNKNOWN' || ! $validKey;
 
+            $supplier = $validKey && $kind === 'SUPPLIER' ? $suppliers->get($supplierId) : null;
+            $supplierName = $supplier === null ? null
+                : (app()->getLocale() === 'ar' && trim((string) $supplier->name_ar) !== ''
+                    ? (string) $supplier->name_ar : (string) $supplier->name_en);
+
             $positions[] = [
                 'owner_kind' => $validKey ? $kind : 'UNKNOWN',
                 'supplier_id' => $validKey ? $supplierId : null,
+                'supplier_name' => $supplierName,
                 'quantity' => self::decimal($lineQuantity),
                 'reserved_quantity' => self::decimal($lineReserved),
                 'certified' => $proof && $sameVersion,
