@@ -272,13 +272,15 @@
 
                 <div class="actions">
                     <button type="submit">
-                        {{ match ($currentStep) {
-                            4, 6, 7, 8, 9, 10 => __('installer.wizard.save_continue'),
-                            5 => __('installer.wizard.test_database'),
-                            14 => __('installer.wizard.test_health'),
-                            15 => __('installer.wizard.finish'),
-                            default => __('installer.wizard.continue'),
-                        } }}
+                        {{ $currentStep === 15
+                            ? __('installer.wizard.finish')
+                            : ($currentStep === 5
+                                ? __('installer.wizard.test_database')
+                                : ($currentStep === 14
+                                    ? __('installer.wizard.test_health')
+                                    : (in_array($currentStep, [4, 6, 7, 8, 9, 10], true)
+                                        ? __('installer.wizard.save_continue')
+                                        : __('installer.wizard.continue')))) }}
                     </button>
                 </div>
             </form>
