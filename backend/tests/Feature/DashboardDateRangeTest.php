@@ -6,6 +6,7 @@ use App\Models\User;
 use App\Services\B2bDashboardService;
 use App\Services\B2cDashboardService;
 use Database\Seeders\DashboardDemoSeeder;
+use Illuminate\Database\Events\QueryExecuted;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Tests\TestCase;
@@ -100,6 +101,12 @@ class DashboardDateRangeTest extends TestCase
         $storeId = (int) DB::table('stores')->where('code', 'FOODEX-DEMO-B2C')->value('id');
         $today = now('Asia/Kuwait')->startOfDay();
         $from = $today->copy()->subDays(35);
+        $dailySeriesQueries = 0;
+        DB::listen(static function (QueryExecuted $query) use (&$dailySeriesQueries): void {
+            if (str_contains(strtolower($query->sql), ' as local_day')) {
+                $dailySeriesQueries++;
+            }
+        });
 
         $dashboard = app(B2bDashboardService::class)->build(
             $user,
@@ -112,6 +119,7 @@ class DashboardDateRangeTest extends TestCase
         $this->assertSame($today->toDateString(), $dashboard['selected_to']);
         $this->assertSame(36, $dashboard['range_days']);
         $this->assertCount(36, $dashboard['series']);
+        $this->assertSame(1, $dailySeriesQueries);
     }
 
     public function test_dashboard_rejects_ranges_longer_than_31_days(): void

@@ -114,24 +114,31 @@ final class B2bDashboardService
     /** @param list<int> $storeIds */
     private function series(array $storeIds, CarbonImmutable $rangeFrom, CarbonImmutable $rangeTo): array
     {
+        [$from] = $this->utcBounds($rangeFrom);
+        [, $to] = $this->utcBounds($rangeTo);
+        $localDayExpression = DB::connection()->getDriverName() === 'sqlite'
+            ? "DATE(orders.created_at, '+3 hours')"
+            : 'DATE(DATE_ADD(orders.created_at, INTERVAL 3 HOUR))';
+
+        // Compute the daily chart in one grouped query. Calling orderSnapshot
+        // once per day expands into several full aggregate queries per day and
+        // can exceed PHP's request timeout on a restored production database.
+        $daily = $this->orders($storeIds, $from, $to)
+            ->selectRaw($localDayExpression.' as local_day')
+            ->selectRaw('COUNT(orders.id) as order_count')
+            ->selectRaw("COALESCE(SUM(CASE WHEN orders.status NOT IN ('cancelled', 'refunded') THEN orders.grand_total ELSE 0 END), 0) as net_revenue")
+            ->groupBy('local_day')
+            ->get()
+            ->keyBy('local_day');
+
         $rows = [];
-
         for ($day = $rangeFrom; $day->lte($rangeTo); $day = $day->addDay()) {
-            [$from, $to] = $this->utcBounds($day);
-            $query = $this->orders($storeIds, $from, $to);
-            $metrics = $this->semanticMetrics->orderSnapshot(
-                $query,
-                MetricDictionary::FLOW_SELL_IN,
-                $day->toDateString(),
-                $day->toDateString(),
-                ['store_ids' => $storeIds],
-            );
-
+            $metrics = $daily->get($day->toDateString());
             $rows[] = [
                 'date' => $day->toDateString(),
                 'label' => $day->format('d/m'),
-                'orders' => (int) $metrics['values']['orders'],
-                'revenue' => (float) $metrics['values']['net_revenue'],
+                'orders' => (int) ($metrics->order_count ?? 0),
+                'revenue' => (float) ($metrics->net_revenue ?? 0),
             ];
         }
 
