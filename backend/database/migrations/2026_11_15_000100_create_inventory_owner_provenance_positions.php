@@ -11,7 +11,9 @@ return new class extends Migration
     {
         Schema::create('enterprise_inventory_owner_positions', function (Blueprint $table): void {
             $table->id();
-            $table->foreignId('inventory_id')->constrained('inventories')->cascadeOnDelete();
+            // A parent inventory delete must never cascade-delete supplier/FOODEX
+            // legal-owner history, even before signed proof is issued.
+            $table->foreignId('inventory_id')->constrained('inventories')->restrictOnDelete();
             $table->string('owner_key', 80);
             $table->string('owner_kind', 16);
             $table->foreignId('supplier_id')->nullable()->constrained('enterprise_suppliers')->restrictOnDelete();
