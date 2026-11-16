@@ -115,8 +115,8 @@ html[dir=ltr] .catalog-header-filters{direction:ltr}
 <aside class="sidebar">@include('admin._sidebar',['navContext'=>$navContext])</aside>
 <main>
 @include('admin._global-header')
-@php($hasProductFilters=$productFilters['q']!=='' || $productFilters['category_id']>0 || $productFilters['brand_id']>0 || $productFilters['status']!=='' || $productFilters['availability']!=='' || $productFilters['health']!=='')
 @php
+$hasProductFilters = $productFilters['q'] !== '' || $productFilters['category_id'] > 0 || $productFilters['brand_id'] > 0 || $productFilters['status'] !== '' || $productFilters['availability'] !== '' || $productFilters['health'] !== '';
 // Preserve already-normalized filter state across real Catalog sibling tabs.
 // Do not propagate record-detail, import commit, or pagination intent.
 $catalogNavigationQuery=array_merge($scopeParams,array_filter([
