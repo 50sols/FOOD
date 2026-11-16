@@ -306,8 +306,8 @@ final class ErpCenterController extends Controller
             };
         } elseif ($state === ModuleState::ENABLED) {
             $status = 'not_entitled';
-            // Neither a platform entitlement nor one in the actor's authorized
-            // store scope is effective. Do not inspect or disclose other tenants.
+            // Distinguish absent grants from granted modules with unusable
+            // Finance legal/store scope; neither grants an HTTP action.
             $denialReason = $moduleCode === 'finance' && $this->hasUnusableFinanceScope($actor)
                 ? 'missing_scope'
                 : 'entitlement_scope';

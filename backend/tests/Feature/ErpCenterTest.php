@@ -827,7 +827,6 @@ final class ErpCenterTest extends TestCase
         }
     }
 
-
     public function test_finance_missing_scope_has_distinct_localized_reason_and_no_denied_workbench_button(): void
     {
         config()->set('security.mfa.enforce_privileged', false);
