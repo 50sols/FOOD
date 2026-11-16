@@ -137,7 +137,6 @@ final class V2ProfitabilityRuleLifecycleTest extends TestCase
             ->assertDontSee('data-v2-p229-profitability', false);
     }
 
-
     public function test_profitability_revision_read_service_enforces_exact_actor_store_and_product(): void
     {
         [$maker, $store, $product] = $this->fixture();
