@@ -6,11 +6,13 @@ use App\Models\Permission;
 use App\Models\Role;
 use App\Models\User;
 use App\Services\CommercialFeatureFlags;
+use App\Services\CommercialProfitabilityRuleService;
 use Database\Seeders\CoreReferenceSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Str;
+use Symfony\Component\HttpKernel\Exception\HttpException;
 use Tests\TestCase;
 
 final class V2ProfitabilityRuleLifecycleTest extends TestCase
@@ -133,6 +135,57 @@ final class V2ProfitabilityRuleLifecycleTest extends TestCase
         $this->actingAs($this->user('SUPER_ADMIN'))->get($page)->assertOk()
             ->assertDontSee('67.89%')
             ->assertDontSee('data-v2-p229-profitability', false);
+    }
+
+
+    public function test_profitability_revision_read_service_enforces_exact_actor_store_and_product(): void
+    {
+        [$maker, $store, $product] = $this->fixture();
+        $this->actingAs($maker)->put(
+            $this->saveRoute($store, $product),
+            $this->proposal((string) Str::uuid(), '19.37'),
+        )->assertSessionHasNoErrors();
+
+        $registry = app(CommercialProfitabilityRuleService::class);
+        $this->assertCount(1, $registry->revisions($maker, $store, $product));
+
+        // The service must deny unauthorized direct callers, even if a new
+        // endpoint were to bypass the controller's section-visibility guard.
+        $superAdmin = $this->user('SUPER_ADMIN');
+        foreach ([
+            [$superAdmin, $store, $product, 403],
+            [$maker, $store, $product + 999999, 404],
+        ] as [$actor, $scopeStore, $scopeProduct, $expectedStatus]) {
+            $caught = null;
+            try {
+                $registry->revisions($actor, $scopeStore, $scopeProduct);
+            } catch (HttpException $exception) {
+                $caught = $exception;
+            }
+
+            $this->assertInstanceOf(HttpException::class, $caught);
+            $this->assertSame($expectedStatus, $caught->getStatusCode());
+        }
+
+        // Catalog discovery alone is insufficient to read business-sensitive
+        // revisions, even for an active user attached to an operational role.
+        Role::query()->where('code', 'B2B_ADMIN')->firstOrFail()
+            ->permissions()->sync(Permission::query()
+                ->whereIn('code', ['stores.view', 'catalog.view'])
+                ->pluck('id')->all());
+        $catalogReader = $this->user('B2B_ADMIN');
+        $caught = null;
+        try {
+            $registry->revisions($catalogReader, $store, $product);
+        } catch (HttpException $exception) {
+            $caught = $exception;
+        }
+
+        $this->assertInstanceOf(HttpException::class, $caught);
+        $this->assertSame(403, $caught->getStatusCode());
+        $this->assertSame(1, DB::table('commercial_profitability_rule_revisions')->count());
+        $this->assertSame(1, DB::table('audit_logs')
+            ->where('event', 'commercial.profitability_rule.proposed')->count());
     }
 
     public function test_scoped_proposal_uses_exact_basis_points_and_request_idempotency_without_activating_prices(): void

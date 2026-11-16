@@ -17,8 +17,14 @@ final class CommercialProfitabilityRuleService
     ) {}
 
     /** @return Collection<int, \stdClass> */
-    public function revisions(int $storeId, int $productId): Collection
+    public function revisions(User $actor, int $storeId, int $productId): Collection
     {
+        // The read-model boundary owns the same authorization as its HTTP
+        // caller. A future controller/job must not expose confidential margin
+        // revisions merely by skipping a view-level capability check.
+        abort_unless($this->canPropose($actor, $storeId) || $this->canReview($actor, $storeId), 403);
+        $this->assertProduct($storeId, $productId);
+
         return DB::table('commercial_profitability_rule_revisions')
             ->where('store_id', $storeId)
             ->where('product_id', $productId)

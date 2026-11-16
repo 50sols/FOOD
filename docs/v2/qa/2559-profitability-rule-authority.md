@@ -156,3 +156,7 @@ GCC isolated checkout, PHP 8.3.33: baseline 5 lifecycle tests/65 assertions PASS
 **Mobile contract impact:** Customer = NO_IMPACT, Driver = NO_IMPACT, Van = NO_IMPACT in this delta, because no API response/request, Flutter, quote, order, wallet, partial collection, dispatch or finance posting semantics changed. Manual app rebuilding is not warranted for this Dashboard-only diff.
 
 **Risk:** HIGH (shared commercial validator plus authorization); independent source/cost/approval acceptance remains FAIL, so PR #3326 stays DRAFT, Issue #2559 stays OPEN, no `Foodex_V2` merge, `main`, release, tags or production.
+
+## 2026-11-16 — service-level confidentiality boundary (P229 incremental security)
+
+The `CommercialProfitabilityRuleService::revisions()` read API now takes the authenticated `User` explicitly and enforces the same B2B store-scoped proposer/independent-checker capability at the service boundary, then checks that the product belongs to the authorized store/channel. The existing Sales Control controller supplies its authorized actor. A new regression exercises an authorized maker read and denies a control-plane caller, catalog-only role and wrong product even on a direct service invocation. This is defense-in-depth; it does **not** activate or certify any financial floor, quote-time cost or approval. #2844 and #2853 remain source prerequisites; keep PR DRAFT and Issue OPEN until full P229 completion and exact-head CI. No mobile API changes.

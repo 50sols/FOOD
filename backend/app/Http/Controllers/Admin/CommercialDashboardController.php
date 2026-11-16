@@ -147,7 +147,7 @@ final class CommercialDashboardController extends Controller
             // proposals and independent review history. Deny data binding,
             // not merely the form controls, for a catalog.view-only reader.
             'profitabilityRevisions' => $canViewProfitability
-                ? $profitability->revisions($storeId, $selectedProductId)
+                ? $profitability->revisions($user, $storeId, $selectedProductId)
                 : collect(),
             'canViewProfitability' => $canViewProfitability,
             'canProposeProfitability' => $canProposeProfitability,
