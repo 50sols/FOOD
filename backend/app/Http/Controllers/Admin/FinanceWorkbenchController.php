@@ -1122,6 +1122,9 @@ final class FinanceWorkbenchController extends Controller
                         ->where('payment.status', 'paid')
                         ->where('payment.provider', 'field_collection')
                         ->where('payment.currency', (string) $settlementDocument->currency_code)
+                        // Preview must not advertise inconsistent Payment/receipt
+                        // totals; the AR service rechecks exact mills on POST.
+                        ->whereColumn('payment.amount', 'receipt.amount')
                         ->whereColumn('payment.provider_reference', 'receipt.idempotency_key')
                         ->where(function ($query) use ($settlementDocument): void {
                             $query->whereNull('payment.invoice_id')

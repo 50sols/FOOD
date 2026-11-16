@@ -1030,6 +1030,22 @@ final class V2ReceivableSettlementWorkbenchTest extends TestCase
         DB::table('collection_transactions')->where('id', $receipt->id)
             ->update(['source' => 'driver_app']);
 
+        // The existing AR/EN selector must not present a payment whose
+        // amount exceeds the posted collection by a single KWD mill.
+        DB::table('payments')->where('id', $receipt->payment_id)
+            ->update(['amount' => '30.001']);
+        foreach (['en', 'ar'] as $locale) {
+            $maker->forceFill(['locale' => $locale])->save();
+            $this->actingAs($maker->fresh())->get(route('admin.erp.finance.index', [
+                'store_id' => $store->id,
+                'tab' => 'receivables',
+                'settlement_document_id' => $document->id,
+            ]))->assertOk()
+                ->assertDontSee('<option value="'.$sourceId.'" data-collection-receipt="true">', false);
+        }
+        DB::table('payments')->where('id', $receipt->payment_id)
+            ->update(['amount' => '30.000']);
+
         $payload = [
             'store_id' => $store->id,
             'idempotency_key' => 'p303-ui-typed-receipt',
@@ -1168,6 +1184,22 @@ final class V2ReceivableSettlementWorkbenchTest extends TestCase
         }
         DB::table('collection_transactions')->where('id', $transaction->id)
             ->update(['source' => 'driver_app']);
+
+        // Both values are valid 3-decimal amounts, but a mismatch of one
+        // KWD mill must revoke a previously accepted source on replay.
+        // The source allocation (30.000) remains <= either inflated total,
+        // so a source-total-only bound would incorrectly accept the replay.
+        DB::table('payments')->where('id', $transaction->payment_id)
+            ->update(['amount' => '30.001']);
+        $assertRevoked();
+        DB::table('payments')->where('id', $transaction->payment_id)
+            ->update(['amount' => '30.000']);
+
+        DB::table('collection_transactions')->where('id', $transaction->id)
+            ->update(['amount' => '30.001']);
+        $assertRevoked();
+        DB::table('collection_transactions')->where('id', $transaction->id)
+            ->update(['amount' => '30.000']);
 
         $this->assertSame($draft->id, $ar->createAllocation(
             $maker, $context, $document->id, $payload,

@@ -1093,6 +1093,10 @@ final class AccountsReceivableService
             || (string) $transaction->source !== ($context->isRetail() ? 'driver_app' : 'van_app')
             || strtoupper((string) $transaction->currency) !== $currency
             || (string) $payment->status !== 'paid'
+            // The operational receipt and its Payment must represent the
+            // exact same collected funds, down to the KWD mill. A smaller
+            // allocation cannot legitimize mismatched source totals.
+            || $this->toMills((string) $transaction->amount) !== $this->toMills((string) $payment->amount)
             || (string) $payment->provider !== 'field_collection'
             || (string) $payment->provider_reference !== (string) $transaction->idempotency_key
             || ($payment->invoice_id !== null
