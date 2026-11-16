@@ -517,7 +517,20 @@ $trendMax=max(1,max(array_map(fn($r)=>max(abs((float)$r['revenue']),abs((float)$
 <div class="finance-panel-head"><div>
 <h3>{{ __('finance_workbench.receivables.mapping_title') }}</h3>
 <p>{{ __('finance_workbench.receivables.mapping_help') }}</p>
+<p class="finance-muted">{{ __('finance_workbench.receivables.mapping_access_help') }}</p>
 </div></div>
+<div class="finance-notice" role="status" data-v2-ar-mapping-readiness>
+<strong>{{ __('finance_workbench.receivables.mapping_readiness_label') }}:</strong>
+@if(! ($access['ar_manage'] ?? false))
+{{ __('finance_workbench.receivables.mapping_readiness_read_only') }}
+@elseif($data['mappingCollectors']->isEmpty())
+{{ __('finance_workbench.receivables.mapping_readiness_missing_wallet') }}
+@elseif($data['mappingFinanceAccounts']->isEmpty())
+{{ __('finance_workbench.receivables.mapping_readiness_missing_finance_account') }}
+@else
+{{ __('finance_workbench.receivables.mapping_readiness_ready') }}
+@endif
+</div>
 @if(($access['ar_manage'] ?? false) && $data['mappingCollectors']->isNotEmpty() && $data['mappingFinanceAccounts']->isNotEmpty())
 <details class="finance-details" data-foodex-operational-modal>
 <summary class="finance-button primary">{{ __('finance_workbench.receivables.mapping_propose') }}</summary>
@@ -526,16 +539,26 @@ $trendMax=max(1,max(array_map(fn($r)=>max(abs((float)$r['revenue']),abs((float)$
 @csrf
 <input type="hidden" name="store_id" value="{{ $storeId }}">
 <input type="hidden" name="request_id" value="{{ (string) \Illuminate\Support\Str::uuid() }}">
-<div class="finance-field"><label>{{ __('finance_workbench.receivables.mapping_collection_account') }}
-<select name="collection_account_id" required><option value="">{{ __('finance_workbench.common.select') }}</option>
+<div class="finance-field">
+<label for="p303-collector-wallet">{{ __('finance_workbench.receivables.mapping_collection_account') }}</label>
+<select id="p303-collector-wallet" name="collection_account_id" aria-describedby="p303-wallet-source" required>
+<option value="">{{ __('finance_workbench.common.select') }}</option>
 @foreach($data['mappingCollectors'] as $collector)
 <option value="{{ $collector->id }}">{{ $collector->collector_name ?? '—' }} · {{ $collector->currency }}</option>
-@endforeach</select></label></div>
-<div class="finance-field"><label>{{ __('finance_workbench.receivables.mapping_finance_account') }}
-<select name="finance_account_id" required><option value="">{{ __('finance_workbench.common.select') }}</option>
+@endforeach
+</select>
+<small id="p303-wallet-source" class="finance-muted">{{ __('finance_workbench.receivables.mapping_wallet_source_help') }}</small>
+</div>
+<div class="finance-field">
+<label for="p303-finance-account">{{ __('finance_workbench.receivables.mapping_finance_account') }}</label>
+<select id="p303-finance-account" name="finance_account_id" aria-describedby="p303-finance-source" required>
+<option value="">{{ __('finance_workbench.common.select') }}</option>
 @foreach($data['mappingFinanceAccounts'] as $account)
 <option value="{{ $account->id }}">{{ $account->code }} · {{ $account->name }}</option>
-@endforeach</select></label></div>
+@endforeach
+</select>
+<small id="p303-finance-source" class="finance-muted">{{ __('finance_workbench.receivables.mapping_finance_source_help') }}</small>
+</div>
 <button class="finance-button primary" type="submit">{{ __('finance_workbench.receivables.mapping_propose') }}</button>
 </form></div></details>
 @endif
