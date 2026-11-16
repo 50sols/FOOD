@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -117,6 +118,77 @@ void main() {
         await _pumpCustomerFrames(tester);
         expect(find.textContaining('20.00 EGP'), findsWidgets);
         expect(find.textContaining('900.00 EGP'), findsNothing);
+        expect(tester.takeException(), isNull);
+      },
+    );
+  }
+
+  for (final locale in const <Locale>[Locale('ar'), Locale('en')]) {
+    testWidgets(
+      'MOB-C03 export cannot share an old store or unlock a new export '
+      '${locale.languageCode}',
+      (tester) async {
+        tester.view.physicalSize = const Size(390, 844);
+        tester.view.devicePixelRatio = 1;
+        addTearDown(() {
+          tester.view.resetPhysicalSize();
+          tester.view.resetDevicePixelRatio();
+        });
+
+        final api = _DeferredStatementExportApi();
+        final actionApi = _FakeCustomerActionApi();
+        Widget scoped(String storeId) => MaterialApp(
+              locale: locale,
+              home: AppTranslations(
+                locale: locale,
+                overrides: const <String, String>{},
+                child: B2bJourneyScreen(
+                  definition: const CustomerRouteDefinition(
+                    pattern: CustomerRoutePaths.b2bAccountStatement,
+                    label: 'B2B account statement',
+                    channel: CustomerChannel.b2b,
+                    requiresAuth: true,
+                  ),
+                  location: '/b2b/account-statement?store_id=$storeId',
+                  actionApi: actionApi,
+                  api: api,
+                ),
+              ),
+            );
+
+        await tester.pumpWidget(scoped('7'));
+        await _pumpCustomerFrames(tester);
+        final pdf = find.byKey(const ValueKey('b2b-statement-export-pdf'));
+        await tester.ensureVisible(pdf);
+        await tester.tap(pdf);
+        await tester.pump();
+        expect(api.downloadPaths, hasLength(1));
+        expect(api.downloadPaths.single, contains('store_id=7'));
+        expect(tester.widget<FilledButton>(pdf).onPressed, isNull);
+
+        // The user changes the authorized store before the old download
+        // finishes. The next store must be immediately usable.
+        await tester.pumpWidget(scoped('9'));
+        await _pumpCustomerFrames(tester);
+        expect(api.readPaths.last, contains('store_id=9'));
+        await tester.ensureVisible(pdf);
+        expect(tester.widget<FilledButton>(pdf).onPressed, isNotNull);
+        await tester.tap(pdf);
+        await tester.pump();
+        expect(api.downloadPaths, hasLength(2));
+        expect(api.downloadPaths.last, contains('store_id=9'));
+        expect(tester.widget<FilledButton>(pdf).onPressed, isNull);
+
+        // A late store-7 PDF must neither share into the new session nor
+        // reset the busy state for an in-flight store-9 export.
+        api.pending[0].complete(_DeferredStatementExportApi.document());
+        await tester.pump();
+        expect(tester.widget<FilledButton>(pdf).onPressed, isNull);
+        expect(find.byType(SnackBar), findsNothing);
+
+        await tester.pumpWidget(const SizedBox());
+        api.pending[1].complete(_DeferredStatementExportApi.document());
+        await tester.pump();
         expect(tester.takeException(), isNull);
       },
     );
@@ -7201,6 +7273,42 @@ class _DeferredPurchaseReportB2bApi implements B2bApi {
     final reply = Completer<Object?>();
     replies.add(reply);
     return reply.future;
+  }
+}
+
+class _DeferredStatementExportApi implements B2bApi, B2bDownloadApi {
+  final readPaths = <String>[];
+  final downloadPaths = <String>[];
+  final pending = <Completer<B2bDownload>>[];
+
+  static B2bDownload document() => B2bDownload(
+        bytes: Uint8List.fromList(const <int>[37, 80, 68, 70, 45]),
+        mimeType: 'application/pdf',
+        filename: 'statement.pdf',
+      );
+
+  @override
+  Future<Object?> get(String path) async {
+    readPaths.add(path);
+    return {
+      'data': {
+        'currency': 'EGP',
+        'balance': -49.875,
+        'closing_balance': -49.875,
+        'period_debits': 0,
+        'period_credits': 0,
+        'transactions': <Object?>[],
+        'pagination': {'current_page': 1, 'last_page': 1},
+      },
+    };
+  }
+
+  @override
+  Future<B2bDownload> download(String path) {
+    downloadPaths.add(path);
+    final result = Completer<B2bDownload>();
+    pending.add(result);
+    return result.future;
   }
 }
 
