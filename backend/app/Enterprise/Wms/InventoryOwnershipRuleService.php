@@ -32,7 +32,9 @@ final class InventoryOwnershipRuleService
             'title_transfer_trigger' => ['required', 'in:NONE,RECEIPT,SALE,DISPATCH,PAYMENT,CONTRACT_EVENT'],
             'required_evidence_classes' => ['required', 'array', 'min:1', 'max:8'],
             'required_evidence_classes.*' => ['required', 'in:SIGNED_CONTRACT,CONSIGNMENT_AGREEMENT,TITLE_ADDENDUM,TRANSFER_CONFIRMATION'],
-            'checker_permission' => ['required', 'string', 'max:96', 'regex:/^[a-z][a-z0-9_.]*$/'],
+            // A policy maker must not nominate a weak generic permission (e.g.
+            // inventory.view) as the legal-title checker authority.
+            'checker_permission' => ['required', 'in:inventory_ownership_rules.review'],
             'effective_at' => ['required', 'date'],
             'request_uuid' => ['required', 'uuid'],
             'rule_uuid' => ['nullable', 'uuid'],

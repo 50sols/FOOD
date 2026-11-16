@@ -810,6 +810,14 @@ final class V2InventoryOwnerProvenanceTest extends TestCase
             $this->assertSame(404, $e->getStatusCode());
         }
         $request['warehouse_id'] = null;
+        $request['checker_permission'] = 'inventory.view';
+        try {
+            $service->propose($actor, $request);
+            $this->fail('A maker must not downgrade independent checker permission.');
+        } catch (ValidationException $e) {
+            $this->assertArrayHasKey('checker_permission', $e->errors());
+        }
+        $request['checker_permission'] = 'inventory_ownership_rules.review';
         $request['initial_owner_kind'] = 'SUPPLIER';
         $request['supplier_id'] = $this->supplier($foreign['store_id']);
         try {
