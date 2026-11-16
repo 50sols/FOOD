@@ -129,3 +129,13 @@ GCC isolated checkout, PHP 8.3.33: baseline 5 lifecycle tests/65 assertions PASS
 - Regression: `V2ProfitabilityRuleLifecycleTest::test_migration_refuses_to_drop_non_empty_profitability_revision_history` creates a real authenticated proposal, invokes the migration rollback, and asserts the exception, table row, exact revision state and proposal audit record remain intact.
 - This guard does not archive, mutate or activate any revision; it does not change pricing, cost attribution, GL/AR posting, API/mobile contracts or approval policy.
 - This is a migration data-retention fix only. It does not complete P229 profitability enforcement; P110 legal owner/cost provenance, P129 independent below-floor credit/discount approval and downstream quote/order/Van/Customer enforcement remain required.
+
+## 2026-11-16 — MySQL 8.0 deployment rollback-retention gate
+
+- Added `backend/tests/Deployment/V2ProfitabilityRuleMigrationSafetyTest.php` to the existing P229 branch/PR. It exercises the real P229 migration class on the dedicated MySQL 8.0 deployment acceptance database.
+- Non-empty case: attempts rollback with a persisted DRAFT revision and proves the migration refuses to drop the table or revision row.
+- Empty case: proves rollback removes an empty table and the same migration can recreate it.
+- Safety boundary: before any destructive reset, the test requires `FOODEX_DISPOSABLE_SERVICES=true`, MySQL driver, and database name `foodex_acceptance`; on GitHub Actions it fails closed if this contract is absent. The MySQL version is asserted as 8.0.
+- GCC local verification: PHP 8.3.33, existing P229 Feature suites **16/16 tests / 229 assertions PASS** on isolated SQLite. The new Deployment test correctly **skips 2/2 locally** because GCC has no MySQL service on port 3306; no local MySQL success is claimed. The required MySQL 8.0 execution is delegated to the existing `backend-ci.yml` `production-services` job (`vendor/bin/phpunit tests/Deployment`).
+- New test file: PHP syntax PASS, Pint --test PASS, PHPStan 0 errors. Exact-final-head hosted CI remains pending.
+- This is test/rollback-safety coverage only. It does not activate margin policy, invent a margin floor or cost basis, or resolve P110/P129 dependencies. PR #3326 remains DRAFT and Issue #2559 remains OPEN.
