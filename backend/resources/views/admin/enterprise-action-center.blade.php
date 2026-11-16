@@ -22,6 +22,14 @@ body{margin:0;background:var(--foodex-background);color:var(--foodex-ink)}
 .action-menu>summary{cursor:pointer;list-style:none;display:inline-flex;align-items:center;justify-content:center;min-width:42px;min-height:42px;border:1px solid var(--foodex-border);border-radius:10px;color:var(--foodex-green-dark);font-weight:900}.action-menu>summary::-webkit-details-marker{display:none}.action-menu[open] .decision-stack{margin-top:10px}.decision-stack{display:grid;gap:10px;min-width:min(320px,70vw)}.decision-form{display:grid;grid-template-columns:minmax(160px,1fr) auto;gap:8px;align-items:end}.decision-form label{display:grid;gap:5px;font-size:.85rem;font-weight:700}.decision-form button{min-height:42px}.action-empty{padding:28px;text-align:center;color:var(--foodex-muted)}.action-pagination{margin-top:16px}
 .action-center .foodex-enterprise-viewbar__save:not([open])>.foodex-enterprise-viewbar__form{display:none}
 .action-center .foodex-enterprise-viewbar__head{flex-wrap:wrap}
+.action-tabs{display:flex;gap:8px;overflow-x:auto;max-width:100%;padding:4px 2px 10px;scrollbar-width:thin;scroll-snap-type:x proximity}
+.action-tab{display:inline-flex;align-items:center;justify-content:center;flex:0 0 auto;min-height:44px;padding:9px 16px;border:1px solid var(--foodex-border);border-radius:10px;background:var(--foodex-surface);color:var(--foodex-ink);font-weight:800;text-decoration:none;white-space:nowrap;scroll-snap-align:start}
+.action-tab:hover,.action-tab:focus-visible{border-color:var(--foodex-green);color:var(--foodex-green-dark)}
+.action-tab:focus-visible{outline:2px solid var(--foodex-green);outline-offset:2px}
+.action-tab[aria-current="page"]{background:var(--foodex-green-soft);border-color:var(--foodex-green);color:var(--foodex-green-dark)}
+.action-center [data-action-panel][hidden]{display:none!important}
+.action-center [data-action-panel]{min-width:0}
+
 @media(min-width:768px){
 .action-center .foodex-enterprise-viewbar__save[open]{flex:1 0 100%;width:100%;max-width:100%;min-width:0}
 .action-center .foodex-enterprise-viewbar__save[open] .foodex-enterprise-viewbar__form{grid-template-columns:repeat(2,minmax(0,1fr))!important;width:100%;max-width:100%;min-width:0;box-sizing:border-box}
@@ -46,7 +54,13 @@ body{margin:0;background:var(--foodex-background);color:var(--foodex-ink)}
 @if($errors->any())<div class="action-state foodex-state" role="alert"><ul>@foreach($errors->all() as $error)<li>{{ $error }}</li>@endforeach</ul></div>@endif
 @if($truncated)<div class="action-state foodex-state" role="status">{{ __('enterprise_action_center.bounded_notice') }}</div>@endif
 
-<section class="work-summary" aria-label="{{ __('enterprise_my_work.summary.title') }}">
+<nav class="action-tabs" aria-label="{{ __('enterprise_my_work.tabs.navigation') }}" data-action-tabs>
+@foreach(['summary', 'filters', 'queue', 'analytics', 'activity', 'approvals'] as $tabKey)
+<a class="action-tab" id="action-tab-{{ $tabKey }}" data-action-tab="{{ $tabKey }}" href="{{ route('admin.action-center.index', array_merge(request()->query(), ['tab' => $tabKey])) }}" @if($activeTab === $tabKey) aria-current="page" @endif>{{ __('enterprise_my_work.tabs.'.$tabKey) }}</a>
+@endforeach
+</nav>
+
+<section class="work-summary" data-action-panel="summary" aria-labelledby="action-tab-summary" @if($activeTab !== 'summary') hidden @endif>
 @foreach([
 'total'=>'total',
 'assigned_to_me'=>'assigned_to_me',
@@ -62,6 +76,7 @@ body{margin:0;background:var(--foodex-background);color:var(--foodex-ink)}
 @endforeach
 </section>
 
+<section data-action-panel="filters" aria-labelledby="action-tab-filters" @if($activeTab !== 'filters') hidden @endif>
 @if($savedViewStateToken !== null)
 @include('admin._enterprise-saved-views',[
 'surfaceKey'=>'enterprise.my_work',
@@ -75,6 +90,7 @@ body{margin:0;background:var(--foodex-background);color:var(--foodex-ink)}
 
 <section class="action-card foodex-card">
 <form method="get" class="work-filters">
+<input type="hidden" name="tab" value="queue">
 <input type="hidden" name="state" value="{{ $state }}">
 <label>{{ __('enterprise_action_center.search') }}<input type="search" name="q" maxlength="100" value="{{ $search }}" placeholder="{{ __('enterprise_action_center.search_placeholder') }}"></label>
 <label>{{ __('enterprise_my_work.filters.module') }}<select name="module">
@@ -97,8 +113,9 @@ body{margin:0;background:var(--foodex-background);color:var(--foodex-ink)}
 <div class="work-filter-actions"><button class="foodex-action-primary" type="submit">{{ __('enterprise_my_work.filters.apply') }}</button><a class="foodex-action-secondary" href="{{ route('admin.action-center.index',['state'=>$state!=='all'?$state:null]) }}">{{ __('enterprise_my_work.filters.reset') }}</a></div>
 </form>
 </section>
+</section>
 
-<section class="action-card foodex-card work-section">
+<section class="action-card foodex-card work-section" data-action-panel="queue" aria-labelledby="action-tab-queue" @if($activeTab !== 'queue') hidden @endif>
 <div class="work-section-head"><div><h2>{{ __('enterprise_my_work.queue_title') }}</h2><p>{{ __('enterprise_my_work.queue_hint') }}</p></div></div>
 @if($workItems->count()===0)
 <div class="action-empty foodex-empty-state">{{ __('enterprise_my_work.empty') }}</div>
@@ -123,11 +140,11 @@ body{margin:0;background:var(--foodex-background);color:var(--foodex-ink)}
 <td><a class="foodex-action-primary" href="{{ $item['deep_link'] }}">{{ __('enterprise_my_work.open') }}</a></td>
 </tr>
 @endforeach</tbody></table></div>
-<div class="action-pagination">{{ $workItems->links() }}</div>
+<div class="action-pagination">{{ $workItems->appends(['tab' => 'queue'])->links() }}</div>
 @endif
 </section>
 
-<section class="work-section">
+<section class="work-section" data-action-panel="analytics" aria-labelledby="action-tab-analytics" @if($activeTab !== 'analytics') hidden @endif>
 <div class="work-section-head"><div><h2>{{ __('enterprise_my_work.analytics.title') }}</h2><p>{{ __('enterprise_my_work.analytics.hint') }}</p></div></div>
 <div class="analytics-grid">
 <article class="action-card foodex-card analytics-card"><h3>{{ __('enterprise_my_work.analytics.by_module') }}</h3><div class="metric-list">@forelse($workAnalytics['by_module'] as $metricKey=>$metricValue)<div class="metric-row"><span>{{ __('enterprise_my_work.modules.'.$metricKey) }}</span><progress max="{{ max(1,$workSummary['total']) }}" value="{{ $metricValue }}"></progress><span class="metric-value">{{ $metricValue }}</span></div>@empty<div class="analytics-muted">{{ __('enterprise_my_work.analytics.no_data') }}</div>@endforelse</div></article>
@@ -140,19 +157,21 @@ body{margin:0;background:var(--foodex-background);color:var(--foodex-ink)}
 </div>
 </section>
 
-<section class="action-card foodex-card work-section">
+<section class="action-card foodex-card work-section" data-action-panel="activity" aria-labelledby="action-tab-activity" @if($activeTab !== 'activity') hidden @endif>
 <div class="work-section-head"><div><h2>{{ __('enterprise_my_work.recent_activity') }}</h2><p>{{ __('enterprise_my_work.recent_activity_hint') }}</p></div></div>
 @if($activity->isEmpty())<div class="action-empty foodex-empty-state">{{ __('enterprise_my_work.empty') }}</div>
 @else<div class="work-activity">@foreach($activity as $event)<a class="work-activity-item foodex-action-secondary" href="{{ $event['deep_link'] }}"><span><strong>{{ __('enterprise_my_work.modules.'.$event['module']) }} · {{ $event['title'] }}</strong><br><small>{{ $event['reference'] }}</small></span><small>{{ $event['updated_at']?->format('Y-m-d H:i') }}</small></a>@endforeach</div>@endif
 </section>
 
-<section class="work-section"><div class="work-section-head"><div><h2>{{ __('enterprise_my_work.approvals_title') }} · {{ __('enterprise_action_center.title') }}</h2><p>{{ __('enterprise_my_work.approvals_hint') }}</p></div></div></section>
+<section data-action-panel="approvals" aria-labelledby="action-tab-approvals" @if($activeTab !== 'approvals') hidden @endif>
+<div class="work-section"><div class="work-section-head"><div><h2>{{ __('enterprise_my_work.approvals_title') }} · {{ __('enterprise_action_center.title') }}</h2><p>{{ __('enterprise_my_work.approvals_hint') }}</p></div></div></section>
 <section class="action-card foodex-card">
 <form method="get" class="action-filters">
-@foreach(request()->except(['q','state','actions_page']) as $key=>$value)@if(is_scalar($value))<input type="hidden" name="{{ $key }}" value="{{ $value }}">@endif @endforeach
+<input type="hidden" name="tab" value="approvals">
+@foreach(request()->except(['q','state','actions_page','tab']) as $key=>$value)@if(is_scalar($value))<input type="hidden" name="{{ $key }}" value="{{ $value }}">@endif @endforeach
 <label>{{ __('enterprise_action_center.search') }}<input type="search" name="q" maxlength="100" value="{{ $search }}" placeholder="{{ __('enterprise_action_center.search_placeholder') }}"></label>
 <label>{{ __('enterprise_action_center.state') }}<select name="state"><option value="all" @selected($state==='all')>{{ __('enterprise_action_center.all') }}</option><option value="pending" @selected($state==='pending')>{{ __('enterprise_action_center.pending') }}</option><option value="overdue" @selected($state==='overdue')>{{ __('enterprise_action_center.overdue') }}</option></select></label>
-<button class="foodex-action-primary" type="submit">{{ __('enterprise_action_center.apply') }}</button><a class="foodex-action-secondary" href="{{ route('admin.action-center.index') }}">{{ __('enterprise_action_center.reset') }}</a>
+<button class="foodex-action-primary" type="submit">{{ __('enterprise_action_center.apply') }}</button><a class="foodex-action-secondary" href="{{ route('admin.action-center.index', ['tab' => 'approvals']) }}">{{ __('enterprise_action_center.reset') }}</a>
 </form>
 </section>
 
@@ -170,15 +189,16 @@ body{margin:0;background:var(--foodex-background);color:var(--foodex-ink)}
 <td><span class="action-badge">{{ $action['overdue'] ? __('enterprise_action_center.overdue') : __('enterprise_action_center.pending') }}</span></td>
 <td><details class="action-menu"><summary aria-label="{{ __('enterprise_action_center.more_actions') }}">⋯</summary><div class="decision-stack">
 <form method="post" action="{{ route('admin.action-center.decide',['workflowRequest'=>$action['workflow_request_id'],'stepCode'=>$action['step_code']]) }}" class="decision-form" data-action-form>@csrf
-<input type="hidden" name="decision" value="APPROVED"><input type="hidden" name="q" value="{{ $search }}"><input type="hidden" name="state" value="{{ $state }}"><input type="hidden" name="actions_page" value="{{ $actions->currentPage() }}">
+<input type="hidden" name="decision" value="APPROVED"><input type="hidden" name="q" value="{{ $search }}"><input type="hidden" name="state" value="{{ $state }}"><input type="hidden" name="actions_page" value="{{ $actions->currentPage() }}"><input type="hidden" name="tab" value="approvals">
 <label>{{ __('enterprise_action_center.comment') }}<input name="comment" maxlength="1000" placeholder="{{ __('enterprise_action_center.comment_placeholder') }}"></label><button class="foodex-primary" type="submit">{{ __('enterprise_action_center.approve') }}</button></form>
 <form method="post" action="{{ route('admin.action-center.decide',['workflowRequest'=>$action['workflow_request_id'],'stepCode'=>$action['step_code']]) }}" class="decision-form" data-action-form>@csrf
-<input type="hidden" name="decision" value="REJECTED"><input type="hidden" name="q" value="{{ $search }}"><input type="hidden" name="state" value="{{ $state }}"><input type="hidden" name="actions_page" value="{{ $actions->currentPage() }}">
+<input type="hidden" name="decision" value="REJECTED"><input type="hidden" name="q" value="{{ $search }}"><input type="hidden" name="state" value="{{ $state }}"><input type="hidden" name="actions_page" value="{{ $actions->currentPage() }}"><input type="hidden" name="tab" value="approvals">
 <label>{{ __('enterprise_action_center.comment') }}<input name="comment" maxlength="1000" placeholder="{{ __('enterprise_action_center.comment_placeholder') }}"></label><button class="foodex-action-secondary" type="submit">{{ __('enterprise_action_center.reject') }}</button></form>
 </div></details></td>
 </tr>@endforeach</tbody></table>
-<div class="action-pagination">{{ $actions->links() }}</div>
+<div class="action-pagination">{{ $actions->appends(['tab' => 'approvals'])->links() }}</div>
 @endif
+</section>
 </section>
 </main></div>
 <script>
