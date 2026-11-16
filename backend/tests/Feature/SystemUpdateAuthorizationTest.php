@@ -117,6 +117,68 @@ class SystemUpdateAuthorizationTest extends TestCase
             ->assertDontSee('href="'.route('admin.system-update.index').'"', false);
     }
 
+    public function test_update_center_shows_bilingual_nonmutating_cpanel_permission_remediation(): void
+    {
+        $admin = $this->userWithRole('SUPER_ADMIN');
+        $directory = storage_path('framework/testing/update-host-preflight-'.bin2hex(random_bytes(6)));
+        mkdir($directory, 0750, true);
+        $blockingFile = $directory.'/not-a-directory';
+        file_put_contents($blockingFile, 'preserve-host-sentinel');
+
+        config([
+            'foodex.update_backup_path' => $blockingFile.'/backups',
+            'foodex.updater_execution_lock' => $blockingFile.'/locks/execution.lock',
+        ]);
+
+        try {
+            foreach (['en' => 'ltr', 'ar' => 'rtl'] as $locale => $direction) {
+                $admin->forceFill(['locale' => $locale])->save();
+                app()->setLocale($locale);
+                $response = $this->actingAs($admin->fresh())
+                    ->get('/admin/settings/system-update')
+                    ->assertOk()
+                    ->assertSee('dir="'.$direction.'"', false)
+                    ->assertSee(__('admin.system_update_host.title', [], $locale))
+                    ->assertSee(__('admin.system_update_host.action_required', [], $locale))
+                    ->assertSee(__('admin.system_update_host.signature_not_certified', [], $locale))
+                    ->assertSee(__('admin.system_update_host.manual_verification', [], $locale))
+                    ->assertSee('data-host-requirement="backup_directory" data-host-status="host-action-required"', false)
+                    ->assertSee('data-host-requirement="update_lock" data-host-status="host-action-required"', false);
+
+                $this->assertStringNotContainsString($directory, (string) $response->getContent());
+            }
+
+            // A GET readiness diagnostic must not create private update/lock
+            // directories, mutate the sentinel, or claim verified host setup.
+            $this->assertSame('preserve-host-sentinel', file_get_contents($blockingFile));
+            $this->assertFileDoesNotExist($blockingFile.'/backups');
+            $this->assertFileDoesNotExist($blockingFile.'/locks/execution.lock');
+        } finally {
+            app()->setLocale('en');
+            @unlink($blockingFile);
+            @rmdir($directory);
+        }
+    }
+
+    public function test_update_center_preflight_does_not_create_creatable_host_directories(): void
+    {
+        $admin = $this->userWithRole('SUPER_ADMIN');
+        $directory = storage_path('framework/testing/update-host-uncreated-'.bin2hex(random_bytes(6)));
+        config([
+            'foodex.update_backup_path' => $directory.'/backups',
+            'foodex.updater_execution_lock' => $directory.'/locks/execution.lock',
+        ]);
+
+        $this->actingAs($admin)
+            ->get('/admin/settings/system-update')
+            ->assertOk()
+            ->assertSee('data-host-requirement="backup_directory" data-host-status="precheck-ok"', false)
+            ->assertSee('data-host-requirement="update_lock" data-host-status="precheck-ok"', false)
+            ->assertSee(__('admin.system_update_host.filesystem_precheck_only'));
+
+        $this->assertDirectoryDoesNotExist($directory);
+    }
+
     private function userWithRole(string $roleCode): User
     {
         $user = User::query()->create([
