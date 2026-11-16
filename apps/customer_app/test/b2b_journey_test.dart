@@ -2708,6 +2708,11 @@ void main() {
             widget.minLines == 3 &&
             widget.maxLines == 4);
         await tester.ensureVisible(noteField);
+        final initialCartItem =
+            (commerce.cartValue['items'] as List).first as Map;
+        initialCartItem.remove('sku');
+        (initialCartItem['product'] as Map).remove('sku');
+        initialCartItem['name'] = 'Wholesale item';
 
         // A successful server order may be hidden behind an ambiguous 503.
         // Retrying the identical intent must replay the same key.
@@ -2718,6 +2723,7 @@ void main() {
         await tester.pump();
         final currentItems = commerce.cartValue['items'] as List;
         (currentItems.first as Map)['quantity'] = '1.000';
+        (currentItems.first as Map)['name'] = 'منتج جملة';
         tester.binding
             .handleAppLifecycleStateChanged(AppLifecycleState.resumed);
         await _pumpCustomerFrames(tester);

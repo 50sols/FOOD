@@ -7064,8 +7064,19 @@ class _WholesaleCheckoutDesignScreenState
     // fresh GET returned the same cart rows in a different order.
     final itemIdentities = mapRows(payload.cart['items']).map((item) {
       final product = item['product'];
+      final itemId = item['id'];
       final productId =
           item['product_id'] ?? (product is Map ? product['id'] : null);
+      final hasStableIdentity = itemId != null || productId != null;
+      final sku = item['sku'] ?? (product is Map ? product['sku'] : null);
+      final fallbackIdentity = hasStableIdentity
+          ? ''
+          : (sku?.toString().trim().isNotEmpty == true
+              ? sku.toString().trim()
+              : (item['name'] ??
+                      (product is Map ? product['name'] : null) ??
+                      '')
+                  .toString());
       final quantity = item['quantity'];
       // A server may render the same quantity as 1 or "1.000".
       // Normalize that representation before comparing retry intent.
@@ -7073,13 +7084,9 @@ class _WholesaleCheckoutDesignScreenState
           ? quantity.toDouble()
           : double.tryParse(quantity?.toString() ?? '');
       return jsonEncode(<String>[
-        (item['id'] ?? '').toString(),
+        (itemId ?? '').toString(),
         (productId ?? '').toString(),
-        (item['sku'] ??
-                (product is Map ? product['sku'] : null) ??
-                item['name'] ??
-                '')
-            .toString(),
+        fallbackIdentity,
         (item['selling_unit_code'] ?? '').toString(),
         quantityNumber?.toString() ?? (quantity ?? '').toString(),
       ]);
