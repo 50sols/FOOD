@@ -116,6 +116,26 @@ final class V2InventoryOwnerProvenanceTest extends TestCase
         ]);
     }
 
+    public function test_removing_a_signed_evidence_guard_disables_title_certification(): void
+    {
+        if (DB::connection()->getDriverName() !== 'sqlite') {
+            $this->markTestSkipped('Trigger integrity can be safely exercised through isolated SQLite DDL.');
+        }
+
+        $verifier = app(InventoryLegalTitleAttestationVerifier::class);
+        $guards = new \ReflectionMethod(InventoryLegalTitleAttestationVerifier::class, 'hasProtectedStockMovementHistory');
+        $this->assertTrue($guards->invoke($verifier));
+
+        DB::unprepared('DROP TRIGGER IF EXISTS p110_attestation_no_delete');
+        try {
+            $this->assertFalse($guards->invoke($verifier));
+        } finally {
+            $migration = require database_path('migrations/2026_11_16_070000_protect_inventory_title_attestation_records.php');
+            $migration->up();
+        }
+        $this->assertTrue($guards->invoke($verifier));
+    }
+
     public function test_inventory_deletion_cannot_cascade_erase_legal_owner_claims(): void
     {
         $this->seed(CoreReferenceSeeder::class);
@@ -1210,14 +1230,29 @@ final class V2InventoryOwnerProvenanceTest extends TestCase
         $this->assertSame('SUPPLIER', $certified['positions'][0]['owner_kind']);
         $this->assertSame($supplierId, $certified['positions'][0]['supplier_id']);
 
-        // A forged checker ID on a genuine signed supplier document must fail
-        // closed even though both users are in the same authorized store.
-        DB::table('enterprise_inventory_title_attestations')
-            ->where('owner_position_id', $position->id)->update(['checked_by' => $actor->id]);
-        $this->assertSame('UNVERIFIED', $read->snapshot($actor, $stock['inventory_id'])['state']);
+        // A forged checker ID must be rejected at the SQL boundary, before
+        // an existing genuine signature can be altered and later restored.
+        try {
+            DB::table('enterprise_inventory_title_attestations')
+                ->where('owner_position_id', $position->id)->update(['checked_by' => $actor->id]);
+            $this->fail('Signed legal-title checker identity must be immutable.');
+        } catch (QueryException $exception) {
+            $this->assertNotEmpty($exception->getMessage());
+        }
+        $this->assertDatabaseHas('enterprise_inventory_title_attestations', [
+            'owner_position_id' => $position->id,
+            'checked_by' => $checker->id,
+        ]);
 
-        DB::table('enterprise_inventory_title_attestations')
-            ->where('owner_position_id', $position->id)->update(['checked_by' => $checker->id]);
+        // Removing legal title evidence must also be denied: otherwise the
+        // movement-history trigger could be bypassed by deleting this row.
+        try {
+            DB::table('enterprise_inventory_title_attestations')
+                ->where('owner_position_id', $position->id)->delete();
+            $this->fail('Signed legal-title evidence must not be deleted.');
+        } catch (QueryException $exception) {
+            $this->assertNotEmpty($exception->getMessage());
+        }
         $this->assertSame('CERTIFIED', $read->snapshot($actor, $stock['inventory_id'])['state']);
 
         // Physical stock custody does not make an out-of-store supplier a
