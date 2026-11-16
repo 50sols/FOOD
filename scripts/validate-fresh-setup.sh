@@ -527,11 +527,60 @@ wizard_post() {
       # artisan migrate again: that would mask the first SQLSTATE and could
       # modify partially created tables in the disposable test database.
       if [[ "$step" == "11" ]]; then
-        FRESH_INSTALL_LOG="$fresh/backend/storage/logs/laravel.log" python3 - <<'PY'
-import json
+        FRESH_INSTALL_LOG="$fresh/backend/storage/logs/laravel.log" \
+        FRESH_INSTALL_RESPONSE="/tmp/install-step-$step.html" python3 - <<'PY'
+from html.parser import HTMLParser
 import os
 import re
 from pathlib import Path
+
+
+class InstallerErrorParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.in_error = False
+        self.in_item = False
+        self.current: list[str] = []
+        self.messages: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        attributes = dict(attrs)
+        if tag == "div" and "error" in (attributes.get("class") or "").split() and attributes.get("role") == "alert":
+            self.in_error = True
+        elif self.in_error and tag == "li":
+            self.in_item = True
+            self.current = []
+
+    def handle_data(self, data: str) -> None:
+        if self.in_error and self.in_item:
+            self.current.append(data)
+
+    def handle_endtag(self, tag: str) -> None:
+        if self.in_error and tag == "li" and self.in_item:
+            message = " ".join("".join(self.current).split())
+            if message:
+                self.messages.append(message)
+            self.in_item = False
+        elif self.in_error and tag == "div":
+            self.in_error = False
+
+
+def classify(message: str) -> str:
+    value = " ".join(message.split()).casefold()
+    if "selected database already contains foodex data" in value:
+        return "database_not_empty"
+    if "unable to verify that the selected database is safe" in value:
+        return "database_preflight_unverifiable"
+    if "installer progress state" in value:
+        return "installer_progress_state"
+    if "migration" in value or "migrations" in value or "الترحيل" in value:
+        return "migration_error"
+    if "storage" in value or "التخزين" in value:
+        return "storage_error"
+    if "permission" in value or "صلاحيات" in value:
+        return "filesystem_permission_error"
+    return "unclassified_runtime_error"
+
 
 log = Path(os.environ["FRESH_INSTALL_LOG"])
 lines = log.read_text(encoding="utf-8", errors="replace").splitlines() if log.is_file() else []
@@ -544,7 +593,15 @@ if failures:
           (state.group(1) if state else "unknown") + ", migration=" +
           (migration.group(1) if migration else "unknown"))
 else:
-    print("::error::G004 original HTTP migration failure has no redacted diagnostic; investigate packaged installer logs")
+    response = Path(os.environ["FRESH_INSTALL_RESPONSE"])
+    parser = InstallerErrorParser()
+    if response.is_file():
+        parser.feed(response.read_text(encoding="utf-8", errors="replace"))
+    categories = sorted({classify(message) for message in parser.messages})
+    if categories:
+        print("::error::G004 safe installer error category: " + ",".join(categories))
+    else:
+        print("::error::G004 step 11 returned an error without a recognized rendered message or redacted migration log.")
 PY
       fi
       return 1
