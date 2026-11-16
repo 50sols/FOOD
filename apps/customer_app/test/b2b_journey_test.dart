@@ -5689,7 +5689,8 @@ void main() {
         );
         expect(
           tester.widget<Text>(unknown).data,
-          contains(arabic ? 'حالة الدفع غير مؤكدة' : 'Payment status unverified'),
+          contains(
+              arabic ? 'حالة الدفع غير مؤكدة' : 'Payment status unverified'),
         );
         expect(
           Directionality.of(tester.element(captured)),
