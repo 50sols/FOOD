@@ -949,6 +949,8 @@ final class V2ReceivableSettlementWorkbenchTest extends TestCase
             ->where('collection_transaction_id', $receipt->id)->value('id');
         $foreignSourceId = (int) DB::table('collection_allocations')
             ->where('collection_transaction_id', $foreignReceipt->id)->value('id');
+        $receiptDate = (string) DB::table('collection_transactions')
+            ->where('id', $receipt->id)->value('created_at');
 
         foreach (['en', 'ar'] as $locale) {
             $maker->forceFill(['locale' => $locale])->save();
@@ -960,7 +962,9 @@ final class V2ReceivableSettlementWorkbenchTest extends TestCase
                 ->assertSee('name="source_collection_allocation_id"', false)
                 ->assertSee('<option value="'.$sourceId.'" data-collection-receipt="true">', false)
                 ->assertDontSee('<option value="'.$foreignSourceId.'" data-collection-receipt="true">', false)
-                ->assertSee(__('finance_workbench.receivables.receipt_allocation', [], $locale));
+                ->assertSee(__('finance_workbench.receivables.receipt_allocation', [], $locale))
+                ->assertSee($receiptDate)
+                ->assertDontSee(__('finance_workbench.receivables.linked_receipt', ['date' => $receipt->id], $locale));
         }
 
         $payload = [
@@ -985,7 +989,7 @@ final class V2ReceivableSettlementWorkbenchTest extends TestCase
                 'settlement_document_id' => $document->id,
             ]))->assertOk()
                 ->assertSee('data-v2-linked-collection', false)
-                ->assertSee(__('finance_workbench.receivables.linked_receipt', ['receipt' => $receipt->id], $locale))
+                ->assertSee(__('finance_workbench.receivables.linked_receipt', ['date' => $receiptDate], $locale))
                 ->assertDontSee('<option value="'.$sourceId.'" data-collection-receipt="true">', false);
         }
         $this->actingAs($maker)->post(
