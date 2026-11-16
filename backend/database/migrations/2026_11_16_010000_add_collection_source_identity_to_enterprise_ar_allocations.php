@@ -2,6 +2,7 @@
 
 use Illuminate\Database\Migrations\Migration;
 use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 
 return new class extends Migration
@@ -57,6 +58,15 @@ return new class extends Migration
         // postings or a MySQL DDL sequence can be rolled back atomically.
         if (! Schema::hasColumn(self::TABLE, self::SOURCE)) {
             return;
+        }
+
+        // Source-backed collection claims are immutable settlement provenance.
+        // Refuse any rollback that would erase an occupied link. This check
+        // must run before the first non-transactional MySQL DDL statement.
+        if (DB::table(self::TABLE)->whereNotNull(self::SOURCE)->exists()) {
+            throw new RuntimeException(
+                'Refusing to drop enterprise_ar_allocations.source_collection_allocation_id while linked collection settlements exist.',
+            );
         }
 
         foreach (Schema::getForeignKeys(self::TABLE) as $foreignKey) {
