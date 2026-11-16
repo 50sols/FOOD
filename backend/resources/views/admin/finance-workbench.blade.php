@@ -520,14 +520,19 @@ $trendMax=max(1,max(array_map(fn($r)=>max(abs((float)$r['revenue']),abs((float)$
         ? ['documents','settlements','aging']
         : ['documents','aging'];
     $financePanelInput = request()->query('finance_panel');
-    // Preserve the established P303 default mapping/settlement entry when
-    // finance_panel was not supplied by older links; malformed input fails
-    // closed to documents without surfacing settlement/approval actions.
-    $financePanelDefault = $tab === 'receivables' ? 'settlements' : 'documents';
+    // A selected scoped AR document opens its settlement detail. Otherwise
+    // show the document list; P303 mapping is reachable in the settlements tab.
+    // Invalid arrays and unknown values never expose another panel.
+    $financePanelDefault = $tab === 'receivables' && ($data['settlementDocument'] ?? null) !== null
+        ? 'settlements'
+        : 'documents';
     $activeFinancePanel = is_string($financePanelInput)
         && in_array($financePanelInput, $financePanelKeys, true)
         ? $financePanelInput
-        : ($financePanelInput === null ? $financePanelDefault : 'documents');
+        : 'documents';
+    if ($financePanelInput === null) {
+        $activeFinancePanel = $financePanelDefault;
+    }
     $financePanelQuery = [...$routeBase,'tab'=>$tab];
     foreach (['status','date_from','date_to','supplier_reference'] as $financeFilterKey) {
         $financeFilterValue = $data['filters'][$financeFilterKey] ?? null;
