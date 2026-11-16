@@ -3609,12 +3609,14 @@ List<Map<Object?, Object?>> _reportRows(Object? value) => value is List
     : const <Map<Object?, Object?>>[];
 
 double? _reportFiniteDouble(Object? value) {
-  final amount = switch (value) {
-    num number => number.toDouble(),
-    String text => double.tryParse(text.trim()),
-    _ => null,
-  };
-  return amount != null && amount.isFinite ? amount : null;
+  if (value is num) {
+    return value.isFinite ? value.toDouble() : null;
+  }
+  if (value is String) {
+    final amount = double.tryParse(value.trim());
+    return amount != null && amount.isFinite ? amount : null;
+  }
+  return null;
 }
 
 // The chart geometry may use zero as a harmless empty bar, but displayed
