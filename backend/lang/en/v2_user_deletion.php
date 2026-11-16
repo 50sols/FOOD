@@ -9,6 +9,7 @@ return [
     'active' => 'Deactivate the account first using the existing authorized archive workflow.',
     'self' => 'You cannot delete your own account.',
     'protected' => 'Platform Owner and Super Admin identities cannot be permanently deleted.',
+    'consumer' => 'Consumer identities must use the separate customer privacy and account-deletion workflow.',
     'references' => 'Retained records or account relationships prevent deletion. They must not be cascaded or silently removed.',
     'unverified' => 'The complete relationship inventory could not be verified. Deletion is unavailable.',
     'reason' => 'Reason for permanent deletion',
