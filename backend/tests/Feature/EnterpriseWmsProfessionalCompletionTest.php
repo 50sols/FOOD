@@ -318,6 +318,75 @@ final class EnterpriseWmsProfessionalCompletionTest extends TestCase
         ]);
     }
 
+    public function test_direct_wms_http_forged_legal_owner_cost_and_cross_store_replay_never_grant_title(): void
+    {
+        $fixture = $this->fixture();
+        $actor = $this->inventoryUser($fixture['store_id'], 'en');
+        config()->set('security.mfa.enforce_privileged', false);
+        $path = route('admin.erp.wms.adjustments.store');
+        $request = [
+            'store_id' => $fixture['store_id'],
+            'warehouse_id' => $fixture['source_warehouse_id'],
+            'product_id' => $fixture['product_id'],
+            'quantity_delta' => -1,
+            'classification' => 'damage',
+            'reason' => 'P110 direct-HTTP forged ownership protection',
+            'request_key' => 'p110-forged-owner-amount-replay',
+            // Untrusted fields must never reach the canonical stock writer
+            // or silently certify FOODEX title, vendor identity or COGS.
+            'owner_kind' => 'FOODEX',
+            'owner_key' => 'FOODEX',
+            'supplier_id' => 999999,
+            'certified_by' => $actor->id,
+            'legal_title_verified' => true,
+            'stock_cost' => '99999999.99',
+        ];
+
+        foreach (['en', 'ar'] as $locale) {
+            $actor->forceFill(['locale' => $locale])->save();
+            $this->actingAs($actor->fresh())->post($path, $request)->assertRedirect();
+        }
+
+        $this->assertDatabaseHas('inventories', [
+            'id' => $fixture['source_inventory_id'], 'quantity' => 9, 'reserved_quantity' => 1,
+        ]);
+        $this->assertSame(1, DB::table('stock_movements')
+            ->where('inventory_id', $fixture['source_inventory_id'])
+            ->where('reference_type', 'wms_workbench_adjustment')->count());
+        $this->assertDatabaseHas('enterprise_inventory_owner_positions', [
+            'inventory_id' => $fixture['source_inventory_id'],
+            'owner_kind' => 'UNKNOWN',
+            'owner_key' => 'UNKNOWN',
+            'supplier_id' => null,
+            'quantity' => 9,
+            'reserved_quantity' => 1,
+            'certified_by' => null,
+        ]);
+        $this->assertSame(0, DB::table('enterprise_finance_journals')->count());
+
+        $foreignStoreId = (int) DB::table('stores')->insertGetId([
+            'store_type_id' => DB::table('stores')->where('id', $fixture['store_id'])->value('store_type_id'),
+            'code' => 'WMS-P110-DIRECT-FOREIGN-STORE',
+            'name' => 'Foreign WMS Direct Caller Store',
+            'is_active' => true,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        $this->enableEnterpriseWmsForStore($foreignStoreId);
+        $foreignActor = $this->inventoryUser($foreignStoreId, 'ar');
+
+        // Genuine authenticated inventory role in store B must not mutate
+        // store A by forging the store, warehouse and legal-owner fields.
+        $this->actingAs($foreignActor)->post($path, $request)->assertNotFound();
+        $this->assertDatabaseHas('inventories', [
+            'id' => $fixture['source_inventory_id'], 'quantity' => 9, 'reserved_quantity' => 1,
+        ]);
+        $this->assertSame(1, DB::table('stock_movements')
+            ->where('inventory_id', $fixture['source_inventory_id'])
+            ->where('reference_type', 'wms_workbench_adjustment')->count());
+        $this->assertSame(0, DB::table('enterprise_finance_journals')->count());
+    }
+
     public function test_wms_completion_keeps_ar_en_translation_key_parity_and_report_contract(): void
     {
         $en = require lang_path('en/enterprise_wms.php');

@@ -811,6 +811,23 @@ final class V2InventoryOwnerProvenanceTest extends TestCase
         );
 
         $this->assertSame($movement->getKey(), $replay->getKey());
+
+        // A reused idempotency reference with different economic facts must
+        // fail inside the locked canonical transaction, without double-post.
+        try {
+            $service->post(
+                $actor, (int) $inventory->warehouse_id, (int) $inventory->product_id,
+                3.0, 'correction', 'p110_unknown_adjustment', 1102844,
+                'Verified stock correction, title still unknown',
+            );
+            $this->fail('Changed quantity cannot replay an already-posted stock movement.');
+        } catch (ValidationException $exception) {
+            $this->assertArrayHasKey('reference', $exception->errors());
+        }
+        $this->assertSame(1, DB::table('stock_movements')
+            ->where('inventory_id', $stock['inventory_id'])
+            ->where('reference_type', 'p110_unknown_adjustment')
+            ->where('reference_id', 1102844)->count());
         $this->assertDatabaseHas('inventories', [
             'id' => $stock['inventory_id'], 'quantity' => 12, 'reserved_quantity' => 3,
         ]);
