@@ -48,6 +48,7 @@ final class V2BiExplicitScopeScheduleAuthorityTest extends TestCase
         $actor = $this->analyst([$storeA, $storeB]);
         $this->entitle($storeA, true);
         $this->entitle($storeB, false);
+        $allowedSchedule = $this->schedulePayload($storeA);
 
         foreach (['ar' => 'rtl', 'en' => 'ltr'] as $locale => $direction) {
             $actor->forceFill(['locale' => $locale])->save();
@@ -76,7 +77,7 @@ final class V2BiExplicitScopeScheduleAuthorityTest extends TestCase
                 ->assertForbidden();
 
             $this->actingAs($actor->fresh())
-                ->post(route('admin.erp.bi.schedules.store'), $this->schedulePayload($storeA))
+                ->post(route('admin.erp.bi.schedules.store'), $allowedSchedule)
                 ->assertRedirect();
         }
 
@@ -116,6 +117,43 @@ final class V2BiExplicitScopeScheduleAuthorityTest extends TestCase
             ->assertForbidden();
 
         $this->assertDatabaseCount('enterprise_scheduled_reports', 0);
+    }
+
+    public function test_foreign_store_scoped_schedule_update_is_denied_even_for_original_requester(): void
+    {
+        $storeA = $this->store('V2-3958-PATCH-A');
+        $storeB = $this->store('V2-3958-PATCH-B');
+        $actor = $this->analyst([$storeA]);
+        $this->entitle($storeA, true);
+        $this->entitle($storeB, true);
+
+        $this->actingAs($actor)
+            ->post(route('admin.erp.bi.schedules.store'), $this->schedulePayload($storeA))
+            ->assertRedirect();
+
+        $schedule = DB::table('enterprise_scheduled_reports')->where('requested_by', $actor->id)->first();
+        $this->assertNotNull($schedule);
+
+        // A previously authorized schedule can no longer be modified once its
+        // scope is outside the principal's effective store membership.
+        DB::table('enterprise_scheduled_reports')
+            ->where('id', $schedule->id)
+            ->update(['scope_id' => $storeB->id]);
+
+        $this->actingAs($actor)
+            ->patch(route('admin.erp.bi.schedules.update', ['schedule' => $schedule->id]), [
+                'enabled' => false,
+                'interval_minutes' => 2880,
+                'next_run_at' => now()->addHours(2)->format('Y-m-d H:i:s'),
+            ])
+            ->assertForbidden();
+
+        $this->assertDatabaseHas('enterprise_scheduled_reports', [
+            'id' => $schedule->id,
+            'scope_id' => $storeB->id,
+            'enabled' => true,
+            'interval_minutes' => 1440,
+        ]);
     }
 
     public function test_roleless_inactive_role_and_inactive_actor_cannot_enter_or_schedule_bi(): void
