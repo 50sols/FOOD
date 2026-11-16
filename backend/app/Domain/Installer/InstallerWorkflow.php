@@ -102,6 +102,26 @@ final class InstallerWorkflow
             $failures[] = (string) __('installer.errors.env_lock_directory_writable');
         }
 
+        // InstallState creates the progress and final installed lock using
+        // sibling temporary files + rename. It also needs a persistent token
+        // lock before the first POST. Check their actual configured parents,
+        // without creating folders/files or touching an existing live site.
+        $progressPath = $this->state->progressPath();
+        $tokenLockPath = (string) config(
+            'foodex.installer_token_lock_path',
+            storage_path('framework/installer-token-locks/'.hash('sha256', $progressPath).'.lock'),
+        );
+        foreach ([
+            'install_state_directory_writable' => $this->state->lockPath(),
+            'install_progress_directory_writable' => $progressPath,
+            'installer_token_lock_directory_writable' => $tokenLockPath,
+        ] as $error => $path) {
+            if ($this->hasInstallerSymlinkComponent($path)
+                || ! $this->writableOrCreatableInstallerDirectory(dirname($path))) {
+                $failures[] = (string) __('installer.errors.'.$error);
+            }
+        }
+
         return $failures;
     }
 
