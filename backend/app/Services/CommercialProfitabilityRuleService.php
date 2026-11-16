@@ -34,7 +34,10 @@ final class CommercialProfitabilityRuleService
 
     public function canReview(User $actor, int $storeId): bool
     {
-        return $this->canPropose($actor, $storeId)
+        // Independent checkers need catalog discovery, not catalog authoring.
+        // Pricing/policy mutation remains guarded by canPropose().
+        return $this->flags->commercialRulesEnabled()
+            && in_array($storeId, $this->scope->allowedStoreIds($actor, 'catalog.view', 'b2b'), true)
             && in_array($storeId, $this->scope->allowedStoreIds($actor, 'orders.approve', 'b2b'), true)
             && in_array($storeId, $this->scope->allowedStoreIds($actor, 'finance.approve', 'b2b'), true);
     }

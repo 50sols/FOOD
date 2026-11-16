@@ -121,6 +121,63 @@ final class V2ProfitabilityRuleLifecycleTest extends TestCase
         $this->assertSame(1, DB::table('audit_logs')->where('event', 'commercial.profitability_rule.proposed')->count());
     }
 
+    public function test_independent_finance_checker_can_review_without_catalog_manage_but_cannot_edit_sales_policy(): void
+    {
+        [$maker, $store, $product] = $this->fixture();
+        $route = $this->saveRoute($store, $product);
+        $this->actingAs($maker)->put($route, $this->proposal((string) Str::uuid(), '12.34'))
+            ->assertSessionHasNoErrors();
+        $revision = (int) DB::table('commercial_profitability_rule_revisions')->value('id');
+
+        // Checker receives read-only catalog discovery plus two independent
+        // approval grants. Catalog authoring is deliberately withheld.
+        $checkerRole = Role::query()->where('code', 'B2B_ADMIN')->firstOrFail();
+        $grants = Permission::query()
+            ->whereIn('code', ['catalog.view', 'orders.approve', 'finance.approve'])
+            ->pluck('id')->all();
+        $this->assertCount(3, $grants);
+        $checkerRole->permissions()->sync($grants);
+        $checker = $this->user('B2B_ADMIN');
+        $this->assertFalse($checker->hasPermission('catalog.manage'));
+
+        $this->actingAs($checker)->get(route('admin.commercial.sales-control', [
+            'store_id' => $store, 'product' => $product,
+        ]))->assertOk()->assertSee('12.34%');
+        $this->actingAs($checker)->put($route, [
+            'profitability_action' => 'review',
+            'revision_id' => $revision,
+            'decision' => 'review',
+        ])->assertSessionHasNoErrors();
+        $this->assertDatabaseHas('commercial_profitability_rule_revisions', [
+            'id' => $revision,
+            'status' => 'REVIEWED_INACTIVE',
+            'reviewed_by' => $checker->id,
+        ]);
+
+        // Review eligibility never confers a proposal or normal sales-policy
+        // mutation permission, even on the same canonical PUT endpoint.
+        $this->actingAs($checker)->put($route, $this->proposal((string) Str::uuid(), '13.00'))
+            ->assertNotFound();
+        $this->actingAs($checker)->put($route, ['status' => 'OPEN'])
+            ->assertNotFound();
+
+        // Both approval permissions remain mandatory; an authorized catalog
+        // reader cannot turn one approval into a two-person financial decision.
+        foreach ([
+            ['catalog.view', 'orders.approve'],
+            ['catalog.view', 'finance.approve'],
+        ] as $reducedGrants) {
+            $checkerRole->permissions()->sync(Permission::query()
+                ->whereIn('code', $reducedGrants)->pluck('id')->all());
+            $this->actingAs($checker->fresh())->put($route, [
+                'profitability_action' => 'review',
+                'revision_id' => $revision,
+                'decision' => 'review',
+            ])->assertForbidden();
+        }
+        $this->assertSame(1, DB::table('commercial_profitability_rule_revisions')->count());
+    }
+
     public function test_independent_checker_review_remains_inactive_and_is_idempotent(): void
     {
         [$maker, $store, $product] = $this->fixture();

@@ -194,7 +194,12 @@ final class CommercialDashboardController extends Controller
 
     public function saveSalesControl(Request $request, int $product): RedirectResponse
     {
-        [$user, $storeId] = $this->authorizedStore($request, 'catalog.manage', false, 'b2b');
+        // A separated finance checker can review an inactive proposal with
+        // catalog.view, orders.approve and finance.approve, but cannot edit
+        // operational Sales Control or author a profitability proposal.
+        $permission = $request->input('profitability_action') === 'review'
+            ? 'catalog.view' : 'catalog.manage';
+        [$user, $storeId] = $this->authorizedStore($request, $permission, false, 'b2b');
         abort_unless(
             DB::table('store_products')
                 ->join('products', 'products.id', '=', 'store_products.product_id')
