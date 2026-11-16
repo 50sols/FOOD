@@ -1185,6 +1185,23 @@ final class V2InventoryOwnerProvenanceTest extends TestCase
         $this->assertSame('UNKNOWN', $advisory['state']);
         $this->assertFalse($advisory['certified']);
         $this->assertSame($approved->id, $advisory['policy']->id);
+
+        // Existing policy evidence must not survive an intervening legal
+        // company change (or a corrupted company scope), even for a store
+        // whose numeric ID and warehouse are unchanged.
+        $originalCompany = (int) DB::table('enterprise_inventory_ownership_rule_revisions')
+            ->where('id', $approved->id)->value('company_id');
+        DB::table('enterprise_inventory_ownership_rule_revisions')
+            ->where('id', $approved->id)->update(['company_id' => $originalCompany + 987654]);
+        $foreignLegalPolicy = $service->advisoryFor(
+            $checker, $stock['store_id'], 'B2C', null, (int) $request['warehouse_id'],
+        );
+        $this->assertNull($foreignLegalPolicy['policy']);
+        $this->assertSame('UNKNOWN', $foreignLegalPolicy['state']);
+        $this->assertFalse($foreignLegalPolicy['certified']);
+        DB::table('enterprise_inventory_ownership_rule_revisions')
+            ->where('id', $approved->id)->update(['company_id' => $originalCompany]);
+
         $this->assertSame('UNKNOWN', app(InventoryOwnerProvenanceReadService::class)
             ->snapshot($this->inventoryActor($stock['store_id']), $stock['inventory_id'])['state']);
         $this->travelBack();
