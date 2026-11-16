@@ -155,3 +155,8 @@ Original #2606 / DRAFT #3311 branch `feat/2606-v2-authorized-van-trips` was reus
 - `VanTripSessionService` now re-reads and locks the persisted active User row in its start, operational-end and active-custody transactions. A formerly active hydrated model cannot bypass a later account suspension.
 - `V2VanTripSessionIdentityTest::test_persisted_user_suspension_revokes_cached_actor_before_trip_or_custody_mutation` denies three stale-model mutations (403), asserts zero new trip/event/stock writes, and positively resumes when authority is restored.
 - Customer: no API/app change. Driver: no B2C dispatch/API change. Van: server-side safety guard for existing B2B custody identity; no new Flutter endpoint or payload. This is a bounded P276 security fix, not proof of final physical custody, offline app delivery or finance closeout; full source acceptance remains gated by original issue/dependencies.
+
+## Tamper-resistant trip replay (2026-11-16)
+- Both historical start-key replay paths now verify the complete lifecycle: immutable start evidence and either a genuinely active/never-ended trip or an ended trip with matching second audit event. An ended record with forged missing end evidence is not a successful replay.
+- A mutable state reset to active is denied for trip end/custody reads if any immutable end event, end timestamp/key or ending actor exists. `V2VanTripSessionIdentityTest::test_forged_status_reset_or_end_event_cannot_turn_closed_trip_into_live_custody` supplies negative start/end/custody/replay cases and no stock mutation assertions.
+- No newly authorized physical stock or GL writer; P276 still requires proven stock/finance/app integration prior to source-complete merge.

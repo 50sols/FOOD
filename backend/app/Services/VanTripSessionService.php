@@ -43,7 +43,7 @@ final class VanTripSessionService
                 abort_unless((int) $replayed->started_by_user_id === (int) $actor->id, 409);
                 $this->tenantScope->assertStore($actor, (int) $replayed->store_id, 'drivers.b2b.manage', 'b2b');
                 $this->tenantScope->assertStore($actor, (int) $replayed->store_id, 'customers.view', 'b2b');
-                $this->assertImmutableTripStartEvidence($replayed);
+                $this->assertTripReplayEvidence($replayed);
 
                 return $replayed;
             }
@@ -101,7 +101,7 @@ final class VanTripSessionService
                     && (int) $existing->started_by_user_id === (int) $actor->id,
                     409,
                 );
-                $this->assertImmutableTripStartEvidence($existing);
+                $this->assertTripReplayEvidence($existing);
 
                 return $existing;
             }
@@ -152,7 +152,7 @@ final class VanTripSessionService
                 return $trip;
             }
 
-            abort_unless($trip->status === 'active', 409);
+            $this->assertUnendedTripEvidence($trip);
             abort_unless($key !== $trip->start_key, 409);
             $trip->forceFill([
                 'status' => 'ended',
@@ -254,6 +254,7 @@ final class VanTripSessionService
             // An orphan/corrupted trip row without immutable start evidence
             // cannot authorize custody activity or masquerade as a replay.
             $this->assertImmutableTripStartEvidence($trip);
+            $this->assertUnendedTripEvidence($trip);
 
             return $trip;
         }, 3);
@@ -270,6 +271,7 @@ final class VanTripSessionService
     {
         abort_unless(
             (int) $trip->van_id > 0
+            && $trip->started_at !== null
             && (int) $trip->reserved_van_id === (int) $trip->van_id,
             409,
         );
@@ -280,6 +282,43 @@ final class VanTripSessionService
             ->where('actor_user_id', $trip->started_by_user_id)
             ->where('idempotency_key', $trip->start_key)
             ->exists(), 409);
+    }
+
+    /**
+     * A replay must prove its full recorded lifecycle, not only the initial
+     * idempotency key. Do not expose an ended trip with a missing/tampered end
+     * event as a successful offline replay.
+     */
+    private function assertTripReplayEvidence(VanTripSession $trip): void
+    {
+        $this->assertImmutableTripStartEvidence($trip);
+
+        if ($trip->status === 'ended') {
+            $this->assertImmutableTripEndEvidence($trip);
+
+            return;
+        }
+
+        $this->assertUnendedTripEvidence($trip);
+    }
+
+    /**
+     * A forged status reset may not reopen a physically reserved trip after
+     * any recorded end event. Ending a trip never authorizes a fresh load.
+     */
+    private function assertUnendedTripEvidence(VanTripSession $trip): void
+    {
+        abort_unless(
+            $trip->status === 'active'
+            && $trip->ended_at === null
+            && $trip->ended_by_user_id === null
+            && $trip->end_key === null
+            && ! DB::table('van_trip_session_events')
+                ->where('van_trip_session_id', $trip->id)
+                ->where('sequence', 2)
+                ->exists(),
+            409,
+        );
     }
 
     /**

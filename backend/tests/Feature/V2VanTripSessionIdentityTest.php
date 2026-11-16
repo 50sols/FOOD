@@ -305,6 +305,58 @@ final class V2VanTripSessionIdentityTest extends TestCase
         $this->assertDatabaseCount('stock_movements', 0);
     }
 
+    public function test_forged_status_reset_or_end_event_cannot_turn_closed_trip_into_live_custody(): void
+    {
+        [$actor, $assignment] = $this->fixture();
+        $service = app(VanTripSessionService::class);
+        $startKey = 'P276-fail-closed-replay-001';
+        $endKey = 'P276-fail-closed-end-001';
+        $trip = $service->start($actor, (int) $assignment->id, $startKey);
+        $ended = $service->endOperationalTrip($actor, $trip->public_id, $endKey);
+
+        // An illicit database writer may reset the mutable row, but cannot
+        // erase the immutable second event or establish new custody authority.
+        DB::table('van_trip_sessions')->where('id', $trip->id)->update([
+            'status' => 'active',
+            'ended_at' => null,
+            'end_key' => null,
+            'ended_by_user_id' => null,
+        ]);
+        $this->expectHttpConflict(fn () => $service->start(
+            $actor, (int) $assignment->id, $startKey
+        ));
+        $this->expectHttpConflict(fn () => $service->endOperationalTrip(
+            $actor, $trip->public_id, 'P276-fail-closed-end-002'
+        ));
+        $this->expectHttpConflict(fn () => $service->requireActiveCustodyContext(
+            $actor, (int) $assignment->id, $trip->public_id
+        ));
+
+        DB::table('van_trip_sessions')->where('id', $trip->id)->update([
+            'status' => 'ended',
+            'ended_at' => $ended->ended_at,
+            'end_key' => $endKey,
+            'ended_by_user_id' => $actor->id,
+        ]);
+        $this->assertSame($trip->id, $service->start(
+            $actor, (int) $assignment->id, $startKey
+        )->id);
+
+        // A corrupted end event must also invalidate a start replay: the
+        // historical session cannot be accepted merely because it exists.
+        DB::table('van_trip_session_events')
+            ->where('van_trip_session_id', $trip->id)
+            ->where('sequence', 2)
+            ->update(['kind' => 'forged']);
+        $this->expectHttpConflict(fn () => $service->start(
+            $actor, (int) $assignment->id, $startKey
+        ));
+
+        $this->assertDatabaseCount('van_trip_sessions', 1);
+        $this->assertDatabaseCount('van_trip_session_events', 2);
+        $this->assertDatabaseCount('stock_movements', 0);
+    }
+
     public function test_persisted_user_suspension_revokes_cached_actor_before_trip_or_custody_mutation(): void
     {
         [$actor, $assignment] = $this->fixture();
