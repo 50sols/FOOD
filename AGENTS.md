@@ -239,7 +239,7 @@ The PR must identify:
 
 Parallel work is encouraged only when ownership is file/scope-disjoint.
 
-**FOODEX V2 owner-approved concurrency (2026-11-15):** `MAX_ACTIVE_V2_WORKERS=12` for the isolated `Foodex_V2` program. The canonical machine-readable distribution is `docs/v2/V2_WORKER_CAPACITY.json`, explained in `docs/v2/V2_WORKER_CAPACITY.md`. This replaces the previous informal V2 seven-slot coordination ceiling, **not** an older mission's explicitly scoped six-lane cap. A slot requires a distinct worker identity/role, verified current Issue/branch/PR lease and non-overlapping file ownership; no implicit permission to claim a 13th slot. A full or uncertain roster fails closed and workers recheck before claiming/first edit. A policy change does not itself launch 12 independent sessions or increase hosted CI runner capacity.
+**FOODEX V2 owner-approved parallel admission (2026-11-16; #3933):** There is **no fixed numeric limit** on open V2 Issues, independently owned issue-scoped work branches, or active workers. The canonical coordination contract is `docs/v2/V2_WORKER_CAPACITY.json` and `docs/v2/V2_WORKER_CAPACITY.md`. Admit workers based on verified distinct active identities, one Issue/worker/branch/PR, non-overlapping file/subsystem ownership, lease freshness and actual execution/CI resources. Uncertain file ownership or unavailable resources still fail closed; raw issue/branch/worker counts alone never block admission. This does not launch workers or expand GitHub-hosted runner capacity.
 
 Before starting parallel lanes:
 
