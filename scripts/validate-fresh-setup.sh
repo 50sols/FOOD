@@ -678,6 +678,19 @@ for step in $(seq 1 15); do
     *) wizard_post "$step";;
   esac
 
+  if [[ "$step" -eq 10 ]]; then
+    # Step 10 is the final .env write. Stop the hot-reloading development
+    # server explicitly so step 11 never races an asynchronous process reload.
+    stop_server /tmp/foodex-install-server.pid
+    wait_for_port_free
+    rm -f /tmp/foodex-install-server.log /tmp/foodex-install-server.pid
+    (
+      cd "$fresh/backend"
+      php artisan serve --host=127.0.0.1 --port=8099 >/tmp/foodex-install-server.log 2>&1 &
+      echo $! >/tmp/foodex-install-server.pid
+    )
+  fi
+
   if [[ "$step" -lt 15 ]]; then
     next=$((step + 1))
     next_status=""
