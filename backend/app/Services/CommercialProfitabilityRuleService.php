@@ -239,7 +239,7 @@ final class CommercialProfitabilityRuleService
     /**
      * One allowlist and validator shared by Test and Save.
      *
-     * @return array{request_id:string,minimum_margin_percent:string,effective_from:string,effective_until:string}
+     * @return array<string, mixed>
      */
     private function validatedProposalFields(Request $request): array
     {
