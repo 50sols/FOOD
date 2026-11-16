@@ -202,9 +202,18 @@ final class FinanceWorkbenchController extends Controller
     public function proposeCollectionMapping(Request $request): RedirectResponse
     {
         [$actor, $context] = $this->mutationContext($request);
-        $this->collectionMappings->propose($actor, $context, $request->only([
+        $action = $request->validate(['mapping_action' => ['sometimes', 'in:test,save']]);
+        $attributes = $request->only([
             'request_id', 'collection_account_id', 'finance_account_id',
-        ]));
+        ]);
+
+        if (($action['mapping_action'] ?? 'save') === 'test') {
+            $this->collectionMappings->testProposal($actor, $context, $attributes);
+
+            return $this->redirectTo($request, 'receivables', 'mapping_tested');
+        }
+
+        $this->collectionMappings->propose($actor, $context, $attributes);
 
         return $this->redirectTo($request, 'receivables', 'mapping_proposed');
     }
