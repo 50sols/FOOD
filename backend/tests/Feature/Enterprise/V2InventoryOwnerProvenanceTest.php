@@ -378,6 +378,35 @@ final class V2InventoryOwnerProvenanceTest extends TestCase
         }
     }
 
+    public function test_supplier_legal_owner_claim_cannot_cross_enterprise_company_with_same_store_id(): void
+    {
+        $this->seed(CoreReferenceSeeder::class);
+        $stock = $this->stock('CROSS-COMPANY-SUP');
+        $actor = $this->inventoryActor($stock['store_id']);
+        $supplierId = $this->supplier($stock['store_id']);
+        $company = DB::table('enterprise_companies')->first(['id', 'organization_id']);
+        $otherCompanyId = DB::table('enterprise_companies')->insertGetId([
+            'organization_id' => $company->organization_id,
+            'code' => 'P110-FOREIGN-COMPANY-SUPPLIER',
+            'name' => 'Other Enterprise Company',
+            'is_active' => true,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        DB::table('enterprise_suppliers')->where('id', $supplierId)
+            ->update(['company_id' => $otherCompanyId]);
+        $this->position($stock['inventory_id'], 'SUPPLIER', $supplierId, 10, 3, $actor->id, $actor->id, false);
+
+        $snapshot = app(InventoryOwnerProvenanceReadService::class)
+            ->snapshot($actor, $stock['inventory_id']);
+        $this->assertSame('UNKNOWN', $snapshot['state']);
+        $this->assertFalse($snapshot['certified']);
+        $this->assertSame('UNKNOWN', $snapshot['positions'][0]['owner_kind']);
+        $this->assertNull($snapshot['positions'][0]['supplier_id']);
+        $this->assertNull($snapshot['positions'][0]['supplier_name']);
+        $this->assertFalse($snapshot['positions'][0]['certified']);
+    }
+
     public function test_foreign_store_supplier_cannot_be_certified_as_local_legal_title(): void
     {
         $this->seed(CoreReferenceSeeder::class);
