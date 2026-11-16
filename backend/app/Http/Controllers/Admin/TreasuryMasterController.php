@@ -47,6 +47,15 @@ final class TreasuryMasterController extends Controller
         $viewStoreIds = $this->tenantScope->allowedStoreIds($actor, 'finance.view');
         abort_if($viewStoreIds === [], 403);
 
+        // GET parameters may only open the editor belonging to the visible tab.
+        // Never resolve an unrelated bank/cashbox record from a hidden tab.
+        $tab = (string) ($filters['tab'] ?? 'cashboxes');
+        $cashboxEditor = isset($filters['edit_cashbox']) || ($filters['create'] ?? null) === 'cashbox';
+        $bankEditor = isset($filters['edit_bank_account']) || ($filters['create'] ?? null) === 'bank_account';
+        abort_if(($cashboxEditor && $tab !== 'cashboxes') || ($bankEditor && $tab !== 'bank_accounts'), 404);
+        abort_if(($cashboxEditor && $bankEditor)
+            || (isset($filters['create']) && (isset($filters['edit_cashbox']) || isset($filters['edit_bank_account']))), 404);
+
         $manageStoreIds = $this->tenantScope->allowedStoreIds($actor, 'finance.manage');
         $requestedStoreId = isset($filters['store_id']) ? (int) $filters['store_id'] : null;
         if ($requestedStoreId !== null) {
@@ -78,12 +87,14 @@ final class TreasuryMasterController extends Controller
         $editingCashbox = isset($filters['edit_cashbox'])
             ? EnterpriseCashbox::query()
                 ->whereIn('store_id', $manageStoreIds)
+                ->when($requestedStoreId !== null, fn (Builder $query) => $query->where('store_id', $requestedStoreId))
                 ->findOrFail((int) $filters['edit_cashbox'])
             : null;
 
         $editingBankAccount = isset($filters['edit_bank_account'])
             ? EnterpriseBankAccount::query()
                 ->whereIn('store_id', $manageStoreIds)
+                ->when($requestedStoreId !== null, fn (Builder $query) => $query->where('store_id', $requestedStoreId))
                 ->findOrFail((int) $filters['edit_bank_account'])
             : null;
 
@@ -93,7 +104,7 @@ final class TreasuryMasterController extends Controller
             'navContext' => 'treasury_master',
             'filters' => [
                 ...$filters,
-                'tab' => (string) ($filters['tab'] ?? 'cashboxes'),
+                'tab' => $tab,
                 'status' => $status,
                 'per_page' => $perPage,
             ],
@@ -131,7 +142,7 @@ final class TreasuryMasterController extends Controller
             );
         });
 
-        return redirect()->route('admin.treasury.master.index', ['tab' => 'cashboxes'])
+        return redirect()->route('admin.treasury.master.index', ['tab' => 'cashboxes', 'store_id' => (int) $data['store_id']])
             ->with('status', __('treasury.messages.cashbox_saved'));
     }
 
@@ -161,7 +172,7 @@ final class TreasuryMasterController extends Controller
             );
         });
 
-        return redirect()->route('admin.treasury.master.index', ['tab' => 'cashboxes'])
+        return redirect()->route('admin.treasury.master.index', ['tab' => 'cashboxes', 'store_id' => (int) $data['store_id']])
             ->with('status', __('treasury.messages.cashbox_saved'));
     }
 
@@ -194,7 +205,7 @@ final class TreasuryMasterController extends Controller
             );
         });
 
-        return redirect()->route('admin.treasury.master.index', ['tab' => 'bank_accounts'])
+        return redirect()->route('admin.treasury.master.index', ['tab' => 'bank_accounts', 'store_id' => (int) $data['store_id']])
             ->with('status', __('treasury.messages.bank_account_saved'));
     }
 
@@ -236,7 +247,7 @@ final class TreasuryMasterController extends Controller
             );
         });
 
-        return redirect()->route('admin.treasury.master.index', ['tab' => 'bank_accounts'])
+        return redirect()->route('admin.treasury.master.index', ['tab' => 'bank_accounts', 'store_id' => (int) $data['store_id']])
             ->with('status', __('treasury.messages.bank_account_saved'));
     }
 
