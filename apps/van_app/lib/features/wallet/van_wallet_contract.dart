@@ -45,6 +45,7 @@ class VanCollectionContext {
 class VanReceipt {
   const VanReceipt({
     required this.id,
+    this.paymentId,
     required this.amount,
     required this.currency,
     required this.status,
@@ -52,6 +53,10 @@ class VanReceipt {
   });
 
   final int id;
+
+  /// Server-issued payment identity for invoice/ledger readback. Legacy
+  /// wallet history may not expose it; do not reconstruct it locally.
+  final int? paymentId;
   final double amount;
   final String currency;
   final String status;
