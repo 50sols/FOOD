@@ -8,6 +8,14 @@
 - Risk: **HIGH** — this code validates paths used by updater preflight, file backup and extraction.
 - Runtime impact: Backend updater only. No Dashboard route/view, public API, Customer, Driver or Van source changes; no fulfillment or finance behavior changes.
 
+## Cross-app impact matrix
+
+- **Customer:** no Customer API, authentication/session, storefront, cart/checkout, order or Flutter source changes; no Customer runtime impact.
+- **Driver:** no Driver API, B2C dispatch, assignment, collection, proof-of-delivery or Flutter source changes; no Driver runtime impact.
+- **Van:** no Van API, B2B assignment, territory/visit, direct-sale, fulfillment or Flutter source changes; no Van runtime impact.
+- **Dashboard:** no route, view, RBAC, navigation or localization source changes; the existing Admin ZIP upload UI contract is unchanged.
+- **Backend:** only the internal update-package archive validation boundary and its regression/QA files change.
+
 ## Source behavior
 
 1. Read each ZIP member name in both decoded and raw form; reject a mismatch with `Update archive contains an unsafe path.` before opening the member stream.
