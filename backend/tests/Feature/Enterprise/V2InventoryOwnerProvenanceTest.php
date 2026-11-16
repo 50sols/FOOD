@@ -1232,6 +1232,32 @@ final class V2InventoryOwnerProvenanceTest extends TestCase
         $this->assertFalse($invalidScope['positions'][0]['certified']);
     }
 
+    public function test_missing_attested_stock_movement_trigger_disables_title_certification(): void
+    {
+        if (DB::connection()->getDriverName() !== 'sqlite') {
+            $this->markTestSkipped('SQL trigger disappearance is isolated to SQLite in this fixture.');
+        }
+
+        $verifier = app(InventoryLegalTitleAttestationVerifier::class);
+        $guards = new \ReflectionMethod(InventoryLegalTitleAttestationVerifier::class, 'hasProtectedStockMovementHistory');
+        $this->assertTrue($guards->invoke($verifier));
+
+        // A partial trigger deployment or privileged DDL tamper must never
+        // count as a protected owner-title ledger.
+        DB::unprepared('DROP TRIGGER IF EXISTS p110_attested_movement_no_delete');
+
+        try {
+            $this->assertFalse($guards->invoke($verifier));
+        } finally {
+            // Restore both guards before the next test; a failed assertion
+            // must not weaken this connection's state for other test cases.
+            $migration = require database_path('migrations/2026_11_16_060000_protect_attested_stock_movement_history.php');
+            $migration->up();
+        }
+
+        $this->assertTrue($guards->invoke($verifier));
+    }
+
     public function test_private_signed_title_proof_is_bound_to_owner_stock_document_and_trusted_key(): void
     {
         $this->seed(CoreReferenceSeeder::class);
