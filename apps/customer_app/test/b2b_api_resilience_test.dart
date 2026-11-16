@@ -596,6 +596,79 @@ void main() {
     }
   });
 
+  test('B2B invoice detail rejects a substituted 200 identity', () async {
+    for (final locale in ['ar', 'en']) {
+      for (final scoped in [false, true]) {
+        for (final payload in [
+          '{"data":{"id":32,"store_id":7,"paid_amount":30.125}}',
+          '{"data":{"store_id":7,"paid_amount":30.125}}',
+          '{"data":[{"id":31,"store_id":7}]}',
+        ]) {
+          var calls = 0;
+          final api = HttpB2bApi(
+            baseUrl: 'https://foodex.example',
+            token: 'scoped-token',
+            retailStoreContextId: 17,
+            locale: locale,
+            maxGetAttempts: 3,
+            client: MockClient((request) async {
+              calls++;
+              expect(request.url.path, '/api/v1/b2b/invoices/31');
+              expect(request.url.queryParameters['store_id'],
+                  scoped ? '7' : null);
+              expect(request.headers['Authorization'], 'Bearer scoped-token');
+              expect(request.headers['X-FOODEX-Customer-Domain'], 'b2b');
+              expect(request.headers['X-FOODEX-Retail-Store-ID'], '17');
+              expect(request.headers['Accept-Language'], locale);
+              return http.Response(
+                payload,
+                200,
+                headers: {'content-type': 'application/json'},
+              );
+            }),
+          );
+          await expectLater(
+            api.get(scoped
+                ? '/api/v1/b2b/invoices/31?store_id=7'
+                : '/api/v1/b2b/invoices/31'),
+            throwsA(isA<B2bApiException>()
+                .having((error) => error.code, 'code', 'invalid_response')),
+          );
+          expect(calls, 1);
+        }
+      }
+    }
+  });
+
+  test('B2B invoice detail preserves matching identity and server money',
+      () async {
+    for (final locale in ['ar', 'en']) {
+      final api = HttpB2bApi(
+        baseUrl: 'https://foodex.example',
+        token: 'scoped-token',
+        locale: locale,
+        retailStoreContextId: 17,
+        client: MockClient((request) async {
+          expect(request.url.path, '/api/v1/b2b/invoices/31');
+          expect(request.url.queryParameters['store_id'], '7');
+          expect(request.headers['Authorization'], 'Bearer scoped-token');
+          expect(request.headers['Accept-Language'], locale);
+          return http.Response(
+            '{"data":{"id":31,"store_id":7,"paid_amount":30.125,"outstanding_amount":49.875}}',
+            200,
+            headers: {'content-type': 'application/json'},
+          );
+        }),
+      );
+      final result =
+          await api.get('/api/v1/b2b/invoices/31?store_id=7') as Map;
+      final data = result['data'] as Map;
+      expect(data['id'], 31);
+      expect(data['paid_amount'], 30.125);
+      expect(data['outstanding_amount'], 49.875);
+    }
+  });
+
   test('Scoped B2B partial receipt and statement readback stay server-owned',
       () async {
     for (final locale in ['ar', 'en']) {
