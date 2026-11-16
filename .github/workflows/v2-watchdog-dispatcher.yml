@@ -1,0 +1,58 @@
+name: FOODEX V2 Watchdog Dispatcher (owner-approved #2931)
+
+# Owner's narrow exception: the *dispatcher only* lives on main.
+# Business/application source stays isolated on Foodex_V2.
+# Scheduled GitHub jobs execute from the repository default branch.
+on:
+  schedule:
+    - cron: '*/5 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: read
+  checks: read
+  actions: read
+
+concurrency:
+  group: foodex-v2-lease-dispatcher
+  cancel-in-progress: false
+
+jobs:
+  v2-idle-leases:
+    name: Reconcile V2 idle leases (30 minute threshold)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout immutable reviewed V2 watchdog source
+        uses: actions/checkout@v7
+        with:
+          # Deliberately NOT a mutable Foodex_V2 ref. The privileged worker
+          # must never execute newly pushed feature-branch code automatically.
+          ref: d229e1527e219507a16ec04f83dcc5d97da5b40d
+          path: watchdog-source
+          persist-credentials: false
+
+      - name: Verify pinned source and regression suites
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git -C watchdog-source rev-parse HEAD)" = "d229e1527e219507a16ec04f83dcc5d97da5b40d"
+          node --check watchdog-source/.github/scripts/v2-lease-watchdog.js
+          node --test watchdog-source/.github/scripts/v2-lease-watchdog.test.js watchdog-source/.github/scripts/v2-lease-watchdog.reconciliation.test.js
+
+      - name: Execute narrowly scoped V2 issue lease reconciler
+        uses: actions/github-script@v8
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            if (context.repo.owner !== 'walidatiyaai2025-gif' ||
+                context.repo.repo !== 'FOOD') {
+              throw new Error('Repository allowlist denied watchdog run');
+            }
+            if (!['schedule', 'workflow_dispatch'].includes(context.eventName)) {
+              throw new Error('Event allowlist denied watchdog run');
+            }
+            const { run } = require('./watchdog-source/.github/scripts/v2-lease-watchdog.js');
+            await run({ github, context, core });
