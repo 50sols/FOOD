@@ -169,6 +169,89 @@ final class V2InventoryOwnerProvenanceTest extends TestCase
         $this->assertSame('3.000', $restored['reserved_quantity']);
     }
 
+    public function test_projection_rolls_back_invalid_canonical_stock_without_owner_reclassification(): void
+    {
+        $this->seed(CoreReferenceSeeder::class);
+        $stock = $this->stock('ATOMIC-BALANCE-GUARD');
+        $projection = app(UnknownInventoryOwnerProjection::class);
+
+        foreach ([
+            ['quantity' => '10.000', 'reserved_quantity' => '10.001'],
+            ['quantity' => '-0.001', 'reserved_quantity' => '0.000'],
+            ['quantity' => '10.000', 'reserved_quantity' => '-0.001'],
+        ] as $invalid) {
+            try {
+                DB::transaction(function () use ($stock, $projection, $invalid): void {
+                    DB::table('inventories')->where('id', $stock['inventory_id'])->update($invalid);
+                    $projection->afterUnattributedInventoryMutation($stock['inventory_id']);
+                });
+                $this->fail('Inconsistent canonical stock must roll back before any owner projection.');
+            } catch (\LogicException $exception) {
+                $this->assertStringContainsString('reservation invariants', $exception->getMessage());
+            }
+
+            $this->assertDatabaseHas('inventories', [
+                'id' => $stock['inventory_id'],
+                'quantity' => 10,
+                'reserved_quantity' => 3,
+            ]);
+            $this->assertSame(0, DB::table('enterprise_inventory_owner_positions')
+                ->where('inventory_id', $stock['inventory_id'])->count());
+        }
+
+        $actor = $this->inventoryActor($stock['store_id']);
+        $this->position($stock['inventory_id'], 'FOODEX', null, 10, 3, $actor->id, $actor->id, false);
+        try {
+            DB::transaction(function () use ($stock, $projection): void {
+                DB::table('inventories')->where('id', $stock['inventory_id'])
+                    ->update(['quantity' => 10, 'reserved_quantity' => 11]);
+                $projection->afterUnattributedInventoryMutation($stock['inventory_id']);
+            });
+            $this->fail('Claimed legal title cannot bypass canonical stock balance checks.');
+        } catch (\LogicException $exception) {
+            $this->assertStringContainsString('reservation invariants', $exception->getMessage());
+        }
+
+        $this->assertDatabaseHas('inventories', [
+            'id' => $stock['inventory_id'],
+            'quantity' => 10,
+            'reserved_quantity' => 3,
+        ]);
+        $this->assertDatabaseHas('enterprise_inventory_owner_positions', [
+            'inventory_id' => $stock['inventory_id'],
+            'owner_kind' => 'FOODEX',
+            'quantity' => 10,
+            'reserved_quantity' => 3,
+        ]);
+    }
+
+    public function test_reservation_projection_rejects_over_reservation_inside_canonical_transaction(): void
+    {
+        $this->seed(CoreReferenceSeeder::class);
+        $stock = $this->stock('RESERVE-ATOMIC-GUARD');
+        $projection = app(UnknownInventoryOwnerProjection::class);
+
+        try {
+            DB::transaction(function () use ($stock, $projection): void {
+                $inventory = Inventory::query()
+                    ->whereKey($stock['inventory_id'])->lockForUpdate()->firstOrFail();
+                $inventory->forceFill(['reserved_quantity' => '10.001'])->save();
+                $projection->afterReservationMutation($inventory);
+            });
+            $this->fail('Invalid reservation must fail before UNKNOWN owner upsert.');
+        } catch (\LogicException $exception) {
+            $this->assertStringContainsString('reservation invariants', $exception->getMessage());
+        }
+
+        $this->assertDatabaseHas('inventories', [
+            'id' => $stock['inventory_id'],
+            'quantity' => 10,
+            'reserved_quantity' => 3,
+        ]);
+        $this->assertSame(0, DB::table('enterprise_inventory_owner_positions')
+            ->where('inventory_id', $stock['inventory_id'])->count());
+    }
+
     public function test_self_approval_and_missing_provenance_cannot_certify_foodex_title(): void
     {
         $this->seed(CoreReferenceSeeder::class);
