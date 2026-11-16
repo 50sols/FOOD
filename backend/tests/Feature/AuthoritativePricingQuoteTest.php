@@ -294,6 +294,97 @@ class AuthoritativePricingQuoteTest extends TestCase
         ]);
     }
 
+    public function test_wholesale_checkout_replay_is_bound_to_server_lines_not_forged_price_or_credit(): void
+    {
+        $user = $this->platformCustomer('wholesale-cart-bound@example.test');
+        $resolver = app(CustomerDomainResolver::class);
+        $b2b = $resolver->b2b($user);
+        $legacyId = (int) DB::table('platform_customers')
+            ->where('user_id', $user->id)
+            ->value('legacy_customer_id');
+        $tierId = (int) DB::table('b2b_price_tiers')->where('code', 'STANDARD')->value('id');
+
+        DB::table('b2b_price_rules')->insert([
+            'price_tier_id' => $tierId,
+            'store_id' => $this->wholesale,
+            'product_id' => $this->wholesaleProduct,
+            'unit_price' => 7.250,
+            'minimum_quantity' => 5,
+            'ordering_increment' => 5,
+            'is_active' => true,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $address = Address::query()->create([
+            'customer_id' => $legacyId,
+            'b2b_customer_id' => $b2b->id,
+            'label' => 'Warehouse',
+            'line1' => 'Wholesale cart replay street',
+            'city' => 'Cairo',
+            'country_code' => 'EG',
+            'is_default' => true,
+        ]);
+
+        Sanctum::actingAs($user);
+
+        $this->postJson('/api/v1/cart/items', [
+            'store_id' => $this->wholesale,
+            'product_id' => $this->wholesaleProduct,
+            'quantity' => 5,
+        ])->assertCreated();
+
+        $checkout = [
+            'store_id' => $this->wholesale,
+            'address_id' => $address->id,
+            'payment_method' => 'cash_on_delivery',
+            'unit_price' => 0.001,
+            'price_tier_id' => 99999,
+            'credit_limit' => 1000000,
+            'discount_total' => 99999,
+        ];
+
+        $first = $this->withHeader('Idempotency-Key', 'wholesale-cart-bound-0001')
+            ->postJson('/api/v1/checkout', $checkout)
+            ->assertCreated()
+            ->assertJsonPath('channel', 'b2b')
+            ->assertJsonPath('items.0.unit_price', 7.25)
+            ->assertJsonPath('price_tier_id', $tierId);
+
+        $orderId = (int) $first->json('id');
+
+        // Lost-response replay with a consumed cart returns the same
+        // authoritative wholesale order, never a second invoice/payment.
+        $this->withHeader('Idempotency-Key', 'wholesale-cart-bound-0001')
+            ->postJson('/api/v1/checkout', $checkout)
+            ->assertOk()
+            ->assertJsonPath('id', $orderId);
+
+        $this->postJson('/api/v1/cart/items', [
+            'store_id' => $this->wholesale,
+            'product_id' => $this->wholesaleProduct,
+            'quantity' => 10,
+        ])->assertCreated();
+
+        $this->withHeader('Idempotency-Key', 'wholesale-cart-bound-0001')
+            ->postJson('/api/v1/checkout', $checkout)
+            ->assertConflict();
+
+        $this->assertDatabaseCount('orders', 1);
+        $this->assertDatabaseCount('payments', 1);
+        $this->assertDatabaseCount('invoices', 1);
+        $this->assertDatabaseHas('order_items', [
+            'order_id' => $orderId,
+            'product_id' => $this->wholesaleProduct,
+            'quantity' => 5,
+            'unit_price' => 7.25,
+        ]);
+        $this->assertDatabaseHas('cart_items', [
+            'product_id' => $this->wholesaleProduct,
+            'quantity' => 10,
+        ]);
+    }
+
     public function test_wholesale_order_keeps_tier_and_price_snapshot_after_tier_changes(): void
     {
         $user = $this->platformCustomer('tier-snapshot@example.test');
