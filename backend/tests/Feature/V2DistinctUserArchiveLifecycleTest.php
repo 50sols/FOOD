@@ -296,6 +296,45 @@ final class V2DistinctUserArchiveLifecycleTest extends TestCase
         $this->assertDatabaseHas('audit_logs', ['event' => 'user.archived', 'auditable_id' => $target->id]);
     }
 
+    public function test_stale_email_confirmation_cannot_archive_an_already_inactive_identity(): void
+    {
+        $admin = $this->withRole('SUPER_ADMIN');
+        $target = $this->withRole('B2B_ADMIN');
+        $target->forceFill([
+            'is_active' => false,
+            'deactivated_at' => now(),
+            'deactivation_reason' => 'Previous authorized temporary suspension',
+        ])->save();
+        $token = $target->createToken('stale-inactive-confirmation')->accessToken;
+        $staleSnapshot = $target->fresh();
+        $oldEmail = $target->email;
+        $originalRememberToken = $target->getRememberToken();
+        $target->forceFill(['email' => 'updated-'.$target->id.'@example.test'])->save();
+
+        try {
+            app(RbacManager::class)->archiveUser(
+                $admin,
+                $staleSnapshot,
+                'Reviewed archival of the inactive identity',
+                Request::create('/admin/security/users/'.$target->id.'/archive', 'PATCH', [
+                    'confirm_email' => $oldEmail,
+                    'confirm_archive' => 'ARCHIVE',
+                    'impact_reviewed' => '1',
+                ]),
+            );
+            $this->fail('Previously inactive identities require current locked-row confirmation.');
+        } catch (ValidationException $exception) {
+            $this->assertArrayHasKey('confirm_email', $exception->errors());
+        }
+
+        $fresh = $target->fresh();
+        $this->assertFalse((bool) $fresh->is_active);
+        $this->assertNull($fresh->archived_at);
+        $this->assertSame($originalRememberToken, $fresh->getRememberToken());
+        $this->assertDatabaseHas('personal_access_tokens', ['id' => $token->id]);
+        $this->assertDatabaseMissing('audit_logs', ['event' => 'user.archived', 'auditable_id' => $target->id]);
+    }
+
     private function withRole(string $code): User
     {
         $user = User::factory()->create(['is_active' => true, 'locale' => 'en']);
