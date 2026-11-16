@@ -665,7 +665,7 @@ $dashboardVisible = (bool) ($dashboardVisible ?? false);
                 <select name="dispatch_target" required data-order-inline-picker-select data-initial-value="{{ $dispatchInitial }}" aria-label="{{ $rowWithDriver ? ($row['channel']==='b2b' ? ($isAr ? 'سحب وتحويل إلى فان' : 'Transfer legacy driver order to Van') : ($isAr ? 'سحب وتحويل الطلب لسائق آخر' : 'Withdraw and transfer order to another driver')) : ($row['channel']==='b2b' ? ($isAr ? 'اختر فان' : 'Choose Van') : __('order_operations.dispatch.choose_driver')) }}" @disabled(!$row['can_dispatch'])>
                     <option value="">{{ $rowWithDriver ? ($row['channel']==='b2b' ? ($isAr ? 'سحب وتحويل إلى فان' : 'Transfer legacy driver order to Van') : ($isAr ? 'سحب وتحويل الطلب لسائق آخر' : 'Withdraw and transfer order to another driver')) : ($row['channel']==='b2b' ? ($isAr ? 'اختر فان' : 'Choose Van') : __('order_operations.dispatch.choose_driver')) }}</option>
                     @foreach($drivers as $driver)
-                        @if((int)$driver->store_id===(int)$row['store_id'] && strtolower((string)$driver->driver_type)===$row['channel'] && (!$rowWithDriver || (int)$driver->id!==$rowCurrentDriverId))
+                        @if($row['channel']==='b2c' && (int)$driver->store_id===(int)$row['store_id'] && strtolower((string)$driver->driver_type)==='b2c' && (!$rowWithDriver || (int)$driver->id!==$rowCurrentDriverId))
                             <option value="driver:{{ $driver->id }}" @selected(!$rowWithDriver && $dispatchInitial===('driver:'.$driver->id))>{{ $isAr ? 'سائق' : 'Driver' }} · {{ $driver->name ?: __('order_operations.filters.unnamed_driver') }}</option>
                         @endif
                     @endforeach
