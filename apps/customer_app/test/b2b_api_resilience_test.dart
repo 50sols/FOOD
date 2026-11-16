@@ -614,8 +614,8 @@ void main() {
             client: MockClient((request) async {
               calls++;
               expect(request.url.path, '/api/v1/b2b/invoices/31');
-              expect(request.url.queryParameters['store_id'],
-                  scoped ? '7' : null);
+              expect(
+                  request.url.queryParameters['store_id'], scoped ? '7' : null);
               expect(request.headers['Authorization'], 'Bearer scoped-token');
               expect(request.headers['X-FOODEX-Customer-Domain'], 'b2b');
               expect(request.headers['X-FOODEX-Retail-Store-ID'], '17');
@@ -660,8 +660,7 @@ void main() {
           );
         }),
       );
-      final result =
-          await api.get('/api/v1/b2b/invoices/31?store_id=7') as Map;
+      final result = await api.get('/api/v1/b2b/invoices/31?store_id=7') as Map;
       final data = result['data'] as Map;
       expect(data['id'], 31);
       expect(data['paid_amount'], 30.125);
