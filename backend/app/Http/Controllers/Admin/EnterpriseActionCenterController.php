@@ -36,6 +36,7 @@ final class EnterpriseActionCenterController extends Controller
             'q' => ['nullable', 'string', 'max:100'],
             'state' => ['nullable', Rule::in(['all', 'pending', 'overdue'])],
             'actions_page' => ['nullable', 'integer', 'min:1'],
+            'tab' => ['nullable', Rule::in(['summary', 'filters', 'queue', 'analytics', 'activity', 'approvals'])],
             'module' => ['nullable', Rule::in(['all', 'procurement', 'wms', 'finance', 'treasury', 'customer_service'])],
             'work_state' => ['nullable', Rule::in(['all', 'pending', 'overdue', 'attention'])],
             'owner' => ['nullable', Rule::in(['all', 'me'])],
@@ -55,6 +56,7 @@ final class EnterpriseActionCenterController extends Controller
 
         $search = trim((string) ($validated['q'] ?? ''));
         $state = (string) ($validated['state'] ?? 'all');
+        $activeTab = (string) ($validated['tab'] ?? 'queue');
         $page = (int) ($validated['actions_page'] ?? 1);
         $module = (string) ($validated['module'] ?? 'all');
         $workState = (string) ($validated['work_state'] ?? 'all');
@@ -147,6 +149,7 @@ final class EnterpriseActionCenterController extends Controller
             'truncated' => $result['truncated'],
             'search' => $search,
             'state' => $state,
+            'activeTab' => $activeTab,
             'workItems' => $workResult['items'],
             'workSummary' => $workSummary,
             'workAnalytics' => $workResult['analytics'],
@@ -253,6 +256,7 @@ final class EnterpriseActionCenterController extends Controller
             'q' => ['nullable', 'string', 'max:100'],
             'state' => ['nullable', Rule::in(['all', 'pending', 'overdue'])],
             'actions_page' => ['nullable', 'integer', 'min:1'],
+            'tab' => ['nullable', Rule::in(['approvals'])],
         ]);
 
         try {
@@ -269,7 +273,7 @@ final class EnterpriseActionCenterController extends Controller
             ]);
         }
 
-        $query = [];
+        $query = ['tab' => 'approvals'];
         $search = trim((string) ($validated['q'] ?? ''));
         $state = (string) ($validated['state'] ?? 'all');
         $page = (int) ($validated['actions_page'] ?? 1);
