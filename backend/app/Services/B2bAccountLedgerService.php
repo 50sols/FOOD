@@ -941,7 +941,7 @@ final class B2bAccountLedgerService
      * the original Payment identity plus the *allocated* amount, not its
      * full multi-invoice receipt. Does not authorize Treasury/GL posting.
      *
-     * @return Collection<int,array<string,mixed>>
+     * @return Collection<int,array{id:int,collection_allocation_id:int,status:string,method:string,reference:mixed,amount:float,currency:string,paid_at:mixed}>
      */
     public function splitFieldCollectionPaymentsForInvoice(Invoice $invoice): Collection
     {
