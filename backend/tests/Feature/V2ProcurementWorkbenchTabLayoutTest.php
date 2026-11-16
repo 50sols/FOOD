@@ -99,10 +99,16 @@ final class V2ProcurementWorkbenchTabLayoutTest extends TestCase
             $this->assertStringContainsString('name="tab" value="'.$tab.'"', $html);
             $this->assertStringContainsString('name="store_id" value="'.$store->id.'"', $html);
             $this->assertStringContainsString('name="q" value="SAFE-PREFIX"', $html);
+            $selectedStatus = $tab === 'matches' ? 'pending' : 'draft';
+            $this->assertMatchesRegularExpression(
+                '/<option value="'.preg_quote($selectedStatus, '/').'"\\s+selected\\b/',
+                $html,
+            );
             parse_str((string) parse_url((string) $response->viewData('rows')->url(2), PHP_URL_QUERY), $pageQuery);
             $this->assertSame($tab, $pageQuery['tab'] ?? null);
             $this->assertSame((string) $store->id, (string) ($pageQuery['store_id'] ?? ''));
             $this->assertSame('SAFE-PREFIX', $pageQuery['q'] ?? null);
+            $this->assertSame($selectedStatus, $pageQuery['status'] ?? null);
         }
 
         foreach (self::FOOTER_PAGINATION_TABS as $tab) {
