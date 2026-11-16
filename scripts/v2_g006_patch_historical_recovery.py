@@ -11,6 +11,9 @@ import sys
 
 ORIGINAL = "php artisan optimize:clear\nphp artisan migrate --force --no-interaction\nphp <<'PHP'\n"
 REPLACEMENT = """php artisan optimize:clear
+# The real v124 worktree owns the installed vendor/DB; stage this CI helper
+# beside that worktree's backend before invoking it from backend cwd.
+cp "$repo_root/scripts/v2_g006_reconcile_interrupted_125.php" "../scripts/"
 # Published v125 can create the MySQL table before recording its migration.
 # This exact historical failure MUST be observed, not silently ignored.
 if php artisan migrate --force --no-interaction > "$workspace/g006-expected-first-failure.log" 2>&1; then

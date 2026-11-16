@@ -27,6 +27,7 @@ class HistoricalFixturePatchTest(unittest.TestCase):
             result = path.read_text(encoding="utf-8")
             self.assertIn("SQLSTATE[42S01]", result)
             self.assertIn("--reconcile-ci-fixture", result)
+            self.assertIn('cp "$repo_root/scripts/v2_g006_reconcile_interrupted_125.php" "../scripts/"', result)
             self.assertIn("DROP INDEX order_cs_discount_revision", result)
             self.assertIn("ADD UNIQUE INDEX order_cs_discount_revision", result)
             self.assertEqual(result.count("php artisan migrate --force --no-interaction"), 4)
