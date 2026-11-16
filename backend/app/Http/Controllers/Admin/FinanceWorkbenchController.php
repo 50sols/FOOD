@@ -224,6 +224,7 @@ final class FinanceWorkbenchController extends Controller
                 'allocation_date',
                 'amount',
                 'settlement_account_id',
+                'source_collection_allocation_id',
                 'reference',
             ]),
         );
@@ -986,6 +987,8 @@ final class FinanceWorkbenchController extends Controller
         $settlements = null;
         $settlementAccounts = collect();
         $settlementCreators = collect();
+        $receiptCandidates = collect();
+        $sourceReceiptReferences = collect();
         if ($request->filled('settlement_document_id')) {
             $validated = $request->validate([
                 'settlement_document_id' => ['required', 'integer', 'min:1'],
@@ -1011,6 +1014,15 @@ final class FinanceWorkbenchController extends Controller
                 ->whereIn('id', $settlements->getCollection()->pluck('created_by')->filter()->all())
                 ->pluck('name', 'id');
 
+            $linkedSourceIds = $settlements->getCollection()
+                ->pluck('source_collection_allocation_id')->filter()->all();
+            if ($linkedSourceIds !== []) {
+                $sourceReceiptReferences = DB::table('collection_allocations as source')
+                    ->join('collection_transactions as receipt', 'receipt.id', '=', 'source.collection_transaction_id')
+                    ->whereIn('source.id', $linkedSourceIds)
+                    ->pluck('receipt.id', 'source.id');
+            }
+
             if ($access['ar_manage'] ?? false) {
                 $settlementAccounts = EnterpriseFinanceAccount::query()
                     ->where('organization_id', $scope->organizationId)
@@ -1022,10 +1034,49 @@ final class FinanceWorkbenchController extends Controller
                     ->orderBy('code')
                     ->limit(100)
                     ->get();
+
+                // Selection is a bounded, store/invoice-scoped preview only.
+                // The canonical AR service row-locks and validates the receipt
+                // again when drafting; no UI option can authorize GL posting.
+                if ($settlementDocument->source_invoice_id !== null) {
+                    $receiptCandidates = DB::table('collection_allocations as source')
+                        ->join('collection_transactions as receipt', 'receipt.id', '=', 'source.collection_transaction_id')
+                        ->join('collection_accounts as custody', 'custody.id', '=', 'receipt.collection_account_id')
+                        ->join('payments as payment', 'payment.id', '=', 'receipt.payment_id')
+                        ->leftJoin('enterprise_ar_allocations as claimed', 'claimed.source_collection_allocation_id', '=', 'source.id')
+                        ->whereNull('claimed.id')
+                        ->where('source.invoice_id', (int) $settlementDocument->source_invoice_id)
+                        ->where('source.currency', (string) $settlementDocument->currency_code)
+                        ->where('custody.store_id', (int) $settlementDocument->store_id)
+                        ->where('custody.currency', (string) $settlementDocument->currency_code)
+                        ->where('custody.actor_type', $context->isRetail() ? 'driver' : 'van_rep')
+                        ->where('custody.status', 'active')
+                        ->where('receipt.type', 'collection')
+                        ->where('receipt.status', 'posted')
+                        ->where('receipt.currency', (string) $settlementDocument->currency_code)
+                        ->where('payment.status', 'paid')
+                        ->where('payment.provider', 'field_collection')
+                        ->where('payment.currency', (string) $settlementDocument->currency_code)
+                        ->whereColumn('payment.provider_reference', 'receipt.idempotency_key')
+                        ->where(function ($query) use ($settlementDocument): void {
+                            $query->whereNull('payment.invoice_id')
+                                ->orWhere('payment.invoice_id', (int) $settlementDocument->source_invoice_id);
+                        })
+                        ->whereNotExists(function ($query): void {
+                            $query->selectRaw('1')
+                                ->from('collection_transactions as reversal')
+                                ->whereColumn('reversal.reversal_of_id', 'receipt.id')
+                                ->where('reversal.status', 'posted');
+                        })
+                        ->where('source.amount', '>', 0)
+                        ->orderByDesc('source.id')
+                        ->limit(50)
+                        ->get(['source.id', 'source.amount', 'source.currency', 'receipt.id as receipt_id']);
+                }
             }
         }
 
-        return compact('documents', 'aging', 'agingTotals', 'filters', 'settlementDocument', 'settlements', 'settlementAccounts', 'settlementCreators');
+        return compact('documents', 'aging', 'agingTotals', 'filters', 'settlementDocument', 'settlements', 'settlementAccounts', 'settlementCreators', 'receiptCandidates', 'sourceReceiptReferences');
     }
 
     /** @return array<string, mixed> */

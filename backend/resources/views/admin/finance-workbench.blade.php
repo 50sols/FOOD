@@ -536,6 +536,18 @@ $trendMax=max(1,max(array_map(fn($r)=>max(abs((float)$r['revenue']),abs((float)$
 <option value="{{ $account->id }}">{{ $account->code }} · {{ $account->name }}</option>
 @endforeach
 </select></div>
+@if($data['settlementDocument']->source_invoice_id !== null)
+<div class="finance-field">
+<label for="p303-collection-receipt">{{ __('finance_workbench.receivables.receipt_allocation') }}</label>
+<select id="p303-collection-receipt" name="source_collection_allocation_id" required>
+<option value="">{{ __('finance_workbench.common.select') }}</option>
+@foreach($data['receiptCandidates'] as $receipt)
+<option value="{{ $receipt->id }}" data-collection-receipt="true">{{ __('finance_workbench.receivables.receipt_option', ['receipt' => $receipt->receipt_id, 'amount' => $money($receipt->amount), 'currency' => $receipt->currency]) }}</option>
+@endforeach
+</select>
+<p class="finance-notice">{{ __('finance_workbench.receivables.receipt_draft_notice') }}</p>
+</div>
+@endif
 <div class="finance-field"><label>{{ __('finance_workbench.common.reference') }}</label><input name="reference" maxlength="180"></div>
 <p class="finance-notice">{{ __('finance_workbench.receivables.reference_notice') }}</p>
 <button class="finance-button" type="submit">{{ __('finance_workbench.receivables.new_settlement') }}</button>
@@ -549,7 +561,12 @@ $trendMax=max(1,max(array_map(fn($r)=>max(abs((float)$r['revenue']),abs((float)$
 <tr>
 <td>{{ optional($settlement->allocation_date)->format('Y-m-d') }}</td>
 <td class="finance-money">{{ $money($settlement->amount) }}</td>
-<td>{{ $settlement->reference ?: '—' }}</td>
+<td>
+{{ $settlement->reference ?: '—' }}
+@if($settlement->source_collection_allocation_id !== null && $data['sourceReceiptReferences']->has($settlement->source_collection_allocation_id))
+<small class="finance-notice" data-v2-linked-collection>{{ __('finance_workbench.receivables.linked_receipt', ['receipt' => $data['sourceReceiptReferences']->get($settlement->source_collection_allocation_id)]) }}</small>
+@endif
+</td>
 <td><span class="finance-status">{{ $statusLabel($settlement->status) }}</span></td>
 <td>{{ $data['settlementCreators']->get($settlement->created_by, '—') }}</td>
 <td>@if($settlement->journal_id)<a class="finance-button" href="{{ route('admin.erp.finance.index',[...$routeBase,'tab'=>'journals','journal'=>$settlement->journal_id]) }}">{{ __('finance_workbench.actions.view_ledger') }}</a>@else—@endif</td>

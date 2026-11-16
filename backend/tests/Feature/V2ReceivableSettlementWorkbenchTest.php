@@ -758,6 +758,105 @@ final class V2ReceivableSettlementWorkbenchTest extends TestCase
         $this->assertDatabaseCount('enterprise_ar_allocations', 1);
     }
 
+    public function test_bilingual_finance_receipt_picker_only_lists_canonical_invoice_allocations_and_persists_typed_source(): void
+    {
+        $fixture = $this->fixture('P303-RECEIPT-UI');
+        $store = $fixture['store'];
+        $document = $fixture['document'];
+        $maker = $fixture['maker'];
+
+        $invoiceId = DB::table('invoices')->insertGetId([
+            'invoice_number' => 'P303-RECEIPT-UI-OWN',
+            'store_id' => $store->id,
+            'customer_id' => $document->customer_id,
+            'status' => 'issued',
+            'currency' => 'KWD',
+            'total' => '100.000',
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        $foreignInvoiceId = DB::table('invoices')->insertGetId([
+            'invoice_number' => 'P303-RECEIPT-UI-OTHER',
+            'store_id' => $store->id,
+            'customer_id' => $document->customer_id,
+            'status' => 'issued',
+            'currency' => 'KWD',
+            'total' => '100.000',
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        $document->forceFill(['source_invoice_id' => $invoiceId])->save();
+        $account = CollectionAccount::query()->create([
+            'actor_type' => 'driver',
+            'actor_id' => $maker->id,
+            'store_id' => $store->id,
+            'currency' => 'KWD',
+            'status' => 'active',
+        ]);
+        $custody = app(CollectionCustodyService::class);
+        $receipt = $custody->collect(
+            $account, $maker, 'p303-receipt-ui-own', 30.0, 'KWD',
+            'driver_app', [['invoice_id' => $invoiceId, 'amount' => 30.0]],
+        );
+        $foreignReceipt = $custody->collect(
+            $account, $maker, 'p303-receipt-ui-foreign', 12.0, 'KWD',
+            'driver_app', [['invoice_id' => $foreignInvoiceId, 'amount' => 12.0]],
+        );
+        $sourceId = (int) DB::table('collection_allocations')
+            ->where('collection_transaction_id', $receipt->id)->value('id');
+        $foreignSourceId = (int) DB::table('collection_allocations')
+            ->where('collection_transaction_id', $foreignReceipt->id)->value('id');
+
+        foreach (['en', 'ar'] as $locale) {
+            $maker->forceFill(['locale' => $locale])->save();
+            $this->actingAs($maker->fresh())->get(route('admin.erp.finance.index', [
+                'store_id' => $store->id,
+                'tab' => 'receivables',
+                'settlement_document_id' => $document->id,
+            ]))->assertOk()
+                ->assertSee('name="source_collection_allocation_id"', false)
+                ->assertSee('<option value="'.$sourceId.'" data-collection-receipt="true">', false)
+                ->assertDontSee('<option value="'.$foreignSourceId.'" data-collection-receipt="true">', false)
+                ->assertSee(__('finance_workbench.receivables.receipt_allocation', [], $locale));
+        }
+
+        $payload = [
+            'store_id' => $store->id,
+            'idempotency_key' => 'p303-ui-typed-receipt',
+            'allocation_date' => '2027-01-12',
+            'amount' => '30.000',
+            'settlement_account_id' => $fixture['cash_account_id'],
+            'source_collection_allocation_id' => $sourceId,
+        ];
+        $this->actingAs($maker)->post(
+            route('admin.erp.finance.receivables.settlements.store', $document->id), $payload,
+        )->assertSessionHasNoErrors();
+        $draft = EnterpriseAccountsReceivableAllocation::query()->sole();
+        $this->assertSame('draft', $draft->status);
+        $this->assertSame($sourceId, (int) $draft->source_collection_allocation_id);
+        foreach (['en', 'ar'] as $locale) {
+            $maker->forceFill(['locale' => $locale])->save();
+            $this->actingAs($maker->fresh())->get(route('admin.erp.finance.index', [
+                'store_id' => $store->id,
+                'tab' => 'receivables',
+                'settlement_document_id' => $document->id,
+            ]))->assertOk()
+                ->assertSee('data-v2-linked-collection', false)
+                ->assertSee(__('finance_workbench.receivables.linked_receipt', ['receipt' => $receipt->id], $locale))
+                ->assertDontSee('<option value="'.$sourceId.'" data-collection-receipt="true">', false);
+        }
+        $this->actingAs($maker)->post(
+            route('admin.erp.finance.receivables.settlements.store', $document->id), $payload,
+        )->assertSessionHasNoErrors();
+        $this->assertDatabaseCount('enterprise_ar_allocations', 1);
+        $this->actingAs($maker)->post(
+            route('admin.erp.finance.receivables.settlements.store', $document->id),
+            [...$payload, 'idempotency_key' => 'p303-ui-forged-other', 'source_collection_allocation_id' => $foreignSourceId],
+        )->assertSessionHasErrors('source_collection_allocation_id');
+        $this->assertDatabaseCount('enterprise_ar_allocations', 1);
+        $this->assertDatabaseCount('enterprise_finance_journals', 1);
+    }
+
     public function test_reversed_and_cross_store_collection_sources_cannot_be_claimed(): void
     {
         $fixture = $this->fixture('P303-COLLECTION-NEG');
