@@ -22,6 +22,12 @@ BASE_ENTRIES = {
         b"Verify the storage symlink. Use cPanel Cron Jobs for schedule:run."
     ),
     "backend/public/index.php": b"<?php",
+    "backend/public/assets/admin/assistant-chat.css": b"/* compiled admin CSS */",
+    "backend/public/assets/admin/assistant-chat.js": b"'use strict';",
+    "backend/public/assets/wholesale/foodex-wholesale.css": b"/* bundled wholesale CSS */",
+    "backend/public/assets/wholesale/foodex-wholesale.js": b"'use strict';",
+    "backend/public/css/smart-ordering-storefront.css": b"/* bundled storefront CSS */",
+    "backend/public/js/smart-ordering-storefront.js": b"'use strict';",
     "backend/vendor/autoload.php": b"<?php",
     "backend/.env.production.example": (
         b"APP_ENV=production\n"
@@ -70,6 +76,36 @@ class V2SetupStagingVerifierTest(unittest.TestCase):
         self.assertIs(False, result["signed"])
         self.assertEqual(SHA, result["source_commit"])
         self.assertEqual(hashlib.sha256(self.archive.read_bytes()).hexdigest(), result["sha256"])
+
+    def test_setup_zip_rejects_missing_required_frontend_css_and_js(self) -> None:
+        # Missing public assets can produce an apparently successful Laravel
+        # installation with broken Admin or storefront functionality.
+        for asset_name in (
+            "backend/public/assets/admin/assistant-chat.css",
+            "backend/public/js/smart-ordering-storefront.js",
+        ):
+            with self.subTest(asset=asset_name):
+                entries = {key: value for key, value in BASE_ENTRIES.items()
+                           if key != asset_name}
+                with zipfile.ZipFile(self.archive, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+                    for key, payload in entries.items():
+                        archive.writestr(key, payload)
+                with self.assertRaisesRegex(SetupZipError, "Missing compiled/public frontend assets"):
+                    self.verify()
+
+    def test_setup_zip_rejects_empty_frontend_assets(self) -> None:
+        for asset_name in (
+            "backend/public/assets/wholesale/foodex-wholesale.css",
+            "backend/public/assets/admin/assistant-chat.js",
+        ):
+            with self.subTest(asset=asset_name):
+                self.pack({asset_name: b""})
+                with self.assertRaisesRegex(SetupZipError, "Empty compiled/public frontend asset"):
+                    self.verify()
+
+    def test_required_frontend_assets_are_nonempty_in_accepted_setup(self) -> None:
+        result = self.verify()
+        self.assertEqual("UNTRUSTED_CI_STAGING_ONLY", result["status"])
 
     def test_secret_env_and_runtime_private_members_fail_closed(self) -> None:
         for entry in (
