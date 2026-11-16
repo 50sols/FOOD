@@ -35,6 +35,12 @@ final class AdminUserDeletionService
             $reasons[] = 'active';
         }
 
+        // Consumer identity erasure follows its separate self-service privacy
+        // workflow; an administrator cannot bypass that retention lifecycle.
+        if ((bool) $target->is_platform_customer) {
+            $reasons[] = 'consumer';
+        }
+
         // Do not infer Platform Owner status only from isPlatformOwner(), which
         // intentionally returns false for deactivated identities.
         if ($target->roles()->whereIn('roles.code', ['SUPER_ADMIN', 'PLATFORM_OWNER'])->exists()
