@@ -119,9 +119,7 @@ final class V2FinanceWorkbenchPanelAuthorityTest extends TestCase
 
                 $response = $this->actingAs($actor)
                     ->get(route('admin.erp.finance.index', $query))->assertOk();
-                $expected = $tab === 'receivables' && $panel === null
-                    ? 'settlements'
-                    : 'documents';
+                $expected = 'documents';
                 $this->assertSame(1, substr_count($response->getContent(), 'data-finance-subpanel="'));
                 $response->assertSee('data-finance-subpanel="'.$expected.'"', false);
                 foreach (['documents','settlements','aging'] as $candidate) {
