@@ -32,6 +32,7 @@ class HttpB2bApi implements B2bApi, B2bDocumentApi, B2bDownloadApi {
     required this.baseUrl,
     required this.token,
     this.retailStoreContextId,
+    this.locale = 'ar',
     this.requestTimeout = const Duration(seconds: 20),
     this.maxGetAttempts = 2,
     http.Client? client,
@@ -41,6 +42,7 @@ class HttpB2bApi implements B2bApi, B2bDocumentApi, B2bDownloadApi {
   final String baseUrl;
   final String token;
   final int? retailStoreContextId;
+  final String locale;
   final Duration requestTimeout;
   final int maxGetAttempts;
   final http.Client _client;
@@ -89,18 +91,29 @@ class HttpB2bApi implements B2bApi, B2bDocumentApi, B2bDownloadApi {
     Object? lastError;
     for (var attempt = 1; attempt <= maxGetAttempts; attempt++) {
       try {
-        return await _client
+        final response = await _client
             .get(
               Uri.parse('$baseUrl$path'),
               headers: {
                 'Accept': accept,
                 'Authorization': 'Bearer $token',
                 'X-FOODEX-Customer-Domain': 'b2b',
+                'Accept-Language': locale == 'en' ? 'en' : 'ar',
                 if (retailStoreContextId != null)
                   'X-FOODEX-Retail-Store-ID': retailStoreContextId.toString(),
               },
             )
             .timeout(requestTimeout);
+        // These are safe invoice/statement/document reads, not financial
+        // mutations. Keep the caller's session, store and locale on retry.
+        if (attempt < maxGetAttempts &&
+            (response.statusCode == 502 ||
+                response.statusCode == 503 ||
+                response.statusCode == 504)) {
+          await Future<void>.delayed(Duration(milliseconds: 200 * attempt));
+          continue;
+        }
+        return response;
       } on TimeoutException catch (error) {
         lastError = error;
       } on http.ClientException catch (error) {
