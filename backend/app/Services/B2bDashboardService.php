@@ -138,7 +138,7 @@ final class B2bDashboardService
                 'date' => $day->toDateString(),
                 'label' => $day->format('d/m'),
                 'orders' => (int) ($metrics->order_count ?? 0),
-                'revenue' => (float) ($metrics->net_revenue ?? 0),
+                'revenue' => round((float) ($metrics->net_revenue ?? 0), 3),
             ];
         }
 
