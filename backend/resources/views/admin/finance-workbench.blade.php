@@ -559,7 +559,13 @@ $trendMax=max(1,max(array_map(fn($r)=>max(abs((float)$r['revenue']),abs((float)$
 </select>
 <small id="p303-finance-source" class="finance-muted">{{ __('finance_workbench.receivables.mapping_finance_source_help') }}</small>
 </div>
-<button class="finance-button primary" type="submit">{{ __('finance_workbench.receivables.mapping_propose') }}</button>
+<div class="finance-field">
+<small class="finance-muted" id="p303-mapping-test-help">{{ __('finance_workbench.receivables.mapping_test_help') }}</small>
+</div>
+<div class="finance-inline-actions" aria-describedby="p303-mapping-test-help">
+<button class="finance-button" type="submit" name="mapping_action" value="test">{{ __('finance_workbench.receivables.mapping_test') }}</button>
+<button class="finance-button primary" type="submit" name="mapping_action" value="save">{{ __('finance_workbench.receivables.mapping_propose') }}</button>
+</div>
 </form></div></details>
 @endif
 <div class="finance-table-wrap"><table class="finance-table">
