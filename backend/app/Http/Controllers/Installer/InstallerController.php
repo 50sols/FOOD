@@ -287,7 +287,47 @@ class InstallerController extends Controller
             'MAIL_FROM_ADDRESS', 'MAIL_FROM_NAME',
         ]);
 
+        // The view is presentation-only: keep complex expressions outside Blade,
+        // and never infer live readiness from a stored configuration alone.
+        $completedStep = (int) $progress['completed_step'];
+        $configurationFields = [
+            4 => ['db_host', 'db_port', 'db_database', 'db_username', 'db_password'],
+            6 => ['app_name', 'app_url', 'app_locale'],
+            7 => ['admin_name', 'admin_email', 'admin_locale', 'admin_password', 'admin_password_confirmation'],
+            8 => ['filesystem_disk'],
+            9 => ['cache_store', 'queue_connection', 'redis_host', 'redis_port', 'redis_password'],
+            10 => ['mail_mailer', 'mail_scheme', 'mail_host', 'mail_port', 'mail_username', 'mail_password', 'mail_from_address', 'mail_from_name'],
+        ][$currentStep] ?? [];
+
+        $readinessKey = match ($currentStep) {
+            4, 5 => $completedStep >= 5 ? 'db_tested' : ($completedStep >= 4 ? 'db_saved' : 'not_saved'),
+            6 => $completedStep >= 6 ? 'platform_saved' : 'not_saved',
+            7 => $completedStep >= 7 ? 'admin_prepared' : 'not_saved',
+            8 => $completedStep >= 14 ? 'storage_checked' : ($completedStep >= 8 ? 'storage_pending' : 'not_saved'),
+            9 => $completedStep >= 14 ? 'queue_checked' : ($completedStep >= 9 ? 'queue_pending' : 'not_saved'),
+            10 => $completedStep >= 10 ? (($values['MAIL_MAILER'] ?? 'log') === 'smtp' ? 'smtp_unverified' : 'mail_non_delivery') : 'not_saved',
+            default => null,
+        };
+
+        $cacheChoice = $input['cache_store'] ?? ($values['CACHE_STORE'] ?? null);
+        $queueChoice = $input['queue_connection'] ?? ($values['QUEUE_CONNECTION'] ?? null);
+        $selectedCache = in_array($cacheChoice, ['file', 'redis'], true) ? $cacheChoice : 'file';
+        $selectedQueue = in_array($queueChoice, ['sync', 'redis'], true) ? $queueChoice : 'sync';
+
+        $actionKey = match ($currentStep) {
+            4, 6, 7, 8, 9, 10 => 'save_continue',
+            5 => 'test_database',
+            14 => 'test_health',
+            15 => 'finish',
+            default => 'continue',
+        };
+
         return [
+            'configurationFields' => $configurationFields,
+            'readinessKey' => $readinessKey,
+            'selectedCache' => $selectedCache,
+            'selectedQueue' => $selectedQueue,
+            'actionKey' => $actionKey,
             'steps' => InstallerChecklist::details(),
             'currentStep' => $currentStep,
             'completedStep' => $progress['completed_step'],

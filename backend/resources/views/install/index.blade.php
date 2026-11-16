@@ -179,8 +179,6 @@
                         </label>
                     </div>
                 @elseif ($currentStep === 9)
-                    @php($selectedCache = $input['cache_store'] ?? (in_array($values['CACHE_STORE'] ?? null, ['redis', 'file'], true) ? $values['CACHE_STORE'] : 'file'))
-                    @php($selectedQueue = $input['queue_connection'] ?? (in_array($values['QUEUE_CONNECTION'] ?? null, ['redis', 'sync'], true) ? $values['QUEUE_CONNECTION'] : 'sync'))
                     <div class="fields">
                         <label>{{ __('installer.fields.cache_store') }}
                             <select name="cache_store">
@@ -234,25 +232,6 @@
                 @endif
 
 
-                @php
-                    $configurationFields = [
-                        4 => ['db_host', 'db_port', 'db_database', 'db_username', 'db_password'],
-                        6 => ['app_name', 'app_url', 'app_locale'],
-                        7 => ['admin_name', 'admin_email', 'admin_locale', 'admin_password', 'admin_password_confirmation'],
-                        8 => ['filesystem_disk'],
-                        9 => ['cache_store', 'queue_connection', 'redis_host', 'redis_port', 'redis_password'],
-                        10 => ['mail_mailer', 'mail_scheme', 'mail_host', 'mail_port', 'mail_username', 'mail_password', 'mail_from_address', 'mail_from_name'],
-                    ][$currentStep] ?? [];
-                    $readinessKey = match ($currentStep) {
-                        4, 5 => $completedStep >= 5 ? 'db_tested' : ($completedStep >= 4 ? 'db_saved' : 'not_saved'),
-                        6 => $completedStep >= 6 ? 'platform_saved' : 'not_saved',
-                        7 => $completedStep >= 7 ? 'admin_prepared' : 'not_saved',
-                        8 => $completedStep >= 14 ? 'storage_checked' : ($completedStep >= 8 ? 'storage_pending' : 'not_saved'),
-                        9 => $completedStep >= 14 ? 'queue_checked' : ($completedStep >= 9 ? 'queue_pending' : 'not_saved'),
-                        10 => $completedStep >= 10 ? (($values['MAIL_MAILER'] ?? 'log') === 'smtp' ? 'smtp_unverified' : 'mail_non_delivery') : 'not_saved',
-                        default => null,
-                    };
-                @endphp
                 @if ($configurationFields !== [])
                     <details class="field-help">
                         <summary>{{ __('installer.wizard.help_summary') }}</summary>
@@ -272,15 +251,7 @@
 
                 <div class="actions">
                     <button type="submit">
-                        {{ $currentStep === 15
-                            ? __('installer.wizard.finish')
-                            : ($currentStep === 5
-                                ? __('installer.wizard.test_database')
-                                : ($currentStep === 14
-                                    ? __('installer.wizard.test_health')
-                                    : (in_array($currentStep, [4, 6, 7, 8, 9, 10], true)
-                                        ? __('installer.wizard.save_continue')
-                                        : __('installer.wizard.continue')))) }}
+                        {{ __('installer.wizard.'.$actionKey) }}
                     </button>
                 </div>
             </form>
