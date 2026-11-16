@@ -184,6 +184,25 @@ final class CollectionAccountSettlementMappingService
                 ]);
             }
             if ($newStatus === 'APPROVED') {
+                // The locked collection-account row serializes approval order.
+                // A late checker must not reactivate an older proposal after
+                // a newer revision has been approved, even if that newer
+                // revision was later superseded by another approved revision.
+                $newerApprovedRevisionExists = EnterpriseFinanceCollectionAccountMapping::query()
+                    ->where('collection_account_id', $collection->id)
+                    ->where('organization_id', $scope->organizationId)
+                    ->where('company_id', $scope->companyId)
+                    ->where('legal_entity_id', $scope->legalEntityId)
+                    ->where('store_id', $context->requiresStore())
+                    ->where('revision', '>', (int) $mapping->revision)
+                    ->whereIn('status', ['APPROVED', 'SUPERSEDED'])
+                    ->exists();
+                if ($newerApprovedRevisionExists) {
+                    throw ValidationException::withMessages([
+                        'mapping_id' => [__('finance_workbench.receivables.mapping_already_reviewed')],
+                    ]);
+                }
+
                 $this->assertFinanceAccount($scope, (int) $mapping->finance_account_id);
 
                 // Superseding an approved revision is itself a financial-control
