@@ -44,7 +44,7 @@ final class FinanceWorkbenchTest extends TestCase
             ->assertForbidden();
     }
 
-    public function test_authorized_accountant_can_open_every_read_tab_in_arabic_and_english(): void
+    public function test_retail_accountant_can_open_store_tabs_but_not_corporate_gl_in_both_locales(): void
     {
         [$actor, $store, $context] = $this->operator(['finance.view'], 'ERP-FINANCE-READ', 'en');
         $this->enableFinance($actor, $context);
@@ -64,8 +64,6 @@ final class FinanceWorkbenchTest extends TestCase
             'tax',
             'allocations',
             'assets',
-            'statements',
-            'reports',
         ];
 
         foreach ($tabs as $tab) {
@@ -75,6 +73,14 @@ final class FinanceWorkbenchTest extends TestCase
                 ->assertSee('data-finance-workbench="true"', false)
                 ->assertSee('Finance Accountant Workbench')
                 ->assertSee('dir="ltr"', false);
+        }
+
+        // Legal-entity GL statements and aggregate reports have no immutable
+        // Retail store provenance; a Retail-only actor must not read them.
+        foreach (['statements', 'reports'] as $corporateTab) {
+            $this->actingAs($actor)
+                ->get(route('admin.erp.finance.index', ['store_id' => $store->id, 'tab' => $corporateTab]))
+                ->assertForbidden();
         }
 
         $actor->update(['locale' => 'ar']);

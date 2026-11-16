@@ -16,6 +16,69 @@ class B2bReportingTest extends TestCase
 {
     use RefreshDatabase;
 
+    public function test_mixed_currency_purchases_use_bilingual_409_without_cross_customer_leak_or_writes(): void
+    {
+        $this->seed(CoreReferenceSeeder::class);
+        [$user, $customer] = $this->buyer('v2-3785-buyer@example.test', 'active');
+        [$foreignUser, $foreignCustomer] = $this->buyer('v2-3785-foreign@example.test', 'active');
+        $domain = app(CustomerDomainResolver::class)->b2b($user);
+        $foreignDomain = app(CustomerDomainResolver::class)->b2b($foreignUser);
+        $typeId = (int) DB::table('store_types')->where('code', 'B2B')->value('id');
+        $storeId = (int) DB::table('stores')->insertGetId([
+            'store_type_id' => $typeId,
+            'code' => 'V2-3785-WHOLESALE',
+            'name' => 'V2 Mixed Currency Wholesale',
+            'is_active' => true,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $kwdOrder = $this->order($storeId, $customer->id, 10, 'delivered');
+        $egpOrder = $this->order($storeId, $customer->id, 20, 'delivered');
+        $foreignOrder = $this->order($storeId, $foreignCustomer->id, 100, 'delivered');
+
+        DB::table('orders')->whereIn('id', [$kwdOrder, $egpOrder])
+            ->update(['b2b_customer_id' => $domain->getKey()]);
+        DB::table('orders')->where('id', $egpOrder)->update(['currency' => 'EGP']);
+        DB::table('orders')->where('id', $foreignOrder)->update([
+            'b2b_customer_id' => $foreignDomain->getKey(),
+            'currency' => 'USD',
+        ]);
+
+        Sanctum::actingAs($user);
+        foreach ([
+            ['ar', 'en', 'يحتوي تقرير المشتريات على عملات مختلفة، ولا يمكن جمع مبالغها بأمان.'],
+            ['en', 'ar', 'Purchase report contains mixed currencies and cannot be combined safely.'],
+            ['fr', 'ar-KW,ar;q=0.9,en;q=0.5', 'يحتوي تقرير المشتريات على عملات مختلفة، ولا يمكن جمع مبالغها بأمان.'],
+            ['fr', 'en-US,en;q=0.9,ar;q=0.5', 'Purchase report contains mixed currencies and cannot be combined safely.'],
+        ] as [$userLocale, $acceptLanguage, $expectedMessage]) {
+            $user->forceFill(['locale' => $userLocale])->save();
+            $this->withHeader('Accept-Language', $acceptLanguage)
+                ->getJson('/api/v1/b2b/reports/purchases?store_id='.$storeId)
+                ->assertConflict()
+                ->assertJsonPath('message', $expectedMessage);
+
+            $this->assertDatabaseCount('orders', 3);
+            $this->assertDatabaseHas('orders', [
+                'id' => $kwdOrder, 'b2b_customer_id' => $domain->getKey(), 'currency' => 'KWD',
+            ]);
+            $this->assertDatabaseHas('orders', [
+                'id' => $egpOrder, 'b2b_customer_id' => $domain->getKey(), 'currency' => 'EGP',
+            ]);
+        }
+
+        DB::table('orders')->where('id', $egpOrder)->update(['currency' => 'KWD']);
+        $user->forceFill(['locale' => 'en'])->save();
+
+        // The foreign USD order must not affect this account's currency
+        // decision after the two owned orders agree.
+        $this->getJson('/api/v1/b2b/reports/purchases?store_id='.$storeId)
+            ->assertOk()
+            ->assertJsonPath('currency', 'KWD')
+            ->assertJsonPath('summary.order_count', 2)
+            ->assertJsonPath('summary.total_purchases', 30);
+    }
+
     public function test_active_b2b_customer_receives_scoped_dashboard_and_purchase_aggregates(): void
     {
         $this->seed(CoreReferenceSeeder::class);
@@ -378,6 +441,99 @@ class B2bReportingTest extends TestCase
         Sanctum::actingAs($active);
         $this->getJson('/api/v1/b2b/reports/purchases?from=2026-09-25&to=2026-09-24')->assertUnprocessable();
         $this->getJson('/api/v1/b2b/products/top?from=2026-09-25&to=2026-09-24')->assertUnprocessable();
+    }
+
+    public function test_top_products_search_treats_sql_wildcards_as_literal_text_and_preserves_scope(): void
+    {
+        $this->seed(CoreReferenceSeeder::class);
+        [$user, $customer] = $this->buyer('top-literal@example.test', 'active');
+        [, $otherCustomer] = $this->buyer('top-literal-other@example.test', 'active');
+
+        $storeType = (int) DB::table('store_types')->where('code', 'B2B')->value('id');
+        $store = (int) DB::table('stores')->insertGetId([
+            'store_type_id' => $storeType, 'code' => 'TOP-LITERAL', 'name' => 'Literal Wholesale',
+            'is_active' => true, 'created_at' => now(), 'updated_at' => now(),
+        ]);
+        $otherStore = (int) DB::table('stores')->insertGetId([
+            'store_type_id' => $storeType, 'code' => 'TOP-LITERAL-OTHER', 'name' => 'Other Wholesale',
+            'is_active' => true, 'created_at' => now(), 'updated_at' => now(),
+        ]);
+        $unit = (int) DB::table('units')->insertGetId([
+            'code' => 'TOP-LITERAL-EA', 'name' => 'Each', 'decimal_places' => 0,
+            'created_at' => now(), 'updated_at' => now(),
+        ]);
+
+        $fixtures = [
+            ['sku' => 'CASE%_A', 'name' => 'Literal percent underscore', 'store' => $store, 'customer' => $customer->id],
+            ['sku' => 'CASEzzA', 'name' => 'Wildcard lookalike', 'store' => $store, 'customer' => $customer->id],
+            ['sku' => 'TOP-EXCL', 'name' => 'MARK!_B', 'store' => $store, 'customer' => $customer->id],
+            ['sku' => 'TOP-BANG', 'name' => 'BANG!END', 'store' => $store, 'customer' => $customer->id],
+            ['sku' => 'OTHER%_A', 'name' => 'Other store literal', 'store' => $otherStore, 'customer' => $customer->id],
+            ['sku' => 'FOREIGN%_A', 'name' => 'Foreign customer literal', 'store' => $store, 'customer' => $otherCustomer->id],
+        ];
+        $productIds = [];
+        foreach ($fixtures as $index => $fixture) {
+            $productId = (int) DB::table('products')->insertGetId([
+                'unit_id' => $unit,
+                'sku' => 'TOP-LITERAL-'.($index + 1),
+                'name' => 'Historical Test Product '.($index + 1),
+                'is_active' => true,
+                'created_at' => now(), 'updated_at' => now(),
+            ]);
+            $productIds[] = $productId;
+            $orderId = $this->order($fixture['store'], $fixture['customer'], 10, 'delivered');
+            DB::table('order_items')->insert([
+                'order_id' => $orderId,
+                'product_id' => $productId,
+                'sku_snapshot' => $fixture['sku'],
+                'name_snapshot' => $fixture['name'],
+                'quantity' => 1,
+                'unit_price' => 10,
+                'line_total' => 10,
+                'created_at' => now(), 'updated_at' => now(),
+            ]);
+        }
+
+        $before = DB::table('order_items')->count();
+        Sanctum::actingAs($user);
+
+        $this->getJson('/api/v1/b2b/products/top?store_id='.$store.'&q='.rawurlencode('%_'))
+            ->assertOk()
+            ->assertJsonPath('meta.total', 1)
+            ->assertJsonPath('meta.has_more', false)
+            ->assertJsonPath('data.0.product_id', $productIds[0]);
+
+        $this->getJson('/api/v1/b2b/products/top?store_id='.$store.'&q='.rawurlencode('!_'))
+            ->assertOk()
+            ->assertJsonPath('meta.total', 1)
+            ->assertJsonPath('data.0.product_id', $productIds[2]);
+
+        $this->getJson('/api/v1/b2b/products/top?store_id='.$store.'&q='.rawurlencode('!'))
+            ->assertOk()
+            ->assertJsonPath('meta.total', 2);
+
+        $this->getJson('/api/v1/b2b/products/top?store_id='.$store.'&q=CASE&per_page=1')
+            ->assertOk()
+            ->assertJsonPath('meta.total', 2)
+            ->assertJsonPath('meta.has_more', true)
+            ->assertJsonPath('meta.per_page', 1);
+
+        $this->getJson('/api/v1/b2b/products/top?store_id='.$store.'&q='.rawurlencode('unknown%_'))
+            ->assertOk()
+            ->assertJsonPath('meta.total', 0)
+            ->assertJsonCount(0, 'data');
+
+        $this->getJson('/api/v1/b2b/products/top?store_id='.$otherStore.'&q='.rawurlencode('%_'))
+            ->assertOk()
+            ->assertJsonPath('meta.total', 1)
+            ->assertJsonPath('data.0.product_id', $productIds[4]);
+
+        $this->assertSame($before, DB::table('order_items')->count());
+
+        [$pending] = $this->buyer('top-literal-pending@example.test', 'pending');
+        Sanctum::actingAs($pending);
+        $this->getJson('/api/v1/b2b/products/top?store_id='.$store.'&q='.rawurlencode('%_'))
+            ->assertForbidden();
     }
 
     private function buyer(string $email, string $status): array

@@ -6,23 +6,26 @@ use App\Enterprise\Modules\ModuleRegistry;
 use App\Enums\StoreBusinessProfile;
 use App\Models\Role;
 use App\Models\User;
+use App\Services\WholesalePrincipal;
 use App\Support\AdminNavigation;
 use Database\Seeders\CoreReferenceSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
+use Tests\Feature\Enterprise\Concerns\EnablesEnterpriseWms;
 use Tests\Support\SyntheticErpWorkflowEvidence;
 use Tests\TestCase;
 
 /** P358: authorized ERP module destinations move by domain, never by privilege. */
 final class V2ErpBusinessDomainNavigationTest extends TestCase
 {
+    use EnablesEnterpriseWms;
     use RefreshDatabase;
 
     private const EXPECTED_GROUPS = [
-        'erp_procurement' => 'catalog',
-        'erp_wms' => 'catalog',
+        'erp_procurement' => 'procurement',
+        'erp_wms' => 'warehouses',
         'erp_finance' => 'finance',
-        'erp_treasury' => 'finance',
+        'erp_treasury' => 'treasury',
         'erp_bi' => 'analytics',
     ];
 
@@ -32,6 +35,9 @@ final class V2ErpBusinessDomainNavigationTest extends TestCase
         SyntheticErpWorkflowEvidence::install();
         config()->set('security.mfa.enforce_privileged', false);
         $this->seed(CoreReferenceSeeder::class);
+        // Certified ERP navigation needs a real WMS-entitled B2B store.
+        // Platform-only bootstrap must not bypass the store-scoped WMS route.
+        $this->enableEnterpriseWmsForStore(app(WholesalePrincipal::class)->storeId());
 
         foreach (['procurement', 'inventory_wms', 'finance', 'treasury', 'enterprise_bi'] as $code) {
             config()->set('enterprise_module_readiness.certified_versions.'.$code, app(ModuleRegistry::class)->manifest($code)->version);

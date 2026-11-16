@@ -3,6 +3,7 @@
 namespace Tests\Feature;
 
 use App\Enterprise\Modules\ModuleLifecycleManager;
+use App\Enterprise\Modules\ModuleRegistry;
 use App\Enterprise\Modules\ModuleState;
 use App\Enterprise\Organization\OrganizationHierarchyService;
 use App\Enterprise\Procurement\GoodsReceiptManager;
@@ -255,6 +256,98 @@ final class EnterprisePurchaseReturnFoundationTest extends TestCase
         }
     }
 
+    public function test_purchase_return_number_prefix_search_is_literal_scoped_and_read_only(): void
+    {
+        $this->enableProcurement();
+        [$actor, $store, $context] = $this->scopedUser($this->allPermissions(), 'PRTN-LIT-A');
+        [$foreignActor, $foreignStore, $foreignContext] = $this->scopedUser(
+            $this->allPermissions(), 'PRTN-LIT-B',
+        );
+        [, $warehouse] = $this->stockTarget($store, 'PRTN-LIT-A-SKU');
+        [, $foreignWarehouse] = $this->stockTarget($foreignStore, 'PRTN-LIT-B-SKU');
+        $receipt = $this->postedReceipt($actor, $context, $warehouse, 'PRTN-LIT-A-SUP', 'PRTN-LIT-A-SKU', 8);
+        $foreignReceipt = $this->postedReceipt(
+            $foreignActor, $foreignContext, $foreignWarehouse, 'PRTN-LIT-B-SUP', 'PRTN-LIT-B-SKU', 2,
+        );
+        $manager = app(PurchaseReturnManager::class);
+        $makeReturn = static function (
+            User $user,
+            ResolvedTenantContext $tenant,
+            EnterpriseGoodsReceipt $source
+        ) use ($manager): int {
+            return (int) $manager->createFromPostedReceipt($user, $tenant, $source->id, [
+                'lines' => [[
+                    'goods_receipt_line_id' => $source->lines()->firstOrFail()->id,
+                    'quantity' => 1,
+                ]],
+            ])->id;
+        };
+
+        $target = $makeReturn($actor, $context, $receipt);
+        $decoy = $makeReturn($actor, $context, $receipt);
+        $leading = [];
+        foreach ([
+            ['%', '%P-001'],
+            ['_', '_U-001'],
+            ['!', '!B-001'],
+            ['\\', '\\S-001'],
+        ] as [$symbol, $number]) {
+            $leading[$symbol] = $makeReturn($actor, $context, $receipt);
+            DB::table('enterprise_purchase_returns')
+                ->where('id', $leading[$symbol])
+                ->update(['return_number' => $number]);
+        }
+        $foreign = $makeReturn($foreignActor, $foreignContext, $foreignReceipt);
+
+        foreach ([
+            [$target, 'RTN_%!\\-A'],
+            [$decoy, 'RTNX-OTHER'],
+            [$foreign, 'RTN_%!\\-FOREIGN'],
+        ] as [$id, $number]) {
+            DB::table('enterprise_purchase_returns')
+                ->where('id', $id)
+                ->update(['return_number' => $number]);
+        }
+
+        $returnCount = DB::table('enterprise_purchase_returns')->count();
+        $auditCount = DB::table('audit_logs')->count();
+        $movementCount = DB::table('stock_movements')->count();
+        $search = fn (string $q): array => $manager->paginate($actor, $context, ['q' => $q])
+            ->getCollection()->pluck('id')->all();
+
+        foreach (['RTN_', 'RTN_%', 'RTN_%!', 'RTN_%!\\-'] as $q) {
+            $this->assertSame([$target], $search($q), 'Incorrect literal return prefix: '.$q);
+        }
+        foreach ($leading as $symbol => $id) {
+            $this->assertSame([$id], $search($symbol), 'Symbol search widened: '.$symbol);
+        }
+        $this->assertSame([$decoy, $target], $search('RTN'));
+        $this->assertSame([], $search('RTN%'));
+        $this->assertSame(1, $manager->paginate($foreignActor, $foreignContext, [
+            'q' => 'RTN_%!',
+        ])->total());
+        $this->assertSame(0, $manager->paginate($actor, $context, [
+            'q' => 'RTN', 'status' => 'posted',
+        ])->total());
+        $this->assertSame(0, $manager->paginate($actor, $context, [
+            'q' => 'RTN', 'goods_receipt_id' => $foreignReceipt->id,
+        ])->total());
+        $this->assertSame(10, $manager->paginate($actor, $context, [], 1)->perPage());
+        $this->assertSame(100, $manager->paginate($actor, $context, [], 500)->perPage());
+
+        $roleless = User::factory()->create(['is_active' => true]);
+        try {
+            $manager->paginate($roleless, $context, ['q' => 'RTN_%']);
+            $this->fail('Roleless actors cannot read purchase returns.');
+        } catch (HttpExceptionInterface $exception) {
+            $this->assertSame(403, $exception->getStatusCode());
+        }
+
+        $this->assertSame($returnCount, DB::table('enterprise_purchase_returns')->count());
+        $this->assertSame($auditCount, DB::table('audit_logs')->count());
+        $this->assertSame($movementCount, DB::table('stock_movements')->count());
+    }
+
     public function test_draft_cancel_is_retry_safe_and_posted_return_is_immutable(): void
     {
         $this->enableProcurement();
@@ -321,6 +414,174 @@ final class EnterprisePurchaseReturnFoundationTest extends TestCase
             'inventory_id',
             'stock_movement_id',
         ]));
+    }
+
+    public function test_returns_workbench_links_to_actual_authorized_return_and_renders_detail_in_both_locales(): void
+    {
+        config()->set('security.mfa.enforce_privileged', false);
+        config()->set(
+            'enterprise_module_readiness.certified_versions.procurement',
+            app(ModuleRegistry::class)->manifest('procurement')->version,
+        );
+        $this->enableProcurement();
+
+        [$actor, $store, $context] = $this->scopedUser($this->allPermissions(), 'P243-OWN');
+        [, $warehouse] = $this->stockTarget($store, 'P243-OWN-SKU');
+        $receipt = $this->postedReceipt($actor, $context, $warehouse, 'P243-OWN-SUP', 'P243-OWN-SKU', 2);
+        $return = app(PurchaseReturnManager::class)->createFromPostedReceipt($actor, $context, $receipt->id, [
+            'lines' => [[
+                'goods_receipt_line_id' => $receipt->lines()->firstOrFail()->id,
+                'quantity' => 1,
+            ]],
+        ]);
+
+        // Preserve the maker/checker fixture's dedicated procurement role
+        // while generating the receipt, then admit the actor to the HTTP workbench.
+        $this->allowReturnsWorkbench($actor, $store);
+
+        foreach (['ar' => 'rtl', 'en' => 'ltr'] as $locale => $direction) {
+            app()->setLocale($locale);
+            $actor->forceFill(['locale' => $locale])->save();
+
+            $this->actingAs($actor->fresh())
+                ->get(route('admin.erp.procurement.index', [
+                    'tab' => 'returns',
+                    'store_id' => $store->id,
+                ]))
+                ->assertOk()
+                ->assertViewHas('activeTab', 'returns')
+                ->assertSee('return='.$return->id, false)
+                ->assertSee(__('enterprise_procurement.view'))
+                ->assertSee('dir="'.$direction.'"', false);
+
+            $this->actingAs($actor->fresh())
+                ->get(route('admin.erp.procurement.index', [
+                    'tab' => 'returns',
+                    'store_id' => $store->id,
+                    'return' => $return->id,
+                ]))
+                ->assertOk()
+                ->assertViewHas('detail', static fn ($detail): bool => (int) $detail->id === (int) $return->id
+                    && $detail->lines->count() === 1
+                    && $detail->supplier !== null)
+                ->assertSee('data-return-detail="'.$return->id.'"', false)
+                ->assertSee($return->return_number)
+                ->assertSee($receipt->receipt_number)
+                ->assertSee('1.000')
+                ->assertSee(__('enterprise_procurement.quantity'))
+                ->assertSee('dir="'.$direction.'"', false);
+        }
+    }
+
+    public function test_returns_workbench_denies_foreign_store_record_and_missing_permission(): void
+    {
+        config()->set('security.mfa.enforce_privileged', false);
+        config()->set(
+            'enterprise_module_readiness.certified_versions.procurement',
+            app(ModuleRegistry::class)->manifest('procurement')->version,
+        );
+        $this->enableProcurement();
+
+        [$owner, $store, $context] = $this->scopedUser($this->allPermissions(), 'P243-SEC-OWNER');
+        [, $warehouse] = $this->stockTarget($store, 'P243-SEC-SKU');
+        $receipt = $this->postedReceipt($owner, $context, $warehouse, 'P243-SEC-SUP', 'P243-SEC-SKU', 2);
+        $return = app(PurchaseReturnManager::class)->createFromPostedReceipt($owner, $context, $receipt->id, [
+            'lines' => [[
+                'goods_receipt_line_id' => $receipt->lines()->firstOrFail()->id,
+                'quantity' => 1,
+            ]],
+        ]);
+
+        $this->allowReturnsWorkbench($owner, $store);
+
+        [$foreign, $otherStore] = $this->scopedUser($this->allPermissions(), 'P243-SEC-FOREIGN');
+        $this->allowReturnsWorkbench($foreign, $otherStore);
+        [$limited, $limitedStore] = $this->scopedUser(['procurement.suppliers.view'], 'P243-SEC-LIMITED');
+        $this->grantPlatformErpAccess($limited);
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            $foreign->forceFill(['locale' => $locale])->save();
+            $limited->forceFill(['locale' => $locale])->save();
+
+            $this->actingAs($foreign->fresh())
+                ->get(route('admin.erp.procurement.index', [
+                    'tab' => 'returns',
+                    'store_id' => $store->id,
+                    'return' => $return->id,
+                ]))
+                ->assertForbidden();
+
+            $this->actingAs($foreign->fresh())
+                ->get(route('admin.erp.procurement.index', [
+                    'tab' => 'returns',
+                    'store_id' => $otherStore->id,
+                    'return' => $return->id,
+                ]))
+                ->assertNotFound();
+
+            $this->actingAs($limited->fresh())
+                ->get(route('admin.erp.procurement.index', [
+                    'tab' => 'returns',
+                    'store_id' => $limitedStore->id,
+                    'return' => $return->id,
+                ]))
+                ->assertForbidden();
+        }
+    }
+
+    public function test_returns_workbench_fails_closed_when_module_disabled_or_actor_roleless(): void
+    {
+        config()->set('security.mfa.enforce_privileged', false);
+        [$actor, $store] = $this->scopedUser($this->allPermissions(), 'P243-MODULE-OFF');
+        $this->allowReturnsWorkbench($actor, $store);
+
+        $this->actingAs($actor)
+            ->get(route('admin.erp.procurement.index', [
+                'tab' => 'returns',
+                'store_id' => $store->id,
+            ]))
+            ->assertForbidden();
+
+        config()->set(
+            'enterprise_module_readiness.certified_versions.procurement',
+            app(ModuleRegistry::class)->manifest('procurement')->version,
+        );
+        $this->enableProcurement();
+        $roleless = User::factory()->create(['is_active' => true]);
+
+        $this->actingAs($roleless)
+            ->get(route('admin.erp.procurement.index', [
+                'tab' => 'returns',
+                'store_id' => $store->id,
+            ]))
+            ->assertForbidden();
+    }
+
+    /**
+     * The public ERP HTTP route requires a canonical Retail dashboard persona,
+     * not merely a custom scope role that is valid for the domain service.
+     * Mirror EnterpriseProcurementWorkbenchTest's production-route actor.
+     */
+    private function allowReturnsWorkbench(User $actor, Store $store): void
+    {
+        $role = Role::query()->firstOrCreate(
+            ['code' => 'B2C_STORE_ADMIN'],
+            ['name' => 'Retail Store Admin', 'scope' => 'store', 'is_active' => true, 'is_system' => true],
+        );
+        foreach (['procurement.suppliers.view', 'procurement.purchase_returns.view'] as $code) {
+            $permission = Permission::query()->firstOrCreate(
+                ['code' => $code],
+                ['name' => $code],
+            );
+            $role->permissions()->syncWithoutDetaching([$permission->id]);
+        }
+
+        DB::table('user_store_roles')->updateOrInsert(
+            ['user_id' => $actor->id, 'store_id' => $store->id, 'role_id' => $role->id],
+            ['created_at' => now(), 'updated_at' => now()],
+        );
+        $this->grantPlatformErpAccess($actor);
     }
 
     private function enableProcurement(): void

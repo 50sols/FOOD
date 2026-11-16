@@ -374,6 +374,110 @@ class CommercialDashboardContractTest extends TestCase
             ->assertSee('data-flash-product-builder', false);
     }
 
+    public function test_b2b_sales_control_product_picker_matches_literal_symbols_without_widening_store_scope(): void
+    {
+        [$manager, $storeId] = $this->wholesaleManager();
+        $nameProductId = $this->flashProduct($storeId, 'b2b');
+        $original = DB::table('products')->where('id', $nameProductId)->first();
+        $this->assertNotNull($original);
+
+        DB::table('products')->where('id', $nameProductId)->update([
+            'name' => 'Widget %_!\\ literal',
+            'sku' => 'SKU-PLAIN-A',
+        ]);
+
+        $addProduct = function (string $name, string $sku) use ($original, $storeId): int {
+            $id = (int) DB::table('products')->insertGetId([
+                'catalog_id' => $original->catalog_id,
+                'category_id' => $original->category_id,
+                'unit_id' => $original->unit_id,
+                'name' => $name,
+                'sku' => $sku,
+                'is_active' => true,
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+            DB::table('store_products')->insert([
+                'store_id' => $storeId,
+                'product_id' => $id,
+                'price' => 10,
+                'is_active' => true,
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+
+            return $id;
+        };
+
+        $skuProductId = $addProduct('Widget Plain B', 'SKU-%_!\\-B');
+        $decoyId = $addProduct('Widget ABC literal', 'SKU-NORMAL-C');
+
+        // A global B2B manager may have several Wholesale stores; selecting one
+        // must still never include the other store's matching products.
+        $outsideWholesaleStoreId = (int) DB::table('stores')->insertGetId([
+            'store_type_id' => DB::table('store_types')->where('code', 'B2B')->value('id'),
+            'code' => 'COMMERCIAL-B2B-OTHER',
+            'name' => 'Other Wholesale Store',
+            'is_active' => true,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        $outsideWholesaleProductId = $this->flashProduct($outsideWholesaleStoreId, 'b2b');
+        DB::table('products')->where('id', $outsideWholesaleProductId)->update([
+            'name' => 'Widget %_!\\ Foreign Wholesale',
+            'sku' => 'SKU-%_!\\-OTHER',
+        ]);
+
+        [$retailManager, $retailStoreId] = $this->retailManager();
+        $retailId = $this->flashProduct($retailStoreId);
+        DB::table('products')->where('id', $retailId)->update([
+            'name' => 'Widget %_!\\ Retail',
+            'sku' => 'SKU-%_!\\-FOREIGN',
+        ]);
+
+        $before = [
+            'products' => DB::table('products')->count(),
+            'store_products' => DB::table('store_products')->count(),
+            'audit_logs' => DB::table('audit_logs')->count(),
+        ];
+
+        $search = function (string $q) use ($manager, $storeId): array {
+            $response = $this->actingAs($manager)->get(route('admin.commercial.sales-control.products', [
+                'store_id' => $storeId,
+                'q' => $q,
+            ]))->assertOk();
+
+            return collect($response->json('products'))->pluck('id')->sort()->values()->all();
+        };
+
+        foreach (['%', '_', '!', '\\', '%_!\\'] as $literal) {
+            $this->assertSame([$nameProductId, $skuProductId], $search($literal), $literal);
+        }
+
+        $this->assertSame([$nameProductId], $search('Widget %_!\\'));
+        $this->assertSame([$skuProductId], $search('SKU-%_!\\'));
+        $this->assertSame([$decoyId], $search('Widget ABC'));
+        $this->assertSame([], $search('Widget %_!\\ MISSING'));
+        $this->assertSame([$nameProductId, $skuProductId, $decoyId], $search(''));
+
+        $roleless = User::factory()->create();
+        $this->actingAs($roleless)
+            ->get(route('admin.commercial.sales-control.products', ['store_id' => $storeId, 'q' => '%']))
+            ->assertForbidden();
+
+        // The Dashboard gate may reject with 403 before the scoped controller
+        // returns its own 404; either response must remain fail-closed.
+        $retailDenied = $this->actingAs($retailManager)
+            ->get(route('admin.commercial.sales-control.products', ['store_id' => $storeId, 'q' => '%']));
+        $this->assertContains($retailDenied->status(), [403, 404]);
+
+        $this->assertSame($before, [
+            'products' => DB::table('products')->count(),
+            'store_products' => DB::table('store_products')->count(),
+            'audit_logs' => DB::table('audit_logs')->count(),
+        ]);
+    }
+
     private function flashProduct(int $storeId, string $channel = 'b2c'): int
     {
         $suffix = strtoupper($channel).'-'.$storeId;

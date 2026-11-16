@@ -7,6 +7,11 @@ repo_root="$(git rev-parse --show-toplevel)"
 test "$(tr -d '[:space:]' < "$repo_root/VERSION")" = "1.0.125"
 package="$repo_root/dist/update/FOODEX-Update.zip"
 test -s "$package"
+python3 "$repo_root/scripts/verify-recovery-update-manifest.py" \
+  --package "$package" \
+  --manifest "$repo_root/dist/update/FOODEX-Update.json" \
+  --target-version 1.0.125 \
+  --minimum-current-version 1.0.124
 workspace="$(mktemp -d)"
 cleanup() {
   git -C "$repo_root" worktree remove --force "$workspace/foodex-124" >/dev/null 2>&1 || true
@@ -24,6 +29,7 @@ APP_NAME=FOODEX
 APP_ENV=testing
 APP_DEBUG=false
 APP_URL=http://localhost
+APP_KEY=
 LOG_CHANNEL=stderr
 DB_CONNECTION=mysql
 DB_HOST=127.0.0.1
@@ -36,6 +42,7 @@ SESSION_DRIVER=array
 QUEUE_CONNECTION=sync
 ENV
 php artisan key:generate --force
+grep -Eq '^APP_KEY=base64:.+' .env || { echo 'G006 test APP_KEY generation failed' >&2; exit 1; }
 php artisan migrate --force --no-interaction
 
 # Reproduce the actual failure state: v125 migration created the audit table

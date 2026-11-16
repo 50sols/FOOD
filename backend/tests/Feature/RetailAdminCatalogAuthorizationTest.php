@@ -148,6 +148,98 @@ class RetailAdminCatalogAuthorizationTest extends TestCase
         $this->assertDatabaseMissing('categories', ['slug' => 'cross-store-child']);
     }
 
+    public function test_retail_catalog_scope_and_duplicate_slug_errors_follow_actor_locale_without_writes(): void
+    {
+        $ownedStore = $this->store('B2C', 'CATALOG-LOCALE-OWNED');
+        $foreignStore = $this->store('B2C', 'CATALOG-LOCALE-OTHER');
+        $manager = $this->storeManager('catalog-locale-owner@example.test', $ownedStore);
+        $foreignManager = $this->storeManager('catalog-locale-other@example.test', $foreignStore);
+        $catalog = app(CatalogOwnership::class)->defaultCatalogForStore($ownedStore);
+        $unit = $this->globalUnit();
+
+        $productId = (int) DB::table('products')->insertGetId([
+            'catalog_id' => $catalog->id,
+            'sku' => 'CATALOG-LOCALE-PRODUCT',
+            'name' => 'Owned product',
+            'description' => null,
+            'category_id' => null,
+            'brand_id' => null,
+            'unit_id' => $unit->id,
+            'is_active' => true,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        $categoryId = (int) DB::table('categories')->insertGetId([
+            'catalog_id' => $catalog->id,
+            'name' => 'Existing category',
+            'slug' => 'already-used-slug',
+            'parent_id' => null,
+            'is_active' => true,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        foreach (['ar', 'en'] as $locale) {
+            $manager->forceFill(['locale' => $locale])->save();
+
+            $this->actingAs($manager)
+                ->postJson(route('admin.catalog.products.assign', $productId), [
+                    'store_id' => $foreignStore,
+                    'is_active' => true,
+                ])
+                ->assertUnprocessable()
+                ->assertJsonPath(
+                    'errors.store_id.0',
+                    $locale === 'ar'
+                        ? 'لا يمكن ربط المنتج إلا بالمتجر المالك للكتالوج.'
+                        : 'A product can only be assigned inside its owning catalog store.',
+                );
+
+            $this->actingAs($manager)
+                ->postJson(route('admin.catalog.categories.store'), [
+                    'store_id' => $ownedStore,
+                    'name' => 'Forbidden duplicate',
+                    'slug' => 'already-used-slug',
+                    'is_active' => true,
+                ])
+                ->assertUnprocessable()
+                ->assertJsonPath(
+                    'errors.slug.0',
+                    $locale === 'ar'
+                        ? 'اسم الرابط مستخدم بالفعل في هذا الكتالوج.'
+                        : 'The slug has already been used in this catalog.',
+                );
+        }
+
+        // A user from another store cannot bypass the owning-store check.
+        $this->actingAs($foreignManager)
+            ->postJson(route('admin.catalog.products.assign', $productId), [
+                'store_id' => $ownedStore,
+            ])
+            ->assertForbidden();
+
+        $this->assertDatabaseMissing('store_products', [
+            'store_id' => $foreignStore,
+            'product_id' => $productId,
+        ]);
+        $this->assertDatabaseHas('categories', [
+            'id' => $categoryId,
+            'name' => 'Existing category',
+            'slug' => 'already-used-slug',
+        ]);
+        $this->assertSame(
+            1,
+            DB::table('categories')
+                ->where('catalog_id', $catalog->id)
+                ->where('slug', 'already-used-slug')
+                ->count(),
+        );
+        $this->assertSame(
+            0,
+            DB::table('audit_logs')->where('event', 'catalog.category.created')->count(),
+        );
+    }
+
     public function test_retail_workspace_does_not_offer_store_management(): void
     {
         $store = $this->store('B2C', 'SHOP-LOCAL');

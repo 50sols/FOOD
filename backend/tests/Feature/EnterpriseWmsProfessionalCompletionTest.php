@@ -15,7 +15,6 @@ use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 use Tests\Feature\Enterprise\Concerns\EnablesEnterpriseWms;
-use Tests\Support\SyntheticErpWorkflowEvidence;
 use Tests\TestCase;
 
 final class EnterpriseWmsProfessionalCompletionTest extends TestCase
@@ -26,7 +25,6 @@ final class EnterpriseWmsProfessionalCompletionTest extends TestCase
     protected function setUp(): void
     {
         parent::setUp();
-        SyntheticErpWorkflowEvidence::install();
         $this->seed(CoreReferenceSeeder::class);
         // Explicit test-only approval of the exact ERP module version; never a runtime default.
         config()->set('enterprise_module_readiness.certified_versions.inventory_wms', app(ModuleRegistry::class)->manifest('inventory_wms')->version);

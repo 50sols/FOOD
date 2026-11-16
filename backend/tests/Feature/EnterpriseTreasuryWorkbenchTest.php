@@ -9,6 +9,7 @@ use App\Enterprise\Modules\ModuleRegistry;
 use App\Enterprise\Modules\ModuleState;
 use App\Enterprise\Organization\OrganizationHierarchyService;
 use App\Enterprise\Reporting\ReportRegistry;
+use App\Enterprise\Treasury\TreasuryPlanningService;
 use App\Enterprise\Treasury\TreasuryReceiptService;
 use App\Models\EnterpriseBankAccount;
 use App\Models\EnterpriseCashbox;
@@ -22,6 +23,7 @@ use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Facades\Route;
+use Symfony\Component\HttpKernel\Exception\HttpException;
 use Tests\Support\SyntheticErpWorkflowEvidence;
 use Tests\TestCase;
 
@@ -301,6 +303,165 @@ final class EnterpriseTreasuryWorkbenchTest extends TestCase
             'scope_id' => $store->id,
             'enabled' => 1,
         ]);
+    }
+
+    public function test_financing_and_investment_prefixes_are_literal_and_store_scoped(): void
+    {
+        [$actor, $store] = $this->operator('ERP-TREASURY-LITERAL-A', 'treasury-literal-list-a@example.test');
+        [$foreignActor, $foreignStore] = $this->operator(
+            'ERP-TREASURY-LITERAL-B', 'treasury-literal-list-b@example.test',
+        );
+        $context = app(TenantContextResolver::class)->retail($actor, $store->id);
+        $foreignContext = app(TenantContextResolver::class)->retail($foreignActor, $foreignStore->id);
+        $this->enableTreasury($actor, $context);
+        $this->enableTreasury($foreignActor, $foreignContext);
+        $planning = app(TreasuryPlanningService::class);
+
+        $facility = static function (
+            User $user, ResolvedTenantContext $tenant, string $key, string $code, string $lender
+        ) use ($planning): int {
+            return $planning->createFacility($user, $tenant, [
+                'idempotency_key' => 'facility-'.$key,
+                'code' => $code,
+                'lender_name' => $lender,
+                'currency_code' => 'KWD',
+                'facility_limit' => '100.000',
+                'annual_rate' => '3.000000',
+                'margin_rate' => '1.000000',
+                'start_date' => '2026-10-16',
+                'maturity_date' => '2027-10-16',
+            ]);
+        };
+        $investment = static function (
+            User $user, ResolvedTenantContext $tenant, string $key, string $code,
+            string $institution, string $type
+        ) use ($planning): int {
+            return $planning->createInvestment($user, $tenant, [
+                'idempotency_key' => 'investment-'.$key,
+                'code' => $code,
+                'institution' => $institution,
+                'instrument_type' => $type,
+                'currency_code' => 'KWD',
+                'principal_amount' => '10.000',
+                'annual_yield_rate' => '3.000000',
+                'expected_return_amount' => '1.000',
+                'placement_date' => '2026-10-16',
+                'maturity_date' => '2027-10-16',
+            ]);
+        };
+
+        $facilityTarget = $facility($actor, $context, 'target', 'FAC_%!\\-A', 'OTHER-LENDER');
+        $facilityDecoy = $facility($actor, $context, 'decoy', 'FACX-OTHER', 'OTHER-DECOY');
+        $lenderOnly = $facility($actor, $context, 'lender', 'OTHER-FACILITY', 'LENDER_%!\\-A');
+        $facilityForeign = $facility(
+            $foreignActor, $foreignContext, 'foreign', 'FAC_%!\\-FOREIGN', 'OTHER-FOREIGN',
+        );
+        $facilityLeading = [];
+        foreach ([
+            ['%', '%FAC-01'],
+            ['_', '_FAC-02'],
+            ['!', '!FAC-03'],
+            ['\\', '\\FAC-04'],
+        ] as [$symbol, $code]) {
+            $facilityLeading[$symbol] = $facility($actor, $context, 'leading-'.ord($symbol), $code, 'LEADING-LENDER');
+        }
+
+        $investmentTarget = $investment(
+            $actor, $context, 'target', 'INV_%!\\-A', 'OTHER-INSTITUTION', 'OTHER-INSTRUMENT',
+        );
+        $investmentDecoy = $investment(
+            $actor, $context, 'decoy', 'INVX-OTHER', 'OTHER-DECOY-INSTITUTION', 'OTHER-DECOY-INSTRUMENT',
+        );
+        $institutionOnly = $investment(
+            $actor, $context, 'institution', 'OTHER-INVESTMENT', 'INSTIT_%!\\-A', 'OTHER-TYPE',
+        );
+        $typeOnly = $investment(
+            $actor, $context, 'type', 'OTHER-INVESTMENT-TYPE', 'OTHER-INSTITUTION-TYPE', 'TYPE_%!\\-A',
+        );
+        $investmentForeign = $investment(
+            $foreignActor, $foreignContext, 'foreign', 'INV_%!\\-FOREIGN', 'OTHER-FOREIGN', 'OTHER-TYPE',
+        );
+        $investmentLeading = [];
+        foreach ([
+            ['%', '%INV-01'],
+            ['_', '_INV-02'],
+            ['!', '!INV-03'],
+            ['\\', '\\INV-04'],
+        ] as [$symbol, $code]) {
+            $investmentLeading[$symbol] = $investment(
+                $actor, $context, 'leading-'.ord($symbol), $code, 'OTHER-INV-INSTITUTION', 'OTHER-INV-TYPE',
+            );
+        }
+
+        $facilityCount = DB::table('enterprise_treasury_facilities')->count();
+        $investmentCount = DB::table('enterprise_treasury_investments')->count();
+        $auditCount = DB::table('audit_logs')->count();
+        $facilitySearch = fn (string $q): array => $planning->paginateFacilities($actor, $context, ['q' => $q])
+            ->getCollection()->pluck('id')->all();
+        $investmentSearch = fn (string $q): array => $planning->paginateInvestments($actor, $context, ['q' => $q])
+            ->getCollection()->pluck('id')->all();
+
+        foreach (['FAC_', 'FAC_%', 'FAC_%!', 'FAC_%!\\-'] as $q) {
+            $this->assertSame([$facilityTarget], $facilitySearch($q), 'Literal facility prefix: '.$q);
+        }
+        foreach (['INV_', 'INV_%', 'INV_%!', 'INV_%!\\-'] as $q) {
+            $this->assertSame([$investmentTarget], $investmentSearch($q), 'Literal investment prefix: '.$q);
+        }
+        foreach (['LENDER_', 'LENDER_%', 'LENDER_%!\\-'] as $q) {
+            $this->assertSame([$lenderOnly], $facilitySearch($q), 'Literal lender prefix: '.$q);
+        }
+        foreach (['INSTIT_', 'INSTIT_%', 'INSTIT_%!\\-'] as $q) {
+            $this->assertSame([$institutionOnly], $investmentSearch($q), 'Literal institution prefix: '.$q);
+        }
+        foreach (['TYPE_', 'TYPE_%', 'TYPE_%!\\-'] as $q) {
+            $this->assertSame([$typeOnly], $investmentSearch($q), 'Literal instrument prefix: '.$q);
+        }
+        foreach ($facilityLeading as $symbol => $id) {
+            $this->assertSame([$id], $facilitySearch($symbol), 'Literal facility symbol: '.$symbol);
+        }
+        foreach ($investmentLeading as $symbol => $id) {
+            $this->assertSame([$id], $investmentSearch($symbol), 'Literal investment symbol: '.$symbol);
+        }
+
+        $this->assertSame([$facilityTarget, $facilityDecoy], $facilitySearch('FAC'));
+        $this->assertSame([$investmentTarget, $investmentDecoy], $investmentSearch('INV'));
+        $this->assertSame([], $facilitySearch('FAC%'));
+        $this->assertSame([], $investmentSearch('INV%'));
+        $this->assertSame(1, $planning->paginateFacilities($foreignActor, $foreignContext, [
+            'q' => 'FAC_%!',
+        ])->total());
+        $this->assertSame(1, $planning->paginateInvestments($foreignActor, $foreignContext, [
+            'q' => 'INV_%!',
+        ])->total());
+        $this->assertGreaterThan(0, $facilityForeign);
+        $this->assertGreaterThan(0, $investmentForeign);
+        $this->assertSame(0, $planning->paginateFacilities($actor, $context, [
+            'q' => 'FAC', 'status' => 'closed',
+        ])->total());
+        $this->assertSame(0, $planning->paginateInvestments($actor, $context, [
+            'q' => 'INV', 'status' => 'matured',
+        ])->total());
+        $this->assertSame(10, $planning->paginateFacilities($actor, $context, [], 1)->perPage());
+        $this->assertSame(50, $planning->paginateFacilities($actor, $context, [], 500)->perPage());
+        $this->assertSame(10, $planning->paginateInvestments($actor, $context, [], 1)->perPage());
+        $this->assertSame(50, $planning->paginateInvestments($actor, $context, [], 500)->perPage());
+
+        $roleless = User::factory()->create(['is_active' => true]);
+        try {
+            $planning->paginateFacilities($roleless, $context, ['q' => 'FAC_%!']);
+            $this->fail('Unprivileged actor must not list financing facilities.');
+        } catch (HttpException $exception) {
+            $this->assertSame(403, $exception->getStatusCode());
+        }
+        try {
+            $planning->paginateInvestments($roleless, $context, ['q' => 'INV_%!']);
+            $this->fail('Unprivileged actor must not list investments.');
+        } catch (HttpException $exception) {
+            $this->assertSame(403, $exception->getStatusCode());
+        }
+        $this->assertSame($facilityCount, DB::table('enterprise_treasury_facilities')->count());
+        $this->assertSame($investmentCount, DB::table('enterprise_treasury_investments')->count());
+        $this->assertSame($auditCount, DB::table('audit_logs')->count());
     }
 
     /** @return array{User,Store} */

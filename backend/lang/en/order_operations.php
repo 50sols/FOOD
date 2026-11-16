@@ -3,6 +3,7 @@
 return [
     'title' => 'Orders · Order Management',
     'description' => 'Monitor and operate every order allowed by the current platform/store scope.',
+    'pending_orders_queue' => 'Pending orders',
     'new_order' => 'Create new order',
     'lookup' => [
         'search_customer' => 'Search by customer name, phone, email or company',
@@ -112,6 +113,8 @@ return [
     'all' => 'All',
     'filters' => [
         'from' => 'From',
+        'origin' => 'Order source',
+        'van_direct_sales' => 'Van direct sales',
         'to' => 'To',
         'order_number' => 'Order no.',
         'status' => 'Status',
