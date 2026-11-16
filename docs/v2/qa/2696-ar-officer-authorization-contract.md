@@ -21,7 +21,7 @@ Placement is **Reuse**, not a new Sidebar route: the existing Finance → ERP Fi
 
 ## Concurrent-work exclusion
 
-During preflight PR #3218 was OPEN on `Foodex_V2` and changed `backend/app/Enterprise/Finance/AccountsReceivableService.php` and `backend/app/Http/Controllers/Admin/FinanceWorkbenchController.php`. These files are read-only for #2696. This PR adds only issue-scoped regression tests and this source record. Related #2695 Accountant and #2697 AP Officer have separate issue ownership.
+During preflight PR #3218 was OPEN on `Foodex_V2` and changed `backend/app/Enterprise/Finance/AccountsReceivableService.php` and `backend/app/Http/Controllers/Admin/FinanceWorkbenchController.php`. These shared Finance controller/service files are read-only for #2696. The **initial** PR added only issue-scoped tests and this source record. The latest source-hardening commit also changes the non-overlapping `FinanceWorkbenchAccess.php` guard; see the current checkpoint below. Related #2695 Accountant and #2697 AP Officer have separate issue ownership.
 
 ## Cross-app impact
 
@@ -71,4 +71,57 @@ cross-company, store and channel negative evidence; actual maker/checker and
 audited collection/recovery boundaries; any required API/app impact trace; reviewed
 HIGH-risk changed-file audit; exact-final-head CI. No source-scoped acceptance
 is waived by this test increment. Customer/Driver/Van runtime/API remain unchanged
-by this test/document-only patch.
+by the earlier test/document-only patch. The subsequent Workbench role hardening does not change mobile runtime, Finance endpoints or dispatch.
+
+
+## 2026-11-16 — Current non-overlapping Workbench source-hardening increment
+
+**Current original PR #3221:** OPEN/DRAFT, base `Foodex_V2` only. Current
+source-checkpoint HEAD `fa206eba0e354c28084443832af27c1d638db70b`
+(the actual head and exact-head CI must always be rechecked before merging).
+
+**Changed code and tests:**
+- `backend/app/Enterprise/Finance/FinanceWorkbenchAccess.php`: require the
+  `finance.ar.read` store/legal-entity entitlement for Workbench eligibility
+  whenever an actor holds `AR_OFFICER`; `canPerform` now fails closed for all
+  non-AR Finance capabilities for that role, even if a second B2B `FINANCE`
+  assignment contributes broad `finance.manage`. Normal actors without
+  `AR_OFFICER` retain their prior Finance access matrix.
+- `backend/tests/Feature/V2ArOfficerAuthorizationContractTest.php`: a
+  deterministic active wholesale store and enterprise hierarchy, real legal
+  entity AR+GL+AP entitlements, mixed AR/Finance role checks, authorized AR
+  Workbench GET in Arabic/English, direct GL journal-create 403 and unchanged
+  journals, denied GL/AP/Foundation/approval capability checks, revocation of
+  AR entitlement while GL remains and original role/Store isolation tests.
+- Latest CI must be checked on this exact head. Earlier terminal-success
+  source-fixture head `98ec8fd` does **not** prove these new runtime changes.
+  The new HEAD also corrects the exact Pint ordered-import/method-spacing
+  failure from predecessor `6734812` (Required run #43868915795).
+
+**High-risk residual acceptance blockers (do not waive):**
+1. Standalone `AR_OFFICER` cannot enumerate or resolve a Wholesale context:
+   `User::hasInheritedPermission`, `AdminNavigation::canAccess`,
+   `TenantContextResolver::wholesale` and
+   `FinanceWorkbenchController::contextOptions` apply the intentional B2B
+   global-role boundary. The mixed `AR_OFFICER`+`FINANCE` positive journey
+   is test evidence for limited Workbench use only, not the required standalone
+   AR-only workflow.
+2. `FinanceWorkbenchController::accessMatrix` and the Finance/Payables
+   domain services remain separately authoritative; the new
+   `FinanceWorkbenchAccess` guards do **not** prove all unrelated GL/AP tabs,
+   direct domain-service use or Treasury access denied. Generic
+   `finance.manage` and an unapproved incompatible-role matrix under #2851
+   prevent a full cross-domain SoD assertion.
+3. #2633 / original PR #3309 owns shared Finance controller, receivables
+   service, Web routes, Dashboard view and AR/EN locale files. They were not
+   modified or silently taken over in this issue.
+4. Before #2696 merge/closure: implement the positive *standalone*
+   B2B AR workflow with trusted scope and navigable entry; enforce exact
+   action-level RBAC/SoD/maker-checker, cross-entity/store/company/channel
+   authorization, real-row GL/AP/Treasury denial, data preservation, retries,
+   audit/recovery and browser AR/EN; re-evaluate Customer/Driver/Van impact
+   after any API change; complete a HIGH-risk final-head code review and get
+   every required CI check terminal SUCCESS.
+
+**Current status:** SOURCE_INCOMPLETE; **DO NOT MERGE / DO NOT CLOSE**;
+no main, version promotion, ZIP release or production deployment.
