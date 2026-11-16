@@ -63,6 +63,28 @@ final class V2ErpOperationalWorkflowEvidenceTest extends TestCase
         }
     }
 
+
+    public function test_missing_or_malformed_manifest_category_cannot_bypass_erp_workflow_gate(): void
+    {
+        $this->enableSample();
+        config()->set('enterprise_module_readiness.certified_versions.sample_optional', 1);
+        $readiness = app(ModuleOperationalReadiness::class);
+
+        // A valid non-ERP module retains its independent health/version contract.
+        $this->assertSame('ready', $readiness->status('sample_optional', 1, ModuleState::ENABLED));
+
+        // No workflow matrix exists for this optional module. A missing category
+        // must not let a future ERP manifest be mistaken for a certified optional.
+        foreach ([null, '', '   ', []] as $invalidCategory) {
+            config()->set('enterprise_modules.modules.sample_optional.category', $invalidCategory);
+
+            foreach (['ar', 'en'] as $locale) {
+                app()->setLocale($locale);
+                $this->assertSame('uncertified', $readiness->status('sample_optional', 1, ModuleState::ENABLED));
+            }
+        }
+    }
+
     public function test_exact_manifest_and_reviewed_complete_workflow_proof_are_required(): void
     {
         $this->enableSample();

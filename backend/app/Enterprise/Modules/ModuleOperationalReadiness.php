@@ -42,6 +42,12 @@ final class ModuleOperationalReadiness
         $category = config('enterprise_modules.modules.'.$code.'.category');
         $required = config('enterprise_module_readiness.required_workflows', []);
 
+        // A missing or malformed manifest category must not make an unknown
+        // ERP module appear optional and evade its workflow evidence gate.
+        if (! is_string($category) || trim($category) === '') {
+            return false;
+        }
+
         // Newly registered ERP modules must fail closed until a complete
         // workflow matrix is explicitly declared. Non-ERP modules retain
         // their independent version/health readiness contract.
