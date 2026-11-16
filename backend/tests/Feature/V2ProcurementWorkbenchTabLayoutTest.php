@@ -67,10 +67,14 @@ final class V2ProcurementWorkbenchTabLayoutTest extends TestCase
                     'data-procurement-tab="'.$tab.'"',
                     $navigation[1],
                 );
-                $this->assertStringContainsString(
-                    'tab='.$tab.'&store_id='.$store->id,
+                $this->assertSame(1, preg_match(
+                    '/<a data-procurement-tab="'.preg_quote($tab, '/').'" href="([^"]+)"/',
                     $navigation[1],
-                );
+                    $tabLink,
+                ));
+                parse_str((string) parse_url($tabLink[1], PHP_URL_QUERY), $tabQuery);
+                $this->assertSame($tab, $tabQuery['tab'] ?? null);
+                $this->assertSame((string) $store->id, (string) ($tabQuery['store_id'] ?? ''));
                 $this->assertStringContainsString(__('enterprise_procurement.tabs.'.$tab), $navigation[1]);
             }
         }
