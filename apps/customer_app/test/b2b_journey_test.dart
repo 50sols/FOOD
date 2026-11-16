@@ -5762,6 +5762,69 @@ void main() {
     },
   );
 
+  for (final locale in const <Locale>[Locale('ar'), Locale('en')]) {
+    for (final caseName in <String>['missing', 'contradictory']) {
+      testWidgets(
+        'MOB-C03 invoice balance fails closed for $caseName in ${locale.languageCode}',
+        (tester) async {
+          tester.view.physicalSize = const Size(900, 2000);
+          tester.view.devicePixelRatio = 1;
+          addTearDown(() {
+            tester.view.resetPhysicalSize();
+            tester.view.resetDevicePixelRatio();
+          });
+          final missing = caseName == 'missing';
+          final api = _FakeB2bApi({
+            'data': {
+              'id': 31,
+              'invoice_number': 'INV-31',
+              'currency': 'KWD',
+              'status': 'partially_paid',
+              'total': missing ? 'NaN' : 20.0,
+              'paid_amount': 5.0,
+              'outstanding_amount': missing ? null : 15.0,
+              'credit_amount': missing ? 'NaN' : 2.0,
+              'store_id': 7,
+              'items': <Object?>[],
+              'payments': <Object?>[],
+              'ledger_entries': <Object?>[],
+            },
+          });
+
+          await tester.pumpWidget(FoodexCustomerApp(
+            session: b2b,
+            locale: locale,
+            initialRoute: '/b2b/invoices/31?store_id=7',
+            b2bApi: api,
+          ));
+          await _pumpCustomerFrames(tester);
+
+          final strip = find.byKey(
+            const ValueKey('b2b-invoice-settlement-strip'),
+          );
+          expect(strip, findsOneWidget);
+          expect(
+            find.descendant(
+              of: strip,
+              matching: find.text(
+                locale.languageCode == 'ar'
+                    ? 'الرصيد غير مؤكد'
+                    : 'Unverified balance',
+              ),
+            ),
+            findsOneWidget,
+          );
+          expect(
+            find.descendant(of: strip, matching: find.text('—')),
+            findsWidgets,
+          );
+          expect(find.textContaining('NaN'), findsNothing);
+          expect(api.lastPath, '/api/v1/b2b/invoices/31?store_id=7');
+        },
+      );
+    }
+  }
+
   testWidgets('B2B remote journey renders loading and empty states', (
     tester,
   ) async {

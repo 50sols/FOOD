@@ -6180,7 +6180,7 @@ class _InvoiceDetailRemoteStateState extends State<_InvoiceDetailRemoteState>
 
   String _money(Object? value, String currency) {
     final amount = double.tryParse(value?.toString() ?? '');
-    if (amount == null) return '—';
+    if (amount == null || !amount.isFinite) return '—';
     return foodexMoneyText(amount, currency);
   }
 
@@ -6362,10 +6362,18 @@ class _InvoiceDetailRemoteStateState extends State<_InvoiceDetailRemoteState>
     final ledger = _rows(data['ledger_entries']);
     final status =
         data['display_status']?.toString() ?? data['status']?.toString() ?? '';
+    // A missing or contradictory settlement position is not a zero balance.
+    // Only the server can certify invoice debt versus customer credit.
     final credit =
-        double.tryParse(data['credit_amount']?.toString() ?? '') ?? 0;
-    final outstanding =
-        double.tryParse(data['outstanding_amount']?.toString() ?? '') ?? 0;
+        WholesaleFinancialSummary.nonNegativeAmount(data['credit_amount']);
+    final outstanding = WholesaleFinancialSummary.nonNegativeAmount(
+      data['outstanding_amount'],
+    );
+    final confirmedBalance = credit != null &&
+        outstanding != null &&
+        !(credit > 0.0005 && outstanding > 0.0005);
+    final hasCredit = confirmedBalance && credit > 0.0005;
+    final hasDebt = confirmedBalance && outstanding > 0.0005;
     final rawInvoiceNumber =
         data['display_invoice_number']?.toString().trim().isNotEmpty == true
             ? data['display_invoice_number'].toString().trim()
@@ -6549,16 +6557,22 @@ class _InvoiceDetailRemoteStateState extends State<_InvoiceDetailRemoteState>
             ),
             const SizedBox(width: 8),
             _settlementMetric(
-              label: credit > 0.0005
-                  ? (ar ? 'رصيد دائن' : 'Credit')
-                  : (ar ? 'المديونية' : 'Debt'),
-              value: credit > 0.0005
-                  ? _money(data['credit_amount'], currency)
-                  : _money(data['outstanding_amount'], currency),
-              icon: credit > 0.0005
-                  ? Icons.savings_outlined
-                  : Icons.account_balance_wallet_outlined,
-              emphasized: credit > 0.0005 || outstanding > 0.0005,
+              label: !confirmedBalance
+                  ? (ar ? 'الرصيد غير مؤكد' : 'Unverified balance')
+                  : hasCredit
+                      ? (ar ? 'رصيد دائن' : 'Credit')
+                      : (ar ? 'المديونية' : 'Debt'),
+              value: !confirmedBalance
+                  ? '—'
+                  : hasCredit
+                      ? _money(data['credit_amount'], currency)
+                      : _money(data['outstanding_amount'], currency),
+              icon: !confirmedBalance
+                  ? Icons.error_outline_rounded
+                  : hasCredit
+                      ? Icons.savings_outlined
+                      : Icons.account_balance_wallet_outlined,
+              emphasized: hasCredit || hasDebt,
             ),
           ],
         ),
@@ -6590,13 +6604,13 @@ class _InvoiceDetailRemoteStateState extends State<_InvoiceDetailRemoteState>
                   ar ? 'المدفوع' : 'Paid',
                   _money(data['paid_amount'], currency),
                 ),
-                if (outstanding > 0.0005)
+                if (hasDebt)
                   _summaryRow(
                     ar ? 'المديونية' : 'Debt',
                     _money(data['outstanding_amount'], currency),
                     strong: true,
                   ),
-                if (credit > 0.0005)
+                if (hasCredit)
                   _summaryRow(
                     ar ? 'رصيد لك' : 'Credit to you',
                     _money(data['credit_amount'], currency),
