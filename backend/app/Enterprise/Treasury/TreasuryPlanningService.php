@@ -69,8 +69,8 @@ final class TreasuryPlanningService
             ->when(
                 $term !== '',
                 fn ($query) => $query->where(function ($nested) use ($term): void {
-                    $nested->where('facility.code', 'like', $term.'%')
-                        ->orWhere('facility.lender_name', 'like', $term.'%');
+                    $nested->whereRaw("facility.code LIKE ? ESCAPE '!'", [$term.'%'])
+                        ->orWhereRaw("facility.lender_name LIKE ? ESCAPE '!'", [$term.'%']);
                 }),
             )
             ->select([
@@ -178,9 +178,9 @@ final class TreasuryPlanningService
             ->when(
                 $term !== '',
                 fn ($query) => $query->where(function ($nested) use ($term): void {
-                    $nested->where('code', 'like', $term.'%')
-                        ->orWhere('institution', 'like', $term.'%')
-                        ->orWhere('instrument_type', 'like', $term.'%');
+                    $nested->whereRaw("code LIKE ? ESCAPE '!'", [$term.'%'])
+                        ->orWhereRaw("institution LIKE ? ESCAPE '!'", [$term.'%'])
+                        ->orWhereRaw("instrument_type LIKE ? ESCAPE '!'", [$term.'%']);
                 }),
             )
             ->orderBy('maturity_date')
@@ -755,7 +755,8 @@ final class TreasuryPlanningService
 
     private function safePrefix(string $value): string
     {
-        return preg_replace('/[%_\\\\]+/', '', trim($value)) ?? '';
+        // Preserve literal user-entered search symbols instead of widening results.
+        return str_replace(['!', '%', '_'], ['!!', '!%', '!_'], trim($value));
     }
 
     private function assertHash(string $existing, string $expected): void

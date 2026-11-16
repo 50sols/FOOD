@@ -371,6 +371,21 @@ return [
         'audience_route_scope' => 'One or more selected routes are not available for this store audience.',
 
     ],
+    'quantity_tiers' => [
+        'heading' => 'Quantity tiers',
+        'description' => 'Configure minimum quantity, increments and graduated all-unit prices for each Wholesale rule.',
+        'price_breaks' => 'Volume price breaks',
+        'breaks_help' => 'Enter each quantity threshold and its new all-unit price in increasing order. Prices must not increase. Use Edit to load an existing rule; saving replaces its breaks.',
+        'break_minimum' => 'Quantity threshold',
+        'break_price' => 'Unit price at threshold',
+        'add_break' => 'Add quantity break',
+        'remove_break' => 'Remove break',
+        'edit_rule' => 'Edit',
+        'loaded_rule' => 'Existing rule loaded for editing.',
+        'invalid_breaks' => 'Quantity breaks must be strictly increasing, match ordering increments, use non-increasing prices and at most three decimal places.',
+        'minimum_quantity' => 'Minimum quantity',
+        'ordering_increment' => 'Quantity increment',
+    ],
     'common' => [
         'active' => 'Active',
         'inactive' => 'Inactive',

@@ -45,7 +45,7 @@ final class BranchPolicyService
             $this->request,
             $branch,
         );
-        abort_unless((bool) $branch->accepting_orders, 409, 'This branch is not accepting orders.');
+        abort_unless((bool) $branch->accepting_orders, 409, __('smart_ordering.branch_policy.not_accepting_orders'));
     }
 
     public function scheduledFor(
@@ -64,19 +64,19 @@ final class BranchPolicyService
 
         if ($scheduled->lt($now->subMinutes(2))) {
             throw ValidationException::withMessages([
-                'scheduled_for' => ['Scheduled time cannot be in the past.'],
+                'scheduled_for' => [__('smart_ordering.branch_policy.past_schedule')],
             ]);
         }
 
         if ($requested !== null && trim($requested) !== '') {
-            abort_unless((bool) $branch->allow_scheduled, 409, 'Scheduled orders are disabled for this branch.');
+            abort_unless((bool) $branch->allow_scheduled, 409, __('smart_ordering.branch_policy.scheduling_disabled'));
 
             $maximum = $now->addDays(max(1, (int) $branch->max_schedule_days));
-            abort_if($scheduled->gt($maximum), 409, 'Scheduled time exceeds the branch pre-order window.');
+            abort_if($scheduled->gt($maximum), 409, __('smart_ordering.branch_policy.scheduling_window'));
 
             if ($mode === 'pickup') {
                 $minimumPickup = $now->addMinutes(max(0, (int) $branch->pickup_lead_minutes));
-                abort_if($scheduled->lt($minimumPickup), 409, 'Pickup time is earlier than the branch preparation lead time.');
+                abort_if($scheduled->lt($minimumPickup), 409, __('smart_ordering.branch_policy.pickup_lead_time'));
             }
         }
 
@@ -84,7 +84,7 @@ final class BranchPolicyService
             (array) $branch->holiday_closed_dates,
             static fn (string $value): bool => $value !== '',
         ));
-        abort_if(in_array($scheduled->format('Y-m-d'), $closedDates, true), 409, 'This branch is closed on the selected date.');
+        abort_if(in_array($scheduled->format('Y-m-d'), $closedDates, true), 409, __('smart_ordering.branch_policy.holiday_closed'));
 
         $hours = DB::table('smart_ordering_branch_hours')
             ->where('branch_id', (int) $branch->getKey())
@@ -95,7 +95,7 @@ final class BranchPolicyService
             return $scheduled;
         }
 
-        abort_if((bool) $hours->is_closed, 409, 'This branch is closed at the selected time.');
+        abort_if((bool) $hours->is_closed, 409, __('smart_ordering.branch_policy.outside_business_hours'));
 
         if ($hours->opens_at === null || $hours->closes_at === null) {
             return $scheduled;
@@ -111,7 +111,7 @@ final class BranchPolicyService
             }
         }
 
-        abort_unless($scheduled->betweenIncluded($opens, $closes), 409, 'This branch is closed at the selected time.');
+        abort_unless($scheduled->betweenIncluded($opens, $closes), 409, __('smart_ordering.branch_policy.outside_business_hours'));
 
         return $scheduled;
     }
@@ -142,7 +142,7 @@ final class BranchPolicyService
             }
         }
 
-        abort(409, 'Delivery address is outside this branch service area.');
+        abort(409, __('smart_ordering.branch_policy.delivery_zone_outside'));
     }
 
     public function table(SmartOrderingBranch $branch, string $tablePublicId, string $token): object

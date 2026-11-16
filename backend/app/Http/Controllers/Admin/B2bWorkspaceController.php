@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Admin;
 
+use App\Domain\Pricing\QuantityPriceBreaks;
 use App\Http\Controllers\Api\V1\B2bAccountController;
 use App\Http\Controllers\Api\V1\B2bPricingController;
 use App\Http\Controllers\Api\V1\DriverAssignmentController;
@@ -101,6 +102,9 @@ class B2bWorkspaceController extends Controller
         App::setLocale(in_array($user->locale, ['ar', 'en'], true) ? $user->locale : 'ar');
 
         $principalStoreId = $this->principal->storeId();
+        if ($module === 'pricing') {
+            $this->operationalScope->assertStore($user, $principalStoreId, 'b2b.pricing.view', 'b2b');
+        }
         $pricingTiersEnabled = $this->pricingMode->tiersEnabled($principalStoreId);
         abort_if($module === 'pricing' && ! $pricingTiersEnabled, 404);
 
@@ -257,10 +261,16 @@ class B2bWorkspaceController extends Controller
             ->where('id', $warehouseId)
             ->where('is_active', true)
             ->first(['id', 'store_id']);
-        abort_unless($warehouse !== null, 422, 'A valid Wholesale warehouse is required.');
+        abort_unless($warehouse !== null, 422, $this->msg(
+            'يلزم اختيار مستودع جملة صالح.',
+            'A valid Wholesale warehouse is required.',
+        ));
 
         $storeId = $this->principal->storeId();
-        abort_unless((int) $warehouse->store_id === $storeId, 422, 'Warehouse must belong to the main Wholesale operation.');
+        abort_unless((int) $warehouse->store_id === $storeId, 422, $this->msg(
+            'يجب أن يتبع المستودع عملية الجملة الرئيسية.',
+            'Warehouse must belong to the main Wholesale operation.',
+        ));
         $this->operationalScope->assertStore($actor, $storeId, 'orders.manage', 'b2b');
 
         $order = $orders->create($request, $actor, 'b2b', $storeId);
@@ -1545,7 +1555,9 @@ class B2bWorkspaceController extends Controller
                     })->all(),
             ],
             'pricing' => [
-                'columns' => ['tier', 'sku', 'product', 'unit_price', 'minimum_quantity', 'status'],
+                'columns' => $user->hasPermission('b2b.pricing.manage')
+                    ? ['tier', 'sku', 'product', 'unit_price', 'minimum_quantity', 'status', 'actions']
+                    : ['tier', 'sku', 'product', 'unit_price', 'minimum_quantity', 'status'],
                 'rows' => DB::table('b2b_price_rules')
                     ->join('b2b_price_tiers', 'b2b_price_tiers.id', '=', 'b2b_price_rules.price_tier_id')
                     ->join('products', 'products.id', '=', 'b2b_price_rules.product_id')
@@ -1558,6 +1570,14 @@ class B2bWorkspaceController extends Controller
                     ->limit(100)
                     ->get([
                         'b2b_price_tiers.name as tier',
+                        'b2b_price_rules.price_tier_id',
+                        'b2b_price_rules.product_id',
+                        'b2b_price_rules.quantity_price_breaks',
+                        'b2b_price_rules.ordering_increment',
+                        'b2b_price_rules.pack_size',
+                        'b2b_price_rules.case_size',
+                        'b2b_price_rules.pack_label',
+                        'b2b_price_rules.retail_reference_price',
                         'products.sku',
                         'products.name as product',
                         'b2b_price_rules.unit_price',
@@ -1571,6 +1591,19 @@ class B2bWorkspaceController extends Controller
                         'unit_price' => number_format((float) $row->unit_price, 3).' EGP',
                         'minimum_quantity' => number_format((float) $row->minimum_quantity, 3),
                         'status' => (bool) $row->status,
+                        'actions' => [
+                            'tier_id' => (int) $row->price_tier_id,
+                            'product_id' => (int) $row->product_id,
+                            'unit_price' => (float) $row->unit_price,
+                            'minimum_quantity' => (float) $row->minimum_quantity,
+                            'ordering_increment' => (float) $row->ordering_increment,
+                            'pack_size' => (float) $row->pack_size,
+                            'case_size' => $row->case_size === null ? null : (float) $row->case_size,
+                            'pack_label' => $row->pack_label,
+                            'retail_reference_price' => $row->retail_reference_price === null ? null : (float) $row->retail_reference_price,
+                            'is_active' => (bool) $row->status,
+                            'breaks' => QuantityPriceBreaks::readBreaks($row->quantity_price_breaks),
+                        ],
                     ])->all(),
                 'tiers' => DB::table('b2b_price_tiers')
                     ->orderBy('priority')

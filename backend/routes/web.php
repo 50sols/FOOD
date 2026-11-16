@@ -21,6 +21,7 @@ use App\Http\Controllers\Admin\CatalogManagementController;
 use App\Http\Controllers\Admin\CommercialDashboardController;
 use App\Http\Controllers\Admin\Customer360Controller;
 use App\Http\Controllers\Admin\CustomerGroupManagementController;
+use App\Http\Controllers\Admin\CustomerSalesContractController;
 use App\Http\Controllers\Admin\CustomerServiceWorkspaceController;
 use App\Http\Controllers\Admin\DocumentBrandingController;
 use App\Http\Controllers\Admin\DriverLiveTrackingDashboardController;
@@ -53,6 +54,7 @@ use App\Http\Controllers\Admin\ProductionLaunchController;
 use App\Http\Controllers\Admin\ReportController;
 use App\Http\Controllers\Admin\RestaurantWholesalePurchasesController;
 use App\Http\Controllers\Admin\RetailStoreProvisioningController;
+use App\Http\Controllers\Admin\SalesQuotationController;
 use App\Http\Controllers\Admin\SecurityController;
 use App\Http\Controllers\Admin\SettingsCenterController;
 use App\Http\Controllers\Admin\SidebarManagementController;
@@ -71,6 +73,7 @@ use App\Http\Controllers\Admin\WhatsAppCallController;
 use App\Http\Controllers\Admin\WhatsAppCampaignController;
 use App\Http\Controllers\Admin\WhatsAppChatbotController;
 use App\Http\Controllers\Admin\WhatsAppConnectionController;
+use App\Http\Controllers\Admin\WhatsAppDistributionRulesController;
 use App\Http\Controllers\Admin\WhatsAppFoundationController;
 use App\Http\Controllers\Admin\WhatsAppInboundAlertController;
 use App\Http\Controllers\Admin\WhatsAppInboxController;
@@ -227,6 +230,21 @@ Route::prefix('admin')
         Route::get('/action-center', [EnterpriseActionCenterController::class, 'index'])->name('action-center.index');
         Route::get('/action-center/export', [EnterpriseActionCenterController::class, 'export'])->middleware('throttle:30,1')->name('action-center.export');
         Route::get('/erp', ErpCenterController::class)->name('erp.index');
+        // P193: Customer & Sales quotes reuse the authoritative Customer pricing engine.
+        Route::get('/sales/quotations', [SalesQuotationController::class, 'index'])->name('sales-quotations.index');
+        Route::post('/sales/quotations', [SalesQuotationController::class, 'store'])->middleware('throttle:30,1')->name('sales-quotations.store');
+        Route::get('/sales/quotations/{quotation}', [SalesQuotationController::class, 'show'])->whereNumber('quotation')->name('sales-quotations.show');
+        Route::post('/sales/quotations/{quotation}/{action}', [SalesQuotationController::class, 'transition'])
+            ->whereNumber('quotation')->whereIn('action', ['issue', 'cancel'])->middleware('throttle:30,1')->name('sales-quotations.transition');
+        // P195: customer contracts reuse issued quotations and real store/channel authorization.
+        Route::post('/sales/contracts', [CustomerSalesContractController::class, 'store'])
+            ->middleware('throttle:20,1')->name('sales-contracts.store');
+        Route::post('/sales/contracts/{contract}/decision', [CustomerSalesContractController::class, 'decide'])
+            ->whereNumber('contract')->middleware('throttle:20,1')->name('sales-contracts.decision');
+        Route::post('/sales/contracts/{contract}/terminate', [CustomerSalesContractController::class, 'terminate'])
+            ->whereNumber('contract')->middleware('throttle:20,1')->name('sales-contracts.terminate');
+        Route::get('/sales/contracts/{contract}/evidence', [CustomerSalesContractController::class, 'evidence'])
+            ->whereNumber('contract')->middleware('throttle:30,1')->name('sales-contracts.download');
         Route::prefix('erp/procurement')->name('erp.procurement.')->group(function (): void {
             Route::get('/', [EnterpriseProcurementController::class, 'index'])->name('index');
             Route::post('/suppliers', [EnterpriseProcurementController::class, 'storeSupplier'])->middleware('throttle:30,1')->name('suppliers.store');
@@ -429,6 +447,10 @@ Route::prefix('admin')
             ->middleware('whatsapp.capability:agent_inbox')
             ->group(function (): void {
                 Route::get('/', [WhatsAppSupervisorController::class, 'index'])->name('index');
+                Route::get('/distribution-rules', [WhatsAppDistributionRulesController::class, 'index'])->name('rules.index');
+                Route::post('/distribution-rules', [WhatsAppDistributionRulesController::class, 'store'])->middleware('throttle:30,1')->name('rules.store');
+                Route::patch('/distribution-rules/{rule}', [WhatsAppDistributionRulesController::class, 'update'])->whereNumber('rule')->middleware('throttle:30,1')->name('rules.update');
+                Route::patch('/distribution-rules/{rule}/status', [WhatsAppDistributionRulesController::class, 'status'])->whereNumber('rule')->middleware('throttle:30,1')->name('rules.status');
                 Route::post('/leads', [WhatsAppSupervisorController::class, 'saveLead'])->name('leads.store');
                 Route::post('/follow-ups', [WhatsAppSupervisorController::class, 'createFollowUp'])->name('follow-ups.store');
                 Route::patch('/follow-ups/{followUp}', [WhatsAppSupervisorController::class, 'transitionFollowUp'])->whereNumber('followUp')->name('follow-ups.transition');
@@ -834,6 +856,7 @@ Route::prefix('admin')
         Route::post('/operations/orders/{order}/status', [OrderOperationsController::class, 'transition'])->whereNumber('order')->name('operations.orders.transition');
         Route::patch('/operations/orders/{order}/customer-service-owner', [OrderOperationsController::class, 'assignCustomerServiceOwner'])->whereNumber('order')->middleware('throttle:30,1')->name('operations.orders.customer-service-owner');
         Route::post('/operations/orders/{order}/customer-service-discount', [OrderOperationsController::class, 'applyCustomerServiceDiscount'])->whereNumber('order')->middleware('throttle:15,1')->name('operations.orders.customer-service-discount');
+        Route::post('/operations/orders/{order}/customer-service-discount-requests/{discountRequest}/review', [OrderOperationsController::class, 'reviewCustomerServiceDiscountRequest'])->whereNumber('order')->whereNumber('discountRequest')->middleware('throttle:15,1')->name('operations.orders.customer-service-discount.review');
         Route::patch('/operations/orders/{order}/dispatch', [OrderOperationsController::class, 'dispatch'])->whereNumber('order')->name('operations.orders.dispatch');
         Route::delete('/operations/orders/{order}/dispatch', [OrderOperationsController::class, 'clearDispatch'])->whereNumber('order')->name('operations.orders.dispatch.clear');
         Route::patch('/operations/orders/{order}/driver', [OrderOperationsController::class, 'reassign'])->whereNumber('order')->name('operations.orders.reassign');

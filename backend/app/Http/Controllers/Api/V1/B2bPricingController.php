@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Api\V1;
 
 use App\Domain\Pricing\B2bPriceResolver;
+use App\Domain\Pricing\QuantityPriceBreaks;
 use App\Http\Controllers\Controller;
 use App\Models\B2bAccount;
 use App\Models\B2bPriceRule;
@@ -11,6 +12,7 @@ use App\Services\AuditLogger;
 use App\Services\B2bPricingMode;
 use App\Services\CommercialPolicyService;
 use App\Services\CustomerDomainResolver;
+use App\Services\OperationalTenantScope;
 use App\Services\ProductAvailabilityService;
 use App\Services\WholesaleAppCatalogPolicy;
 use App\Services\WholesalePrincipal;
@@ -25,19 +27,23 @@ class B2bPricingController extends Controller
         private readonly ProductAvailabilityService $availability,
         private readonly B2bPriceResolver $prices,
         private readonly B2bPricingMode $pricingMode,
+        private readonly OperationalTenantScope $tenantScope,
         private readonly WholesalePrincipal $principal,
         private readonly WholesaleAppCatalogPolicy $appCatalog,
     ) {}
 
     public function index(Request $request): JsonResponse
     {
+        $user = $request->user();
+        abort_unless($user instanceof User, 401);
         Gate::authorize('b2b.pricing.view');
 
         $storeId = $this->principal->storeId();
+        $this->tenantScope->assertStore($user, $storeId, 'b2b.pricing.view', 'b2b');
         abort_unless(
             $this->pricingMode->tiersEnabled($storeId),
             409,
-            'B2B pricing tiers are disabled.',
+            $this->tiersDisabledMessage($request, $user),
         );
 
         $rules = B2bPriceRule::query()
@@ -53,6 +59,8 @@ class B2bPricingController extends Controller
 
     public function upsert(Request $request): JsonResponse
     {
+        $user = $request->user();
+        abort_unless($user instanceof User, 401);
         Gate::authorize('b2b.pricing.manage');
         $data = $request->validate([
             'price_tier_id' => ['required', 'integer', 'exists:b2b_price_tiers,id'],
@@ -66,8 +74,16 @@ class B2bPricingController extends Controller
             'pack_label' => ['nullable', 'string', 'max:80'],
             'retail_reference_price' => ['nullable', 'numeric', 'gte:0'],
             'is_active' => ['sometimes', 'boolean'],
+            'quantity_price_breaks' => ['sometimes', 'array', 'max:12'],
+            'quantity_price_breaks.*.minimum_quantity' => ['required', 'numeric', 'gt:0'],
+            'quantity_price_breaks.*.unit_price' => ['required', 'numeric', 'gte:0'],
+            'replace_quantity_price_breaks' => ['sometimes', 'boolean'],
         ]);
-        abort_unless($this->pricingMode->tiersEnabled((int) $data['store_id']), 409, 'B2B pricing tiers are disabled.');
+        // Preserve the authorized multi-store B2B API contract while rejecting
+        // another channel, inactive stores and explicit per-user store DENYs.
+        $storeId = (int) $data['store_id'];
+        $this->tenantScope->assertStore($user, $storeId, 'b2b.pricing.manage', 'b2b');
+        abort_unless($this->pricingMode->tiersEnabled($storeId), 409, $this->tiersDisabledMessage($request, $user));
 
         $ownedProduct = DB::table('products')
             ->join('catalogs', 'catalogs.id', '=', 'products.catalog_id')
@@ -82,20 +98,60 @@ class B2bPricingController extends Controller
             ->exists();
         abort_unless($ownedProduct, 422, 'Product must belong to the selected B2B store catalog.');
 
-        $rule = B2bPriceRule::query()->updateOrCreate(
-            ['price_tier_id' => $data['price_tier_id'], 'store_id' => $data['store_id'], 'product_id' => $data['product_id']],
-            [
-                'unit_price' => $data['unit_price'],
-                'minimum_quantity' => $data['minimum_quantity'],
-                'ordering_increment' => $data['ordering_increment'] ?? 1,
-                'pack_size' => $data['pack_size'] ?? 1,
-                'case_size' => $data['case_size'] ?? null,
-                'pack_label' => $data['pack_label'] ?? null,
-                'retail_reference_price' => $data['retail_reference_price'] ?? null,
-                'is_active' => $data['is_active'] ?? true,
-            ],
-        );
-        app(AuditLogger::class)->record('b2b.price_rule.saved', $request->user(), $rule, null, $rule->toArray(), $request);
+        // Omitted breaks in legacy API requests preserve their existing contract.
+        // An explicit list or Dashboard replace flag atomically replaces the list.
+        $replaceBreaks = array_key_exists('quantity_price_breaks', $data)
+            || (bool) ($data['replace_quantity_price_breaks'] ?? false);
+        $breaks = $replaceBreaks
+            ? QuantityPriceBreaks::normalize(
+                $data['quantity_price_breaks'] ?? [],
+                (float) $data['minimum_quantity'],
+                (float) ($data['ordering_increment'] ?? 1),
+                (float) $data['unit_price'],
+            )
+            : null;
+
+        $rule = DB::transaction(function () use ($data, $request, $replaceBreaks, $breaks): B2bPriceRule {
+            // A legacy caller may omit the schedule but must not silently
+            // invalidate its saved breaks by changing base price, MOQ or increment.
+            // Lock before checking so a concurrent editor cannot change the
+            // schedule between validation and the audited write.
+            $current = B2bPriceRule::query()
+                ->where('price_tier_id', $data['price_tier_id'])
+                ->where('store_id', $data['store_id'])
+                ->where('product_id', $data['product_id'])
+                ->lockForUpdate()
+                ->first();
+            if (! $replaceBreaks && $current instanceof B2bPriceRule) {
+                QuantityPriceBreaks::normalize(
+                    QuantityPriceBreaks::readBreaks($current->quantity_price_breaks),
+                    (float) $data['minimum_quantity'],
+                    (float) ($data['ordering_increment'] ?? 1),
+                    (float) $data['unit_price'],
+                );
+            }
+
+            $rule = B2bPriceRule::query()->updateOrCreate(
+                ['price_tier_id' => $data['price_tier_id'], 'store_id' => $data['store_id'], 'product_id' => $data['product_id']],
+                [
+                    'unit_price' => $data['unit_price'],
+                    'minimum_quantity' => $data['minimum_quantity'],
+                    'ordering_increment' => $data['ordering_increment'] ?? 1,
+                    'pack_size' => $data['pack_size'] ?? 1,
+                    'case_size' => $data['case_size'] ?? null,
+                    'pack_label' => $data['pack_label'] ?? null,
+                    'retail_reference_price' => $data['retail_reference_price'] ?? null,
+                    'is_active' => $data['is_active'] ?? true,
+                ],
+            );
+            if ($replaceBreaks) {
+                $rule->quantity_price_breaks = $breaks;
+                $rule->save();
+            }
+            app(AuditLogger::class)->record('b2b.price_rule.saved', $request->user(), $rule, null, $rule->toArray(), $request);
+
+            return $rule;
+        });
 
         return response()->json(['data' => $rule], $rule->wasRecentlyCreated ? 201 : 200);
     }
@@ -203,6 +259,7 @@ class B2bPricingController extends Controller
             'base_wholesale_price' => (float) $row->base_wholesale_price,
             'account_price' => $pricing['price'],
             'unit_price' => $pricing['price'],
+            'quantity_price_breaks' => $pricing['quantity_price_breaks'],
             'retail_reference_price' => $pricing['retail_reference_price'],
             'minimum_quantity' => $pricing['minimum_quantity'],
             'minimum_order_quantity' => $pricing['minimum_quantity'],
@@ -263,10 +320,11 @@ class B2bPricingController extends Controller
             ->where('stores.is_active', true)
             ->where('store_types.code', 'B2B')
             ->when($search !== '', fn ($query) => $query->where(function ($query) use ($search): void {
-                $like = '%'.$search.'%';
-                $query->where('products.name', 'like', $like)
-                    ->orWhere('products.sku', 'like', $like)
-                    ->orWhere('products.barcode', 'like', $like);
+                // Treat Customer search as literal text on SQLite and MySQL.
+                $like = '%'.str_replace(['!', '%', '_'], ['!!', '!%', '!_'], $search).'%';
+                $query->whereRaw("products.name LIKE ? ESCAPE '!'", [$like])
+                    ->orWhereRaw("products.sku LIKE ? ESCAPE '!'", [$like])
+                    ->orWhereRaw("products.barcode LIKE ? ESCAPE '!'", [$like]);
             }))
             ->when($categoryId !== null, fn ($query) => $query->where('products.category_id', $categoryId))
             ->when($brandId !== null, fn ($query) => $query->where('products.brand_id', $brandId));
@@ -335,6 +393,7 @@ class B2bPricingController extends Controller
                     'base_wholesale_price' => (float) $row->base_wholesale_price,
                     'unit_price' => $pricing['price'],
                     'account_price' => $pricing['price'],
+                    'quantity_price_breaks' => $pricing['quantity_price_breaks'],
                     'retail_reference_price' => $pricing['retail_reference_price'],
                     'minimum_quantity' => $pricing['minimum_quantity'],
                     'minimum_order_quantity' => $pricing['minimum_quantity'],
@@ -355,6 +414,15 @@ class B2bPricingController extends Controller
             'currency' => 'EGP',
             'pricing_tiers_enabled' => $tiersEnabled,
         ]);
+    }
+
+    private function tiersDisabledMessage(Request $request, User $user): string
+    {
+        $locale = in_array($user->locale, ['ar', 'en'], true)
+            ? (string) $user->locale
+            : (string) $request->getPreferredLanguage(['ar', 'en']);
+
+        return __('b2b_pricing_errors.tiers_disabled', [], $locale === 'en' ? 'en' : 'ar');
     }
 
     private function assetUrl(mixed $path): ?string

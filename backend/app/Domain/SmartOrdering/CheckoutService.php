@@ -87,7 +87,7 @@ final class CheckoutService
             abort_unless(
                 hash_equals((string) $existing->request_hash, $requestHash),
                 409,
-                'Idempotency-Key was already used for a different checkout request.',
+                __('smart_ordering.checkout.idempotency_conflict'),
             );
 
             return [
