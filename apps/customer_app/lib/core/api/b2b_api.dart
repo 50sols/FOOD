@@ -91,19 +91,17 @@ class HttpB2bApi implements B2bApi, B2bDocumentApi, B2bDownloadApi {
     Object? lastError;
     for (var attempt = 1; attempt <= maxGetAttempts; attempt++) {
       try {
-        final response = await _client
-            .get(
-              Uri.parse('$baseUrl$path'),
-              headers: {
-                'Accept': accept,
-                'Authorization': 'Bearer $token',
-                'X-FOODEX-Customer-Domain': 'b2b',
-                'Accept-Language': locale == 'en' ? 'en' : 'ar',
-                if (retailStoreContextId != null)
-                  'X-FOODEX-Retail-Store-ID': retailStoreContextId.toString(),
-              },
-            )
-            .timeout(requestTimeout);
+        final response = await _client.get(
+          Uri.parse('$baseUrl$path'),
+          headers: {
+            'Accept': accept,
+            'Authorization': 'Bearer $token',
+            'X-FOODEX-Customer-Domain': 'b2b',
+            'Accept-Language': locale == 'en' ? 'en' : 'ar',
+            if (retailStoreContextId != null)
+              'X-FOODEX-Retail-Store-ID': retailStoreContextId.toString(),
+          },
+        ).timeout(requestTimeout);
         // These are safe invoice/statement/document reads, not financial
         // mutations. Keep the caller's session, store and locale on retry.
         if (attempt < maxGetAttempts &&
@@ -157,7 +155,8 @@ class HttpB2bApi implements B2bApi, B2bDocumentApi, B2bDownloadApi {
     final mime = response.headers['content-type']?.split(';').first.trim();
     return B2bDownload(
       bytes: response.bodyBytes,
-      mimeType: mime == null || mime.isEmpty ? 'application/octet-stream' : mime,
+      mimeType:
+          mime == null || mime.isEmpty ? 'application/octet-stream' : mime,
       filename: filenameMatch?.group(1) ?? 'foodex-account-statement',
     );
   }
