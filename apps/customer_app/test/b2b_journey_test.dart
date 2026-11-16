@@ -1,7 +1,6 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
-import 'package:flutter/rendering.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:foodex_visualization/foodex_visualization.dart';
 import 'package:foodex_customer_app/app.dart';
