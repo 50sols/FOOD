@@ -29,6 +29,8 @@ final class UnknownInventoryOwnerProjection
             throw new LogicException('Reservation owner projection requires the locked canonical stock transaction.');
         }
 
+        self::assertCanonicalBalance($lockedInventory->quantity, $lockedInventory->reserved_quantity);
+
         // A single statement is essential: the existing WMS reservation
         // performance contract allows no extra SELECT+INSERT/UPDATE sequence.
         // Use the already-locked canonical snapshot, never user-supplied stock.
@@ -102,6 +104,17 @@ SQL;
             throw new LogicException('Inventory owner projection requires the canonical stock transaction.');
         }
 
+        // Read the already locked canonical row, not client-supplied quantity.
+        $canonical = DB::table('inventories')
+            ->where('id', $inventoryId)
+            ->first(['quantity', 'reserved_quantity', 'updated_at']);
+
+        if ($canonical === null) {
+            throw new LogicException('Canonical inventory disappeared before owner projection.');
+        }
+
+        self::assertCanonicalBalance($canonical->quantity, $canonical->reserved_quantity);
+
         $rows = DB::table('enterprise_inventory_owner_positions')
             ->where('inventory_id', $inventoryId)
             ->lockForUpdate()
@@ -121,15 +134,6 @@ SQL;
                 || $row->supplier_id !== null) {
                 return;
             }
-        }
-
-        // Read the already locked canonical row, not client-supplied quantity.
-        $canonical = DB::table('inventories')
-            ->where('id', $inventoryId)
-            ->first(['quantity', 'reserved_quantity', 'updated_at']);
-
-        if ($canonical === null) {
-            throw new LogicException('Canonical inventory disappeared before owner projection.');
         }
 
         $data = [
@@ -155,5 +159,33 @@ SQL;
             ...$data,
             'created_at' => now(),
         ]);
+    }
+
+    /**
+     * Every projection is a transactional integrity boundary on canonical
+     * stock. Never write a valid-looking UNKNOWN/known owner report while
+     * reserved units exceed physical on-hand or either balance is negative.
+     * Work in exact DECIMAL(14,3) milli-units; an exception rolls back the
+     * surrounding canonical stock mutation and its movement.
+     */
+    private static function assertCanonicalBalance(mixed $quantity, mixed $reserved): void
+    {
+        $onHand = self::milliUnits($quantity);
+        $onReserve = self::milliUnits($reserved);
+
+        if ($onHand < 0 || $onReserve < 0 || $onReserve > $onHand) {
+            throw new LogicException('Canonical stock balance violates inventory reservation invariants.');
+        }
+    }
+
+    private static function milliUnits(mixed $value): int
+    {
+        if (preg_match('/\A(-?)([0-9]{1,11})(?:\.([0-9]{1,3}))?\z/D', trim((string) $value), $parts) !== 1) {
+            throw new LogicException('Canonical stock quantity is not valid DECIMAL(14,3).');
+        }
+
+        $millis = ((int) $parts[2]) * 1000 + (int) str_pad($parts[3] ?? '', 3, '0');
+
+        return $parts[1] === '-' ? -$millis : $millis;
     }
 }
