@@ -14,15 +14,15 @@
 - Audit: Draft writes create `enterprise.finance.ar_allocation_created`; unverified P303 post attempts never create `enterprise.finance.ar_allocation_posted` or a Finance journal. Legitimate pre-existing canonical AR posting retains its separate history. Retry uses stable form idempotency key; new business request generates new key.
 - Failure and recovery: invalid foreign document returns 404; conflicting idempotency key or over-allocation returns validation error; failed posting leaves draft for authorized review. Database transaction and canonical journal state machine are unchanged. No manual rollback of posted journal is implied.
 - UI states: selected document, no settlements, draft/unverified receipt, previously posted linked journal, disabled create when no posting account or no manage permission, missing entitlement 403. An AR/EN source-verification warning replaces the unsafe P303 Post form on a draft. A crafted direct POST is denied with `collection_source` validation and no financial mutation; page/list/pagination and language remain unchanged.
-- No backend/mobile API contract, app navigation or fulfillment behavior changed.
+- Current original PR modifies the B2B invoice readback API: `B2bFinanceController::invoicePayload` returns `paid|captured` field payments with explicit status to match the existing account ledger. It does not change Customer/Driver/Van Flutter sources here, create an accounting journal, or change dispatch/fulfillment invariants.
 
 ## Explicit three-app impact decision
 
 | App | Impact | Evidence |
 | --- | --- | --- |
-| Customer | No app or public API changes; customer invoice/ledger APIs untouched | Only backend Admin Finance routes / view / language / tests changed |
-| Driver | No app/API changes; B2C DRIVER ONLY and Driver collection contracts untouched | No Driver/dispatch/collection table changes |
-| Van | No app/API changes; B2B VAN ONLY and Van collection/remittance workflows untouched | No Van/dispatch/visit/stock table changes |
+| Customer | **AFFECTED API contract**; B2B invoice `payments` includes `paid|captured` plus status; Customer UI/ledger integration remains an explicit dependent acceptance | `backend/app/Http/Controllers/Api/V1/B2bFinanceController.php` and `B2bAccountLedgerContractTest.php`; [MOB-C03 #2732](https://github.com/walidatiyaai2025-gif/FOOD/issues/2732), original PR #3337; no Customer Flutter edit in this PR |
+| Driver | **NO_DIRECT_FLUTTER_CODE_IMPACT on this PR's changed-file set**; operational B2C collections remain DRIVER ONLY, without a Wholesale fallback | No Driver Flutter/dispatch change in this PR; source contract owner [MOB-D03 #2736](https://github.com/walidatiyaai2025-gif/FOOD/issues/2736); not an E2E Driver settlement acceptance claim |
+| Van | **AFFECTED settlement/source lineage contract**; B2B operational collection from Van custody must be joined to independently approved remittance and Treasury receipt before final AR/GL posting. No Van Flutter code changes here | [MOB-V03 #2739](https://github.com/walidatiyaai2025-gif/FOOD/issues/2739) and custody [#2602 / PR #3332](https://github.com/walidatiyaai2025-gif/FOOD/issues/2602); no final Van→Finance E2E acceptance yet |
 
 ## Reproducible tests and release gates
 
