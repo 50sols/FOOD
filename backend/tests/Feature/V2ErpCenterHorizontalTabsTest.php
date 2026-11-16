@@ -53,6 +53,7 @@ final class V2ErpCenterHorizontalTabsTest extends TestCase
             }
             $this->assertSame([$expected], $visible, json_encode($query));
             $this->assertSame(4, substr_count($markup, 'data-erp-tab="'));
+            $this->assertSame(1, substr_count($markup, 'class="foodex-tab active"'));
         }
     }
 
