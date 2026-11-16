@@ -984,6 +984,34 @@ final class V2InventoryOwnerProvenanceTest extends TestCase
         $this->assertSame('STALE', $read->snapshot($actor, $stock['inventory_id'])['state']);
     }
 
+    public function test_signed_owner_revision_hash_preserves_exact_large_milli_unit_differences(): void
+    {
+        $verifier = app(InventoryLegalTitleAttestationVerifier::class);
+        $inventory = (object) ['id' => 1, 'warehouse_id' => 2, 'product_id' => 3];
+        $position = (object) [
+            'id' => 4,
+            'owner_key' => 'FOODEX',
+            'owner_kind' => 'FOODEX',
+            'supplier_id' => null,
+            'quantity' => '99999999999.001',
+            'reserved_quantity' => '0.001',
+            'source_inventory_updated_at' => '2026-11-16 00:00:00',
+            'evidence_type' => 'SIGNED_CONTRACT',
+            'evidence_reference' => 'TITLE-REV-001',
+            'proposed_by' => 5,
+            'certified_by' => 6,
+            'certified_at' => '2026-11-16 00:01:00',
+        ];
+
+        $first = $verifier->stockRevisionSha256($inventory, $position, 7);
+        $position->quantity = '99999999999.002';
+        $this->assertNotSame($first, $verifier->stockRevisionSha256($inventory, $position, 7));
+
+        $position->quantity = '99999999999.001';
+        $position->reserved_quantity = '0.002';
+        $this->assertNotSame($first, $verifier->stockRevisionSha256($inventory, $position, 7));
+    }
+
     /** @return array{store_id:int,inventory_id:int} */
     private function stock(string $suffix): array
     {

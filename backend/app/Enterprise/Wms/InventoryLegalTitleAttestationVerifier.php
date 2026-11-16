@@ -48,7 +48,13 @@ final class InventoryLegalTitleAttestationVerifier
             return false;
         }
 
-        $stockSha = $this->stockRevisionSha256($inventory, $position, $storeId);
+        try {
+            $stockSha = $this->stockRevisionSha256($inventory, $position, $storeId);
+        } catch (Throwable) {
+            // Corrupt or out-of-range canonical owner quantities must fail
+            // closed rather than become usable legal-title evidence.
+            return false;
+        }
         $attestations = DB::table('enterprise_inventory_title_attestations')
             ->where('owner_position_id', (int) $position->id)
             ->where('stock_revision_sha256', $stockSha)
@@ -105,6 +111,11 @@ final class InventoryLegalTitleAttestationVerifier
             return false;
         }
 
+        $fileSize = filesize($realFile);
+        if (! is_int($fileSize) || $fileSize < 1 || $fileSize > 25 * 1024 * 1024) {
+            return false;
+        }
+
         $actualDigest = hash_file('sha256', $realFile);
         if (! is_string($actualDigest) || ! hash_equals($digest, $actualDigest)) {
             return false;
@@ -128,6 +139,24 @@ final class InventoryLegalTitleAttestationVerifier
         ) === 1;
     }
 
+    /**
+     * DECIMAL(14,3) quantities must never be converted through binary float.
+     * At 11 integer digits, distinct milli-units are not always representable
+     * as distinct PHP float values; the certificate digest must distinguish
+     * every legal source quantity exactly.
+     */
+    private static function exactQuantity(mixed $value): string
+    {
+        $raw = trim((string) $value);
+        if (preg_match('/\A([0-9]{1,11})(?:\.([0-9]{1,3}))?\z/D', $raw, $matches) !== 1) {
+            throw new \UnexpectedValueException('Noncanonical signed owner quantity.');
+        }
+
+        $integer = ltrim($matches[1], '0');
+
+        return ($integer === '' ? '0' : $integer).'.'.str_pad($matches[2] ?? '', 3, '0');
+    }
+
     /** @param object $inventory @param object $position */
     private function stockIdentity(object $inventory, object $position, int $storeId): string
     {
@@ -140,8 +169,8 @@ final class InventoryLegalTitleAttestationVerifier
             'owner_key' => (string) $position->owner_key,
             'owner_kind' => (string) $position->owner_kind,
             'supplier_id' => $position->supplier_id === null ? null : (int) $position->supplier_id,
-            'quantity' => number_format((float) $position->quantity, 3, '.', ''),
-            'reserved_quantity' => number_format((float) $position->reserved_quantity, 3, '.', ''),
+            'quantity' => self::exactQuantity($position->quantity),
+            'reserved_quantity' => self::exactQuantity($position->reserved_quantity),
             'source_inventory_updated_at' => (string) $position->source_inventory_updated_at,
             'evidence_type' => (string) $position->evidence_type,
             'evidence_reference' => (string) $position->evidence_reference,
