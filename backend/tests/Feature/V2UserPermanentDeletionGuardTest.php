@@ -102,6 +102,36 @@ final class V2UserPermanentDeletionGuardTest extends TestCase
         $this->assertDatabaseMissing('audit_logs', ['event' => 'user.permanently_deleted']);
     }
 
+    public function test_existing_mobile_sanctum_token_is_retained_and_blocks_delete(): void
+    {
+        $admin = $this->makeUser('SUPER_ADMIN');
+        $target = User::factory()->create(['is_active' => false]);
+        $token = $target->createToken('existing-mobile-session');
+
+        $this->actingAs($admin)
+            ->get(route('admin.security.index', ['section' => 'users', 'deletion_preview' => $target->id]))
+            ->assertOk()
+            ->assertSee('data-v2-user-deletion-blocked', false)
+            ->assertDontSee('data-v2-user-deletion-form', false);
+
+        $this->actingAs($admin)
+            ->delete(route('admin.security.users.destroy', $target), [
+                'reason' => 'Attempt deletion with a retained mobile session',
+                'confirm_email' => $target->email,
+                'confirm_delete' => 'DELETE',
+                'impact_reviewed' => '1',
+            ])
+            ->assertRedirect()
+            ->assertSessionHasErrors('user');
+
+        $this->assertDatabaseHas('users', ['id' => $target->id]);
+        $this->assertDatabaseHas('personal_access_tokens', [
+            'id' => $token->accessToken->getKey(),
+            'tokenable_id' => $target->id,
+            'tokenable_type' => User::class,
+        ]);
+    }
+
     public function test_consumer_identity_is_routed_to_the_separate_privacy_deletion_workflow(): void
     {
         $admin = $this->makeUser('SUPER_ADMIN');
