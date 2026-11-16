@@ -3905,6 +3905,91 @@ void main() {
     },
   );
 
+  for (final locale in const <Locale>[Locale('ar'), Locale('en')]) {
+    testWidgets(
+      'MOB-C03 order settlement readback ignores superseded refresh in ${locale.languageCode}',
+      (tester) async {
+        final api = _DeferredOrderDetailsB2bApi();
+        Map<String, Object?> orderWithSettlement(double paid, double due) => {
+              'id': 77,
+              'order_number': 'B2B-77',
+              'status': 'out_for_delivery',
+              'grand_total': 100.0,
+              'currency': 'KWD',
+              'payment_method': 'account_credit',
+              'store': {'id': 1, 'name': 'FOODEX Wholesale'},
+              'settlement': {
+                'payment_state': 'partially_settled',
+                'paid_amount': paid,
+                'remaining_amount': due,
+              },
+              'items': const <Object>[],
+            };
+
+        await tester.pumpWidget(
+          FoodexCustomerApp(
+            session: b2b,
+            initialRoute: '/b2b/orders/77',
+            b2bApi: api,
+            locale: locale,
+          ),
+        );
+        await tester.pump();
+        expect(api.calls, 1);
+
+        api.requests[0].complete(orderWithSettlement(10, 90));
+        await _pumpCustomerFrames(tester);
+        expect(find.byKey(const ValueKey('b2b-order-detail')), findsOneWidget);
+
+        await tester.tap(find.byKey(const ValueKey('b2b-order-refresh')));
+        await tester.pump();
+        await tester.tap(find.byKey(const ValueKey('b2b-order-refresh')));
+        await tester.pump();
+        expect(api.calls, 3);
+
+        // A later verified settlement has already won the visible readback.
+        api.requests[2].complete(orderWithSettlement(60, 40));
+        await _pumpCustomerFrames(tester);
+        expect(
+          tester
+              .widget<Text>(
+                  find.byKey(const ValueKey('customer-order-paid-77')))
+              .data,
+          contains('60'),
+        );
+
+        // Network completion order is not financial event chronology.
+        api.requests[1].complete(orderWithSettlement(20, 80));
+        await _pumpCustomerFrames(tester);
+
+        // If the next request fails, retain only the latest successful
+        // response (60/40) as explicitly stale, never older 20/80.
+        await tester.tap(find.byKey(const ValueKey('b2b-order-refresh')));
+        await tester.pump();
+        expect(api.calls, 4);
+        api.requests[3].completeError(const B2bApiException('http_503'));
+        await _pumpCustomerFrames(tester);
+
+        expect(find.byKey(const ValueKey('b2b-order-detail-stale')),
+            findsOneWidget);
+        expect(
+          tester
+              .widget<Text>(
+                  find.byKey(const ValueKey('customer-order-paid-77')))
+              .data,
+          contains('60'),
+        );
+        expect(
+          tester
+              .widget<Text>(
+                  find.byKey(const ValueKey('customer-order-remaining-77')))
+              .data,
+          contains('40'),
+        );
+      },
+    );
+  }
+
   testWidgets(
     'B2B order timeline renders only authoritative events and refreshes state',
     (tester) async {
@@ -6298,6 +6383,21 @@ class _PathB2bApi implements B2bApi {
   Future<Object?> get(String path) async {
     lastPath = path;
     return responses[path];
+  }
+}
+
+class _DeferredOrderDetailsB2bApi implements B2bApi {
+  final List<Completer<Object?>> requests = <Completer<Object?>>[];
+  int get calls => requests.length;
+
+  @override
+  Future<Object?> get(String path) {
+    if (path != '/api/v1/b2b/orders/77') {
+      throw StateError('Unexpected partial collection readback route: $path');
+    }
+    final completer = Completer<Object?>();
+    requests.add(completer);
+    return completer.future;
   }
 }
 

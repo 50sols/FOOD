@@ -8658,6 +8658,7 @@ class _WholesaleOrderDetailsDesignScreenState
     with WidgetsBindingObserver {
   late final int orderId = _orderId(widget.location);
   Map<String, dynamic>? _lastOrder;
+  int _latestOrderReadRevision = 0;
   late Future<Object?> future = _load();
 
   static int _orderId(String location) {
@@ -8687,6 +8688,10 @@ class _WholesaleOrderDetailsDesignScreenState
   }
 
   Future<Object?> _load() async {
+    // An earlier network request may resolve after a newer settlement read.
+    // FutureBuilder ignores its visual result but its cache side-effect must
+    // not undo the latest verified paid / remaining amounts.
+    final revision = ++_latestOrderReadRevision;
     if (orderId <= 0 || widget.api == null) {
       return null;
     }
@@ -8697,12 +8702,15 @@ class _WholesaleOrderDetailsDesignScreenState
       );
       if (raw is Map) {
         final order = Map<String, dynamic>.from(raw);
-        _lastOrder = order;
+        if (mounted && revision == _latestOrderReadRevision) {
+          _lastOrder = order;
+        }
         return order;
       }
       return raw;
     } catch (_) {
-      if (_lastOrder != null) {
+      // Never return an obsolete cached result from a superseded request.
+      if (revision == _latestOrderReadRevision && _lastOrder != null) {
         return <String, dynamic>{..._lastOrder!, '__stale': true};
       }
       rethrow;
