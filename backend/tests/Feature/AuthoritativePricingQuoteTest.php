@@ -385,6 +385,85 @@ class AuthoritativePricingQuoteTest extends TestCase
         ]);
     }
 
+    public function test_wholesale_credit_checkout_replay_survives_credit_policy_change_but_new_purchase_does_not(): void
+    {
+        $user = $this->platformCustomer('wholesale-credit-replay@example.test');
+        $b2b = app(CustomerDomainResolver::class)->b2b($user);
+        $legacyId = (int) DB::table('platform_customers')
+            ->where('user_id', $user->id)
+            ->value('legacy_customer_id');
+
+        DB::table('b2b_accounts')->where('b2b_customer_id', $b2b->id)->update([
+            'credit_limit' => 1000,
+            'updated_at' => now(),
+        ]);
+
+        $address = Address::query()->create([
+            'customer_id' => $legacyId,
+            'b2b_customer_id' => $b2b->id,
+            'label' => 'Wholesale',
+            'line1' => 'Credit replay street',
+            'city' => 'Cairo',
+            'country_code' => 'EG',
+            'is_default' => true,
+        ]);
+
+        Sanctum::actingAs($user);
+
+        $this->postJson('/api/v1/cart/items', [
+            'store_id' => $this->wholesale,
+            'product_id' => $this->wholesaleProduct,
+            'quantity' => 1,
+        ])->assertCreated();
+
+        $payload = [
+            'store_id' => $this->wholesale,
+            'address_id' => $address->id,
+            'payment_method' => 'account_credit',
+        ];
+
+        $first = $this->withHeader('Idempotency-Key', 'wholesale-credit-replay-0001')
+            ->postJson('/api/v1/checkout', $payload)
+            ->assertCreated();
+        $orderId = (int) $first->json('id');
+
+        // Credit eligibility can change after a successful invoice. The old
+        // key is readback only and must not be checked as a *new* credit sale.
+        DB::table('b2b_accounts')->where('b2b_customer_id', $b2b->id)->update([
+            'credit_limit' => 0,
+            'updated_at' => now(),
+        ]);
+
+        $this->withHeader('Idempotency-Key', 'wholesale-credit-replay-0001')
+            ->postJson('/api/v1/checkout', $payload)
+            ->assertOk()
+            ->assertJsonPath('id', $orderId);
+
+        $this->assertDatabaseCount('orders', 1);
+        $this->assertDatabaseCount('payments', 1);
+        $this->assertDatabaseCount('invoices', 1);
+
+        $this->postJson('/api/v1/cart/items', [
+            'store_id' => $this->wholesale,
+            'product_id' => $this->wholesaleProduct,
+            'quantity' => 2,
+        ])->assertCreated();
+
+        // Changed cart + old key is not a replay and has no side effects.
+        $this->withHeader('Idempotency-Key', 'wholesale-credit-replay-0001')
+            ->postJson('/api/v1/checkout', $payload)
+            ->assertConflict();
+
+        // Fresh credit request remains forbidden after withdrawal.
+        $this->withHeader('Idempotency-Key', 'wholesale-credit-replay-0002')
+            ->postJson('/api/v1/checkout', $payload)
+            ->assertUnprocessable();
+
+        $this->assertDatabaseCount('orders', 1);
+        $this->assertDatabaseCount('payments', 1);
+        $this->assertDatabaseCount('invoices', 1);
+    }
+
     public function test_wholesale_order_keeps_tier_and_price_snapshot_after_tier_changes(): void
     {
         $user = $this->platformCustomer('tier-snapshot@example.test');
