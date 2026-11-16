@@ -234,8 +234,7 @@ void main() {
         );
         await expectLater(
           api.download(
-            '/api/v1/b2b/account-statement/export?store_id=7&format=' +
-                failure.format,
+            '/api/v1/b2b/account-statement/export?store_id=7&format=${failure.format}',
           ),
           throwsA(isA<B2bApiException>()
               .having((error) => error.code, 'code', 'invalid_document')),
