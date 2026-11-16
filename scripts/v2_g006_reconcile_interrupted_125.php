@@ -18,6 +18,14 @@ require __DIR__.'/../backend/vendor/autoload.php';
 $app = require __DIR__.'/../backend/bootstrap/app.php';
 $app->make(\Illuminate\Contracts\Console\Kernel::class)->bootstrap();
 
+// Laravel's registered CLI exception reporter can log a failure and return
+// exit status 0 for an uncaught standalone-script exception. A fail-closed
+// recovery guard must also fail the invoking shell's exit-status contract.
+set_exception_handler(static function (Throwable $error): void {
+    fwrite(STDERR, 'G006 CI fixture validation rejected: '.$error->getMessage().PHP_EOL);
+    exit(2);
+});
+
 $mode = $argv[1] ?? '--verify-only';
 if (! in_array($mode, ['--verify-only', '--reconcile-ci-fixture'], true) || count($argv) > 2) {
     throw new RuntimeException('Usage: php scripts/v2_g006_reconcile_interrupted_125.php [--verify-only|--reconcile-ci-fixture]');
