@@ -36,7 +36,6 @@
     <nav class="wms-tabs foodex-tabs" aria-label="{{ __('enterprise_wms.reports.title') }}" data-wms-report-tabs>
         @foreach($reportPanelKeys as $reportPanelKey)
             <a class="wms-tab foodex-tab {{ $activeReportPanel === $reportPanelKey ? 'is-active' : '' }}"
-               style="min-height:44px"
                data-wms-report-tab="{{ $reportPanelKey }}"
                href="{{ route('admin.erp.wms.index', array_merge($reportBase, ['tab'=>'reports','report_panel'=>$reportPanelKey])) }}"
                @if($activeReportPanel === $reportPanelKey) aria-current="page" @endif>{{ __('enterprise_wms.reports.'.$reportPanelKey) }}</a>
