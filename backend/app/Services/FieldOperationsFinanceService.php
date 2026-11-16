@@ -44,6 +44,7 @@ final class FieldOperationsFinanceService
                         || (string) ($record['van_status'] ?? '') !== 'active'
                         || (int) $record['custody_entries'] === 0
                         || (int) $record['currency_mismatch_entries'] > 0
+                        || (int) $record['remittance_currency_mismatch_entries'] > 0
                         || abs((float) $record['custody_balance']) > 0.0005
                         || (int) $record['pending_remittance_count'] > 0
                         || (int) $record['awaiting_reconciliation'] > 0
@@ -122,6 +123,15 @@ final class FieldOperationsFinanceService
             ->selectRaw('COUNT(*) as pending_remittance_count')
             ->groupBy('collection_account_id');
 
+        // An already reconciled remittance with the wrong currency is still
+        // inconsistent financial provenance; pending/approved counts alone
+        // cannot safely certify an account ledger as clear.
+        $remittanceCurrencies = DB::table('remittances')
+            ->join('collection_accounts as remittance_accounts', 'remittance_accounts.id', '=', 'remittances.collection_account_id')
+            ->select('remittances.collection_account_id')
+            ->selectRaw('SUM(CASE WHEN UPPER(TRIM(remittances.currency)) = UPPER(TRIM(remittance_accounts.currency)) THEN 0 ELSE 1 END) as currency_mismatch_entries')
+            ->groupBy('remittances.collection_account_id');
+
         $approved = DB::table('remittances')
             ->where('status', 'approved')
             ->select('collection_account_id')
@@ -134,6 +144,7 @@ final class FieldOperationsFinanceService
             ->leftJoinSub($custody, 'custody_totals', fn ($join) => $join->on('custody_totals.collection_account_id', '=', 'collection_accounts.id'))
             ->leftJoinSub($pending, 'pending_totals', fn ($join) => $join->on('pending_totals.collection_account_id', '=', 'collection_accounts.id'))
             ->leftJoinSub($approved, 'approved_totals', fn ($join) => $join->on('approved_totals.collection_account_id', '=', 'collection_accounts.id'))
+            ->leftJoinSub($remittanceCurrencies, 'remittance_currency_totals', fn ($join) => $join->on('remittance_currency_totals.collection_account_id', '=', 'collection_accounts.id'))
             ->where('collection_accounts.actor_type', 'van')
             ->whereIn('collection_accounts.store_id', $storeIds)
             ->when($q !== '', function ($query) use ($q): void {
@@ -160,6 +171,7 @@ final class FieldOperationsFinanceService
                 DB::raw('COALESCE(custody_totals.custody_balance, 0) as custody_balance'),
                 DB::raw('COALESCE(custody_totals.custody_entries, 0) as custody_entries'),
                 DB::raw('COALESCE(custody_totals.currency_mismatch_entries, 0) as currency_mismatch_entries'),
+                DB::raw('COALESCE(remittance_currency_totals.currency_mismatch_entries, 0) as remittance_currency_mismatch_entries'),
                 DB::raw('COALESCE(pending_totals.pending_remittance, 0) as pending_remittance'),
                 DB::raw('COALESCE(pending_totals.pending_remittance_count, 0) as pending_remittance_count'),
                 DB::raw('COALESCE(approved_totals.awaiting_reconciliation, 0) as awaiting_reconciliation'),
