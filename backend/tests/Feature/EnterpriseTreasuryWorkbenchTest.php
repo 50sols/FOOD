@@ -462,6 +462,103 @@ final class EnterpriseTreasuryWorkbenchTest extends TestCase
         $this->assertSame($auditCount, DB::table('audit_logs')->count());
     }
 
+    public function test_p302_guarantee_types_are_documentary_drafts_with_idempotency_and_no_financial_posting(): void
+    {
+        [$actor, $store] = $this->operator('ERP-GUARANTEE-A', 'guarantee-a@example.test', 'en');
+        $context = app(TenantContextResolver::class)->retail($actor, $store->id);
+        $this->enableTreasury($actor, $context);
+
+        $this->actingAs($actor)
+            ->get(route('admin.erp.treasury.index', ['store_id' => $store->id, 'tab' => 'guarantees']))
+            ->assertOk()
+            ->assertSee('Bank guarantees and secured commercial contracts')
+            ->assertSee('No issuance, claim, collateral enforcement');
+
+        $payload = [
+            'store_id' => $store->id,
+            '_operation_key' => 'guarantee-draft-001',
+            'instrument_type' => 'bank_guarantee',
+            'direction' => 'issued',
+            'reference' => 'BG-001',
+            'underlying_reference' => 'CONTRACT-001',
+            'issuer_name' => 'Bank One',
+            'applicant_name' => 'FOODEX',
+            'beneficiary_name' => 'Vendor',
+            'currency_code' => 'KWD',
+            'face_amount' => '125.500',
+            'effective_date' => '2026-11-01',
+            'expiry_date' => '2027-11-01',
+        ];
+
+        $endpoint = route('admin.erp.treasury.guarantees.store');
+        $this->actingAs($actor)->post($endpoint, $payload)
+            ->assertRedirect(route('admin.erp.treasury.index', ['tab' => 'guarantees', 'store_id' => $store->id]));
+        $this->actingAs($actor)->post($endpoint, $payload)->assertRedirect();
+        $this->assertDatabaseCount('enterprise_guaranteed_contracts', 1);
+        $this->assertDatabaseHas('enterprise_guaranteed_contracts', [
+            'store_id' => $store->id,
+            'instrument_type' => 'bank_guarantee',
+            'status' => 'draft',
+            'face_amount' => '125.500',
+        ]);
+
+        $this->actingAs($actor)->post($endpoint, [
+            ...$payload,
+            '_operation_key' => 'guarantee-draft-002',
+            'instrument_type' => 'secured_commercial_contract',
+            'reference' => 'SC-002',
+            'security_description' => 'Secured by documented pledged inventory',
+        ])->assertRedirect();
+        $this->assertDatabaseCount('enterprise_guaranteed_contracts', 2);
+        $this->assertDatabaseHas('enterprise_guaranteed_contracts', [
+            'store_id' => $store->id,
+            'instrument_type' => 'secured_commercial_contract',
+            'reference' => 'SC-002',
+            'status' => 'draft',
+        ]);
+        $this->assertSame(0, DB::table('enterprise_finance_journals')->count());
+        $this->assertSame(0, DB::table('enterprise_treasury_payments')->count());
+        $this->assertSame(0, DB::table('enterprise_treasury_receipts')->count());
+        $this->actingAs($actor)->post($endpoint, [...$payload, 'reference' => 'CHANGED'])
+            ->assertSessionHasErrors('idempotency_key');
+    }
+
+    public function test_p302_guarantee_instruments_deny_foreign_store_invalid_payload_and_disabled_module(): void
+    {
+        [$actor, $store] = $this->operator('ERP-GUARANTEE-OWN', 'guarantee-own@example.test', 'ar');
+        [, $otherStore] = $this->operator('ERP-GUARANTEE-OTHER', 'guarantee-other@example.test', 'ar');
+        $context = app(TenantContextResolver::class)->retail($actor, $store->id);
+        $endpoint = route('admin.erp.treasury.guarantees.store');
+        $base = [
+            'store_id' => $store->id,
+            '_operation_key' => 'guarantee-negative-001',
+            'instrument_type' => 'bank_guarantee',
+            'direction' => 'received',
+            'reference' => 'BG-NEG-001',
+            'underlying_reference' => 'CONTRACT-NEG',
+            'issuer_name' => 'Bank',
+            'applicant_name' => 'Customer',
+            'beneficiary_name' => 'FOODEX',
+            'currency_code' => 'KWD',
+            'face_amount' => '20.000',
+            'effective_date' => '2026-11-01',
+            'expiry_date' => '2027-11-01',
+        ];
+        $this->actingAs($actor)->post($endpoint, $base)->assertForbidden();
+        $this->enableTreasury($actor, $context);
+        $this->actingAs($actor)->post($endpoint, [...$base, 'store_id' => $otherStore->id])
+            ->assertForbidden();
+        $this->actingAs($actor)->post($endpoint, [...$base, 'face_amount' => '-12.000'])
+            ->assertSessionHasErrors('face_amount');
+        $this->actingAs($actor)->post($endpoint, [...$base, 'expiry_date' => '2025-01-01'])
+            ->assertSessionHasErrors('expiry_date');
+        $this->actingAs($actor)->post($endpoint, [...$base, 'instrument_type' => 'loan'])
+            ->assertSessionHasErrors('instrument_type');
+        $this->actingAs($actor)->post($endpoint, [...$base, 'issuer_name' => ''])
+            ->assertSessionHasErrors('issuer_name');
+        $this->assertDatabaseCount('enterprise_guaranteed_contracts', 0);
+    }
+
     /** @return array{User,Store} */
     private function operator(string $storeCode, string $email, string $locale = 'ar'): array
     {
