@@ -291,6 +291,29 @@ class HttpWholesaleCommerceApi
       );
     }
 
+    // A successful cart, quote or checkout must carry an authoritative
+    // JSON object. Do not reinterpret HTTP 200 HTML, malformed JSON, an
+    // empty body or a JSON scalar as an empty cart/zero-price checkout.
+    // Other cart mutations keep their existing response contract (including
+    // the valid empty response on DELETE).
+    if (method == 'GET' ||
+        path == '/api/v1/quote' ||
+        path == '/api/v1/checkout') {
+      final mime =
+          response.headers['content-type']?.split(';').first.trim().toLowerCase();
+      if (response.body.isEmpty ||
+          (mime != null &&
+              mime.isNotEmpty &&
+              mime != 'application/json' &&
+              !mime.endsWith('+json')) ||
+          value is! Map<String, dynamic>) {
+        throw WholesaleCommerceException(
+          locale == 'en'
+              ? 'The server returned an invalid response. Try again.'
+              : 'أعاد الخادم استجابة غير صالحة. حاول مرة أخرى.',
+        );
+      }
+    }
     return value;
   }
 }
