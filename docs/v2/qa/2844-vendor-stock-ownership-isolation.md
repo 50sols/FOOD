@@ -145,3 +145,18 @@ document upload/certification authorization, append-only signed event source,
 owner-specific transactional stock writers and full quote/GL/Van parity remain
 mandatory before #2844 can be considered source-complete. No unsigned production
 source becomes certified. Original PR #3921 stays DRAFT and Issue #2844 OPEN.
+
+
+## 2026-11-16 — P110 signed-title evidence SQL immutability
+
+Original #2844, original Draft PR #3921, Foodex_V2 only. SOURCE_COMPLETE=FALSE, RISK=HIGH.
+
+**Audited defect:** Earlier movement DELETE/UPDATE SQL triggers ran only while a title-attestation row existed. An attacker capable of SQL mutation could delete that evidence row first, remove an intervening movement, then attempt to restore a stale certificate (ABA). Trust in a signed source document requires preservation of the corresponding evidence record, not only the movement count and last movement ID.
+
+**Additive source:** backend/database/migrations/2026_11_16_070000_protect_inventory_title_attestation_records.php adds MySQL/MariaDB and SQLite BEFORE DELETE/UPDATE guards on recorded signed title evidence. This is an additional forward migration so databases with already-applied movement guards receive it on an upgrade. Hosting that rejects CREATE TRIGGER (MySQL 1142, 1227 or 1419 with binary logging) keeps the site installable, but missing audit guards must disable legal-title certification, never turn off global binlog or demand SUPER. The existing InventoryLegalTitleAttestationVerifier now requires all four (two movement, two signed evidence) SQL guards to be visible and correctly placed before any owner position is CERTIFIED.
+
+**Test source:** Existing signed supplier consignment fixture now asserts SQL QueryException for a forged checker UPDATE and certificate DELETE, preserving the original independent signature and checker. A separate regression drops the attestation DELETE guard in an isolated SQLite connection and proves the verifier fails closed; its finally clause restores the trigger. A signed evidence fixture also asserts the new migration refuses destructive down() while claims exist. Existing owner/company/store scope, real document digest and movement-revision tests remain in place.
+
+**File impact:** 1 additive migration, 1 existing P110 verifier and 1 existing P110 feature suite plus this QA entry; no peer Finance, Van, Driver, Customer, route, Sidebar or backend stock writer edit. Any new CI success must be verified on the final SHA and cannot be inferred from the previous green head. App jobs SKIPPED are not mobile parity PASS.
+
+**Still missing full P110:** registered trusted issuer/rotation/revocation with independently authorized maker/checker HTTP, immutable per-owner posted legal events across GRN/returns/transfers/adjustments/sales, Van cargo custody and owner valuation/COGS/GL/quote/reports and full mobile API contract parity. Source and technical review FAIL for full scope; NO MERGE, issue close, main, tag, release or production. Foodex_V2 server-side branch protection is currently off, a separate merge blocker.
