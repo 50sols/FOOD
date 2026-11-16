@@ -1,39 +1,39 @@
 {
-  "$comment": "FOODEX V2 worker coordination capacity contract; human admission policy in V2_WORKER_CAPACITY.md. This file is not an executable worker scheduler.",
+  "$comment": "FOODEX V2 worker coordination contract: no fixed issue/branch/worker count cap; machine-readable policy is not an executable scheduler. Unknown ownership and resource states still fail closed.",
   "version": 1,
-  "owner_approved_utc_date": "2026-11-15",
+  "owner_approved_utc_date": "2026-11-16",
   "program": "FOODEX V2",
   "integration_branch": "Foodex_V2",
-  "max_active_workers": 12,
+  "max_active_workers": null,
   "former_coordination_limit": 7,
   "lane_slots": [
     {
       "lane": "backend_api_erp",
-      "slots": 3
+      "slots": null
     },
     {
       "lane": "dashboard_finance",
-      "slots": 2
+      "slots": null
     },
     {
       "lane": "customer_driver_van",
-      "slots": 3
+      "slots": null
     },
     {
       "lane": "rbac_security",
-      "slots": 1
+      "slots": null
     },
     {
       "lane": "installer_updater_backup_recovery",
-      "slots": 1
+      "slots": null
     },
     {
       "lane": "ci_rescue_integration",
-      "slots": 1
+      "slots": null
     },
     {
       "lane": "coordination_lease_management",
-      "slots": 1
+      "slots": null
     }
   ],
   "occupied_issue_labels": [
@@ -51,5 +51,6 @@
   "allows_main_merge_or_production": false,
   "launches_workers": false,
   "controls_ci_runner_capacity": false,
-  "activates_v2_watchdog": false
+  "activates_v2_watchdog": false,
+  "capacity_mode": "resource_aware_no_fixed_numeric_ceiling"
 }

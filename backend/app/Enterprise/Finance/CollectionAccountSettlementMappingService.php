@@ -185,10 +185,32 @@ final class CollectionAccountSettlementMappingService
             }
             if ($newStatus === 'APPROVED') {
                 $this->assertFinanceAccount($scope, (int) $mapping->finance_account_id);
-                EnterpriseFinanceCollectionAccountMapping::query()
+
+                // Superseding an approved revision is itself a financial-control
+                // transition. Persist one immutable before/after audit event per
+                // revision instead of silently bulk-updating historical authority.
+                $previousApproved = EnterpriseFinanceCollectionAccountMapping::query()
                     ->where('collection_account_id', $collection->id)
+                    ->where('organization_id', $scope->organizationId)
+                    ->where('company_id', $scope->companyId)
+                    ->where('legal_entity_id', $scope->legalEntityId)
+                    ->where('store_id', $context->requiresStore())
                     ->where('status', 'APPROVED')
-                    ->update(['status' => 'SUPERSEDED', 'updated_at' => now()]);
+                    ->lockForUpdate()
+                    ->get();
+
+                foreach ($previousApproved as $previousMapping) {
+                    $previousState = $previousMapping->toArray();
+                    $previousMapping->forceFill(['status' => 'SUPERSEDED'])->save();
+
+                    $this->audit->record(
+                        'enterprise.finance.collection_account_mapping_superseded',
+                        $actor,
+                        $previousMapping,
+                        $previousState,
+                        $previousMapping->refresh()->toArray(),
+                    );
+                }
             }
 
             $before = $mapping->toArray();

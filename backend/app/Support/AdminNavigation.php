@@ -152,7 +152,11 @@ class AdminNavigation
             // Wholesale inventory modules; channel, store and permission gates are unchanged.
             $this->group('inventory', 'admin.nav_groups.inventory', '▣', [
                 $hideRetailWorkspaces ? null : $this->module($user, $channels, 'b2c', 'inventory', 'admin.b2c_workspace.modules.inventory', 'inventory.view'),
-                $useCustomerServiceDashboardProfile
+                // T353R4: warehouse/inventory specialists must discover their
+                // real B2B inventory workspace without borrowing the Customer
+                // Service presentation profile. Keep the compact manager menus;
+                // the module() helper still enforces channel + inventory.view.
+                ! $isSuperAdmin && ! $user->hasRole('B2B_ADMIN')
                     ? $this->module($user, $channels, 'b2b', 'inventory', 'admin.b2b_sidebar.inventory_management', 'inventory.view')
                     : null,
             ]),
@@ -1066,12 +1070,49 @@ class AdminNavigation
             }
         }
 
+        // P353R4: WMS must select a concrete inventory.view store whose
+        // enterprise entitlement is effective. A global B2B Warehouse Manager
+        // has no Retail assignments, and checking Retail-only grants would hide
+        // a valid WMS destination. Never link to a different, unentitled store.
+        $wmsStoreId = null;
+        if ($moduleCode === 'inventory_wms') {
+            $wmsStoreId = $this->wmsNavigationStoreId($user);
+            if ($wmsStoreId === null) {
+                return null;
+            }
+            $params['store_id'] = (string) $wmsStoreId;
+        }
+
         $item = $this->routeItemScoped($user, $key, $label, $route, $permission, $params);
-        if ($item === null || ($wholesaleTreasuryStoreId === null && ! $this->enterpriseModuleAccessible($user, $moduleCode))) {
+        if ($item === null || ($wholesaleTreasuryStoreId === null && $wmsStoreId === null && ! $this->enterpriseModuleAccessible($user, $moduleCode))) {
             return null;
         }
 
         return $item;
+    }
+
+    /**
+     * Find the first store that the actor can actually read in WMS and for
+     * which the live module entitlement is effective. This is a navigation
+     * projection, not an alternate permission grant.
+     */
+    private function wmsNavigationStoreId(User $user): ?int
+    {
+        if (! $user->is_active) {
+            return null;
+        }
+
+        $storeIds = app(OperationalTenantScope::class)->allowedStoreIds($user, 'inventory.view');
+        foreach ($storeIds as $storeId) {
+            if ($this->enterpriseEntitlements->allows(
+                'inventory_wms',
+                new EntitlementScope(EntitlementScope::STORE, $storeId),
+            )) {
+                return $storeId;
+            }
+        }
+
+        return null;
     }
 
     /**

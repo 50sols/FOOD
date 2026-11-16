@@ -1100,6 +1100,43 @@ final class V2ReceivableSettlementWorkbenchTest extends TestCase
         $this->assertDatabaseCount('enterprise_finance_journals', 1);
     }
 
+    public function test_allocation_amount_preserves_exact_kwd_mills_and_rejects_submill_precision(): void
+    {
+        $fixture = $this->fixture('P303-MILLS');
+        $maker = $fixture['maker'];
+        $context = app(TenantContextResolver::class)->retail($maker, $fixture['store']->id);
+        $receivables = app(AccountsReceivableService::class);
+
+        $draft = $receivables->createAllocation($maker, $context, $fixture['document']->id, [
+            'idempotency_key' => 'p303-mills-valid',
+            'allocation_date' => '2027-01-06',
+            'amount' => '0.001',
+            'settlement_account_id' => $fixture['cash_account_id'],
+        ]);
+
+        $this->assertSame('0.001', (string) $draft->amount);
+        $this->assertDatabaseHas('enterprise_ar_allocations', [
+            'id' => $draft->id,
+            'amount' => '0.001',
+            'status' => 'draft',
+        ]);
+
+        try {
+            $receivables->createAllocation($maker, $context, $fixture['document']->id, [
+                'idempotency_key' => 'p303-mills-submill',
+                'allocation_date' => '2027-01-06',
+                'amount' => '0.0001',
+                'settlement_account_id' => $fixture['cash_account_id'],
+            ]);
+            $this->fail('Sub-mill AR allocations must be rejected instead of rounded.');
+        } catch (ValidationException $exception) {
+            $this->assertArrayHasKey('amount', $exception->errors());
+        }
+
+        $this->assertDatabaseCount('enterprise_ar_allocations', 1);
+        $this->assertDatabaseCount('enterprise_finance_journals', 1);
+    }
+
     public function test_collection_account_mapping_requires_independent_finance_checker_and_never_posts_cash_ar(): void
     {
         $fixture = $this->fixture('P303-MAPPING');
@@ -1208,6 +1245,67 @@ final class V2ReceivableSettlementWorkbenchTest extends TestCase
         ])->assertSessionHasNoErrors();
         $this->assertSame(1, DB::table('audit_logs')
             ->where('event', 'enterprise.finance.collection_account_mapping_reviewed')
+            ->count());
+
+        $clearingAccount = app(FinanceFoundationService::class)->createAccount($maker, $context, [
+            'code' => '1110',
+            'name' => 'Collection Clearing',
+            'type' => 'asset',
+            'normal_balance' => 'debit',
+            'allow_posting' => true,
+        ]);
+        $secondPayload = [
+            'store_id' => $store->id,
+            'request_id' => (string) Str::uuid(),
+            'collection_account_id' => $wallet->id,
+            'finance_account_id' => $clearingAccount->id,
+        ];
+        $this->actingAs($maker)->post(
+            route('admin.erp.finance.receivables.mappings.propose'), $secondPayload,
+        )->assertSessionHasNoErrors()->assertRedirect();
+        $secondMapping = DB::table('enterprise_finance_collection_account_mappings')
+            ->where('request_id', $secondPayload['request_id'])->first();
+        $this->assertNotNull($secondMapping);
+
+        $secondReview = route('admin.erp.finance.receivables.mappings.review', $secondMapping->id);
+        $this->actingAs($checker)->post($secondReview, [
+            'store_id' => $store->id, 'decision' => 'approve',
+        ])->assertSessionHasNoErrors()->assertRedirect();
+
+        $this->assertDatabaseHas('enterprise_finance_collection_account_mappings', [
+            'id' => $mapping->id, 'status' => 'SUPERSEDED', 'reviewed_by' => $checker->id,
+        ]);
+        $this->assertDatabaseHas('enterprise_finance_collection_account_mappings', [
+            'id' => $secondMapping->id, 'status' => 'APPROVED', 'reviewed_by' => $checker->id,
+        ]);
+
+        $supersededAudit = DB::table('audit_logs')
+            ->where('event', 'enterprise.finance.collection_account_mapping_superseded')
+            ->where('auditable_id', $mapping->id)
+            ->first();
+        $this->assertNotNull($supersededAudit);
+        $this->assertSame($checker->id, (int) $supersededAudit->user_id);
+        $this->assertSame($store->id, (int) $supersededAudit->store_id);
+        $beforeState = json_decode((string) $supersededAudit->before, true, 512, JSON_THROW_ON_ERROR);
+        $afterState = json_decode((string) $supersededAudit->after, true, 512, JSON_THROW_ON_ERROR);
+        $this->assertSame('APPROVED', $beforeState['status']);
+        $this->assertSame('SUPERSEDED', $afterState['status']);
+
+        $this->assertSame(2, DB::table('audit_logs')
+            ->where('event', 'enterprise.finance.collection_account_mapping_reviewed')
+            ->count());
+        $this->assertSame(1, DB::table('audit_logs')
+            ->where('event', 'enterprise.finance.collection_account_mapping_superseded')
+            ->count());
+
+        $this->actingAs($checker)->post($secondReview, [
+            'store_id' => $store->id, 'decision' => 'approve',
+        ])->assertSessionHasNoErrors();
+        $this->assertSame(2, DB::table('audit_logs')
+            ->where('event', 'enterprise.finance.collection_account_mapping_reviewed')
+            ->count());
+        $this->assertSame(1, DB::table('audit_logs')
+            ->where('event', 'enterprise.finance.collection_account_mapping_superseded')
             ->count());
         $this->assertDatabaseCount('enterprise_finance_journals', 1);
         $this->assertDatabaseCount('enterprise_finance_source_postings', 0);
