@@ -1082,7 +1082,7 @@ final class FinanceWorkbenchController extends Controller
                 $sourceReceiptReferences = DB::table('collection_allocations as source')
                     ->join('collection_transactions as receipt', 'receipt.id', '=', 'source.collection_transaction_id')
                     ->whereIn('source.id', $linkedSourceIds)
-                    ->pluck('receipt.id', 'source.id');
+                    ->pluck('receipt.created_at', 'source.id');
             }
 
             if ($access['ar_manage'] ?? false) {
@@ -1133,7 +1133,7 @@ final class FinanceWorkbenchController extends Controller
                         ->where('source.amount', '>', 0)
                         ->orderByDesc('source.id')
                         ->limit(50)
-                        ->get(['source.id', 'source.amount', 'source.currency', 'receipt.id as receipt_id']);
+                        ->get(['source.id', 'source.amount', 'source.currency', 'receipt.created_at as collected_at']);
                 }
             }
         }
