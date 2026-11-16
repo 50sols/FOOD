@@ -356,6 +356,70 @@ final class V2ProfitabilityRuleLifecycleTest extends TestCase
         $this->assertSame(1, DB::table('audit_logs')->where('event', 'commercial.profitability_rule.proposed')->count());
     }
 
+    public function test_tampered_margin_or_effective_dates_cannot_be_reviewed_read_or_replayed(): void
+    {
+        [$maker, $store, $product] = $this->fixture();
+        $route = $this->saveRoute($store, $product);
+        $firstPayload = $this->proposal((string) Str::uuid(), '12.34');
+        $secondPayload = $this->proposal((string) Str::uuid(), '13.56');
+
+        $this->actingAs($maker)->put($route, $firstPayload)->assertSessionHasNoErrors();
+        $this->actingAs($maker)->put($route, $secondPayload)->assertSessionHasNoErrors();
+        $ids = DB::table('commercial_profitability_rule_revisions')
+            ->orderBy('id')->pluck('id')->map(static fn ($id): int => (int) $id)->all();
+
+        // Simulate an out-of-band database corruption of the author-approved
+        // margin and a separate effective-date window. The old digest remains.
+        DB::table('commercial_profitability_rule_revisions')->where('id', $ids[0])
+            ->update(['minimum_margin_basis_points' => 9999]);
+        DB::table('commercial_profitability_rule_revisions')->where('id', $ids[1])
+            ->update(['effective_until' => now()->addYear()->toDateString()]);
+
+        $maker->forceFill(['locale' => 'en'])->save();
+        $this->actingAs($maker->fresh())->put($route, $firstPayload)
+            ->assertSessionHasErrors('revision_id');
+
+        $this->restrictB2bAdminToIndependentChecker();
+        $checker = $this->user('B2B_ADMIN');
+
+        foreach (['en', 'ar'] as $index => $locale) {
+            $checker->forceFill(['locale' => $locale])->save();
+            app()->setLocale($locale);
+
+            $this->actingAs($checker->fresh())->put($route, [
+                'profitability_action' => 'review',
+                'decision' => 'review',
+                'revision_id' => $ids[$index],
+            ])->assertSessionHasErrors('revision_id');
+
+            $this->actingAs($checker->fresh())->get(route('admin.commercial.sales-control', [
+                'store_id' => $store, 'product' => $product,
+            ]))->assertRedirect()->assertSessionHasErrors('revision_id');
+        }
+
+        $caught = null;
+        try {
+            app(CommercialProfitabilityRuleService::class)->revisions($checker, $store, $product);
+        } catch (\Illuminate\Validation\ValidationException $exception) {
+            $caught = $exception;
+        }
+        $this->assertNotNull($caught);
+        $this->assertArrayHasKey('revision_id', $caught->errors());
+
+        $this->assertDatabaseHas('commercial_profitability_rule_revisions', [
+            'id' => $ids[0], 'status' => 'DRAFT', 'reviewed_by' => null,
+        ]);
+        $this->assertDatabaseHas('commercial_profitability_rule_revisions', [
+            'id' => $ids[1], 'status' => 'DRAFT', 'reviewed_by' => null,
+        ]);
+        $this->assertSame(2, DB::table('audit_logs')
+            ->where('event', 'commercial.profitability_rule.proposed')->count());
+        $this->assertSame(0, DB::table('audit_logs')
+            ->where('event', 'commercial.profitability_rule.reviewed')->count());
+        $this->assertSame(0, DB::table('commercial_profitability_rule_revisions')
+            ->where('status', 'ACTIVE')->count());
+    }
+
     public function test_independent_finance_checker_can_review_without_catalog_manage_but_cannot_edit_sales_policy(): void
     {
         [$maker, $store, $product] = $this->fixture();
