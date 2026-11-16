@@ -172,13 +172,30 @@ final class InventoryOwnerProvenanceReadService
         ];
     }
 
+    /**
+     * Preserve all three fractional digits of the database DECIMAL(14,3).
+     * Casting to float before comparing owner and canonical inventories can
+     * round stock balances and must never establish legal-title consistency.
+     */
     private static function millis(mixed $value): int
     {
-        return (int) round(((float) $value) * 1000);
+        $raw = trim((string) $value);
+        if (preg_match('/\A(-?)([0-9]{1,11})(?:\.([0-9]{1,3}))?\z/D', $raw, $parts) !== 1) {
+            throw new \UnexpectedValueException('Invalid canonical inventory quantity.');
+        }
+
+        $whole = (int) $parts[2];
+        $fraction = (int) str_pad($parts[3] ?? '', 3, '0');
+        $millis = $whole * 1000 + $fraction;
+
+        return $parts[1] === '-' ? -$millis : $millis;
     }
 
     private static function decimal(int $millis): string
     {
-        return number_format($millis / 1000, 3, '.', '');
+        $absolute = abs($millis);
+
+        return ($millis < 0 ? '-' : '').intdiv($absolute, 1000).'.'
+            .str_pad((string) ($absolute % 1000), 3, '0', STR_PAD_LEFT);
     }
 }
