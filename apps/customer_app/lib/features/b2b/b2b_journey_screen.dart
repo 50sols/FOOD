@@ -6733,9 +6733,7 @@ class _InvoiceDetailRemoteStateState extends State<_InvoiceDetailRemoteState>
                     final paymentStatusLabel = switch (payment['status']) {
                       'paid' => ar ? 'مدفوع' : 'Paid',
                       'captured' => ar ? 'تم التحصيل' : 'Captured',
-                      _ => ar
-                          ? 'حالة الدفع غير مؤكدة'
-                          : 'Payment status unverified',
+                      _ => ar ? 'غير مؤكد' : 'Unverified',
                     };
                     return ListTile(
                       key: ValueKey('b2b-invoice-payment-${payment['id']}'),
