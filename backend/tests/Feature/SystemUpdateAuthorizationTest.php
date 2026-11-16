@@ -117,6 +117,59 @@ class SystemUpdateAuthorizationTest extends TestCase
             ->assertDontSee('href="'.route('admin.system-update.index').'"', false);
     }
 
+    public function test_system_administrator_with_system_update_permission_cannot_access_high_risk_update_or_recovery_routes(): void
+    {
+        $this->withoutMiddleware(ThrottleRequests::class);
+
+        $administrator = $this->userWithRole('SYSTEM_ADMINISTRATOR');
+        $this->assertTrue($administrator->hasPermission('system.update'));
+        $this->assertFalse($administrator->hasRole('SUPER_ADMIN'));
+
+        $this->actingAs($administrator)
+            ->get(route('admin.system-update.index'))
+            ->assertForbidden();
+
+        $this->actingAs($administrator)
+            ->post(route('admin.system-update.store'), [])
+            ->assertForbidden();
+
+        $this->actingAs($administrator)
+            ->post(route('admin.system-update.backups.store'), ['reason' => 'forbidden backup'])
+            ->assertForbidden();
+
+        $this->actingAs($administrator)
+            ->post(route('admin.system-update.backups.restore', [
+                'backupReference' => '20261017-120000-database-aaaaaaaaaa',
+            ]), [
+                'reason' => 'forbidden restore',
+                'confirm_reference' => '20261017-120000-database-aaaaaaaaaa',
+            ])
+            ->assertForbidden();
+
+        $this->assertDatabaseCount('update_history', 0);
+    }
+
+    public function test_super_admin_reaches_validation_for_update_backup_and_restore_actions(): void
+    {
+        $this->withoutMiddleware(ThrottleRequests::class);
+
+        $superAdmin = $this->userWithRole('SUPER_ADMIN');
+
+        $this->actingAs($superAdmin)
+            ->post(route('admin.system-update.store'), [])
+            ->assertSessionHasErrors(['package', 'target_version', 'minimum_current_version', 'sha256']);
+
+        $this->actingAs($superAdmin)
+            ->post(route('admin.system-update.backups.store'), [])
+            ->assertSessionHasErrors(['reason']);
+
+        $this->actingAs($superAdmin)
+            ->post(route('admin.system-update.backups.restore', [
+                'backupReference' => '20261017-120000-database-aaaaaaaaaa',
+            ]), [])
+            ->assertSessionHasErrors(['reason', 'confirm_reference']);
+    }
+
     public function test_update_center_shows_bilingual_nonmutating_cpanel_permission_remediation(): void
     {
         $admin = $this->userWithRole('SUPER_ADMIN');
