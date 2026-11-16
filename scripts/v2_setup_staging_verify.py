@@ -50,12 +50,6 @@ FORBIDDEN_INSTALL_INSTRUCTION_VALUES = (
     "solscool_vanfoodex",
     "noreply@50sols.com",
 )
-FORBIDDEN_SETUP_ENV_VALUES = (
-    "foodex.50sols.com",
-    "solscool_foodex",
-    "solscool_vanfoodex",
-    "noreply@50sols.com",
-)
 SENSITIVE_ENV_KEYS = frozenset({
     "APP_KEY",
     "DB_PASSWORD",
@@ -344,11 +338,6 @@ def verify_setup_zip(zip_path: Path, version_path: Path, source_sha: str) -> dic
                 env_template = archive.read("backend/.env.production.example").decode("utf-8")
             except (KeyError, UnicodeDecodeError) as exc:
                 raise SetupZipError("Invalid Setup ZIP environment template.") from exc
-            env_normalized = env_template.casefold()
-            _require(
-                not any(value in env_normalized for value in FORBIDDEN_SETUP_ENV_VALUES),
-                "Setup ZIP environment template contains deployment-specific production values.",
-            )
             env_values = _parse_env_template(env_template)
             unsafe_secret_keys = []
             for key in SENSITIVE_ENV_KEYS:

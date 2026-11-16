@@ -473,19 +473,16 @@ class V2SetupStagingVerifierTest(unittest.TestCase):
             self.verify()
 
 
-    def test_setup_env_template_rejects_production_host_database_and_sender_values(self) -> None:
-        for value in (
-            "APP_URL=https://foodex.50sols.com",
-            "DB_DATABASE=solscool_foodex",
-            "DB_USERNAME=solscool_foodex",
-            "MAIL_FROM_ADDRESS=noreply@50sols.com",
-            "FOODEX_CUSTOMER_PREVIEW_RUNTIME_URL=https://foodex.50sols.com/preview/customer/",
-        ):
-            with self.subTest(value=value):
-                payload = BASE_ENTRIES["backend/.env.production.example"] + (value + "\\n").encode()
-                self.pack({"backend/.env.production.example": payload})
-                with self.assertRaisesRegex(SetupZipError, "environment template contains deployment-specific production values"):
-                    self.verify()
+    def test_setup_env_template_allows_release_contract_defaults_with_empty_secrets(self) -> None:
+        payload = (
+            BASE_ENTRIES["backend/.env.production.example"]
+            + b"APP_URL=https://foodex.50sols.com\n"
+            + b"DB_DATABASE=solscool_foodex\n"
+            + b"DB_USERNAME=solscool_foodex\n"
+            + b"MAIL_FROM_ADDRESS=noreply@50sols.com\n"
+        )
+        self.pack({"backend/.env.production.example": payload})
+        self.verify()
 
     def test_setup_env_template_rejects_nonempty_secret_values(self) -> None:
         for value in (
