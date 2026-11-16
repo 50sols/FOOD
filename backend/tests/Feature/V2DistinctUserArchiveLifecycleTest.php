@@ -10,6 +10,7 @@ use Database\Seeders\CoreReferenceSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
 use Illuminate\Validation\ValidationException;
 use Tests\TestCase;
 
@@ -268,6 +269,31 @@ final class V2DistinctUserArchiveLifecycleTest extends TestCase
         $this->assertTrue((bool) $target->fresh()->is_active);
         $this->assertNull($target->fresh()->archived_at);
         $this->assertDatabaseMissing('audit_logs', ['event' => 'user.archived']);
+    }
+
+    public function test_migration_rollback_refuses_to_erase_live_archival_history(): void
+    {
+        $admin = $this->withRole('SUPER_ADMIN');
+        $target = $this->withRole('B2B_ADMIN');
+
+        $this->actingAs($admin)
+            ->patch(route('admin.security.users.archive', $target), $this->archivePayload($target))
+            ->assertRedirect();
+
+        $migration = require database_path('migrations/2026_11_16_000001_add_explicit_user_archival_state.php');
+
+        try {
+            $migration->down();
+            $this->fail('Rollback must refuse to erase retained archival provenance.');
+        } catch (\RuntimeException $exception) {
+            $this->assertStringContainsString('retained archival history', $exception->getMessage());
+        }
+
+        $this->assertTrue(Schema::hasColumn('users', 'archived_at'));
+        $this->assertTrue(Schema::hasColumn('users', 'archived_by'));
+        $this->assertNotNull($target->fresh()->archived_at);
+        $this->assertSame($admin->id, (int) $target->fresh()->archived_by);
+        $this->assertDatabaseHas('audit_logs', ['event' => 'user.archived', 'auditable_id' => $target->id]);
     }
 
     private function withRole(string $code): User
