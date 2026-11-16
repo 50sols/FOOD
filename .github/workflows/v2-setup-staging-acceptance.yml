@@ -15,6 +15,8 @@ on:
       - 'scripts/validate-fresh-setup.sh'
       - 'scripts/v2_setup_staging_verify.py'
       - 'scripts/tests/test_v2_setup_staging_verify.py'
+      - 'scripts/v2_build_setup_zip.py'
+      - 'scripts/tests/test_v2_build_setup_zip.py'
 
 permissions:
   contents: read
@@ -107,17 +109,32 @@ jobs:
           rm -f "$stage/backend/bootstrap/cache/"*.php
           cp VERSION "$stage/VERSION"
           cp Release/INSTALL-FIRST.txt "$stage/INSTALL-FIRST.txt"
-          # zip(1) updates an existing archive without removing absent source
-          # members. A tracked/leftover Setup ZIP could therefore reintroduce
-          # previously packaged private files even after rsync exclusions.
-          # Always build a fresh archive from the current exact PR source.
+          # Source-identical CI reruns used to produce different ZIP digests
+          # because zip(1) serialized input mtimes and traversal order.
+          # Freeze metadata to the immutable commit date, preserve empty
+          # directories and executable modes, reject symlinks/hardlinks,
+          # and compare two independently written archives of THIS tree.
           rm -f "$GITHUB_WORKSPACE/Release/FOODEX-Laravel-Setup.zip"
           test ! -e "$GITHUB_WORKSPACE/Release/FOODEX-Laravel-Setup.zip"
-          (cd "$stage" && zip -qr "$GITHUB_WORKSPACE/Release/FOODEX-Laravel-Setup.zip" .)
+          repeat="$GITHUB_WORKSPACE/Release/.G004-setup-repeat.zip"
+          test ! -e "$repeat"
+          source_epoch="$(git show -s --format=%ct "$PR_HEAD_SHA")"
+          python3 scripts/v2_build_setup_zip.py \
+            --source-root "$stage" \
+            --output "$GITHUB_WORKSPACE/Release/FOODEX-Laravel-Setup.zip" \
+            --source-date-epoch "$source_epoch"
+          python3 scripts/v2_build_setup_zip.py \
+            --source-root "$stage" \
+            --output "$repeat" \
+            --source-date-epoch "$source_epoch"
+          cmp "$GITHUB_WORKSPACE/Release/FOODEX-Laravel-Setup.zip" "$repeat"
+          rm -f "$repeat"
+          echo "PASS: exact staged Setup ZIP bytes repeat under fixed commit timestamp"
       - name: Verify ZIP security, secret exclusion and source checksum
         shell: bash
         run: |
           set -euo pipefail
+          python3 -m unittest discover -s scripts/tests -p 'test_v2_build_setup_zip.py'
           python3 -m unittest discover -s scripts/tests -p 'test_v2_setup_staging_verify.py'
           test "$(git rev-parse HEAD)" = "$PR_HEAD_SHA"
           python3 scripts/v2_setup_staging_verify.py \
