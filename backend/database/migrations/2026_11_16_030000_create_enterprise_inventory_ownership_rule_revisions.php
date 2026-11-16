@@ -13,12 +13,12 @@ return new class extends Migration
             $table->id();
             $table->uuid('rule_uuid');
             $table->unsignedInteger('revision');
-            $table->foreignId('company_id')->constrained('enterprise_companies')->restrictOnDelete();
-            $table->foreignId('store_id')->constrained('stores')->restrictOnDelete();
+            $table->foreignId('company_id')->constrained('enterprise_companies', 'id', 'eior_company_fk')->restrictOnDelete();
+            $table->foreignId('store_id')->constrained('stores', 'id', 'eior_store_fk')->restrictOnDelete();
             $table->string('channel', 8);
-            $table->foreignId('supplier_id')->nullable()->constrained('enterprise_suppliers')->restrictOnDelete();
-            $table->foreignId('warehouse_id')->nullable()->constrained('warehouses')->restrictOnDelete();
-            $table->foreignId('supplier_document_id')->nullable()->constrained('enterprise_supplier_documents')->restrictOnDelete();
+            $table->foreignId('supplier_id')->nullable()->constrained('enterprise_suppliers', 'id', 'eior_supplier_fk')->restrictOnDelete();
+            $table->foreignId('warehouse_id')->nullable()->constrained('warehouses', 'id', 'eior_warehouse_fk')->restrictOnDelete();
+            $table->foreignId('supplier_document_id')->nullable()->constrained('enterprise_supplier_documents', 'id', 'eior_document_fk')->restrictOnDelete();
             $table->string('initial_owner_kind', 16);
             $table->string('title_transfer_trigger', 32);
             $table->json('required_evidence_classes');
@@ -27,8 +27,8 @@ return new class extends Migration
             $table->string('status', 24)->default('DRAFT');
             $table->uuid('request_uuid')->unique();
             $table->char('payload_sha256', 64);
-            $table->foreignId('proposed_by')->constrained('users')->restrictOnDelete();
-            $table->foreignId('reviewed_by')->nullable()->constrained('users')->restrictOnDelete();
+            $table->foreignId('proposed_by')->constrained('users', 'id', 'eior_proposer_fk')->restrictOnDelete();
+            $table->foreignId('reviewed_by')->nullable()->constrained('users', 'id', 'eior_reviewer_fk')->restrictOnDelete();
             $table->timestamp('reviewed_at')->nullable();
             $table->timestamps();
 
