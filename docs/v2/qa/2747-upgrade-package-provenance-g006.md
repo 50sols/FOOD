@@ -387,3 +387,16 @@ checkout. The workflow now executes each harness **from its own detached
 historical worktree** in a subshell, so `repo_root` and VERSION resolve to
 the intended immutable tag. Do not count the aborted attempt as a successful
 historical DB upgrade; require terminal green on the new exact PR HEAD.
+
+
+## Worker E G006 — isolated published-v125 interrupted-migration acceptance (2026-11-16)
+
+**Status: original historical MySQL job RED before this candidate; subsequent GitHub Actions outcome must be checked on the exact new PR head. The larger G006 source gate remains OPEN/DRAFT regardless of this bounded test.**
+
+The pinned, actual **v1.0.125** ZIP and original migration file are *not* edited or re-signed. Its unguarded `Schema::create('order_customer_service_discounts')` truly fails with `SQLSTATE[42S01]` when a previous interrupted MySQL DDL created the table without a `migrations` ledger row. The isolated G006 job deliberately executes and **requires** this original failure first. Other/unexpected migration errors are still fatal.
+
+Only in disposable `APP_ENV=testing`, MySQL `foodex_recovery_125` on `127.0.0.1`, the new **CI-only** `scripts/v2_g006_reconcile_interrupted_125.php` performs strict schema/type/null/default, primary/uniqueness, FK target/deletion-rule, and existing discount-audit-marker validation. It rejects missing or extra columns, an absent unique revision index, wrong foreign-key actions, modified audit data, unexpected database/environment or duplicate ledger rows. The test **removes one unique index temporarily**, verifies that the guard fails closed without recording the migration, restores it, then reconciles only this one verified historical CREATE TABLE fixture to the test `migrations` ledger and retries the original published update. Data/audit, `.env`, upload bytes, a second no-op migration run and the independent v125→127 historical path remain mandatory.
+
+`scripts/v2_g006_patch_historical_recovery.py` modifies an *ephemeral copy* of the historical CI acceptance script in a detached Git worktree, only if its exact pre-existing migration boundary and count match. Neither the published v125/v127 assets nor the canonical `scripts/ci-125-recovery-upgrade.sh`, Laravel updater runtime, live database or release tagging are modified by this PR. Focused GCC Python 3.9: **4/4** adversarial fixture-patcher tests PASS, original v125 shell patch `bash -n` PASS, and CI-only PHP syntax `php -l` PASS. GCC Docker service was stopped; these local validations do **not** prove MySQL. Hosted MySQL CI must be independently checked on the final commit.
+
+**Critical acceptance distinction:** This fixture-specific, structurally verified reconciliation is not an authorized production migration repair or an automatic general recovery algorithm. A trusted publisher signature for historical/final packages, production updater backup/recovery safety, continuous populated MySQL 124→125→127 transitions, actual signed installer/updater packages and staging UAT remain unresolved and tracked by #2747, #2746, #2846 and #2503. No `main`, production, release, tag or deployment is authorized. Customer/Driver/Van code and API behavior are unchanged individually; no AR/EN end-user UI surface is changed in this issue-scoped CI-only increment.

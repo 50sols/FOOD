@@ -6,6 +6,9 @@ on:
     paths:
       - 'scripts/v2_upgrade_package_provenance.py'
       - 'scripts/tests/test_v2_upgrade_package_provenance.py'
+      - 'scripts/v2_g006_patch_historical_recovery.py'
+      - 'scripts/tests/test_v2_g006_patch_historical_recovery.py'
+      - 'scripts/v2_g006_reconcile_interrupted_125.php'
       - 'docs/v2/qa/2747-upgrade-package-provenance-g006.md'
       - '.github/workflows/v2-g006-package-provenance.yml'
   push:
@@ -39,9 +42,11 @@ jobs:
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
       - name: Validate Python source syntax
-        run: python3 -m py_compile scripts/v2_upgrade_package_provenance.py scripts/tests/test_v2_upgrade_package_provenance.py
+        run: python3 -m py_compile scripts/v2_upgrade_package_provenance.py scripts/tests/test_v2_upgrade_package_provenance.py scripts/v2_g006_patch_historical_recovery.py scripts/tests/test_v2_g006_patch_historical_recovery.py
       - name: Execute positive and adversarial ZIP unit tests
         run: python3 -m unittest discover -s scripts/tests -p 'test_v2_upgrade_package_provenance.py' -v
+      - name: Verify fail-closed historical fixture patch contracts
+        run: python3 -m unittest discover -s scripts/tests -p 'test_v2_g006_patch_historical_recovery.py' -v
 
   verify-published-historical-bytes:
     name: Real v125/v127 archived Update ZIP integrity (not deploy/upgrade)
@@ -184,6 +189,10 @@ jobs:
             cp "$base/verified-recovery-manifest-preflight.py" "$target/scripts/verify-recovery-update-manifest.py"
             if [ "$v" = 125 ]; then
               cp "$GITHUB_WORKSPACE/scripts/ci-125-recovery-upgrade.sh" "$target/scripts/"
+              cp "$GITHUB_WORKSPACE/scripts/v2_g006_reconcile_interrupted_125.php" "$target/scripts/"
+              python3 "$GITHUB_WORKSPACE/scripts/v2_g006_patch_historical_recovery.py" "$target/scripts/ci-125-recovery-upgrade.sh"
+              bash -n "$target/scripts/ci-125-recovery-upgrade.sh"
+              php -l "$target/scripts/v2_g006_reconcile_interrupted_125.php"
             else
               cp "$GITHUB_WORKSPACE/scripts/ci-127-upgrade.sh" "$target/scripts/"
             fi
@@ -197,5 +206,5 @@ jobs:
             cd "$base/tag-127"
             bash scripts/ci-127-upgrade.sh
           )
-          echo "PASS: two real pinned historical ZIPs exercised on nonempty MySQL, with interrupted migrations, retry, .env and upload retention."
-          echo "NOT PROVEN: continuous same-DB chain, trusted publisher signature, full Update Center recovery, production upgrade."
+          echo "PASS: two real pinned historical ZIPs exercised on nonempty MySQL; the v125 interruption first FAILED as published, then guarded CI-only schema/ledger reconciliation and retry verified .env, uploads, and audit retention."
+          echo "NOT PROVEN: continuous same-DB chain, trusted publisher signature, general production-safe automatic recovery, full Update Center recovery, production upgrade."
