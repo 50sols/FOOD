@@ -43,6 +43,7 @@ final class V2ProfitabilityRuleLifecycleTest extends TestCase
             ->whereIn('code', ['stores.view', 'catalog.view'])
             ->pluck('id')
             ->all());
+        /** @var User $viewer */
         $viewer = User::factory()->create(['locale' => 'en', 'is_active' => true]);
         $viewer->roles()->attach($viewerRole);
 
@@ -52,7 +53,7 @@ final class V2ProfitabilityRuleLifecycleTest extends TestCase
         foreach (['ar', 'en'] as $locale) {
             $viewer->forceFill(['locale' => $locale])->save();
             app()->setLocale($locale);
-            $this->actingAs($viewer->fresh())->get($page)->assertOk()
+            $this->actingAs($viewer)->get($page)->assertOk()
                 ->assertDontSee('67.89%')
                 ->assertDontSee('data-v2-p229-profitability', false);
         }
@@ -60,9 +61,11 @@ final class V2ProfitabilityRuleLifecycleTest extends TestCase
         // Unauthorized mutations conceal the B2B store scope with 404.
         $this->actingAs($viewer)->put($save, $this->proposal((string) Str::uuid(), '67.89'))
             ->assertNotFound();
+        // The control-plane shortcut grants exceptional store scope, not
+        // daily access to confidential profitability history.
         $this->actingAs($this->user('SUPER_ADMIN'))->get($page)->assertOk()
-            ->assertSee('67.89%')
-            ->assertSee('data-v2-p229-profitability', false);
+            ->assertDontSee('67.89%')
+            ->assertDontSee('data-v2-p229-profitability', false);
     }
 
     public function test_scoped_proposal_uses_exact_basis_points_and_request_idempotency_without_activating_prices(): void
@@ -169,7 +172,7 @@ final class V2ProfitabilityRuleLifecycleTest extends TestCase
         ] as $reducedGrants) {
             $checkerRole->permissions()->sync(Permission::query()
                 ->whereIn('code', $reducedGrants)->pluck('id')->all());
-            $this->actingAs($checker->fresh())->put($route, [
+            $this->actingAs($checker)->put($route, [
                 'profitability_action' => 'review',
                 'revision_id' => $revision,
                 'decision' => 'review',
@@ -181,11 +184,20 @@ final class V2ProfitabilityRuleLifecycleTest extends TestCase
     public function test_independent_checker_review_remains_inactive_and_is_idempotent(): void
     {
         [$maker, $store, $product] = $this->fixture();
-        $checker = $this->user('SUPER_ADMIN');
+        $checker = $this->user('B2B_ADMIN');
         $route = $this->saveRoute($store, $product);
         $this->actingAs($maker)->put($route, $this->proposal((string) Str::uuid(), '99.99'))
             ->assertSessionHasNoErrors();
         $revision = (int) DB::table('commercial_profitability_rule_revisions')->value('id');
+
+        // The checker authors a separate draft while still assigned the maker
+        // permission, then is restricted to the three independent review grants.
+        $this->actingAs($checker)->put($route, $this->proposal((string) Str::uuid(), '8.88'))
+            ->assertSessionHasNoErrors();
+        $selfRevision = (int) DB::table('commercial_profitability_rule_revisions')
+            ->orderByDesc('revision')->value('id');
+        $this->restrictB2bAdminToIndependentChecker();
+
         $review = [
             'profitability_action' => 'review',
             'revision_id' => $revision,
@@ -218,12 +230,7 @@ final class V2ProfitabilityRuleLifecycleTest extends TestCase
             ->assertSee(__('commercial.profitability.statuses.reviewed_inactive'))
             ->assertSee(__('commercial.profitability.inactive_explanation'));
 
-        // Finance + Catalog authority, even SUPER_ADMIN, never defeats
-        // distinct-person maker/checker separation for a new revision.
-        $this->actingAs($checker)->put($route, $this->proposal((string) Str::uuid(), '8.88'))
-            ->assertSessionHasNoErrors();
-        $selfRevision = (int) DB::table('commercial_profitability_rule_revisions')
-            ->orderByDesc('revision')->value('id');
+        // A checker cannot approve the separate revision that they authored.
         $this->actingAs($checker)->put($route, [
             'profitability_action' => 'review',
             'revision_id' => $selfRevision,
@@ -236,9 +243,12 @@ final class V2ProfitabilityRuleLifecycleTest extends TestCase
 
     public function test_independent_review_prevents_overlapping_inactive_margin_windows_in_both_locales(): void
     {
+        $checkerRole = Role::query()->where('code', 'B2B_ADMIN')->firstOrFail();
+        $originalPermissions = $checkerRole->permissions()->pluck('permissions.id')->all();
+
         foreach (['en', 'ar'] as $locale) {
+            $checkerRole->permissions()->sync($originalPermissions);
             [$maker, $store, $product] = $this->fixture();
-            $checker = $this->user('SUPER_ADMIN');
             $route = $this->saveRoute($store, $product);
 
             // Multiple proposals can coexist before commercial review; only
@@ -250,9 +260,21 @@ final class V2ProfitabilityRuleLifecycleTest extends TestCase
                 $route, $this->proposal((string) Str::uuid(), '25.00'),
             )->assertSessionHasNoErrors();
 
+            // Prepare the adjacent, non-overlapping proposal before the role
+            // is reduced to its independent-checker grants.
+            $next = [
+                ...$this->proposal((string) Str::uuid(), '30.00'),
+                'effective_from' => now()->addMonth()->addDay()->toDateString(),
+                'effective_until' => now()->addMonths(2)->toDateString(),
+            ];
+            $this->actingAs($maker)->put($route, $next)->assertSessionHasNoErrors();
+
             $ids = DB::table('commercial_profitability_rule_revisions')
                 ->where('store_id', $store)->where('product_id', $product)
                 ->orderBy('revision')->pluck('id')->all();
+            $this->restrictB2bAdminToIndependentChecker();
+            $checker = $this->user('B2B_ADMIN');
+
             $review = static fn (int $id, string $decision): array => [
                 'profitability_action' => 'review',
                 'revision_id' => $id,
@@ -261,11 +283,11 @@ final class V2ProfitabilityRuleLifecycleTest extends TestCase
 
             $checker->forceFill(['locale' => $locale])->save();
             app()->setLocale($locale);
-            $this->actingAs($checker->fresh())->put(
+            $this->actingAs($checker)->put(
                 $route, $review((int) $ids[0], 'review'),
             )->assertSessionHasNoErrors();
 
-            $this->actingAs($checker->fresh())->put(
+            $this->actingAs($checker)->put(
                 $route, $review((int) $ids[1], 'review'),
             )->assertSessionHasErrors([
                 'revision_id' => __('commercial.profitability.overlapping_window', [], $locale),
@@ -275,23 +297,13 @@ final class V2ProfitabilityRuleLifecycleTest extends TestCase
             ]);
 
             // Rejection of the conflicting draft is still allowed.
-            $this->actingAs($checker->fresh())->put(
+            $this->actingAs($checker)->put(
                 $route, $review((int) $ids[1], 'reject'),
             )->assertSessionHasNoErrors();
 
             // An adjacent period starting on the next day is not overlapping.
-            $next = [
-                ...$this->proposal((string) Str::uuid(), '30.00'),
-                'effective_from' => now()->addMonth()->addDay()->toDateString(),
-                'effective_until' => now()->addMonths(2)->toDateString(),
-            ];
-            $this->actingAs($maker)->put($route, $next)
-                ->assertSessionHasNoErrors();
-            $third = (int) DB::table('commercial_profitability_rule_revisions')
-                ->where('store_id', $store)->where('product_id', $product)
-                ->orderByDesc('revision')->value('id');
-            $this->actingAs($checker->fresh())->put(
-                $route, $review($third, 'review'),
+            $this->actingAs($checker)->put(
+                $route, $review((int) $ids[2], 'review'),
             )->assertSessionHasNoErrors();
 
             $this->assertSame(2, DB::table('commercial_profitability_rule_revisions')
@@ -305,17 +317,21 @@ final class V2ProfitabilityRuleLifecycleTest extends TestCase
                 ->count() - (($locale === 'ar') ? 3 : 0));
             $this->assertSame(0, DB::table('product_commercial_policies')
                 ->where('product_id', $product)->count());
+
+            $checkerRole->permissions()->sync($originalPermissions);
         }
     }
 
     public function test_bilingual_review_and_rejection_states_are_visible_and_non_operational(): void
     {
         [$maker, $store, $product] = $this->fixture();
-        $checker = $this->user('SUPER_ADMIN');
         $route = $this->saveRoute($store, $product);
         $this->actingAs($maker)->put($route, $this->proposal((string) Str::uuid(), '0.01'))
             ->assertSessionHasNoErrors();
         $id = (int) DB::table('commercial_profitability_rule_revisions')->value('id');
+
+        $this->restrictB2bAdminToIndependentChecker();
+        $checker = $this->user('B2B_ADMIN');
         $this->actingAs($checker)->put($route, [
             'profitability_action' => 'review', 'revision_id' => $id, 'decision' => 'reject',
         ])->assertSessionHasNoErrors();
@@ -326,7 +342,7 @@ final class V2ProfitabilityRuleLifecycleTest extends TestCase
         foreach (['ar', 'en'] as $locale) {
             $checker->forceFill(['locale' => $locale])->save();
             app()->setLocale($locale);
-            $this->actingAs($checker->fresh())->get(route('admin.commercial.sales-control', [
+            $this->actingAs($checker)->get(route('admin.commercial.sales-control', [
                 'store_id' => $store, 'product' => $product,
             ]))->assertOk()
                 ->assertSee(__('commercial.profitability.title', [], $locale))
@@ -360,6 +376,7 @@ final class V2ProfitabilityRuleLifecycleTest extends TestCase
         [, $otherStore, $otherProduct] = $this->fixture();
         $route = $this->saveRoute($store, $product);
         $payload = $this->proposal((string) Str::uuid(), '15');
+        /** @var User $roleless */
         $roleless = User::factory()->create(['is_active' => true]);
 
         // B2B_ADMIN is intentionally a global Wholesale role. Its second B2B
@@ -376,6 +393,68 @@ final class V2ProfitabilityRuleLifecycleTest extends TestCase
         ]);
         $this->actingAs($maker)->put($route, $payload)->assertForbidden();
         $this->assertSame(0, DB::table('commercial_profitability_rule_revisions')->count());
+    }
+
+    public function test_super_admin_and_registry_platform_owner_cannot_act_as_p229_makers_or_checkers(): void
+    {
+        [$maker, $store, $product] = $this->fixture();
+        $route = $this->saveRoute($store, $product);
+        $this->actingAs($maker)->put($route, $this->proposal((string) Str::uuid(), '21.25'))
+            ->assertSessionHasNoErrors();
+        $revision = (int) DB::table('commercial_profitability_rule_revisions')->value('id');
+
+        // A Super Admin may carry an operational role as well; the control-plane
+        // identity must not inherit daily finance authority through that role.
+        $superAdmin = $this->user('SUPER_ADMIN');
+        $superAdmin->roles()->attach(Role::query()->where('code', 'B2B_ADMIN')->firstOrFail());
+
+        // PLATFORM_OWNER is recognized only through the protected one-owner
+        // registry, not merely by attaching the historical role row.
+        /** @var User $platformOwner */
+        $platformOwner = User::factory()->create(['locale' => 'en', 'is_active' => true]);
+        $platformOwner->roles()->attach([
+            Role::query()->where('code', 'PLATFORM_OWNER')->firstOrFail()->getKey(),
+            Role::query()->where('code', 'B2B_ADMIN')->firstOrFail()->getKey(),
+        ]);
+        DB::table('platform_owner_registry')->insert([
+            'id' => 1,
+            'user_id' => $platformOwner->id,
+            'provisioned_at' => now(),
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        $this->assertTrue($platformOwner->hasRole('PLATFORM_OWNER'));
+        $this->assertTrue($platformOwner->hasRole('SUPER_ADMIN'));
+
+        $review = [
+            'profitability_action' => 'review',
+            'revision_id' => $revision,
+            'decision' => 'review',
+        ];
+
+        foreach ([$superAdmin, $platformOwner] as $controlPlaneActor) {
+            $this->actingAs($controlPlaneActor)->get(route('admin.commercial.sales-control', [
+                'store_id' => $store,
+                'product' => $product,
+            ]))->assertOk()->assertDontSee('21.25%');
+
+            $this->actingAs($controlPlaneActor)->put($route, $review)->assertForbidden();
+            $this->actingAs($controlPlaneActor)->put(
+                $route,
+                $this->proposal((string) Str::uuid(), '13.37'),
+            )->assertForbidden();
+        }
+
+        $this->assertSame(1, DB::table('commercial_profitability_rule_revisions')->count());
+        $this->assertDatabaseHas('commercial_profitability_rule_revisions', [
+            'id' => $revision,
+            'status' => 'DRAFT',
+            'reviewed_by' => null,
+        ]);
+        $this->assertSame(1, DB::table('audit_logs')
+            ->where('event', 'commercial.profitability_rule.proposed')->count());
+        $this->assertSame(0, DB::table('audit_logs')
+            ->where('event', 'commercial.profitability_rule.reviewed')->count());
     }
 
     /** @return array{User,int,int} */
@@ -419,8 +498,17 @@ final class V2ProfitabilityRuleLifecycleTest extends TestCase
         return [$maker, $storeId, $productId];
     }
 
+    private function restrictB2bAdminToIndependentChecker(): void
+    {
+        Role::query()->where('code', 'B2B_ADMIN')->firstOrFail()
+            ->permissions()->sync(Permission::query()
+            ->whereIn('code', ['catalog.view', 'orders.approve', 'finance.approve'])
+            ->pluck('id')->all());
+    }
+
     private function user(string $role): User
     {
+        /** @var User $user */
         $user = User::factory()->create(['locale' => 'en', 'is_active' => true]);
         $user->roles()->attach(Role::query()->where('code', $role)->firstOrFail());
 

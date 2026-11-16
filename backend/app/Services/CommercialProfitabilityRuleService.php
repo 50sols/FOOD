@@ -28,7 +28,8 @@ final class CommercialProfitabilityRuleService
 
     public function canPropose(User $actor, int $storeId): bool
     {
-        return $this->flags->commercialRulesEnabled()
+        return $this->isOperationalActor($actor)
+            && $this->flags->commercialRulesEnabled()
             && in_array($storeId, $this->scope->allowedStoreIds($actor, 'catalog.manage', 'b2b'), true);
     }
 
@@ -36,7 +37,8 @@ final class CommercialProfitabilityRuleService
     {
         // Independent checkers need catalog discovery, not catalog authoring.
         // Pricing/policy mutation remains guarded by canPropose().
-        return $this->flags->commercialRulesEnabled()
+        return $this->isOperationalActor($actor)
+            && $this->flags->commercialRulesEnabled()
             && in_array($storeId, $this->scope->allowedStoreIds($actor, 'catalog.view', 'b2b'), true)
             && in_array($storeId, $this->scope->allowedStoreIds($actor, 'orders.approve', 'b2b'), true)
             && in_array($storeId, $this->scope->allowedStoreIds($actor, 'finance.approve', 'b2b'), true);
@@ -206,6 +208,19 @@ final class CommercialProfitabilityRuleService
                 'content_sha256' => (string) $rule->content_sha256,
             ], $request);
         }, 3);
+    }
+
+    /**
+     * OperationalTenantScope deliberately gives control-plane identities a
+     * broad store scope for exceptional administration. That scope is not a
+     * daily business permission: P130 forbids SUPER_ADMIN / PLATFORM_OWNER
+     * from acting as commercial makers or independent financial checkers.
+     */
+    private function isOperationalActor(User $actor): bool
+    {
+        return $actor->is_active
+            && ! $actor->hasRole('SUPER_ADMIN')
+            && ! $actor->hasRole('PLATFORM_OWNER');
     }
 
     private function assertProduct(int $storeId, int $productId): void
