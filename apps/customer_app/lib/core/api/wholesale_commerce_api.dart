@@ -92,7 +92,8 @@ class HttpWholesaleCommerceApi
     required int storeId,
     String? couponCode,
     String? paymentMethod,
-  }) async => _scopedResponse(
+  }) async =>
+      _scopedResponse(
         await _request(
           'POST',
           '/api/v1/quote',
@@ -163,7 +164,8 @@ class HttpWholesaleCommerceApi
     String? note,
     String? couponCode,
     required String idempotencyKey,
-  }) async => _scopedResponse(
+  }) async =>
+      _scopedResponse(
         await _request(
           'POST',
           '/api/v1/checkout',
@@ -330,8 +332,11 @@ class HttpWholesaleCommerceApi
     if (method == 'GET' ||
         path == '/api/v1/quote' ||
         path == '/api/v1/checkout') {
-      final mime =
-          response.headers['content-type']?.split(';').first.trim().toLowerCase();
+      final mime = response.headers['content-type']
+          ?.split(';')
+          .first
+          .trim()
+          .toLowerCase();
       if (response.body.isEmpty ||
           (mime != null &&
               mime.isNotEmpty &&
