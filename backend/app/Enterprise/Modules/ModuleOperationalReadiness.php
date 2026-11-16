@@ -65,34 +65,8 @@ final class ModuleOperationalReadiness
             return false;
         }
 
-        $sha = $attestation['head_sha'] ?? null;
-        $reviewIssue = $attestation['review_issue'] ?? null;
-        $ciRun = $attestation['ci_run'] ?? null;
-        if (! is_string($sha) || preg_match('/^[a-f0-9]{40}$/i', $sha) !== 1
-            || ! is_int($reviewIssue) || $reviewIssue < 1
-            || ! is_string($ciRun)
-            || preg_match('~^https://github\\.com/walidatiyaai2025-gif/FOOD/actions/runs/[1-9][0-9]*$~', $ciRun) !== 1) {
-            return false;
-        }
+        $payload = ModuleWorkflowAttestation::payload($code, $manifestVersion, $steps, $attestation);
 
-        $checks = $attestation['checks'] ?? null;
-        if (! is_array($checks)) {
-            return false;
-        }
-
-        foreach ($steps as $step) {
-            if (! is_string($step) || $step === '' || ! is_array($checks[$step] ?? null)) {
-                return false;
-            }
-
-            $check = $checks[$step];
-            if (($check['result'] ?? null) !== 'passed'
-                || ! is_string($check['test'] ?? null)
-                || trim($check['test']) === '') {
-                return false;
-            }
-        }
-
-        return true;
+        return $payload !== null && ModuleWorkflowAttestation::hasTrustedSignature($attestation, $payload);
     }
 }

@@ -3,6 +3,7 @@
 namespace Tests\Support;
 
 use App\Enterprise\Modules\ModuleRegistry;
+use App\Enterprise\Modules\ModuleWorkflowAttestation;
 
 /**
  * Test-only evidence for fixtures that intentionally exercise ready ERP modules.
@@ -18,6 +19,14 @@ final class SyntheticErpWorkflowEvidence
         if (! is_array($required)) {
             return;
         }
+
+        if (! function_exists('sodium_crypto_sign_keypair')) {
+            throw new \RuntimeException('The sodium extension is required for signed ERP test evidence.');
+        }
+
+        $keyPair = sodium_crypto_sign_keypair();
+        $secretKey = sodium_crypto_sign_secretkey($keyPair);
+        config()->set('enterprise_module_readiness.trusted_public_keys.synthetic-test', base64_encode(sodium_crypto_sign_publickey($keyPair)));
 
         $registry = app(ModuleRegistry::class);
 
@@ -38,13 +47,22 @@ final class SyntheticErpWorkflowEvidence
                 ];
             }
 
-            config()->set('enterprise_module_readiness.workflow_attestations.'.$code, [
-                'version' => $registry->manifest($code)->version,
+            $version = $registry->manifest($code)->version;
+            $attestation = [
+                'version' => $version,
                 'head_sha' => str_repeat('a', 40),
                 'review_issue' => 2858,
                 'ci_run' => 'https://github.com/walidatiyaai2025-gif/FOOD/actions/runs/1',
                 'checks' => $checks,
-            ]);
+            ];
+            $payload = ModuleWorkflowAttestation::payload($code, $version, $steps, $attestation);
+            if ($payload === null) {
+                throw new \LogicException('Invalid synthetic ERP workflow requirements.');
+            }
+
+            $attestation['key_id'] = 'synthetic-test';
+            $attestation['signature'] = base64_encode(sodium_crypto_sign_detached($payload, $secretKey));
+            config()->set('enterprise_module_readiness.workflow_attestations.'.$code, $attestation);
         }
     }
 }

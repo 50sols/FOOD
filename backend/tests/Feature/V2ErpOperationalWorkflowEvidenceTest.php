@@ -8,6 +8,7 @@ use App\Enterprise\Modules\ModuleLifecycleManager;
 use App\Enterprise\Modules\ModuleOperationalReadiness;
 use App\Enterprise\Modules\ModuleState;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Tests\Support\SyntheticErpWorkflowEvidence;
 use Tests\TestCase;
 
 /**
@@ -34,6 +35,7 @@ final class V2ErpOperationalWorkflowEvidenceTest extends TestCase
         }
 
         $this->assertSame([], config('enterprise_module_readiness.workflow_attestations'));
+        $this->assertSame([], config('enterprise_module_readiness.trusted_public_keys'));
         $this->assertSame([], config('enterprise_module_readiness.certified_versions'));
     }
 
@@ -76,6 +78,13 @@ final class V2ErpOperationalWorkflowEvidenceTest extends TestCase
             ['head_sha' => 'not-a-git-sha'],
             ['review_issue' => 0],
             ['ci_run' => 'https://example.invalid/green'],
+            ['key_id' => 'untrusted'],
+            ['signature' => base64_encode(str_repeat('x', 64))],
+            ['checks' => [
+                'create' => ['result' => 'passed', 'test' => 'Forged::create'],
+                'approve' => ['result' => 'passed', 'test' => 'Synthetic::approve'],
+                'audit' => ['result' => 'passed', 'test' => 'Synthetic::audit'],
+            ]],
             ['checks' => ['create' => ['result' => 'passed', 'test' => 'only-one-step']]],
         ] as $invalidFields) {
             config()->set('enterprise_module_readiness.workflow_attestations.sample_optional', [
@@ -89,6 +98,32 @@ final class V2ErpOperationalWorkflowEvidenceTest extends TestCase
         config()->set('enterprise_module_readiness.workflow_attestations.sample_optional', $good);
         config()->set('enterprise_module_readiness.certified_versions.sample_optional', 2);
         $this->assertSame('uncertified', $readiness->status('sample_optional', 2, ModuleState::ENABLED));
+    }
+
+    public function test_untrusted_or_replayed_signature_never_turns_on_an_erp_module(): void
+    {
+        $this->enableSample();
+        $this->requireSampleWorkflow();
+        $readiness = app(ModuleOperationalReadiness::class);
+        $signed = $this->evidence();
+
+        $this->assertSame('ready', $readiness->status('sample_optional', 1, ModuleState::ENABLED));
+
+        // A full-looking SHA, trusted URL and named passing tests are not proof.
+        config()->set('enterprise_module_readiness.trusted_public_keys', []);
+        $this->assertSame('uncertified', $readiness->status('sample_optional', 1, ModuleState::ENABLED));
+
+        // A valid signature cannot be copied from another exact module identity.
+        SyntheticErpWorkflowEvidence::install();
+        config()->set('enterprise_module_readiness.workflow_attestations.finance', $signed);
+        $this->assertSame('uncertified', $readiness->status('finance', 1, ModuleState::ENABLED));
+
+        // Even an allowed key cannot approve new checks by changing the payload.
+        config()->set('enterprise_module_readiness.workflow_attestations.sample_optional', [
+            ...$signed,
+            'head_sha' => str_repeat('b', 40),
+        ]);
+        $this->assertSame('uncertified', $readiness->status('sample_optional', 1, ModuleState::ENABLED));
     }
 
     public function test_operational_proof_never_bypasses_disabled_lifecycle_or_failing_health(): void
@@ -122,17 +157,9 @@ final class V2ErpOperationalWorkflowEvidenceTest extends TestCase
     /** @return array<string, mixed> */
     private function evidence(): array
     {
-        return [
-            'version' => 1,
-            'head_sha' => str_repeat('a', 40),
-            'review_issue' => 2503,
-            'ci_run' => 'https://github.com/walidatiyaai2025-gif/FOOD/actions/runs/1',
-            'checks' => [
-                'create' => ['result' => 'passed', 'test' => 'Synthetic::create'],
-                'approve' => ['result' => 'passed', 'test' => 'Synthetic::approve'],
-                'audit' => ['result' => 'passed', 'test' => 'Synthetic::audit'],
-            ],
-        ];
+        SyntheticErpWorkflowEvidence::install();
+
+        return (array) config('enterprise_module_readiness.workflow_attestations.sample_optional', []);
     }
 }
 
