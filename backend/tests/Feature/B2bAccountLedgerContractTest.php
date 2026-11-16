@@ -243,6 +243,69 @@ final class B2bAccountLedgerContractTest extends TestCase
         $this->assertSame(25.0, $statement['transactions'][1]['credit']);
     }
 
+    public function test_invoice_api_exposes_paid_and_captured_field_payments_with_ledger_parity_without_finalizing_partial_invoice(): void
+    {
+        [$user, $legacyCustomer, $customer, $storeId] = $this->account(100);
+        $invoice = $this->invoice($legacyCustomer->id, $customer->id, $storeId, 80, now()->addWeek());
+
+        $paidId = DB::table('payments')->insertGetId([
+            'invoice_id' => $invoice->id,
+            'provider' => 'account',
+            'provider_reference' => 'P303-READBACK-PAID-20',
+            'status' => 'paid',
+            'amount' => 20,
+            'currency' => 'EGP',
+            'created_at' => now()->subMinutes(2),
+            'updated_at' => now()->subMinutes(2),
+        ]);
+        $capturedId = DB::table('payments')->insertGetId([
+            'invoice_id' => $invoice->id,
+            'provider' => 'field_collection',
+            'provider_reference' => 'P303-READBACK-CAPTURED-10',
+            'status' => 'captured',
+            'amount' => 10,
+            'currency' => 'EGP',
+            'created_at' => now()->subMinute(),
+            'updated_at' => now()->subMinute(),
+        ]);
+
+        Sanctum::actingAs($user);
+        $this->getJson('/api/v1/b2b/invoices/'.$invoice->id.'?store_id='.$storeId)
+            ->assertOk()
+            ->assertJsonPath('data.status', 'issued')
+            ->assertJsonPath('data.display_status', 'partially_paid')
+            ->assertJsonPath('data.total', 80.0)
+            ->assertJsonPath('data.paid_amount', 30.0)
+            ->assertJsonPath('data.outstanding_amount', 50.0)
+            ->assertJsonCount(2, 'data.payments')
+            ->assertJsonPath('data.payments.0.id', $paidId)
+            ->assertJsonPath('data.payments.0.status', 'paid')
+            ->assertJsonPath('data.payments.0.amount', 20.0)
+            ->assertJsonPath('data.payments.1.id', $capturedId)
+            ->assertJsonPath('data.payments.1.status', 'captured')
+            ->assertJsonPath('data.payments.1.method', 'field_collection')
+            ->assertJsonPath('data.payments.1.reference', 'P303-READBACK-CAPTURED-10')
+            ->assertJsonPath('data.payments.1.currency', 'EGP')
+            ->assertJsonPath('data.payments.1.amount', 10.0);
+
+        $this->getJson('/api/v1/b2b/account-summary?store_id='.$storeId)
+            ->assertOk()
+            ->assertJsonPath('data.total_credits', 30.0)
+            ->assertJsonPath('data.outstanding_receivable', 50.0);
+
+        $this->getJson('/api/v1/b2b/account-statement?store_id='.$storeId)
+            ->assertOk()
+            ->assertJsonPath('data.total_credits', 30.0)
+            ->assertJsonPath('data.closing_balance', -50.0);
+
+        // A forged scope must not expose even an otherwise owned invoice.
+        $this->getJson('/api/v1/b2b/invoices/'.$invoice->id.'?store_id='.($storeId + 9999))
+            ->assertNotFound();
+
+        $this->assertSame('issued', $invoice->fresh()->status);
+        $this->assertDatabaseHas('payments', ['id' => $capturedId, 'status' => 'captured']);
+    }
+
     public function test_opening_notes_returns_and_adjustments_are_append_only_supported_types(): void
     {
         [$user, , $customer] = $this->account(200);
