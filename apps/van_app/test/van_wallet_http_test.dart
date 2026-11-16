@@ -9,13 +9,15 @@ import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 
 void main() {
-  test('Van finance HTTP contract keeps authoritative scope and idempotency', () async {
+  test('Van finance HTTP contract keeps authoritative scope and idempotency',
+      () async {
     final seen = <String>[];
     final client = MockClient((request) async {
       seen.add('${request.method} ${request.url.path}');
       expect(request.headers['authorization'], 'Bearer van-token');
 
-      if (request.method == 'GET' && request.url.path == '/api/v1/van/customers') {
+      if (request.method == 'GET' &&
+          request.url.path == '/api/v1/van/customers') {
         return http.Response(
           jsonEncode({
             'data': [
@@ -32,7 +34,8 @@ void main() {
       }
 
       if (request.method == 'GET' &&
-          request.url.path == '/api/v1/van/customers/b2b/44/collection-context') {
+          request.url.path ==
+              '/api/v1/van/customers/b2b/44/collection-context') {
         expect(request.url.queryParameters['store_id'], '7');
         return http.Response(
           jsonEncode({
@@ -167,7 +170,8 @@ void main() {
     );
   });
 
-  test('Van finance HTTP errors retain sanitized status for actionable UI', () async {
+  test('Van finance HTTP errors retain sanitized status for actionable UI',
+      () async {
     final client = MockClient((request) async => http.Response(
           jsonEncode({
             'message': 'The given data was invalid.',
@@ -202,7 +206,6 @@ void main() {
       ),
     );
   });
-
 
   test('Van wallet preserves payment identity and genuine three-place money',
       () async {
@@ -335,7 +338,9 @@ void main() {
         client: MockClient((request) async {
           expect(request.url.queryParameters['store_id'], '7');
           return http.Response(
-            jsonEncode({'data': {'store_id': 8, 'invoices': []}}),
+            jsonEncode({
+              'data': {'store_id': 8, 'invoices': []}
+            }),
             200,
           );
         }),
@@ -347,8 +352,7 @@ void main() {
     );
   });
 
-  test('Van finance rejects missing, malformed and non-finite money',
-      () async {
+  test('Van finance rejects missing, malformed and non-finite money', () async {
     const customer = VanCustomerScope(
       type: 'b2b',
       id: 44,
@@ -393,6 +397,4 @@ void main() {
         throwsA(isA<VanApiException>()),
       );
     }
-  });
-
-}
+  });}
