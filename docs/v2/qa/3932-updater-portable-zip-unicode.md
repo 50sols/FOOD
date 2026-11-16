@@ -51,3 +51,11 @@ Environment: Windows GCC, PHP 8.3.33, ZipArchive, PHPUnit 11.5.58. `pdo_sqlite` 
 - Linux full Laravel tests and MySQL/Redis deployment acceptance: pending exact-head CI.
 - Publisher-trusted signed package, staging installation and parent G005/P112 UAT remain separate final acceptance under #2746 / #2846 / #2503; this leaf does not claim release readiness.
 - No `main`, tag, release, production, cPanel or deployment changes.
+
+## Follow-up review finding: mixed-case explicit directory descendants (2026-11-16)
+
+- Prior HIGH-risk worker comment flagged parent/ancestor lookup against an original-case parent key. The inspected current source at `65fd1223d0ef485ba4d907467e1c284cdd4dac1d` already derives `$parts = explode('/', $foldedPath)` **after** `$foldedPath = strtolower($relativePath)`, and keys both `$seen` and `$requiredDirectories` by folded names. Thus the reported unnormalized parent lookup is **not present in that committed source**; do not claim a runtime change was needed to repair it at that HEAD.
+- The test gap was explicit directory-only descendants: extend the real-ZIP negative fixtures with `Mod` (file) versus `mod/Child/` (directory) in **both ZIP entry orders**, plus nested `Alpha/Beta` (file) versus `alpha/beta/Deep/` (directory) in both orders. Each case exercises `preflight()`, `backupFiles()`, and `extractRelease()` and asserts the exact file/directory conflict exception and absence of file, backup and database mutation.
+- Also include a non-conflicting explicit ASCII `Nested/` directory entry in the existing positive ZIP backup/extract/rollback test, to ensure the fail-closed policy does not break legitimate publisher archives.
+- Scope delta is regression proof only; core updater archive validation and prior portability fix remain unchanged. The previous HIGH-risk review was for an older HEAD and must not be reused as final-head approval.
+- Verification status for the follow-up commit: **not yet certified**. GCC was offline when these regressions were authored; fresh GitHub exact-head CI (Repository Policy, V2 Isolation and Required CI), security/source audit, and mergeability must be rechecked before any merge. Never treat prior-head CI or previous GCC figures as proof for the new commit.
