@@ -9,6 +9,7 @@ use App\Models\Remittance;
 use App\Models\Role;
 use App\Models\User;
 use App\Services\CollectionCustodyService;
+use App\Services\VanCustomerCollectionContextService;
 use Database\Seeders\CoreReferenceSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
@@ -167,6 +168,75 @@ final class V2VanTripSettlementProvenanceTest extends TestCase
             'provider_reference' => 'p272-valid-van',
         ]);
         $this->assertDatabaseCount('custody_ledger_entries', 1);
+    }
+
+    public function test_distinct_key_collection_cannot_overcollect_after_authoritative_invoice_lock(): void
+    {
+        $actor = User::factory()->create(['is_active' => true]);
+        $storeId = $this->store('B2B', 'P272-LOCKED-OUTSTANDING');
+        $invoice = $this->invoice($storeId, 'b2b', 'P272-LOCKED-INVOICE');
+        $invoice->forceFill(['total' => 80])->save();
+        $account = CollectionAccount::query()->create([
+            'actor_type' => 'van',
+            'actor_id' => 457,
+            'store_id' => $storeId,
+            'currency' => 'KWD',
+            'status' => 'active',
+        ]);
+
+        $service = app(CollectionCustodyService::class);
+        $invoiceId = (int) $invoice->getKey();
+        $first = $service->collect(
+            $account, $actor, 'p272-first-collection', 60, 'KWD', 'van_app',
+            [['invoice_id' => $invoiceId, 'amount' => 60]],
+        );
+        $this->assertSame('posted', $first->status);
+        $this->assertEqualsWithDelta(
+            20,
+            app(VanCustomerCollectionContextService::class)->outstandingAmount($invoice->fresh(), 'b2b'),
+            0.0005,
+        );
+
+        // Both requests could independently pass the controller's old 80
+        // outstanding preflight. The service must reject the second key after
+        // its invoice lock observes the first committed payment.
+        try {
+            $service->collect(
+                $account, $actor, 'p272-racing-second-key', 60, 'KWD', 'van_app',
+                [['invoice_id' => $invoiceId, 'amount' => 60]],
+            );
+            $this->fail('A second idempotency key must not overcollect the same invoice.');
+        } catch (ValidationException $exception) {
+            $this->assertArrayHasKey('allocations', $exception->errors());
+        }
+
+        $this->assertDatabaseMissing('payments', ['provider_reference' => 'p272-racing-second-key']);
+        $this->assertDatabaseMissing('collection_transactions', ['idempotency_key' => 'p272-racing-second-key']);
+        $this->assertDatabaseCount('payments', 1);
+        $this->assertDatabaseCount('collection_transactions', 1);
+        $this->assertDatabaseCount('collection_allocations', 1);
+        $this->assertDatabaseCount('custody_ledger_entries', 1);
+
+        // Legal remainder and identical replay are both preserved, without
+        // generating a second receipt/payment/custody row for the replay.
+        $remaining = $service->collect(
+            $account, $actor, 'p272-legal-remainder', 20, 'KWD', 'van_app',
+            [['invoice_id' => $invoiceId, 'amount' => 20]],
+        );
+        $replay = $service->collect(
+            $account, $actor, 'p272-legal-remainder', 20, 'KWD', 'van_app',
+            [['invoice_id' => $invoiceId, 'amount' => 20]],
+        );
+        $this->assertSame($remaining->getKey(), $replay->getKey());
+        $this->assertEqualsWithDelta(
+            0,
+            app(VanCustomerCollectionContextService::class)->outstandingAmount($invoice->fresh(), 'b2b'),
+            0.0005,
+        );
+        $this->assertDatabaseCount('payments', 2);
+        $this->assertDatabaseCount('collection_transactions', 2);
+        $this->assertDatabaseCount('collection_allocations', 2);
+        $this->assertDatabaseCount('custody_ledger_entries', 2);
     }
 
     public function test_invoice_allocations_reject_zero_negative_and_non_finite_amounts_without_financial_writes(): void

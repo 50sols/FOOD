@@ -5,6 +5,7 @@ namespace App\Services;
 use App\Models\CollectionAccount;
 use App\Models\CollectionTransaction;
 use App\Models\CustodyLedgerEntry;
+use App\Models\Invoice;
 use App\Models\Payment;
 use App\Models\Remittance;
 use App\Models\User;
@@ -35,6 +36,16 @@ final class CollectionCustodyService
         }
 
         return DB::transaction(function () use ($account, $actor, $idempotencyKey, $amount, $currency, $source, $allocations): CollectionTransaction {
+            // Serialize receipts for this account before looking up the key or
+            // locking invoices. Both identical-key and distinct-key submissions
+            // must observe the immediately preceding committed collection.
+            // Keep the same account-first lock order as remittance submission.
+            $lockedAccount = CollectionAccount::query()
+                ->whereKey($account->getKey())
+                ->lockForUpdate()
+                ->firstOrFail();
+            $this->assertAccountCurrency($lockedAccount, $currency);
+
             $existing = CollectionTransaction::query()
                 ->where('idempotency_key', $idempotencyKey)
                 ->lockForUpdate()
@@ -127,7 +138,7 @@ final class CollectionCustodyService
                     ]);
                 }
 
-                $invoice = DB::table('invoices')->where('id', (int) $allocation['invoice_id'])->lockForUpdate()->first();
+                $invoice = Invoice::query()->whereKey($invoiceId)->lockForUpdate()->first();
                 if ($invoice === null) {
                     throw ValidationException::withMessages(['allocations' => ['Invoice not found.']]);
                 }
@@ -140,6 +151,20 @@ final class CollectionCustodyService
                 if (strtoupper((string) $invoice->currency) !== $currency) {
                     throw ValidationException::withMessages(['currency' => ['Mixed-currency collection allocation is not allowed.']]);
                 }
+
+                // The Van HTTP preflight is outside this transaction and can
+                // race another authorized collection with a different key.
+                // Read the authoritative payment/credit ledger only AFTER the
+                // invoice row lock and before creating any payment or custody.
+                // The shared service also covers direct and Driver callers.
+                $outstanding = app(VanCustomerCollectionContextService::class)
+                    ->outstandingAmount($invoice, $accountChannel);
+                if ((float) $allocationAmount > $outstanding + 0.0005) {
+                    throw ValidationException::withMessages([
+                        'allocations' => ['Invoice allocation exceeds the current outstanding balance.'],
+                    ]);
+                }
+
                 $allocatedTotal += (float) $allocationAmount;
             }
 
