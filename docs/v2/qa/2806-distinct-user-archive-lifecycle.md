@@ -15,6 +15,12 @@ Archive action requires active `SUPER_ADMIN` and independent `users.status.manag
 
 Archive reuses `RbacManager::setUserActive` to revoke API tokens and sessions before durable `archived_at` marking, with the outer database transaction ensuring both changes and `user.archived` audit commit or roll back atomically. An already inactive target keeps its original `deactivated_at` but has any lingering tokens revoked. Restoring is a separate explicitly labeled action available only to the global Super Admin; existing typed-confirmation/status service clears archived state and audits activation. The original irreversible delete route remains guarded by `users.delete`, `AdminUserDeletionService` full reference/retention preflight, and role restrictions (#2809).
 
+## Source security review — historical archival-actor deletion provenance
+
+The additive `users.archived_by` RESTRICT self-FK creates a retained link **within the users table**. P071's general table inventory intentionally skips the users row, so the permanent-deletion preflight must separately inspect incoming `users.archived_by` references. The existing `AdminUserDeletionService::inspect` now returns `references` before any mutation when a previously privileged archival actor is referenced by another archived identity, even if that actor has since lost roles and has no ordinary linked record. The P071 direct HTTP deletion path rejects the attempt with the localized existing retention reason and zero destructive audit event. The additive `V2UserPermanentDeletionGuardTest` covers preview, direct denial, preserved both identity rows, intact archival provenance and no deletion audit. No cascading delete and no new approval bypass.
+
+Pint is enforced on exact HEAD; the prior failed fast-fail was one extra blank line in `V2DistinctUserArchiveLifecycleTest`, corrected on the original PR. Archive stale-identity typed confirmation and archived no-op status denial are verified by issue-owned negative tests; keep final exact-head CI and high-risk source review as mandatory merge gates.
+
 ## Placement and AR/EN
 
 Existing Users 3-dot action menu now exposes Archive separately from Deactivate and the per-record Permanent Delete eligibility preview. The archived row is labeled Archived rather than merely Inactive; the control becomes Restore archived account. All AR/EN labels, errors, warnings and impact notes reuse original locale and modal. Buttons retain shared responsive/keyboard/RTL behavior. No database IDs or JSON are shown as user inputs.
