@@ -1396,7 +1396,11 @@ final class V2InventoryOwnerProvenanceTest extends TestCase
         $this->assertSame('UNVERIFIED', $read->snapshot($actor, $stock['inventory_id'])['state']);
         DB::table('enterprise_store_scopes')->where('store_id', $stock['store_id'])
             ->update(['business_unit_id' => $originalScope->business_unit_id]);
-        $this->assertSame('CERTIFIED', $read->snapshot($actor, $stock['inventory_id'])['state']);
+        // Reverting a store's legal-entity mapping must NOT resurrect a
+        // certificate already invalidated by a newer stock movement.
+        // Title can only be re-certified using fresh independently signed
+        // evidence for the latest canonical movement revision.
+        $this->assertSame('UNVERIFIED', $read->snapshot($actor, $stock['inventory_id'])['state']);
 
         Storage::disk('local')->put($path, 'tampered document');
         $this->assertSame('UNVERIFIED', $read->snapshot($actor, $stock['inventory_id'])['state']);
