@@ -1230,6 +1230,16 @@ final class V2InventoryOwnerProvenanceTest extends TestCase
         $this->assertSame('SUPPLIER', $certified['positions'][0]['owner_kind']);
         $this->assertSame($supplierId, $certified['positions'][0]['supplier_id']);
 
+        // A normal migration rollback must never remove SQL evidence guards
+        // while a signed title claim is persisted in this same store.
+        $attestationMigration = require database_path('migrations/2026_11_16_070000_protect_inventory_title_attestation_records.php');
+        try {
+            $attestationMigration->down();
+            $this->fail('Signed evidence downgrade must refuse removal of the immutable guards.');
+        } catch (\RuntimeException $exception) {
+            $this->assertStringContainsString('recovery', $exception->getMessage());
+        }
+
         // A forged checker ID must be rejected at the SQL boundary, before
         // an existing genuine signature can be altered and later restored.
         try {
