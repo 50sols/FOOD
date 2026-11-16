@@ -202,7 +202,7 @@ class CheckoutController extends Controller
                 $locale = in_array($userLocale, ['ar', 'en'], true)
                     ? $userLocale
                     : strtolower((string) $request->getPreferredLanguage(['ar', 'en']));
-    
+
                 throw ValidationException::withMessages([
                     'payment_method' => [__('checkout_errors.payment_method_not_configured', [], $locale === 'ar' ? 'ar' : 'en')],
                 ]);
