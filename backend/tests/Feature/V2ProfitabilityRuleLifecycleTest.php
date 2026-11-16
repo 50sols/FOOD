@@ -29,6 +29,75 @@ final class V2ProfitabilityRuleLifecycleTest extends TestCase
         ]);
     }
 
+    public function test_inclusive_single_day_margin_window_and_reversed_dates_remain_safe_in_both_locales(): void
+    {
+        [$maker, $store, $product] = $this->fixture();
+        $route = $this->saveRoute($store, $product);
+        $singleDay = now()->addDays(3)->toDateString();
+        $previousDay = now()->addDays(2)->toDateString();
+
+        foreach (['ar', 'en'] as $locale) {
+            $maker->forceFill(['locale' => $locale])->save();
+            app()->setLocale($locale);
+
+            $this->actingAs($maker->fresh())->put($route, [
+                ...$this->proposal((string) Str::uuid(), '17.25'),
+                'effective_from' => $singleDay,
+                'effective_until' => $singleDay,
+            ])->assertSessionHasNoErrors();
+
+            $this->actingAs($maker->fresh())->put($route, [
+                ...$this->proposal((string) Str::uuid(), '17.25'),
+                'effective_from' => $singleDay,
+                'effective_until' => $previousDay,
+            ])->assertSessionHasErrors('effective_until');
+        }
+
+        $this->assertSame(2, DB::table('commercial_profitability_rule_revisions')->count());
+        $this->assertSame(2, DB::table('audit_logs')
+            ->where('event', 'commercial.profitability_rule.proposed')->count());
+        $this->assertSame(0, DB::table('product_commercial_policies')->count());
+        $this->assertDatabaseHas('commercial_profitability_rule_revisions', [
+            'store_id' => $store,
+            'product_id' => $product,
+            'status' => 'DRAFT',
+            'minimum_margin_basis_points' => 1725,
+            'effective_from' => $singleDay,
+            'effective_until' => $singleDay,
+        ]);
+
+        $this->restrictB2bAdminToIndependentChecker();
+        $checker = $this->user('B2B_ADMIN');
+        $revisionIds = DB::table('commercial_profitability_rule_revisions')
+            ->orderBy('id')->pluck('id')->map(static fn ($id): int => (int) $id)->all();
+
+        $this->actingAs($checker)->put($route, [
+            'profitability_action' => 'review',
+            'revision_id' => $revisionIds[0],
+            'decision' => 'review',
+        ])->assertSessionHasNoErrors();
+        $this->assertDatabaseHas('commercial_profitability_rule_revisions', [
+            'id' => $revisionIds[0],
+            'status' => 'REVIEWED_INACTIVE',
+            'reviewed_by' => $checker->id,
+        ]);
+
+        // Inclusive overlap must prevent a second independently reviewed floor
+        // for the very same date, without silently activating business pricing.
+        $this->actingAs($checker)->put($route, [
+            'profitability_action' => 'review',
+            'revision_id' => $revisionIds[1],
+            'decision' => 'review',
+        ])->assertSessionHasErrors('revision_id');
+        $this->assertDatabaseHas('commercial_profitability_rule_revisions', [
+            'id' => $revisionIds[1],
+            'status' => 'DRAFT',
+            'reviewed_by' => null,
+        ]);
+        $this->assertSame(0, DB::table('commercial_profitability_rule_revisions')
+            ->where('status', 'ACTIVE')->count());
+    }
+
     public function test_profitability_configuration_help_and_blocked_readiness_are_bilingual_without_default_margin(): void
     {
         [$maker, $store, $product] = $this->fixture();
