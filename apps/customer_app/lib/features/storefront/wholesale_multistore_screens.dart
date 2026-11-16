@@ -2504,13 +2504,12 @@ class _WholesaleProductCardState extends State<_WholesaleProductCard> {
       String value => double.tryParse(value.trim()),
       _ => null,
     };
-    final priceLabel = displayAmount == null ||
-            !displayAmount.isFinite ||
-            displayAmount < 0
-        ? '—'
-        : widget.homeWholeNumberPrice
-            ? '${displayAmount.toStringAsFixed(0)} $currency'
-            : money(displayAmount, currency: currency);
+    final priceLabel =
+        displayAmount == null || !displayAmount.isFinite || displayAmount < 0
+            ? '—'
+            : widget.homeWholeNumberPrice
+                ? '${displayAmount.toStringAsFixed(0)} $currency'
+                : money(displayAmount, currency: currency);
     final twoColumns = widget.gridColumns == 2;
     final singleColumn = widget.gridColumns == 1;
     final imageHeight = singleColumn ? 176.0 : (twoColumns ? 126.0 : 96.0);
