@@ -274,29 +274,29 @@ final class B2bAccountLedgerContractTest extends TestCase
             ->assertOk()
             ->assertJsonPath('data.status', 'issued')
             ->assertJsonPath('data.display_status', 'partially_paid')
-            ->assertJsonPath('data.total', 80.0)
-            ->assertJsonPath('data.paid_amount', 30.0)
-            ->assertJsonPath('data.outstanding_amount', 50.0)
+            ->assertJsonPath('data.total', 80)
+            ->assertJsonPath('data.paid_amount', 30)
+            ->assertJsonPath('data.outstanding_amount', 50)
             ->assertJsonCount(2, 'data.payments')
             ->assertJsonPath('data.payments.0.id', $paidId)
             ->assertJsonPath('data.payments.0.status', 'paid')
-            ->assertJsonPath('data.payments.0.amount', 20.0)
+            ->assertJsonPath('data.payments.0.amount', 20)
             ->assertJsonPath('data.payments.1.id', $capturedId)
             ->assertJsonPath('data.payments.1.status', 'captured')
             ->assertJsonPath('data.payments.1.method', 'field_collection')
             ->assertJsonPath('data.payments.1.reference', 'P303-READBACK-CAPTURED-10')
             ->assertJsonPath('data.payments.1.currency', 'EGP')
-            ->assertJsonPath('data.payments.1.amount', 10.0);
+            ->assertJsonPath('data.payments.1.amount', 10);
 
         $this->getJson('/api/v1/b2b/account-summary?store_id='.$storeId)
             ->assertOk()
-            ->assertJsonPath('data.total_credits', 30.0)
-            ->assertJsonPath('data.outstanding_receivable', 50.0);
+            ->assertJsonPath('data.total_credits', 30)
+            ->assertJsonPath('data.outstanding_receivable', 50);
 
         $this->getJson('/api/v1/b2b/account-statement?store_id='.$storeId)
             ->assertOk()
-            ->assertJsonPath('data.total_credits', 30.0)
-            ->assertJsonPath('data.closing_balance', -50.0);
+            ->assertJsonPath('data.total_credits', 30)
+            ->assertJsonPath('data.closing_balance', -50);
 
         // A forged scope must not expose even an otherwise owned invoice.
         $this->getJson('/api/v1/b2b/invoices/'.$invoice->id.'?store_id='.($storeId + 9999))
