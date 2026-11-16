@@ -216,7 +216,6 @@ final class V2DistinctUserArchiveLifecycleTest extends TestCase
         }
     }
 
-
     public function test_archived_account_rejects_noop_deactivation_without_changing_audit_or_reason(): void
     {
         $admin = $this->withRole('SUPER_ADMIN');
