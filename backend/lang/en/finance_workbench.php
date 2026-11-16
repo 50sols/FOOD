@@ -163,6 +163,8 @@ return [
     'receivables' => [
         'mapping_title' => 'Custody to Finance account mapping',
         'mapping_help' => 'Configure the settlement/clearing ledger account for an existing collector wallet. A separate Finance approver must review; the mapping is NOT proof of collected cash or authorization for an AR journal.',
+        'mapping_test' => 'Test mapping without saving',
+        'mapping_test_help' => 'Test the selected authorized wallet and clearing account before saving. Source: an active store-scoped collector wallet and an active posting asset in Finance Chart of Accounts. Both selections are required; no account is preselected. Save rechecks the live state. Test creates no mapping, approval, audit or financial journal.',
         'mapping_propose' => 'Propose account mapping',
         'mapping_collection_account' => 'Collector wallet',
         'mapping_finance_account' => 'Finance custody/clearing account',
@@ -410,6 +412,7 @@ return [
         'supplier' => 'Supplier',
     ],
     'messages' => [
+        'mapping_tested' => 'The mapping inputs passed the current scope, permission and account checks without saving. Save and independent review are still required; no collection or ledger posting is certified.',
         'mapping_proposed' => 'Custody account mapping proposal recorded; no cash or AR journal created.',
         'mapping_reviewed' => 'Independent mapping decision recorded; no cash or AR journal created.',
         'ar_settlement_created' => 'Receivable settlement draft recorded.',
