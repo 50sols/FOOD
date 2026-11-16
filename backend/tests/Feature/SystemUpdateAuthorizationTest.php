@@ -174,7 +174,7 @@ class SystemUpdateAuthorizationTest extends TestCase
             ->assertOk()
             ->assertSee('data-host-requirement="backup_directory" data-host-status="precheck-ok"', false)
             ->assertSee('data-host-requirement="update_lock" data-host-status="precheck-ok"', false)
-            ->assertSee(__('admin.system_update_host.filesystem_precheck_only'));
+            ->assertSee(__('admin.system_update_host.precheck_ok'));
 
         $this->assertDirectoryDoesNotExist($directory);
     }
