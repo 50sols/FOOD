@@ -170,8 +170,8 @@ final class V2ProfitabilityRuleLifecycleTest extends TestCase
         // revisions, even for an active user attached to an operational role.
         Role::query()->where('code', 'B2B_ADMIN')->firstOrFail()
             ->permissions()->sync(Permission::query()
-                ->whereIn('code', ['stores.view', 'catalog.view'])
-                ->pluck('id')->all());
+            ->whereIn('code', ['stores.view', 'catalog.view'])
+            ->pluck('id')->all());
         $catalogReader = $this->user('B2B_ADMIN');
         $caught = null;
         try {
