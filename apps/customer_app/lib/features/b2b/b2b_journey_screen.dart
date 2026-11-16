@@ -5393,7 +5393,9 @@ class _B2bAccountStatementRemoteStateState
       firstDate: DateTime(2020),
       lastDate: DateTime.now().add(const Duration(days: 366)),
     );
-    if (!mounted || selected == null || revision != _readRevision ||
+    if (!mounted ||
+        selected == null ||
+        revision != _readRevision ||
         !identical(widget.api, api)) return;
     setState(() {
       if (from) {
@@ -5471,8 +5473,10 @@ class _B2bAccountStatementRemoteStateState
       );
       // An old account, store or period must never reach the OS share
       // surface after the scope changes during document download.
-      if (!mounted || exportRevision != _exportRevision ||
-          !identical(widget.api, api) || scopePath != _requestPath) return;
+      if (!mounted ||
+          exportRevision != _exportRevision ||
+          !identical(widget.api, api) ||
+          scopePath != _requestPath) return;
       await SharePlus.instance.share(
         ShareParams(
           files: [
@@ -5486,8 +5490,10 @@ class _B2bAccountStatementRemoteStateState
         ),
       );
     } catch (_) {
-      if (!mounted || exportRevision != _exportRevision ||
-          !identical(widget.api, api) || scopePath != _requestPath) return;
+      if (!mounted ||
+          exportRevision != _exportRevision ||
+          !identical(widget.api, api) ||
+          scopePath != _requestPath) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text(context.tr('b2b.statement.export_failed'))),
       );
