@@ -497,17 +497,30 @@
                     <section class="policy-section" id="profitability-rules" data-v2-p229-profitability>
                         <div class="policy-section-title"><span>{{ __('commercial.profitability.title') }}</span></div>
                         <p class="muted">{{ __('commercial.profitability.inactive_explanation') }}</p>
+                        <div class="commercial-status" role="status" data-v2-p229-readiness data-readiness-state="blocked">
+                            <strong>{{ __('commercial.profitability.readiness_label') }}:</strong>
+                            {{ __('commercial.profitability.readiness_blocked') }}
+                        </div>
+                        <details class="policy-section" data-v2-p229-setup-help>
+                            <summary>{{ __('commercial.profitability.help_title') }}</summary>
+                            <p class="muted">{{ __('commercial.profitability.help_purpose') }}</p>
+                            <p class="muted">{{ __('commercial.profitability.help_source') }}</p>
+                            <p class="muted">{{ __('commercial.profitability.help_example') }}</p>
+                            <p class="muted">{{ __('commercial.profitability.help_default') }}</p>
+                            <p class="muted">{{ __('commercial.profitability.help_permissions') }}</p>
+                            <p class="muted">{{ __('commercial.profitability.help_test') }}</p>
+                        </details>
                         @if($errors->any())
                             <div role="alert" class="commercial-status">{{ $errors->first() }}</div>
                         @endif
                         @if($canProposeProfitability)
                             <form method="post" action="{{ route('admin.commercial.sales-control.save', ['product'=>$product->id] + $scope) }}">
                                 @csrf @method('put')
-                                <input type="hidden" name="profitability_action" value="propose">
                                 <input type="hidden" name="request_id" value="{{ old('request_id', (string) \Illuminate\Support\Str::uuid()) }}">
                                 <div class="commercial-form-grid">
                                     <label>{{ __('commercial.profitability.min_margin') }}
-                                        <input type="number" name="minimum_margin_percent" min="0" max="100" step="0.01" value="{{ old('minimum_margin_percent') }}" required>
+                                        <input type="number" name="minimum_margin_percent" min="0" max="100" step="0.01" inputmode="decimal" placeholder="12.50" aria-describedby="profitability-margin-help-{{ $product->id }}" value="{{ old('minimum_margin_percent') }}" required>
+                                        <small id="profitability-margin-help-{{ $product->id }}" class="muted">{{ __('commercial.profitability.validation_hint') }}</small>
                                     </label>
                                     <label>{{ __('commercial.profitability.effective_from') }}
                                         <input type="date" name="effective_from" value="{{ old('effective_from') }}" required>
@@ -516,7 +529,8 @@
                                         <input type="date" name="effective_until" value="{{ old('effective_until') }}" required>
                                     </label>
                                 </div>
-                                <button type="submit" class="foodex-primary">{{ __('commercial.profitability.propose') }}</button>
+                                <button type="submit" class="flash-secondary" name="profitability_action" value="validate_proposal" formnovalidate>{{ __('commercial.profitability.test_inputs') }}</button>
+                                <button type="submit" class="foodex-primary" name="profitability_action" value="propose">{{ __('commercial.profitability.propose') }}</button>
                             </form>
                         @endif
                         <div class="structured-list">
