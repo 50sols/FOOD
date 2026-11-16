@@ -81,9 +81,34 @@ final class InstallerWorkflow
         // late to preserve the original database credentials and APP_KEY.
         $existing = $this->environment->read(['APP_ENV', 'APP_KEY']);
         abort_if($this->state->isInstalled(), 404);
-        if (strtolower(trim((string) ($existing['APP_ENV'] ?? ''))) === 'production'
-            || trim((string) ($existing['APP_KEY'] ?? '')) !== '') {
+        if (trim((string) ($existing['APP_KEY'] ?? '')) !== '') {
             throw new RuntimeException((string) __('installer.environment_already_configured'));
+        }
+
+        // A genuine first-install ZIP starts in APP_ENV=production with an
+        // empty APP_KEY. Treat that as uninitialized, not as proof of a live
+        // site, but examine the previously configured database BEFORE
+        // changing its credentials whenever the old connection is reachable.
+        if (strtolower(trim((string) ($existing['APP_ENV'] ?? ''))) === 'production') {
+            $existingConnectionAvailable = false;
+            try {
+                $this->applyDatabaseConfiguration();
+                DB::connection()->getPdo();
+                $existingConnectionAvailable = true;
+            } catch (Throwable) {
+                // The stock production template may name an unavailable
+                // database. An empty key/absent lock may still configure it.
+            }
+
+            if ($existingConnectionAvailable) {
+                try {
+                    $this->assertFreshInstallDatabase();
+                } catch (RuntimeException) {
+                    // Existing FOODEX business data or uncertain introspection
+                    // must never be overwritten through a fresh setup.
+                    throw new RuntimeException((string) __('installer.environment_already_configured'));
+                }
+            }
         }
 
         $this->environment->write([

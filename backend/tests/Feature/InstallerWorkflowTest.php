@@ -211,8 +211,17 @@ class InstallerWorkflowTest extends TestCase
         $this->assertSame($original, file_get_contents($environment->path()));
     }
 
-    public function test_database_configuration_refuses_production_marker_without_app_key(): void
+    public function test_unlocked_production_env_with_empty_key_rejects_existing_database_data_before_write(): void
     {
+        DB::table('users')->insert([
+            'name' => 'Existing Live Operator',
+            'email' => 'existing-unlocked-user@example.test',
+            'password' => 'existing-hash-not-for-auth',
+            'locale' => 'ar',
+            'is_active' => true,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
         $environment = app(InstallerEnvironment::class);
         $environment->write(['APP_ENV' => 'production', 'APP_KEY' => '']);
         $original = file_get_contents($environment->path());
@@ -225,12 +234,35 @@ class InstallerWorkflowTest extends TestCase
                 'username' => 'fresh_user',
                 'password' => 'new-password-test-only',
             ]);
-            $this->fail('An unlocked production .env must be treated as a protected site.');
+            $this->fail('An unlocked production .env with existing FOODEX user data must not be replaced.');
         } catch (\RuntimeException $exception) {
             $this->assertSame(__('installer.environment_already_configured'), $exception->getMessage());
         }
 
         $this->assertSame($original, file_get_contents($environment->path()));
+    }
+
+    public function test_clean_production_setup_template_with_empty_key_can_save_database_settings(): void
+    {
+        $environment = app(InstallerEnvironment::class);
+        $environment->write(['APP_ENV' => 'production', 'APP_KEY' => '']);
+        $this->assertDatabaseCount('users', 0);
+        $this->assertDatabaseCount('system_versions', 0);
+
+        app(InstallerWorkflow::class)->saveDatabaseConfiguration([
+            'host' => 'localhost',
+            'port' => 3306,
+            'database' => 'foodex_fresh_setup',
+            'username' => 'setup_operator',
+            'password' => 'test-only-password',
+        ]);
+
+        $stored = $environment->read(['APP_ENV', 'APP_KEY', 'DB_CONNECTION', 'DB_DATABASE', 'DB_USERNAME']);
+        $this->assertSame('production', $stored['APP_ENV']);
+        $this->assertSame('', $stored['APP_KEY']);
+        $this->assertSame('mysql', $stored['DB_CONNECTION']);
+        $this->assertSame('foodex_fresh_setup', $stored['DB_DATABASE']);
+        $this->assertSame('setup_operator', $stored['DB_USERNAME']);
     }
 
     public function test_database_configuration_persists_mysql_production_defaults(): void
