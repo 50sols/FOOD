@@ -15,6 +15,7 @@ use App\Models\User;
 use App\Services\EnterpriseActionCenter;
 use App\Services\EnterpriseModuleAdministration;
 use App\Services\EnterpriseMyWork;
+use App\Services\OperationalTenantScope;
 use App\Support\AdminNavigation;
 use App\Support\TenantContextResolver;
 use Illuminate\Contracts\View\View;
@@ -384,6 +385,26 @@ final class ErpCenterController extends Controller
                 new EntitlementScope(EntitlementScope::STORE, $storeId),
             )) {
                 return true;
+            }
+        }
+
+        // P135: Procurement's existing Wholesale workbench accepts an
+        // authorized B2B store as well as Retail. A store-only entitlement
+        // must not be mislabeled "not entitled" by this read-only Center.
+        // The canonical operational scope filters explicit user DENYs;
+        // this does not change role grants or HTTP authorization.
+        if ($moduleCode === 'procurement') {
+            foreach (app(OperationalTenantScope::class)->allowedStoreIds(
+                $actor,
+                'procurement.suppliers.view',
+                'b2b',
+            ) as $storeId) {
+                if ($this->entitlements->allows(
+                    $moduleCode,
+                    new EntitlementScope(EntitlementScope::STORE, $storeId),
+                )) {
+                    return true;
+                }
             }
         }
 

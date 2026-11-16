@@ -1300,6 +1300,25 @@ class AdminNavigation
             }
         }
 
+        // Read-only parity with the existing Procurement HTTP store chooser:
+        // a role-entitled Wholesale store may carry the module entitlement
+        // without a platform-wide grant. The same scoped supplier permission
+        // and explicit user DENYs govern this single existing menu route.
+        if ($moduleCode === 'procurement') {
+            foreach (app(OperationalTenantScope::class)->allowedStoreIds(
+                $user,
+                'procurement.suppliers.view',
+                'b2b',
+            ) as $storeId) {
+                if ($this->enterpriseEntitlements->allows(
+                    $moduleCode,
+                    new EntitlementScope(EntitlementScope::STORE, $storeId),
+                )) {
+                    return $this->enterpriseModuleAccessMemo[$memoKey] = true;
+                }
+            }
+        }
+
         return $this->enterpriseModuleAccessMemo[$memoKey] = false;
     }
 

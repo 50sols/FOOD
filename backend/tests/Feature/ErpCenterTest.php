@@ -4,8 +4,10 @@ namespace Tests\Feature;
 
 use App\Enterprise\Entitlements\EntitlementScope;
 use App\Enterprise\Entitlements\ModuleEntitlementManager;
+use App\Enterprise\Organization\OrganizationHierarchyService;
 use App\Models\EnterpriseModuleEntitlement;
 use App\Models\Role;
+use App\Models\Store;
 use App\Models\User;
 use App\Services\EnterpriseModuleAdministration;
 use App\Support\AdminNavigation;
@@ -379,6 +381,112 @@ final class ErpCenterTest extends TestCase
         $erpGroup = collect(app(AdminNavigation::class)->groupsFor($actor))->firstWhere('key', 'erp');
         $this->assertNotNull($erpGroup);
         $this->assertNotNull(collect($erpGroup['children'])->firstWhere('key', 'erp_center'));
+    }
+
+
+    public function test_wholesale_procurement_store_entitlement_projects_existing_read_route_without_platform_grant(): void
+    {
+        $admin = $this->userWithGlobalRole('SUPER_ADMIN', 'en', 'erp-wholesale-setup@example.test');
+        $buyer = $this->userWithGlobalRole('PROCUREMENT_BUYER', 'en', 'erp-wholesale-buyer@example.test');
+        $store = $this->wholesaleStore('P135-READ-OWN');
+
+        app(EnterpriseModuleAdministration::class)->perform('procurement', 'enable', $admin);
+        app(ModuleEntitlementManager::class)->set(
+            'procurement',
+            new EntitlementScope(EntitlementScope::STORE, $store->id),
+            true,
+        );
+        $this->assertDatabaseMissing('enterprise_module_entitlements', [
+            'module_code' => 'procurement',
+            'scope_key' => 'platform:0',
+        ]);
+
+        foreach (['en' => 'ltr', 'ar' => 'rtl'] as $locale => $direction) {
+            $buyer->forceFill(['locale' => $locale])->save();
+
+            $response = $this->actingAs($buyer->fresh())->get(route('admin.erp.index'));
+            $response->assertOk()->assertSee('dir="'.$direction.'"', false);
+            $card = collect($response->viewData('cards'))->firstWhere('key', 'procurement');
+
+            $this->assertIsArray($card);
+            $this->assertSame('available', $card['status']);
+            $this->assertSame(route('admin.erp.procurement.index'), $card['url']);
+
+            $group = collect(app(AdminNavigation::class)->groupsFor($buyer->fresh()))
+                ->firstWhere('key', 'procurement');
+            $this->assertIsArray($group);
+            $item = collect($group['children'])->firstWhere('key', 'erp_procurement');
+            $this->assertIsArray($item);
+            $this->assertSame('admin.erp.procurement.index', $item['route']);
+
+            $this->actingAs($buyer->fresh())->get(route('admin.erp.procurement.index', [
+                'store_id' => $store->id,
+                'tab' => 'suppliers',
+            ]))->assertOk();
+        }
+    }
+
+    public function test_wholesale_procurement_read_projection_does_not_invent_an_entitlement_or_readiness(): void
+    {
+        $admin = $this->userWithGlobalRole('SUPER_ADMIN', 'en', 'erp-wholesale-guard-admin@example.test');
+        $buyer = $this->userWithGlobalRole('PROCUREMENT_BUYER', 'en', 'erp-wholesale-guard-buyer@example.test');
+        $store = $this->wholesaleStore('P135-READ-DENIED');
+
+        app(EnterpriseModuleAdministration::class)->perform('procurement', 'enable', $admin);
+
+        foreach (['ar' => 'rtl', 'en' => 'ltr'] as $locale => $direction) {
+            $buyer->forceFill(['locale' => $locale])->save();
+            $response = $this->actingAs($buyer->fresh())->get(route('admin.erp.index'));
+            $response->assertOk()->assertSee('dir="'.$direction.'"', false);
+
+            $card = collect($response->viewData('cards'))->firstWhere('key', 'procurement');
+            $this->assertIsArray($card);
+            $this->assertSame('not_entitled', $card['status']);
+            $this->assertSame('entitlement_scope', $card['denial_reason']);
+            $this->assertNull($card['url']);
+            $group = collect(app(AdminNavigation::class)->groupsFor($buyer->fresh()))
+                ->firstWhere('key', 'procurement');
+            $this->assertNull($group);
+        }
+
+        // Even a real scoped entitlement cannot override missing approval of
+        // the exact module version: both Center and direct HTTP stay blocked.
+        app(ModuleEntitlementManager::class)->set(
+            'procurement',
+            new EntitlementScope(EntitlementScope::STORE, $store->id),
+            true,
+        );
+        config()->set('enterprise_module_readiness.certified_versions.procurement', null);
+
+        // New actor avoids reusing an earlier request's navigation memo.
+        $anotherBuyer = $this->userWithGlobalRole('PROCUREMENT_BUYER', 'ar', 'erp-wholesale-no-cert@example.test');
+        $response = $this->actingAs($anotherBuyer)->get(route('admin.erp.index'));
+        $card = collect($response->viewData('cards'))->firstWhere('key', 'procurement');
+        $this->assertIsArray($card);
+        $this->assertSame('degraded', $card['status']);
+        $this->assertSame('uncertified', $card['denial_reason']);
+        $this->assertNull($card['url']);
+
+        $this->actingAs($anotherBuyer)->get(route('admin.erp.procurement.index', [
+            'store_id' => $store->id,
+            'tab' => 'suppliers',
+        ]))->assertForbidden();
+    }
+
+    private function wholesaleStore(string $code): Store
+    {
+        $typeId = (int) DB::table('store_types')->where('code', 'B2B')->value('id');
+        $this->assertGreaterThan(0, $typeId);
+
+        $store = Store::query()->create([
+            'store_type_id' => $typeId,
+            'code' => $code,
+            'name' => $code,
+            'is_active' => true,
+        ]);
+        app(OrganizationHierarchyService::class)->ensureDefaultScopeForStore($store);
+
+        return $store;
     }
 
     private function userWithGlobalRole(string $roleCode, string $locale, string $email): User
