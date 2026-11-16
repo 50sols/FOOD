@@ -106,6 +106,7 @@ final class V2ErpOperationalWorkflowEvidenceTest extends TestCase
         $this->requireSampleWorkflow();
         $readiness = app(ModuleOperationalReadiness::class);
         $signed = $this->evidence();
+        $trustedKeys = config('enterprise_module_readiness.trusted_public_keys');
 
         $this->assertSame('ready', $readiness->status('sample_optional', 1, ModuleState::ENABLED));
 
@@ -113,8 +114,11 @@ final class V2ErpOperationalWorkflowEvidenceTest extends TestCase
         config()->set('enterprise_module_readiness.trusted_public_keys', []);
         $this->assertSame('uncertified', $readiness->status('sample_optional', 1, ModuleState::ENABLED));
 
-        // A valid signature cannot be copied from another exact module identity.
-        SyntheticErpWorkflowEvidence::install();
+        // Keep the same valid trust root and exact workflow steps to prove
+        // that the module identity itself is signed and cannot be replayed.
+        config()->set('enterprise_module_readiness.trusted_public_keys', $trustedKeys);
+        config()->set('enterprise_module_readiness.required_workflows.finance', ['create', 'approve', 'audit']);
+        config()->set('enterprise_module_readiness.certified_versions.finance', 1);
         config()->set('enterprise_module_readiness.workflow_attestations.finance', $signed);
         $this->assertSame('uncertified', $readiness->status('finance', 1, ModuleState::ENABLED));
 

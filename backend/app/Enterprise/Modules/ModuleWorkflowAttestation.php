@@ -15,7 +15,7 @@ use SodiumException;
 final class ModuleWorkflowAttestation
 {
     /**
-     * @param  list<string>  $stages
+     * @param  array<array-key, mixed>  $stages
      * @param  array<string, mixed>  $attestation
      */
     public static function payload(string $moduleCode, int $version, array $stages, array $attestation): ?string
