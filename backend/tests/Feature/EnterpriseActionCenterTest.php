@@ -25,6 +25,59 @@ final class EnterpriseActionCenterTest extends TestCase
         $this->seed(CoreReferenceSeeder::class);
     }
 
+    public function test_page_sections_are_bilingual_horizontal_tabs_with_one_active_panel(): void
+    {
+        $user = $this->userWithRole('B2B_ADMIN', 'en', 'action-tabs@example.test');
+
+        foreach (['en' => 'ltr', 'ar' => 'rtl'] as $locale => $direction) {
+            app()->setLocale($locale);
+            $user->forceFill(['locale' => $locale])->save();
+
+            foreach (['summary', 'filters', 'queue', 'analytics', 'activity', 'approvals'] as $tab) {
+                $response = $this->actingAs($user->fresh())
+                    ->get(route('admin.action-center.index', ['tab' => $tab, 'state' => 'overdue']))
+                    ->assertOk()
+                    ->assertSee('dir="'.$direction.'"', false)
+                    ->assertSee('data-action-tabs', false)
+                    ->assertSee(__('enterprise_my_work.tabs.'.$tab));
+
+                $this->assertSame($tab, $response->viewData('activeTab'));
+                $html = (string) $response->getContent();
+                $this->assertSame(6, substr_count($html, 'data-action-panel="'));
+                $this->assertSame(6, substr_count($html, 'data-action-tab="'));
+                $this->assertSame(1, substr_count($html, 'aria-current="page"'));
+                foreach (['summary', 'filters', 'queue', 'analytics', 'activity', 'approvals'] as $panel) {
+                    $pattern = '~data-action-panel="'.preg_quote($panel, '~').'"[^>]*~';
+                    $this->assertSame(1, preg_match($pattern, $html, $matches));
+                    $this->assertSame($panel !== $tab, str_contains($matches[0], 'hidden'));
+                }
+            }
+        }
+
+        $this->actingAs($user->fresh())
+            ->get(route('admin.action-center.index', ['tab' => 'invalid']))
+            ->assertSessionHasErrors('tab');
+    }
+
+    public function test_decisions_return_to_approvals_tab_without_bypassing_workflow_authority(): void
+    {
+        $requester = $this->userWithRole('CUSTOMER_SERVICE_AGENT', 'en', 'action-tab-maker@example.test');
+        $approver = $this->userWithRole('B2B_ADMIN', 'en', 'action-tab-approver@example.test');
+        $workflow = $this->workflow($requester, ['action_title' => 'Tabbed approval']);
+
+        $this->actingAs($approver)
+            ->post(route('admin.action-center.decide', [
+                'workflowRequest' => $workflow->id,
+                'stepCode' => 'operations_approval',
+            ]), ['decision' => 'APPROVED', 'tab' => 'approvals'])
+            ->assertRedirect(route('admin.action-center.index', ['tab' => 'approvals']));
+
+        $this->assertDatabaseHas('enterprise_workflow_requests', [
+            'id' => $workflow->id,
+            'status' => 'APPROVED',
+        ]);
+    }
+
     public function test_authorized_actor_sees_safe_overdue_action_and_unauthorized_actor_does_not(): void
     {
         $requester = $this->userWithRole('CUSTOMER_SERVICE_AGENT', 'en', 'action-requester@example.test');
