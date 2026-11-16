@@ -857,6 +857,111 @@ final class V2ReceivableSettlementWorkbenchTest extends TestCase
         $this->assertDatabaseCount('enterprise_finance_journals', 1);
     }
 
+    public function test_replaying_typed_receipt_draft_revalidates_revoked_source_without_extra_financial_posting(): void
+    {
+        $fixture = $this->fixture('P303-REPLAY-REVOKED');
+        $store = $fixture['store'];
+        $document = $fixture['document'];
+        $maker = $fixture['maker'];
+        $context = app(TenantContextResolver::class)->retail($maker, $store->id);
+        $invoiceId = DB::table('invoices')->insertGetId([
+            'invoice_number' => 'P303-REPLAY-REVOKED-INVOICE',
+            'store_id' => $store->id,
+            'customer_id' => $document->customer_id,
+            'status' => 'issued',
+            'currency' => 'KWD',
+            'total' => '100.000',
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        $document->forceFill(['source_invoice_id' => $invoiceId])->save();
+        $account = CollectionAccount::query()->create([
+            'actor_type' => 'driver',
+            'actor_id' => $maker->id,
+            'store_id' => $store->id,
+            'currency' => 'KWD',
+            'status' => 'active',
+        ]);
+        $transaction = app(CollectionCustodyService::class)->collect(
+            $account,
+            $maker,
+            'p303-replay-revoked-collection',
+            30.0,
+            'KWD',
+            'driver_app',
+            [['invoice_id' => $invoiceId, 'amount' => 30.0]],
+        );
+        $sourceId = (int) DB::table('collection_allocations')
+            ->where('collection_transaction_id', $transaction->id)->value('id');
+
+        $payload = [
+            'idempotency_key' => 'p303-same-receipt-draft-retry',
+            'allocation_date' => '2027-01-12',
+            'amount' => '30.000',
+            'settlement_account_id' => $fixture['cash_account_id'],
+            'source_collection_allocation_id' => $sourceId,
+        ];
+        $ar = app(AccountsReceivableService::class);
+        $draft = $ar->createAllocation($maker, $context, $document->id, $payload);
+        $this->assertSame('draft', $draft->status);
+        $this->assertSame($draft->id, $ar->createAllocation(
+            $maker, $context, $document->id, $payload,
+        )->id);
+
+        $assertRevoked = function () use ($ar, $maker, $context, $document, $payload): void {
+            try {
+                $ar->createAllocation($maker, $context, $document->id, $payload);
+                $this->fail('A previously accepted but now revoked collection receipt must not replay as verified.');
+            } catch (ValidationException $exception) {
+                $this->assertArrayHasKey('source_collection_allocation_id', $exception->errors());
+            }
+        };
+
+        DB::table('collection_transactions')->where('id', $transaction->id)
+            ->update(['status' => 'reversed']);
+        $assertRevoked();
+
+        // The same untrusted browser/API retry must fail closed in AR and EN,
+        // without ever promoting an invalid receipt into an accounting entry.
+        foreach (['en', 'ar'] as $locale) {
+            $maker->forceFill(['locale' => $locale])->save();
+            $this->actingAs($maker->fresh())->post(
+                route('admin.erp.finance.receivables.settlements.store', $document->id),
+                [...$payload, 'store_id' => $store->id],
+            )->assertSessionHasErrors([
+                'source_collection_allocation_id' => __('finance_workbench.receivables.collection_source_invalid', [], $locale),
+            ]);
+        }
+
+        DB::table('collection_transactions')->where('id', $transaction->id)
+            ->update(['status' => 'posted']);
+
+        DB::table('collection_accounts')->where('id', $account->id)
+            ->update(['status' => 'disabled']);
+        $assertRevoked();
+        DB::table('collection_accounts')->where('id', $account->id)
+            ->update(['status' => 'active']);
+
+        $this->assertSame($draft->id, $ar->createAllocation(
+            $maker, $context, $document->id, $payload,
+        )->id);
+        $this->assertDatabaseCount('enterprise_ar_allocations', 1);
+        $this->assertDatabaseHas('enterprise_ar_allocations', [
+            'id' => $draft->id,
+            'status' => 'draft',
+            'source_collection_allocation_id' => $sourceId,
+            'journal_id' => null,
+        ]);
+        $this->assertDatabaseCount('enterprise_finance_journals', 1);
+        $this->assertSame(1, DB::table('audit_logs')
+            ->where('event', 'enterprise.finance.ar_allocation_created')
+            ->where('auditable_id', $draft->id)->count());
+        $this->assertDatabaseMissing('audit_logs', [
+            'event' => 'enterprise.finance.ar_allocation_posted',
+            'auditable_id' => $draft->id,
+        ]);
+    }
+
     public function test_reversed_and_cross_store_collection_sources_cannot_be_claimed(): void
     {
         $fixture = $this->fixture('P303-COLLECTION-NEG');

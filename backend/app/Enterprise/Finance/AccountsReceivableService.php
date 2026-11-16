@@ -524,6 +524,21 @@ final class AccountsReceivableService
             if ($existing instanceof EnterpriseAccountsReceivableAllocation) {
                 $this->assertRequestHash($existing->request_hash, $requestHash);
 
+                // A successful draft retry is not evidence that its original
+                // operational receipt is still valid. Collections may later
+                // be reversed, disabled or moved out of scope; revalidate
+                // under the original document/source locks without claiming
+                // this allocation's own unique source as a second consumer.
+                if ($sourceCollectionAllocationId !== null) {
+                    $this->assertCollectionAllocationMatches(
+                        $document,
+                        $context,
+                        $sourceCollectionAllocationId,
+                        $amount,
+                        (int) $existing->getKey(),
+                    );
+                }
+
                 return $existing;
             }
 
@@ -982,6 +997,7 @@ final class AccountsReceivableService
         ResolvedTenantContext $context,
         int $sourceAllocationId,
         string $amount,
+        ?int $replayingAllocationId = null,
     ): void {
         if ($document->source_invoice_id === null) {
             $this->rejectCollectionSource();
@@ -1058,12 +1074,16 @@ final class AccountsReceivableService
             ->where('collection_transaction_id', $transaction->id)
             ->sum('amount');
 
+        $otherClaim = DB::table('enterprise_ar_allocations')
+            ->where('source_collection_allocation_id', $sourceAllocationId);
+        if ($replayingAllocationId !== null) {
+            $otherClaim->where('id', '!=', $replayingAllocationId);
+        }
+
         if (
             $this->toMills($sourceTotal) > $this->toMills((string) $transaction->amount)
             || $this->toMills($sourceTotal) > $this->toMills((string) $payment->amount)
-            || DB::table('enterprise_ar_allocations')
-                ->where('source_collection_allocation_id', $sourceAllocationId)
-                ->exists()
+            || $otherClaim->exists()
         ) {
             $this->rejectCollectionSource();
         }
