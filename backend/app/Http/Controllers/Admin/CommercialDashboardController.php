@@ -219,6 +219,10 @@ final class CommercialDashboardController extends Controller
             $action = $request->input('profitability_action');
             if ($action === 'propose') {
                 $registry->propose($user, $storeId, $product, $request);
+            } elseif ($action === 'validate_proposal') {
+                // Same maker/store RBAC and input validator as Save. This does
+                // not enable operational cost/margin authority or write state.
+                $registry->validateProposal($user, $storeId, $product, $request);
             } elseif ($action === 'review') {
                 $registry->review($user, $storeId, $product, $request);
             } else {
@@ -230,7 +234,9 @@ final class CommercialDashboardController extends Controller
             return redirect()->route('admin.commercial.sales-control', [
                 'store_id' => $storeId,
                 'product' => $product,
-            ])->with('status', __('commercial.profitability.saved_inactive'));
+            ])->with('status', __($action === 'validate_proposal'
+                ? 'commercial.profitability.validated_inactive'
+                : 'commercial.profitability.saved_inactive'));
         }
 
         $this->rejectUnsupportedProfitabilityFields($request);
