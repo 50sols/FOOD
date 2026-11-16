@@ -5,6 +5,7 @@ namespace Tests\Feature\Enterprise;
 use App\Enterprise\Wms\InventoryAdjustmentService;
 use App\Enterprise\Wms\InventoryCountService;
 use App\Enterprise\Wms\InventoryOwnerProvenanceReadService;
+use App\Enterprise\Wms\InventoryOwnershipRuleService;
 use App\Enterprise\Wms\StockReservationService;
 use App\Enterprise\Wms\UnknownInventoryOwnerProjection;
 use App\Enterprise\Wms\WarehouseTransferService;
@@ -16,6 +17,8 @@ use Database\Seeders\CoreReferenceSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
+use Illuminate\Support\Str;
+use Illuminate\Validation\ValidationException;
 use Symfony\Component\HttpKernel\Exception\HttpException;
 use Tests\Feature\Enterprise\Concerns\EnablesEnterpriseWms;
 use Tests\TestCase;
@@ -679,6 +682,152 @@ final class V2InventoryOwnerProvenanceTest extends TestCase
         $actor = $this->inventoryActor($own['store_id']);
         $this->expectException(HttpException::class);
         app(InventoryOwnerProvenanceReadService::class)->snapshot($actor, $foreign['inventory_id']);
+    }
+
+    public function test_owner_rule_configuration_requires_independent_review_and_never_certifies_stock(): void
+    {
+        $this->seed(CoreReferenceSeeder::class);
+        $stock = $this->stock('POLICY-RULE');
+        $unitId = DB::table('enterprise_business_units')->value('id');
+        DB::table('enterprise_store_scopes')->insert([
+            'store_id' => $stock['store_id'],
+            'business_unit_id' => $unitId,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        $role = Role::query()->where('code', 'SUPER_ADMIN')->firstOrFail();
+        $maker = User::query()->create([
+            'name' => 'Ownership Policy Maker',
+            'email' => 'p110-policy-maker@example.test',
+            'password' => 'password',
+            'is_active' => true,
+        ]);
+        $checker = User::query()->create([
+            'name' => 'Independent Ownership Policy Checker',
+            'email' => 'p110-policy-checker@example.test',
+            'password' => 'password',
+            'is_active' => true,
+        ]);
+        foreach ([$maker, $checker] as $user) {
+            DB::table('role_user')->insert(['user_id' => $user->id, 'role_id' => $role->id]);
+        }
+
+        $service = app(InventoryOwnershipRuleService::class);
+        $request = [
+            'store_id' => $stock['store_id'],
+            'channel' => 'B2C',
+            'warehouse_id' => DB::table('inventories')->where('id', $stock['inventory_id'])->value('warehouse_id'),
+            'initial_owner_kind' => 'FOODEX',
+            'title_transfer_trigger' => 'CONTRACT_EVENT',
+            'required_evidence_classes' => ['SIGNED_CONTRACT', 'TITLE_ADDENDUM'],
+            'checker_permission' => 'inventory_ownership_rules.review',
+            'effective_at' => now()->addDays(2)->startOfDay()->toDateTimeString(),
+            'request_uuid' => (string) Str::uuid(),
+        ];
+        $draft = $service->propose($maker, $request);
+        $this->assertSame('DRAFT', $draft->status);
+        $this->assertSame($draft->id, $service->propose($maker, $request)->id);
+        $this->assertSame(1, DB::table('enterprise_inventory_ownership_rule_revisions')->count());
+
+        try {
+            $service->review($maker, (int) $draft->id, true);
+            $this->fail('A maker must not review their own rule, even as Super Admin.');
+        } catch (HttpException $e) {
+            $this->assertSame(403, $e->getStatusCode());
+        }
+
+        $approved = $service->review($checker, (int) $draft->id, true);
+        $this->assertSame('APPROVED_RULE', $approved->status);
+        $this->assertSame($approved->id, $service->review($checker, (int) $draft->id, true)->id);
+        $this->travelTo(now()->addDays(3));
+        $advisory = $service->advisoryFor($checker, $stock['store_id'], 'B2C', null, (int) $request['warehouse_id']);
+        $this->assertSame('UNKNOWN', $advisory['state']);
+        $this->assertFalse($advisory['certified']);
+        $this->assertSame($approved->id, $advisory['policy']->id);
+        $this->assertSame('UNKNOWN', app(InventoryOwnerProvenanceReadService::class)
+            ->snapshot($this->inventoryActor($stock['store_id']), $stock['inventory_id'])['state']);
+        $this->travelBack();
+
+        $conflictingRequest = $request;
+        $conflictingRequest['request_uuid'] = (string) Str::uuid();
+        $duplicateScope = $service->propose($maker, $conflictingRequest);
+        try {
+            $service->review($checker, (int) $duplicateScope->id, true);
+            $this->fail('Overlapping approved policy identities must not coexist.');
+        } catch (HttpException $e) {
+            $this->assertSame(409, $e->getStatusCode());
+        }
+
+        $migration = require database_path('migrations/2026_11_16_030000_create_enterprise_inventory_ownership_rule_revisions.php');
+        try {
+            $migration->down();
+            $this->fail('Immutable policy/review history must not disappear on rollback.');
+        } catch (\RuntimeException $e) {
+            $this->assertStringContainsString('preserved', $e->getMessage());
+        }
+        $this->assertDatabaseHas('enterprise_inventory_ownership_rule_revisions', [
+            'id' => $draft->id,
+            'status' => 'APPROVED_RULE',
+            'reviewed_by' => $checker->id,
+        ]);
+    }
+
+    public function test_owner_rule_configuration_denies_wrong_store_supplier_and_retroactivity(): void
+    {
+        $this->seed(CoreReferenceSeeder::class);
+        $home = $this->stock('POLICY-HOME');
+        $foreign = $this->stock('POLICY-FOREIGN');
+        DB::table('enterprise_store_scopes')->insert([
+            'store_id' => $home['store_id'],
+            'business_unit_id' => DB::table('enterprise_business_units')->value('id'),
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        $actor = User::query()->create([
+            'name' => 'Ownership Rule Admin',
+            'email' => 'p110-ownership-admin@example.test',
+            'password' => 'password',
+            'is_active' => true,
+        ]);
+        $role = Role::query()->where('code', 'SUPER_ADMIN')->firstOrFail();
+        DB::table('role_user')->insert(['user_id' => $actor->id, 'role_id' => $role->id]);
+        $service = app(InventoryOwnershipRuleService::class);
+        $request = [
+            'store_id' => $home['store_id'],
+            'channel' => 'B2C',
+            'warehouse_id' => DB::table('inventories')->where('id', $foreign['inventory_id'])->value('warehouse_id'),
+            'initial_owner_kind' => 'UNKNOWN',
+            'title_transfer_trigger' => 'NONE',
+            'required_evidence_classes' => ['SIGNED_CONTRACT'],
+            'checker_permission' => 'inventory_ownership_rules.review',
+            'effective_at' => now()->addDay()->toDateTimeString(),
+            'request_uuid' => (string) Str::uuid(),
+        ];
+        try {
+            $service->propose($actor, $request);
+            $this->fail('Cross-store warehouse policy must fail closed.');
+        } catch (HttpException $e) {
+            $this->assertSame(404, $e->getStatusCode());
+        }
+        $request['warehouse_id'] = null;
+        $request['initial_owner_kind'] = 'SUPPLIER';
+        $request['supplier_id'] = $this->supplier($foreign['store_id']);
+        try {
+            $service->propose($actor, $request);
+            $this->fail('A foreign-store supplier cannot be scoped into this store.');
+        } catch (HttpException $e) {
+            $this->assertSame(404, $e->getStatusCode());
+        }
+        unset($request['supplier_id']);
+        $request['initial_owner_kind'] = 'UNKNOWN';
+        $request['effective_at'] = now()->subDay()->toDateTimeString();
+        try {
+            $service->propose($actor, $request);
+            $this->fail('Retroactive policy must fail closed.');
+        } catch (ValidationException $e) {
+            $this->assertArrayHasKey('effective_at', $e->errors());
+        }
+        $this->assertSame(0, DB::table('enterprise_inventory_ownership_rule_revisions')->count());
     }
 
     /** @return array{store_id:int,inventory_id:int} */
