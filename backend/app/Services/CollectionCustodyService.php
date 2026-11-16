@@ -75,6 +75,25 @@ final class CollectionCustodyService
                 return $existing;
             }
 
+            // Lock every affected invoice in a stable order before ANY ordinary
+            // (snapshot) SELECT inside this transaction. Under MySQL REPEATABLE
+            // READ a store lookup before waiting for the invoice lock could
+            // establish an old snapshot, hiding a competing committed payment.
+            // The immutable IDs are validated again in the allocation loop.
+            $invoiceIds = array_map(
+                static fn (array $allocation): int => (int) ($allocation['invoice_id'] ?? 0),
+                $allocations,
+            );
+            sort($invoiceIds, SORT_NUMERIC);
+            $lockedInvoices = $invoiceIds === []
+                ? collect()
+                : Invoice::query()
+                    ->whereIn('id', $invoiceIds)
+                    ->orderBy('id')
+                    ->lockForUpdate()
+                    ->get()
+                    ->keyBy('id');
+
             // An invoice allocation is a financial write. Never accept an invoice by
             // numeric ID alone: the collector account, store and invoice channel must
             // share the same authoritative B2B/B2C scope before any payment is posted.
@@ -138,7 +157,7 @@ final class CollectionCustodyService
                     ]);
                 }
 
-                $invoice = Invoice::query()->whereKey($invoiceId)->lockForUpdate()->first();
+                $invoice = $lockedInvoices->get($invoiceId);
                 if ($invoice === null) {
                     throw ValidationException::withMessages(['allocations' => ['Invoice not found.']]);
                 }

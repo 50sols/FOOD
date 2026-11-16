@@ -184,6 +184,16 @@ final class V2VanTripSettlementProvenanceTest extends TestCase
             'status' => 'active',
         ]);
 
+        // A competing Van account does not share the collector account lock:
+        // the invoice row itself must serialize both authorized writers.
+        $competingAccount = CollectionAccount::query()->create([
+            'actor_type' => 'van',
+            'actor_id' => 458,
+            'store_id' => $storeId,
+            'currency' => 'KWD',
+            'status' => 'active',
+        ]);
+
         $service = app(CollectionCustodyService::class);
         $invoiceId = (int) $invoice->getKey();
         $first = $service->collect(
@@ -202,7 +212,7 @@ final class V2VanTripSettlementProvenanceTest extends TestCase
         // its invoice lock observes the first committed payment.
         try {
             $service->collect(
-                $account, $actor, 'p272-racing-second-key', 60, 'KWD', 'van_app',
+                $competingAccount, $actor, 'p272-racing-second-key', 60, 'KWD', 'van_app',
                 [['invoice_id' => $invoiceId, 'amount' => 60]],
             );
             $this->fail('A second idempotency key must not overcollect the same invoice.');
