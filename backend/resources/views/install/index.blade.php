@@ -184,14 +184,14 @@
                     <div class="fields">
                         <label>{{ __('installer.fields.cache_store') }}
                             <select name="cache_store">
-                                <option value="redis" @selected($selectedCache === 'redis')>redis</option>
-                                <option value="file" @selected($selectedCache === 'file')>file</option>
+                                <option value="redis" @selected($selectedCache === 'redis')>{{ __('installer.options.redis') }}</option>
+                                <option value="file" @selected($selectedCache === 'file')>{{ __('installer.options.file') }}</option>
                             </select>
                         </label>
                         <label>{{ __('installer.fields.queue_connection') }}
                             <select name="queue_connection">
-                                <option value="redis" @selected($selectedQueue === 'redis')>redis</option>
-                                <option value="sync" @selected($selectedQueue === 'sync')>sync</option>
+                                <option value="redis" @selected($selectedQueue === 'redis')>{{ __('installer.options.redis') }}</option>
+                                <option value="sync" @selected($selectedQueue === 'sync')>{{ __('installer.options.sync') }}</option>
                             </select>
                         </label>
                         <label>{{ __('installer.fields.redis_host') }}<input name="redis_host" value="{{ $input['redis_host'] ?? ($values['REDIS_HOST'] ?: '127.0.0.1') }}"></label>

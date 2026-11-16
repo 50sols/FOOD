@@ -75,6 +75,9 @@ return [
         'english' => 'English',
         'local_private' => 'Local (private)',
         'public' => 'Public',
+        'redis' => 'Redis service',
+        'file' => 'File cache',
+        'sync' => 'Synchronous queue',
         'default' => 'Default',
     ],
     'help' => [

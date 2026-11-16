@@ -75,6 +75,9 @@ return [
         'english' => 'الإنجليزية',
         'local_private' => 'محلي (خاص)',
         'public' => 'عام',
+        'redis' => 'خدمة Redis',
+        'file' => 'ذاكرة الملفات المؤقتة',
+        'sync' => 'طابور متزامن',
         'default' => 'افتراضي',
     ],
     'help' => [

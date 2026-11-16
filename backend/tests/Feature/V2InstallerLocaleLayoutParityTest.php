@@ -158,7 +158,6 @@ final class V2InstallerLocaleLayoutParityTest extends TestCase
         $this->assertFalse(app(InstallState::class)->isInstalled());
     }
 
-
     public function test_configuration_help_and_readiness_are_localized_without_changing_secrets_or_progress(): void
     {
         $state = app(InstallState::class);
