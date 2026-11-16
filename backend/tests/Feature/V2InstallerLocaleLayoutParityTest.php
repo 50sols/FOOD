@@ -6,6 +6,7 @@ use App\Domain\Installer\InstallerChecklist;
 use App\Domain\Installer\InstallerWorkflow;
 use App\Domain\Installer\InstallState;
 use Illuminate\Support\Facades\Artisan;
+use Illuminate\Support\Facades\Mail;
 use Mockery;
 use Symfony\Component\Console\Output\BufferedOutput;
 use Tests\TestCase;
@@ -194,6 +195,130 @@ final class V2InstallerLocaleLayoutParityTest extends TestCase
             ->assertSee(__('installer.readiness.mail_non_delivery', [], 'en'));
 
         $this->assertSame($before, file_get_contents($path));
+        $this->assertFalse($state->isInstalled());
+    }
+
+    public function test_mail_test_inputs_uses_existing_validator_in_both_locales_without_saving_or_sending(): void
+    {
+        $state = app(InstallState::class);
+        $state->markStepComplete(9);
+        $token = $state->token();
+        $envPath = $this->fixtureDirectory.'/.env';
+        $beforeEnvironment = file_get_contents($envPath);
+        $beforeProgress = $state->progress();
+
+        Mail::fake();
+
+        foreach (['ar', 'en'] as $locale) {
+            $this->get('/install?step=10&lang='.$locale)
+                ->assertOk()
+                ->assertSee('<html lang="'.$locale.'" dir="'.($locale === 'ar' ? 'rtl' : 'ltr').'">', false)
+                ->assertSee(__('installer.wizard.mail_test_inputs_help', [], $locale))
+                ->assertSee('name="mail_action" value="test_inputs"', false)
+                ->assertSee(__('installer.wizard.mail_test_inputs', [], $locale));
+
+            $this->post('/install/step/10?lang='.$locale, [
+                'installer_token' => $token,
+                'mail_action' => 'test_inputs',
+                'mail_mailer' => 'smtp',
+                'mail_host' => 'smtp.example.com',
+                'mail_port' => 587,
+                'mail_scheme' => 'smtp',
+                'mail_username' => 'sender@example.com',
+                'mail_password' => 'private-mail-secret-test-only',
+                'mail_from_address' => 'noreply@example.com',
+                'mail_from_name' => 'Example',
+            ])
+                ->assertOk()
+                ->assertSee(__('installer.wizard.mail_test_inputs_passed', [], $locale))
+                ->assertSee(__('installer.readiness.not_saved', [], $locale))
+                ->assertDontSee('private-mail-secret-test-only')
+                ->assertDontSee(__('installer.readiness.smtp_unverified', [], $locale));
+
+            $this->assertSame($beforeEnvironment, file_get_contents($envPath));
+            $this->assertSame($beforeProgress, $state->progress());
+        }
+
+        Mail::assertNothingSent();
+        $this->assertFalse($state->isInstalled());
+    }
+
+    public function test_mail_test_inputs_rejects_invalid_provider_values_and_fake_test_actions_without_state_mutation(): void
+    {
+        $state = app(InstallState::class);
+        $state->markStepComplete(9);
+        $token = $state->token();
+        $envPath = $this->fixtureDirectory.'/.env';
+        $beforeEnvironment = file_get_contents($envPath);
+        $beforeProgress = $state->progress();
+
+        Mail::fake();
+
+        foreach (['ar', 'en'] as $locale) {
+            $this->post('/install/step/10?lang='.$locale, [
+                'installer_token' => $token,
+                'mail_action' => 'test_inputs',
+                'mail_mailer' => 'smtp',
+                'mail_host' => '',
+                'mail_port' => 0,
+                'mail_from_address' => 'invalid',
+                'mail_from_name' => '',
+                'mail_password' => 'private-invalid-secret-test-only',
+            ])
+                ->assertUnprocessable()
+                ->assertSee(__('installer.wizard.error', [], $locale))
+                ->assertDontSee('private-invalid-secret-test-only');
+
+            $this->assertSame($beforeEnvironment, file_get_contents($envPath));
+            $this->assertSame($beforeProgress, $state->progress());
+        }
+
+        $this->post('/install/step/10?lang=en', [
+            'installer_token' => $token,
+            'mail_action' => 'bypass_save',
+            'mail_mailer' => 'log',
+            'mail_from_address' => 'noreply@example.com',
+            'mail_from_name' => 'Example',
+        ])->assertUnprocessable();
+
+        $this->post('/install/step/10?lang=en', [
+            'mail_action' => 'test_inputs',
+            'mail_mailer' => 'log',
+            'mail_from_address' => 'noreply@example.com',
+            'mail_from_name' => 'Example',
+        ])->assertStatus(419);
+
+        $this->assertSame($beforeEnvironment, file_get_contents($envPath));
+        $this->assertSame($beforeProgress, $state->progress());
+        Mail::assertNothingSent();
+    }
+
+    public function test_mail_test_inputs_respects_step_order_and_normal_save_still_advances(): void
+    {
+        $state = app(InstallState::class);
+        $state->markStepComplete(8);
+        $token = $state->token();
+        $payload = [
+            'installer_token' => $token,
+            'mail_action' => 'test_inputs',
+            'mail_mailer' => 'log',
+            'mail_from_address' => 'noreply@example.com',
+            'mail_from_name' => 'Example',
+        ];
+        $before = file_get_contents($this->fixtureDirectory.'/.env');
+
+        $this->post('/install/step/10?lang=en', $payload)->assertStatus(409);
+        $this->assertSame(8, $state->progress()['completed_step']);
+        $this->assertSame($before, file_get_contents($this->fixtureDirectory.'/.env'));
+
+        $state->markStepComplete(9);
+        $this->post('/install/step/10?lang=en', [
+            ...$payload,
+            'mail_action' => 'save',
+        ])->assertRedirect(route('install.index', ['step' => 11, 'lang' => 'en']));
+
+        $this->assertSame(10, $state->progress()['completed_step']);
+        $this->assertSame('log', app(\App\Domain\Installer\InstallerEnvironment::class)->read(['MAIL_MAILER'])['MAIL_MAILER']);
         $this->assertFalse($state->isInstalled());
     }
 
