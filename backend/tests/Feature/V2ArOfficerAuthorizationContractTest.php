@@ -13,6 +13,7 @@ use App\Services\BuiltInJobRoleCatalog;
 use Database\Seeders\CoreReferenceSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Route;
 use Tests\TestCase;
 
 /**
@@ -222,7 +223,7 @@ final class V2ArOfficerAuthorizationContractTest extends TestCase
             $this->assertFalse($principal->hasPermission('finance.approve'));
 
             foreach ($attempts as [$routeName, $routeParameters]) {
-                $this->assertTrue(\Illuminate\Support\Facades\Route::has($routeName), $routeName);
+                $this->assertTrue(Route::has($routeName), $routeName);
                 $response = $this->actingAs($principal)->post(
                     route($routeName, $routeParameters, false),
                     ['store_id' => $wholesaleId, 'idempotency_key' => '2696-gl-denied'],
