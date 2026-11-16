@@ -555,4 +555,101 @@ void main() {
       expect((data['payments'] as List).single['status'], 'captured');
     }
   });
+
+  test('B2B financial invoice list/detail denies foreign-store 200', () async {
+    for (final locale in ['ar', 'en']) {
+      for (final detail in [false, true]) {
+        var calls = 0;
+        final path = detail
+            ? '/api/v1/b2b/invoices/31?store_id=7'
+            : '/api/v1/b2b/invoices?store_id=7';
+        final api = HttpB2bApi(
+          baseUrl: 'https://foodex.example',
+          token: 'scoped-token',
+          retailStoreContextId: 17,
+          locale: locale,
+          maxGetAttempts: 3,
+          client: MockClient((request) async {
+            calls++;
+            expect(request.url.queryParameters['store_id'], '7');
+            expect(request.headers['Authorization'], 'Bearer scoped-token');
+            expect(request.headers['X-FOODEX-Customer-Domain'], 'b2b');
+            expect(request.headers['X-FOODEX-Retail-Store-ID'], '17');
+            expect(request.headers['Accept-Language'], locale);
+            return http.Response(
+              detail
+                  ? '{"data":{"id":31,"store_id":99,"paid_amount":30.125}}'
+                  : '{"data":[{"id":31,"store_id":7},{"id":32,"store_id":99}]}',
+              200,
+              headers: {'content-type': 'application/json'},
+            );
+          }),
+        );
+        await expectLater(
+          api.get(path),
+          throwsA(isA<B2bApiException>()
+              .having((error) => error.code, 'code', 'invalid_response')),
+        );
+        expect(calls, 1);
+      }
+    }
+  });
+
+  test('Scoped B2B partial receipt and statement readback stay server-owned',
+      () async {
+    for (final locale in ['ar', 'en']) {
+      final requests = <String>[];
+      final api = HttpB2bApi(
+        baseUrl: 'https://foodex.example',
+        token: 'scoped-token',
+        retailStoreContextId: 17,
+        locale: locale,
+        client: MockClient((request) async {
+          requests.add(request.url.path);
+          expect(request.method, 'GET');
+          expect(request.url.queryParameters['store_id'], '7');
+          expect(request.headers['Authorization'], 'Bearer scoped-token');
+          expect(request.headers['X-FOODEX-Customer-Domain'], 'b2b');
+          expect(request.headers['X-FOODEX-Retail-Store-ID'], '17');
+          expect(request.headers['Accept-Language'], locale);
+          if (request.url.path == '/api/v1/b2b/invoices/31') {
+            return http.Response(
+              '{"data":{"id":31,"store_id":7,"display_status":"partially_paid","total":80,"paid_amount":30.125,"outstanding_amount":49.875,"payments":[{"id":901,"status":"captured","amount":30.125,"currency":"EGP"}],"ledger_entries":[{"type":"payment","credit":30.125}]}}',
+              200,
+              headers: {'content-type': 'application/json'},
+            );
+          }
+          return http.Response(
+            '{"data":{"currency":"EGP","total_debits":80,"total_credits":30.125,"balance":-49.875,"closing_balance":-49.875,"transactions":[{"type":"invoice","debit":80,"running_balance":-80},{"type":"payment","invoice_id":31,"credit":30.125,"running_balance":-49.875}]}}',
+            200,
+            headers: {'content-type': 'application/json'},
+          );
+        }),
+      );
+      final invoice =
+          await api.get('/api/v1/b2b/invoices/31?store_id=7') as Map;
+      final detail = invoice['data'] as Map;
+      expect(detail['display_status'], 'partially_paid');
+      expect(detail['paid_amount'], 30.125);
+      expect(detail['outstanding_amount'], 49.875);
+      final receipt = (detail['payments'] as List).single as Map;
+      expect(receipt['id'], 901);
+      expect(receipt['status'], 'captured');
+      expect(receipt['amount'], 30.125);
+      final statement =
+          await api.get('/api/v1/b2b/account-statement?store_id=7') as Map;
+      final ledger = statement['data'] as Map;
+      expect(ledger['balance'], -49.875);
+      expect(ledger['closing_balance'], -49.875);
+      expect((ledger['transactions'] as List).last['running_balance'],
+          -49.875);
+      expect(requests, [
+        '/api/v1/b2b/invoices/31',
+        '/api/v1/b2b/account-statement',
+      ]);
+      // This is transport-only contract evidence, not evidence that
+      // the current Finance producer includes captured payments in
+      // invoice detail. Producer #2633 must prove this with real DB/HTTP.
+    }
+  });
 }
