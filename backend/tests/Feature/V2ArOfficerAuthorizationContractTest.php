@@ -254,6 +254,13 @@ final class V2ArOfficerAuthorizationContractTest extends TestCase
     public function test_ar_officer_finance_access_remains_ar_only_with_a_second_b2b_channel_role(): void
     {
         $this->enableFinance();
+        // ERP HTTP requires version-scoped operational readiness in addition
+        // to lifecycle ENABLED. Certify only the isolated test request; never
+        // bypass the real production readiness middleware or change config.
+        config()->set(
+            'enterprise_module_readiness.certified_versions.finance',
+            app(ModuleRegistry::class)->manifest('finance')->version,
+        );
         $actor = $this->officer();
 
         // FINANCE admits the actor to B2B and independently grants finance.manage.
