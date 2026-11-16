@@ -15,6 +15,7 @@ use App\Models\Role;
 use App\Models\User;
 use App\Models\UserStoreRole;
 use Database\Seeders\CoreReferenceSeeder;
+use Illuminate\Database\QueryException;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
@@ -160,7 +161,7 @@ final class V2InventoryOwnerProvenanceTest extends TestCase
         try {
             DB::table('inventories')->where('id', $stock['inventory_id'])->delete();
             $this->fail('Parent deletion must not erase FOODEX and supplier ownership claims.');
-        } catch (\Illuminate\Database\QueryException $exception) {
+        } catch (QueryException $exception) {
             $this->assertNotEmpty($exception->getMessage());
         }
 
