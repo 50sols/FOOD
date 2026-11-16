@@ -247,27 +247,21 @@ final class EnterpriseWmsController extends Controller
     }
 
     /**
-     * A warehouse transfer has no Van cargo target. PHP request keys may
-     * arrive as vanId, Van-ID or VAN_ID; canonical 'missing' rules alone
-     * would silently ignore those aliases and create a normal transfer.
+     * Strict warehouse-only request contract: extra top-level input is never
+     * interpreted as physical Van cargo or quietly ignored. In particular,
+     * wrappers such as payload[van_id] are forbidden, not just known vanId
+     * aliases. Keep CSRF and method-spoof fields from the existing forms.
      *
+     * @param  list<string>  $allowedFields
      * @return array<string, array<int, string>>
      */
-    private function vanTransferMissingRules(Request $request): array
+    private function vanTransferMissingRules(Request $request, array $allowedFields): array
     {
         $rules = self::UNSUPPORTED_VAN_TRANSFER_FIELDS;
-        $restricted = [];
-        foreach (array_keys($rules) as $field) {
-            $restricted[strtolower((string) preg_replace('/[^a-z0-9]/i', '', $field))] = true;
-        }
+        $allowed = array_fill_keys([...$allowedFields, '_token', '_method'], true);
 
         foreach (array_keys($request->all()) as $field) {
-            if (! is_string($field)) {
-                continue;
-            }
-
-            $normalized = strtolower((string) preg_replace('/[^a-z0-9]/i', '', $field));
-            if (isset($restricted[$normalized])) {
+            if (! is_string($field) || ! isset($allowed[$field])) {
                 $rules[$field] = ['missing'];
             }
         }
@@ -281,7 +275,7 @@ final class EnterpriseWmsController extends Controller
         // P258: a warehouse-to-warehouse transfer cannot load a van.
         // Reject a forged van target until the dedicated van-stock lifecycle exists.
         $data = $request->validate([
-            ...$this->vanTransferMissingRules($request),
+            ...$this->vanTransferMissingRules($request, ['store_id', 'source_warehouse_id', 'target_warehouse_id', 'product_id', 'quantity', 'request_key']),
             'store_id' => ['required', 'integer', 'min:1'],
             'source_warehouse_id' => ['required', 'integer', 'min:1'],
             'target_warehouse_id' => ['required', 'integer', 'different:source_warehouse_id'],
@@ -308,7 +302,7 @@ final class EnterpriseWmsController extends Controller
         $actor = $this->actor($request);
         // P258: normal warehouse transfer transitions never authorize van stock loading.
         $data = $request->validate([
-            ...$this->vanTransferMissingRules($request),
+            ...$this->vanTransferMissingRules($request, ['store_id']),
             'store_id' => ['required', 'integer', 'min:1'],
         ]);
         $this->assertStore($actor, (int) $data['store_id'], 'inventory.manage');
@@ -324,7 +318,7 @@ final class EnterpriseWmsController extends Controller
         $actor = $this->actor($request);
         // P258: normal warehouse transfer transitions never authorize van stock loading.
         $data = $request->validate([
-            ...$this->vanTransferMissingRules($request),
+            ...$this->vanTransferMissingRules($request, ['store_id']),
             'store_id' => ['required', 'integer', 'min:1'],
         ]);
         $this->assertStore($actor, (int) $data['store_id'], 'inventory.manage');

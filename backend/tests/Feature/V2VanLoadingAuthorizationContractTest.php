@@ -90,6 +90,16 @@ final class V2VanLoadingAuthorizationContractTest extends TestCase
             ['destinationType' => 'van'],
             ['metaData' => ['vanId' => 987654]],
             ['meta-data' => ['targetVanId' => 987654]],
+            // Unknown wrappers must also fail closed: ignoring these would
+            // report an ordinary warehouse transfer as an accepted Van load.
+            ['payload' => ['van_id' => 987654]],
+            ['cargo' => ['van_id' => 987654]],
+            ['source' => ['type' => 'van']],
+            ['destination' => ['type' => 'van']],
+            ['van_stock' => 2],
+            ['warehouse_to_van' => 1],
+            ['target' => 'van'],
+            ['unrecognized_field' => 'reject, never silently ignore'],
         ];
         foreach (['en', 'ar'] as $locale) {
             $actor->forceFill(['locale' => $locale])->save();

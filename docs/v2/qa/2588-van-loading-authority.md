@@ -62,3 +62,21 @@ The controller now applies one shared `missing` rule map to all three actions. F
 **This is a bounded fail-closed security increment, not a physical loading implementation.** Laravel's `missing` validation rules match exact request keys. A caller could instead send `vanId`, `Van-ID`, `VAN_ID`, `vanTripId`, `targetVanId`, `metaData` or similar casing/separator variants: those fields were ignored as unknown while an otherwise valid ordinary warehouse transfer could proceed, misleading clients about accepted Van cargo. The three existing warehouse-transfer mutations now normalize inbound top-level key spellings (case and non-alphanumeric separators only) before applying the **same** localized `missing` validation. No other transfer logic, permissions, stock postings, reservations, money, migrations, Dashboard route or Van API changed.
 
 **Verified on isolated GCC PHP 8.3.33/PHPUnit 11.5.57:** one authenticated AR/EN feature test, **544 assertions PASS** across 30 forged targets × 3 create/dispatch/receive requests × 2 locales, asserting rejection and zero transfer, transfer-line, movement and audit writes. Test-only SQLite `:memory:`, never the production database. Remaining scope still requires #2844 *verified* immutable owner/title proof, #2606 authoritative integrated trip identity, one accepted load/return/consumption authority with #2604 and #2739, independent maker/checker, partial damage/shortage/returns, MySQL concurrency, actual Van Flutter offline replay, full RTL/a11y and final exact-HEAD CI. **Do not merge/close #2588 just because this regression passes.** Foodex_V2 only; no main/release/deployment.
+
+## 2026-11-16 — Strict warehouse-only field allowlist hardening
+
+The three existing transfer POST handlers now reject every unexpected top-level
+request field (including arbitrary nested wrappers), instead of only recognizing
+a finite list of normalized Van aliases. The allowed set exactly matches the
+existing WMS transfer forms (create: store/source warehouse/target warehouse/
+product/quantity/request key; dispatch/receive: store), with framework _token
+and _method allowed. Unknown fields generate Laravel's localized validation
+error **before any stock or audit side effect**. Original base transfer service,
+permissions, channel, pricing and movement authority remain unchanged.
+
+The authenticated P258 AR/EN create/dispatch/receive negative matrix was
+extended with nested/unknown wrapper payloads; terminal exact-head GitHub CI
+is required for the new source commit. This safety patch **does not implement**
+physical Van loading, approval, owner/title, accepted custody, returns, Van
+offline replay or single order-stock debit and cannot close P258. No new
+Sidebar, route, stock table, public Van API or posting is enabled.
