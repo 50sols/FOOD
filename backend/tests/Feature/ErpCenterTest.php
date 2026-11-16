@@ -880,7 +880,6 @@ final class ErpCenterTest extends TestCase
         $this->assertDatabaseCount('enterprise_finance_journals', 0);
     }
 
-
     public function test_ready_modules_with_grants_but_no_store_scope_are_nonactionable_in_both_locales(): void
     {
         config()->set('security.mfa.enforce_privileged', false);
