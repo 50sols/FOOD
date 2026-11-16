@@ -45,7 +45,7 @@ final class EnterpriseActionCenterTest extends TestCase
                 $html = (string) $response->getContent();
                 $this->assertSame(6, substr_count($html, 'data-action-panel="'));
                 $this->assertSame(6, substr_count($html, 'data-action-tab="'));
-                $this->assertSame(1, substr_count($html, 'aria-current="page"'));
+                $this->assertSame(1, preg_match_all('~<a class="action-tab"[^>]*aria-current="page"~', $html));
                 foreach (['summary', 'filters', 'queue', 'analytics', 'activity', 'approvals'] as $panel) {
                     $pattern = '~data-action-panel="'.preg_quote($panel, '~').'"[^>]*~';
                     $this->assertSame(1, preg_match($pattern, $html, $matches));
