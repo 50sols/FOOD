@@ -258,7 +258,7 @@ final class CommercialProfitabilityRuleService
             'request_id' => ['required', 'uuid'],
             'minimum_margin_percent' => ['required', 'regex:/^(?:100(?:\\.0{1,2})?|(?:[0-9]|[1-9][0-9])(?:\\.[0-9]{1,2})?)$/'],
             'effective_from' => ['required', 'date_format:Y-m-d'],
-            'effective_until' => ['required', 'date_format:Y-m-d', 'after:effective_from'],
+            'effective_until' => ['required', 'date_format:Y-m-d', 'after_or_equal:effective_from'],
         ]);
     }
 
