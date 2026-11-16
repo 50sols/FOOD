@@ -1337,6 +1337,20 @@ final class V2ReceivableSettlementWorkbenchTest extends TestCase
             ->where('event', 'enterprise.finance.collection_account_mapping_reviewed')
             ->count());
 
+        // Keep an older proposal pending while a newer revision receives
+        // independent approval. A late replay must not roll that decision back.
+        $stalePayload = [
+            ...$payload,
+            'request_id' => (string) Str::uuid(),
+        ];
+        $this->actingAs($maker)->post(
+            route('admin.erp.finance.receivables.mappings.propose'), $stalePayload,
+        )->assertSessionHasNoErrors()->assertRedirect();
+        $staleMapping = DB::table('enterprise_finance_collection_account_mappings')
+            ->where('request_id', $stalePayload['request_id'])
+            ->first();
+        $this->assertNotNull($staleMapping);
+
         $clearingAccount = app(FinanceFoundationService::class)->createAccount($maker, $context, [
             'code' => '1110',
             'name' => 'Collection Clearing',
@@ -1364,6 +1378,17 @@ final class V2ReceivableSettlementWorkbenchTest extends TestCase
 
         $this->assertDatabaseHas('enterprise_finance_collection_account_mappings', [
             'id' => $mapping->id, 'status' => 'SUPERSEDED', 'reviewed_by' => $checker->id,
+        ]);
+        $this->assertDatabaseHas('enterprise_finance_collection_account_mappings', [
+            'id' => $secondMapping->id, 'status' => 'APPROVED', 'reviewed_by' => $checker->id,
+        ]);
+
+        $this->actingAs($checker)->post(
+            route('admin.erp.finance.receivables.mappings.review', $staleMapping->id),
+            ['store_id' => $store->id, 'decision' => 'approve'],
+        )->assertSessionHasErrors('mapping_id');
+        $this->assertDatabaseHas('enterprise_finance_collection_account_mappings', [
+            'id' => $staleMapping->id, 'status' => 'PROPOSED', 'reviewed_by' => null,
         ]);
         $this->assertDatabaseHas('enterprise_finance_collection_account_mappings', [
             'id' => $secondMapping->id, 'status' => 'APPROVED', 'reviewed_by' => $checker->id,
