@@ -190,7 +190,7 @@ class HttpWholesaleCommerceApi
     bool requireOrder = false,
   }) {
     final envelope = raw is Map<String, dynamic> ? raw : null;
-    final value = wrapped ? envelope?['data'] : envelope;
+    final value = wrapped && envelope != null ? envelope['data'] : envelope;
     // Transport-level integrity only: the server still decides prices,
     // discount approvals, credit eligibility and whether checkout committed.
     if (value is! Map<String, dynamic> ||
