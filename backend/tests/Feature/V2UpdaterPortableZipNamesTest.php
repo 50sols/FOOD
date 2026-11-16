@@ -131,6 +131,22 @@ final class V2UpdaterPortableZipNamesTest extends TestCase
                 [$this->releaseName.'/mod/Child.php', $this->releaseName.'/Mod'],
                 'Update archive contains a file/directory target conflict.',
             ],
+            [
+                [$this->releaseName.'/Mod', $this->releaseName.'/mod/Child/'],
+                'Update archive contains a file/directory target conflict.',
+            ],
+            [
+                [$this->releaseName.'/mod/Child/', $this->releaseName.'/Mod'],
+                'Update archive contains a file/directory target conflict.',
+            ],
+            [
+                [$this->releaseName.'/Alpha/Beta', $this->releaseName.'/alpha/beta/Deep/'],
+                'Update archive contains a file/directory target conflict.',
+            ],
+            [
+                [$this->releaseName.'/alpha/beta/Deep/', $this->releaseName.'/Alpha/Beta'],
+                'Update archive contains a file/directory target conflict.',
+            ],
         ] as [$names, $message]) {
             $this->assertRejectsBeforeMutation(array_fill_keys($names, 'content'), $message);
         }
@@ -160,6 +176,7 @@ final class V2UpdaterPortableZipNamesTest extends TestCase
         $package = $this->createArchive([
             $this->releaseName.'/sentinel.txt' => 'تحديث café',
             $this->releaseName.'/alpha.php' => 'alpha',
+            $this->releaseName.'/Nested/' => '',
             $this->releaseName.'/Nested/bravo.php' => 'bravo',
         ]);
         $runtime = app(LaravelUpdateRuntime::class);
