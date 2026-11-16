@@ -44,8 +44,8 @@ final class V2FinanceWorkbenchPanelAuthorityTest extends TestCase
             $actor->forceFill(['locale' => $locale])->save();
 
             foreach ([
-                'receivables' => ['documents','settlements','aging'],
-                'payables' => ['documents','aging'],
+                'receivables' => ['documents', 'settlements', 'aging'],
+                'payables' => ['documents', 'aging'],
             ] as $tab => $panels) {
                 foreach ($panels as $panel) {
                     $query = [
@@ -122,7 +122,7 @@ final class V2FinanceWorkbenchPanelAuthorityTest extends TestCase
                 $expected = 'documents';
                 $this->assertSame(1, substr_count($response->getContent(), 'data-finance-subpanel="'));
                 $response->assertSee('data-finance-subpanel="'.$expected.'"', false);
-                foreach (['documents','settlements','aging'] as $candidate) {
+                foreach (['documents', 'settlements', 'aging'] as $candidate) {
                     if ($candidate !== $expected) {
                         $response->assertDontSee('data-finance-subpanel="'.$candidate.'"', false);
                     }
