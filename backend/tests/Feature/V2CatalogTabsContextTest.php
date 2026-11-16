@@ -62,13 +62,13 @@ final class V2CatalogTabsContextTest extends TestCase
                     $this->assertStringNotContainsString('category_detail=', $link);
                 }
 
-                $this->assertSame(1, preg_match(
-                    '/<a\b[^>]*aria-current="page"[^>]*href="[^"]*"/',
-                    $rail,
-                ) + preg_match(
-                    '/<a\b[^>]*href="[^"]*"[^>]*aria-current="page"/',
-                    $rail,
-                ) >= 1 ? 1 : 0);
+                $activeAnchors = array_values(array_filter($anchors, static fn (array $anchor): bool => str_contains($anchor[0], 'aria-current="page"')));
+                $this->assertCount(1, $activeAnchors);
+                parse_str((string) parse_url(
+                    html_entity_decode($activeAnchors[0][1], ENT_QUOTES | ENT_HTML5, 'UTF-8'),
+                    PHP_URL_QUERY,
+                ), $activeQuery);
+                $this->assertSame($tab, $activeQuery['tab'] ?? null);
 
                 if ($tab !== 'products') {
                     $response->assertDontSee('data-dialog-open="catalog-add-product"', false);
