@@ -168,6 +168,13 @@ final class CollectionAccountSettlementMappingService
 
             $newStatus = $decision === 'approve' ? 'APPROVED' : 'REJECTED';
             if ($mapping->status === $newStatus && (int) $mapping->reviewed_by === (int) $actor->id) {
+                // An idempotent retry must not recertify a stale clearing
+                // account after its posting authority has been revoked.
+                // Keep the immutable historical decision and audit unchanged.
+                if ($newStatus === 'APPROVED') {
+                    $this->assertFinanceAccount($scope, (int) $mapping->finance_account_id);
+                }
+
                 return $mapping;
             }
             if ($mapping->status !== 'PROPOSED') {
