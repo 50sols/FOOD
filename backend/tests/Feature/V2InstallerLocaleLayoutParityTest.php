@@ -96,6 +96,38 @@ final class V2InstallerLocaleLayoutParityTest extends TestCase
         $this->assertFalse(app(InstallState::class)->isInstalled());
     }
 
+    public function test_host_readiness_guidance_is_localized_and_does_not_mutate_environment(): void
+    {
+        $environment = $this->fixtureDirectory.'/.env';
+        $before = file_get_contents($environment);
+
+        foreach (['ar', 'en'] as $locale) {
+            $this->get('/install?lang='.$locale)
+                ->assertOk()
+                ->assertSee(__('installer.hosting.document_root', [], $locale));
+
+            foreach (['document_root', 'php_extensions', 'file_permissions', 'mysql', 'public_storage', 'scheduler'] as $key) {
+                $message = __('installer.hosting.'.$key, [], $locale);
+                $this->assertIsString($message);
+                $this->assertNotSame('installer.hosting.'.$key, $message);
+                $this->assertNotSame('', trim($message));
+            }
+        }
+
+        $token = app(InstallState::class)->token();
+        $this->post('/install/step/1?lang=en', ['installer_token' => $token])
+            ->assertRedirect(route('install.index', ['step' => 2, 'lang' => 'en']));
+        $this->get('/install?step=2&lang=en')
+            ->assertOk()
+            ->assertSee(__('installer.hosting.php_extensions', [], 'en'));
+        $this->get('/install?step=2&lang=ar')
+            ->assertOk()
+            ->assertSee(__('installer.hosting.php_extensions', [], 'ar'));
+
+        $this->assertSame($before, file_get_contents($environment));
+        $this->assertFalse(app(InstallState::class)->isInstalled());
+    }
+
     public function test_explicit_language_survives_links_and_post_redirect_without_changing_platform_locale(): void
     {
         $state = app(InstallState::class);

@@ -69,7 +69,64 @@ final class InstallerWorkflow
             }
         }
 
+        // The .env writer uses a temporary sibling + atomic rename; writing
+        // storage/cache alone does not establish the required parent rights.
+        $environmentPath = $this->environment->path();
+        if ($this->hasInstallerSymlinkComponent($environmentPath)
+            || ! $this->writableOrCreatableInstallerDirectory(dirname($environmentPath))) {
+            $failures[] = (string) __('installer.errors.env_directory_writable');
+        }
+
+        // The persistent lock path is separate from the replaceable .env.
+        // Inspect only: the preflight must not create files or mutate secrets.
+        $lockPath = (string) config(
+            'foodex.installer_env_lock_path',
+            storage_path('framework/installer-env-locks/'.hash('sha256', $environmentPath).'.lock'),
+        );
+        if ($this->hasInstallerSymlinkComponent($lockPath)
+            || ! $this->writableOrCreatableInstallerDirectory(dirname($lockPath))) {
+            $failures[] = (string) __('installer.errors.env_lock_directory_writable');
+        }
+
         return $failures;
+    }
+
+    private function writableOrCreatableInstallerDirectory(string $directory): bool
+    {
+        $candidate = $directory;
+
+        while (! is_dir($candidate)) {
+            if (file_exists($candidate) || is_link($candidate)) {
+                return false;
+            }
+
+            $parent = dirname($candidate);
+            if ($parent === $candidate) {
+                return false;
+            }
+
+            $candidate = $parent;
+        }
+
+        return is_writable($candidate);
+    }
+
+    private function hasInstallerSymlinkComponent(string $path): bool
+    {
+        $candidate = $path;
+
+        while (true) {
+            if (is_link($candidate)) {
+                return true;
+            }
+
+            $parent = dirname($candidate);
+            if ($parent === $candidate) {
+                return false;
+            }
+
+            $candidate = $parent;
+        }
     }
 
     /**

@@ -109,6 +109,11 @@
                 @endif
             @endif
 
+            @php($hostingGuidance = [1 => 'document_root', 2 => 'php_extensions', 3 => 'file_permissions', 4 => 'mysql', 8 => 'public_storage', 9 => 'scheduler'][$currentStep] ?? null)
+            @if ($hostingGuidance !== null)
+                <div class="notice" role="note">{{ __('installer.hosting.'.$hostingGuidance) }}</div>
+            @endif
+
             <form method="post" action="{{ route('install.step', array_filter(['step' => $currentStep, 'lang' => $languageQuery])) }}" autocomplete="off">
                 <input type="hidden" name="installer_token" value="{{ $installerToken }}">
 

@@ -76,6 +76,68 @@ class InstallerWorkflowTest extends TestCase
         parent::tearDown();
     }
 
+    public function test_permission_preflight_rejects_non_directory_environment_and_lock_parents_without_writing(): void
+    {
+        $envPath = $this->testDirectory.'/.env';
+        $before = file_get_contents($envPath);
+        $blocker = $this->testDirectory.'/not-a-directory';
+        file_put_contents($blocker, 'sentinel');
+
+        config([
+            'foodex.installer_env_path' => $blocker.'/.env',
+            'foodex.installer_env_lock_path' => $blocker.'/locks/env.lock',
+        ]);
+
+        $failures = app(InstallerWorkflow::class)->writablePathFailures();
+        $this->assertContains(__('installer.errors.env_directory_writable'), $failures);
+        $this->assertContains(__('installer.errors.env_lock_directory_writable'), $failures);
+        $this->assertSame($before, file_get_contents($envPath));
+        $this->assertSame('sentinel', file_get_contents($blocker));
+        $this->assertFileDoesNotExist($blocker.'/.env');
+    }
+
+    public function test_permission_preflight_allows_creatable_private_lock_directory_without_creating_it(): void
+    {
+        $lockDirectory = $this->testDirectory.'/new-lock-directory';
+        config(['foodex.installer_env_lock_path' => $lockDirectory.'/env.lock']);
+
+        $failures = app(InstallerWorkflow::class)->writablePathFailures();
+        $this->assertNotContains(__('installer.errors.env_directory_writable'), $failures);
+        $this->assertNotContains(__('installer.errors.env_lock_directory_writable'), $failures);
+        $this->assertDirectoryDoesNotExist($lockDirectory);
+    }
+
+    public function test_permission_preflight_rejects_environment_and_lock_symlinks_without_mutation(): void
+    {
+        if (! function_exists('symlink')) {
+            $this->markTestSkipped('Symlinks are not supported.');
+        }
+
+        $environmentPath = $this->testDirectory.'/.env';
+        $before = file_get_contents($environmentPath);
+        $environmentLink = $this->testDirectory.'/env-link';
+        $lockTarget = $this->testDirectory.'/lock-target';
+        $lockLink = $this->testDirectory.'/env-lock-link';
+        file_put_contents($lockTarget, 'lock-sentinel');
+
+        if (! @symlink($environmentPath, $environmentLink) || ! @symlink($lockTarget, $lockLink)) {
+            $this->markTestSkipped('Filesystem cannot create symlinks.');
+        }
+
+        config([
+            'foodex.installer_env_path' => $environmentLink,
+            'foodex.installer_env_lock_path' => $lockLink,
+        ]);
+
+        $failures = app(InstallerWorkflow::class)->writablePathFailures();
+        $this->assertContains(__('installer.errors.env_directory_writable'), $failures);
+        $this->assertContains(__('installer.errors.env_lock_directory_writable'), $failures);
+        $this->assertSame($before, file_get_contents($environmentPath));
+        $this->assertSame('lock-sentinel', file_get_contents($lockTarget));
+        $this->assertTrue(is_link($environmentLink));
+        $this->assertTrue(is_link($lockLink));
+    }
+
     public function test_storage_configuration_rejects_foreign_symlink_without_changing_environment(): void
     {
         if (! function_exists('symlink')) {

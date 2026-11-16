@@ -26,6 +26,14 @@ return [
         'finish' => 'Finish',
         'step_language' => 'Choose setup language',
     ],
+    'hosting' => [
+        'document_root' => 'Hosting setup: in cPanel > Domains, set the website Document Root to the deployed backend/public directory. If your plan does not allow changing this, ask your host; the installer cannot change cPanel settings. Never expose backend/.env, vendor or storage as public files.',
+        'php_extensions' => 'Server setup: use cPanel > Select PHP Version or MultiPHP Manager (when available) to enable PHP 8.2+ and the listed extensions. If the host denies this, request provider support before continuing.',
+        'file_permissions' => 'File permissions: the site PHP account needs write access to backend/storage, backend/bootstrap/cache, the backend/.env parent directory for safe atomic replacement, and the private installer-env-locks directory under storage/framework. Ask your host to correct ownership/ACLs if blocked; never use chmod 777.',
+        'mysql' => 'Database setup: create a new empty MySQL/MariaDB database and scoped user in cPanel > MySQL Databases. Grant the permissions required to create and alter application tables, then enter the provided host, port, name and user here. Do not connect the installer to an existing live database.',
+        'public_storage' => 'Public uploads: a valid public/storage link must point to storage/app/public. If symlinks are disabled, ask your host to configure a safe web-server mapping; a real directory with the same name does not prove the mapping. Verify with an authorized upload and public URL test before marking this ready.',
+        'scheduler' => 'Background tasks: the installer attempts to provision Cron only when hosting permits it. Otherwise configure the supported schedule in cPanel > Cron Jobs with your host, or select the supported synchronous queue mode and acknowledge that scheduled jobs may not run automatically.',
+    ],
     'fields' => [
         'db_host' => 'Database host',
         'db_port' => 'Port',
@@ -129,6 +137,8 @@ return [
         'extension' => 'PHP extension [:extension] is required.',
         'pdo_mysql' => 'PHP extension [pdo_mysql] is required for the production MySQL/MariaDB database.',
         'path_writable' => 'Runtime path [:path] must be writable.',
+        'env_directory_writable' => 'The .env parent directory is not writable or contains an unsafe symbolic link. Ask your host to allow the PHP account to create and atomically replace files in the application directory.',
+        'env_lock_directory_writable' => 'The private installer environment lock directory cannot be created/written or contains an unsafe symbolic link. Check storage/framework/installer-env-locks ownership and hosting permissions.',
         'db_connection' => 'Database connection failed. Verify the supplied host, port, database and credentials.',
         'storage_dir' => 'Storage directories could not be prepared.',
         'public_storage_link' => 'This host cannot create the required public storage symlink. Ask your hosting provider to enable PHP symlink support or configure a safe web-server alias from backend/storage/app/public to backend/public/storage, then retry. Do not create an empty backend/public/storage directory as a substitute.',
