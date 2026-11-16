@@ -164,7 +164,7 @@ body{margin:0;background:var(--foodex-background);color:var(--foodex-ink)}
 </section>
 
 <section data-action-panel="approvals" aria-labelledby="action-tab-approvals" @if($activeTab !== 'approvals') hidden @endif>
-<div class="work-section"><div class="work-section-head"><div><h2>{{ __('enterprise_my_work.approvals_title') }} · {{ __('enterprise_action_center.title') }}</h2><p>{{ __('enterprise_my_work.approvals_hint') }}</p></div></div></section>
+<div class="work-section"><div class="work-section-head"><div><h2>{{ __('enterprise_my_work.approvals_title') }} · {{ __('enterprise_action_center.title') }}</h2><p>{{ __('enterprise_my_work.approvals_hint') }}</p></div></div></div>
 <section class="action-card foodex-card">
 <form method="get" class="action-filters">
 <input type="hidden" name="tab" value="approvals">
