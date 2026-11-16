@@ -13,6 +13,8 @@
 .treasury-check input{inline-size:18px;block-size:18px}
 .treasury-actions{display:flex;gap:var(--foodex-space-2);align-items:center;flex-wrap:wrap}
 .treasury-code{font-family:var(--foodex-font-en);font-variant-numeric:tabular-nums;white-space:nowrap}
+.treasury-tab-rail{display:flex;flex-wrap:nowrap;overflow-x:auto;max-width:100%;min-width:0;overscroll-behavior-inline:contain}
+.treasury-tab-rail>a{display:inline-flex;align-items:center;min-height:44px;flex:0 0 auto;white-space:nowrap}
 @media(max-width:767px){.treasury-form-grid{grid-template-columns:minmax(0,1fr)}}
 </style>
 </head>
@@ -21,6 +23,9 @@
 <aside class="sidebar">@include('admin._sidebar',['navGroups'=>$navGroups,'navContext'=>$navContext,'user'=>$user])</aside>
 <main class="foodex-admin-main foodex-admin-page">
 @include('admin._global-header')
+@php
+$treasuryQuery = array_intersect_key($filters, array_flip(['store_id','q','status','per_page']));
+@endphp
 <div class="foodex-page-toolbar">
 <div>
 <div class="muted">{{ __('treasury.eyebrow') }}</div>
@@ -30,9 +35,9 @@
 @if($manageableStores->isNotEmpty())
 <div class="foodex-header-actions">
 @if(($filters['tab'] ?? 'cashboxes') === 'bank_accounts')
-<a class="foodex-action-primary" href="{{ route('admin.treasury.master.index',['tab'=>'bank_accounts','create'=>'bank_account']) }}">{{ __('treasury.new_bank_account') }}</a>
+<a class="foodex-action-primary" href="{{ route('admin.treasury.master.index',[...$treasuryQuery,'tab'=>'bank_accounts','create'=>'bank_account']) }}">{{ __('treasury.new_bank_account') }}</a>
 @else
-<a class="foodex-action-primary" href="{{ route('admin.treasury.master.index',['tab'=>'cashboxes','create'=>'cashbox']) }}">{{ __('treasury.new_cashbox') }}</a>
+<a class="foodex-action-primary" href="{{ route('admin.treasury.master.index',[...$treasuryQuery,'tab'=>'cashboxes','create'=>'cashbox']) }}">{{ __('treasury.new_cashbox') }}</a>
 @endif
 </div>
 @endif
@@ -47,12 +52,12 @@
 </div>
 @endif
 
-<nav class="foodex-tabs" aria-label="{{ __('treasury.title') }}">
-<a class="{{ ($filters['tab'] ?? 'cashboxes') === 'cashboxes' ? 'active' : '' }}" href="{{ route('admin.treasury.master.index',['tab'=>'cashboxes']) }}">{{ __('treasury.cashboxes') }}</a>
-<a class="{{ ($filters['tab'] ?? 'cashboxes') === 'bank_accounts' ? 'active' : '' }}" href="{{ route('admin.treasury.master.index',['tab'=>'bank_accounts']) }}">{{ __('treasury.bank_accounts') }}</a>
+<nav class="foodex-tabs treasury-tab-rail" aria-label="{{ __('treasury.title') }}">
+<a class="foodex-tab {{ ($filters['tab'] ?? 'cashboxes') === 'cashboxes' ? 'active' : '' }}" href="{{ route('admin.treasury.master.index',[...$treasuryQuery,'tab'=>'cashboxes']) }}" @if(($filters['tab'] ?? 'cashboxes') === 'cashboxes') aria-current="page" @endif>{{ __('treasury.cashboxes') }}</a>
+<a class="foodex-tab {{ ($filters['tab'] ?? 'cashboxes') === 'bank_accounts' ? 'active' : '' }}" href="{{ route('admin.treasury.master.index',[...$treasuryQuery,'tab'=>'bank_accounts']) }}" @if(($filters['tab'] ?? 'cashboxes') === 'bank_accounts') aria-current="page" @endif>{{ __('treasury.bank_accounts') }}</a>
 </nav>
 
-@if((($filters['create'] ?? null) === 'cashbox' || $editingCashbox) && $manageableStores->isNotEmpty())
+@if(($filters['tab'] ?? 'cashboxes') === 'cashboxes' && (($filters['create'] ?? null) === 'cashbox' || $editingCashbox) && $manageableStores->isNotEmpty())
 <section class="treasury-section" aria-labelledby="cashbox-form-title">
 <form class="foodex-form" method="post" action="{{ $editingCashbox ? route('admin.treasury.cashboxes.update',['cashbox'=>$editingCashbox->id]) : route('admin.treasury.cashboxes.store') }}">
 @csrf
@@ -62,7 +67,7 @@
 <label>{{ __('treasury.fields.store') }}
 <select name="store_id" required>
 @foreach($manageableStores as $store)
-<option value="{{ $store->id }}" @selected((int)old('store_id',$editingCashbox?->store_id) === (int)$store->id)>{{ $store->name }}</option>
+<option value="{{ $store->id }}" @selected((int)old('store_id',$editingCashbox?->store_id ?? ($filters['store_id'] ?? null)) === (int)$store->id)>{{ $store->name }}</option>
 @endforeach
 </select>
 </label>
@@ -82,13 +87,13 @@
 </div>
 <div class="treasury-actions">
 <button type="submit" class="foodex-primary">{{ __('treasury.actions.save') }}</button>
-<a class="foodex-action-secondary" href="{{ route('admin.treasury.master.index',['tab'=>'cashboxes']) }}">{{ __('treasury.actions.cancel') }}</a>
+<a class="foodex-action-secondary" href="{{ route('admin.treasury.master.index',[...$treasuryQuery,'tab'=>'cashboxes']) }}">{{ __('treasury.actions.cancel') }}</a>
 </div>
 </form>
 </section>
 @endif
 
-@if((($filters['create'] ?? null) === 'bank_account' || $editingBankAccount) && $manageableStores->isNotEmpty())
+@if(($filters['tab'] ?? 'cashboxes') === 'bank_accounts' && (($filters['create'] ?? null) === 'bank_account' || $editingBankAccount) && $manageableStores->isNotEmpty())
 <section class="treasury-section" aria-labelledby="bank-form-title">
 <form class="foodex-form" method="post" action="{{ $editingBankAccount ? route('admin.treasury.bank-accounts.update',['bankAccount'=>$editingBankAccount->id]) : route('admin.treasury.bank-accounts.store') }}">
 @csrf
@@ -98,7 +103,7 @@
 <label>{{ __('treasury.fields.store') }}
 <select name="store_id" required>
 @foreach($manageableStores as $store)
-<option value="{{ $store->id }}" @selected((int)old('store_id',$editingBankAccount?->store_id) === (int)$store->id)>{{ $store->name }}</option>
+<option value="{{ $store->id }}" @selected((int)old('store_id',$editingBankAccount?->store_id ?? ($filters['store_id'] ?? null)) === (int)$store->id)>{{ $store->name }}</option>
 @endforeach
 </select>
 </label>
@@ -124,7 +129,7 @@
 </div>
 <div class="treasury-actions">
 <button type="submit" class="foodex-primary">{{ __('treasury.actions.save') }}</button>
-<a class="foodex-action-secondary" href="{{ route('admin.treasury.master.index',['tab'=>'bank_accounts']) }}">{{ __('treasury.actions.cancel') }}</a>
+<a class="foodex-action-secondary" href="{{ route('admin.treasury.master.index',[...$treasuryQuery,'tab'=>'bank_accounts']) }}">{{ __('treasury.actions.cancel') }}</a>
 </div>
 </form>
 </section>
@@ -175,7 +180,7 @@
 <td><span class="badge {{ $cashbox->is_active ? 'active' : '' }}">{{ $cashbox->is_active ? __('treasury.status.active') : __('treasury.status.inactive') }}</span></td>
 <td>
 @if(in_array((int)$cashbox->store_id,$manageStoreIds,true))
-<a class="foodex-action-secondary" href="{{ route('admin.treasury.master.index',['tab'=>'cashboxes','edit_cashbox'=>$cashbox->id]) }}">{{ __('treasury.actions.edit') }}</a>
+<a class="foodex-action-secondary" href="{{ route('admin.treasury.master.index',[...$treasuryQuery,'tab'=>'cashboxes','edit_cashbox'=>$cashbox->id]) }}">{{ __('treasury.actions.edit') }}</a>
 @else <span class="muted">—</span> @endif
 </td>
 </tr>
@@ -208,7 +213,7 @@
 <td><span class="badge {{ $bank->is_active ? 'active' : '' }}">{{ $bank->is_active ? __('treasury.status.active') : __('treasury.status.inactive') }}</span></td>
 <td>
 @if(in_array((int)$bank->store_id,$manageStoreIds,true))
-<a class="foodex-action-secondary" href="{{ route('admin.treasury.master.index',['tab'=>'bank_accounts','edit_bank_account'=>$bank->id]) }}">{{ __('treasury.actions.edit') }}</a>
+<a class="foodex-action-secondary" href="{{ route('admin.treasury.master.index',[...$treasuryQuery,'tab'=>'bank_accounts','edit_bank_account'=>$bank->id]) }}">{{ __('treasury.actions.edit') }}</a>
 @else <span class="muted">—</span> @endif
 </td>
 </tr>
