@@ -3,6 +3,7 @@
 namespace Tests\Feature;
 
 use App\Domain\Installer\InstallerChecklist;
+use App\Domain\Installer\InstallerWorkflow;
 use App\Domain\Installer\InstallState;
 use Illuminate\Support\Facades\Artisan;
 use Mockery;
@@ -137,7 +138,7 @@ final class V2InstallerLocaleLayoutParityTest extends TestCase
         $this->post('/install/step/1?lang=en', ['installer_token' => $token])
             ->assertRedirect(route('install.index', ['step' => 2, 'lang' => 'en']));
 
-        $available = app(\App\Domain\Installer\InstallerWorkflow::class)->hasErpEvidenceVerifier();
+        $available = app(InstallerWorkflow::class)->hasErpEvidenceVerifier();
         $status = $available ? 'erp_evidence_crypto_available' : 'erp_evidence_crypto_missing';
         $otherStatus = $available ? 'erp_evidence_crypto_missing' : 'erp_evidence_crypto_available';
 
