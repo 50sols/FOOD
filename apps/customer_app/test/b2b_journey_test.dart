@@ -5822,7 +5822,8 @@ void main() {
       );
       expect(find.text('Wholesale item'), findsNothing);
       expect(find.textContaining('WHO-501'), findsNothing);
-      expect(find.textContaining('الكمية'), findsOneWidget);
+      expect(find.text('الكمية: 2.0'), findsOneWidget);
+      expect(find.text('الكمية: 1.0'), findsOneWidget);
       expect(find.text('الضريبة'), findsNothing);
       expect(find.text('المديونية'), findsWidgets);
       expect(
