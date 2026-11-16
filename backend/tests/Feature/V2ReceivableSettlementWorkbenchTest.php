@@ -748,6 +748,19 @@ final class V2ReceivableSettlementWorkbenchTest extends TestCase
         $this->assertNull($linked->fresh()->journal_id);
         $this->assertDatabaseCount('enterprise_finance_journals', 1);
 
+        // Historic/forged posted invoice-linked AR rows must not be
+        // reclassified as source-certified on the idempotent POST path.
+        $linked->forceFill(['status' => 'posted'])->save();
+        try {
+            $ar->post($poster, $posterContext, $linked->id);
+            $this->fail('A posted invoice-linked AR row is not a certified accounting handoff.');
+        } catch (ValidationException $exception) {
+            $this->assertArrayHasKey('source_invoice_id', $exception->errors());
+        }
+        $this->assertDatabaseCount('enterprise_finance_journals', 1);
+        $this->assertNull($linked->fresh()->journal_id);
+        $linked->forceFill(['status' => 'draft'])->save();
+
         $sequence = 0;
         $reject = function (array $changes = []) use ($ar, $maker, $context, $payload, &$sequence): void {
             $sequence++;
@@ -774,6 +787,18 @@ final class V2ReceivableSettlementWorkbenchTest extends TestCase
             'total' => '40.000',
             'voided_at' => null,
         ];
+        $beforeReplayDocuments = DB::table('enterprise_ar_documents')->count();
+        $beforeReplayAudit = DB::table('audit_logs')
+            ->where('event', 'enterprise.finance.ar_document_created')
+            ->count();
+        $rejectStaleReplay = function () use ($ar, $maker, $context, $payload): void {
+            try {
+                $ar->createDraft($maker, $context, $payload);
+                $this->fail('An old idempotency key must not re-attest a changed invoice.');
+            } catch (ValidationException $exception) {
+                $this->assertArrayHasKey('source_invoice_id', $exception->errors());
+            }
+        };
         $foreign = $this->retailStore('P303-FOREIGN-INV');
         $otherCustomer = Customer::query()->create([
             'type' => 'b2b',
@@ -790,9 +815,15 @@ final class V2ReceivableSettlementWorkbenchTest extends TestCase
         ] as $tamper) {
             DB::table('invoices')->where('id', $invoiceId)->update(array_merge($baseline, $tamper));
             $reject();
+            $rejectStaleReplay();
         }
 
         DB::table('invoices')->where('id', $invoiceId)->update($baseline);
+        $this->assertSame($linked->id, $ar->createDraft($maker, $context, $payload)->id);
+        $this->assertSame($beforeReplayDocuments, DB::table('enterprise_ar_documents')->count());
+        $this->assertSame($beforeReplayAudit, DB::table('audit_logs')
+            ->where('event', 'enterprise.finance.ar_document_created')
+            ->count());
         $reject(['source_invoice_id' => $invoiceId + 10000]);
         $this->assertDatabaseCount('enterprise_ar_documents', 2);
         $this->assertDatabaseCount('enterprise_finance_journals', 1);
