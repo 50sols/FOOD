@@ -397,4 +397,5 @@ void main() {
         throwsA(isA<VanApiException>()),
       );
     }
-  });}
+  });
+}
