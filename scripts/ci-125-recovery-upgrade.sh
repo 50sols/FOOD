@@ -24,6 +24,7 @@ APP_NAME=FOODEX
 APP_ENV=testing
 APP_DEBUG=false
 APP_URL=http://localhost
+APP_KEY=
 LOG_CHANNEL=stderr
 DB_CONNECTION=mysql
 DB_HOST=127.0.0.1
@@ -36,6 +37,7 @@ SESSION_DRIVER=array
 QUEUE_CONNECTION=sync
 ENV
 php artisan key:generate --force
+grep -Eq '^APP_KEY=base64:.+' .env || { echo 'G006 test APP_KEY generation failed' >&2; exit 1; }
 php artisan migrate --force --no-interaction
 
 # Reproduce the actual failure state: v125 migration created the audit table
