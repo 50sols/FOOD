@@ -234,6 +234,43 @@ class InstallerWorkflowTest extends TestCase
         $this->assertDirectoryDoesNotExist($root);
     }
 
+    public function test_fresh_seed_preserves_admin_managed_global_flags_without_creating_demo_business_data(): void
+    {
+        // Disposable RefreshDatabase fixture only: never reseed a live site.
+        $workflow = app(InstallerWorkflow::class);
+        $flags = app(\App\Services\CommercialFeatureFlags::class);
+        $workflow->seedRequiredCoreData();
+
+        $this->assertSame([
+            'commercial_rules_enabled' => true,
+            'flash_offers_enabled' => true,
+            'customer_flash_popup_enabled' => true,
+            'van_offers_enabled' => true,
+        ], $flags->snapshot());
+
+        // Same authoritative service used by the existing Admin feature-flags form.
+        $overrides = [
+            'commercial_rules_enabled' => false,
+            'flash_offers_enabled' => false,
+            'customer_flash_popup_enabled' => false,
+            'van_offers_enabled' => false,
+        ];
+        $this->assertSame($overrides, $flags->persist($overrides));
+        $snapshot = DB::table('settings')->whereNull('store_id')->orderBy('key')
+            ->get(['id', 'key', 'value', 'is_secret'])->toArray();
+
+        // A repeated pre-install step on isolated test storage must not revert
+        // operator-owned overrides or invent business entities.
+        $workflow->seedRequiredCoreData();
+
+        $this->assertSame($overrides, $flags->snapshot());
+        $this->assertEquals($snapshot, DB::table('settings')->whereNull('store_id')->orderBy('key')
+            ->get(['id', 'key', 'value', 'is_secret'])->toArray());
+        foreach (['users', 'stores', 'products', 'orders'] as $table) {
+            $this->assertSame(0, DB::table($table)->count(), 'Unexpected demo data in '.$table);
+        }
+    }
+
     public function test_storage_configuration_rejects_foreign_symlink_without_changing_environment(): void
     {
         if (! function_exists('symlink')) {
