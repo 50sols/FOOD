@@ -205,6 +205,7 @@ final class InstallerWorkflow
         // preserving a pre-existing shared-host directory mapping).
         $this->environment->write(['FILESYSTEM_DISK' => $disk]);
     }
+
     /**
      * @param  array{cache: string, queue: string, redis_host?: string|null, redis_port?: int|string|null, redis_password?: string|null}  $data
      */

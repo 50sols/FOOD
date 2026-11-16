@@ -63,7 +63,11 @@ class InstallerWorkflowTest extends TestCase
             );
 
             foreach ($files as $file) {
-                if ($file->isDir() && ! $file->isLink()) { rmdir($file->getPathname()); } else { unlink($file->getPathname()); }
+                if ($file->isDir() && ! $file->isLink()) {
+                    rmdir($file->getPathname());
+                } else {
+                    unlink($file->getPathname());
+                }
             }
 
             rmdir($this->testDirectory);
