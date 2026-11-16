@@ -6558,7 +6558,7 @@ class _InvoiceDetailRemoteStateState extends State<_InvoiceDetailRemoteState>
             const SizedBox(width: 8),
             _settlementMetric(
               label: !confirmedBalance
-                  ? (ar ? 'الرصيد غير مؤكد' : 'Unverified balance')
+                  ? context.tr('b2b.invoice.balance_unverified')
                   : hasCredit
                       ? (ar ? 'رصيد دائن' : 'Credit')
                       : (ar ? 'المديونية' : 'Debt'),
