@@ -5588,6 +5588,142 @@ void main() {
     expect(api.lastPath, '/api/v1/b2b/invoices/31?store_id=7');
   });
 
+  for (final locale in const <Locale>[Locale('ar'), Locale('en')]) {
+    testWidgets(
+      'MOB-C03 scoped invoice distinguishes paid, captured and unverified states in ${locale.languageCode}',
+      (tester) async {
+        tester.view.physicalSize = const Size(390, 844);
+        tester.view.devicePixelRatio = 1;
+        addTearDown(() {
+          tester.view.resetPhysicalSize();
+          tester.view.resetDevicePixelRatio();
+        });
+
+        final api = _FakeB2bApi({
+          'data': {
+            'id': 31,
+            'invoice_number': 'INV-31',
+            'display_status': 'partially_paid',
+            'currency': 'KWD',
+            'total': 80.375,
+            'paid_amount': 30.375,
+            'outstanding_amount': 50.0,
+            'credit_amount': 0.0,
+            'store_id': 7,
+            'issued_at': '2026-10-01T10:00:00Z',
+            'items': <Object?>[],
+            'payments': [
+              {
+                'id': 901,
+                'status': 'paid',
+                'method': 'account',
+                'reference': 'PAY-901',
+                'amount': 20.125,
+                'currency': 'KWD',
+                'paid_at': '2026-10-02T10:00:00Z',
+              },
+              {
+                'id': 902,
+                'status': 'captured',
+                'method': 'field_collection',
+                'reference': 'CAP-902',
+                'amount': 10.25,
+                'currency': 'KWD',
+                'paid_at': '2026-10-03T10:00:00Z',
+              },
+              {
+                'id': 903,
+                'status': 'unrecognized',
+                'method': 'field_collection',
+                'reference': 'UNKNOWN-903',
+                'amount': 'NaN',
+                'currency': 'KWD',
+                'paid_at': '2026-10-04T10:00:00Z',
+              },
+            ],
+            'ledger_entries': <Object?>[],
+          },
+          'account': {
+            'currency': 'KWD',
+            'balance': -50.0,
+            'balance_direction': 'customer_owes_company',
+          },
+        });
+
+        await tester.pumpWidget(
+          FoodexCustomerApp(
+            session: b2b,
+            locale: locale,
+            initialRoute: '/b2b/invoices/31?store_id=7',
+            b2bApi: api,
+          ),
+        );
+        await _pumpCustomerFrames(tester);
+
+        expect(api.lastPath, '/api/v1/b2b/invoices/31?store_id=7');
+        expect(
+          find.byKey(const ValueKey('b2b-invoice-detail-data')),
+          findsOneWidget,
+        );
+
+        final paid = find.byKey(
+          const ValueKey('b2b-invoice-payment-status-901'),
+        );
+        final captured = find.byKey(
+          const ValueKey('b2b-invoice-payment-status-902'),
+        );
+        final unknown = find.byKey(
+          const ValueKey('b2b-invoice-payment-status-903'),
+        );
+        final arabic = locale.languageCode == 'ar';
+        expect(paid, findsOneWidget);
+        expect(captured, findsOneWidget);
+        expect(unknown, findsOneWidget);
+        expect(
+          tester.widget<Text>(paid).data,
+          contains(arabic ? 'مدفوع' : 'Paid'),
+        );
+        expect(
+          tester.widget<Text>(captured).data,
+          contains(arabic ? 'تم التحصيل' : 'Captured'),
+        );
+        expect(
+          tester.widget<Text>(unknown).data,
+          contains(arabic ? 'حالة الدفع غير مؤكدة' : 'Payment status unverified'),
+        );
+        expect(
+          Directionality.of(tester.element(captured)),
+          arabic ? TextDirection.rtl : TextDirection.ltr,
+        );
+        expect(
+          tester
+              .widget<Text>(
+                find.byKey(const ValueKey('b2b-invoice-payment-amount-901')),
+              )
+              .data,
+          '20.125 KWD',
+        );
+        expect(
+          tester
+              .widget<Text>(
+                find.byKey(const ValueKey('b2b-invoice-payment-amount-902')),
+              )
+              .data,
+          '10.250 KWD',
+        );
+        expect(
+          tester
+              .widget<Text>(
+                find.byKey(const ValueKey('b2b-invoice-payment-amount-903')),
+              )
+              .data,
+          '—',
+        );
+        expect(tester.takeException(), isNull);
+      },
+    );
+  }
+
   testWidgets(
     'C13 Screen 9 renders reconciled invoice detail and visible actions',
     (tester) async {
