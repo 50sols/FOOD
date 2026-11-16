@@ -124,6 +124,12 @@ class OrderController extends Controller
         }
 
         [$customer, $channel] = $this->customerContext($request);
+
+        // The split Customer endpoint is domain-authoritative. A caller may
+        // filter its orders only within that channel, never relabel a Retail
+        // list as Wholesale (or vice versa) through the optional query.
+        abort_if(isset($validated['channel']) && $validated['channel'] !== $channel, 404);
+
         $customerColumn = $channel === 'b2b' ? 'b2b_customer_id' : 'b2c_customer_id';
 
         $query = Order::query()
@@ -498,23 +504,35 @@ class OrderController extends Controller
 
     private function assertRequestedOrderContext(Request $request, Order $order): void
     {
-        $requestedStoreId = $request->input('store_id')
-            ?? $request->query('store_id')
-            ?? $request->header('X-FOODEX-Store-ID');
+        // An explicitly empty or malformed query value must not fall back to a
+        // valid-looking header or silently disable the requested store scope.
+        $hasInputStoreId = array_key_exists('store_id', $request->all());
+        $hasHeaderStoreId = $request->headers->has('X-FOODEX-Store-ID');
+        if ($hasInputStoreId || $hasHeaderStoreId) {
+            $storeId = $hasInputStoreId
+                ? $request->input('store_id')
+                : $request->header('X-FOODEX-Store-ID');
+            abort_unless(is_string($storeId) || is_int($storeId), 404);
+            $rawStoreId = trim((string) $storeId);
+            abort_unless($rawStoreId !== '' && ctype_digit($rawStoreId), 404);
 
-        if (is_numeric($requestedStoreId) && (int) $requestedStoreId > 0) {
-            abort_unless((int) $requestedStoreId === (int) $order->store_id, 404);
+            $requestedStoreId = DisplayNumber::referenceId($rawStoreId);
+            abort_unless($requestedStoreId !== null && $requestedStoreId === (int) $order->store_id, 404);
         }
 
-        $requestedChannel = strtolower(trim((string) (
-            $request->input('channel')
-            ?? $request->query('channel')
-            ?? $request->header('X-FOODEX-Customer-Domain', '')
-        )));
+        // Match the strict Customer invoice detail context contract: never
+        // cast an array or use a header when an invalid query was supplied.
+        $hasInputChannel = array_key_exists('channel', $request->all());
+        $hasHeaderChannel = $request->headers->has('X-FOODEX-Customer-Domain');
+        if ($hasInputChannel || $hasHeaderChannel) {
+            $rawChannel = $hasInputChannel
+                ? $request->input('channel')
+                : $request->header('X-FOODEX-Customer-Domain');
+            abort_unless(is_string($rawChannel), 404);
 
-        if ($requestedChannel !== '') {
-            abort_unless(in_array($requestedChannel, ['b2b', 'b2c'], true), 404);
-            abort_unless($requestedChannel === strtolower((string) $order->channel), 404);
+            $channel = strtolower(trim($rawChannel));
+            abort_unless(in_array($channel, ['b2b', 'b2c'], true), 404);
+            abort_unless($channel === strtolower((string) $order->channel), 404);
         }
     }
 

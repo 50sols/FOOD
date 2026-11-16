@@ -81,6 +81,7 @@ final class InvoiceController extends Controller
             'amount' => ['required', 'numeric', 'gt:0'],
             'reference' => ['nullable', 'string', 'max:120'],
             'description' => ['nullable', 'string', 'max:500'],
+            'settlement_request_id' => ['nullable', 'uuid'],
         ]);
 
         $result = $ledger->settleInvoice(
@@ -91,8 +92,11 @@ final class InvoiceController extends Controller
             $user,
             $validated['reference'] ?? null,
             $validated['description'] ?? null,
+            $validated['settlement_request_id'] ?? null,
         );
-        $audit->record('invoice.settled', $user, $model, null, $result, $request);
+        if (! $result['replayed']) {
+            $audit->record('invoice.settled', $user, $model, null, $result, $request);
+        }
 
         return redirect()
             ->route('admin.invoices.show', ['invoice' => $model->getKey()])

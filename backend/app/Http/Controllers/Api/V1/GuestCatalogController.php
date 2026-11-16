@@ -14,6 +14,8 @@ use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Facades\Validator;
+use Illuminate\Validation\ValidationException;
 
 class GuestCatalogController extends Controller
 {
@@ -24,7 +26,7 @@ class GuestCatalogController extends Controller
     public function categories(Request $request, int $store): JsonResponse
     {
         $this->activeB2cStore($store);
-        $perPage = min(max($request->integer('per_page', 20), 1), 100);
+        $perPage = $this->validatedPerPage($request);
 
         $categories = Category::query()
             ->select('categories.*')
@@ -79,7 +81,7 @@ class GuestCatalogController extends Controller
             'direction' => ['nullable', 'in:asc,desc'],
         ]);
 
-        $perPage = min(max($request->integer('per_page', 20), 1), 100);
+        $perPage = $this->validatedPerPage($request);
 
         $query = Product::query()
             ->select('products.*', 'store_products.price as store_price')
@@ -224,7 +226,7 @@ class GuestCatalogController extends Controller
     public function offers(Request $request, int $store): JsonResponse
     {
         $this->activeB2cStore($store);
-        $perPage = min(max($request->integer('per_page', 20), 1), 100);
+        $perPage = $this->validatedPerPage($request);
         $now = now();
 
         $offers = Promotion::query()
@@ -265,7 +267,7 @@ class GuestCatalogController extends Controller
     public function banners(Request $request, int $store): JsonResponse
     {
         $this->activeB2cStore($store);
-        $perPage = min(max($request->integer('per_page', 10), 1), 50);
+        $perPage = $this->validatedPerPage($request, 10, 50);
 
         $banners = DB::table('banners')
             ->where('store_id', $store)
@@ -293,6 +295,37 @@ class GuestCatalogController extends Controller
                 'total' => $banners->total(),
             ],
         ]);
+    }
+
+    private function validatedPerPage(Request $request, int $default = 20, int $max = 100): int
+    {
+        $validator = Validator::make($request->query(), [
+            'page' => ['sometimes', 'required', 'integer', 'min:1'],
+            'per_page' => ['sometimes', 'required', 'integer', 'min:1', 'max:'.$max],
+        ]);
+
+        if ($validator->fails()) {
+            $locale = in_array(app()->getLocale(), ['ar', 'en'], true) ? app()->getLocale() : 'ar';
+
+            foreach ($request->getLanguages() as $preferredLanguage) {
+                $candidate = strtolower(substr((string) $preferredLanguage, 0, 2));
+                if (in_array($candidate, ['ar', 'en'], true)) {
+                    $locale = $candidate;
+                    break;
+                }
+            }
+
+            $errors = [];
+            foreach ($validator->errors()->keys() as $field) {
+                $errors[$field] = [__('guest_catalog_pagination.invalid_parameter', [], $locale)];
+            }
+
+            throw ValidationException::withMessages($errors);
+        }
+
+        $validated = $validator->validated();
+
+        return isset($validated['per_page']) ? (int) $validated['per_page'] : $default;
     }
 
     private function activeB2cStore(int $storeId): Store

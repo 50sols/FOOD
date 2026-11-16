@@ -579,6 +579,9 @@ final class OrderOperationsController extends Controller
             $detailOrder = Order::query()
                 ->whereKey((int) $data['order'])
                 ->where(fn ($query) => $this->applyOperationalScopes($query, $scopes))
+                // A scoped Van-only list must not open a non-Van order through
+                // a crafted detail ID. Keep the canonical store/role guard.
+                ->when(($data['origin'] ?? null) === 'van', fn ($query) => $query->where('pricing_snapshot->commercial_origin', 'van'))
                 ->firstOrFail();
             $detail = $this->detail(
                 $actor,

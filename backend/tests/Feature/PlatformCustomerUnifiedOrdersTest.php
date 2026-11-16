@@ -150,6 +150,30 @@ class PlatformCustomerUnifiedOrdersTest extends TestCase
             ->getJson("/api/v1/orders/{$orderId}?store_id={$retailA}&channel=b2b")
             ->assertNotFound();
 
+        // Malformed explicit context may not be silently ignored just because
+        // the authenticated customer owns the target order.
+        foreach (['invalid', '0', '-1', '999999999999999999999999999', ''] as $badStore) {
+            $this->actingAs($user)
+                ->getJson("/api/v1/orders/{$orderId}?store_id={$badStore}&channel=b2c")
+                ->assertNotFound();
+        }
+
+        $this->actingAs($user)
+            ->getJson("/api/v1/orders/{$orderId}?store_id%5B0%5D={$retailA}&channel=b2c")
+            ->assertNotFound();
+
+        $this->actingAs($user)
+            ->getJson("/api/v1/orders/{$orderId}?store_id={$retailA}&channel%5B0%5D=b2c")
+            ->assertNotFound();
+
+        $this->actingAs($user)
+            ->getJson("/api/v1/orders/{$orderId}?store_id={$retailA}&channel=")
+            ->assertNotFound();
+
+        $this->actingAs($user)
+            ->getJson("/api/v1/orders/{$orderId}?store_id={$retailA}&channel=invalid")
+            ->assertNotFound();
+
         $foreign = app(PlatformCustomerService::class)->register([
             'name' => 'Other Shopper',
             'email' => 'other-shopper@example.test',
@@ -162,6 +186,28 @@ class PlatformCustomerUnifiedOrdersTest extends TestCase
             ->getJson("/api/v1/orders/{$orderId}")
             ->assertNotFound();
 
+        // A valid header is a fallback only when no query context was
+        // supplied; it must never override an explicitly malformed value.
+        $this->actingAs($user)->withHeaders([
+            'X-FOODEX-Store-ID' => (string) $retailA,
+            'X-FOODEX-Customer-Domain' => 'b2c',
+        ]);
+
+        $this->getJson("/api/v1/orders/{$orderId}")
+            ->assertOk()
+            ->assertJsonPath('store_id', $retailA)
+            ->assertJsonPath('channel', 'b2c');
+
+        $this->getJson("/api/v1/orders/{$orderId}?store_id=&channel=b2c")
+            ->assertNotFound();
+
+        $this->getJson("/api/v1/orders/{$orderId}?store_id={$retailA}&channel=")
+            ->assertNotFound();
+
+        $this->getJson("/api/v1/orders/{$orderId}?store_id=invalid&channel=b2c")
+            ->assertNotFound();
+
+        $this->assertDatabaseCount('orders', 1);
         $this->assertDatabaseHas('stores', ['id' => $wholesale, 'code' => 'WHOLESALE-MAIN']);
     }
 

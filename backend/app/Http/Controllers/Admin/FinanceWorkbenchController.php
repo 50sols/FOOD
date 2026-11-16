@@ -35,6 +35,7 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\Rule;
+use Symfony\Component\HttpFoundation\StreamedResponse;
 
 final class FinanceWorkbenchController extends Controller
 {
@@ -78,7 +79,7 @@ final class FinanceWorkbenchController extends Controller
         private readonly FinanceAnalyticsService $analytics,
     ) {}
 
-    public function index(Request $request): View
+    public function index(Request $request): View|StreamedResponse
     {
         $actor = $this->actor($request);
         abort_unless($this->modules->isEnabled(FinanceFoundationService::MODULE), 403);
@@ -86,10 +87,28 @@ final class FinanceWorkbenchController extends Controller
         // Do not expose Finance context choices to operational roles lacking
         // Finance read permission. Authorize before enterprise scope resolution
         // so a service-only actor receives 403, not a misleading 409.
+        $assignedContexts = $this->contextOptions($actor);
         $contexts = array_values(array_filter(
-            $this->contextOptions($actor),
+            $assignedContexts,
             fn (array $option): bool => $this->financeAccess->canRead($actor, (int) $option['id']),
         ));
+
+        // A Retail store assigned through an actual store-scoped role but
+        // denied Finance is forbidden (403). Global Wholesale roles enumerate
+        // B2B contexts without store assignment: preserve their 404 when denied.
+        // Never resolve a denied store's enterprise data scope or borrow access
+        // from the user's other authorized Retail store.
+        $requestedStoreId = (int) $request->input('store_id', 0);
+        $assignedRetailStoreIds = array_column(
+            array_filter($assignedContexts, static fn (array $option): bool => $option['channel'] === 'b2c'),
+            'id',
+        );
+        if ($requestedStoreId > 0
+            && in_array($requestedStoreId, $assignedRetailStoreIds, true)
+            && ! in_array($requestedStoreId, array_column($contexts, 'id'), true)) {
+            abort(403);
+        }
+
         if ($contexts === []) {
             // Only a privileged platform operator with an actual platform
             // Finance entitlement can view the non-data setup context.
@@ -154,6 +173,13 @@ final class FinanceWorkbenchController extends Controller
             'reports' => $this->reportData($request, $actor, $context),
         };
 
+        if ($request->query->has('download')) {
+            abort_unless($request->query('download') === 'csv' && in_array($tab, ['reports', 'statements'], true), 404);
+            abort_if(($tab === 'reports' ? $data['report'] : $data['statement']) === null, 404);
+
+            return $this->downloadFinancialCsv($tab, $data);
+        }
+
         return view('admin.finance-workbench', [
             'user' => $actor,
             'navGroups' => $this->navigation->groupsFor($actor),
@@ -165,6 +191,86 @@ final class FinanceWorkbenchController extends Controller
             'tab' => $tab,
             'data' => $data,
             'needsContext' => false,
+        ]);
+    }
+
+    /**
+     * Download the exact report already authorized by the canonical Finance tab.
+     * No second route, entitlement decision or unscoped export query is introduced.
+     *
+     * @param  array<string, mixed>  $data
+     */
+    private function downloadFinancialCsv(string $tab, array $data): StreamedResponse
+    {
+        $report = $tab === 'reports' ? $data['report'] : $data['statement'];
+        $lines = $report['lines'];
+        $columns = $tab === 'reports'
+            ? array_keys($lines[0] ?? ['code' => null])
+            : ['code', 'name', 'type', 'debit_mills', 'credit_mills', 'balance_mills', 'comparative_balance_mills'];
+        $labels = $tab === 'reports'
+            ? array_map(
+                static fn (string $key): string => $key === 'code'
+                    ? __('finance_workbench.common.code')
+                    : __('finance_workbench.report_columns.'.$key),
+                $columns,
+            )
+            : [
+                __('finance_workbench.common.code'),
+                __('finance_workbench.statements.account'),
+                __('finance_workbench.common.type'),
+                __('finance_workbench.common.debit'),
+                __('finance_workbench.common.credit'),
+                __('finance_workbench.statements.balance'),
+                __('finance_workbench.statements.comparative'),
+            ];
+        $reportName = $tab === 'reports' ? $report['code'] : $data['statementType'];
+        $filename = sprintf('foodex-finance-%s-%s-period-%d.csv', $tab, $reportName, $data['periodId']);
+
+        return response()->streamDownload(static function () use ($lines, $columns, $labels, $tab): void {
+            $stream = fopen('php://output', 'wb');
+            if ($stream === false) {
+                return;
+            }
+
+            // UTF-8 BOM makes Arabic headings readable in spreadsheet programs.
+            fwrite($stream, "\xEF\xBB\xBF");
+            fputcsv($stream, $labels, ',', '"', '');
+
+            foreach ($lines as $line) {
+                fputcsv($stream, array_map(static function (string $column) use ($line, $tab): string|int|float {
+                    $value = $line[$column] ?? null;
+                    if ($value === null) {
+                        return '';
+                    }
+                    if ($tab === 'statements' && str_ends_with($column, '_mills') && is_numeric($value)) {
+                        // Statements persist integer milli-units, but CSV must
+                        // show readable currency amounts, not values 1000x too high.
+                        $mills = (int) $value;
+                        $absolute = abs($mills);
+
+                        return ($mills < 0 ? '-' : '').intdiv($absolute, 1000).'.'.str_pad((string) ($absolute % 1000), 3, '0', STR_PAD_LEFT);
+                    }
+                    if (is_bool($value)) {
+                        return $value ? __('finance_workbench.common.yes') : __('finance_workbench.common.no');
+                    }
+                    if (is_int($value) || is_float($value)) {
+                        return $value;
+                    }
+
+                    $text = is_array($value)
+                        ? (json_encode($value, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?: '')
+                        : (string) $value;
+
+                    // Neutralize spreadsheet formulas, including prefixed whitespace.
+                    return preg_match('/^\\s*[=+\\-@]/u', $text) ? "'".$text : $text;
+                }, $columns), ',', '"', '');
+            }
+
+            fclose($stream);
+        }, $filename, [
+            'Content-Type' => 'text/csv; charset=UTF-8',
+            'Cache-Control' => 'private, no-store, no-cache, max-age=0',
+            'X-Content-Type-Options' => 'nosniff',
         ]);
     }
 
@@ -978,6 +1084,10 @@ final class FinanceWorkbenchController extends Controller
 
         return [
             'foundation_read' => $permitted('finance.view') && $entitled('finance.foundation.read'),
+            // Posted GL has legal-entity, not immutable Retail store, source scope.
+            // Report/statement tab visibility must match server-side 403 checks.
+            'reports_read' => ! $context->isRetail() && $permitted('finance.view') && $entitled('finance.foundation.read'),
+            'statements_read' => ! $context->isRetail() && $permitted('finance.view') && $entitled('finance.gl.read'),
             'foundation_manage' => $permitted('finance.manage') && $entitled('finance.foundation.manage'),
             'gl_read' => $permitted('finance.view') && $entitled('finance.gl.read'),
             'gl_manage' => $permitted('finance.manage') && $entitled('finance.gl.manage'),
@@ -1017,8 +1127,8 @@ final class FinanceWorkbenchController extends Controller
             ['key' => 'tax', 'label' => 'finance_workbench.tabs.tax', 'available' => $available('foundation_read')],
             ['key' => 'allocations', 'label' => 'finance_workbench.tabs.allocations', 'available' => $available('foundation_read')],
             ['key' => 'assets', 'label' => 'finance_workbench.tabs.assets', 'available' => $available('foundation_read')],
-            ['key' => 'statements', 'label' => 'finance_workbench.tabs.statements', 'available' => $available('gl_read')],
-            ['key' => 'reports', 'label' => 'finance_workbench.tabs.reports', 'available' => $available('foundation_read')],
+            ['key' => 'statements', 'label' => 'finance_workbench.tabs.statements', 'available' => $available('statements_read')],
+            ['key' => 'reports', 'label' => 'finance_workbench.tabs.reports', 'available' => $available('reports_read')],
         ];
     }
 

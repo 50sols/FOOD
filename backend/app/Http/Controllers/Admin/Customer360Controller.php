@@ -878,6 +878,7 @@ final class Customer360Controller extends Controller
             'amount' => ['required', 'numeric', 'gt:0'],
             'reference' => ['nullable', 'string', 'max:120'],
             'description' => ['nullable', 'string', 'max:500'],
+            'settlement_request_id' => ['nullable', 'uuid'],
         ]);
 
         $result = $ledger->settleInvoice(
@@ -888,9 +889,12 @@ final class Customer360Controller extends Controller
             $actor,
             $validated['reference'] ?? null,
             $validated['description'] ?? null,
+            $validated['settlement_request_id'] ?? null,
         );
 
-        $audit->record('customer360.invoice_settled', $actor, $model, null, $result, $request);
+        if (! $result['replayed']) {
+            $audit->record('customer360.invoice_settled', $actor, $model, null, $result, $request);
+        }
 
         return redirect()
             ->to(route('admin.customer-360.show', ['platformCustomer' => $customer->getKey()]).'#invoices')

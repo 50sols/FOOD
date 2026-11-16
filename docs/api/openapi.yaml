@@ -49,6 +49,48 @@ tags:
     description: Retailer-owned actual sell-out connections, SKU mapping, ingestion and reconciliation.
 
 paths:
+  /platform/storefront:
+    get:
+      tags: [Stores, Catalog]
+      summary: Public Platform Wholesale storefront with active Retail store placements
+      operationId: getPublicPlatformWholesaleStorefront
+      description: The configured active B2B principal is the only Wholesale product source. Active B2C Retail placements remain separately service-zone-scoped. Optional filters must be scalar; arrays and malformed or oversized inputs return field-scoped JSON 422.
+      parameters:
+        - in: query
+          name: q
+          description: Literal Wholesale product name, SKU or barcode search
+          schema:
+            type: string
+            maxLength: 160
+        - in: query
+          name: category_id
+          description: Positive Wholesale category ID
+          schema:
+            type: integer
+            minimum: 1
+        - in: query
+          name: country_code
+          schema:
+            type: string
+            maxLength: 8
+        - in: query
+          name: city
+          schema:
+            type: string
+            maxLength: 160
+        - in: query
+          name: area
+          schema:
+            type: string
+            maxLength: 160
+      responses:
+        "200":
+          description: Public B2B platform store, product groups, and active B2C Retail placements
+        "422":
+          $ref: "#/components/responses/ValidationError"
+        "503":
+          description: The configured active Platform Wholesale principal is unavailable
+
   /assistant/sellout/connections:
     get:
       tags: [AI Sell-Out]
@@ -867,6 +909,24 @@ paths:
       parameters:
         - $ref: "#/components/parameters/Page"
         - $ref: "#/components/parameters/PerPage"
+        - in: query
+          name: country_code
+          description: Optional service-zone country filter; an empty value is ignored.
+          schema:
+            type: string
+            maxLength: 16
+        - in: query
+          name: city
+          description: Optional service-zone city filter; an empty value is ignored.
+          schema:
+            type: string
+            maxLength: 150
+        - in: query
+          name: area
+          description: Optional service-zone area filter; an empty value is ignored.
+          schema:
+            type: string
+            maxLength: 150
       responses:
         "200":
           description: Store collection
@@ -874,6 +934,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/StoreCollection"
+        "422":
+          $ref: "#/components/responses/ValidationError"
 
   /stores/{store}/categories:
     get:
@@ -891,6 +953,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/CategoryCollection"
+        "422":
+          $ref: "#/components/responses/ValidationError"
         "404":
           $ref: "#/components/responses/NotFound"
 
@@ -940,6 +1004,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ProductCollection"
+        "422":
+          $ref: "#/components/responses/ValidationError"
         "404":
           $ref: "#/components/responses/NotFound"
 
@@ -959,6 +1025,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/OfferCollection"
+        "422":
+          $ref: "#/components/responses/ValidationError"
         "404":
           $ref: "#/components/responses/NotFound"
 
@@ -970,7 +1038,14 @@ paths:
       parameters:
         - $ref: "#/components/parameters/StoreId"
         - $ref: "#/components/parameters/Page"
-        - $ref: "#/components/parameters/PerPage"
+        - in: query
+          name: per_page
+          description: Maximum 50 banners per page.
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 50
+            default: 10
       responses:
         "200":
           description: Store banner collection
@@ -978,6 +1053,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/BannerCollection"
+        "422":
+          $ref: "#/components/responses/ValidationError"
         "404":
           $ref: "#/components/responses/NotFound"
 
@@ -2021,6 +2098,8 @@ paths:
                 $ref: "#/components/schemas/NotificationCollection"
         "401":
           $ref: "#/components/responses/Unauthenticated"
+        "422":
+          $ref: "#/components/responses/ValidationError"
 
   /notifications/{notification}:
     get:
@@ -2043,6 +2122,8 @@ paths:
           $ref: "#/components/responses/Unauthenticated"
         "404":
           $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/ValidationError"
 
   /notifications/{notification}/read:
     post:
@@ -3140,7 +3221,7 @@ components:
     Locale:
       in: query
       name: locale
-      description: Requested localized notification content. Falls back to the authenticated user's locale.
+      description: Optional scalar ar/en. Missing uses the authenticated user's supported locale; invalid explicit values return HTTP 422.
       schema:
         type: string
         enum: [ar, en]
@@ -3693,6 +3774,21 @@ components:
         password:
           type: string
           format: password
+        app:
+          description: >-
+            Optional first-party app selector. If omitted or null, newly issued
+            bearer token abilities are limited to app:customer (never wildcard).
+            Driver and Van tokens require an explicit matching app plus
+            independent server-side role and assignment authorization.
+          type: [string, "null"]
+          enum: [customer, driver, van, null]
+        van_id:
+          description: >-
+            Optional positive Van assignment selector evaluated by the server;
+            it does not authorize a Van runtime without app:van and a valid
+            effective role and assignment.
+          type: [integer, "null"]
+          minimum: 1
 
     LoginResponse:
       type: object

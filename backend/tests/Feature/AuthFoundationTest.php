@@ -40,6 +40,10 @@ class AuthFoundationTest extends TestCase
 
         $token = $login->json('token');
 
+        // An omitted app remains compatible with legacy Customer clients
+        // without silently creating a privileged wildcard bearer token.
+        $this->assertSame(['app:customer'], $user->tokens()->firstOrFail()->abilities);
+
         $this->withToken($token)
             ->getJson('/api/v1/profile')
             ->assertOk()
@@ -250,6 +254,31 @@ class AuthFoundationTest extends TestCase
         $this->assertSame($operatorAssignment->id, $context['selected']['assignment_id']);
         $this->assertCount(1, $context['available']);
         $this->assertDatabaseHas('van_assignments', ['id' => $legacyAssignment->id, 'driver_id' => $driver->id]);
+
+        // This account is genuinely eligible for both runtimes. An
+        // unspecified legacy login must still issue a Customer-only token,
+        // not the wildcard that Sanctum tokenCan treats as every app.
+        $legacyToken = $this->postJson('/api/v1/auth/login', [
+            'email' => $user->email,
+            'password' => 'correct-password',
+        ])->assertOk()->json('token');
+
+        $legacyAccessToken = $user->fresh()->tokens()->latest('id')->firstOrFail();
+        $this->assertSame(['app:customer'], $legacyAccessToken->abilities);
+        $this->assertFalse($legacyAccessToken->can('app:driver'));
+        $this->assertFalse($legacyAccessToken->can('app:van'));
+
+        $this->withToken($legacyToken)
+            ->getJson('/api/v1/driver/wallet')
+            ->assertForbidden();
+
+        $this->app['auth']->forgetGuards();
+
+        $this->withToken($legacyToken)
+            ->getJson('/api/v1/van/no-order-reasons')
+            ->assertForbidden();
+
+        $this->app['auth']->forgetGuards();
 
         $driverToken = $this->postJson('/api/v1/auth/login', [
             'email' => $user->email,
