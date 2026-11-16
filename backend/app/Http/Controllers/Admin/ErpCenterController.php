@@ -9,6 +9,7 @@ use App\Enterprise\Health\ModuleHealthService;
 use App\Enterprise\Modules\ModuleOperationalReadiness;
 use App\Enterprise\Modules\ModuleRegistry;
 use App\Enterprise\Modules\ModuleState;
+use App\Enterprise\Organization\OrganizationHierarchyService;
 use App\Http\Controllers\Controller;
 use App\Models\EnterpriseModuleEntitlement;
 use App\Models\User;
@@ -23,6 +24,7 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Route;
 use Illuminate\Support\Facades\Schema;
+use Throwable;
 
 final class ErpCenterController extends Controller
 {
@@ -285,9 +287,13 @@ final class ErpCenterController extends Controller
         $financeStoreId = $state === ModuleState::ENABLED && $moduleCode === 'finance'
             ? $this->navigation->firstAuthorizedFinanceStoreId($actor)
             : null;
+        $needsOperationalStore = in_array($moduleCode, ['procurement', 'inventory_wms', 'treasury'], true);
+        $operationalStoreId = $state === ModuleState::ENABLED && $needsOperationalStore
+            ? $this->firstAuthorizedOperationalStoreId($actor, $moduleCode)
+            : null;
         $entitled = $state === ModuleState::ENABLED && ($moduleCode === 'finance'
             ? $financeStoreId !== null
-            : $this->isEntitled($actor, $moduleCode));
+            : ($this->isEntitled($actor, $moduleCode) || $operationalStoreId !== null));
         $healthStatus = null;
         $denialReason = null;
 
@@ -304,13 +310,22 @@ final class ErpCenterController extends Controller
                 'uncertified' => 'uncertified',
                 default => 'unhealthy',
             };
+
+            if ($status === 'available' && $needsOperationalStore && $operationalStoreId === null) {
+                // A healthy, certified module without an actual authorized
+                // store is still not an HTTP Workbench destination.
+                $status = 'not_entitled';
+                $denialReason = 'missing_scope';
+            }
         } elseif ($state === ModuleState::ENABLED) {
             $status = 'not_entitled';
             // Distinguish absent grants from granted modules with unusable
             // Finance legal/store scope; neither grants an HTTP action.
-            $denialReason = $moduleCode === 'finance' && $this->hasUnusableFinanceScope($actor)
-                ? 'missing_scope'
-                : 'entitlement_scope';
+            $denialReason = ($moduleCode === 'finance' && $this->hasUnusableFinanceScope($actor))
+                || ($needsOperationalStore
+                    && $this->firstAuthorizedOperationalStoreId($actor, $moduleCode, false) !== null)
+                    ? 'missing_scope'
+                    : 'entitlement_scope';
         } else {
             $status = match ($state) {
                 ModuleState::NOT_INSTALLED, ModuleState::INSTALLED, ModuleState::ENABLING => 'setup_required',
@@ -335,6 +350,9 @@ final class ErpCenterController extends Controller
         // Workbench controller and FinanceWorkbenchAccess accept.
         if ($actionable && $moduleCode === 'finance' && $financeStoreId !== null) {
             $params['store_id'] = (string) $financeStoreId;
+        }
+        if ($actionable && $needsOperationalStore && $operationalStoreId !== null) {
+            $params['store_id'] = (string) $operationalStoreId;
         }
 
         return $this->card(
@@ -424,6 +442,54 @@ final class ErpCenterController extends Controller
         }
 
         return false;
+    }
+
+    /**
+     * Return an existing operational store allowed by the same permission
+     * candidate set as its HTTP workbench. No store/scope is created. Scope
+     * and entitlement checks fail closed without exposing probe internals.
+     */
+    private function firstAuthorizedOperationalStoreId(
+        User $actor,
+        string $moduleCode,
+        bool $requireHierarchy = true,
+    ): ?int {
+        $permissions = match ($moduleCode) {
+            'procurement' => [
+                'procurement.suppliers.view',
+                'procurement.purchase_requests.view',
+                'procurement.purchase_orders.view',
+            ],
+            'inventory_wms' => ['inventory.view'],
+            'treasury' => ['finance.view'],
+            default => [],
+        };
+
+        foreach ($permissions as $permission) {
+            foreach (app(OperationalTenantScope::class)->allowedStoreIds($actor, $permission) as $storeId) {
+                if (! $actor->hasPermission($permission, $storeId)
+                    || ! $this->entitlements->allows(
+                        $moduleCode,
+                        new EntitlementScope(EntitlementScope::STORE, $storeId),
+                    )) {
+                    continue;
+                }
+
+                if (! $requireHierarchy) {
+                    return $storeId;
+                }
+
+                try {
+                    if (app(OrganizationHierarchyService::class)->scopeForStore($storeId) !== null) {
+                        return $storeId;
+                    }
+                } catch (Throwable) {
+                    // Missing or invalid hierarchy never creates a live link.
+                }
+            }
+        }
+
+        return null;
     }
 
     /**
