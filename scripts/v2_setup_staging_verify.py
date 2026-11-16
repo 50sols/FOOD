@@ -35,6 +35,19 @@ MAX_ENTRIES = 100_000
 MAX_ENTRY_SIZE = 512 * 1024 * 1024
 MAX_TOTAL_SIZE = 4 * 1024 * 1024 * 1024
 ALLOWED_ENV_EXAMPLES = frozenset({".env.example", ".env.production.example"})
+REQUIRED_INSTALL_INSTRUCTION_MARKERS = (
+    "cpanel",
+    "backend/public",
+    "pdo_mysql",
+    "fileinfo",
+    "mysql/mariadb",
+    "cron jobs",
+    "symlink",
+)
+FORBIDDEN_INSTALL_INSTRUCTION_VALUES = (
+    "foodex.50sols.com",
+    "solscool_vanfoodex",
+)
 
 
 def _require(condition: bool, message: str) -> None:
@@ -277,6 +290,18 @@ def verify_setup_zip(zip_path: Path, version_path: Path, source_sha: str) -> dic
                              f"File/directory path collision in Setup ZIP: {name!r}")
             _require(REQUIRED.issubset(files),
                      f"Missing Setup ZIP files: {sorted(REQUIRED - files)}")
+            try:
+                instructions = archive.read("INSTALL-FIRST.txt").decode("utf-8").casefold()
+            except (KeyError, UnicodeDecodeError) as exc:
+                raise SetupZipError("Invalid Setup ZIP first-install instructions.") from exc
+            _require(
+                all(marker in instructions for marker in REQUIRED_INSTALL_INSTRUCTION_MARKERS),
+                "Setup ZIP first-install instructions omit cPanel/PHP/storage/scheduler guidance.",
+            )
+            _require(
+                not any(value in instructions for value in FORBIDDEN_INSTALL_INSTRUCTION_VALUES),
+                "Setup ZIP first-install instructions contain deployment-specific production values.",
+            )
             _require(archive.read("VERSION").decode("utf-8").strip() == version,
                      "ZIP VERSION differs from checked-out source.")
             _require(archive.testzip() is None, "Setup ZIP CRC verification failed.")

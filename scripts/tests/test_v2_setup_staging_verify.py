@@ -16,7 +16,11 @@ from scripts.v2_setup_staging_verify import SetupZipError, verify_setup_zip
 SHA = "a" * 40
 BASE_ENTRIES = {
     "VERSION": b"1.0.125",
-    "INSTALL-FIRST.txt": b"Read instructions.",
+    "INSTALL-FIRST.txt": (
+        b"cPanel shared hosting: set Document Root to backend/public. "
+        b"Create an empty MySQL/MariaDB database. PHP requires pdo_mysql and fileinfo. "
+        b"Verify the storage symlink. Use cPanel Cron Jobs for schedule:run."
+    ),
     "backend/public/index.php": b"<?php",
     "backend/vendor/autoload.php": b"<?php",
     "backend/.env.production.example": b"APP_ENV=production\n",
@@ -456,6 +460,20 @@ class V2SetupStagingVerifierTest(unittest.TestCase):
         with self.assertRaisesRegex(SetupZipError, "Invalid source Semantic Version"):
             self.verify()
 
+
+    def test_install_instructions_reject_production_host_and_database_values(self) -> None:
+        for value in ("foodex.50sols.com", "solscool_vanfoodex"):
+            with self.subTest(value=value):
+                self.pack({
+                    "INSTALL-FIRST.txt": BASE_ENTRIES["INSTALL-FIRST.txt"] + value.encode("utf-8"),
+                })
+                with self.assertRaisesRegex(SetupZipError, "deployment-specific production values"):
+                    self.verify()
+
+    def test_install_instructions_require_cpanel_runtime_and_scheduler_guidance(self) -> None:
+        self.pack({"INSTALL-FIRST.txt": b"Read instructions."})
+        with self.assertRaisesRegex(SetupZipError, "omit cPanel/PHP/storage/scheduler guidance"):
+            self.verify()
 
 if __name__ == "__main__":
     unittest.main()

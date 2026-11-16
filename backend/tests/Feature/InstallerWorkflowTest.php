@@ -72,6 +72,39 @@ class InstallerWorkflowTest extends TestCase
         parent::tearDown();
     }
 
+    public function test_storage_configuration_rejects_unmapped_public_directory_without_changing_environment(): void
+    {
+        $originalPublicPath = app()->publicPath();
+        $originalStoragePath = app()->storagePath();
+        $publicPath = $this->testDirectory.'/cpanel-public';
+        $storagePath = $this->testDirectory.'/cpanel-storage';
+
+        mkdir($publicPath.'/storage', 0750, true);
+        mkdir($storagePath, 0750, true);
+
+        app()->usePublicPath($publicPath);
+        app()->useStoragePath($storagePath);
+
+        try {
+            $environment = app(InstallerEnvironment::class);
+            $before = file_get_contents($environment->path());
+
+            try {
+                app(InstallerWorkflow::class)->saveStorageConfiguration('public');
+                $this->fail('A real public/storage directory does not map storage/app/public.');
+            } catch (\RuntimeException $exception) {
+                $this->assertSame(__('installer.errors.public_storage_link'), $exception->getMessage());
+            }
+
+            $this->assertSame($before, file_get_contents($environment->path()));
+            $this->assertDirectoryExists($publicPath.'/storage');
+            $this->assertFalse(is_link($publicPath.'/storage'));
+        } finally {
+            app()->usePublicPath($originalPublicPath);
+            app()->useStoragePath($originalStoragePath);
+        }
+    }
+
     public function test_installer_exposes_exactly_fifteen_ordered_steps(): void
     {
         $this->assertCount(15, InstallerChecklist::steps());

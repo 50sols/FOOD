@@ -131,7 +131,7 @@ return [
         'path_writable' => 'Runtime path [:path] must be writable.',
         'db_connection' => 'Database connection failed. Verify the supplied host, port, database and credentials.',
         'storage_dir' => 'Storage directories could not be prepared.',
-        'public_storage_link' => 'The public/storage link could not be created. Image uploads would not be publicly accessible.',
+        'public_storage_link' => 'This host cannot create the required public storage symlink. Ask your hosting provider to enable PHP symlink support or configure a safe web-server alias from backend/storage/app/public to backend/public/storage, then retry. Do not create an empty backend/public/storage directory as a substitute.',
         'migrations' => 'Database migrations failed.',
         'seed' => 'Required core data could not be seeded.',
         'storage_health' => 'Storage health check failed.',
