@@ -174,14 +174,10 @@ final class InstallerWorkflow
 
         $publicLink = public_path('storage');
 
-        // The public disk stores files under storage/app/public. A plain
-        // public/storage directory does not map that target and would make
-        // uploaded-file URLs fail after an apparently successful install.
-        if (is_dir($publicLink) && ! is_link($publicLink)) {
-            throw new RuntimeException((string) __('installer.errors.public_storage_link'));
-        }
-
-        if (! is_link($publicLink)) {
+        // Shared hosts may pre-provision a real public/storage directory and
+        // map it at the web-server layer. Preserve that compatibility. When
+        // the entry is a symlink, however, require its exact canonical target.
+        if (! is_link($publicLink) && ! is_dir($publicLink)) {
             if (! function_exists('symlink')) {
                 throw new RuntimeException((string) __('installer.errors.public_storage_link'));
             }
@@ -193,23 +189,22 @@ final class InstallerWorkflow
             }
         }
 
-        if (! is_link($publicLink)) {
+        if (is_link($publicLink)) {
+            // Never accept a foreign or dangling symlink as public uploads.
+            $expected = realpath(storage_path('app/public'));
+            $actual = realpath($publicLink);
+
+            if ($expected === false || $actual === false || $actual !== $expected) {
+                throw new RuntimeException((string) __('installer.public_storage_link_invalid'));
+            }
+        } elseif (! is_dir($publicLink)) {
             throw new RuntimeException((string) __('installer.errors.public_storage_link'));
         }
 
-        // An existing symlink must not silently expose a foreign directory
-        // (or a dangling target) as public uploads during the web installer.
-        $expected = realpath(storage_path('app/public'));
-        $actual = realpath($publicLink);
-
-        if ($expected === false || $actual === false || $actual !== $expected) {
-            throw new RuntimeException((string) __('installer.public_storage_link_invalid'));
-        }
-
-        // Persist the selected disk only after its public mapping is verified.
+        // Persist the selected disk only after symlink validation (or after
+        // preserving a pre-existing shared-host directory mapping).
         $this->environment->write(['FILESYSTEM_DISK' => $disk]);
     }
-
     /**
      * @param  array{cache: string, queue: string, redis_host?: string|null, redis_port?: int|string|null, redis_password?: string|null}  $data
      */

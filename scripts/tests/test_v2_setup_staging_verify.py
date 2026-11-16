@@ -23,7 +23,19 @@ BASE_ENTRIES = {
     ),
     "backend/public/index.php": b"<?php",
     "backend/vendor/autoload.php": b"<?php",
-    "backend/.env.production.example": b"APP_ENV=production\n",
+    "backend/.env.production.example": (
+        b"APP_ENV=production\n"
+        b"APP_KEY=\n"
+        b"APP_URL=http://localhost\n"
+        b"DB_DATABASE=foodex\n"
+        b"DB_USERNAME=foodex\n"
+        b"DB_PASSWORD=\n"
+        b"REDIS_PASSWORD=null\n"
+        b"MAIL_PASSWORD=\n"
+        b"MAIL_FROM_ADDRESS=noreply@example.com\n"
+        b"FOODEX_CUSTOMER_PREVIEW_RUNTIME_URL=${APP_URL}/preview/customer/\n"
+        b"FOODEX_CUSTOMER_PREVIEW_ALLOWED_ORIGIN=${APP_URL}\n"
+    ),
 }
 
 
@@ -460,6 +472,34 @@ class V2SetupStagingVerifierTest(unittest.TestCase):
         with self.assertRaisesRegex(SetupZipError, "Invalid source Semantic Version"):
             self.verify()
 
+
+    def test_setup_env_template_rejects_production_host_database_and_sender_values(self) -> None:
+        for value in (
+            "APP_URL=https://foodex.50sols.com",
+            "DB_DATABASE=solscool_foodex",
+            "DB_USERNAME=solscool_foodex",
+            "MAIL_FROM_ADDRESS=noreply@50sols.com",
+            "FOODEX_CUSTOMER_PREVIEW_RUNTIME_URL=https://foodex.50sols.com/preview/customer/",
+        ):
+            with self.subTest(value=value):
+                payload = BASE_ENTRIES["backend/.env.production.example"] + (value + "\\n").encode()
+                self.pack({"backend/.env.production.example": payload})
+                with self.assertRaisesRegex(SetupZipError, "environment template contains deployment-specific production values"):
+                    self.verify()
+
+    def test_setup_env_template_rejects_nonempty_secret_values(self) -> None:
+        for value in (
+            "APP_KEY=base64:must-not-ship",
+            "DB_PASSWORD=must-not-ship",
+            "MAIL_PASSWORD=must-not-ship",
+            "REDIS_PASSWORD=must-not-ship",
+            "AWS_SECRET_ACCESS_KEY=must-not-ship",
+        ):
+            with self.subTest(value=value):
+                payload = BASE_ENTRIES["backend/.env.production.example"] + (value + "\\n").encode()
+                self.pack({"backend/.env.production.example": payload})
+                with self.assertRaisesRegex(SetupZipError, "environment template contains non-empty secret fields"):
+                    self.verify()
 
     def test_install_instructions_reject_production_host_and_database_values(self) -> None:
         for value in ("foodex.50sols.com", "solscool_vanfoodex"):

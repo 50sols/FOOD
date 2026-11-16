@@ -46,13 +46,51 @@ REQUIRED_INSTALL_INSTRUCTION_MARKERS = (
 )
 FORBIDDEN_INSTALL_INSTRUCTION_VALUES = (
     "foodex.50sols.com",
+    "solscool_foodex",
     "solscool_vanfoodex",
+    "noreply@50sols.com",
 )
+FORBIDDEN_SETUP_ENV_VALUES = (
+    "foodex.50sols.com",
+    "solscool_foodex",
+    "solscool_vanfoodex",
+    "noreply@50sols.com",
+)
+SENSITIVE_ENV_KEYS = frozenset({
+    "APP_KEY",
+    "DB_PASSWORD",
+    "MAIL_PASSWORD",
+    "REDIS_PASSWORD",
+    "AWS_ACCESS_KEY_ID",
+    "AWS_SECRET_ACCESS_KEY",
+    "PUSHER_APP_SECRET",
+    "SENTRY_DSN",
+    "FOODEX_WHATSAPP_ACCESS_TOKEN",
+    "FOODEX_WHATSAPP_APP_SECRET",
+    "FOODEX_WHATSAPP_VERIFY_TOKEN",
+    "TWILIO_AUTH_TOKEN",
+})
 
 
 def _require(condition: bool, message: str) -> None:
     if not condition:
         raise SetupZipError(message)
+
+
+def _parse_env_template(content: str) -> dict[str, list[str]]:
+    """Parse every dotenv assignment so duplicate keys cannot hide secrets."""
+    values: dict[str, list[str]] = {}
+    for raw_line in content.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+            value = value[1:-1]
+        values.setdefault(key, []).append(value)
+    return values
 
 
 def _reject_ambiguous_extra_fields(extra: bytes, member_name: str) -> None:
@@ -301,6 +339,25 @@ def verify_setup_zip(zip_path: Path, version_path: Path, source_sha: str) -> dic
             _require(
                 not any(value in instructions for value in FORBIDDEN_INSTALL_INSTRUCTION_VALUES),
                 "Setup ZIP first-install instructions contain deployment-specific production values.",
+            )
+            try:
+                env_template = archive.read("backend/.env.production.example").decode("utf-8")
+            except (KeyError, UnicodeDecodeError) as exc:
+                raise SetupZipError("Invalid Setup ZIP environment template.") from exc
+            env_normalized = env_template.casefold()
+            _require(
+                not any(value in env_normalized for value in FORBIDDEN_SETUP_ENV_VALUES),
+                "Setup ZIP environment template contains deployment-specific production values.",
+            )
+            env_values = _parse_env_template(env_template)
+            unsafe_secret_keys = []
+            for key in SENSITIVE_ENV_KEYS:
+                allowed_values = {"", "null"} if key == "REDIS_PASSWORD" else {""}
+                if any(value.casefold() not in allowed_values for value in env_values.get(key, [])):
+                    unsafe_secret_keys.append(key)
+            _require(
+                not unsafe_secret_keys,
+                "Setup ZIP environment template contains non-empty secret fields.",
             )
             _require(archive.read("VERSION").decode("utf-8").strip() == version,
                      "ZIP VERSION differs from checked-out source.")

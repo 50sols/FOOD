@@ -63,7 +63,7 @@ class InstallerWorkflowTest extends TestCase
             );
 
             foreach ($files as $file) {
-                $file->isDir() ? rmdir($file->getPathname()) : unlink($file->getPathname());
+                if ($file->isDir() && ! $file->isLink()) { rmdir($file->getPathname()); } else { unlink($file->getPathname()); }
             }
 
             rmdir($this->testDirectory);
@@ -72,15 +72,26 @@ class InstallerWorkflowTest extends TestCase
         parent::tearDown();
     }
 
-    public function test_storage_configuration_rejects_unmapped_public_directory_without_changing_environment(): void
+    public function test_storage_configuration_rejects_foreign_symlink_without_changing_environment(): void
     {
+        if (! function_exists('symlink')) {
+            $this->markTestSkipped('Symlinks are not supported on this PHP installation.');
+        }
+
         $originalPublicPath = app()->publicPath();
         $originalStoragePath = app()->storagePath();
         $publicPath = $this->testDirectory.'/cpanel-public';
         $storagePath = $this->testDirectory.'/cpanel-storage';
+        $foreignPath = $this->testDirectory.'/cpanel-foreign';
 
-        mkdir($publicPath.'/storage', 0750, true);
-        mkdir($storagePath, 0750, true);
+        mkdir($publicPath, 0750, true);
+        mkdir($storagePath.'/app/public', 0750, true);
+        mkdir($foreignPath, 0750, true);
+
+        $link = $publicPath.'/storage';
+        if (! @symlink($foreignPath, $link)) {
+            $this->markTestSkipped('The current filesystem cannot create symlinks.');
+        }
 
         app()->usePublicPath($publicPath);
         app()->useStoragePath($storagePath);
@@ -91,14 +102,14 @@ class InstallerWorkflowTest extends TestCase
 
             try {
                 app(InstallerWorkflow::class)->saveStorageConfiguration('public');
-                $this->fail('A real public/storage directory does not map storage/app/public.');
+                $this->fail('A foreign public/storage symlink must not be accepted.');
             } catch (\RuntimeException $exception) {
-                $this->assertSame(__('installer.errors.public_storage_link'), $exception->getMessage());
+                $this->assertSame(__('installer.public_storage_link_invalid'), $exception->getMessage());
             }
 
             $this->assertSame($before, file_get_contents($environment->path()));
-            $this->assertDirectoryExists($publicPath.'/storage');
-            $this->assertFalse(is_link($publicPath.'/storage'));
+            $this->assertTrue(is_link($link));
+            $this->assertSame(realpath($foreignPath), realpath($link));
         } finally {
             app()->usePublicPath($originalPublicPath);
             app()->useStoragePath($originalStoragePath);
