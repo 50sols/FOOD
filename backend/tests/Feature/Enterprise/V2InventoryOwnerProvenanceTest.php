@@ -467,6 +467,65 @@ final class V2InventoryOwnerProvenanceTest extends TestCase
         }
     }
 
+    public function test_company_scoped_supplier_title_read_respects_ar_en_and_denies_revoked_or_foreign_scope(): void
+    {
+        $this->seed(CoreReferenceSeeder::class);
+        $stock = $this->stock('SHARED-SUPPLIER-OWNER');
+        $actor = $this->inventoryActor($stock['store_id']);
+        $supplierId = $this->supplier($stock['store_id']);
+        DB::table('enterprise_suppliers')->where('id', $supplierId)->update([
+            'scope_type' => 'company',
+            'store_id' => null,
+            'name_ar' => 'مورد الشركة المعتمد',
+        ]);
+        $this->position($stock['inventory_id'], 'SUPPLIER', $supplierId, 10, 3, $actor->id, $actor->id, false);
+        $reader = app(InventoryOwnerProvenanceReadService::class);
+        $previousLocale = app()->getLocale();
+        try {
+            foreach (['en' => 'Verified Supplier Fixture', 'ar' => 'مورد الشركة المعتمد'] as $locale => $expectedName) {
+                app()->setLocale($locale);
+                $snapshot = $reader->snapshot($actor, $stock['inventory_id']);
+                $this->assertSame('UNVERIFIED', $snapshot['state']);
+                $this->assertFalse($snapshot['certified']);
+                $this->assertSame('SUPPLIER', $snapshot['positions'][0]['owner_kind']);
+                $this->assertSame($supplierId, $snapshot['positions'][0]['supplier_id']);
+                $this->assertSame($expectedName, $snapshot['positions'][0]['supplier_name']);
+                $this->assertFalse($snapshot['positions'][0]['certified']);
+            }
+        } finally {
+            app()->setLocale($previousLocale);
+        }
+
+        DB::table('enterprise_suppliers')->where('id', $supplierId)->update(['status' => 'inactive']);
+        $revoked = $reader->snapshot($actor, $stock['inventory_id']);
+        $this->assertSame('UNKNOWN', $revoked['state']);
+        $this->assertNull($revoked['positions'][0]['supplier_id']);
+        $this->assertFalse($revoked['certified']);
+
+        DB::table('enterprise_suppliers')->where('id', $supplierId)->update([
+            'status' => 'active', 'scope_type' => 'store', 'store_id' => null,
+        ]);
+        $forgedScope = $reader->snapshot($actor, $stock['inventory_id']);
+        $this->assertSame('UNKNOWN', $forgedScope['state']);
+        $this->assertNull($forgedScope['positions'][0]['supplier_name']);
+
+        $company = DB::table('enterprise_companies')->first(['organization_id']);
+        $foreignCompanyId = DB::table('enterprise_companies')->insertGetId([
+            'organization_id' => $company->organization_id,
+            'code' => 'P110-FOREIGN-SHARED-SUPPLIER',
+            'name' => 'Foreign Shared Supplier Company',
+            'is_active' => true, 'created_at' => now(), 'updated_at' => now(),
+        ]);
+        DB::table('enterprise_suppliers')->where('id', $supplierId)->update([
+            'scope_type' => 'company', 'store_id' => null, 'company_id' => $foreignCompanyId,
+        ]);
+        $foreignCompany = $reader->snapshot($actor, $stock['inventory_id']);
+        $this->assertSame('UNKNOWN', $foreignCompany['state']);
+        $this->assertNull($foreignCompany['positions'][0]['supplier_id']);
+        $this->assertNull($foreignCompany['positions'][0]['supplier_name']);
+        $this->assertFalse($foreignCompany['certified']);
+    }
+
     public function test_supplier_legal_owner_claim_cannot_cross_enterprise_company_with_same_store_id(): void
     {
         $this->seed(CoreReferenceSeeder::class);

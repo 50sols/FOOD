@@ -109,8 +109,20 @@ final class InventoryOwnerProvenanceReadService
                 // Supplier identity must belong to the authorized legal
                 // company, not merely share a manually assigned store_id.
                 $suppliers = DB::table('enterprise_suppliers')
-                    ->where('store_id', (int) $warehouse->store_id)
                     ->where('company_id', (int) $companyId)
+                    ->where('status', 'active')
+                    // Follow the canonical supplier directory: a legal
+                    // company-wide supplier is visible to its company stores,
+                    // but not to another company or another store's scope.
+                    ->where(function ($scope) use ($warehouse): void {
+                        $scope->where(function ($store) use ($warehouse): void {
+                            $store->where('scope_type', 'store')
+                                ->where('store_id', (int) $warehouse->store_id);
+                        })->orWhere(function ($company): void {
+                            $company->where('scope_type', 'company')
+                                ->whereNull('store_id');
+                        });
+                    })
                     ->whereIn('id', $supplierIds)
                     ->get(['id', 'name_en', 'name_ar'])
                     ->keyBy('id');
