@@ -44,20 +44,22 @@ final class CommercialProfitabilityRuleService
             && in_array($storeId, $this->scope->allowedStoreIds($actor, 'finance.approve', 'b2b'), true);
     }
 
+    /**
+     * Server-side form test: validate an inactive proposal without
+     * creating a rule, audit, posting or readiness certificate.
+     */
+    public function validateProposal(User $actor, int $storeId, int $productId, Request $request): void
+    {
+        abort_unless($this->canPropose($actor, $storeId), 403);
+        $this->assertProduct($storeId, $productId);
+        $this->validatedProposalFields($request);
+    }
+
     public function propose(User $actor, int $storeId, int $productId, Request $request): void
     {
         abort_unless($this->canPropose($actor, $storeId), 403);
         $this->assertProduct($storeId, $productId);
-        $this->assertAllowedFields($request, [
-            'profitability_action', 'request_id', 'minimum_margin_percent', 'effective_from', 'effective_until',
-        ]);
-
-        $data = $request->validate([
-            'request_id' => ['required', 'uuid'],
-            'minimum_margin_percent' => ['required', 'regex:/^(?:100(?:\\.0{1,2})?|(?:[0-9]|[1-9][0-9])(?:\\.[0-9]{1,2})?)$/'],
-            'effective_from' => ['required', 'date_format:Y-m-d'],
-            'effective_until' => ['required', 'date_format:Y-m-d', 'after:effective_from'],
-        ]);
+        $data = $this->validatedProposalFields($request);
 
         // Integer hundredths of a percent; never use float conversion for money policy.
         [$whole, $fraction] = array_pad(explode('.', (string) $data['minimum_margin_percent'], 2), 2, '');
@@ -232,6 +234,25 @@ final class CommercialProfitabilityRuleService
             ->where('store_products.product_id', $productId)
             ->where('catalogs.channel', 'b2b')
             ->exists(), 404);
+    }
+
+    /**
+     * One allowlist and validator shared by Test and Save.
+     *
+     * @return array{request_id:string,minimum_margin_percent:string,effective_from:string,effective_until:string}
+     */
+    private function validatedProposalFields(Request $request): array
+    {
+        $this->assertAllowedFields($request, [
+            'profitability_action', 'request_id', 'minimum_margin_percent', 'effective_from', 'effective_until',
+        ]);
+
+        return $request->validate([
+            'request_id' => ['required', 'uuid'],
+            'minimum_margin_percent' => ['required', 'regex:/^(?:100(?:\\.0{1,2})?|(?:[0-9]|[1-9][0-9])(?:\\.[0-9]{1,2})?)$/'],
+            'effective_from' => ['required', 'date_format:Y-m-d'],
+            'effective_until' => ['required', 'date_format:Y-m-d', 'after:effective_from'],
+        ]);
     }
 
     /** @param list<string> $fields */
