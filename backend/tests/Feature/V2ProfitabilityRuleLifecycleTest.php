@@ -12,6 +12,7 @@ use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Str;
+use Illuminate\Validation\ValidationException;
 use Symfony\Component\HttpKernel\Exception\HttpException;
 use Tests\TestCase;
 
@@ -400,7 +401,7 @@ final class V2ProfitabilityRuleLifecycleTest extends TestCase
         $caught = null;
         try {
             app(CommercialProfitabilityRuleService::class)->revisions($checker, $store, $product);
-        } catch (\Illuminate\Validation\ValidationException $exception) {
+        } catch (ValidationException $exception) {
             $caught = $exception;
         }
         $this->assertNotNull($caught);
