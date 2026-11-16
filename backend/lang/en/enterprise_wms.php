@@ -277,6 +277,9 @@ return [
         'ownership' => [
             'title' => 'Legal stock ownership and provenance',
             'notice' => 'Stock quantity is not proof of legal ownership or unit cost. Recorded supplier or FOODEX claims require independently verified evidence and must not be used for margin, pricing, or COGS until certified.',
+            'custodian' => 'Current physical custodian',
+            'warehouse_custodian' => 'Warehouse (possession, not legal title)',
+            'owner_valuation_unavailable' => 'Legal-owner cost and COGS are not certified by this stock report. Van custody requires a separate verified trip handoff; neither warehouse location nor supplier name transfers legal title.',
             'state_label' => 'Legal-title evidence status',
             'owner' => 'Recorded owner claim',
             'certification' => 'Certification',
