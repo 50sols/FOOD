@@ -86,7 +86,7 @@ final class V2ProcurementWorkbenchTabLayoutTest extends TestCase
                 'tab' => $tab,
                 'store_id' => $store->id,
                 'q' => 'SAFE-PREFIX',
-                'status' => $tab === 'contracts' ? 'draft' : 'pending',
+                'status' => $tab === 'matches' ? 'pending' : 'draft',
             ]))->assertOk();
 
             $html = $response->getContent();
