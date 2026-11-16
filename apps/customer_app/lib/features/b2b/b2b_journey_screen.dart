@@ -5296,6 +5296,7 @@ class _B2bAccountStatementRemoteStateState
   String? _to;
   String? _storeId;
   int _readRevision = 0;
+  int _exportRevision = 0;
   B2bApi? _readApi;
   String? _readPath;
 
@@ -5346,6 +5347,7 @@ class _B2bAccountStatementRemoteStateState
     final api = widget.api;
     final path = _requestPath;
     final scopeChanged = !identical(_readApi, api) || _readPath != path;
+    if (scopeChanged) ++_exportRevision;
     _readApi = api;
     _readPath = path;
     if (mounted) {
@@ -5353,6 +5355,7 @@ class _B2bAccountStatementRemoteStateState
         if (scopeChanged) {
           _data = null;
           _stale = false;
+          _exporting = false;
         }
         _loading = _data == null;
         _error = null;
@@ -5381,6 +5384,8 @@ class _B2bAccountStatementRemoteStateState
   }
 
   Future<void> _pickDate({required bool from}) async {
+    final revision = _readRevision;
+    final api = widget.api;
     final current = DateTime.tryParse((from ? _from : _to) ?? '');
     final selected = await showDatePicker(
       context: context,
@@ -5388,7 +5393,8 @@ class _B2bAccountStatementRemoteStateState
       firstDate: DateTime(2020),
       lastDate: DateTime.now().add(const Duration(days: 366)),
     );
-    if (selected == null) return;
+    if (!mounted || selected == null || revision != _readRevision ||
+        !identical(widget.api, api)) return;
     setState(() {
       if (from) {
         _from = _isoDate(selected);
@@ -5439,6 +5445,9 @@ class _B2bAccountStatementRemoteStateState
 
   Future<void> _export(String format) async {
     if (_exporting) return;
+    final exportRevision = ++_exportRevision;
+    final api = widget.api;
+    final scopePath = _requestPath;
     setState(() => _exporting = true);
     final locale =
         Localizations.localeOf(context).languageCode == 'ar' ? 'ar' : 'en';
@@ -5451,15 +5460,19 @@ class _B2bAccountStatementRemoteStateState
     };
     final subject = context.tr('b2b.statement.title');
     try {
-      if (widget.api is! B2bDownloadApi) {
+      if (api is! B2bDownloadApi) {
         throw UnsupportedError('B2B statement export is unavailable.');
       }
-      final download = await (widget.api as B2bDownloadApi).download(
+      final download = await api.download(
         Uri(
           path: '/api/v1/b2b/account-statement/export',
           queryParameters: query,
         ).toString(),
       );
+      // An old account, store or period must never reach the OS share
+      // surface after the scope changes during document download.
+      if (!mounted || exportRevision != _exportRevision ||
+          !identical(widget.api, api) || scopePath != _requestPath) return;
       await SharePlus.instance.share(
         ShareParams(
           files: [
@@ -5473,12 +5486,16 @@ class _B2bAccountStatementRemoteStateState
         ),
       );
     } catch (_) {
-      if (!mounted) return;
+      if (!mounted || exportRevision != _exportRevision ||
+          !identical(widget.api, api) || scopePath != _requestPath) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text(context.tr('b2b.statement.export_failed'))),
       );
     } finally {
-      if (mounted) setState(() => _exporting = false);
+      // Late completion must not unlock a newer scope's export button.
+      if (mounted && exportRevision == _exportRevision) {
+        setState(() => _exporting = false);
+      }
     }
   }
 
