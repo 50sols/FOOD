@@ -93,6 +93,26 @@
         </div>
     @endif
 
+    <section class="foodex-card system-runtime-card" aria-labelledby="update-host-readiness-title" data-update-host-readiness>
+        <h2 id="update-host-readiness-title">{{ __('admin.system_update_host.title') }}</h2>
+        <p>{{ __('admin.system_update_host.description') }}</p>
+        @php($hostingFailures = array_keys(array_filter($hostingChecks, static fn (bool $ready): bool => ! $ready)))
+        <div class="foodex-alert {{ $hostingFailures !== [] ? 'warning' : 'info' }}" role="{{ $hostingFailures !== [] ? 'alert' : 'note' }}">
+            {{ __('admin.system_update_host.'.($hostingFailures !== [] ? 'action_required' : 'filesystem_precheck_only')) }}
+        </div>
+        <div class="system-runtime-panels">
+            @foreach($hostingChecks as $key => $ready)
+                <div class="foodex-alert {{ $ready ? 'info' : 'warning' }}" data-host-requirement="{{ $key }}" data-host-status="{{ $ready ? 'precheck-ok' : 'host-action-required' }}">
+                    <strong>{{ __('admin.system_update_host.checks.'.$key.'.label') }}</strong>
+                    <p>{{ __('admin.system_update_host.'.($ready ? 'precheck_ok' : 'host_action_required')) }}</p>
+                    <p>{{ __('admin.system_update_host.checks.'.$key.'.help') }}</p>
+                </div>
+            @endforeach
+        </div>
+        <p class="foodex-alert info" role="note">{{ __('admin.system_update_host.manual_verification') }}</p>
+        <p class="foodex-alert warning" role="note">{{ __('admin.system_update_host.signature_not_certified') }}</p>
+    </section>
+
     <section aria-labelledby="runtime-health-title">
         <div class="foodex-viz-header">
             <div>
