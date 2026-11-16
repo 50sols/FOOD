@@ -421,6 +421,81 @@ final class V2ProfitabilityRuleLifecycleTest extends TestCase
             ->where('status', 'ACTIVE')->count());
     }
 
+    public function test_impossible_review_state_never_becomes_visible_or_approved_by_a_forged_status(): void
+    {
+        [$maker, $store, $product] = $this->fixture();
+        $route = $this->saveRoute($store, $product);
+        $page = route('admin.commercial.sales-control', [
+            'store_id' => $store, 'product' => $product,
+        ]);
+        $payload = $this->proposal((string) Str::uuid(), '18.75');
+
+        $this->actingAs($maker)->put($route, $payload)->assertSessionHasNoErrors();
+        $revision = (int) DB::table('commercial_profitability_rule_revisions')->value('id');
+        $checker = $this->user('B2B_ADMIN');
+        $date = now()->toDateTimeString();
+
+        // Content digest still matches: only the unchecked status/checker
+        // columns are forged. Never confuse an inactive proposal with ACTIVE.
+        $invalidStates = [
+            ['status' => 'ACTIVE', 'reviewed_by' => $checker->id, 'reviewed_at' => $date],
+            ['status' => 'REVIEWED_INACTIVE', 'reviewed_by' => null, 'reviewed_at' => $date],
+            ['status' => 'REVIEWED_INACTIVE', 'reviewed_by' => $maker->id, 'reviewed_at' => $date],
+            ['status' => 'REJECTED', 'reviewed_by' => $checker->id, 'reviewed_at' => null],
+            ['status' => 'DRAFT', 'reviewed_by' => $checker->id, 'reviewed_at' => $date],
+        ];
+
+        foreach ($invalidStates as $state) {
+            DB::table('commercial_profitability_rule_revisions')->where('id', $revision)
+                ->update($state);
+
+            $this->actingAs($maker)->get($page)
+                ->assertRedirect()->assertSessionHasErrors('revision_id');
+            $this->actingAs($maker)->put($route, $payload)
+                ->assertSessionHasErrors('revision_id');
+
+            $this->assertDatabaseHas('commercial_profitability_rule_revisions', [
+                'id' => $revision, 'status' => $state['status'],
+            ]);
+        }
+
+        $this->restrictB2bAdminToIndependentChecker();
+
+        foreach ($invalidStates as $state) {
+            DB::table('commercial_profitability_rule_revisions')->where('id', $revision)
+                ->update($state);
+
+            $this->actingAs($checker)->put($route, [
+                'profitability_action' => 'review',
+                'revision_id' => $revision,
+                'decision' => 'review',
+            ])->assertSessionHasErrors('revision_id');
+        }
+
+        $this->assertSame(0, DB::table('audit_logs')
+            ->where('event', 'commercial.profitability_rule.reviewed')->count());
+
+        // Repairing the historical record to its untouched original DRAFT
+        // must restore legitimate independent review, still never activation.
+        DB::table('commercial_profitability_rule_revisions')->where('id', $revision)
+            ->update(['status' => 'DRAFT', 'reviewed_by' => null, 'reviewed_at' => null]);
+
+        $this->actingAs($checker)->put($route, [
+            'profitability_action' => 'review',
+            'revision_id' => $revision,
+            'decision' => 'review',
+        ])->assertSessionHasNoErrors();
+        $this->actingAs($checker)->get($page)->assertOk();
+        $this->assertDatabaseHas('commercial_profitability_rule_revisions', [
+            'id' => $revision, 'status' => 'REVIEWED_INACTIVE',
+            'reviewed_by' => $checker->id,
+        ]);
+        $this->assertSame(1, DB::table('audit_logs')
+            ->where('event', 'commercial.profitability_rule.reviewed')->count());
+        $this->assertSame(0, DB::table('commercial_profitability_rule_revisions')
+            ->where('status', 'ACTIVE')->count());
+    }
+
     public function test_independent_finance_checker_can_review_without_catalog_manage_but_cannot_edit_sales_policy(): void
     {
         [$maker, $store, $product] = $this->fixture();
