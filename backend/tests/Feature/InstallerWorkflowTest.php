@@ -10,6 +10,8 @@ use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\Log;
+use Symfony\Component\Console\Output\BufferedOutput;
 use Tests\TestCase;
 
 class InstallerWorkflowTest extends TestCase
@@ -150,6 +152,28 @@ class InstallerWorkflowTest extends TestCase
             'email' => 'existing-before-migrate@example.test',
             'password' => 'existing-hash-not-for-auth',
         ]);
+    }
+
+    public function test_failed_migration_records_only_redacted_first_failure_and_never_retries(): void
+    {
+        Artisan::shouldReceive('call')->once()
+            ->with('migrate', ['--force' => true], \Mockery::type(BufferedOutput::class))
+            ->andReturnUsing(static function (string $command, array $options, BufferedOutput $output): int {
+                $output->writeln('2026_09_24_000100_create_identity_store_foundation FAILED SQLSTATE[42S01] password=secret-should-not-appear');
+
+                return 1;
+            });
+
+        Log::shouldReceive('error')->once()
+            ->with('Installer migration failed', [
+                'sqlstate' => '42S01',
+                'migration' => '2026_09_24_000100_create_identity_store_foundation',
+            ]);
+
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage((string) __('installer.errors.migrations'));
+
+        app(InstallerWorkflow::class)->runMigrations();
     }
 
     public function test_database_step_refuses_to_replace_unlocked_live_environment_and_preserves_secrets(): void

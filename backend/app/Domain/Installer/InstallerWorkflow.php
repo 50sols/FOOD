@@ -10,8 +10,10 @@ use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Schema;
 use RuntimeException;
+use Symfony\Component\Console\Output\BufferedOutput;
 use Throwable;
 
 final class InstallerWorkflow
@@ -244,7 +246,22 @@ final class InstallerWorkflow
         $this->applyDatabaseConfiguration();
         $this->assertFreshInstallDatabase();
 
-        if (Artisan::call('migrate', ['--force' => true]) !== 0) {
+        // Capture the FIRST migration failure. MySQL DDL is not transactional:
+        // rerunning migrate merely to diagnose a 422 can hit a partially
+        // created table and disguise the original failure (or mutate data).
+        $output = new BufferedOutput;
+        if (Artisan::call('migrate', ['--force' => true], $output) !== 0) {
+            $diagnostic = $output->fetch();
+            preg_match('/SQLSTATE\\[([A-Z0-9]{5})\\]/', $diagnostic, $sqlState);
+            preg_match('/\\b([0-9]{4}_[0-9]{2}_[0-9]{2}_[0-9]{6}_[a-z0-9_]+)\\b/i', $diagnostic, $migration);
+
+            // Preserve only a fixed SQLSTATE and migration filename. Never log
+            // raw SQL, connection details, passwords or the command output.
+            Log::error('Installer migration failed', [
+                'sqlstate' => $sqlState[1] ?? 'unknown',
+                'migration' => $migration[1] ?? 'unknown',
+            ]);
+
             throw new RuntimeException((string) __('installer.errors.migrations'));
         }
     }
