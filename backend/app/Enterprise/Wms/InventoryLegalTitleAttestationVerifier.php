@@ -143,20 +143,21 @@ final class InventoryLegalTitleAttestationVerifier
     }
 
     /**
-     * A signed snapshot is not authority when canonical movement history
-     * can be deleted and recreated (ABA replay). Both SQL guards are required
-     * before ANY owner title is returned as CERTIFIED.
+     * A signed inventory snapshot requires a protected movement history AND
+     * an immutable attestation row. Otherwise an attacker could first delete
+     * the certificate, then erase an intervening movement and reintroduce
+     * stale title evidence (ABA replay). All four SQL guards are mandatory.
      *
-     * Some MySQL shared-hosting accounts cannot install triggers with binary
-     * logging (1419/SUPER). The migration permits deployment in that case,
-     * but certification remains disabled rather than claiming provenance.
+     * cPanel/shared-hosting users without MySQL TRIGGER/SUPER privileges may
+     * install the site, but legal-title certification must fail closed.
      */
     private function hasProtectedStockMovementHistory(): bool
     {
         try {
             $driver = DB::connection()->getDriverName();
+
             if ($driver === 'sqlite') {
-                return DB::table('sqlite_master')
+                $movements = DB::table('sqlite_master')
                     ->where('type', 'trigger')
                     ->where('tbl_name', 'stock_movements')
                     ->whereIn('name', [
@@ -165,12 +166,25 @@ final class InventoryLegalTitleAttestationVerifier
                     ])
                     ->where('sql', 'like', '%enterprise_inventory_title_attestations%')
                     ->where('sql', 'like', '%RAISE(ABORT%')
-                    ->count() === 2;
+                    ->count();
+
+                $attestations = DB::table('sqlite_master')
+                    ->where('type', 'trigger')
+                    ->where('tbl_name', 'enterprise_inventory_title_attestations')
+                    ->whereIn('name', [
+                        'p110_attestation_no_delete',
+                        'p110_attestation_no_update',
+                    ])
+                    ->where('sql', 'like', '%RAISE(ABORT%')
+                    ->count();
+
+                return $movements === 2 && $attestations === 2;
             }
 
             if (in_array($driver, ['mysql', 'mariadb'], true)) {
-                return DB::table('information_schema.TRIGGERS')
-                    ->where('TRIGGER_SCHEMA', DB::connection()->getDatabaseName())
+                $schema = DB::connection()->getDatabaseName();
+                $movements = DB::table('information_schema.TRIGGERS')
+                    ->where('TRIGGER_SCHEMA', $schema)
                     ->where('EVENT_OBJECT_TABLE', 'stock_movements')
                     ->where('ACTION_TIMING', 'BEFORE')
                     ->whereRaw(
@@ -182,11 +196,27 @@ final class InventoryLegalTitleAttestationVerifier
                     )
                     ->where('ACTION_STATEMENT', 'like', '%enterprise_inventory_title_attestations%')
                     ->where('ACTION_STATEMENT', 'like', '%SIGNAL%')
-                    ->count() === 2;
+                    ->count();
+
+                $attestations = DB::table('information_schema.TRIGGERS')
+                    ->where('TRIGGER_SCHEMA', $schema)
+                    ->where('EVENT_OBJECT_TABLE', 'enterprise_inventory_title_attestations')
+                    ->where('ACTION_TIMING', 'BEFORE')
+                    ->whereRaw(
+                        '((TRIGGER_NAME = ? AND EVENT_MANIPULATION = ?) OR (TRIGGER_NAME = ? AND EVENT_MANIPULATION = ?))',
+                        [
+                            'p110_attestation_no_delete', 'DELETE',
+                            'p110_attestation_no_update', 'UPDATE',
+                        ],
+                    )
+                    ->where('ACTION_STATEMENT', 'like', '%SIGNAL%')
+                    ->count();
+
+                return $movements === 2 && $attestations === 2;
             }
         } catch (Throwable) {
-            // Missing metadata privilege, corrupted/missing triggers, or
-            // unsupported schema must never certify legal title.
+            // Missing SQL metadata privileges, incomplete DDL or unsupported
+            // drivers must never certify an owner's legal title.
             return false;
         }
 
