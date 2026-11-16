@@ -123,6 +123,13 @@ final class CommercialDashboardController extends Controller
             ]);
         }
 
+        $profitability = app(CommercialProfitabilityRuleService::class);
+        $canProposeProfitability = $selectedProduct !== null
+            && $profitability->canPropose($user, $storeId);
+        $canReviewProfitability = $selectedProduct !== null
+            && $profitability->canReview($user, $storeId);
+        $canViewProfitability = $canProposeProfitability || $canReviewProfitability;
+
         return $this->render($request, $user, $storeId, 'sales-control', [
             'products' => $products,
             'selectedProduct' => $selectedProduct,
@@ -136,9 +143,15 @@ final class CommercialDashboardController extends Controller
             'commercialRules' => DB::table('product_commercial_rules')->whereIn('product_id', $selectedProductIds)->orderBy('id')->get()->groupBy('product_id'),
             'ruleCustomers' => $ruleCustomers,
             'ruleGroups' => $ruleGroups,
-            'profitabilityRevisions' => $selectedProduct === null ? collect() : app(CommercialProfitabilityRuleService::class)->revisions($storeId, $selectedProductId),
-            'canProposeProfitability' => $selectedProduct !== null && app(CommercialProfitabilityRuleService::class)->canPropose($user, $storeId),
-            'canReviewProfitability' => $selectedProduct !== null && app(CommercialProfitabilityRuleService::class)->canReview($user, $storeId),
+            // Catalog visibility does not grant access to sensitive margin
+            // proposals and independent review history. Deny data binding,
+            // not merely the form controls, for a catalog.view-only reader.
+            'profitabilityRevisions' => $canViewProfitability
+                ? $profitability->revisions($storeId, $selectedProductId)
+                : collect(),
+            'canViewProfitability' => $canViewProfitability,
+            'canProposeProfitability' => $canProposeProfitability,
+            'canReviewProfitability' => $canReviewProfitability,
             'featureFlags' => $this->flags->snapshot(),
             'canManageFeatureFlags' => $this->canManageFeatureFlags($user),
             'contractReady' => $this->hasApiContract('commercial'),

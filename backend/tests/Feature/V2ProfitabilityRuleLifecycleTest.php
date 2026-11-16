@@ -2,6 +2,7 @@
 
 namespace Tests\Feature;
 
+use App\Models\Permission;
 use App\Models\Role;
 use App\Models\User;
 use App\Services\CommercialFeatureFlags;
@@ -23,6 +24,45 @@ final class V2ProfitabilityRuleLifecycleTest extends TestCase
         app(CommercialFeatureFlags::class)->persist([
             CommercialFeatureFlags::COMMERCIAL_RULES => true,
         ]);
+    }
+
+    public function test_catalog_view_only_role_cannot_read_confidential_profitability_revisions(): void
+    {
+        [$maker, $store, $product] = $this->fixture();
+        $save = $this->saveRoute($store, $product);
+        $this->actingAs($maker)->put($save, $this->proposal((string) Str::uuid(), '67.89'))
+            ->assertSessionHasNoErrors();
+
+        // A catalog reader may browse saleable products, but the role has no
+        // commercial policy write, financial approval or profitability access.
+        // B2B_ADMIN is a registered wholesale global-role template; narrow
+        // its actual grants to read-only catalog access for this test.
+        // An arbitrary custom global role is intentionally not auto-scoped.
+        $viewerRole = Role::query()->where('code', 'B2B_ADMIN')->firstOrFail();
+        $viewerRole->permissions()->sync(Permission::query()
+            ->whereIn('code', ['stores.view', 'catalog.view'])
+            ->pluck('id')
+            ->all());
+        $viewer = User::factory()->create(['locale' => 'en', 'is_active' => true]);
+        $viewer->roles()->attach($viewerRole);
+
+        $page = route('admin.commercial.sales-control', [
+            'store_id' => $store, 'product' => $product,
+        ]);
+        foreach (['ar', 'en'] as $locale) {
+            $viewer->forceFill(['locale' => $locale])->save();
+            app()->setLocale($locale);
+            $this->actingAs($viewer->fresh())->get($page)->assertOk()
+                ->assertDontSee('67.89%')
+                ->assertDontSee('data-v2-p229-profitability', false);
+        }
+
+        // Unauthorized mutations conceal the B2B store scope with 404.
+        $this->actingAs($viewer)->put($save, $this->proposal((string) Str::uuid(), '67.89'))
+            ->assertNotFound();
+        $this->actingAs($this->user('SUPER_ADMIN'))->get($page)->assertOk()
+            ->assertSee('67.89%')
+            ->assertSee('data-v2-p229-profitability', false);
     }
 
     public function test_scoped_proposal_uses_exact_basis_points_and_request_idempotency_without_activating_prices(): void

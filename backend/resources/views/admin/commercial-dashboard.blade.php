@@ -493,6 +493,7 @@
                         @endif
                         <button type="submit" class="foodex-primary">{{ __('commercial.sales.save_policy') }}</button>
                     </form>
+                    @if($canViewProfitability)
                     <section class="policy-section" id="profitability-rules" data-v2-p229-profitability>
                         <div class="policy-section-title"><span>{{ __('commercial.profitability.title') }}</span></div>
                         <p class="muted">{{ __('commercial.profitability.inactive_explanation') }}</p>
@@ -540,6 +541,7 @@
                             @endforelse
                         </div>
                     </section>
+                    @endif
                     </div>
                 </article>
             @endforeach
