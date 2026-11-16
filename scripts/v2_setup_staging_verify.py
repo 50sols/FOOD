@@ -297,6 +297,31 @@ def _member_target(member: zipfile.ZipInfo) -> tuple[str, str, bool]:
     return normalized, portable, is_directory
 
 
+def _reject_noncanonical_zip_envelope(zip_path: Path) -> None:
+    """Reject valid-CRC ZIP wrappers that shared-host extractors may interpret differently.
+
+    Python zipfile accepts self-extracting PHP stubs, appended payloads and
+    ZIP comments. A G004 one-ZIP installer is a plain archive with its first
+    local header at byte zero and its zero-comment EOCD as the final 22 bytes.
+    """
+    try:
+        with zip_path.open("rb") as stream:
+            stream.seek(0, 2)
+            length = stream.tell()
+            _require(length >= 22, "Setup ZIP has no canonical end record.")
+            stream.seek(0)
+            _require(stream.read(4) == b"PK\x03\x04",
+                     "Setup ZIP contains prepended data or an invalid first header.")
+            stream.seek(length - 22)
+            end_record = stream.read(22)
+    except OSError as exc:
+        raise SetupZipError("Setup ZIP envelope is not readable.") from exc
+
+    _require(end_record[:4] == b"PK\x05\x06"
+             and end_record[20:22] == b"\x00\x00",
+             "Setup ZIP contains appended data, an archive comment or an ambiguous end record.")
+
+
 def verify_setup_zip(zip_path: Path, version_path: Path, source_sha: str) -> dict[str, str | int | bool]:
     _require(bool(SOURCE_SHA.fullmatch(source_sha)), "Invalid exact source SHA.")
     _require(zip_path.is_file() and not zip_path.is_symlink(), "Missing or symlinked Setup ZIP.")
@@ -304,6 +329,8 @@ def verify_setup_zip(zip_path: Path, version_path: Path, source_sha: str) -> dic
     version = version_path.read_text(encoding="utf-8").strip()
     _require(bool(re.fullmatch(r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)", version)),
              "Invalid source Semantic Version.")
+
+    _reject_noncanonical_zip_envelope(zip_path)
 
     files: set[str] = set()
     aliases: set[str] = set()

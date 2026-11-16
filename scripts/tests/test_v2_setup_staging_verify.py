@@ -271,6 +271,26 @@ class V2SetupStagingVerifierTest(unittest.TestCase):
         with self.assertRaisesRegex(SetupZipError, "Ambiguous Unicode Path"):
             self.verify()
 
+    def test_wrapped_setup_zip_is_rejected_even_when_zipfile_crc_passes(self) -> None:
+        # A cPanel/shared-host extractor need not handle SFX stubs, trailing
+        # bytes or comments as Python does. Reject ambiguous one-ZIP input.
+        for wrapper in ("prepended", "appended", "comment"):
+            with self.subTest(wrapper=wrapper):
+                self.pack()
+                if wrapper == "prepended":
+                    self.archive.write_bytes(b"<?php exit; ?>" + self.archive.read_bytes())
+                elif wrapper == "appended":
+                    self.archive.write_bytes(self.archive.read_bytes() + b"<?php exit; ?>")
+                else:
+                    with zipfile.ZipFile(self.archive, "a") as archive:
+                        archive.comment = b"extra payload"
+
+                with zipfile.ZipFile(self.archive) as archive:
+                    self.assertIsNone(archive.testzip())
+                with self.assertRaisesRegex(SetupZipError, "prepended|appended|archive comment"):
+                    self.verify()
+
+
     def test_stored_and_deflated_zip_members_are_portable(self) -> None:
         for method in (zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED):
             with self.subTest(method=method):
