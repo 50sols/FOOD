@@ -25,11 +25,19 @@ final class CommercialProfitabilityRuleService
         abort_unless($this->canPropose($actor, $storeId) || $this->canReview($actor, $storeId), 403);
         $this->assertProduct($storeId, $productId);
 
-        return DB::table('commercial_profitability_rule_revisions')
+        $revisions = DB::table('commercial_profitability_rule_revisions')
             ->where('store_id', $storeId)
             ->where('product_id', $productId)
             ->orderByDesc('revision')
             ->get();
+
+        // A stored content hash is only useful if every read verifies it.
+        // Never render altered money/date proposals as independently reviewed.
+        foreach ($revisions as $revision) {
+            $this->assertRevisionIntegrity($revision);
+        }
+
+        return $revisions;
     }
 
     public function canPropose(User $actor, int $storeId): bool
@@ -92,6 +100,8 @@ final class CommercialProfitabilityRuleService
                 ->lockForUpdate()
                 ->first();
             if ($existing !== null) {
+                // An idempotent retry must never bless a mutated stored row.
+                $this->assertRevisionIntegrity($existing);
                 if ((int) $existing->proposed_by !== (int) $actor->getKey()
                     || (int) $existing->product_id !== $productId
                     || ! hash_equals((string) $existing->content_sha256, $digest)) {
@@ -163,6 +173,7 @@ final class CommercialProfitabilityRuleService
                 ->where('product_id', $productId);
             $rule = $query->lockForUpdate()->first();
             abort_if($rule === null, 404);
+            $this->assertRevisionIntegrity($rule);
             abort_if((int) $rule->proposed_by === (int) $actor->getKey(), 403);
 
             if ($rule->status === $status && (int) $rule->reviewed_by === (int) $actor->getKey()) {
@@ -216,6 +227,29 @@ final class CommercialProfitabilityRuleService
                 'content_sha256' => (string) $rule->content_sha256,
             ], $request);
         }, 3);
+    }
+
+    /**
+     * Check the immutable proposal payload at the read, replay and review
+     * boundaries. This is corruption detection, not a digital signature:
+     * trusted issuer/financial approval still requires P110/P129.
+     */
+    private function assertRevisionIntegrity(object $revision): void
+    {
+        $canonical = [
+            'store_id' => (int) $revision->store_id,
+            'product_id' => (int) $revision->product_id,
+            'minimum_margin_basis_points' => (int) $revision->minimum_margin_basis_points,
+            'effective_from' => (string) $revision->effective_from,
+            'effective_until' => (string) $revision->effective_until,
+        ];
+
+        $expected = hash('sha256', json_encode($canonical, JSON_THROW_ON_ERROR));
+        if (! hash_equals($expected, (string) $revision->content_sha256)) {
+            throw ValidationException::withMessages([
+                'revision_id' => [__('commercial.profitability.integrity_mismatch')],
+            ]);
+        }
     }
 
     /**
