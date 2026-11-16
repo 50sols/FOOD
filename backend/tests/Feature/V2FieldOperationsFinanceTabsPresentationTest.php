@@ -106,8 +106,8 @@ final class V2FieldOperationsFinanceTabsPresentationTest extends TestCase
 
         // Financial data and approval are still rendered as one original tab
         // per server response; no client-only or hidden-tab finance POST.
-        $this->assertStringContainsString("route(\$opsReviewRouteName", $source);
-        $this->assertStringContainsString("@csrf", $source);
+        $this->assertStringContainsString('route($opsReviewRouteName', $source);
+        $this->assertStringContainsString('@csrf', $source);
         $this->assertStringContainsString("@if(\$opsTab==='wallets')", $source);
         $this->assertStringContainsString("@elseif(\$opsTab==='collections')", $source);
         $this->assertStringContainsString("@if(\$opsTab==='reconciliation')", $source);
