@@ -82,25 +82,30 @@ class HttpWholesaleCommerceApi
       };
 
   @override
-  Future<Object?> cart(int storeId) =>
-      _request('GET', '/api/v1/cart', query: {'store': '$storeId'});
+  Future<Object?> cart(int storeId) async => _scopedResponse(
+        await _request('GET', '/api/v1/cart', query: {'store': '$storeId'}),
+        storeId: storeId,
+      );
 
   @override
   Future<Object?> quote({
     required int storeId,
     String? couponCode,
     String? paymentMethod,
-  }) =>
-      _request(
-        'POST',
-        '/api/v1/quote',
-        body: {
-          'store_id': storeId,
-          if (couponCode != null && couponCode.trim().isNotEmpty)
-            'coupon_code': couponCode.trim().toUpperCase(),
-          if (paymentMethod != null && paymentMethod.trim().isNotEmpty)
-            'payment_method': paymentMethod.trim(),
-        },
+  }) async => _scopedResponse(
+        await _request(
+          'POST',
+          '/api/v1/quote',
+          body: {
+            'store_id': storeId,
+            if (couponCode != null && couponCode.trim().isNotEmpty)
+              'coupon_code': couponCode.trim().toUpperCase(),
+            if (paymentMethod != null && paymentMethod.trim().isNotEmpty)
+              'payment_method': paymentMethod.trim(),
+          },
+        ),
+        storeId: storeId,
+        wrapped: true,
       );
 
   @override
@@ -158,22 +163,48 @@ class HttpWholesaleCommerceApi
     String? note,
     String? couponCode,
     required String idempotencyKey,
-  }) =>
-      _request(
-        'POST',
-        '/api/v1/checkout',
-        body: {
-          'store_id': storeId,
-          'address_id': addressId,
-          'payment_method': paymentMethod,
-          if (requestedDeliveryDate != null)
-            'requested_delivery_date': requestedDeliveryDate,
-          if (note != null && note.trim().isNotEmpty) 'note': note.trim(),
-          if (couponCode != null && couponCode.trim().isNotEmpty)
-            'coupon_code': couponCode.trim().toUpperCase(),
-        },
-        extraHeaders: {'Idempotency-Key': idempotencyKey},
+  }) async => _scopedResponse(
+        await _request(
+          'POST',
+          '/api/v1/checkout',
+          body: {
+            'store_id': storeId,
+            'address_id': addressId,
+            'payment_method': paymentMethod,
+            if (requestedDeliveryDate != null)
+              'requested_delivery_date': requestedDeliveryDate,
+            if (note != null && note.trim().isNotEmpty) 'note': note.trim(),
+            if (couponCode != null && couponCode.trim().isNotEmpty)
+              'coupon_code': couponCode.trim().toUpperCase(),
+          },
+          extraHeaders: {'Idempotency-Key': idempotencyKey},
+        ),
+        storeId: storeId,
+        requireOrder: true,
       );
+
+  Object? _scopedResponse(
+    Object? raw, {
+    required int storeId,
+    bool wrapped = false,
+    bool requireOrder = false,
+  }) {
+    final envelope = raw is Map<String, dynamic> ? raw : null;
+    final value = wrapped ? envelope?['data'] : envelope;
+    // Transport-level integrity only: the server still decides prices,
+    // discount approvals, credit eligibility and whether checkout committed.
+    if (value is! Map<String, dynamic> ||
+        value['store_id'] != storeId ||
+        value['channel'] != 'b2b' ||
+        (requireOrder && (value['id'] is! int || (value['id'] as int) <= 0))) {
+      throw WholesaleCommerceException(
+        locale == 'en'
+            ? 'The server returned a different store or invalid order. Refresh and try again.'
+            : 'أعاد الخادم بيانات متجر مختلف أو طلبًا غير صالح. حدّث الصفحة وحاول مرة أخرى.',
+      );
+    }
+    return raw;
+  }
 
   Future<Object?> _request(
     String method,
