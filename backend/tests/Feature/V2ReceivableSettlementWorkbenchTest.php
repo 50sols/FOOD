@@ -1014,6 +1014,22 @@ final class V2ReceivableSettlementWorkbenchTest extends TestCase
                 ->assertDontSee(__('finance_workbench.receivables.linked_receipt', ['date' => $receipt->id], $locale));
         }
 
+        // A forged Van-origin collection on a Retail Driver wallet must
+        // never be offered in the existing bilingual Finance receipt picker.
+        DB::table('collection_transactions')->where('id', $receipt->id)
+            ->update(['source' => 'van_app']);
+        foreach (['en', 'ar'] as $locale) {
+            $maker->forceFill(['locale' => $locale])->save();
+            $this->actingAs($maker->fresh())->get(route('admin.erp.finance.index', [
+                'store_id' => $store->id,
+                'tab' => 'receivables',
+                'settlement_document_id' => $document->id,
+            ]))->assertOk()
+                ->assertDontSee('<option value="'.$sourceId.'" data-collection-receipt="true">', false);
+        }
+        DB::table('collection_transactions')->where('id', $receipt->id)
+            ->update(['source' => 'driver_app']);
+
         $payload = [
             'store_id' => $store->id,
             'idempotency_key' => 'p303-ui-typed-receipt',
@@ -1136,6 +1152,23 @@ final class V2ReceivableSettlementWorkbenchTest extends TestCase
         DB::table('collection_accounts')->where('id', $account->id)
             ->update(['status' => 'active']);
 
+        // A formerly valid receipt must fail idempotent source replay after
+        // the transaction origin changes to the wrong fulfillment channel.
+        DB::table('collection_transactions')->where('id', $transaction->id)
+            ->update(['source' => 'van_app']);
+        $assertRevoked();
+        foreach (['en', 'ar'] as $locale) {
+            $maker->forceFill(['locale' => $locale])->save();
+            $this->actingAs($maker->fresh())->post(
+                route('admin.erp.finance.receivables.settlements.store', $document->id),
+                [...$payload, 'store_id' => $store->id],
+            )->assertSessionHasErrors([
+                'source_collection_allocation_id' => __('finance_workbench.receivables.collection_source_invalid', [], $locale),
+            ]);
+        }
+        DB::table('collection_transactions')->where('id', $transaction->id)
+            ->update(['source' => 'driver_app']);
+
         $this->assertSame($draft->id, $ar->createAllocation(
             $maker, $context, $document->id, $payload,
         )->id);
@@ -1206,6 +1239,14 @@ final class V2ReceivableSettlementWorkbenchTest extends TestCase
                 $this->assertArrayHasKey('source_collection_allocation_id', $exception->errors());
             }
         };
+
+        // The source producer is an independent provenance field: correct
+        // Retail wallet but Van-origin transaction must fail closed.
+        DB::table('collection_transactions')->where('id', $transaction->id)
+            ->update(['source' => 'van_app']);
+        $reject('p303-cross-channel-origin');
+        DB::table('collection_transactions')->where('id', $transaction->id)
+            ->update(['source' => 'driver_app']);
 
         DB::table('collection_accounts')->where('id', $account->id)
             ->update(['store_id' => $this->retailStore('P303-FOREIGN-RECEIPT')->id]);
