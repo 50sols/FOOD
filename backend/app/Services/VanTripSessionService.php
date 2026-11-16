@@ -28,6 +28,7 @@ final class VanTripSessionService
         abort_unless($actor->is_active, 403);
 
         return DB::transaction(function () use ($actor, $assignmentId, $key): VanTripSession {
+            $this->assertPersistedActiveActor($actor);
             $assignment = VanAssignment::query()->lockForUpdate()->findOrFail($assignmentId);
 
             // Offline retries must resolve the immutable original outcome even
@@ -134,6 +135,7 @@ final class VanTripSessionService
         abort_unless($actor->is_active, 403);
 
         return DB::transaction(function () use ($actor, $publicId, $key): VanTripSession {
+            $this->assertPersistedActiveActor($actor);
             $trip = VanTripSession::query()->where('public_id', $publicId)->lockForUpdate()->firstOrFail();
             $this->tenantScope->assertStore($actor, (int) $trip->store_id, 'drivers.b2b.manage', 'b2b');
             $this->tenantScope->assertStore($actor, (int) $trip->store_id, 'customers.view', 'b2b');
@@ -182,6 +184,7 @@ final class VanTripSessionService
         abort_unless($actor->is_active, 403);
 
         return DB::transaction(function () use ($actor, $assignmentId, $publicId): VanTripSession {
+            $this->assertPersistedActiveActor($actor);
             // Match start() lock ordering to avoid a trip-start/read deadlock.
             $assignment = VanAssignment::query()->lockForUpdate()->findOrFail($assignmentId);
             $van = Van::query()->whereKey($assignment->van_id)->lockForUpdate()->firstOrFail();
@@ -300,6 +303,24 @@ final class VanTripSessionService
             ->where('actor_user_id', $trip->ended_by_user_id)
             ->where('idempotency_key', $trip->end_key)
             ->exists(), 409);
+    }
+
+    /**
+     * A long-running writer must not trust a previously hydrated User model:
+     * suspension can occur after it was loaded. Lock the authoritative user
+     * row within the same transaction as the trip identity/custody operation.
+     */
+    private function assertPersistedActiveActor(User $actor): void
+    {
+        abort_unless(
+            $actor->getKey() !== null
+            && DB::table('users')
+                ->where('id', $actor->getKey())
+                ->where('is_active', true)
+                ->lockForUpdate()
+                ->first(['id']) !== null,
+            403,
+        );
     }
 
     private function assertValidKey(string $key): void

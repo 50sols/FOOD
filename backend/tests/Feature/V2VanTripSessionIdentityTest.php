@@ -305,6 +305,44 @@ final class V2VanTripSessionIdentityTest extends TestCase
         $this->assertDatabaseCount('stock_movements', 0);
     }
 
+    public function test_persisted_user_suspension_revokes_cached_actor_before_trip_or_custody_mutation(): void
+    {
+        [$actor, $assignment] = $this->fixture();
+        $service = app(VanTripSessionService::class);
+        $trip = $service->start($actor, (int) $assignment->id, 'P276-persisted-actor-001');
+
+        // The model is intentionally NOT refreshed. A queue/job or request
+        // may retain a once-active actor after authoritative revocation.
+        DB::table('users')->where('id', $actor->id)->update(['is_active' => false]);
+        $this->assertTrue($actor->is_active);
+
+        $this->expectNotFoundOrForbidden(fn () => $service->start(
+            $actor, (int) $assignment->id, 'P276-persisted-actor-002'
+        ));
+        $this->expectNotFoundOrForbidden(fn () => $service->requireActiveCustodyContext(
+            $actor, (int) $assignment->id, $trip->public_id
+        ));
+        $this->expectNotFoundOrForbidden(fn () => $service->endOperationalTrip(
+            $actor, $trip->public_id, 'P276-persisted-actor-end'
+        ));
+
+        $this->assertDatabaseHas('van_trip_sessions', ['id' => $trip->id, 'status' => 'active']);
+        $this->assertDatabaseCount('van_trip_session_events', 1);
+        $this->assertDatabaseCount('stock_movements', 0);
+
+        // Once the same authoritative account is restored, the original
+        // actor may finish the existing trip without an unauthorized replay.
+        DB::table('users')->where('id', $actor->id)->update(['is_active' => true]);
+        $this->assertSame($trip->id, $service->requireActiveCustodyContext(
+            $actor, (int) $assignment->id, $trip->public_id
+        )->id);
+        $this->assertSame('ended', $service->endOperationalTrip(
+            $actor, $trip->public_id, 'P276-persisted-actor-end'
+        )->status);
+        $this->assertDatabaseCount('van_trip_session_events', 2);
+        $this->assertDatabaseCount('stock_movements', 0);
+    }
+
     public function test_unassigned_privileged_peer_cannot_impersonate_trip_starter_for_custody_writes(): void
     {
         [$starter, $assignment] = $this->fixture();
