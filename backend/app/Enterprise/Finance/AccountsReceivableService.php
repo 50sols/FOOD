@@ -175,7 +175,10 @@ final class AccountsReceivableService
             ->where('idempotency_key', $idempotencyKey)
             ->first();
 
-        if ($existing instanceof EnterpriseAccountsReceivableDocument) {
+        // A source-linked draft is not trusted forever: even a matching
+        // idempotency retry must recheck the invoice inside a transaction.
+        // Retain the fast path for legacy manual AR drafts only.
+        if ($existing instanceof EnterpriseAccountsReceivableDocument && $sourceInvoiceId === null) {
             $this->assertRequestHash($existing->request_hash, $requestHash);
 
             return $existing;
@@ -202,6 +205,19 @@ final class AccountsReceivableService
 
             if ($existing instanceof EnterpriseAccountsReceivableDocument) {
                 $this->assertRequestHash($existing->request_hash, $requestHash);
+
+                // A voided, reissued with changed totals, or cross-store
+                // invoice must not be re-attested by replaying an old draft
+                // request. This shares the invoice lock with fresh drafts.
+                if ($sourceInvoiceId !== null) {
+                    $this->assertSourceInvoiceMatches(
+                        $sourceInvoiceId,
+                        (int) $data['store_id'],
+                        (int) $data['customer_id'],
+                        $currency,
+                        $amount,
+                    );
+                }
 
                 return $existing;
             }
@@ -282,6 +298,15 @@ final class AccountsReceivableService
                 ->whereKey($documentId)
                 ->lockForUpdate()
                 ->firstOrFail();
+
+            // Invoice-linked AR posting is not yet an independently
+            // certified revenue/GL handoff. Never treat an old posted row as
+            // approved simply because this call is an idempotent retry.
+            if ($document->source_invoice_id !== null && $document->status === 'posted') {
+                throw ValidationException::withMessages([
+                    'source_invoice_id' => [__('finance_workbench.receivables.source_invoice_invalid')],
+                ]);
+            }
 
             if ($document->status === 'posted') {
                 return $document;
