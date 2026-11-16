@@ -89,3 +89,49 @@ The original P276 service now calls one shared `assertImmutableTripStartEvidence
 The new feature regression proves pre-patch RED: replay returned an unverified success for a tampered event; after the fix it proves start replay and end deny both a tampered first event and erased reservation, then accept the restored authentic event and permit one operational end. Existing invalid actor/store, B2C isolation, expired assignment, anti-replay and zero-stock-movement tests remain. GCC isolated checkout, PHP 8.3.33 / SQLite in memory with a **local-only** source-correct test autoload override (the shared vendor directory otherwise resolves unrelated worktree classes): 33 adjacent P276/visit HTTP tests and 272 assertions PASS; no changes to Composer production autoload or peer checkouts. This check does not substitute for hosted MySQL/Redis CI.
 
 **HIGH source risk and nonclosure:** this is canonical trip identity/integrity source behavior only. Full P276 still needs the authorized Dashboard/Van app trip journey and offline idempotent recording, visits/orders/load/return membership, legal-title-approved WMS cargo, finance/GL maker-checker settlement, AR/EN device/a11y and MySQL concurrency. Original Issue #2606 and Draft PR #3311 remain OPEN until all requirements are source-complete and exact-final-head CI and independent review pass. Customer, B2C Driver and Van Flutter/API contracts are unchanged by this bounded internal service correction. No new branch, `main`, release, tag or production.
+
+## 2026-11-16 — P276 immutable operational end-event replay guard (Worker E)
+
+**Original Issue #2606 / Draft PR #3311 / Foodex_V2 only.** On the existing
+`VanTripSessionService::endOperationalTrip()`, an `ended` row with a matching
+`end_key` and same actor previously returned success on retry without
+reconciling the append-only `van_trip_session_events` sequence 2 event. A
+missing or tampered end audit record could therefore appear as a verified
+operational completion, despite the service's separate start-event guard.
+
+**Source correction:** terminal idempotent retry now requires the original
+`ended` event on the exact trip (sequence 2, kind `ended`, recorded
+`ended_by_user_id`, matching immutable `end_key`), as well as a non-null
+`ended_at`. Mismatched key/kind, missing event or missing completion time
+return HTTP 409 before writes; a verified same-actor retry still returns
+the same trip without a duplicate event. This path never performs stock,
+warehouse, payment, AR/GL, reservation release or other posting.
+
+**Real GCC red/green evidence:** original exact PR source HEAD
+`28e7738d36387a0a8cc53fe12dfcbd50bd5ac039` plus new targeted
+PHPUnit regression first **FAILED** because an altered end-event
+idempotency key was accepted. After the service fix, the targeted test
+passed 1/7 assertions; the full P276 immutable-trip suite passed
+12 tests / 89 assertions with PHP 8.3.33 and an isolated SQLite
+test database. The broader three-suite checkout run had 29 tests pass
+and one unrelated `V2VanTripActivityAuthorityTest` failure
+(HTTP 302 vs expected 404 in planned visit POST); this is NOT a full
+local green claim and requires source/fixture diagnosis if hosted CI
+reproduces it. PHP syntax and Pint --test passed on both changed PHP
+paths after normalizing LF line endings. Temporary APP_KEY, isolated
+autoload bootstrap and Composer vendor junction remained outside the
+tracked package.
+
+**HIGH source/security review boundary:** same-account technical review
+cannot be independent approval. The two committed runtime/test files
+and this QA note must be validated on the exact new GitHub HEAD by
+Repository Policy, V2 Isolation, full Required CI and MySQL acceptance
+before any integration decision.
+
+**Source completion remains BLOCKED:** this proves only the immutable
+end-event replay guard. Full authorized Van/Dashboard journey, trip
+physical load/return legal-title stock authority (#2588/#2604/#2844),
+Van offline app (#2739), trip payment and AR/GL settlement checker
+(#2602/#2607), real end-to-end and AR/EN device acceptance are still
+missing. Keep original PR DRAFT and #2606 OPEN; no main, release, tag,
+production, branch duplication or ownership of Worker D's files.

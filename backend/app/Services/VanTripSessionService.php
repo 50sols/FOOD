@@ -145,6 +145,7 @@ final class VanTripSessionService
 
             if ($trip->status === 'ended') {
                 abort_unless($trip->end_key === $key && (int) $trip->ended_by_user_id === (int) $actor->id, 409);
+                $this->assertImmutableTripEndEvidence($trip);
 
                 return $trip;
             }
@@ -270,6 +271,29 @@ final class VanTripSessionService
             ->where('kind', 'started')
             ->where('actor_user_id', $trip->started_by_user_id)
             ->where('idempotency_key', $trip->start_key)
+            ->exists(), 409);
+    }
+
+    /**
+     * Idempotent completion must prove the original second audit event, not
+     * merely trust mutable status/end-key fields on the trip row. An absent or
+     * altered event is never a successful replay or a finance closeout.
+     */
+    private function assertImmutableTripEndEvidence(VanTripSession $trip): void
+    {
+        abort_unless(
+            $trip->status === 'ended'
+            && $trip->ended_at !== null
+            && $trip->end_key !== null
+            && (int) $trip->ended_by_user_id > 0,
+            409,
+        );
+        abort_unless(DB::table('van_trip_session_events')
+            ->where('van_trip_session_id', $trip->id)
+            ->where('sequence', 2)
+            ->where('kind', 'ended')
+            ->where('actor_user_id', $trip->ended_by_user_id)
+            ->where('idempotency_key', $trip->end_key)
             ->exists(), 409);
     }
 

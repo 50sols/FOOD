@@ -400,6 +400,50 @@ final class V2VanTripSessionIdentityTest extends TestCase
         $this->assertDatabaseCount('stock_movements', 0);
     }
 
+    public function test_ended_trip_replay_requires_immutable_end_event_and_timestamp_without_stock_or_finance_writes(): void
+    {
+        [$actor, $assignment] = $this->fixture();
+        $service = app(VanTripSessionService::class);
+        $trip = $service->start($actor, (int) $assignment->id, 'P276-end-proof-start-0001');
+        $ended = $service->endOperationalTrip($actor, $trip->public_id, 'P276-end-proof-finish-0001');
+
+        // An ended row with a forged or absent immutable end event cannot be
+        // accepted as the original idempotent completion.
+        DB::table('van_trip_session_events')->where('van_trip_session_id', $trip->id)
+            ->where('sequence', 2)->update(['idempotency_key' => 'P276-forged-end-proof']);
+        $this->expectHttpConflict(fn () => $service->endOperationalTrip(
+            $actor, $trip->public_id, 'P276-end-proof-finish-0001'
+        ));
+        DB::table('van_trip_session_events')->where('van_trip_session_id', $trip->id)
+            ->where('sequence', 2)->update(['idempotency_key' => 'P276-end-proof-finish-0001']);
+
+        DB::table('van_trip_session_events')->where('van_trip_session_id', $trip->id)
+            ->where('sequence', 2)->update(['kind' => 'started']);
+        $this->expectHttpConflict(fn () => $service->endOperationalTrip(
+            $actor, $trip->public_id, 'P276-end-proof-finish-0001'
+        ));
+        DB::table('van_trip_session_events')->where('van_trip_session_id', $trip->id)
+            ->where('sequence', 2)->update(['kind' => 'ended']);
+
+        DB::table('van_trip_sessions')->where('id', $trip->id)->update(['ended_at' => null]);
+        $this->expectHttpConflict(fn () => $service->endOperationalTrip(
+            $actor, $trip->public_id, 'P276-end-proof-finish-0001'
+        ));
+        DB::table('van_trip_sessions')->where('id', $trip->id)->update(['ended_at' => $ended->ended_at]);
+
+        $this->assertSame($trip->id, $service->endOperationalTrip(
+            $actor, $trip->public_id, 'P276-end-proof-finish-0001'
+        )->id);
+
+        DB::table('van_trip_session_events')->where('van_trip_session_id', $trip->id)
+            ->where('sequence', 2)->delete();
+        $this->expectHttpConflict(fn () => $service->endOperationalTrip(
+            $actor, $trip->public_id, 'P276-end-proof-finish-0001'
+        ));
+        $this->assertDatabaseCount('van_trip_sessions', 1);
+        $this->assertDatabaseCount('stock_movements', 0);
+    }
+
     /** @return array{User, VanAssignment} */
     private function fixture(): array
     {
