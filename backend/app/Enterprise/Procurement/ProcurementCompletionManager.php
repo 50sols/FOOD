@@ -669,6 +669,17 @@ final class ProcurementCompletionManager
                 ]);
             }
 
+            // The locked request may already have a purchase order created
+            // through the direct procurement workflow. Never reassign its
+            // supplier, RFQ, contract or priced lines during a later award,
+            // especially after an order was issued or received.
+            abort_if(
+                DB::table('enterprise_purchase_orders')
+                    ->where('purchase_request_id', $request->id)
+                    ->exists(),
+                409,
+            );
+
             DB::table('enterprise_purchase_requests')->where('id', $request->id)->update([
                 'supplier_id' => $quote->supplier_id,
                 'updated_by' => $actor->id,

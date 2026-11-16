@@ -212,6 +212,61 @@ final class V2ErpProcurementRfqReceiptFlowTest extends TestCase
             ->where('event', 'enterprise.procurement.rfq.awarded')->count());
     }
 
+    public function test_rfq_award_cannot_rewrite_an_existing_issued_purchase_order_or_its_line_prices(): void
+    {
+        $store = $this->store();
+        $maker = $this->actor('PROCUREMENT_BUYER', 'ar');
+        $checker = $this->actor('PROCUREMENT_MANAGER', 'en');
+        [$supplierId, $requestId, $rfqId, $quoteId] = $this->quotedRequest($maker, $store);
+
+        $this->actingAs($checker)->post(route('admin.erp.procurement.requests.decision', $requestId), [
+            'store_id' => $store->id, 'decision' => 'approve',
+        ])->assertRedirect();
+
+        // An already-approved, supplier-qualified request can independently
+        // produce a PO. Keep this a genuine HTTP create/issue journey.
+        DB::table('enterprise_purchase_requests')->where('id', $requestId)
+            ->update(['supplier_id' => $supplierId]);
+        $this->actingAs($checker)->post(route('admin.erp.procurement.orders.create', $requestId), [
+            'store_id' => $store->id,
+        ])->assertRedirect();
+        $order = DB::table('enterprise_purchase_orders')
+            ->where('purchase_request_id', $requestId)->first();
+        $this->assertNotNull($order);
+
+        $this->actingAs($checker)->post(route('admin.erp.procurement.orders.issue', $order->id), [
+            'store_id' => $store->id,
+        ])->assertRedirect();
+        $this->assertDatabaseHas('enterprise_purchase_orders', [
+            'id' => $order->id, 'status' => 'issued', 'supplier_id' => $supplierId,
+            'procurement_rfq_id' => null, 'awarded_quote_id' => null,
+        ]);
+        $beforeAudits = DB::table('audit_logs')
+            ->where('event', 'enterprise.procurement.rfq.awarded')->count();
+
+        $this->actingAs($checker)->post(route('admin.erp.procurement.rfqs.award', [
+            'rfq' => $rfqId, 'quote' => $quoteId,
+        ]), ['store_id' => $store->id])->assertStatus(409);
+
+        $this->assertDatabaseHas('enterprise_procurement_rfqs', [
+            'id' => $rfqId, 'status' => 'published', 'awarded_quote_id' => null,
+        ]);
+        $this->assertDatabaseHas('enterprise_procurement_quotes', [
+            'id' => $quoteId, 'status' => 'submitted',
+        ]);
+        $this->assertDatabaseHas('enterprise_purchase_orders', [
+            'id' => $order->id, 'status' => 'issued', 'supplier_id' => $supplierId,
+            'procurement_rfq_id' => null, 'awarded_quote_id' => null,
+        ]);
+        $this->assertDatabaseCount('enterprise_purchase_orders', 1);
+        $this->assertSame('5.000', number_format((float) DB::table('enterprise_purchase_order_lines')
+            ->where('purchase_order_id', $order->id)->value('unit_price'), 3, '.', ''));
+        $this->assertSame('5.000', number_format((float) DB::table('enterprise_purchase_request_lines')
+            ->where('purchase_request_id', $requestId)->value('estimated_unit_cost'), 3, '.', ''));
+        $this->assertSame($beforeAudits, DB::table('audit_logs')
+            ->where('event', 'enterprise.procurement.rfq.awarded')->count());
+    }
+
     public function test_expired_or_forged_quote_fails_http_before_award_mutates_request_supplier_or_amount(): void
     {
         $store = $this->store();
