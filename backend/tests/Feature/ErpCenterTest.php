@@ -57,6 +57,8 @@ final class ErpCenterTest extends TestCase
     public function test_local_super_admin_bootstraps_all_erp_modules_and_platform_entitlements(): void
     {
         $actor = $this->userWithGlobalRole('SUPER_ADMIN', 'en', 'erp-local-modules@example.test');
+        // Even local bootstrap needs a real store/legal-entity for Finance.
+        $this->wholesaleStore('P135-LOCAL-FINANCE-STORE');
 
         $response = $this->actingAs($actor)->get(route('admin.erp.index'));
 
@@ -656,6 +658,173 @@ final class ErpCenterTest extends TestCase
 
         $this->assertSame($before['journals'], DB::table('enterprise_finance_journals')->count());
         $this->assertSame($before['receipts'], DB::table('enterprise_treasury_receipts')->count());
+    }
+
+    public function test_finance_center_link_matches_real_accountant_legal_entity_and_store_http_in_both_locales(): void
+    {
+        config()->set('security.mfa.enforce_privileged', false);
+        $admin = $this->userWithGlobalRole('SUPER_ADMIN', 'en', 'p135-finance-admin@example.test');
+        $actor = $this->userWithGlobalRole('ACCOUNTANT', 'en', 'p135-finance-accountant@example.test');
+        $store = $this->wholesaleStore('P135-FINANCE-ACCOUNTANT');
+        $scope = app(OrganizationHierarchyService::class)->scopeForStore($store->id);
+        $this->assertNotNull($scope);
+        app(EnterpriseModuleAdministration::class)->perform('finance', 'enable', $admin);
+
+        $this->assertTrue($actor->fresh()->hasPermission('finance.view', $store->id));
+        $this->assertFalse($actor->fresh()->hasPermission('finance.approve', $store->id));
+
+        $card = collect($this->actingAs($actor)->get(route('admin.erp.index'))
+            ->assertOk()->viewData('cards'))->firstWhere('key', 'finance');
+        $this->assertIsArray($card);
+        $this->assertSame('not_entitled', $card['status']);
+        $this->assertNull($card['url']);
+        $this->actingAs($actor)->get(route('admin.erp.finance.index', [
+            'store_id' => $store->id, 'tab' => 'accounts',
+        ]))->assertForbidden();
+
+        // Store-only module capability is NOT legal-entity ledger authority.
+        app(ModuleEntitlementManager::class)->set(
+            'finance', new EntitlementScope(EntitlementScope::STORE, $store->id),
+            true, ['finance.foundation.read'],
+        );
+        $card = collect($this->actingAs($actor)->get(route('admin.erp.index'))
+            ->assertOk()->viewData('cards'))->firstWhere('key', 'finance');
+        $this->assertIsArray($card);
+        $this->assertSame('not_entitled', $card['status']);
+        $this->assertNull($card['url']);
+        $this->actingAs($actor)->get(route('admin.erp.finance.index', [
+            'store_id' => $store->id, 'tab' => 'accounts',
+        ]))->assertForbidden();
+
+        app(ModuleEntitlementManager::class)->set(
+            'finance',
+            new EntitlementScope(EntitlementScope::LEGAL_ENTITY, $scope['legal_entity_id']),
+            true, ['finance.foundation.read', 'finance.gl.read'],
+        );
+
+        foreach (['en' => 'ltr', 'ar' => 'rtl'] as $locale => $direction) {
+            $actor->forceFill(['locale' => $locale])->save();
+            $user = $actor->fresh();
+            $response = $this->actingAs($user)->get(route('admin.erp.index'));
+            $response->assertOk()->assertSee('dir="'.$direction.'"', false);
+            $card = collect($response->viewData('cards'))->firstWhere('key', 'finance');
+
+            $this->assertIsArray($card);
+            $this->assertSame('available', $card['status']);
+            $this->assertSame(
+                route('admin.erp.finance.index', ['store_id' => $store->id]),
+                $card['url'],
+            );
+            $this->actingAs($user)->get($card['url'])
+                ->assertOk()
+                ->assertSee('data-finance-workbench="true"', false)
+                ->assertSee('dir="'.$direction.'"', false);
+            $this->actingAs($user)->get(route('admin.erp.finance.index', [
+                'store_id' => $store->id, 'tab' => 'accounts',
+            ]))->assertOk();
+        }
+
+        config()->set('enterprise_module_readiness.certified_versions.finance', null);
+        $card = collect($this->actingAs($actor->fresh())->get(route('admin.erp.index'))
+            ->assertOk()->viewData('cards'))->firstWhere('key', 'finance');
+        $this->assertIsArray($card);
+        $this->assertSame('degraded', $card['status']);
+        $this->assertSame('uncertified', $card['denial_reason']);
+        $this->assertNull($card['url']);
+        $this->actingAs($actor->fresh())->get(route('admin.erp.finance.index', [
+            'store_id' => $store->id,
+        ]))->assertForbidden();
+        config()->set('enterprise_module_readiness.certified_versions.finance', 1);
+
+        // Child STORE deny overrides legal entity entitlement and permission.
+        app(ModuleEntitlementManager::class)->set(
+            'finance', new EntitlementScope(EntitlementScope::STORE, $store->id),
+            false,
+        );
+        $card = collect($this->actingAs($actor->fresh())->get(route('admin.erp.index'))
+            ->assertOk()->viewData('cards'))->firstWhere('key', 'finance');
+        $this->assertIsArray($card);
+        $this->assertSame('not_entitled', $card['status']);
+        $this->assertNull($card['url']);
+        $this->actingAs($actor->fresh())->get(route('admin.erp.finance.index', [
+            'store_id' => $store->id,
+        ]))->assertForbidden();
+        $this->assertDatabaseCount('enterprise_finance_journals', 0);
+        $this->assertDatabaseCount('enterprise_finance_ledger_entries', 0);
+    }
+
+    public function test_finance_center_links_only_the_wholesale_store_the_real_workbench_can_read(): void
+    {
+        config()->set('security.mfa.enforce_privileged', false);
+        $admin = $this->userWithGlobalRole('SUPER_ADMIN', 'en', 'p135-finance-b-admin@example.test');
+        $actor = $this->userWithGlobalRole('ACCOUNTANT', 'en', 'p135-finance-b-accountant@example.test');
+        $denied = $this->wholesaleStore('P135-FINANCE-A-DENY');
+        $allowed = $this->wholesaleStore('P135-FINANCE-B-ALLOW');
+        $scope = app(OrganizationHierarchyService::class)->scopeForStore($allowed->id);
+        $this->assertNotNull($scope);
+        app(EnterpriseModuleAdministration::class)->perform('finance', 'enable', $admin);
+
+        app(ModuleEntitlementManager::class)->set(
+            'finance', new EntitlementScope(EntitlementScope::LEGAL_ENTITY, $scope['legal_entity_id']),
+            true, ['finance.foundation.read'],
+        );
+        app(ModuleEntitlementManager::class)->set(
+            'finance', new EntitlementScope(EntitlementScope::STORE, $denied->id),
+            false,
+        );
+
+        foreach (['ar' => 'rtl', 'en' => 'ltr'] as $locale => $direction) {
+            $actor->forceFill(['locale' => $locale])->save();
+            $user = $actor->fresh();
+            $response = $this->actingAs($user)->get(route('admin.erp.index'));
+            $response->assertOk()->assertSee('dir="'.$direction.'"', false);
+            $card = collect($response->viewData('cards'))->firstWhere('key', 'finance');
+
+            $this->assertIsArray($card);
+            $this->assertSame('available', $card['status']);
+            $this->assertSame(
+                route('admin.erp.finance.index', ['store_id' => $allowed->id]),
+                $card['url'],
+            );
+            $this->actingAs($user)->get($card['url'])->assertOk();
+            // An unselected B2B store uses the canonical HTTP 404 boundary.
+            $this->actingAs($user)->get(route('admin.erp.finance.index', [
+                'store_id' => $denied->id,
+            ]))->assertNotFound();
+        }
+    }
+
+    public function test_global_catalog_ap_ar_officers_without_channel_admission_have_no_finance_shortcut(): void
+    {
+        config()->set('security.mfa.enforce_privileged', false);
+        $admin = $this->userWithGlobalRole('SUPER_ADMIN', 'en', 'p135-finance-officers-setup@example.test');
+        $store = $this->wholesaleStore('P135-FINANCE-AP-AR-STORE');
+        $scope = app(OrganizationHierarchyService::class)->scopeForStore($store->id);
+        $this->assertNotNull($scope);
+        app(EnterpriseModuleAdministration::class)->perform('finance', 'enable', $admin);
+        app(ModuleEntitlementManager::class)->set(
+            'finance', new EntitlementScope(EntitlementScope::LEGAL_ENTITY, $scope['legal_entity_id']),
+            true, ['finance.foundation.read', 'finance.ar.read', 'finance.ap.read'],
+        );
+
+        foreach (['AR_OFFICER' => 'receivables', 'AP_OFFICER' => 'payables'] as $code => $tab) {
+            $this->assertNotContains($code, config('admin.channels.b2b.global_roles'));
+            $officer = $this->userWithGlobalRole($code, 'en', strtolower($code).'@p135-finance.test');
+            foreach (['en' => 'ltr', 'ar' => 'rtl'] as $locale => $direction) {
+                $officer->forceFill(['locale' => $locale])->save();
+                $user = $officer->fresh();
+                $response = $this->actingAs($user)->get(route('admin.erp.index'));
+                $response->assertOk()->assertSee('dir="'.$direction.'"', false);
+                $card = collect($response->viewData('cards'))->firstWhere('key', 'finance');
+                if (is_array($card)) {
+                    $this->assertNotSame('available', $card['status']);
+                    $this->assertNull($card['url']);
+                }
+                $this->actingAs($user)->get(route('admin.erp.finance.index', [
+                    'store_id' => $store->id, 'tab' => $tab,
+                ]))->assertForbidden();
+            }
+        }
     }
 
     private function wholesaleStore(string $code): Store

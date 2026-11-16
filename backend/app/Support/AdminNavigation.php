@@ -1328,14 +1328,24 @@ class AdminNavigation
      */
     private function financeWorkspacesAccessible(User $user): bool
     {
+        return $this->firstAuthorizedFinanceStoreId($user) !== null;
+    }
+
+    /**
+     * Return the actual bounded, store-effective Finance Workbench read context.
+     * This shares the existing HTTP chooser and FinanceWorkbenchAccess checks;
+     * a role or platform entitlement alone never authorizes a ledger link.
+     */
+    public function firstAuthorizedFinanceStoreId(User $user): ?int
+    {
         if (! $user->is_active) {
-            return false;
+            return null;
         }
 
         $retailStoreIds = $this->tenantContext->retailStoreIds($user);
         $canWholesale = $this->canAccess($user, 'b2b');
         if (! $canWholesale && $retailStoreIds === []) {
-            return false;
+            return null;
         }
 
         // Match the controller's bounded context chooser, including order
@@ -1363,11 +1373,11 @@ class AdminNavigation
         $finance = app(FinanceWorkbenchAccess::class);
         foreach ($stores as $storeId) {
             if ($finance->canRead($user, (int) $storeId)) {
-                return true;
+                return (int) $storeId;
             }
         }
 
-        return false;
+        return null;
     }
 
     private function isSuperAdmin(User $user): bool

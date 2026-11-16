@@ -280,7 +280,14 @@ final class ErpCenterController extends Controller
         }
 
         $state = $this->modules->state($moduleCode);
-        $entitled = $state === ModuleState::ENABLED && $this->isEntitled($actor, $moduleCode);
+        // Finance requires a real legal-entity and store-effective HTTP read
+        // context, not a global-role or platform-entitlement-only projection.
+        $financeStoreId = $state === ModuleState::ENABLED && $moduleCode === 'finance'
+            ? $this->navigation->firstAuthorizedFinanceStoreId($actor)
+            : null;
+        $entitled = $state === ModuleState::ENABLED && ($moduleCode === 'finance'
+            ? $financeStoreId !== null
+            : $this->isEntitled($actor, $moduleCode));
         $healthStatus = null;
         $denialReason = null;
 
@@ -320,6 +327,12 @@ final class ErpCenterController extends Controller
             // Missing registered HTTP destinations are never operational links.
             $status = 'degraded';
             $denialReason = 'route_unavailable';
+        }
+
+        // A READY Finance card must link to the *same* store that its real
+        // Workbench controller and FinanceWorkbenchAccess accept.
+        if ($actionable && $moduleCode === 'finance' && $financeStoreId !== null) {
+            $params['store_id'] = (string) $financeStoreId;
         }
 
         return $this->card(
