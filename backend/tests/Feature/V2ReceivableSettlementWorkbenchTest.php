@@ -127,6 +127,12 @@ final class V2ReceivableSettlementWorkbenchTest extends TestCase
         $migration->down();
 
         $this->assertFalse(Schema::hasColumn('enterprise_ar_documents', 'source_invoice_id'));
+        // Simulate a non-transactional MySQL deployment interrupted after
+        // adding the column but before installing its FK/unique index.
+        Schema::table('enterprise_ar_documents', function (\Illuminate\Database\Schema\Blueprint $table): void {
+            $table->foreignId('source_invoice_id')->nullable();
+        });
+        $this->assertFalse(Schema::hasIndex('enterprise_ar_documents', 'ear_doc_legal_invoice_source_uq'));
         $migration->up();
         $migration->up();
 
