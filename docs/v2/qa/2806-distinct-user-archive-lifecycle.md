@@ -32,7 +32,7 @@ Existing Users 3-dot action menu now exposes Archive separately from Deactivate 
 ## App / API impact
 
 - **Dashboard: affected** — existing Security Users row/actions and server route, real persisted archived marker, no additional Sidebar. 
-- **Customer: no Flutter/API contract change** — platform customer privacy deletion remains separately guarded and cannot be archived through the admin-only destructive path; existing deactivation token revocation unchanged.
+- **Customer: security correction in existing read-only API contract** — the authenticated invoice list, exact invoice detail and PDF download now revalidate the user's current persisted `is_active` before disclosure, even if the Sanctum request's in-memory principal is stale after revocation. An archived/deactivated user receives HTTP 403; active customer response payloads/routes do not change. `V2ArchivedIdentityAccessRetentionTest` covers all three direct HTTP denials with invoice/payment retention. No Flutter source change, no new endpoint/sidebar. Platform customer privacy deletion remains separately guarded.
 - **Driver: no Flutter/API contract change** — active B2C delivery assignments block offboarding; session revocation retained; B2C DRIVER ONLY.
 - **Van: no Flutter/API contract change** — active B2B custody/visits block offboarding; session revocation retained; B2B VAN ONLY.
 
