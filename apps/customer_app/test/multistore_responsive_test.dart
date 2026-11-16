@@ -76,6 +76,93 @@ void main() {
     );
   }
 
+  // MOB-C03 price labels are display-only; never turn a malformed API price
+  // into a genuine zero or invent any quote/credit decision in Flutter.
+  final priceScenarios = <({
+    String name,
+    List<Object?> amounts,
+    List<String> labels,
+  })>[
+    (
+      name: 'valid prices and genuine zero',
+      amounts: <Object?>[0, 12.625, '1.2'],
+      labels: <String>['0 EGP', '13 EGP', '1 EGP'],
+    ),
+    (
+      name: 'missing malformed and NaN',
+      amounts: <Object?>[null, 'not-a-price', double.nan],
+      labels: <String>['—', '—', '—'],
+    ),
+    (
+      name: 'infinite negative and forged string',
+      amounts: <Object?>[double.infinity, -5, '-Infinity'],
+      labels: <String>['—', '—', '—'],
+    ),
+  ];
+
+  for (final language in const <String>['ar', 'en']) {
+    for (final scenario in priceScenarios) {
+      testWidgets(
+        'MOB-C03 wholesale home price truthfulness ${scenario.name} $language',
+        (tester) async {
+          await tester.binding.setSurfaceSize(const Size(390, 844));
+          addTearDown(() => tester.binding.setSurfaceSize(null));
+
+          final rows = <Map<String, dynamic>>[
+            for (var index = 0; index < scenario.amounts.length; index++)
+              <String, dynamic>{
+                'id': 901 + index,
+                'name': 'Wholesale product ${index + 1}',
+                'sku': 'WHOLESALE-PRICE-${index + 1}',
+                'currency': 'EGP',
+                'available_quantity': 10,
+                if (scenario.amounts[index] != null)
+                  'account_price': scenario.amounts[index],
+              },
+          ];
+          final api = _PriceBadgeB2bApi(rows);
+
+          await tester.pumpWidget(
+            FoodexCustomerApp(
+              locale: Locale(language),
+              initialRoute: '/b2b/home?store_id=70',
+              session: const CustomerSession.authenticated(
+                CustomerChannel.b2b,
+                accessToken: 'scoped-price-test-token',
+                b2bRetailStoreId: 7,
+              ),
+              b2cCatalogApi: const _ResponsiveCatalogApi(),
+              b2cAccountApi: const _ResponsiveAccountApi(),
+              actionApi: const _ResponsiveActionApi(),
+              b2bApi: api,
+              storefrontApi: const _PriceBadgeStorefrontApi(),
+              wholesaleCommerceApi: const _ResponsiveWholesaleApi(),
+            ),
+          );
+          await tester.pumpAndSettle();
+
+          expect(api.productPaths, contains('/api/v1/b2b/products?store_id=70'));
+          for (var index = 0; index < scenario.labels.length; index++) {
+            final badge = find.byKey(
+              ValueKey('wholesale-product-price-${901 + index}'),
+            );
+            expect(badge, findsOneWidget);
+            final labelFinder = find.descendant(
+              of: badge,
+              matching: find.byType(Text),
+            );
+            expect(tester.widget<Text>(labelFinder).data, scenario.labels[index]);
+            expect(
+              Directionality.of(tester.element(badge)),
+              language == 'ar' ? TextDirection.rtl : TextDirection.ltr,
+            );
+          }
+          expect(tester.takeException(), isNull);
+        },
+      );
+    }
+  }
+
   const orderReferenceDevices = <Size>[
     Size(320, 568),
     Size(360, 800),
@@ -143,6 +230,42 @@ void main() {
     );
   }
 
+}
+
+class _PriceBadgeStorefrontApi extends _ResponsiveStorefrontApi {
+  const _PriceBadgeStorefrontApi();
+
+  @override
+  Future<Map<String, dynamic>> wholesaleHome(int storeId) async {
+    final home = await super.wholesaleHome(storeId);
+    return {
+      ...home,
+      'sections': [
+        {
+          'type': 'product_grid',
+          'title_ar': 'المنتجات',
+          'title_en': 'Products',
+          'sort_order': 10,
+        },
+      ],
+    };
+  }
+}
+
+class _PriceBadgeB2bApi extends _ResponsiveB2bApi {
+  _PriceBadgeB2bApi(this.rows);
+
+  final List<Map<String, dynamic>> rows;
+  final List<String> productPaths = [];
+
+  @override
+  Future<Object?> get(String path) async {
+    if (path.startsWith('/api/v1/b2b/products?')) {
+      productPaths.add(path);
+      return {'data': rows};
+    }
+    return super.get(path);
+  }
 }
 
 class _ResponsiveCatalogApi implements B2cCatalogApi {
