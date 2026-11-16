@@ -1177,6 +1177,23 @@ final class V2InventoryOwnerProvenanceTest extends TestCase
             $this->assertSame(403, $e->getStatusCode());
         }
 
+        // A company/store may keep the same numeric identity while a
+        // policy's stored channel becomes stale. The independent reviewer
+        // must not approve this as a live B2B ownership rule for a B2C store.
+        DB::table('enterprise_inventory_ownership_rule_revisions')
+            ->where('id', $draft->id)->update(['channel' => 'B2B']);
+        try {
+            $service->review($checker, (int) $draft->id, true);
+            $this->fail('A mismatched channel cannot receive legal-title policy approval.');
+        } catch (HttpException $exception) {
+            $this->assertSame(422, $exception->getStatusCode());
+        }
+        $this->assertDatabaseHas('enterprise_inventory_ownership_rule_revisions', [
+            'id' => $draft->id, 'status' => 'DRAFT', 'reviewed_by' => null,
+        ]);
+        DB::table('enterprise_inventory_ownership_rule_revisions')
+            ->where('id', $draft->id)->update(['channel' => 'B2C']);
+
         $approved = $service->review($checker, (int) $draft->id, true);
         $this->assertSame('APPROVED_RULE', $approved->status);
         $this->assertSame($approved->id, $service->review($checker, (int) $draft->id, true)->id);
