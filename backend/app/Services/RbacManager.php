@@ -94,19 +94,37 @@ final class RbacManager
         // The audit and lifecycle mutation form one DB transaction. A failed
         // audit write must not leave an untraceable archive or revoked session.
         return DB::transaction(function () use ($target, $actor, $active, $reason, $request): User {
+            if (! $active) {
+                // Use the same role-first lock order as protected role removals.
+                $this->lockSuperAdminRoleForMutation();
+            }
+            // Revalidate the actual database row, not a stale route-bound model.
+            // Concurrent Archive/Restore must not silently bypass confirmation.
+            $target = User::query()->lockForUpdate()->findOrFail($target->getKey());
+            abort_if($target->isPlatformOwner(), 403, 'Platform Owner status is internally managed.');
             if ($active && $target->archived_at !== null) {
-                $target = User::query()->lockForUpdate()->findOrFail($target->getKey());
                 abort_unless($actor->hasRole('SUPER_ADMIN'), 403);
             }
-            if (! $active) {
-                // Lock the same persistent row as role demotions before re-reading
-                // the live Super Admin count. Two independent offboarding requests
-                // must never both pass the last-admin preflight on stale snapshots.
-                $this->lockSuperAdminRoleForMutation();
-                $target->refresh();
-                if ($this->isLastActiveSuperAdmin($target)) {
-                    throw ValidationException::withMessages(['is_active' => [__('admin.security.errors.last_super_admin')]]);
+            if (! $active && $actor->is($target)) {
+                throw ValidationException::withMessages([
+                    'is_active' => [__('admin.security.errors.self_deactivate')],
+                ]);
+            }
+            if (! $active && $this->isLastActiveSuperAdmin($target)) {
+                throw ValidationException::withMessages([
+                    'is_active' => [__('admin.security.errors.last_super_admin')],
+                ]);
+            }
+            if ((bool) $target->is_active !== $active) {
+                if ($reason === null || mb_strlen(trim($reason)) < 8) {
+                    throw ValidationException::withMessages([
+                        'reason' => [__('admin.security.lifecycle_reason_required')],
+                    ]);
                 }
+                $request->validate([
+                    'impact_reviewed' => ['required', 'accepted'],
+                    'confirm_email' => ['required', 'string', 'max:190', Rule::in([(string) $target->email])],
+                ]);
             }
 
             // The archival transition cannot strand active Driver or Van work.
