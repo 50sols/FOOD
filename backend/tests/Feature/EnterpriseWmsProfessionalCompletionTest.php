@@ -209,6 +209,110 @@ final class EnterpriseWmsProfessionalCompletionTest extends TestCase
             ->assertSee('Reorder / demand plan');
     }
 
+    public function test_record_360_shows_uncertified_stock_title_in_ar_en_without_tenant_leak_or_mutation(): void
+    {
+        $fixture = $this->fixture();
+        $actor = $this->inventoryUser($fixture['store_id'], 'en');
+        $url = route('admin.erp.wms.index', [
+            'tab' => 'overview',
+            'store_id' => $fixture['store_id'],
+            'warehouse_id' => $fixture['source_warehouse_id'],
+            'inventory_id' => $fixture['source_inventory_id'],
+        ]);
+
+        foreach (['en', 'ar'] as $locale) {
+            $actor->forceFill(['locale' => $locale])->save();
+            $this->actingAs($actor->fresh())->get($url)
+                ->assertOk()
+                ->assertSee('data-v2-owner-title-report', false)
+                ->assertSee('data-v2-owner-state="UNKNOWN"', false)
+                ->assertSee('data-v2-owner-certification="unverified"', false)
+                ->assertSee(__('enterprise_wms.record360.ownership.notice', [], $locale))
+                ->assertSee(__('enterprise_wms.record360.ownership.states.UNKNOWN', [], $locale))
+                ->assertSee(__('enterprise_wms.record360.ownership.kinds.UNKNOWN', [], $locale))
+                ->assertDontSee('data-v2-certified-title', false);
+        }
+
+        $this->assertSame(0, DB::table('enterprise_inventory_owner_positions')
+            ->where('inventory_id', $fixture['source_inventory_id'])->count());
+
+        $checker = User::query()->create([
+            'name' => 'Unverified Legal Title Checker',
+            'email' => 'wms-pro-owner-checker@example.test',
+            'password' => 'password',
+            'is_active' => true,
+        ]);
+        DB::table('enterprise_inventory_owner_positions')->insert([
+            'inventory_id' => $fixture['source_inventory_id'],
+            'owner_key' => 'FOODEX',
+            'owner_kind' => 'FOODEX',
+            'supplier_id' => null,
+            'quantity' => 10,
+            'reserved_quantity' => 1,
+            'source_inventory_updated_at' => DB::table('inventories')
+                ->where('id', $fixture['source_inventory_id'])->value('updated_at'),
+            'evidence_type' => 'untrusted_free_text',
+            'evidence_reference' => 'NOT-A-VERIFIED-DEED',
+            'proposed_by' => $actor->id,
+            'certified_by' => $checker->id,
+            'certified_at' => now(),
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        foreach (['en', 'ar'] as $locale) {
+            $actor->forceFill(['locale' => $locale])->save();
+            $this->actingAs($actor->fresh())->get($url)
+                ->assertOk()
+                ->assertSee('data-v2-owner-state="UNVERIFIED"', false)
+                ->assertSee('data-v2-owner-certification="unverified"', false)
+                ->assertSee(__('enterprise_wms.record360.ownership.states.UNVERIFIED', [], $locale))
+                ->assertSee(__('enterprise_wms.record360.ownership.kinds.FOODEX', [], $locale))
+                ->assertDontSee('data-v2-certified-title', false);
+        }
+
+        $foreignStoreId = (int) DB::table('stores')->insertGetId([
+            'store_type_id' => DB::table('stores')->where('id', $fixture['store_id'])->value('store_type_id'),
+            'code' => 'WMS-P110-FOREIGN',
+            'name' => 'Out Of Scope WMS Store',
+            'is_active' => true,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        $foreignWarehouseId = (int) DB::table('warehouses')->insertGetId([
+            'store_id' => $foreignStoreId,
+            'code' => 'WMS-P110-FOREIGN',
+            'name' => 'Foreign Warehouse',
+            'is_active' => true,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        $foreignInventoryId = (int) DB::table('inventories')->insertGetId([
+            'warehouse_id' => $foreignWarehouseId,
+            'product_id' => $fixture['product_id'],
+            'quantity' => 1000,
+            'reserved_quantity' => 0,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        $this->actingAs($actor->fresh())->get(route('admin.erp.wms.index', [
+            'tab' => 'overview',
+            'store_id' => $fixture['store_id'],
+            'warehouse_id' => $fixture['source_warehouse_id'],
+            'inventory_id' => $foreignInventoryId,
+        ]))->assertNotFound();
+
+        $this->assertDatabaseHas('inventories', [
+            'id' => $fixture['source_inventory_id'],
+            'quantity' => 10,
+            'reserved_quantity' => 1,
+        ]);
+        $this->assertDatabaseHas('enterprise_inventory_owner_positions', [
+            'inventory_id' => $fixture['source_inventory_id'],
+            'owner_kind' => 'FOODEX',
+            'evidence_reference' => 'NOT-A-VERIFIED-DEED',
+        ]);
+    }
+
     public function test_wms_completion_keeps_ar_en_translation_key_parity_and_report_contract(): void
     {
         $en = require lang_path('en/enterprise_wms.php');

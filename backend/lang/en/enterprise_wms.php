@@ -274,6 +274,26 @@ return [
         'adjustments' => 'Adjustments',
         'reservations' => 'Reservations',
         'no_bin' => 'No bin assigned',
+        'ownership' => [
+            'title' => 'Legal stock ownership and provenance',
+            'notice' => 'Stock quantity is not proof of legal ownership or unit cost. Recorded supplier or FOODEX claims require independently verified evidence and must not be used for margin, pricing, or COGS until certified.',
+            'state_label' => 'Legal-title evidence status',
+            'owner' => 'Recorded owner claim',
+            'certification' => 'Certification',
+            'unverified' => 'Not certified',
+            'certified' => 'Verified legal title',
+            'states' => [
+                'UNKNOWN' => 'Unknown legal owner',
+                'STALE' => 'Stale or inconsistent ownership ledger',
+                'UNVERIFIED' => 'Ownership evidence unverified',
+                'CERTIFIED' => 'Certified legal ownership',
+            ],
+            'kinds' => [
+                'UNKNOWN' => 'Unknown owner',
+                'FOODEX' => 'FOODEX (recorded claim)',
+                'SUPPLIER' => 'Supplier (recorded claim)',
+            ],
+        ],
     ],
     'messages' => [
         'transfer_created' => 'Warehouse transfer created.',
