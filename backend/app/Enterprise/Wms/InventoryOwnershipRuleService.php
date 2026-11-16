@@ -147,6 +147,10 @@ final class InventoryOwnershipRuleService
             $rule = $query->where('id', $revisionId)->lockForUpdate()->first();
             abort_if($rule === null, 404);
             $this->authorize($checker, (int) $rule->store_id, (string) $rule->checker_permission);
+            // An approved policy cannot cross a later store legal-company or
+            // channel reassignment even when its stored store_id is unchanged.
+            abort_unless((int) $rule->company_id === $this->companyForStore((int) $rule->store_id), 409);
+            $this->assertChannel((int) $rule->store_id, (string) $rule->channel);
             abort_if((int) $rule->proposed_by === (int) $checker->id, 403);
             $target = $approve ? 'APPROVED_RULE' : 'REJECTED';
             if ($rule->status !== 'DRAFT') {
