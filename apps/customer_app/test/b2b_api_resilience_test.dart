@@ -235,7 +235,8 @@ void main() {
     );
   });
 
-  test('B2B invoice PDF retries bounded GET with session, locale and store scope',
+  test(
+      'B2B invoice PDF retries bounded GET with session, locale and store scope',
       () async {
     for (final locale in ['ar', 'en']) {
       var attempts = 0;
@@ -249,7 +250,7 @@ void main() {
         client: MockClient((request) async {
           attempts++;
           expect(request.method, 'GET');
-          expect(request.url.path, '/api/v1/b2b/invoices/31/pdf');
+          expect(request.url.path, '/api/v1/b2b/invoices/31/download');
           expect(request.url.queryParameters['store_id'], '7');
           expect(request.headers['Authorization'], 'Bearer pdf-session-token');
           expect(request.headers['X-FOODEX-Customer-Domain'], 'b2b');
@@ -268,7 +269,7 @@ void main() {
       );
 
       final bytes =
-          await api.getBytes('/api/v1/b2b/invoices/31/pdf?store_id=7');
+          await api.getBytes('/api/v1/b2b/invoices/31/download?store_id=7');
       expect(bytes, orderedEquals(pdf));
       expect(attempts, 2);
     }
@@ -296,7 +297,8 @@ void main() {
             attempts++;
             expect(request.method, 'GET');
             expect(request.url.queryParameters['store_id'], '7');
-            expect(request.headers['Authorization'], 'Bearer pdf-session-token');
+            expect(
+                request.headers['Authorization'], 'Bearer pdf-session-token');
             expect(request.headers['X-FOODEX-Customer-Domain'], 'b2b');
             expect(request.headers['X-FOODEX-Retail-Store-ID'], '17');
             expect(request.headers['Accept-Language'], locale);
@@ -309,7 +311,7 @@ void main() {
         );
 
         await expectLater(
-          api.getBytes('/api/v1/b2b/invoices/31/pdf?store_id=7'),
+          api.getBytes('/api/v1/b2b/invoices/31/download?store_id=7'),
           throwsA(
             isA<B2bApiException>()
                 .having((error) => error.code, 'code', 'invalid_document'),
@@ -341,7 +343,7 @@ void main() {
       );
 
       await expectLater(
-        api.getBytes('/api/v1/b2b/invoices/31/pdf?store_id=7'),
+        api.getBytes('/api/v1/b2b/invoices/31/download?store_id=7'),
         throwsA(
           isA<B2bApiException>()
               .having((error) => error.code, 'code', 'not_authorized')
@@ -351,5 +353,4 @@ void main() {
       expect(attempts, 1);
     }
   });
-
 }
