@@ -5,6 +5,7 @@ namespace Tests\Feature\Enterprise;
 use App\Enterprise\Wms\InventoryAdjustmentService;
 use App\Enterprise\Wms\InventoryCountService;
 use App\Enterprise\Wms\InventoryOwnerProvenanceReadService;
+use App\Enterprise\Wms\StockReservationService;
 use App\Enterprise\Wms\UnknownInventoryOwnerProjection;
 use App\Enterprise\Wms\WarehouseTransferService;
 use App\Models\Inventory;
@@ -488,6 +489,97 @@ final class V2InventoryOwnerProvenanceTest extends TestCase
             'Unverified title must not be reallocated',
         );
 
+        $this->assertDatabaseHas('enterprise_inventory_owner_positions', [
+            'inventory_id' => $stock['inventory_id'], 'owner_key' => 'FOODEX',
+            'quantity' => 10, 'reserved_quantity' => 3,
+        ]);
+        $this->assertSame(0, DB::table('enterprise_inventory_owner_positions')
+            ->where('inventory_id', $stock['inventory_id'])->where('owner_key', 'UNKNOWN')->count());
+        $snapshot = app(InventoryOwnerProvenanceReadService::class)
+            ->snapshot($actor, $stock['inventory_id']);
+        $this->assertSame('STALE', $snapshot['state']);
+        $this->assertFalse($snapshot['certified']);
+    }
+
+    public function test_wms_reservation_and_release_reconcile_unknown_title_and_replays_do_not_double_post(): void
+    {
+        $this->seed(CoreReferenceSeeder::class);
+        $stock = $this->stock('RESERVE-UNKNOWN');
+        $actor = $this->inventoryActor($stock['store_id']);
+        $inventory = DB::table('inventories')->where('id', $stock['inventory_id'])
+            ->first(['warehouse_id', 'product_id']);
+        $service = app(StockReservationService::class);
+
+        $this->assertSame(2.0, $service->ensureReservation(
+            $actor, (int) $inventory->warehouse_id, (int) $inventory->product_id,
+            2.0, 'p110_owner_reservation', 1102846,
+        ));
+        $this->assertSame(2.0, $service->ensureReservation(
+            $actor, (int) $inventory->warehouse_id, (int) $inventory->product_id,
+            2.0, 'p110_owner_reservation', 1102846,
+        ));
+
+        $this->assertDatabaseHas('inventories', [
+            'id' => $stock['inventory_id'], 'quantity' => 10, 'reserved_quantity' => 5,
+        ]);
+        $this->assertDatabaseHas('enterprise_inventory_owner_positions', [
+            'inventory_id' => $stock['inventory_id'], 'owner_key' => 'UNKNOWN',
+            'quantity' => 10, 'reserved_quantity' => 5, 'certified_by' => null,
+        ]);
+        $this->assertSame(1, DB::table('stock_movements')
+            ->where('reference_type', 'p110_owner_reservation')->where('reference_id', 1102846)
+            ->where('type', 'reserve')->count());
+
+        $this->assertSame(0.0, $service->releaseReservation(
+            $actor, (int) $inventory->warehouse_id, (int) $inventory->product_id,
+            'p110_owner_reservation', 1102846,
+        ));
+        $this->assertSame(0.0, $service->releaseReservation(
+            $actor, (int) $inventory->warehouse_id, (int) $inventory->product_id,
+            'p110_owner_reservation', 1102846,
+        ));
+
+        $this->assertDatabaseHas('inventories', [
+            'id' => $stock['inventory_id'], 'quantity' => 10, 'reserved_quantity' => 3,
+        ]);
+        $this->assertDatabaseHas('enterprise_inventory_owner_positions', [
+            'inventory_id' => $stock['inventory_id'], 'owner_key' => 'UNKNOWN',
+            'quantity' => 10, 'reserved_quantity' => 3, 'certified_at' => null,
+        ]);
+        $this->assertSame(1, DB::table('enterprise_inventory_owner_positions')
+            ->where('inventory_id', $stock['inventory_id'])->count());
+        $this->assertSame(2, DB::table('stock_movements')
+            ->where('reference_type', 'p110_owner_reservation')->where('reference_id', 1102846)
+            ->count());
+        $snapshot = app(InventoryOwnerProvenanceReadService::class)
+            ->snapshot($actor, $stock['inventory_id']);
+        $this->assertSame('UNKNOWN', $snapshot['state']);
+        $this->assertFalse($snapshot['certified']);
+    }
+
+    public function test_wms_reservation_never_reclassifies_a_claimed_foodex_title(): void
+    {
+        $this->seed(CoreReferenceSeeder::class);
+        $stock = $this->stock('RESERVE-PRESERVE');
+        $actor = $this->inventoryActor($stock['store_id']);
+        $checker = User::query()->create([
+            'name' => 'Reservation Title Checker',
+            'email' => 'p110-reservation-title-checker@example.test',
+            'password' => 'password',
+            'is_active' => true,
+        ]);
+        $this->position($stock['inventory_id'], 'FOODEX', null, 10, 3, $actor->id, $checker->id, true);
+        $inventory = DB::table('inventories')->where('id', $stock['inventory_id'])
+            ->first(['warehouse_id', 'product_id']);
+
+        app(StockReservationService::class)->ensureReservation(
+            $actor, (int) $inventory->warehouse_id, (int) $inventory->product_id,
+            1.0, 'p110_unverified_owner_reservation', 1102847,
+        );
+
+        $this->assertDatabaseHas('inventories', [
+            'id' => $stock['inventory_id'], 'quantity' => 10, 'reserved_quantity' => 4,
+        ]);
         $this->assertDatabaseHas('enterprise_inventory_owner_positions', [
             'inventory_id' => $stock['inventory_id'], 'owner_key' => 'FOODEX',
             'quantity' => 10, 'reserved_quantity' => 3,
