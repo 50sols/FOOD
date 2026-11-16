@@ -588,7 +588,7 @@ $trendMax=max(1,max(array_map(fn($r)=>max(abs((float)$r['revenue']),abs((float)$
 <select id="p303-collection-receipt" name="source_collection_allocation_id" required>
 <option value="">{{ __('finance_workbench.common.select') }}</option>
 @foreach($data['receiptCandidates'] as $receipt)
-<option value="{{ $receipt->id }}" data-collection-receipt="true">{{ __('finance_workbench.receivables.receipt_option', ['receipt' => $receipt->receipt_id, 'amount' => $money($receipt->amount), 'currency' => $receipt->currency]) }}</option>
+<option value="{{ $receipt->id }}" data-collection-receipt="true">{{ __('finance_workbench.receivables.receipt_option', ['date' => $receipt->collected_at, 'amount' => $money($receipt->amount), 'currency' => $receipt->currency]) }}</option>
 @endforeach
 </select>
 <p class="finance-notice">{{ __('finance_workbench.receivables.receipt_draft_notice') }}</p>
@@ -610,7 +610,7 @@ $trendMax=max(1,max(array_map(fn($r)=>max(abs((float)$r['revenue']),abs((float)$
 <td>
 {{ $settlement->reference ?: '—' }}
 @if($settlement->source_collection_allocation_id !== null && $data['sourceReceiptReferences']->has($settlement->source_collection_allocation_id))
-<small class="finance-notice" data-v2-linked-collection>{{ __('finance_workbench.receivables.linked_receipt', ['receipt' => $data['sourceReceiptReferences']->get($settlement->source_collection_allocation_id)]) }}</small>
+<small class="finance-notice" data-v2-linked-collection>{{ __('finance_workbench.receivables.linked_receipt', ['date' => $data['sourceReceiptReferences']->get($settlement->source_collection_allocation_id)]) }}</small>
 @endif
 </td>
 <td><span class="finance-status">{{ $statusLabel($settlement->status) }}</span></td>
