@@ -30,7 +30,7 @@ final class SystemUpdateController extends Controller
 
     public function index(Request $request): View
     {
-        Gate::authorize('system.update');
+        $this->authorizeSuperAdminUpdate($request);
 
         $currentVersion = $this->currentVersion();
 
@@ -66,7 +66,7 @@ final class SystemUpdateController extends Controller
 
     public function store(Request $request): RedirectResponse
     {
-        Gate::authorize('system.update');
+        $this->authorizeSuperAdminUpdate($request);
 
         $validated = $request->validate([
             'package' => ['required', 'file', 'max:512000'],
@@ -130,7 +130,7 @@ final class SystemUpdateController extends Controller
 
     public function backup(Request $request): RedirectResponse
     {
-        Gate::authorize('system.update');
+        $this->authorizeSuperAdminUpdate($request);
 
         $validated = $request->validate([
             'reason' => ['required', 'string', 'min:5', 'max:500'],
@@ -163,7 +163,7 @@ final class SystemUpdateController extends Controller
 
     public function restore(Request $request, string $backupReference): RedirectResponse
     {
-        Gate::authorize('system.update');
+        $this->authorizeSuperAdminUpdate($request);
 
         $validated = $request->validate([
             'reason' => ['required', 'string', 'min:5', 'max:500'],
@@ -199,6 +199,23 @@ final class SystemUpdateController extends Controller
                 ->route('admin.system-update.index')
                 ->withErrors(['restore' => __('admin.system_update_surface.restore_failed')]);
         }
+    }
+
+    /**
+     * The updater, manual backups and recovery mutate platform-wide files
+     * and databases. system.update alone can be granted to a SYSTEM_ADMINISTRATOR,
+     * but these high-risk operations require an active global Super Admin.
+     * Retain the existing Gate so explicit permission checks are not bypassed.
+     */
+    private function authorizeSuperAdminUpdate(Request $request): void
+    {
+        Gate::authorize('system.update');
+
+        $actor = $request->user();
+        abort_unless(
+            $actor instanceof User && $actor->is_active && $actor->hasRole('SUPER_ADMIN'),
+            403,
+        );
     }
 
     /**
