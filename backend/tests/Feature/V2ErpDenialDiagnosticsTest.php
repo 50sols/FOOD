@@ -91,14 +91,23 @@ final class V2ErpDenialDiagnosticsTest extends TestCase
                 ->assertForbidden();
         }
 
+        // Certified version alone cannot produce a Workbench route: its
+        // accepted positive path also needs a real authorized enterprise store.
         $version = app(ModuleRegistry::class)->manifest('procurement')->version;
         config()->set('enterprise_module_readiness.certified_versions.procurement', $version);
+        $store = \App\Models\Store::query()->create([
+            'store_type_id' => (int) \Illuminate\Support\Facades\DB::table('store_types')->where('code', 'B2B')->value('id'),
+            'code' => 'P034-ERP-READY',
+            'name' => 'P034 Ready Store',
+            'is_active' => true,
+        ]);
+        app(\App\Enterprise\Organization\OrganizationHierarchyService::class)->ensureDefaultScopeForStore($store);
 
         foreach (['en' => 'ltr', 'ar' => 'rtl'] as $locale => $direction) {
             $card = $this->viewCard($admin, $locale, $direction);
             $this->assertSame('available', $card['status']);
             $this->assertNull($card['denial_reason']);
-            $this->assertSame(route('admin.erp.procurement.index'), $card['url']);
+            $this->assertSame(route('admin.erp.procurement.index', ['store_id' => $store->id]), $card['url']);
         }
     }
 
