@@ -970,6 +970,28 @@ final class V2InventoryOwnerProvenanceTest extends TestCase
         $this->assertTrue($trusted['certified']);
         $this->assertTrue($trusted['positions'][0]['certified']);
 
+        // An append-only canonical stock movement invalidates this proof
+        // even if the inventory's timestamp and net quantity look identical
+        // (same-second / ABA stale-certificate replay).
+        $originalRevision = $verifier->stockRevisionSha256($inventory, $position, $stock['store_id']);
+        $movementId = DB::table('stock_movements')->insertGetId([
+            'inventory_id' => $stock['inventory_id'],
+            'store_id' => $stock['store_id'],
+            'type' => 'adjustment',
+            'quantity' => '0.001',
+            'reference_type' => 'test-owner-attestation-replay',
+            'reference_id' => $stock['inventory_id'],
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        $this->assertNotSame(
+            $originalRevision,
+            $verifier->stockRevisionSha256($inventory, $position, $stock['store_id']),
+        );
+        $this->assertSame('UNVERIFIED', $read->snapshot($actor, $stock['inventory_id'])['state']);
+        DB::table('stock_movements')->where('id', $movementId)->delete();
+        $this->assertSame('CERTIFIED', $read->snapshot($actor, $stock['inventory_id'])['state']);
+
         Storage::disk('local')->put($path, 'tampered document');
         $this->assertSame('UNVERIFIED', $read->snapshot($actor, $stock['inventory_id'])['state']);
         Storage::disk('local')->put($path, $bytes);
