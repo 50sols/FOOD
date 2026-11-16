@@ -5,6 +5,7 @@ namespace Tests\Feature;
 use App\Models\Role;
 use App\Models\User;
 use App\Models\VanVisit;
+use App\Services\RbacManager;
 use Database\Seeders\CoreReferenceSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Request;
@@ -168,7 +169,7 @@ final class V2DistinctUserArchiveLifecycleTest extends TestCase
             'is_active' => true,
         ]);
         try {
-            app(\App\Services\RbacManager::class)->setUserActive(
+            app(RbacManager::class)->setUserActive(
                 $admin,
                 $staleBeforeArchival,
                 true,
