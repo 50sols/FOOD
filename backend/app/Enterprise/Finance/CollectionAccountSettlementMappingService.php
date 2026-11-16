@@ -46,7 +46,7 @@ final class CollectionAccountSettlementMappingService
      * persisting a proposal, audit event, payment or journal. This is only a
      * current preflight: Save takes its own locks and revalidates every rule.
      *
-     * @param array<string, mixed> $attributes
+     * @param  array<string, mixed>  $attributes
      */
     public function testProposal(User $actor, ResolvedTenantContext $context, array $attributes): void
     {
@@ -299,7 +299,7 @@ final class CollectionAccountSettlementMappingService
     }
 
     /** @param array<string, mixed> $attributes
-     *  @return array<string, mixed>
+     * @return array<string, mixed>
      */
     private function validatedProposalInput(array $attributes): array
     {
