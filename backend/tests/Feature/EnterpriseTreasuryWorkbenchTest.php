@@ -523,6 +523,42 @@ final class EnterpriseTreasuryWorkbenchTest extends TestCase
             ->assertSessionHasErrors('idempotency_key');
     }
 
+    public function test_p302_large_decimal_guarantee_values_do_not_collapse_distinct_idempotent_requests(): void
+    {
+        [$actor, $store] = $this->operator('ERP-GUARANTEE-PRECISION', 'guarantee-precision@example.test', 'en');
+        $context = app(TenantContextResolver::class)->retail($actor, $store->id);
+        $this->enableTreasury($actor, $context);
+
+        $payload = [
+            'store_id' => $store->id,
+            '_operation_key' => 'guarantee-precision-001',
+            'instrument_type' => 'bank_guarantee',
+            'direction' => 'received',
+            'reference' => 'BG-PRECISION-001',
+            'underlying_reference' => 'CONTRACT-PRECISION',
+            'issuer_name' => 'Bank',
+            'applicant_name' => 'Customer',
+            'beneficiary_name' => 'FOODEX',
+            'currency_code' => 'KWD',
+            'face_amount' => '123456789012345.998',
+            'effective_date' => '2026-11-01',
+            'expiry_date' => '2027-11-01',
+        ];
+
+        $endpoint = route('admin.erp.treasury.guarantees.store');
+        $this->actingAs($actor)->post($endpoint, $payload)->assertRedirect();
+        $this->actingAs($actor)->post($endpoint, $payload)->assertRedirect();
+
+        $this->actingAs($actor)->post($endpoint, [
+            ...$payload,
+            'face_amount' => '123456789012345.997',
+        ])->assertSessionHasErrors('idempotency_key');
+
+        $this->assertDatabaseCount('enterprise_guaranteed_contracts', 1);
+        $this->assertSame(0, DB::table('enterprise_finance_journals')->count());
+        $this->assertSame(0, DB::table('enterprise_treasury_payments')->count());
+    }
+
     public function test_p302_guarantee_instruments_deny_foreign_store_invalid_payload_and_disabled_module(): void
     {
         [$actor, $store] = $this->operator('ERP-GUARANTEE-OWN', 'guarantee-own@example.test', 'ar');
