@@ -2,6 +2,11 @@
 
 namespace Tests\Feature;
 
+use App\Enterprise\Entitlements\EntitlementScope;
+use App\Enterprise\Entitlements\ModuleEntitlementManager;
+use App\Enterprise\Finance\FinanceFoundationService;
+use App\Enterprise\Finance\FinanceWorkbenchAccess;
+use App\Enterprise\Organization\OrganizationHierarchyService;
 use App\Enterprise\Modules\ModuleLifecycleManager;
 use App\Enterprise\Modules\ModuleRegistry;
 use App\Enterprise\Modules\ModuleState;
@@ -244,6 +249,81 @@ final class V2ArOfficerAuthorizationContractTest extends TestCase
 
         $this->assertSame($before['journals'], DB::table('enterprise_finance_journals')->count());
         $this->assertSame($before['ledger'], DB::table('enterprise_finance_ledger_entries')->count());
+    }
+
+
+    public function test_ar_officer_finance_access_remains_ar_only_with_a_second_b2b_channel_role(): void
+    {
+        $this->enableFinance();
+        $actor = $this->officer();
+
+        // OPERATIONS admits the actor to the ordinary B2B context but cannot
+        // transform the AR officer's shared finance.manage grant into GL/AP.
+        $actor->roles()->attach(Role::query()->where('code', 'OPERATIONS')->firstOrFail());
+        $store = Store::query()->create([
+            'store_type_id' => (int) DB::table('store_types')->where('code', 'B2B')->value('id'),
+            'code' => 'V2-AR-OFFICER-SCOPE',
+            'name' => 'AR capability isolation store',
+            'is_active' => true,
+        ]);
+        $hierarchy = app(OrganizationHierarchyService::class);
+        $hierarchy->ensureDefaultScopeForStore($store);
+        $scope = $hierarchy->scopeForStore($store->id);
+        $this->assertNotNull($scope);
+
+        $entitlements = app(ModuleEntitlementManager::class);
+        $legalEntity = new EntitlementScope(
+            EntitlementScope::LEGAL_ENTITY,
+            (int) $scope['legal_entity_id'],
+        );
+        $entitlements->set(FinanceFoundationService::MODULE, $legalEntity, true, [
+            'finance.ar.read',
+            'finance.ar.manage',
+            'finance.gl.read',
+            'finance.gl.manage',
+            'finance.ap.read',
+            'finance.ap.manage',
+            'finance.foundation.read',
+            'finance.foundation.manage',
+            'finance.approvals.manage',
+        ]);
+
+        $actor = $actor->fresh();
+        $access = app(FinanceWorkbenchAccess::class);
+        $this->assertTrue($actor->hasPermission('finance.view', $store->id));
+        $this->assertTrue($actor->hasPermission('finance.manage', $store->id));
+        $this->assertTrue($access->canRead($actor, $store->id));
+        $this->assertTrue($access->canPerform(
+            $actor, $store->id, 'finance.manage', 'finance.ar.manage',
+        ));
+
+        foreach ([
+            'finance.gl.read',
+            'finance.gl.manage',
+            'finance.ap.read',
+            'finance.ap.manage',
+            'finance.foundation.manage',
+            'finance.approvals.manage',
+        ] as $capability) {
+            $permission = str_ends_with($capability, '.read')
+                ? 'finance.view'
+                : 'finance.manage';
+            $this->assertFalse(
+                $access->canPerform($actor, $store->id, $permission, $capability),
+                "An AR_OFFICER must not inherit {$capability} via finance.view/manage.",
+            );
+        }
+
+        // Removing AR entitlements immediately revokes the ability to read the
+        // workbench, even if a GL entitlement remains active at the same entity.
+        $entitlements->set(FinanceFoundationService::MODULE, $legalEntity, true, [
+            'finance.gl.read',
+            'finance.gl.manage',
+        ]);
+        $this->assertFalse($access->canRead($actor, $store->id));
+        $this->assertFalse($access->canPerform(
+            $actor, $store->id, 'finance.manage', 'finance.ar.manage',
+        ));
     }
 
     private function officer(): User
