@@ -9,6 +9,7 @@ use App\Services\AuditLogger;
 use App\Support\EnterpriseDataScope;
 use App\Support\EnterpriseScopeAuthorizer;
 use App\Support\ResolvedTenantContext;
+use Illuminate\Database\Query\Builder;
 use Illuminate\Pagination\LengthAwarePaginator;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Validator;
@@ -107,7 +108,7 @@ final class GuaranteedContractService
         }, 3);
     }
 
-    private function scopedQuery(EnterpriseDataScope $scope): \Illuminate\Database\Query\Builder
+    private function scopedQuery(EnterpriseDataScope $scope): Builder
     {
         return DB::table('enterprise_guaranteed_contracts')
             ->where('organization_id', $scope->organizationId)
