@@ -173,20 +173,28 @@ final class V2FinanceWorkbenchPanelAuthorityTest extends TestCase
     {
         $template = file_get_contents(resource_path('views/admin/finance-workbench.blade.php'));
         $this->assertIsString($template);
+        // The Receivable document actions have an inner GL capability guard.
         $this->assertStringContainsString(
             "@if(\$document->journal_id && (\$access['gl_read'] ?? false))",
             $template,
         );
+        // AP and settlement reports hide their entire GL-only table column.
         $this->assertStringContainsString(
-            "@if(\$settlement->journal_id && (\$access['gl_read'] ?? false))",
+            "@if(\$access['gl_read'] ?? false)<td>@if(\$document->journal_id)",
+            $template,
+        );
+        $this->assertStringContainsString(
+            "@if(\$access['gl_read'] ?? false)<td>@if(\$settlement->journal_id)",
+            $template,
+        );
+        $this->assertStringContainsString(
+            "@if(\$access['gl_read'] ?? false)<th>{{ __('finance_workbench.actions.view_ledger') }}</th>@endif",
             $template,
         );
         $this->assertStringContainsString(
             "5 => (bool) (\$access['gl_read'] ?? false)",
             $template,
         );
-        $this->assertStringNotContainsString('@if($document->journal_id)<a', $template);
-        $this->assertStringNotContainsString('@if($settlement->journal_id)<a', $template);
     }
 
     /** @return array{User, Store} */
