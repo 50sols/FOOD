@@ -210,12 +210,12 @@ final class FinanceWorkbenchController extends Controller
         if (($action['mapping_action'] ?? 'save') === 'test') {
             $this->collectionMappings->testProposal($actor, $context, $attributes);
 
-            return $this->redirectTo($request, 'receivables', 'mapping_tested');
+            return $this->redirectTo($request, 'receivables', 'mapping_tested', ['finance_panel' => 'settlements']);
         }
 
         $this->collectionMappings->propose($actor, $context, $attributes);
 
-        return $this->redirectTo($request, 'receivables', 'mapping_proposed');
+        return $this->redirectTo($request, 'receivables', 'mapping_proposed', ['finance_panel' => 'settlements']);
     }
 
     public function reviewCollectionMapping(Request $request, int $mapping): RedirectResponse
@@ -225,7 +225,7 @@ final class FinanceWorkbenchController extends Controller
             $actor, $context, $mapping, (string) $request->input('decision', ''),
         );
 
-        return $this->redirectTo($request, 'receivables', 'mapping_reviewed');
+        return $this->redirectTo($request, 'receivables', 'mapping_reviewed', ['finance_panel' => 'settlements']);
     }
 
     public function storeReceivableSettlement(Request $request, int $document): RedirectResponse
