@@ -38,6 +38,20 @@ void main() {
         );
         await tester.pumpAndSettle();
 
+        // Footer copy must follow the selected language, including screen-reader text.
+        const englishTagline = 'Good Food   A Stronger Tomorrow';
+        const arabicTagline = 'غذاء جيد   غد أقوى';
+        expect(
+          find.text(
+              locale.languageCode == 'ar' ? arabicTagline : englishTagline),
+          findsOneWidget,
+        );
+        expect(
+          find.text(
+              locale.languageCode == 'ar' ? englishTagline : arabicTagline),
+          findsNothing,
+        );
+
         final email = find.byKey(const Key('van-login-email'));
         final password = find.byKey(const Key('van-login-password'));
         final submit = find.byKey(const Key('van-login-submit'));

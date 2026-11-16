@@ -695,7 +695,8 @@ class _VanLoginScreenState extends State<VanLoginScreen> {
                       child: LayoutBuilder(
                         builder: (context, constraints) {
                           final tagline = Text(
-                            'Good Food   A Stronger Tomorrow',
+                            _text('Good Food   A Stronger Tomorrow',
+                                'غذاء جيد   غد أقوى'),
                             style: TextStyle(
                               color: _LoginColors.muted,
                               fontSize: 11,
