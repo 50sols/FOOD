@@ -154,6 +154,7 @@ class InstallerController extends Controller
 
                 case 10:
                     $validated = $this->validated($request, [
+                        'mail_action' => ['sometimes', 'in:save,test_inputs'],
                         'mail_mailer' => ['required', 'in:log,array,smtp'],
                         'mail_host' => ['nullable', 'required_if:mail_mailer,smtp', 'string', 'max:255'],
                         'mail_port' => ['nullable', 'required_if:mail_mailer,smtp', 'integer', 'between:1,65535'],
@@ -163,6 +164,31 @@ class InstallerController extends Controller
                         'mail_from_address' => ['required', 'email', 'max:255'],
                         'mail_from_name' => ['required', 'string', 'max:120'],
                     ]);
+                    // Test Inputs reuses the exact Save validator and installer token/order
+                    // checks, but must never persist credentials, send SMTP mail or
+                    // advance first-install progress. A syntactically valid SMTP host is
+                    // NOT proof that the provider accepted or delivered a message.
+                    if (($validated['mail_action'] ?? 'save') === 'test_inputs') {
+                        return response()->view('install.index', [
+                            ...$this->viewData(
+                                $state,
+                                $environment,
+                                $workflow,
+                                $step,
+                                [],
+                                $request->except([
+                                    'installer_token',
+                                    'db_password',
+                                    'admin_password',
+                                    'admin_password_confirmation',
+                                    'redis_password',
+                                    'mail_password',
+                                ]),
+                            ),
+                            'mailInputTestPassed' => true,
+                        ]);
+                    }
+
                     $workflow->saveMailConfiguration([
                         'mailer' => (string) $validated['mail_mailer'],
                         'host' => (string) ($validated['mail_host'] ?? ''),
