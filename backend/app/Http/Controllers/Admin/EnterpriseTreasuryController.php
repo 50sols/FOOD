@@ -9,6 +9,7 @@ use App\Enterprise\Reporting\ReportExportManager;
 use App\Enterprise\Reporting\ReportQuery;
 use App\Enterprise\Reporting\ReportRegistry;
 use App\Enterprise\Reporting\ScheduledReportManager;
+use App\Enterprise\Treasury\GuaranteedContractService;
 use App\Enterprise\Treasury\TreasuryAnalyticsService;
 use App\Enterprise\Treasury\TreasuryChequeService;
 use App\Enterprise\Treasury\TreasuryPaymentService;
@@ -43,6 +44,7 @@ final class EnterpriseTreasuryController extends Controller
         'reconciliation',
         'cash_closing',
         'financing',
+        'guarantees',
         'investments',
         'forecast',
         'reports',
@@ -130,6 +132,9 @@ final class EnterpriseTreasuryController extends Controller
             'canApproveReconciliation' => $this->allowed($actor, $storeId, 'finance.manage')
                 && $this->entitlements->allows('treasury', new EntitlementScope(EntitlementScope::STORE, $storeId), 'treasury.reconciliation.approve'),
             'rows' => null,
+            'guaranteeToken' => 'ui-guarantee-'.Str::ulid(),
+            'canManageGuarantees' => $this->allowed($actor, $storeId, 'finance.manage')
+                && $this->entitlements->allows('treasury', new EntitlementScope(EntitlementScope::STORE, $storeId), 'treasury.payments.manage'),
             'dashboard' => null,
             'forecast' => null,
             'reports' => null,
@@ -151,6 +156,11 @@ final class EnterpriseTreasuryController extends Controller
         ];
 
         switch ($tab) {
+            case 'guarantees':
+                $data['rows'] = app(GuaranteedContractService::class)->paginate($actor, $context, [
+                    'instrument_type' => $request->query('instrument_type'),
+                ]);
+                break;
             case 'overview':
                 $data['dashboard'] = $this->analytics->dashboard($actor, $context, [
                     'from' => $request->query('from'),
@@ -284,6 +294,18 @@ final class EnterpriseTreasuryController extends Controller
         }
 
         return view('admin.enterprise-treasury', $data);
+    }
+
+    public function storeGuarantee(Request $request): RedirectResponse
+    {
+        [$actor, $context, $storeId] = $this->mutationContext($request);
+        $attributes = $request->all();
+        $attributes['idempotency_key'] = $attributes['_operation_key'] ?? null;
+        unset($attributes['_operation_key']);
+        app(GuaranteedContractService::class)->createDraft($actor, $context, $attributes);
+
+        return $this->backTo('guarantees', $storeId)
+            ->with('status', __('enterprise_treasury.guarantees.created'));
     }
 
     public function storeReceipt(Request $request): RedirectResponse
