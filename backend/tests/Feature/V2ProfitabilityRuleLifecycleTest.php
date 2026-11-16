@@ -187,6 +187,50 @@ final class V2ProfitabilityRuleLifecycleTest extends TestCase
             ->where('event', 'commercial.profitability_rule.proposed')->count());
     }
 
+    public function test_foreign_catalog_product_cross_link_cannot_be_managed_as_own_store(): void
+    {
+        [$maker, $store, $product] = $this->fixture();
+        [, , $foreignProduct] = $this->fixture();
+
+        // Simulate an inconsistent/forged store_products pivot: its existence
+        // must never substitute for proof that the catalog belongs to store.
+        DB::table('store_products')->insert([
+            'store_id' => $store,
+            'product_id' => $foreignProduct,
+            'price' => 10,
+            'is_active' => true,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $this->actingAs($maker)->get(route('admin.commercial.sales-control', [
+            'store_id' => $store, 'product' => $product,
+        ]))->assertOk();
+
+        $this->actingAs($maker)->get(route('admin.commercial.sales-control', [
+            'store_id' => $store, 'product' => $foreignProduct,
+        ]))->assertNotFound();
+
+        $this->actingAs($maker)->put(
+            $this->saveRoute($store, $foreignProduct),
+            $this->proposal((string) Str::uuid(), '18.25'),
+        )->assertNotFound();
+
+        $caught = null;
+        try {
+            $registry = app(CommercialProfitabilityRuleService::class);
+            $registry->revisions($maker, $store, $foreignProduct);
+        } catch (HttpException $exception) {
+            $caught = $exception;
+        }
+
+        $this->assertInstanceOf(HttpException::class, $caught);
+        $this->assertSame(404, $caught->getStatusCode());
+        $this->assertSame(0, DB::table('commercial_profitability_rule_revisions')->count());
+        $this->assertSame(0, DB::table('audit_logs')
+            ->where('event', 'like', 'commercial.profitability_rule.%')->count());
+    }
+
     public function test_scoped_proposal_uses_exact_basis_points_and_request_idempotency_without_activating_prices(): void
     {
         [$maker, $store, $product] = $this->fixture();

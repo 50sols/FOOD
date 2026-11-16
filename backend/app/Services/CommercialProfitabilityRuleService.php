@@ -238,6 +238,7 @@ final class CommercialProfitabilityRuleService
             ->join('catalogs', 'catalogs.id', '=', 'products.catalog_id')
             ->where('store_products.store_id', $storeId)
             ->where('store_products.product_id', $productId)
+            ->where('catalogs.store_id', $storeId)
             ->where('catalogs.channel', 'b2b')
             ->exists(), 404);
     }

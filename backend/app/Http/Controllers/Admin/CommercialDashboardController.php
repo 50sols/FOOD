@@ -39,6 +39,7 @@ final class CommercialDashboardController extends Controller
             ->join('products', 'products.id', '=', 'store_products.product_id')
             ->join('catalogs', 'catalogs.id', '=', 'products.catalog_id')
             ->where('store_products.store_id', $storeId)
+            ->where('catalogs.store_id', $storeId)
             ->where('catalogs.channel', 'b2b')
             ->count();
 
@@ -50,6 +51,7 @@ final class CommercialDashboardController extends Controller
                 ->join('catalogs', 'catalogs.id', '=', 'products.catalog_id')
                 ->where('store_products.store_id', $storeId)
                 ->where('store_products.product_id', $selectedProductId)
+                ->where('catalogs.store_id', $storeId)
                 ->where('catalogs.channel', 'b2b')
                 ->first(['products.id', 'products.sku', 'products.name', 'store_products.is_active']);
 
@@ -167,6 +169,7 @@ final class CommercialDashboardController extends Controller
             ->join('products', 'products.id', '=', 'store_products.product_id')
             ->join('catalogs', 'catalogs.id', '=', 'products.catalog_id')
             ->where('store_products.store_id', $storeId)
+            ->where('catalogs.store_id', $storeId)
             ->where('catalogs.channel', 'b2b')
             ->when($term !== '', function ($query) use ($term): void {
                 // Search the operator's text literally; only the outer % anchors
@@ -206,6 +209,7 @@ final class CommercialDashboardController extends Controller
                 ->join('catalogs', 'catalogs.id', '=', 'products.catalog_id')
                 ->where('store_products.store_id', $storeId)
                 ->where('store_products.product_id', $product)
+                ->where('catalogs.store_id', $storeId)
                 ->where('catalogs.channel', 'b2b')
                 ->exists(),
             404,
