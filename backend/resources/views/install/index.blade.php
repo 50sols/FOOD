@@ -39,8 +39,9 @@
         input, select { width: 100%; border: 1px solid #cbd5e1; border-radius: 8px; padding: 11px 12px; font: inherit; font-size: 16px; background: #fff; min-height: 44px; }
         input[type="email"], input[type="url"], input[type="password"], input[type="number"], input[name="db_host"], input[name="db_database"], input[name="db_username"], input[name="redis_host"], input[name="mail_host"], input[name="mail_username"], input[name="mail_from_address"] { direction: ltr; text-align: start; }
         small { color: #64748b; font-weight: 400; }
-        .actions { display: flex; justify-content: flex-start; gap: 10px; margin-top: 28px; }
+        .actions { display: flex; flex-wrap: wrap; justify-content: flex-start; gap: 10px; margin-top: 28px; }
         button { border: 0; border-radius: 8px; background: #047857; color: white; padding: 12px 22px; font: inherit; font-weight: 700; min-height: 44px; cursor: pointer; }
+        .test-only { background: #334155; }
         code { direction: ltr; unicode-bidi: embed; }
         ul { line-height: 1.8; }
         @media (max-width: 820px) { .layout { grid-template-columns: minmax(0, 1fr); } aside { padding: 12px 16px; } aside p { margin-bottom: 8px; } aside ol { display: flex; gap: 6px; overflow-x: auto; overscroll-behavior-x: contain; padding-bottom: 6px; } aside li { flex: 0 0 auto; } .step-link, .step-disabled { white-space: nowrap; } main { padding: 16px; } .card { padding: 22px; } .fields { grid-template-columns: minmax(0, 1fr); } }
@@ -100,6 +101,10 @@
                         @endforeach
                     </ul>
                 </div>
+            @endif
+
+            @if ($currentStep === 10 && !empty($mailInputTestPassed))
+                <div class="success" role="status">{{ __('installer.wizard.mail_test_inputs_passed') }}</div>
             @endif
 
             @if ($currentStep === 2)
@@ -197,6 +202,7 @@
                         <label class="full">{{ __('installer.fields.redis_password') }}<input name="redis_password" type="password" value=""></label>
                     </div>
                 @elseif ($currentStep === 10)
+                    <div class="notice" role="note">{{ __('installer.wizard.mail_test_inputs_help') }}</div>
                     <div class="fields">
                         <label>{{ __('installer.fields.mail_mailer') }}
                             <select name="mail_mailer">
@@ -250,6 +256,9 @@
                 @endif
 
                 <div class="actions">
+                    @if ($currentStep === 10)
+                        <button type="submit" class="test-only" name="mail_action" value="test_inputs" formnovalidate>{{ __('installer.wizard.mail_test_inputs') }}</button>
+                    @endif
                     <button type="submit">
                         {{ __('installer.wizard.'.$actionKey) }}
                     </button>
