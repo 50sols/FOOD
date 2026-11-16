@@ -4,6 +4,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:foodex_van_app/core/api/http_van_api.dart';
 import 'package:foodex_van_app/core/auth/van_session.dart';
 import 'package:foodex_van_app/features/wallet/http_van_wallet_repository.dart';
+import 'package:foodex_van_app/features/wallet/van_wallet_contract.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 
@@ -66,6 +67,7 @@ void main() {
             'data': {
               'receipt': {
                 'id': 501,
+                'payment_id': 902,
                 'amount': 25,
                 'currency': 'EGP',
                 'status': 'posted',
@@ -142,6 +144,7 @@ void main() {
       idempotencyKey: 'collect-retry-1',
     );
     expect(collection.receipt.id, 501);
+    expect(collection.receipt.paymentId, 902);
     expect(collection.remainingOutstanding, 40);
     expect(collection.wallet.custodyBalance, 25);
 
@@ -198,6 +201,198 @@ void main() {
         ),
       ),
     );
+  });
+
+
+  test('Van wallet preserves payment identity and genuine three-place money',
+      () async {
+    final api = VanApiClient(
+      'https://foodex.example/',
+      'van-token',
+      client: MockClient((request) async {
+        expect(request.url.path, '/api/v1/van/wallet');
+        return http.Response(
+          jsonEncode({
+            'data': [
+              {
+                'id': 12,
+                'store_id': 7,
+                'currency': 'KWD',
+                'status': 'active',
+                'custody_balance': '25.125',
+                'available_to_remit': '25.125',
+                'transactions': [
+                  {
+                    'id': 501,
+                    'payment_id': 902,
+                    'amount': '25.125',
+                    'currency': 'KWD',
+                    'status': 'posted',
+                    'created_at': '2026-11-16T03:00:00Z',
+                  },
+                  {
+                    'id': 502,
+                    'amount': '0.000',
+                    'currency': 'KWD',
+                    'status': 'posted',
+                    'created_at': '2026-11-16T03:01:00Z',
+                  },
+                ],
+                'remittances': [],
+              },
+            ],
+          }),
+          200,
+        );
+      }),
+    );
+
+    final accounts = await HttpVanWalletRepository(api).wallet();
+    final wallet = accounts.single;
+    expect(wallet.storeId, 7);
+    expect(wallet.custodyBalance, 25.125);
+    expect(wallet.receipts.first.paymentId, 902);
+    expect(wallet.receipts.first.amount, 25.125);
+    // Legacy history may omit payment_id; do not invent one or a paid status.
+    expect(wallet.receipts.last.paymentId, isNull);
+    expect(wallet.receipts.last.amount, 0);
+  });
+
+  test('Van collection rejects a forged payment ID after a scoped response',
+      () async {
+    const customer = VanCustomerScope(
+      type: 'b2b',
+      id: 44,
+      name: 'Wholesale customer',
+      storeId: 7,
+    );
+    for (final invalidId in <Object?>[0, -1, 'invalid', 'NaN']) {
+      final repository = HttpVanWalletRepository(
+        VanApiClient(
+          'https://foodex.example/',
+          'van-token',
+          client: MockClient((request) async {
+            expect(request.method, 'POST');
+            expect(
+              request.url.path,
+              '/api/v1/van/customers/b2b/44/collect',
+            );
+            expect(request.headers['idempotency-key'], 'collect-safe-key');
+            return http.Response(
+              jsonEncode({
+                'data': {
+                  'receipt': {
+                    'id': 501,
+                    'payment_id': invalidId,
+                    'amount': '25.125',
+                    'currency': 'KWD',
+                    'status': 'posted',
+                    'created_at': '2026-11-16T03:00:00Z',
+                  },
+                  'remaining_outstanding': '40.000',
+                  'wallet': {
+                    'id': 12,
+                    'store_id': 7,
+                    'currency': 'KWD',
+                    'status': 'active',
+                    'custody_balance': '25.125',
+                    'available_to_remit': '25.125',
+                    'transactions': [],
+                    'remittances': [],
+                  },
+                },
+              }),
+              201,
+            );
+          }),
+        ),
+      );
+
+      await expectLater(
+        repository.collect(
+          customer: customer,
+          invoiceId: 91,
+          amount: 25.125,
+          idempotencyKey: 'collect-safe-key',
+        ),
+        throwsA(isA<VanApiException>()),
+      );
+    }
+  });
+
+  test('Van scoped collection context rejects foreign-store responses',
+      () async {
+    const customer = VanCustomerScope(
+      type: 'b2b',
+      id: 44,
+      name: 'Wholesale customer',
+      storeId: 7,
+    );
+    final repository = HttpVanWalletRepository(
+      VanApiClient(
+        'https://foodex.example/',
+        'van-token',
+        client: MockClient((request) async {
+          expect(request.url.queryParameters['store_id'], '7');
+          return http.Response(
+            jsonEncode({'data': {'store_id': 8, 'invoices': []}}),
+            200,
+          );
+        }),
+      ),
+    );
+    await expectLater(
+      repository.collectionContext(customer),
+      throwsA(isA<VanApiException>()),
+    );
+  });
+
+  test('Van finance rejects missing, malformed and non-finite money',
+      () async {
+    const customer = VanCustomerScope(
+      type: 'b2b',
+      id: 44,
+      name: 'Wholesale customer',
+      storeId: 7,
+    );
+    for (final invalidAmount in <Object?>[
+      null,
+      'broken',
+      'NaN',
+      'Infinity',
+      '-Infinity',
+    ]) {
+      final repository = HttpVanWalletRepository(
+        VanApiClient(
+          'https://foodex.example/',
+          'van-token',
+          client: MockClient((request) async {
+            expect(request.url.queryParameters['store_id'], '7');
+            return http.Response(
+              jsonEncode({
+                'data': {
+                  'store_id': 7,
+                  'invoices': [
+                    {
+                      'id': 91,
+                      'number': 'INV-91',
+                      'currency': 'KWD',
+                      'total': invalidAmount,
+                      'outstanding_amount': '40.000',
+                    },
+                  ],
+                },
+              }),
+              200,
+            );
+          }),
+        ),
+      );
+      await expectLater(
+        repository.collectionContext(customer),
+        throwsA(isA<VanApiException>()),
+      );
+    }
   });
 
 }
