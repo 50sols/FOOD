@@ -219,6 +219,77 @@ final class ErpCenterTest extends TestCase
         ]);
     }
 
+    public function test_owner_reported_uncertified_erp_modules_remain_nonactionable_in_both_locales(): void
+    {
+        // This reproduces the owner's five degraded ERP cards without
+        // manufacturing an operational certificate or relaxing real HTTP.
+        config()->set('security.mfa.enforce_privileged', false);
+        $admin = $this->userWithGlobalRole('SUPER_ADMIN', 'ar', 'p135-local-uncertified@example.test');
+        $this->app['env'] = 'production';
+        $this->wholesaleStore('P135-UNCERTIFIED-ERP-STORE');
+
+        $modules = [
+            'procurement' => ['procurement', 'admin.erp.procurement.index'],
+            'wms' => ['inventory_wms', 'admin.erp.wms.index'],
+            'finance' => ['finance', 'admin.erp.finance.index'],
+            'treasury' => ['treasury', 'admin.erp.treasury.index'],
+            'bi' => ['enterprise_bi', 'admin.erp.bi'],
+        ];
+
+        foreach ($modules as [$code]) {
+            app(EnterpriseModuleAdministration::class)->perform($code, 'enable', $admin);
+            app(ModuleEntitlementManager::class)->set(
+                $code,
+                EntitlementScope::platform(),
+                true,
+                null,
+                $admin,
+            );
+        }
+
+        // Simulate production defaults, overriding any synthetic evidence
+        // installed globally by this test suite's positive-case setup.
+        config()->set('enterprise_module_readiness.certified_versions', []);
+        config()->set('enterprise_module_readiness.workflow_attestations', []);
+        config()->set('enterprise_module_readiness.trusted_public_keys', []);
+
+        foreach (['ar' => 'rtl', 'en' => 'ltr'] as $locale => $direction) {
+            $admin->forceFill(['locale' => $locale])->save();
+            $actor = $admin->fresh();
+            $response = $this->actingAs($actor)->get(route('admin.erp.index'));
+            $response->assertOk()
+                ->assertSee('dir="'.$direction.'"', false)
+                ->assertSee(__('admin.erp_center.denial_reasons.uncertified', [], $locale));
+
+            $cards = collect($response->viewData('cards'))->keyBy('key');
+            foreach ($modules as $cardKey => [, $route]) {
+                $card = $cards->get($cardKey);
+                $this->assertIsArray($card);
+                $this->assertSame('degraded', $card['status']);
+                $this->assertSame('uncertified', $card['denial_reason']);
+                $this->assertNull($card['url']);
+                $response->assertSee(
+                    'data-erp-key="'.$cardKey.'" data-erp-status="degraded"',
+                    false,
+                );
+
+                // Direct HTTP cannot bypass a missing signature/version,
+                // even for the same authenticated privileged actor.
+                $this->actingAs($actor)->get(route($route))->assertForbidden();
+            }
+
+            foreach (['customer_service', 'my_work'] as $cardKey) {
+                $card = $cards->get($cardKey);
+                $this->assertIsArray($card);
+                $this->assertSame('available', $card['status']);
+                $this->assertIsString($card['url']);
+            }
+        }
+
+        $this->assertDatabaseCount('enterprise_purchase_orders', 0);
+        $this->assertDatabaseCount('enterprise_finance_journals', 0);
+    }
+
     public function test_enabled_and_entitled_module_exposes_only_its_canonical_destination(): void
     {
         $actor = $this->userWithGlobalRole('SUPER_ADMIN', 'en', 'erp-enabled@example.test');
