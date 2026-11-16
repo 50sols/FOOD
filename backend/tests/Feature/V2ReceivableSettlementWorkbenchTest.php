@@ -1615,7 +1615,7 @@ final class V2ReceivableSettlementWorkbenchTest extends TestCase
         try {
             $service->review($maker, $context, $mapping->id, 'approve');
             $this->fail('Mapping maker must not self-approve.');
-        } catch (\\Symfony\\Component\\HttpKernel\\Exception\\HttpException $exception) {
+        } catch (\Symfony\Component\HttpKernel\Exception\HttpException $exception) {
             $this->assertSame(403, $exception->getStatusCode());
         }
 
