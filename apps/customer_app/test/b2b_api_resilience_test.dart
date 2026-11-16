@@ -641,8 +641,7 @@ void main() {
       final ledger = statement['data'] as Map;
       expect(ledger['balance'], -49.875);
       expect(ledger['closing_balance'], -49.875);
-      expect((ledger['transactions'] as List).last['running_balance'],
-          -49.875);
+      expect((ledger['transactions'] as List).last['running_balance'], -49.875);
       expect(requests, [
         '/api/v1/b2b/invoices/31',
         '/api/v1/b2b/account-statement',
