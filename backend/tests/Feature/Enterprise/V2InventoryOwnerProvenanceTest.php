@@ -21,6 +21,7 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
+use Laravel\Sanctum\Sanctum;
 use Illuminate\Validation\ValidationException;
 use Symfony\Component\HttpKernel\Exception\HttpException;
 use Tests\Feature\Enterprise\Concerns\EnablesEnterpriseWms;
@@ -1043,6 +1044,63 @@ final class V2InventoryOwnerProvenanceTest extends TestCase
         $actor = $this->inventoryActor($own['store_id']);
         $this->expectException(HttpException::class);
         app(InventoryOwnerProvenanceReadService::class)->snapshot($actor, $foreign['inventory_id']);
+    }
+
+    public function test_actual_inventory_rest_api_denies_foreign_store_forged_title_and_stale_balance_retry(): void
+    {
+        $this->seed(CoreReferenceSeeder::class);
+        $home = $this->stock('REST-OWNER-HOME');
+        $foreign = $this->stock('REST-OWNER-FOREIGN');
+        $actor = $this->inventoryActor($home['store_id']);
+
+        Sanctum::actingAs($actor);
+        $url = '/api/v1/admin/inventory/'.$home['inventory_id'].'/adjust';
+        $request = [
+            'quantity_delta' => -1,
+            'reason' => 'Direct P110 stock API must not create verified title',
+            'expected_quantity' => 10,
+            'expected_reserved_quantity' => 3,
+            // These fields are not legal proof and are deliberately outside
+            // the existing inventory API's validated stock contract.
+            'owner_kind' => 'FOODEX',
+            'owner_key' => 'FOODEX',
+            'supplier_id' => $this->supplier($home['store_id']),
+            'certified_by' => $actor->id,
+            'legal_title_verified' => true,
+            'stock_cost' => '1000000.00',
+        ];
+
+        $this->postJson($url, $request)
+            ->assertOk()
+            ->assertJsonPath('data.quantity', 9);
+
+        $this->assertDatabaseHas('inventories', [
+            'id' => $home['inventory_id'], 'quantity' => 9, 'reserved_quantity' => 3,
+        ]);
+        $this->assertSame(0, DB::table('enterprise_inventory_title_attestations')->count());
+        $this->assertSame(0, DB::table('enterprise_finance_journals')->count());
+        $this->assertSame('UNKNOWN', app(InventoryOwnerProvenanceReadService::class)
+            ->snapshot($actor, $home['inventory_id'])['state']);
+
+        // Optimistic stale-state failure must roll back before either
+        // a second physical movement or fabricated title can be recorded.
+        $this->postJson($url, $request)->assertUnprocessable();
+        $this->postJson('/api/v1/admin/inventory/'.$foreign['inventory_id'].'/adjust', [
+            ...$request,
+            'expected_quantity' => 10,
+        ])->assertNotFound();
+
+        $this->assertDatabaseHas('inventories', [
+            'id' => $home['inventory_id'], 'quantity' => 9, 'reserved_quantity' => 3,
+        ]);
+        $this->assertDatabaseHas('inventories', [
+            'id' => $foreign['inventory_id'], 'quantity' => 10, 'reserved_quantity' => 3,
+        ]);
+        $this->assertSame(1, DB::table('stock_movements')
+            ->where('inventory_id', $home['inventory_id'])
+            ->where('reference_type', 'inventory_adjustment')->count());
+        $this->assertSame(0, DB::table('enterprise_inventory_title_attestations')->count());
+        $this->assertSame(0, DB::table('enterprise_finance_journals')->count());
     }
 
     public function test_inventory_only_actor_cannot_direct_post_finance_journal_with_forged_stock_cost(): void
