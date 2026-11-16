@@ -949,6 +949,28 @@ final class V2InventoryOwnerProvenanceTest extends TestCase
         app(InventoryOwnerProvenanceReadService::class)->snapshot($actor, $foreign['inventory_id']);
     }
 
+    public function test_inventory_only_actor_cannot_direct_post_finance_journal_with_forged_stock_cost(): void
+    {
+        $this->seed(CoreReferenceSeeder::class);
+        $stock = $this->stock('FINANCE-FORGED-OWNER-COST');
+        $actor = $this->inventoryActor($stock['store_id']);
+        config()->set('security.mfa.enforce_privileged', false);
+
+        // This route is deliberately invoked directly: the actor has an
+        // inventory role, not a Finance posting or GL approval permission.
+        $this->actingAs($actor)->post(route('admin.erp.finance.journals.store'), [
+            'store_id' => $stock['store_id'],
+            'idempotency_key' => (string) Str::uuid(),
+            'entry_date' => now()->toDateString(),
+            'description' => 'Forged supplier-owned stock cost posting',
+            'lines' => [
+                ['account_id' => 1, 'debit' => '999999.00', 'credit' => '0.00'],
+            ],
+        ])->assertForbidden();
+
+        $this->assertSame(0, DB::table('enterprise_finance_journals')->count());
+    }
+
     public function test_owner_rule_configuration_requires_independent_review_and_never_certifies_stock(): void
     {
         $this->seed(CoreReferenceSeeder::class);
@@ -1116,6 +1138,98 @@ final class V2InventoryOwnerProvenanceTest extends TestCase
         $this->assertContains('eior_request_uuid_uq', $names);
         $this->assertNotContains('enterprise_inventory_ownership_rule_revisions_request_uuid_unique', $names);
         $this->assertLessThanOrEqual(64, max(array_map('strlen', $names)));
+    }
+
+    public function test_signed_supplier_consignment_requires_scoped_independent_certificate(): void
+    {
+        $this->seed(CoreReferenceSeeder::class);
+        $stock = $this->stock('SIGNED-SUPPLIER-TITLE');
+        $actor = $this->inventoryActor($stock['store_id']);
+        $checker = User::query()->create([
+            'name' => 'Independent Supplier Title Checker',
+            'email' => 'p110-supplier-title-checker@example.test',
+            'password' => 'password',
+            'is_active' => true,
+        ]);
+        $supplierId = $this->supplier($stock['store_id']);
+        $this->position($stock['inventory_id'], 'SUPPLIER', $supplierId, 10, 3, $actor->id, $checker->id, true);
+
+        $inventory = DB::table('inventories')->where('id', $stock['inventory_id'])->first();
+        $position = DB::table('enterprise_inventory_owner_positions')
+            ->where('inventory_id', $stock['inventory_id'])->first();
+        $verifier = app(InventoryLegalTitleAttestationVerifier::class);
+
+        Storage::fake('local');
+        $path = 'inventory-title-evidence/'.Str::uuid().'.pdf';
+        $bytes = '%PDF-1.7 P110 test-only independent supplier consignment evidence';
+        Storage::disk('local')->put($path, $bytes);
+
+        $privateKey = openssl_pkey_new([
+            'private_key_type' => OPENSSL_KEYTYPE_RSA,
+            'private_key_bits' => 2048,
+        ]);
+        $this->assertNotFalse($privateKey);
+        $details = openssl_pkey_get_details($privateKey);
+        $this->assertIsArray($details);
+        config()->set('enterprise_inventory_title.trusted_public_keys.test-supplier-issuer', $details['key']);
+
+        $attestation = (object) [
+            'document_kind' => 'CONSIGNMENT_AGREEMENT',
+            'document_path' => $path,
+            'document_sha256' => hash('sha256', $bytes),
+            'trusted_key_id' => 'test-supplier-issuer',
+            'checked_by' => (int) $checker->id,
+            'signed_at' => now()->subMinute()->toDateTimeString(),
+            'expires_at' => now()->addDay()->toDateTimeString(),
+        ];
+        $this->assertTrue(openssl_sign(
+            $verifier->signedPayload($inventory, $position, $stock['store_id'], $attestation),
+            $signature,
+            $privateKey,
+            OPENSSL_ALGO_SHA256,
+        ));
+        DB::table('enterprise_inventory_title_attestations')->insert([
+            'owner_position_id' => $position->id,
+            'stock_revision_sha256' => $verifier->stockRevisionSha256($inventory, $position, $stock['store_id']),
+            'document_kind' => $attestation->document_kind,
+            'document_path' => $path,
+            'document_sha256' => $attestation->document_sha256,
+            'trusted_key_id' => $attestation->trusted_key_id,
+            'signature_base64' => base64_encode($signature),
+            'checked_by' => $checker->id,
+            'signed_at' => $attestation->signed_at,
+            'expires_at' => $attestation->expires_at,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $read = app(InventoryOwnerProvenanceReadService::class);
+        $certified = $read->snapshot($actor, $stock['inventory_id']);
+        $this->assertSame('CERTIFIED', $certified['state']);
+        $this->assertTrue($certified['certified']);
+        $this->assertSame('SUPPLIER', $certified['positions'][0]['owner_kind']);
+        $this->assertSame($supplierId, $certified['positions'][0]['supplier_id']);
+
+        // A forged checker ID on a genuine signed supplier document must fail
+        // closed even though both users are in the same authorized store.
+        DB::table('enterprise_inventory_title_attestations')
+            ->where('owner_position_id', $position->id)->update(['checked_by' => $actor->id]);
+        $this->assertSame('UNVERIFIED', $read->snapshot($actor, $stock['inventory_id'])['state']);
+
+        DB::table('enterprise_inventory_title_attestations')
+            ->where('owner_position_id', $position->id)->update(['checked_by' => $checker->id]);
+        $this->assertSame('CERTIFIED', $read->snapshot($actor, $stock['inventory_id'])['state']);
+
+        // Physical stock custody does not make an out-of-store supplier a
+        // legal owner of this store's consignment.
+        $foreignStock = $this->stock('SIGNED-SUPPLIER-FOREIGN');
+        DB::table('enterprise_suppliers')->where('id', $supplierId)->update([
+            'store_id' => $foreignStock['store_id'],
+        ]);
+        $invalidScope = $read->snapshot($actor, $stock['inventory_id']);
+        $this->assertFalse($invalidScope['certified']);
+        $this->assertSame('UNKNOWN', $invalidScope['state']);
+        $this->assertFalse($invalidScope['positions'][0]['certified']);
     }
 
     public function test_private_signed_title_proof_is_bound_to_owner_stock_document_and_trusted_key(): void
