@@ -560,6 +560,60 @@ final class ProcurementCompletionManager
                 ->first();
             abort_if($quote === null, 404);
 
+            // A published invitation is not permanent authority to procure.
+            // Revalidate its supplier, quoted amount and expiry under the
+            // locked RFQ before changing the approved request or creating a PO.
+            $invitation = DB::table('enterprise_procurement_rfq_invitations')
+                ->where('id', $quote->invitation_id)
+                ->where('rfq_id', $rfq->id)
+                ->where('supplier_id', $quote->supplier_id)
+                ->first();
+            if ($invitation === null) {
+                throw ValidationException::withMessages([
+                    'quote_id' => [__('enterprise_procurement.errors.quote_source_invalid')],
+                ]);
+            }
+            if ($quote->valid_until !== null
+                && CarbonImmutable::parse((string) $quote->valid_until)->startOfDay()->isBefore(CarbonImmutable::today())) {
+                throw ValidationException::withMessages([
+                    'quote_id' => [__('enterprise_procurement.errors.quote_expired')],
+                ]);
+            }
+            $supplier = $this->visibleSupplier($scope, (int) $quote->supplier_id);
+            if ($supplier->status !== 'active' || $supplier->qualification_status === 'unqualified') {
+                throw ValidationException::withMessages([
+                    'supplier_id' => [__('enterprise_procurement.errors.quote_supplier_ineligible')],
+                ]);
+            }
+
+            $rfqLines = DB::table('enterprise_procurement_rfq_lines')
+                ->where('rfq_id', $rfq->id)
+                ->get(['id', 'quantity'])
+                ->keyBy('id');
+            $submittedLines = DB::table('enterprise_procurement_quote_lines')
+                ->where('quote_id', $quote->id)
+                ->get(['rfq_line_id', 'quantity', 'unit_price', 'line_total']);
+            $totalMills = 0;
+            $validLines = $rfqLines->isNotEmpty() && $submittedLines->count() === $rfqLines->count();
+            foreach ($submittedLines as $line) {
+                $sourceLine = $rfqLines->get((int) $line->rfq_line_id);
+                if ($sourceLine === null
+                    || (float) $line->unit_price < 0
+                    || (int) round((float) $line->quantity * 1000) !== (int) round((float) $sourceLine->quantity * 1000)
+                    || (int) round((float) $line->line_total * 1000) !== (int) round((float) $line->quantity * (float) $line->unit_price * 1000)) {
+                    $validLines = false;
+
+                    break;
+                }
+                $totalMills += (int) round((float) $line->line_total * 1000);
+            }
+            if (! $validLines || $quote->currency_code !== $rfq->currency_code
+                || (int) round((float) $quote->total_amount * 1000) !== $totalMills) {
+                throw ValidationException::withMessages([
+                    'quote_id' => [__('enterprise_procurement.errors.quote_source_invalid')],
+                ]);
+            }
+
             if ($rfq->contract_id !== null) {
                 $contract = $this->visibleContract($scope, (int) $rfq->contract_id, true);
                 if (
