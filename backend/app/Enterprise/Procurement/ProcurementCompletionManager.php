@@ -550,11 +550,20 @@ final class ProcurementCompletionManager
                     ]);
                 }
 
+                // Awarded state alone is not proof of a valid scoped purchase
+                // order. Never report a synthetic order ID or cross-scope PO.
                 $existingOrder = DB::table('enterprise_purchase_orders')
                     ->where('procurement_rfq_id', $rfq->id)
+                    ->where('organization_id', $scope->organizationId)
+                    ->where('company_id', $scope->companyId)
+                    ->where('store_id', $scope->storeId)
+                    ->where('purchase_request_id', $rfq->purchase_request_id)
+                    ->where('awarded_quote_id', $quoteId)
                     ->first();
 
-                return $existingOrder ?? (object) ['id' => 0, 'order_number' => ''];
+                abort_if($existingOrder === null, 409);
+
+                return $existingOrder;
             }
             if ($rfq->status !== 'published') {
                 throw ValidationException::withMessages(['status' => ['Only published RFQs can be awarded.']]);

@@ -177,6 +177,41 @@ final class V2ErpProcurementRfqReceiptFlowTest extends TestCase
         }
     }
 
+    public function test_awarded_rfq_without_matching_purchase_order_fails_closed_instead_of_returning_phantom_id(): void
+    {
+        $store = $this->store();
+        $maker = $this->actor('PROCUREMENT_BUYER', 'ar');
+        $checker = $this->actor('PROCUREMENT_MANAGER', 'en');
+        [, $requestId, $rfqId, $quoteId] = $this->quotedRequest($maker, $store);
+
+        $this->actingAs($checker)->post(route('admin.erp.procurement.requests.decision', $requestId), [
+            'store_id' => $store->id, 'decision' => 'approve',
+        ])->assertRedirect();
+
+        // Emulate a recovered/inconsistent legacy award without its PO.
+        // This must never generate a success link to an invented order 0.
+        DB::table('enterprise_procurement_rfqs')->where('id', $rfqId)->update([
+            'status' => 'awarded',
+            'awarded_quote_id' => $quoteId,
+            'awarded_by' => $checker->id,
+            'awarded_at' => now(),
+        ]);
+        $this->assertDatabaseMissing('enterprise_purchase_orders', ['procurement_rfq_id' => $rfqId]);
+        $beforeAwardAudits = DB::table('audit_logs')
+            ->where('event', 'enterprise.procurement.rfq.awarded')->count();
+
+        $this->actingAs($checker)->post(route('admin.erp.procurement.rfqs.award', [
+            'rfq' => $rfqId, 'quote' => $quoteId,
+        ]), ['store_id' => $store->id])->assertStatus(409);
+
+        $this->assertDatabaseHas('enterprise_procurement_rfqs', [
+            'id' => $rfqId, 'status' => 'awarded', 'awarded_quote_id' => $quoteId,
+        ]);
+        $this->assertDatabaseMissing('enterprise_purchase_orders', ['procurement_rfq_id' => $rfqId]);
+        $this->assertSame($beforeAwardAudits, DB::table('audit_logs')
+            ->where('event', 'enterprise.procurement.rfq.awarded')->count());
+    }
+
     public function test_expired_or_forged_quote_fails_http_before_award_mutates_request_supplier_or_amount(): void
     {
         $store = $this->store();
