@@ -97,7 +97,25 @@ class HttpB2bApi implements B2bApi, B2bDocumentApi, B2bDownloadApi {
         supportReference: _supportReference(response.headers),
       );
     }
-    return response.body.isEmpty ? null : jsonDecode(response.body);
+    // Every B2B balance, invoice and statement read must be a server JSON
+    // object. A 200 HTML login redirect, truncated body or JSON scalar is
+    // not a settled ledger or a successful empty financial response.
+    final mime =
+        response.headers['content-type']?.split(';').first.trim().toLowerCase();
+    if (response.body.isEmpty ||
+        (mime != null &&
+            mime.isNotEmpty &&
+            mime != 'application/json' &&
+            !mime.endsWith('+json'))) {
+      throw const B2bApiException('invalid_response');
+    }
+    try {
+      final decoded = jsonDecode(response.body);
+      if (decoded is Map<String, dynamic>) return decoded;
+    } on FormatException {
+      // Do not surface proxy/parser details or synthesize money as zero.
+    }
+    throw const B2bApiException('invalid_response');
   }
 
   Future<http.Response> _getWithRetry(String path, String accept) async {
