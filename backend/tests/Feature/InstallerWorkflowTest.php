@@ -20,6 +20,19 @@ class InstallerWorkflowTest extends TestCase
 
     private string $testDirectory;
 
+    public function test_erp_evidence_crypto_prerequisite_is_independent_from_core_install_requirements(): void
+    {
+        $workflow = app(InstallerWorkflow::class);
+        $allExceptSodium = static fn (string $extension): bool => $extension !== 'sodium';
+        $allAvailable = static fn (string $value): bool => true;
+        $noneAvailable = static fn (string $value): bool => false;
+
+        $this->assertFalse($workflow->hasErpEvidenceVerifier($allExceptSodium, $allAvailable));
+        $this->assertFalse($workflow->hasErpEvidenceVerifier($allAvailable, $noneAvailable));
+        $this->assertTrue($workflow->hasErpEvidenceVerifier($allAvailable, $allAvailable));
+        $this->assertSame([], $workflow->serverRequirementFailures($allExceptSodium));
+    }
+
     protected function setUp(): void
     {
         parent::setUp();

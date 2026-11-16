@@ -128,6 +128,35 @@ final class V2InstallerLocaleLayoutParityTest extends TestCase
         $this->assertFalse(app(InstallState::class)->isInstalled());
     }
 
+    public function test_erp_sodium_status_is_localized_on_requirements_step_without_certifying_modules(): void
+    {
+        $environment = $this->fixtureDirectory.'/.env';
+        $before = file_get_contents($environment);
+        $token = app(InstallState::class)->token();
+
+        $this->post('/install/step/1?lang=en', ['installer_token' => $token])
+            ->assertRedirect(route('install.index', ['step' => 2, 'lang' => 'en']));
+
+        $available = app(\App\Domain\Installer\InstallerWorkflow::class)->hasErpEvidenceVerifier();
+        $status = $available ? 'erp_evidence_crypto_available' : 'erp_evidence_crypto_missing';
+        $otherStatus = $available ? 'erp_evidence_crypto_missing' : 'erp_evidence_crypto_available';
+
+        foreach (['ar', 'en'] as $locale) {
+            $this->get('/install?step=2&lang='.$locale)
+                ->assertOk()
+                ->assertSee(__('installer.hosting.'.$status, [], $locale))
+                ->assertDontSee(__('installer.hosting.'.$otherStatus, [], $locale));
+
+            $this->assertNotSame(
+                __('installer.hosting.'.$status, [], $locale),
+                __('installer.hosting.'.$otherStatus, [], $locale),
+            );
+        }
+
+        $this->assertSame($before, file_get_contents($environment));
+        $this->assertFalse(app(InstallState::class)->isInstalled());
+    }
+
     public function test_explicit_language_survives_links_and_post_redirect_without_changing_platform_locale(): void
     {
         $state = app(InstallState::class);

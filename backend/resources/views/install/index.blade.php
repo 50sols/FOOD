@@ -101,6 +101,12 @@
                 @endif
             @endif
 
+            @if ($currentStep === 2)
+                <div class="{{ $erpEvidenceVerifierAvailable ? 'notice' : 'error' }}" role="note">
+                    {{ __($erpEvidenceVerifierAvailable ? 'installer.hosting.erp_evidence_crypto_available' : 'installer.hosting.erp_evidence_crypto_missing') }}
+                </div>
+            @endif
+
             @if ($currentStep === 3)
                 @if ($permissionFailures === [])
                     <div class="success">{{ __('installer.wizard.permissions_ok') }}</div>

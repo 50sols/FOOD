@@ -212,3 +212,11 @@ The original InstallerWorkflow now captures the first Artisan migrate output wit
 - Extend the Setup ZIP staging verifier so packages fail if INSTALL-FIRST.txt omits cPanel, document-root, PHP extension, storage-symlink or scheduler guidance, or contains the known production host/database identifiers.
 
 **Validation status:** focused PHP/Python tests and exact-head GitHub CI are pending this source commit. This is a host-configuration correctness fix and packaging hygiene; it does not implement a symlink-free storage transport, publisher signing identity, signed release artifact or live cPanel deployment. PR #3444 remains DRAFT and #2745 remains OPEN until the full G004 signed-package, cPanel and recovery acceptance is independently proven. No main, merge, release, tag or production action.
+
+## 2026-11-16 — Device D: ERP cryptographic runtime requirement in existing web installer (P135 compatibility)
+
+#2858 / P135 uses PHP sodium's detached Ed25519 verifier to authenticate operational ERP workflow evidence. The existing G004 web installer Step 2 tested only baseline Laravel extensions and did not show the ERP-certification dependency for a cPanel host without sodium.
+
+On original #2745 PR #3444 only, Step 2 now shows AR/EN status for ext-sodium AND `sodium_crypto_sign_verify_detached` with cPanel/provider remediation when missing. It states that core installation may proceed but ERP operational evidence certification remains blocked, and extension availability alone does NOT certify ERP modules absent trusted public keys and verified exact signed evidence. P135 runtime verifier and fail-closed readiness rules are unchanged. No route, Sidebar, module, user input, secrets or core PHP requirements changed.
+
+Regression fixtures cover missing extension, missing verifier function, both present, separate core requirements, AR/EN Step 2 status and unchanged .env / install lock. This source patch still requires exact new-head GitHub CI (Setup ZIP staging, Required CI, policy, isolation, release validation). G004 stays OPEN/DRAFT pending complete signed-artifact delivery and approved final acceptance. No main, tag, production or release.

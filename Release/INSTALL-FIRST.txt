@@ -14,6 +14,8 @@ This is a clean-install package. A trusted release Setup ZIP includes Laravel pr
 
 4. Select PHP 8.2 or newer for this domain. Enable these required PHP extensions: pdo, pdo_mysql, mbstring, openssl, tokenizer, json, zip and fileinfo. The installer checks the active PHP runtime.
 
+   ERP signed-workflow-evidence readiness additionally requires PHP ext-sodium for Ed25519 signature verification. A missing sodium extension does not block an otherwise valid core install, but ERP modules must stay uncertified until the extension, trusted public keys and valid signed evidence are available. Enable it through cPanel PHP settings or ask the host; never bypass signature verification.
+
 5. Ensure the PHP/web-server account can write to backend/storage and backend/bootstrap/cache only. Use the account's correct ownership and restrictive permissions; never make the whole application writable and never use 777 permissions. Do not upload a live .env file.
 
 6. Public uploads must be served from backend/storage/app/public. If backend/public/storage is a symlink, the installer verifies that its real target is exactly backend/storage/app/public and rejects foreign or dangling links. Shared hosts without symlink support may use a pre-created real backend/public/storage directory only when the hosting provider has configured a server-level alias/bind mapping to backend/storage/app/public; the installer preserves that directory but cannot verify the web-server mapping. Confirm an uploaded file is reachable through its public URL before go-live.

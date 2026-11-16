@@ -54,6 +54,20 @@ final class InstallerWorkflow
     }
 
     /**
+     * ERP operational evidence requires detached Ed25519 verification.
+     * Missing crypto support blocks module certification, not core setup.
+     */
+    public function hasErpEvidenceVerifier(
+        ?callable $extensionLoaded = null,
+        ?callable $functionExists = null,
+    ): bool {
+        $extensionLoaded ??= static fn (string $extension): bool => extension_loaded($extension);
+        $functionExists ??= static fn (string $function): bool => function_exists($function);
+
+        return $extensionLoaded('sodium') && $functionExists('sodium_crypto_sign_verify_detached');
+    }
+
+    /**
      * @return array<int, string>
      */
     public function writablePathFailures(): array

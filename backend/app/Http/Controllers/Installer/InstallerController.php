@@ -302,6 +302,7 @@ class InstallerController extends Controller
                 ? request()->query('lang')
                 : null,
             'requirementFailures' => $currentStep === 2 ? $workflow->serverRequirementFailures() : [],
+            'erpEvidenceVerifierAvailable' => $currentStep === 2 && $workflow->hasErpEvidenceVerifier(),
             'permissionFailures' => $currentStep === 3 ? $workflow->writablePathFailures() : [],
         ];
     }
