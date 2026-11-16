@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:http/http.dart' as http;
@@ -54,18 +55,28 @@ class HttpWholesaleCommerceApi
     required this.baseUrl,
     required this.token,
     this.retailStoreContextId,
+    this.locale = 'ar',
+    this.requestTimeout = const Duration(seconds: 20),
+    this.maxGetAttempts = 2,
     http.Client? client,
-  }) : _client = client ?? http.Client();
+  })  : assert(maxGetAttempts >= 1 && maxGetAttempts <= 3),
+        assert(requestTimeout > Duration.zero),
+        _client = client ?? http.Client();
 
   final String baseUrl;
   final String token;
   final int? retailStoreContextId;
+  final String locale;
+  final Duration requestTimeout;
+  final int maxGetAttempts;
   final http.Client _client;
 
   Map<String, String> get _headers => {
         'Accept': 'application/json',
         'Content-Type': 'application/json',
         'Authorization': 'Bearer $token',
+        'X-FOODEX-Customer-Domain': 'b2b',
+        'Accept-Language': locale == 'en' ? 'en' : 'ar',
         if (retailStoreContextId != null)
           'X-FOODEX-Retail-Store-ID': '$retailStoreContextId',
       };
@@ -175,27 +186,58 @@ class HttpWholesaleCommerceApi
     final uri = query.isEmpty ? base : base.replace(queryParameters: query);
     final headers = {..._headers, ...extraHeaders};
 
-    http.Response response;
-    try {
-      if (method == 'POST') {
-        response = await _client.post(
-          uri,
-          headers: headers,
-          body: jsonEncode(body ?? const {}),
-        );
-      } else if (method == 'PATCH') {
-        response = await _client.patch(
-          uri,
-          headers: headers,
-          body: jsonEncode(body ?? const {}),
-        );
-      } else if (method == 'DELETE') {
-        response = await _client.delete(uri, headers: headers);
-      } else {
-        response = await _client.get(uri, headers: headers);
+    // Only GET is retry-safe. Quote and checkout are POST operations:
+    // never silently resend a potentially committed business action.
+    final attempts = method == 'GET' ? maxGetAttempts : 1;
+    http.Response? response;
+    for (var attempt = 1; attempt <= attempts; attempt++) {
+      try {
+        final Future<http.Response> pending;
+        if (method == 'POST') {
+          pending = _client.post(
+            uri,
+            headers: headers,
+            body: jsonEncode(body ?? const {}),
+          );
+        } else if (method == 'PATCH') {
+          pending = _client.patch(
+            uri,
+            headers: headers,
+            body: jsonEncode(body ?? const {}),
+          );
+        } else if (method == 'DELETE') {
+          pending = _client.delete(uri, headers: headers);
+        } else {
+          pending = _client.get(uri, headers: headers);
+        }
+        response = await pending.timeout(requestTimeout);
+        break;
+      } on TimeoutException {
+        if (attempt == attempts) {
+          throw WholesaleCommerceException(
+            locale == 'en'
+                ? 'The server request timed out.'
+                : 'انتهت مهلة الاتصال بالخادم.',
+          );
+        }
+      } on http.ClientException {
+        if (attempt == attempts) {
+          throw WholesaleCommerceException(
+            locale == 'en'
+                ? 'Unable to connect to the server.'
+                : 'تعذر الاتصال بالخادم.',
+          );
+        }
       }
-    } on http.ClientException {
-      throw const WholesaleCommerceException('تعذر الاتصال بالخادم.');
+      await Future<void>.delayed(Duration(milliseconds: 200 * attempt));
+    }
+
+    if (response == null) {
+      throw WholesaleCommerceException(
+        locale == 'en'
+            ? 'Unable to complete the request.'
+            : 'تعذر تنفيذ العملية.',
+      );
     }
 
     Object? value;
@@ -210,7 +252,9 @@ class HttpWholesaleCommerceApi
     if (response.statusCode < 200 || response.statusCode >= 300) {
       final message = value is Map && value['message'] is String
           ? value['message'] as String
-          : 'تعذر تنفيذ العملية.';
+          : locale == 'en'
+              ? 'Unable to complete the request.'
+              : 'تعذر تنفيذ العملية.';
       throw WholesaleCommerceException(
         message,
         statusCode: response.statusCode,
