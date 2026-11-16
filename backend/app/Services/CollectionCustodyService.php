@@ -81,7 +81,7 @@ final class CollectionCustodyService
             // establish an old snapshot, hiding a competing committed payment.
             // The immutable IDs are validated again in the allocation loop.
             $invoiceIds = array_map(
-                static fn (array $allocation): int => (int) ($allocation['invoice_id'] ?? 0),
+                static fn (array $allocation): int => (int) $allocation['invoice_id'],
                 $allocations,
             );
             sort($invoiceIds, SORT_NUMERIC);
