@@ -151,6 +151,89 @@ class InstallerWorkflowTest extends TestCase
         $this->assertTrue(is_link($lockLink));
     }
 
+    public function test_permission_preflight_rejects_blocked_install_state_and_token_lock_parents_without_writing(): void
+    {
+        $envPath = $this->testDirectory.'/.env';
+        $before = file_get_contents($envPath);
+        $blocker = $this->testDirectory.'/blocked-state-parent';
+        file_put_contents($blocker, 'keep-sentinel');
+
+        config([
+            'foodex.install_lock' => $blocker.'/installed.lock',
+            'foodex.install_progress' => $blocker.'/progress.json',
+            'foodex.installer_token_lock_path' => $blocker.'/locks/token.lock',
+        ]);
+
+        $failures = app(InstallerWorkflow::class)->writablePathFailures();
+
+        foreach ([
+            'install_state_directory_writable',
+            'install_progress_directory_writable',
+            'installer_token_lock_directory_writable',
+        ] as $key) {
+            $this->assertContains(__('installer.errors.'.$key), $failures);
+        }
+        $this->assertSame($before, file_get_contents($envPath));
+        $this->assertSame('keep-sentinel', file_get_contents($blocker));
+        $this->assertFileDoesNotExist($blocker.'/installed.lock');
+    }
+
+    public function test_permission_preflight_rejects_symlinked_installer_state_paths_without_mutation(): void
+    {
+        if (! function_exists('symlink')) {
+            $this->markTestSkipped('Symlinks are not supported.');
+        }
+
+        $sentinel = $this->testDirectory.'/state-sentinel';
+        file_put_contents($sentinel, 'do-not-touch');
+        $links = [
+            'foodex.install_lock' => $this->testDirectory.'/lock-link',
+            'foodex.install_progress' => $this->testDirectory.'/progress-link',
+            'foodex.installer_token_lock_path' => $this->testDirectory.'/token-link',
+        ];
+        foreach ($links as $link) {
+            if (! @symlink($sentinel, $link)) {
+                $this->markTestSkipped('Filesystem cannot create symlinks.');
+            }
+        }
+        config($links);
+
+        $failures = app(InstallerWorkflow::class)->writablePathFailures();
+
+        foreach ([
+            'install_state_directory_writable',
+            'install_progress_directory_writable',
+            'installer_token_lock_directory_writable',
+        ] as $key) {
+            $this->assertContains(__('installer.errors.'.$key), $failures);
+        }
+        $this->assertSame('do-not-touch', file_get_contents($sentinel));
+        foreach ($links as $link) {
+            $this->assertTrue(is_link($link));
+        }
+    }
+
+    public function test_permission_preflight_accepts_creatable_state_directories_without_creating_them(): void
+    {
+        $root = $this->testDirectory.'/private-host-state';
+        config([
+            'foodex.install_lock' => $root.'/install/installed.lock',
+            'foodex.install_progress' => $root.'/progress/install-progress.json',
+            'foodex.installer_token_lock_path' => $root.'/locks/token.lock',
+        ]);
+
+        $failures = app(InstallerWorkflow::class)->writablePathFailures();
+
+        foreach ([
+            'install_state_directory_writable',
+            'install_progress_directory_writable',
+            'installer_token_lock_directory_writable',
+        ] as $key) {
+            $this->assertNotContains(__('installer.errors.'.$key), $failures);
+        }
+        $this->assertDirectoryDoesNotExist($root);
+    }
+
     public function test_storage_configuration_rejects_foreign_symlink_without_changing_environment(): void
     {
         if (! function_exists('symlink')) {
