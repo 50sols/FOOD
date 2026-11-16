@@ -112,175 +112,32 @@ class HttpB2bApi implements B2bApi, B2bDocumentApi, B2bDownloadApi {
     try {
       final decoded = jsonDecode(response.body);
       if (decoded is Map<String, dynamic>) {
-        // The API enforces ownership. Also reject an inconsistent invoice
-        // response before showing another store's financial records.
+        // The server enforces access. Reject an inconsistent, explicitly
+        // scoped invoice response before it is displayed to the customer.
         final uri = Uri.parse(path);
-        final scopedStoreId = int.tryParse(uri.queryParameters['store_id'] ?? '');
-        if (scopedStoreId != null &&
-            RegExp(r'^/api/v1/b2b/invoices(?:/[1-9][0-9]*)?    } on FormatException {
-      // Do not surface proxy/parser details or synthesize money as zero.
-    }
-    throw const B2bApiException('invalid_response');
-  }
-
-  Future<http.Response> _getWithRetry(String path, String accept) async {
-    Object? lastError;
-    for (var attempt = 1; attempt <= maxGetAttempts; attempt++) {
-      try {
-        final response = await _client.get(
-          Uri.parse('$baseUrl$path'),
-          headers: {
-            'Accept': accept,
-            'Authorization': 'Bearer $token',
-            'X-FOODEX-Customer-Domain': 'b2b',
-            'Accept-Language': locale == 'en' ? 'en' : 'ar',
-            if (retailStoreContextId != null)
-              'X-FOODEX-Retail-Store-ID': retailStoreContextId.toString(),
-          },
-        ).timeout(requestTimeout);
-        // These are safe invoice/statement/document reads, not financial
-        // mutations. Keep the caller's session, store and locale on retry.
-        if (attempt < maxGetAttempts &&
-            (response.statusCode == 502 ||
-                response.statusCode == 503 ||
-                response.statusCode == 504)) {
-          await Future<void>.delayed(Duration(milliseconds: 200 * attempt));
-          continue;
-        }
-        return response;
-      } on TimeoutException catch (error) {
-        lastError = error;
-      } on http.ClientException catch (error) {
-        lastError = error;
-      }
-
-      if (attempt < maxGetAttempts) {
-        await Future<void>.delayed(Duration(milliseconds: 200 * attempt));
-      }
-    }
-
-    throw B2bApiException(
-      lastError is TimeoutException ? 'timeout' : 'network_unavailable',
-    );
-  }
-
-  @override
-  Future<B2bDownload> download(String path) async {
-    final response = await _getWithRetry(
-      path,
-      'application/pdf, application/vnd.openxmlformats-officedocument.spreadsheetml.sheet, application/octet-stream',
-    );
-    if (response.statusCode == 401 || response.statusCode == 403) {
-      throw B2bApiException(
-        'not_authorized',
-        statusCode: response.statusCode,
-        supportReference: _supportReference(response.headers),
-      );
-    }
-    if (response.statusCode < 200 || response.statusCode >= 300) {
-      throw B2bApiException(
-        'http_${response.statusCode}',
-        statusCode: response.statusCode,
-        supportReference: _supportReference(response.headers),
-      );
-    }
-
-    // A successful HTTP status can be an HTML authentication redirect or
-    // JSON gateway error. Verify the declared format before sharing bytes.
-    final requestedFormat =
-        Uri.parse(path).queryParameters['format']?.toLowerCase();
-    final bytes = response.bodyBytes;
-    final mime =
-        response.headers['content-type']?.split(';').first.trim().toLowerCase();
-    const xlsxMime =
-        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
-    final binaryMime = mime == 'application/octet-stream';
-    final isPdf = requestedFormat != 'xlsx' &&
-        _hasPdfSignature(bytes) &&
-        (mime == 'application/pdf' || binaryMime);
-    final isXlsx = requestedFormat != 'pdf' &&
-        _hasXlsxSignature(bytes) &&
-        (mime == xlsxMime || binaryMime);
-    if (!isPdf && !isXlsx) {
-      throw const B2bApiException('invalid_document');
-    }
-
-    final extension = isPdf ? 'pdf' : 'xlsx';
-    final disposition = response.headers['content-disposition'] ?? '';
-    final filenameMatch = RegExp(r'filename="?([^";]+)"?', caseSensitive: false)
-        .firstMatch(disposition);
-    final candidate = filenameMatch?.group(1)?.trim();
-    final safeFilename = candidate != null &&
-            candidate.isNotEmpty &&
-            candidate.length <= 180 &&
-            !candidate.startsWith('.') &&
-            !RegExp(r'[/\\\x00-\x1f\x7f]').hasMatch(candidate) &&
-            candidate.toLowerCase().endsWith('.$extension')
-        ? candidate
-        : 'foodex-account-statement.$extension';
-    return B2bDownload(
-      bytes: bytes,
-      mimeType: isPdf ? 'application/pdf' : xlsxMime,
-      filename: safeFilename,
-    );
-  }
-}
-
-bool _hasPdfSignature(Uint8List bytes) =>
-    bytes.length >= 5 &&
-    bytes[0] == 0x25 &&
-    bytes[1] == 0x50 &&
-    bytes[2] == 0x44 &&
-    bytes[3] == 0x46 &&
-    bytes[4] == 0x2D;
-
-bool _hasXlsxSignature(Uint8List bytes) =>
-    bytes.length >= 4 &&
-    bytes[0] == 0x50 &&
-    bytes[1] == 0x4b &&
-    bytes[2] == 0x03 &&
-    bytes[3] == 0x04;
-
-class B2bApiException implements Exception {
-  const B2bApiException(
-    this.code, {
-    this.statusCode,
-    this.supportReference,
-  });
-
-  final String code;
-  final int? statusCode;
-  final String? supportReference;
-}
-
-String? _supportReference(Map<String, String> headers) {
-  for (final key in const [
-    'x-request-id',
-    'x-correlation-id',
-    'request-id',
-    'traceparent',
-  ]) {
-    final value = headers[key];
-    if (value != null && value.trim().isNotEmpty) {
-      return value.trim();
-    }
-  }
-  return null;
-}
-)
-                .hasMatch(uri.path)) {
-          final records = decoded['data'];
+        final requestedStore = int.tryParse(uri.queryParameters['store_id'] ?? '');
+        final segments = uri.pathSegments;
+        final invoiceEndpoint = segments.length >= 4 &&
+            segments[0] == 'api' &&
+            segments[1] == 'v1' &&
+            segments[2] == 'b2b' &&
+            segments[3] == 'invoices' &&
+            (segments.length == 4 ||
+                (segments.length == 5 &&
+                    (int.tryParse(segments[4]) ?? 0) > 0));
+        if (requestedStore != null && invoiceEndpoint) {
+          final data = decoded['data'];
           final Iterable<Object?> invoices;
-          if (records is Map<String, dynamic>) {
-            invoices = [records];
-          } else if (records is List) {
-            invoices = records;
+          if (data is Map<String, dynamic>) {
+            invoices = [data];
+          } else if (data is List) {
+            invoices = data;
           } else {
             throw const B2bApiException('invalid_response');
           }
           for (final invoice in invoices) {
             if (invoice is! Map<String, dynamic> ||
-                invoice['store_id'] != scopedStoreId) {
+                invoice['store_id'] != requestedStore) {
               throw const B2bApiException('invalid_response');
             }
           }
