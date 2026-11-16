@@ -349,6 +349,35 @@ final class V2InventoryOwnerProvenanceTest extends TestCase
         $this->assertFalse($changed['positions'][1]['certified']);
     }
 
+    public function test_owner_report_uses_scoped_localized_supplier_name_not_raw_foreign_id(): void
+    {
+        $this->seed(CoreReferenceSeeder::class);
+        $stock = $this->stock('SUPPLIER-DISPLAY');
+        $actor = $this->inventoryActor($stock['store_id']);
+        $supplierId = $this->supplier($stock['store_id']);
+        DB::table('enterprise_suppliers')->where('id', $supplierId)->update([
+            'name_ar' => 'المورد المعتمد في المتجر',
+        ]);
+        $this->position($stock['inventory_id'], 'SUPPLIER', $supplierId, 10, 3, $actor->id, $actor->id, false);
+
+        $originalLocale = app()->getLocale();
+        try {
+            foreach (['en' => 'Verified Supplier Fixture', 'ar' => 'المورد المعتمد في المتجر'] as $locale => $expected) {
+                app()->setLocale($locale);
+                $snapshot = app(InventoryOwnerProvenanceReadService::class)
+                    ->snapshot($actor, $stock['inventory_id']);
+                $this->assertSame('UNVERIFIED', $snapshot['state']);
+                $this->assertFalse($snapshot['certified']);
+                $this->assertSame('SUPPLIER', $snapshot['positions'][0]['owner_kind']);
+                $this->assertSame($supplierId, $snapshot['positions'][0]['supplier_id']);
+                $this->assertSame($expected, $snapshot['positions'][0]['supplier_name']);
+                $this->assertFalse($snapshot['positions'][0]['certified']);
+            }
+        } finally {
+            app()->setLocale($originalLocale);
+        }
+    }
+
     public function test_foreign_store_supplier_cannot_be_certified_as_local_legal_title(): void
     {
         $this->seed(CoreReferenceSeeder::class);
