@@ -108,10 +108,16 @@ class DriverAssignmentController extends Controller
             $ability,
             $channel,
         );
-        abort_unless($channel === 'b2c', 409, 'Wholesale orders require Van fulfillment.');
+        $actorLocale = $user->locale;
+        $locale = in_array($actorLocale, ['ar', 'en'], true) ? $actorLocale : 'ar';
+        abort_unless(
+            $channel === 'b2c',
+            409,
+            (string) __('fulfillment_actor_guard.b2b_van_only', [], $locale),
+        );
 
         $driver = Driver::query()->findOrFail($data['driver_id']);
-        abort_unless((bool) $driver->is_active, 409, 'Driver must be active before assignment.');
+        abort_unless((bool) $driver->is_active, 409, (string) __('driver_assignment_errors.driver_inactive', [], $locale));
         [$driverChannel, $driverStoreId] = $this->driverTenants->resolve($driver);
         abort_unless($driverChannel === $channel, 409, 'Driver and order channels must match.');
         abort_unless(

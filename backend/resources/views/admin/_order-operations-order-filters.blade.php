@@ -102,6 +102,14 @@
                         </select>
                     </label>
                 @endif
+                @if($orderFilterChannel === 'b2b')
+                    <label>{{ __('order_operations.filters.origin') }}
+                        <select name="origin" aria-label="{{ __('order_operations.filters.origin') }}" data-van-order-origin-filter>
+                            <option value="">{{ __('order_operations.all') }}</option>
+                            <option value="van" @selected(request('origin') === 'van')>{{ __('order_operations.filters.van_direct_sales') }}</option>
+                        </select>
+                    </label>
+                @endif
                 <label>{{ __('order_operations.filters.from') }}<input type="date" name="from" value="{{ request('from') }}"></label>
                 <label>{{ __('order_operations.filters.to') }}<input type="date" name="to" value="{{ request('to') }}"></label>
                 <label>{{ __('order_operations.filters.dispatch_status') }}

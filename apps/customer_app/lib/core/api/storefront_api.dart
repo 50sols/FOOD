@@ -99,33 +99,11 @@ class HttpStorefrontApi implements StorefrontApi {
       return publicSelection();
     }
 
-    final scopedSelection =
-        _asMap(await _get('/api/v1/store-selector', query: params));
-    final entitlements = scopedSelection['entitlements'] is Map
-        ? Map<String, dynamic>.from(scopedSelection['entitlements'] as Map)
-        : <String, dynamic>{};
-    final principalId = int.tryParse(
-      entitlements['principal_wholesale_store_id']?.toString() ?? '',
-    );
-    final wholesaleStores = scopedSelection['wholesale_stores'];
-
-    if (principalId != null &&
-        principalId > 0 &&
-        wholesaleStores is List &&
-        wholesaleStores.isNotEmpty) {
-      return scopedSelection;
-    }
-
-    final publicPayload = await publicSelection();
-    return <String, dynamic>{
-      ...scopedSelection,
-      'wholesale_stores': publicPayload['wholesale_stores'],
-      'entitlements': <String, dynamic>{
-        ...entitlements,
-        'principal_wholesale_store_id': (publicPayload['entitlements']
-            as Map?)?['principal_wholesale_store_id'],
-      },
-    };
+    // An authenticated Customer's selectable commerce scopes come ONLY from
+    // the authorized store-selector endpoint. Public storefront discovery is
+    // intentionally separate and must not manufacture a Wholesale entitlement
+    // when the scoped selector returns no principal or denies the request.
+    return _asMap(await _get('/api/v1/store-selector', query: params));
   }
 
   @override

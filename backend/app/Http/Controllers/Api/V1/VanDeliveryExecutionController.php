@@ -152,9 +152,14 @@ final class VanDeliveryExecutionController extends Controller
             || strlen($key) > 128
             || preg_match('/^[A-Za-z0-9._:-]+$/', $key) !== 1
         ) {
+            $actorLocale = strtolower(trim((string) $this->actor($request)->locale));
+            $locale = in_array($actorLocale, ['ar', 'en'], true)
+                ? $actorLocale
+                : ($request->getPreferredLanguage(['ar', 'en']) ?? 'en');
+
             throw ValidationException::withMessages([
                 'idempotency_key' => [
-                    'Idempotency-Key must be 8-128 characters using letters, numbers, dot, underscore, colon or dash.',
+                    __('van_delivery_execution_errors.idempotency_key_invalid', [], $locale),
                 ],
             ]);
         }

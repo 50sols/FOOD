@@ -183,6 +183,92 @@ class StoreSubmissionReadinessTest extends TestCase
         $this->assertTrue(User::query()->findOrFail($user->id)->is_active);
     }
 
+    public function test_reviewer_secret_and_store_channel_validation_use_selected_ar_en_without_writes(): void
+    {
+        $admin = $this->admin('reviewer-validation-admin@example.test');
+        $retailTypeId = (int) DB::table('store_types')->where('code', 'B2C')->value('id');
+        $this->assertGreaterThan(0, $retailTypeId);
+
+        $retailStoreId = (int) DB::table('stores')->insertGetId([
+            'store_type_id' => $retailTypeId,
+            'code' => 'REVIEWER-VALIDATION-B2C',
+            'name' => 'Reviewer Validation Retail',
+            'is_active' => true,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        $reviewerCount = StoreReviewerAccount::query()->count();
+        $auditCount = DB::table('audit_logs')->where('event', 'store_reviewer_account.updated')->count();
+
+        foreach ([
+            'ar' => [
+                'secret' => 'يجب إدخال كلمة مرور المراجع عند إنشاء حساب مراجعة جديد.',
+                'store' => 'المتجر المحدد لا يتبع قناة النشاط المختارة.',
+            ],
+            'en' => [
+                'secret' => 'A reviewer secret is required when creating the reviewer persona.',
+                'store' => 'The selected store does not belong to the selected business channel.',
+            ],
+        ] as $locale => $messages) {
+            $admin->forceFill(['locale' => $locale])->save();
+
+            $base = [
+                'app' => 'customer',
+                'platform' => 'android',
+                'environment' => 'staging',
+                'persona' => 'validation_'.$locale,
+                'identifier_type' => 'email',
+                'identifier' => 'reviewer-'.$locale.'@example.test',
+            ];
+
+            $this->actingAs($admin)
+                ->putJson('/admin/settings/mobile/reviewer', $base)
+                ->assertUnprocessable()
+                ->assertJsonPath('errors.reviewer_secret.0', $messages['secret']);
+
+            $this->actingAs($admin)
+                ->putJson('/admin/settings/mobile/reviewer', [
+                    ...$base,
+                    'reviewer_secret' => 'reviewer-secret-123',
+                    'reviewer_channel' => 'b2b',
+                    'reviewer_store_id' => $retailStoreId,
+                ])
+                ->assertUnprocessable()
+                ->assertJsonPath('errors.reviewer_store_id.0', $messages['store'])
+                ->assertDontSee('reviewer-secret-123');
+
+            $this->assertSame($reviewerCount, StoreReviewerAccount::query()->count());
+            $this->assertSame(
+                $auditCount,
+                DB::table('audit_logs')->where('event', 'store_reviewer_account.updated')->count(),
+            );
+        }
+
+        $unprivileged = User::query()->create([
+            'name' => 'Unprivileged reviewer operator',
+            'email' => 'reviewer-no-permission@example.test',
+            'password' => 'unused-password',
+            'locale' => 'ar',
+            'is_active' => true,
+        ]);
+        $this->actingAs($unprivileged)
+            ->putJson('/admin/settings/mobile/reviewer', [
+                'app' => 'customer',
+                'platform' => 'android',
+                'environment' => 'staging',
+                'persona' => 'unauthorized-reviewer',
+                'identifier_type' => 'email',
+                'identifier' => 'unauthorized@example.test',
+                'reviewer_secret' => 'reviewer-secret-123',
+            ])->assertForbidden();
+
+        $this->assertSame($reviewerCount, StoreReviewerAccount::query()->count());
+        $this->assertSame(
+            $auditCount,
+            DB::table('audit_logs')->where('event', 'store_reviewer_account.updated')->count(),
+        );
+    }
+
     private function customer(string $email, string $password): User
     {
         $user = User::query()->create([

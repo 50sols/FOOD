@@ -212,16 +212,32 @@ final class DriverCollectionController extends Controller
         $user = $request->user();
         abort_unless($user instanceof User, 401);
 
+        // The Driver App middleware has already selected the authorized Retail
+        // profile. Never reselect the first historical Driver row for this user.
+        $runtime = $request->attributes->get('driver_runtime_context');
+        abort_unless(
+            is_array($runtime)
+                && ($runtime['channel'] ?? null) === 'b2c'
+                && is_int($runtime['driver_id'] ?? null),
+            403,
+            'Authorized Retail driver context is required.',
+        );
+
         $driver = Driver::query()
+            ->whereKey($runtime['driver_id'])
             ->where('user_id', $user->getKey())
+            ->where('driver_type', 'b2c')
             ->where('is_active', true)
             ->first();
-        abort_unless($driver instanceof Driver, 403, 'Active driver profile is required.');
+        abort_unless($driver instanceof Driver, 403, 'Active Retail driver profile is required.');
 
         [$channel, $storeId] = $this->driverTenants->resolve($driver);
-        abort_unless(in_array($channel, ['b2c', 'b2b'], true), 403);
-        abort_unless($storeId === (int) $driver->store_id, 403);
-        abort_unless($user->hasPermission("deliveries.{$channel}.execute"), 403);
+        abort_unless(
+            $channel === 'b2c' && $storeId === (int) ($runtime['store_id'] ?? 0),
+            403,
+            'Authorized Retail driver store is required.',
+        );
+        abort_unless($user->hasPermission('deliveries.b2c.execute'), 403);
 
         return [$user, $driver, $channel];
     }
@@ -240,6 +256,10 @@ final class DriverCollectionController extends Controller
     private function idempotencyKey(Request $request): string
     {
         $key = trim((string) $request->header('Idempotency-Key', ''));
+        $actorLocale = $request->user()?->locale;
+        $locale = in_array($actorLocale, ['ar', 'en'], true)
+            ? $actorLocale
+            : ($request->getPreferredLanguage(['ar', 'en']) ?? 'ar');
         if (
             strlen($key) < 8
             || strlen($key) > 72
@@ -247,7 +267,7 @@ final class DriverCollectionController extends Controller
         ) {
             throw ValidationException::withMessages([
                 'idempotency_key' => [
-                    'Idempotency-Key must be 8-72 characters using letters, numbers, dot, underscore, colon or dash.',
+                    (string) __('driver_collection_errors.invalid_idempotency_header', [], $locale),
                 ],
             ]);
         }

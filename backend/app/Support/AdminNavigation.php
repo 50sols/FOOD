@@ -7,6 +7,7 @@ use App\Domain\WhatsApp\RuntimePolicy;
 use App\Enterprise\Entitlements\EntitlementScope;
 use App\Enterprise\Entitlements\ModuleEntitlementResolver;
 use App\Enterprise\Finance\FinanceFoundationService;
+use App\Enterprise\Finance\FinanceWorkbenchAccess;
 use App\Enterprise\Modules\ModuleOperationalReadiness;
 use App\Enterprise\Modules\ModuleRegistry;
 use App\Enterprise\Organization\OrganizationHierarchyService;
@@ -151,7 +152,11 @@ class AdminNavigation
             // Wholesale inventory modules; channel, store and permission gates are unchanged.
             $this->group('inventory', 'admin.nav_groups.inventory', '▣', [
                 $hideRetailWorkspaces ? null : $this->module($user, $channels, 'b2c', 'inventory', 'admin.b2c_workspace.modules.inventory', 'inventory.view'),
-                $useCustomerServiceDashboardProfile
+                // T353R4: warehouse/inventory specialists must discover their
+                // real B2B inventory workspace without borrowing the Customer
+                // Service presentation profile. Keep the compact manager menus;
+                // the module() helper still enforces channel + inventory.view.
+                ! $isSuperAdmin && ! $user->hasRole('B2B_ADMIN')
                     ? $this->module($user, $channels, 'b2b', 'inventory', 'admin.b2b_sidebar.inventory_management', 'inventory.view')
                     : null,
             ]),
@@ -1065,12 +1070,49 @@ class AdminNavigation
             }
         }
 
+        // P353R4: WMS must select a concrete inventory.view store whose
+        // enterprise entitlement is effective. A global B2B Warehouse Manager
+        // has no Retail assignments, and checking Retail-only grants would hide
+        // a valid WMS destination. Never link to a different, unentitled store.
+        $wmsStoreId = null;
+        if ($moduleCode === 'inventory_wms') {
+            $wmsStoreId = $this->wmsNavigationStoreId($user);
+            if ($wmsStoreId === null) {
+                return null;
+            }
+            $params['store_id'] = (string) $wmsStoreId;
+        }
+
         $item = $this->routeItemScoped($user, $key, $label, $route, $permission, $params);
-        if ($item === null || ($wholesaleTreasuryStoreId === null && ! $this->enterpriseModuleAccessible($user, $moduleCode))) {
+        if ($item === null || ($wholesaleTreasuryStoreId === null && $wmsStoreId === null && ! $this->enterpriseModuleAccessible($user, $moduleCode))) {
             return null;
         }
 
         return $item;
+    }
+
+    /**
+     * Find the first store that the actor can actually read in WMS and for
+     * which the live module entitlement is effective. This is a navigation
+     * projection, not an alternate permission grant.
+     */
+    private function wmsNavigationStoreId(User $user): ?int
+    {
+        if (! $user->is_active) {
+            return null;
+        }
+
+        $storeIds = app(OperationalTenantScope::class)->allowedStoreIds($user, 'inventory.view');
+        foreach ($storeIds as $storeId) {
+            if ($this->enterpriseEntitlements->allows(
+                'inventory_wms',
+                new EntitlementScope(EntitlementScope::STORE, $storeId),
+            )) {
+                return $storeId;
+            }
+        }
+
+        return null;
     }
 
     /**
@@ -1138,6 +1180,7 @@ class AdminNavigation
             ->get();
 
         $eligible = [];
+        $financeAccess = app(FinanceWorkbenchAccess::class);
         foreach ($stores as $store) {
             $storeId = (int) $store->id;
             if (! $user->hasPermission('finance.view', $storeId)) {
@@ -1151,21 +1194,8 @@ class AdminNavigation
                     $this->tenantContext->wholesale($user, $storeId);
                 }
 
-                $organizationScope = app(OrganizationHierarchyService::class)->scopeForStore($storeId);
-                if ($organizationScope === null) {
-                    continue;
-                }
-
-                $scope = new EntitlementScope(
-                    EntitlementScope::LEGAL_ENTITY,
-                    $organizationScope['legal_entity_id'],
-                );
                 foreach (['receivables' => 'finance.ar.read', 'payables' => 'finance.ap.read'] as $tab => $capability) {
-                    if (! isset($eligible[$tab]) && $this->enterpriseEntitlements->allows(
-                        FinanceFoundationService::MODULE,
-                        $scope,
-                        $capability,
-                    )) {
+                    if (! isset($eligible[$tab]) && $financeAccess->allowsAtStore($storeId, $capability)) {
                         $eligible[$tab] = $this->routeItemScoped(
                             $user,
                             'erp_'.$tab,
@@ -1235,6 +1265,20 @@ class AdminNavigation
             return $this->enterpriseModuleAccessMemo[$memoKey];
         }
 
+        // Finance has legal-entity ledger authority plus effective store
+        // overrides. An entitled Wholesale actor must not have a dead link,
+        // and a Platform Owner cannot bypass the same finance constraints.
+        if ($moduleCode === 'finance') {
+            // Platform Super Admin can inspect a ready and entitled Finance
+            // workspace even before any store is provisioned. This grants
+            // only the empty setup context, never store or ledger access.
+            $setupAccess = $this->isSuperAdmin($user)
+                && $this->enterpriseEntitlements->allows($moduleCode, EntitlementScope::platform());
+
+            return $this->enterpriseModuleAccessMemo[$memoKey] =
+                $setupAccess || $this->financeWorkspacesAccessible($user);
+        }
+
         if ($user->isPlatformOwner()) {
             return $this->enterpriseModuleAccessMemo[$memoKey] = true;
         }
@@ -1257,6 +1301,54 @@ class AdminNavigation
         }
 
         return $this->enterpriseModuleAccessMemo[$memoKey] = false;
+    }
+
+    /**
+     * Project the same authorized Finance store contexts as the actual HTTP
+     * workbench. No navigation-only entitlement or blanket global-role grant.
+     */
+    private function financeWorkspacesAccessible(User $user): bool
+    {
+        if (! $user->is_active) {
+            return false;
+        }
+
+        $retailStoreIds = $this->tenantContext->retailStoreIds($user);
+        $canWholesale = $this->canAccess($user, 'b2b');
+        if (! $canWholesale && $retailStoreIds === []) {
+            return false;
+        }
+
+        // Match the controller's bounded context chooser, including order
+        // and limit. A grant outside the chooser must not create a dead link.
+        $stores = DB::table('stores as store')
+            ->join('store_types as type', 'type.id', '=', 'store.store_type_id')
+            ->where('store.is_active', true)
+            ->where(function ($query) use ($canWholesale, $retailStoreIds): void {
+                if ($canWholesale) {
+                    $query->where('type.code', 'B2B');
+                }
+                if ($retailStoreIds !== []) {
+                    $method = $canWholesale ? 'orWhere' : 'where';
+                    $query->{$method}(function ($retail) use ($retailStoreIds): void {
+                        $retail->where('type.code', 'B2C')
+                            ->whereIn('store.id', $retailStoreIds);
+                    });
+                }
+            })
+            ->orderBy('type.code')
+            ->orderBy('store.code')
+            ->limit(100)
+            ->pluck('store.id');
+
+        $finance = app(FinanceWorkbenchAccess::class);
+        foreach ($stores as $storeId) {
+            if ($finance->canRead($user, (int) $storeId)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private function isSuperAdmin(User $user): bool

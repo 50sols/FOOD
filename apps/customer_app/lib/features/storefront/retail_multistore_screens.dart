@@ -12,6 +12,7 @@ import '../../core/engagement/live_ad_service.dart';
 import '../../core/engagement/notification_campaign_popup_service.dart';
 import '../../core/localization/app_translations.dart';
 import '../../core/routing/customer_commerce_context.dart';
+import '../../core/routing/customer_commerce_context_switcher.dart';
 import '../../core/routing/customer_routes.dart';
 import '../../shared/customer_favorite_button.dart';
 import 'storefront_design_system.dart';
@@ -73,11 +74,22 @@ class _StoreSelectionDesignScreenState
         }
       }
 
-      return widget.storefrontApi!.selection(
+      final selection = await widget.storefrontApi!.selection(
         countryCode: countryCode,
         city: city,
         area: area,
       );
+      if (widget.session.isAuthenticated && widget.session.platformWide) {
+        if (widget.session.accessToken?.trim().isNotEmpty != true) {
+          throw const CustomerCommerceContextSwitchException(
+            'platform_customer_session_required',
+          );
+        }
+        // Never display a channel/store candidate that failed the same
+        // authoritative selector contract used by Customer context switches.
+        return CustomerCommerceContextSwitcher.validatedSelection(selection);
+      }
+      return selection;
     }
     final stores = await widget.catalogApi.stores();
     return {
@@ -122,16 +134,16 @@ class _StoreSelectionDesignScreenState
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                const Text(
-                  'اختر متجر التجزئة المستلم',
+                Text(
+                  context.tr('customer.selector.receiving_title'),
                   style: TextStyle(
                     fontSize: 17,
                     fontWeight: FontWeight.w800,
                   ),
                 ),
                 const SizedBox(height: 6),
-                const Text(
-                  'سيتم ربط طلب الجملة ومخزون الاستلام بهذا المتجر.',
+                Text(
+                  context.tr('customer.selector.receiving_hint'),
                   style: TextStyle(
                     fontSize: 12,
                     color: Color(0xFF6B7785),
@@ -142,7 +154,8 @@ class _StoreSelectionDesignScreenState
                   (storeId) => ListTile(
                     leading: const Icon(Icons.storefront_outlined),
                     title: Text(
-                      names[storeId] ?? 'متجر #' + storeId.toString(),
+                      names[storeId] ??
+                          "${context.tr('customer.selector.store_fallback')} #$storeId",
                     ),
                     trailing:
                         const Icon(Icons.arrow_back_ios_new_rounded, size: 16),
@@ -164,7 +177,7 @@ class _StoreSelectionDesignScreenState
           backgroundColor: const Color(0xFFFAFBFA),
           body: FoodexUnifiedHeaderSurface(
             title: 'FOODEX',
-            searchHint: 'ابحث عن المنتجات',
+            searchHint: context.tr('customer.selector.search'),
             child: FutureBuilder<Map<String, dynamic>>(
               future: future,
               builder: (context, snapshot) {
@@ -175,7 +188,7 @@ class _StoreSelectionDesignScreenState
                 }
                 if (snapshot.hasError) {
                   return FoodexErrorState(
-                    message: 'تعذر تحميل المتاجر المتاحة.',
+                    message: context.tr('customer.selector.load_failed'),
                     onRetry: () => setState(() => future = _load()),
                   );
                 }
@@ -200,8 +213,8 @@ class _StoreSelectionDesignScreenState
                       children: [
                         const _BrandMark(),
                         const SizedBox(height: 24),
-                        const Text(
-                          'اختر المتجر',
+                        Text(
+                          context.tr('customer.selector.title'),
                           textAlign: TextAlign.center,
                           style: TextStyle(
                             fontSize: 26,
@@ -210,8 +223,8 @@ class _StoreSelectionDesignScreenState
                           ),
                         ),
                         const SizedBox(height: 8),
-                        const Text(
-                          'المتاجر المتاحة حسب موقع الخدمة',
+                        Text(
+                          context.tr('customer.selector.subtitle'),
                           textAlign: TextAlign.center,
                           style: TextStyle(
                             fontSize: 14,
@@ -232,8 +245,15 @@ class _StoreSelectionDesignScreenState
                               store: store,
                               onTap: () {
                                 final id = intValue(store['id']);
-                                Navigator.of(context)
-                                    .pushNamed('/retail/$id/home');
+                                if (id <= 0) return;
+                                Navigator.of(context).pushNamed(
+                                  CustomerRouteLocations.retailHome(
+                                    CustomerCommerceContext(
+                                      channel: CustomerCommerceChannel.retail,
+                                      storeId: id,
+                                    ),
+                                  ),
+                                );
                               },
                             ),
                           ),
@@ -263,11 +283,22 @@ class _StoreSelectionDesignScreenState
                                 }
 
                                 widget.enterWholesale(retailContext);
+                                if (storeId <= 0) return;
+                                final wholesaleContext =
+                                    CustomerCommerceContext(
+                                  channel: CustomerCommerceChannel.wholesale,
+                                  storeId: storeId,
+                                );
                                 var route =
-                                    '/b2b/home?store_id=' + storeId.toString();
+                                    CustomerRouteLocations.wholesaleHome(
+                                  wholesaleContext,
+                                );
                                 if (retailContext != null) {
-                                  route += '&retail_store_id=' +
-                                      retailContext.toString();
+                                  final uri = Uri.parse(route);
+                                  route = uri.replace(queryParameters: {
+                                    ...uri.queryParameters,
+                                    'retail_store_id': '$retailContext',
+                                  }).toString();
                                 }
                                 WidgetsBinding.instance
                                     .addPostFrameCallback((_) {
@@ -280,9 +311,10 @@ class _StoreSelectionDesignScreenState
                           ),
                         ),
                         if (retail.isEmpty && wholesale.isEmpty)
-                          const FoodexEmptyState(
-                            title: 'لا توجد متاجر متاحة',
-                            subtitle: 'لا توجد متاجر ضمن نطاق الخدمة الحالي.',
+                          FoodexEmptyState(
+                            title: context.tr('customer.selector.empty_title'),
+                            subtitle:
+                                context.tr('customer.selector.empty_body'),
                           ),
                       ],
                     );
@@ -323,9 +355,10 @@ class _StoreFilter extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final values = <(String, String)>[
-      ('all', 'الكل'),
-      ('retail', 'تجزئة'),
-      if (wholesaleVisible) ('wholesale', 'جملة'),
+      ('all', context.tr('customer.selector.all')),
+      ('retail', context.tr('customer.selector.retail')),
+      if (wholesaleVisible)
+        ('wholesale', context.tr('customer.selector.wholesale')),
     ];
     return Container(
       height: 46,
@@ -423,8 +456,8 @@ class _RetailStoreCard extends StatelessWidget {
                       store['address']?.toString().trim().isNotEmpty == true
                           ? store['address'].toString()
                           : pharmacy
-                              ? 'صيدلية · توصيل سريع'
-                              : 'بقالة وسوبرماركت · توصيل سريع',
+                              ? context.tr('customer.selector.pharmacy_hint')
+                              : context.tr('customer.selector.grocery_hint'),
                       style: TextStyle(
                         color: palette.muted,
                         fontSize: 12,
@@ -432,7 +465,7 @@ class _RetailStoreCard extends StatelessWidget {
                     ),
                     const SizedBox(height: 8),
                     Text(
-                      'تسوق الآن',
+                      context.tr('customer.selector.shop_now'),
                       style: TextStyle(
                         color: palette.primary,
                         fontWeight: FontWeight.w800,
@@ -519,9 +552,9 @@ class _WholesaleStoreCard extends StatelessWidget {
               borderRadius: BorderRadius.circular(22),
               border: Border.all(color: const Color(0xFFE8D8F7)),
             ),
-            child: const Row(
+            child: Row(
               children: [
-                SizedBox(
+                const SizedBox(
                   width: 66,
                   height: 66,
                   child: DecoratedBox(
@@ -541,10 +574,10 @@ class _WholesaleStoreCard extends StatelessWidget {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      _B2bBadge(),
+                      const _B2bBadge(),
                       SizedBox(height: 7),
                       Text(
-                        'متجر الجملة',
+                        context.tr('customer.selector.wholesale_store'),
                         style: TextStyle(
                           fontSize: 18,
                           fontWeight: FontWeight.w800,
@@ -552,7 +585,7 @@ class _WholesaleStoreCard extends StatelessWidget {
                       ),
                       SizedBox(height: 5),
                       Text(
-                        'للمسؤولين والمعتمدين فقط',
+                        context.tr('customer.selector.authorized_only'),
                         style: TextStyle(
                           color: Color(0xFF6F6A7D),
                           fontSize: 12,

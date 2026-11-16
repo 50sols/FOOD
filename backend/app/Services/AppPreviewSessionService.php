@@ -241,14 +241,14 @@ final class AppPreviewSessionService
     ): int {
         if ($channel === 'b2b') {
             $storeId = $this->wholesalePrincipal->storeId();
-            abort_if($requestedStoreId !== null && $requestedStoreId !== $storeId, 422, 'Wholesale preview uses the canonical principal store.');
+            abort_if($requestedStoreId !== null && $requestedStoreId !== $storeId, 422, __('preview_sessions.wholesale_principal_required'));
 
             $this->tenantResolver->wholesale($actor, $storeId);
 
             return $storeId;
         }
 
-        abort_if($requestedStoreId === null, 422, 'Retail preview requires a store.');
+        abort_if($requestedStoreId === null, 422, __('preview_sessions.retail_store_required'));
         $this->tenantResolver->retail($actor, $requestedStoreId, $supportAccess, $request);
 
         return $requestedStoreId;

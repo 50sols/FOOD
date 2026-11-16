@@ -18,6 +18,8 @@ final class MobileRuntimeController extends Controller
             'locale' => ['nullable', 'in:ar,en'],
         ]);
 
+        $locale = $data['locale'] ?? 'ar';
+
         $setting = MobileAppSetting::query()
             ->where('app', $data['app'])
             ->where('environment', $data['environment'])
@@ -25,11 +27,10 @@ final class MobileRuntimeController extends Controller
 
         if ($setting === null) {
             return response()->json([
-                'message' => 'Mobile runtime settings are not configured.',
+                'message' => __('mobile_runtime_errors.settings_not_configured', [], $locale),
             ], 404);
         }
 
-        $locale = $data['locale'] ?? 'ar';
         $push = PushProviderSetting::query()
             ->where('app', $setting->app)
             ->where('environment', $setting->environment)

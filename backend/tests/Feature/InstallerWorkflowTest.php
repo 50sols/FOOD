@@ -79,8 +79,8 @@ class InstallerWorkflowTest extends TestCase
         $this->get('/install')
             ->assertOk()
             ->assertSee('FOODEX')
-            ->assertSee('Welcome')
-            ->assertSee('Finish');
+            ->assertSee('مرحبًا')
+            ->assertSee('إنهاء التثبيت');
     }
 
     public function test_database_connection_allows_empty_fresh_install_database(): void
@@ -267,11 +267,11 @@ class InstallerWorkflowTest extends TestCase
 
         $state = app(InstallState::class);
 
-        $this->post('/install/step/7', ['installer_token' => $state->token()])
+        $this->post('/install/step/7?lang=en', ['installer_token' => $state->token()])
             ->assertStatus(422)
-            ->assertSee('admin name field is required', false)
-            ->assertSee('admin email field is required', false)
-            ->assertSee('admin password field is required', false);
+            ->assertSee('The Name field is required.', false)
+            ->assertSee('The Email field is required.', false)
+            ->assertSee('The Password field is required.', false);
 
         $this->assertFalse(app(InstallState::class)->isInstalled());
     }
@@ -282,7 +282,7 @@ class InstallerWorkflowTest extends TestCase
 
         $state = app(InstallState::class);
 
-        $this->post('/install/step/15', ['installer_token' => $state->token()])
+        $this->post('/install/step/15?lang=en', ['installer_token' => $state->token()])
             ->assertStatus(422)
             ->assertSee('Super Admin setup is incomplete', false);
 

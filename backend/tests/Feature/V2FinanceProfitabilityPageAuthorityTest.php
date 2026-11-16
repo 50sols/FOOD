@@ -42,7 +42,7 @@ final class V2FinanceProfitabilityPageAuthorityTest extends TestCase
         );
     }
 
-    public function test_existing_profit_center_and_profit_and_loss_are_real_scoped_bilingual_pages(): void
+    public function test_retail_profit_center_is_visible_but_corporate_profit_and_loss_is_denied_in_both_locales(): void
     {
         [$actor, $store, $context] = $this->operator('P283-OWN');
         $this->enableFinance($actor, $context);
@@ -91,8 +91,7 @@ final class V2FinanceProfitabilityPageAuthorityTest extends TestCase
                     'statement' => 'profit_and_loss',
                     'period_id' => $period->id,
                 ]))
-                ->assertOk()
-                ->assertSee(__('finance_workbench.statements.profit_and_loss'));
+                ->assertForbidden();
         }
     }
 

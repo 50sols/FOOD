@@ -1,0 +1,55 @@
+{
+  "$comment": "FOODEX V2 worker coordination capacity contract; human admission policy in V2_WORKER_CAPACITY.md. This file is not an executable worker scheduler.",
+  "version": 1,
+  "owner_approved_utc_date": "2026-11-15",
+  "program": "FOODEX V2",
+  "integration_branch": "Foodex_V2",
+  "max_active_workers": 12,
+  "former_coordination_limit": 7,
+  "lane_slots": [
+    {
+      "lane": "backend_api_erp",
+      "slots": 3
+    },
+    {
+      "lane": "dashboard_finance",
+      "slots": 2
+    },
+    {
+      "lane": "customer_driver_van",
+      "slots": 3
+    },
+    {
+      "lane": "rbac_security",
+      "slots": 1
+    },
+    {
+      "lane": "installer_updater_backup_recovery",
+      "slots": 1
+    },
+    {
+      "lane": "ci_rescue_integration",
+      "slots": 1
+    },
+    {
+      "lane": "coordination_lease_management",
+      "slots": 1
+    }
+  ],
+  "occupied_issue_labels": [
+    "worker:active",
+    "worker:waiting-ci"
+  ],
+  "coordinator_occupies_slot_when_running": true,
+  "heartbeat_minutes": 10,
+  "idle_lease_minutes": 30,
+  "admission_on_unknown_state": "fail_closed",
+  "requires_distinct_worker_identity": true,
+  "requires_nonoverlapping_issue_and_file_scope": true,
+  "requires_exact_head_ci_for_merge": true,
+  "allowed_merge_base": "Foodex_V2",
+  "allows_main_merge_or_production": false,
+  "launches_workers": false,
+  "controls_ci_runner_capacity": false,
+  "activates_v2_watchdog": false
+}

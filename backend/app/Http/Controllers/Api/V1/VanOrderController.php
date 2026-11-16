@@ -7,11 +7,9 @@ use App\Enterprise\Commercial\CommercialVanSalesBridge;
 use App\Http\Controllers\Controller;
 use App\Models\B2bAccount;
 use App\Models\B2bCustomer;
-use App\Models\B2cCustomer;
 use App\Models\Order;
 use App\Models\User;
 use App\Models\VanVisit;
-use App\Services\AdminOrderManagementService;
 use App\Services\ProductAvailabilityService;
 use App\Services\VanOrderReadService;
 use App\Support\DisplayNumber;
@@ -24,7 +22,6 @@ use Illuminate\Validation\ValidationException;
 final class VanOrderController extends Controller
 {
     public function __construct(
-        private readonly AdminOrderManagementService $orders,
         private readonly CommercialVanSalesBridge $commercialVanSales,
         private readonly ProductAvailabilityService $availability,
         private readonly B2bPriceResolver $b2bPrices,
@@ -46,9 +43,7 @@ final class VanOrderController extends Controller
         $page = (int) ($validated['page'] ?? 1);
         $perPage = (int) ($validated['per_page'] ?? 50);
 
-        $result = $type === 'b2b'
-            ? $this->b2bCatalog($customer, $storeId, $search, $page, $perPage)
-            : $this->b2cCatalog($customer, $storeId, $search, $page, $perPage);
+        $result = $this->b2bCatalog($customer, $storeId, $search, $page, $perPage);
 
         return response()->json([
             'data' => $result['data'],
@@ -71,9 +66,8 @@ final class VanOrderController extends Controller
         $storeId = $this->sellerStoreId($request, $validated['store_id'] ?? null);
         $this->assertCustomerScope($request, $actor, $type, $customer, $storeId);
 
-        $customerColumn = $type === 'b2b' ? 'b2b_customer_id' : 'b2c_customer_id';
         $addresses = DB::table('addresses')
-            ->where($customerColumn, $customer)
+            ->where('b2b_customer_id', $customer)
             ->whereNull('deleted_at')
             ->orderByDesc('is_default')
             ->orderBy('id')
@@ -101,33 +95,29 @@ final class VanOrderController extends Controller
             ])
             ->values();
 
-        $warehouses = $type === 'b2b'
-            ? DB::table('warehouses')
-                ->where('store_id', $storeId)
-                ->where('is_active', true)
-                ->orderBy('name')
-                ->get(['id', 'code', 'name'])
-                ->map(static fn (object $row): array => [
-                    'id' => (int) $row->id,
-                    'code' => (string) $row->code,
-                    'name' => (string) $row->name,
-                ])
-                ->values()
-            : collect();
+        $warehouses = DB::table('warehouses')
+            ->where('store_id', $storeId)
+            ->where('is_active', true)
+            ->orderBy('name')
+            ->get(['id', 'code', 'name'])
+            ->map(static fn (object $row): array => [
+                'id' => (int) $row->id,
+                'code' => (string) $row->code,
+                'name' => (string) $row->name,
+            ])
+            ->values();
 
         $paymentMethods = array_values((array) config('checkout.payment_methods', ['cash_on_delivery']));
-        if ($type === 'b2b') {
-            $account = B2bAccount::query()
-                ->where('b2b_customer_id', $customer)
-                ->where('status', 'active')
-                ->first();
-            if (
-                $account instanceof B2bAccount
-                && (float) $account->credit_limit > 0
-                && ! in_array('account_credit', $paymentMethods, true)
-            ) {
-                $paymentMethods[] = 'account_credit';
-            }
+        $account = B2bAccount::query()
+            ->where('b2b_customer_id', $customer)
+            ->where('status', 'active')
+            ->first();
+        if (
+            $account instanceof B2bAccount
+            && (float) $account->credit_limit > 0
+            && ! in_array('account_credit', $paymentMethods, true)
+        ) {
+            $paymentMethods[] = 'account_credit';
         }
 
         return response()->json([
@@ -152,16 +142,11 @@ final class VanOrderController extends Controller
         $storeId = $this->sellerStoreId($request, $data['store_id'] ?? null);
         $this->assertCustomerScope($request, $actor, $type, $customer, $storeId);
 
-        if ($type === 'b2b') {
-            $quote = $this->commercialVanSales->quote(
-                $request,
-                $customer,
-                $storeId,
-            );
-        } else {
-            $request->merge(['customer_id' => $customer]);
-            $quote = $this->orders->quote($request, $type, $storeId);
-        }
+        $quote = $this->commercialVanSales->quote(
+            $request,
+            $customer,
+            $storeId,
+        );
 
         return response()->json(['data' => $quote]);
     }
@@ -177,31 +162,23 @@ final class VanOrderController extends Controller
 
         $idempotencyKey = trim((string) $request->header('Idempotency-Key', ''));
         if (strlen($idempotencyKey) < 16 || strlen($idempotencyKey) > 100) {
+            $actorLocale = $actor->locale;
+            $locale = in_array($actorLocale, ['ar', 'en'], true)
+                ? $actorLocale
+                : strtolower((string) $request->getPreferredLanguage(['ar', 'en']));
+
             throw ValidationException::withMessages([
-                'Idempotency-Key' => ['A valid Idempotency-Key header is required.'],
+                'Idempotency-Key' => [__('van_order_errors.idempotency_header_invalid', [], $locale === 'ar' ? 'ar' : 'en')],
             ]);
         }
 
-        if ($type === 'b2b') {
-            $order = $this->commercialVanSales->create(
-                $request,
-                $actor,
-                $customer,
-                $storeId,
-                $idempotencyKey,
-            );
-        } else {
-            $request->merge(['customer_id' => $customer]);
-            $order = $this->orders->create(
-                $request,
-                $actor,
-                $type,
-                $storeId,
-                'van',
-                'van',
-                $idempotencyKey,
-            );
-        }
+        $order = $this->commercialVanSales->create(
+            $request,
+            $actor,
+            $customer,
+            $storeId,
+            $idempotencyKey,
+        );
 
         return response()->json(['data' => $this->orderPayload($order)], 201);
     }
@@ -297,6 +274,9 @@ final class VanOrderController extends Controller
             ->where('customer_type', 'b2b')
             ->where('customer_id', $customer)
             ->where('store_id', $storeId)
+            // A completed/closed historical visit is not an authorization
+            // grant for another sale. Collections retain their own scope.
+            ->whereIn('status', ['planned', 'started'])
             ->exists(), 404);
     }
 
@@ -350,11 +330,14 @@ final class VanOrderController extends Controller
             ->where('catalogs.is_active', true)
             ->where('catalogs.is_migration_quarantine', false)
             ->when($search !== '', function ($query) use ($search): void {
-                $like = '%'.$search.'%';
+                // Treat operator-entered % and _ as text, not SQL wildcards.
+                // A fixed escape marker and bound values work on MySQL and SQLite.
+                $literal = str_replace(['!', '%', '_'], ['!!', '!%', '!_'], $search);
+                $like = '%'.$literal.'%';
                 $query->where(function ($nested) use ($like): void {
-                    $nested->where('products.name', 'like', $like)
-                        ->orWhere('products.sku', 'like', $like)
-                        ->orWhere('products.barcode', 'like', $like);
+                    $nested->whereRaw("products.name LIKE ? ESCAPE '!'", [$like])
+                        ->orWhereRaw("products.sku LIKE ? ESCAPE '!'", [$like])
+                        ->orWhereRaw("products.barcode LIKE ? ESCAPE '!'", [$like]);
                 });
             })
             ->orderBy('products.name')
@@ -394,75 +377,12 @@ final class VanOrderController extends Controller
                         'sku' => (string) $row->sku,
                         'barcode' => $row->barcode,
                         'unit_price' => (float) $price['price'],
+                        'quantity_price_breaks' => $price['quantity_price_breaks'],
                         'minimum_quantity' => (float) $price['minimum_quantity'],
                         'ordering_increment' => (float) $price['ordering_increment'],
                         ...$this->availability->forStoreProduct($storeId, (int) $row->id),
                     ];
                 })
-                ->values()
-                ->all(),
-            'has_more' => $hasMore,
-        ];
-    }
-
-    /** @return array{data:list<array<string, mixed>>,has_more:bool} */
-    private function b2cCatalog(
-        int $customer,
-        int $storeId,
-        string $search,
-        int $page,
-        int $perPage,
-    ): array {
-        abort_unless(
-            B2cCustomer::query()->whereKey($customer)->where('store_id', $storeId)->exists(),
-            404,
-        );
-
-        $rows = DB::table('store_products')
-            ->join('products', 'products.id', '=', 'store_products.product_id')
-            ->join('catalogs', 'catalogs.id', '=', 'products.catalog_id')
-            ->where('store_products.store_id', $storeId)
-            ->where('store_products.is_active', true)
-            ->where('products.is_active', true)
-            ->where('catalogs.store_id', $storeId)
-            ->where('catalogs.channel', 'b2c')
-            ->where('catalogs.is_active', true)
-            ->where('catalogs.is_migration_quarantine', false)
-            ->when($search !== '', function ($query) use ($search): void {
-                $like = '%'.$search.'%';
-                $query->where(function ($nested) use ($like): void {
-                    $nested->where('products.name', 'like', $like)
-                        ->orWhere('products.sku', 'like', $like)
-                        ->orWhere('products.barcode', 'like', $like);
-                });
-            })
-            ->orderBy('products.name')
-            ->orderBy('products.id')
-            ->offset(($page - 1) * $perPage)
-            ->limit($perPage + 1)
-            ->get([
-                'products.id',
-                'products.name',
-                'products.sku',
-                'products.barcode',
-                'store_products.price as unit_price',
-            ]);
-
-        $hasMore = $rows->count() > $perPage;
-
-        return [
-            'data' => $rows
-                ->take($perPage)
-                ->map(fn (object $row): array => [
-                    'id' => (int) $row->id,
-                    'name' => (string) $row->name,
-                    'sku' => (string) $row->sku,
-                    'barcode' => $row->barcode,
-                    'unit_price' => (float) ($row->unit_price ?? 0),
-                    'minimum_quantity' => 1.0,
-                    'ordering_increment' => 1.0,
-                    ...$this->availability->forStoreProduct($storeId, (int) $row->id),
-                ])
                 ->values()
                 ->all(),
             'has_more' => $hasMore,

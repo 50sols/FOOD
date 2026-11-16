@@ -58,8 +58,14 @@ class CheckoutController extends Controller
         $idempotencyKey = trim((string) $request->header('Idempotency-Key', ''));
 
         if (strlen($idempotencyKey) < 16 || strlen($idempotencyKey) > 100) {
+            $authenticatedUser = $request->user();
+            $userLocale = $authenticatedUser instanceof User ? $authenticatedUser->locale : null;
+            $locale = in_array($userLocale, ['ar', 'en'], true)
+                ? $userLocale
+                : strtolower((string) $request->getPreferredLanguage(['ar', 'en']));
+
             throw ValidationException::withMessages([
-                'Idempotency-Key' => ['A valid Idempotency-Key header is required.'],
+                'Idempotency-Key' => [__('checkout_errors.idempotency_header_invalid', [], $locale === 'ar' ? 'ar' : 'en')],
             ]);
         }
 
@@ -95,8 +101,13 @@ class CheckoutController extends Controller
         }
 
         if (! in_array($paymentMethod, $allowedMethods, true)) {
+            $userLocale = $user->locale;
+            $locale = in_array($userLocale, ['ar', 'en'], true)
+                ? $userLocale
+                : strtolower((string) $request->getPreferredLanguage(['ar', 'en']));
+
             throw ValidationException::withMessages([
-                'payment_method' => ['The selected payment method is not configured.'],
+                'payment_method' => [__('checkout_errors.payment_method_not_configured', [], $locale === 'ar' ? 'ar' : 'en')],
             ]);
         }
 
@@ -141,10 +152,15 @@ class CheckoutController extends Controller
                 ->first();
 
             if ($existing instanceof Order) {
+                $userLocale = $user->locale;
+                $locale = in_array($userLocale, ['ar', 'en'], true)
+                    ? $userLocale
+                    : strtolower((string) $request->getPreferredLanguage(['ar', 'en']));
+
                 abort_if(
                     ! hash_equals((string) $existing->checkout_request_hash, $requestHash),
                     409,
-                    'Idempotency key was already used for a different checkout request.',
+                    __('checkout_errors.idempotency_reuse_conflict', [], $locale === 'ar' ? 'ar' : 'en'),
                 );
 
                 return [$existing, false];
@@ -157,7 +173,7 @@ class CheckoutController extends Controller
                 ->lockForUpdate()
                 ->first();
 
-            abort_unless($cart instanceof Cart, 409, 'No authenticated cart exists for this store.');
+            abort_unless($cart instanceof Cart, 409, $this->localizedCartConflict($request, $user, 'checkout_cart_missing'));
 
             $smartOrderingAttribution->markCheckoutStartedForCart($cart);
 
@@ -167,7 +183,7 @@ class CheckoutController extends Controller
                 ->lockForUpdate()
                 ->get();
 
-            abort_if($lockedItems->isEmpty(), 409, 'The cart is empty.');
+            abort_if($lockedItems->isEmpty(), 409, $this->localizedCartConflict($request, $user, 'checkout_cart_empty'));
 
             // This is the authoritative reprice point. No submitted or stale cart price is trusted.
             $quote = $quotes->quoteCart(
@@ -410,6 +426,15 @@ class CheckoutController extends Controller
             $this->orderPayload($order->fresh()),
             $created ? 201 : 200,
         );
+    }
+
+    private function localizedCartConflict(Request $request, User $user, string $key): string
+    {
+        $locale = in_array($user->locale, ['ar', 'en'], true)
+            ? (string) $user->locale
+            : (string) $request->getPreferredLanguage(['ar', 'en']);
+
+        return __('checkout_errors.'.$key, [], $locale === 'en' ? 'en' : 'ar');
     }
 
     private function orderPayload(Order $order): array
