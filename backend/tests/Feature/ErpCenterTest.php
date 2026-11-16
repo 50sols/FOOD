@@ -58,7 +58,7 @@ final class ErpCenterTest extends TestCase
     {
         $actor = $this->userWithGlobalRole('SUPER_ADMIN', 'en', 'erp-local-modules@example.test');
         // Even local bootstrap needs a real store/legal-entity for Finance.
-        $this->wholesaleStore('P135-LOCAL-FINANCE-STORE');
+        $store = $this->wholesaleStore('P135-LOCAL-FINANCE-STORE');
 
         $response = $this->actingAs($actor)->get(route('admin.erp.index'));
 
@@ -87,11 +87,21 @@ final class ErpCenterTest extends TestCase
                 'is_enabled' => true,
             ]);
         }
+
+        $cards = collect($response->viewData('cards'))->keyBy('key');
+        foreach (['procurement', 'wms', 'treasury'] as $key) {
+            $this->assertIsArray($cards->get($key));
+            $url = $cards->get($key)['url'];
+            $this->assertIsString($url);
+            $this->assertStringContainsString('store_id='.$store->id, $url);
+            $this->actingAs($actor)->get($url)->assertOk();
+        }
     }
 
     public function test_local_super_admin_bootstraps_missing_enabled_erp_entitlement(): void
     {
         $actor = $this->userWithGlobalRole('SUPER_ADMIN', 'en', 'erp-local-bootstrap@example.test');
+        $this->wholesaleStore('P135-READY-LOCAL-BOOTSTRAP');
 
         app(EnterpriseModuleAdministration::class)->perform('procurement', 'enable', $actor);
 
@@ -141,6 +151,7 @@ final class ErpCenterTest extends TestCase
     public function test_local_super_admin_bootstraps_platform_entitlement_when_only_narrower_scope_is_configured(): void
     {
         $actor = $this->userWithGlobalRole('SUPER_ADMIN', 'en', 'erp-local-narrower-deny@example.test');
+        $this->wholesaleStore('P135-READY-LOCAL-NARROWER-DENY');
 
         app(EnterpriseModuleAdministration::class)->perform('procurement', 'enable', $actor);
         EnterpriseModuleEntitlement::query()->create([
@@ -211,6 +222,7 @@ final class ErpCenterTest extends TestCase
     public function test_enabled_and_entitled_module_exposes_only_its_canonical_destination(): void
     {
         $actor = $this->userWithGlobalRole('SUPER_ADMIN', 'en', 'erp-enabled@example.test');
+        $this->wholesaleStore('P135-READY-ENABLED');
 
         app(EnterpriseModuleAdministration::class)->perform('procurement', 'enable', $actor);
         app(ModuleEntitlementManager::class)->set(
@@ -275,6 +287,7 @@ final class ErpCenterTest extends TestCase
     public function test_erp_center_renders_authoritative_snapshot_drilldowns_and_accessible_analytics(): void
     {
         $actor = $this->userWithGlobalRole('SUPER_ADMIN', 'en', 'erp-snapshot@example.test');
+        $this->wholesaleStore('P135-READY-SNAPSHOT');
 
         app(EnterpriseModuleAdministration::class)->perform('procurement', 'enable', $actor);
         app(ModuleEntitlementManager::class)->set(
@@ -366,6 +379,7 @@ final class ErpCenterTest extends TestCase
     public function test_erp_center_state_filter_hides_other_module_cards_without_changing_navigation_authority(): void
     {
         $actor = $this->userWithGlobalRole('SUPER_ADMIN', 'en', 'erp-state-filter@example.test');
+        $this->wholesaleStore('P135-READY-STATE-FILTER');
 
         app(EnterpriseModuleAdministration::class)->perform('procurement', 'enable', $actor);
         app(ModuleEntitlementManager::class)->set(
@@ -412,7 +426,7 @@ final class ErpCenterTest extends TestCase
 
             $this->assertIsArray($card);
             $this->assertSame('available', $card['status']);
-            $this->assertSame(route('admin.erp.procurement.index'), $card['url']);
+            $this->assertSame(route('admin.erp.procurement.index', ['store_id' => $store->id]), $card['url']);
 
             $group = collect(app(AdminNavigation::class)->groupsFor($buyer->fresh()))
                 ->firstWhere('key', 'procurement');
@@ -864,6 +878,49 @@ final class ErpCenterTest extends TestCase
         }
 
         $this->assertDatabaseCount('enterprise_finance_journals', 0);
+    }
+
+
+    public function test_ready_modules_with_grants_but_no_store_scope_are_nonactionable_in_both_locales(): void
+    {
+        config()->set('security.mfa.enforce_privileged', false);
+        $admin = $this->userWithGlobalRole('SUPER_ADMIN', 'en', 'p135-module-store-scope@example.test');
+        $this->app['env'] = 'production';
+
+        foreach (['procurement', 'inventory_wms', 'treasury'] as $module) {
+            app(EnterpriseModuleAdministration::class)->perform($module, 'enable', $admin);
+            app(ModuleEntitlementManager::class)->set($module, EntitlementScope::platform(), true, null, $admin);
+        }
+
+        foreach (['ar' => 'rtl', 'en' => 'ltr'] as $locale => $direction) {
+            $admin->forceFill(['locale' => $locale])->save();
+            $response = $this->actingAs($admin->fresh())->get(route('admin.erp.index'));
+            $response->assertOk()
+                ->assertSee('dir="'.$direction.'"', false)
+                ->assertSee(__('admin.erp_center.denial_reasons.missing_scope', [], $locale));
+
+            foreach (['procurement', 'wms', 'treasury'] as $key) {
+                $card = collect($response->viewData('cards'))->firstWhere('key', $key);
+                $this->assertIsArray($card);
+                $this->assertSame('not_entitled', $card['status']);
+                $this->assertSame('missing_scope', $card['denial_reason']);
+                $this->assertNull($card['url']);
+                $this->assertSame(1, preg_match(
+                    '/<article class="foodex-card erp-module[^"]*" data-erp-key="'.$key.'".*?<\/article>/s',
+                    (string) $response->getContent(),
+                    $markup,
+                ));
+                $this->assertStringNotContainsString('foodex-action-primary', $markup[0]);
+            }
+        }
+
+        foreach ([
+            'admin.erp.procurement.index',
+            'admin.erp.wms.index',
+            'admin.erp.treasury.index',
+        ] as $routeName) {
+            $this->actingAs($admin->fresh())->get(route($routeName))->assertForbidden();
+        }
     }
 
     private function wholesaleStore(string $code): Store
