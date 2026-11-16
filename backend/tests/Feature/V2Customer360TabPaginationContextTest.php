@@ -105,7 +105,7 @@ final class V2Customer360TabPaginationContextTest extends TestCase
     }
 
     /**
-     * @param array<string, string> $pages
+     * @param  array<string, string>  $pages
      */
     private function hasScopedPaginationContext(
         string $url,
