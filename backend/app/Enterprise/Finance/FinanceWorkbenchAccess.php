@@ -24,6 +24,21 @@ final class FinanceWorkbenchAccess
         'finance.ap.read',
     ];
 
+    /**
+     * AR_OFFICER is a receivables duty, not a general Finance actor. Its legacy
+     * finance.manage grant must never become GL/AP/Foundation/Treasury authority
+     * merely because a second role enables the B2B navigation context.
+     *
+     * Until incompatible multi-role combinations are resolved by the P127 SoD
+     * policy, an active AR officer fails closed for other Finance capabilities.
+     *
+     * @var list<string>
+     */
+    private const AR_OFFICER_CAPABILITIES = [
+        'finance.ar.read',
+        'finance.ar.manage',
+    ];
+
     public function __construct(
         private readonly ModuleEntitlementResolver $entitlements,
         private readonly EntitlementScopeResolver $scopes,
@@ -33,6 +48,12 @@ final class FinanceWorkbenchAccess
     {
         if (! $actor->is_active || ! $actor->hasPermission('finance.view', $storeId)) {
             return false;
+        }
+
+        // A combined operational role must not turn the AR officer's shared
+        // finance.view grant into a GL/AP/Foundation overview.
+        if ($actor->hasRole('AR_OFFICER')) {
+            return $this->allowsAtStore($storeId, 'finance.ar.read');
         }
 
         foreach (self::READ_CAPABILITIES as $capability) {
@@ -46,6 +67,14 @@ final class FinanceWorkbenchAccess
 
     public function canPerform(User $actor, int $storeId, string $permission, string $capability): bool
     {
+        // P127 fail-closed duty boundary: finance.manage is shared with GL,
+        // credit terms and Treasury, while AR_OFFICER is authorized for AR only.
+        // Other role grants must not silently enlarge its Finance duties.
+        if ($actor->hasRole('AR_OFFICER')
+            && ! in_array($capability, self::AR_OFFICER_CAPABILITIES, true)) {
+            return false;
+        }
+
         return $actor->is_active
             && $actor->hasPermission($permission, $storeId)
             && $this->allowsAtStore($storeId, $capability);
