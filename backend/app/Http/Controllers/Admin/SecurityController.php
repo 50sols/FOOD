@@ -21,6 +21,7 @@ use App\Models\User;
 use App\Models\UserStoreRole;
 use App\Services\AdminSecurityPolicy;
 use App\Services\AdminSessionRegistry;
+use App\Services\AdminUserDeletionService;
 use App\Services\AuditLogger;
 use App\Services\BuiltInJobRoleCatalog;
 use App\Services\DemoDataManager;
@@ -41,7 +42,7 @@ use Symfony\Component\HttpFoundation\StreamedResponse;
 
 final class SecurityController extends Controller
 {
-    public function index(Request $request, DemoDataManager $demoData, BuiltInJobRoleCatalog $jobRoles, RoleAssignmentAudit $assignmentAudit): View
+    public function index(Request $request, DemoDataManager $demoData, BuiltInJobRoleCatalog $jobRoles, RoleAssignmentAudit $assignmentAudit, AdminUserDeletionService $deletion): View
     {
         Gate::authorize('security.view');
         $this->useActorLocale($request);
@@ -87,6 +88,20 @@ final class SecurityController extends Controller
             ->orderBy('name')
             ->paginate(15)
             ->withQueryString();
+
+        // P071: inspect one explicitly selected account on the existing
+        // Security Users surface, never scan deletion eligibility for an
+        // entire paginated grid on every request.
+        $deletionPreview = null;
+        if ($section === 'users' && $request->filled('deletion_preview')) {
+            Gate::authorize('users.delete');
+            abort_unless($actor->hasRole('SUPER_ADMIN'), 403);
+            $candidate = User::query()->findOrFail((int) $request->query('deletion_preview'));
+            $deletionPreview = [
+                'user' => $candidate,
+                'assessment' => $deletion->inspect($actor, $candidate),
+            ];
+        }
 
         $roles = Role::query()
             ->with('permissions:id,code,name')
@@ -561,6 +576,7 @@ final class SecurityController extends Controller
         }
 
         return view('admin.security', [
+            'deletionPreview' => $deletionPreview,
             'users' => $users,
             'roles' => $roles,
             'roleApprovalLimits' => $roleApprovalLimits,
@@ -869,6 +885,33 @@ final class SecurityController extends Controller
         return back()->with('status', (bool) $validated['is_active']
             ? __('admin.security.user_activated')
             : __('admin.security.user_deactivated'));
+    }
+
+    public function destroyUser(Request $request, User $user, AdminUserDeletionService $deletion): RedirectResponse
+    {
+        Gate::authorize('users.delete');
+        $actor = $this->actor($request);
+
+        // This is a global control-plane operation, never a store-delegated
+        // capability even if a malformed direct grant reaches the Gate.
+        abort_unless($actor->hasRole('SUPER_ADMIN'), 403);
+
+        $validated = $request->validate([
+            'reason' => ['required', 'string', 'min:8', 'max:500'],
+            'confirm_email' => ['required', 'string', 'max:190', Rule::in([(string) $user->email])],
+            'confirm_delete' => ['required', Rule::in(['DELETE'])],
+            'impact_reviewed' => ['required', 'accepted'],
+        ]);
+
+        try {
+            $deletion->permanentlyDelete($actor, $user, (string) $validated['reason'], $request);
+        } catch (ValidationException $exception) {
+            return back()->withErrors($exception->errors());
+        }
+
+        return redirect()
+            ->route('admin.security.index', ['section' => 'users', 'status' => 'inactive'])
+            ->with('status', __('v2_user_deletion.deleted'));
     }
 
     public function updateUserRoles(Request $request, User $user, RbacManager $rbac): RedirectResponse
