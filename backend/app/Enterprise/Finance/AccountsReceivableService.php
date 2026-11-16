@@ -633,6 +633,18 @@ final class AccountsReceivableService
                 ->lockForUpdate()
                 ->firstOrFail();
 
+            // A typed operational receipt is already associated with a
+            // collected payment. Until the independent accounting handoff is
+            // certified, NEVER post it via this manual AR cash/GL service,
+            // including callers using the legacy default-false flag or a
+            // previously posted row's idempotent replay. The route-level
+            // P303 flag alone cannot enforce this financial invariant.
+            if ($allocation->getAttribute('source_collection_allocation_id') !== null) {
+                throw ValidationException::withMessages([
+                    'collection_source' => [__('finance_workbench.receivables.verification_pending')],
+                ]);
+            }
+
             // A historic allocation posted by another legitimate AR flow is
             // not proof that the P303 collection-backed workflow verified it.
             if ($requiresVerifiedCollectionSource && $allocation->status === 'posted') {

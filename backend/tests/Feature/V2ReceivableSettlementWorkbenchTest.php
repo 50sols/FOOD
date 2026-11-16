@@ -727,6 +727,19 @@ final class V2ReceivableSettlementWorkbenchTest extends TestCase
         $this->assertSame($draft->id, $ar->createAllocation($maker, $context, $document->id, $payload)->id);
         $this->assertDatabaseCount('enterprise_ar_allocations', 1);
 
+        // The canonical API also has legacy callers that omit the optional
+        // P303 flag. A typed operational receipt must never be posted into a
+        // second cash/AR journal by taking that legacy default-false path.
+        try {
+            $ar->postAllocation($poster, $posterContext, $draft->id);
+            $this->fail('Typed operational collection must not be re-posted as manual AR cash.');
+        } catch (ValidationException $exception) {
+            $this->assertArrayHasKey('collection_source', $exception->errors());
+        }
+        $this->assertSame('draft', $draft->fresh()->status);
+        $this->assertNull($draft->fresh()->journal_id);
+        $this->assertDatabaseCount('enterprise_finance_journals', 1);
+
         foreach ([
             [...$payload, 'idempotency_key' => 'p303-source-double-claim'],
             [...$payload, 'idempotency_key' => 'p303-source-inflated', 'amount' => '31.000'],
