@@ -870,8 +870,6 @@ final class B2bAccountLedgerService
      * allocation when a Van deposits against multiple B2B invoices. Every
      * consumer uses the same server-scoped source; never guess from the
      * collector's total or trust an unbound/fake receipt.
-     *
-     * @return QueryBuilder
      */
     private function multiInvoiceFieldAllocations(): QueryBuilder
     {
@@ -907,7 +905,7 @@ final class B2bAccountLedgerService
     }
 
     /** @param array<int,int> $invoiceIds
-     *  @return array<int,float>
+     * @return array<int,float>
      */
     private function paidByInvoice(array $invoiceIds): array
     {
