@@ -67,7 +67,7 @@
         .policy-section-title{display:flex;justify-content:space-between;gap:10px;align-items:center;font-weight:800;font-size:.88rem}
         [data-v2-p229-readiness]{display:block;padding:10px 12px;line-height:1.6;font-size:.875rem;white-space:normal;background:var(--foodex-orange-soft);color:var(--foodex-ink);border-radius:10px}
         [data-v2-p229-setup-help] summary{min-height:44px;padding:10px 0;cursor:pointer;font-weight:800}
-        [data-v2-p229-profitability] .flash-secondary,[data-v2-p229-profitability] .foodex-primary{min-height:44px}
+        #profitability-rules .flash-secondary,#profitability-rules .foodex-primary{min-height:44px}
         .commercial-form-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
         .commercial-form-grid.five{grid-template-columns:repeat(5,minmax(0,1fr))}
         .commercial-form-grid label,.policy-section>label{display:grid;gap:6px;font-weight:700;font-size:.8rem}
