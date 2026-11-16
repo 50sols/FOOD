@@ -141,7 +141,8 @@ void main() {
           );
           await tester.pumpAndSettle();
 
-          expect(api.productPaths, contains('/api/v1/b2b/products?store_id=70'));
+          expect(
+              api.productPaths, contains('/api/v1/b2b/products?store_id=70'));
           for (var index = 0; index < scenario.labels.length; index++) {
             final badge = find.byKey(
               ValueKey('wholesale-product-price-${901 + index}'),
@@ -151,7 +152,8 @@ void main() {
               of: badge,
               matching: find.byType(Text),
             );
-            expect(tester.widget<Text>(labelFinder).data, scenario.labels[index]);
+            expect(
+                tester.widget<Text>(labelFinder).data, scenario.labels[index]);
             expect(
               Directionality.of(tester.element(badge)),
               language == 'ar' ? TextDirection.rtl : TextDirection.ltr,
@@ -201,10 +203,14 @@ void main() {
         await tester.pumpAndSettle();
 
         expect(find.byKey(const ValueKey('b2b-orders-screen')), findsOneWidget);
-        expect(find.byKey(const ValueKey('b2b-orders-refresh')), findsOneWidget);
-        expect(find.byKey(const ValueKey('b2b-order-row-1001')), findsOneWidget);
-        expect(find.byKey(const ValueKey('b2b-order-receipt-1001')), findsOneWidget);
-        expect(find.byKey(const ValueKey('customer-persistent-footer')), findsOneWidget);
+        expect(
+            find.byKey(const ValueKey('b2b-orders-refresh')), findsOneWidget);
+        expect(
+            find.byKey(const ValueKey('b2b-order-row-1001')), findsOneWidget);
+        expect(find.byKey(const ValueKey('b2b-order-receipt-1001')),
+            findsOneWidget);
+        expect(find.byKey(const ValueKey('customer-persistent-footer')),
+            findsOneWidget);
 
         const filterKeys = <String>[
           'all',
@@ -213,23 +219,25 @@ void main() {
           'out_for_delivery',
           'delivered',
         ];
-        final firstTop = tester.getTopLeft(
-          find.byKey(const ValueKey('b2b-orders-filter-all')),
-        ).dy;
+        final firstTop = tester
+            .getTopLeft(
+              find.byKey(const ValueKey('b2b-orders-filter-all')),
+            )
+            .dy;
         for (final filter in filterKeys) {
           final finder = find.byKey(ValueKey('b2b-orders-filter-' + filter));
           expect(finder, findsOneWidget);
           expect(tester.getTopLeft(finder).dy, closeTo(firstTop, .5));
         }
 
-        final cardWidth =
-            tester.getSize(find.byKey(const ValueKey('b2b-order-row-1001'))).width;
+        final cardWidth = tester
+            .getSize(find.byKey(const ValueKey('b2b-order-row-1001')))
+            .width;
         expect(cardWidth, lessThanOrEqualTo(device.width - 20));
         expect(tester.takeException(), isNull);
       },
     );
   }
-
 }
 
 class _PriceBadgeStorefrontApi extends _ResponsiveStorefrontApi {
@@ -558,14 +566,12 @@ class _ResponsiveAccountApi implements B2cAccountApi {
   const _ResponsiveAccountApi();
 
   @override
-  dynamic noSuchMethod(Invocation invocation) =>
-      Future<Object?>.value(null);
+  dynamic noSuchMethod(Invocation invocation) => Future<Object?>.value(null);
 }
 
 class _ResponsiveActionApi implements CustomerActionApi {
   const _ResponsiveActionApi();
 
   @override
-  dynamic noSuchMethod(Invocation invocation) =>
-      Future<Object?>.value({});
+  dynamic noSuchMethod(Invocation invocation) => Future<Object?>.value({});
 }
