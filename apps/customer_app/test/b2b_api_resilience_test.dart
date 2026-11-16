@@ -234,4 +234,122 @@ void main() {
       ),
     );
   });
+
+  test('B2B invoice PDF retries bounded GET with session, locale and store scope',
+      () async {
+    for (final locale in ['ar', 'en']) {
+      var attempts = 0;
+      final pdf = <int>[37, 80, 68, 70, 45, 49, 46, 55, 10];
+      final api = HttpB2bApi(
+        baseUrl: 'https://foodex.example',
+        token: 'pdf-session-token',
+        retailStoreContextId: 17,
+        locale: locale,
+        maxGetAttempts: 2,
+        client: MockClient((request) async {
+          attempts++;
+          expect(request.method, 'GET');
+          expect(request.url.path, '/api/v1/b2b/invoices/31/pdf');
+          expect(request.url.queryParameters['store_id'], '7');
+          expect(request.headers['Authorization'], 'Bearer pdf-session-token');
+          expect(request.headers['X-FOODEX-Customer-Domain'], 'b2b');
+          expect(request.headers['X-FOODEX-Retail-Store-ID'], '17');
+          expect(request.headers['Accept-Language'], locale);
+          expect(request.headers['Accept'], 'application/pdf');
+          if (attempts == 1) {
+            return http.Response('temporary gateway', 502);
+          }
+          return http.Response.bytes(
+            pdf,
+            200,
+            headers: {'content-type': 'application/pdf; charset=binary'},
+          );
+        }),
+      );
+
+      final bytes =
+          await api.getBytes('/api/v1/b2b/invoices/31/pdf?store_id=7');
+      expect(bytes, orderedEquals(pdf));
+      expect(attempts, 2);
+    }
+  });
+
+  test('B2B invoice PDF fails closed on 200 login HTML, JSON and corrupt bytes',
+      () async {
+    final cases = <({String mime, String body})>[
+      (mime: 'text/html', body: '<html>Sign in</html>'),
+      (mime: 'application/json', body: '{"message":"login required"}'),
+      (mime: 'application/pdf', body: 'not a PDF'),
+      (mime: 'application/pdf', body: ''),
+      (mime: 'text/html', body: '%PDF-1.7'),
+    ];
+    for (final response in cases) {
+      for (final locale in ['ar', 'en']) {
+        var attempts = 0;
+        final api = HttpB2bApi(
+          baseUrl: 'https://foodex.example',
+          token: 'pdf-session-token',
+          retailStoreContextId: 17,
+          locale: locale,
+          maxGetAttempts: 3,
+          client: MockClient((request) async {
+            attempts++;
+            expect(request.method, 'GET');
+            expect(request.url.queryParameters['store_id'], '7');
+            expect(request.headers['Authorization'], 'Bearer pdf-session-token');
+            expect(request.headers['X-FOODEX-Customer-Domain'], 'b2b');
+            expect(request.headers['X-FOODEX-Retail-Store-ID'], '17');
+            expect(request.headers['Accept-Language'], locale);
+            return http.Response(
+              response.body,
+              200,
+              headers: {'content-type': response.mime},
+            );
+          }),
+        );
+
+        await expectLater(
+          api.getBytes('/api/v1/b2b/invoices/31/pdf?store_id=7'),
+          throwsA(
+            isA<B2bApiException>()
+                .having((error) => error.code, 'code', 'invalid_document'),
+          ),
+        );
+        expect(attempts, 1);
+      }
+    }
+  });
+
+  test('B2B invoice PDF preserves 401/403 denial without retry', () async {
+    for (final status in [401, 403]) {
+      var attempts = 0;
+      final api = HttpB2bApi(
+        baseUrl: 'https://foodex.example',
+        token: 'expired-token',
+        retailStoreContextId: 17,
+        maxGetAttempts: 3,
+        client: MockClient((request) async {
+          attempts++;
+          expect(request.headers['X-FOODEX-Customer-Domain'], 'b2b');
+          expect(request.headers['X-FOODEX-Retail-Store-ID'], '17');
+          return http.Response(
+            '<html>login</html>',
+            status,
+            headers: {'content-type': 'text/html'},
+          );
+        }),
+      );
+
+      await expectLater(
+        api.getBytes('/api/v1/b2b/invoices/31/pdf?store_id=7'),
+        throwsA(
+          isA<B2bApiException>()
+              .having((error) => error.code, 'code', 'not_authorized')
+              .having((error) => error.statusCode, 'status', status),
+        ),
+      );
+      expect(attempts, 1);
+    }
+  });
+
 }
