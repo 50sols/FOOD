@@ -124,7 +124,7 @@ final class AdminUserDeletionService
         $userId = (int) $target->getKey();
 
         foreach ($tables as $metadata) {
-            $table = (string) ($metadata['name'] ?? '');
+            $table = (string) $metadata['name'];
             if ($table === '' || ! preg_match('/^[a-zA-Z_][a-zA-Z0-9_]*$/', $table)) {
                 throw new RuntimeException('Unverifiable table identifier in schema inventory.');
             }
