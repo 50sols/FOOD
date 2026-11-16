@@ -6419,74 +6419,96 @@ class _InvoiceDetailRemoteStateState extends State<_InvoiceDetailRemoteState>
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Container(
-                    key: const ValueKey('b2b-invoice-brand'),
-                    width: 72,
-                    height: 54,
-                    padding: const EdgeInsets.all(6),
-                    decoration: BoxDecoration(
-                      color: Theme.of(context).colorScheme.surface,
-                      borderRadius: BorderRadius.circular(16),
-                    ),
-                    child: (seller['logo_url']?.toString().trim().isNotEmpty ??
-                            false)
-                        ? Image.network(
-                            seller['logo_url'].toString(),
-                            fit: BoxFit.contain,
-                            semanticLabel:
-                                seller['name']?.toString() ?? 'FOODEX',
-                            errorBuilder: (_, __, ___) => Image.asset(
-                              'assets/branding/foodex-economical-group.webp',
-                              fit: BoxFit.contain,
-                              semanticLabel: context.tr(
-                                'customer.brand.economic_group',
-                              ),
-                            ),
-                          )
-                        : Image.asset(
-                            'assets/branding/foodex-economical-group.webp',
-                            fit: BoxFit.contain,
-                            semanticLabel: context.tr(
-                              'customer.brand.economic_group',
-                            ),
-                          ),
-                  ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: Text.rich(
-                      key: const ValueKey('b2b-invoice-detail-number'),
-                      TextSpan(
-                        style:
-                            Theme.of(context).textTheme.titleMedium?.copyWith(
-                                  color: Theme.of(context)
-                                      .colorScheme
-                                      .onPrimaryContainer,
-                                  fontWeight: FontWeight.w800,
-                                ),
-                        children: [
-                          TextSpan(
-                            text: ar ? 'رقم الفاتورة ' : 'Invoice ',
-                          ),
-                          TextSpan(
-                            text: invoiceNumber,
-                            style: const TextStyle(
-                              fontWeight: FontWeight.w900,
-                            ),
-                          ),
-                        ],
-                      ),
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                  ),
-                  Chip(
+              LayoutBuilder(
+                builder: (context, constraints) {
+                  // Reserve a second line for the full server status on narrow
+                  // layouts. An English "Partially settled" Chip is 255px wide:
+                  // it cannot share a 326px header with the 72px brand.
+                  final compactHeader = constraints.maxWidth < 440;
+                  final statusChip = Chip(
                     key: const ValueKey('b2b-invoice-status-chip'),
                     label: Text(_statusLabel(status, ar)),
-                  ),
-                ],
+                  );
+                  return Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Container(
+                            key: const ValueKey('b2b-invoice-brand'),
+                            width: 72,
+                            height: 54,
+                            padding: const EdgeInsets.all(6),
+                            decoration: BoxDecoration(
+                              color: Theme.of(context).colorScheme.surface,
+                              borderRadius: BorderRadius.circular(16),
+                            ),
+                            child: (seller['logo_url']?.toString().trim().isNotEmpty ??
+                                    false)
+                                ? Image.network(
+                                    seller['logo_url'].toString(),
+                                    fit: BoxFit.contain,
+                                    semanticLabel:
+                                        seller['name']?.toString() ?? 'FOODEX',
+                                    errorBuilder: (_, __, ___) => Image.asset(
+                                      'assets/branding/foodex-economical-group.webp',
+                                      fit: BoxFit.contain,
+                                      semanticLabel: context.tr(
+                                        'customer.brand.economic_group',
+                                      ),
+                                    ),
+                                  )
+                                : Image.asset(
+                                    'assets/branding/foodex-economical-group.webp',
+                                    fit: BoxFit.contain,
+                                    semanticLabel: context.tr(
+                                      'customer.brand.economic_group',
+                                    ),
+                                  ),
+                          ),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: Text.rich(
+                              key: const ValueKey('b2b-invoice-detail-number'),
+                              TextSpan(
+                                style:
+                                    Theme.of(context).textTheme.titleMedium?.copyWith(
+                                          color: Theme.of(context)
+                                              .colorScheme
+                                              .onPrimaryContainer,
+                                          fontWeight: FontWeight.w800,
+                                        ),
+                                children: [
+                                  TextSpan(
+                                    text: ar ? 'رقم الفاتورة ' : 'Invoice ',
+                                  ),
+                                  TextSpan(
+                                    text: invoiceNumber,
+                                    style: const TextStyle(
+                                      fontWeight: FontWeight.w900,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
+                          if (!compactHeader) statusChip,
+                        ],
+                      ),
+                      if (compactHeader)
+                        Align(
+                          alignment: AlignmentDirectional.centerEnd,
+                          child: Padding(
+                            padding: const EdgeInsets.only(top: 6),
+                            child: statusChip,
+                          ),
+                        ),
+                    ],
+                  );
+                },
               ),
               const SizedBox(height: 14),
               Wrap(
