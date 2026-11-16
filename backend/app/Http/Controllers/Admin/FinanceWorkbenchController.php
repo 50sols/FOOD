@@ -6,6 +6,7 @@ use App\Enterprise\Entitlements\EntitlementScope;
 use App\Enterprise\Entitlements\ModuleEntitlementResolver;
 use App\Enterprise\Finance\AccountsPayableService;
 use App\Enterprise\Finance\AccountsReceivableService;
+use App\Enterprise\Finance\CollectionAccountSettlementMappingService;
 use App\Enterprise\Finance\FinanceAnalyticsService;
 use App\Enterprise\Finance\FinanceApprovalService;
 use App\Enterprise\Finance\FinanceAssetService;
@@ -72,6 +73,7 @@ final class FinanceWorkbenchController extends Controller
         private readonly GeneralLedgerService $ledger,
         private readonly OpeningBalanceService $openingBalances,
         private readonly AccountsReceivableService $receivables,
+        private readonly CollectionAccountSettlementMappingService $collectionMappings,
         private readonly AccountsPayableService $payables,
         private readonly FinanceCreditTermsService $creditTerms,
         private readonly FinancialStatementService $statements,
@@ -195,6 +197,26 @@ final class FinanceWorkbenchController extends Controller
             'data' => $data,
             'needsContext' => false,
         ]);
+    }
+
+    public function proposeCollectionMapping(Request $request): RedirectResponse
+    {
+        [$actor, $context] = $this->mutationContext($request);
+        $this->collectionMappings->propose($actor, $context, $request->only([
+            'request_id', 'collection_account_id', 'finance_account_id',
+        ]));
+
+        return $this->redirectTo($request, 'receivables', 'mapping_proposed');
+    }
+
+    public function reviewCollectionMapping(Request $request, int $mapping): RedirectResponse
+    {
+        [$actor, $context] = $this->mutationContext($request);
+        $this->collectionMappings->review(
+            $actor, $context, $mapping, (string) $request->input('decision', ''),
+        );
+
+        return $this->redirectTo($request, 'receivables', 'mapping_reviewed');
     }
 
     public function storeReceivableSettlement(Request $request, int $document): RedirectResponse
@@ -980,6 +1002,46 @@ final class FinanceWorkbenchController extends Controller
         $aging = $this->receivables->paginateAging($actor, $context, $customerId, 25);
         $agingTotals = $this->receivables->agingTotals($actor, $context, $customerId);
 
+        // Keep custody-account GL mapping in the existing Receivables
+        // workbench. It is maker/checker configuration, not a cash posting
+        // or a replacement for verified Treasury receipt provenance.
+        $mappingRevisions = $this->collectionMappings->revisions($actor, $context);
+        $mappingCollectors = collect();
+        $mappingFinanceAccounts = collect();
+        if (($access['ar_manage'] ?? false) || ($access['approval_decide'] ?? false)) {
+            $scope = $context->enterpriseScope;
+            abort_if($scope === null, 409);
+            $mappingCollectors = DB::table('collection_accounts as collector')
+                ->leftJoin('drivers as driver', function ($join): void {
+                    $join->on('driver.id', '=', 'collector.actor_id')
+                        ->where('collector.actor_type', 'driver');
+                })
+                ->leftJoin('users as driver_user', 'driver_user.id', '=', 'driver.user_id')
+                ->leftJoin('users as van_user', function ($join): void {
+                    $join->on('van_user.id', '=', 'collector.actor_id')
+                        ->where('collector.actor_type', 'van_rep');
+                })
+                ->where('collector.store_id', $context->requiresStore())
+                ->where('collector.status', 'active')
+                ->where('collector.actor_type', $context->isRetail() ? 'driver' : 'van_rep')
+                ->orderBy('collector.id')
+                ->limit(100)
+                ->get(['collector.id', 'collector.currency', 'collector.actor_type',
+                    DB::raw('COALESCE(driver_user.name, van_user.name) as collector_name')]);
+            $mappingFinanceAccounts = EnterpriseFinanceAccount::query()
+                ->where('organization_id', $scope->organizationId)
+                ->where('company_id', $scope->companyId)
+                ->where('legal_entity_id', $scope->legalEntityId)
+                ->where('status', 'active')
+                ->where('type', 'asset')
+                ->where('normal_balance', 'debit')
+                ->where('allow_posting', true)
+                ->where('is_control', false)
+                ->orderBy('code')
+                ->limit(100)
+                ->get();
+        }
+
         // Show exactly one selected AR document and a bounded, separate
         // settlement paginator; never eager-load an unlimited allocation list
         // for every document on the main AR page.
@@ -1076,7 +1138,7 @@ final class FinanceWorkbenchController extends Controller
             }
         }
 
-        return compact('documents', 'aging', 'agingTotals', 'filters', 'settlementDocument', 'settlements', 'settlementAccounts', 'settlementCreators', 'receiptCandidates', 'sourceReceiptReferences');
+        return compact('documents', 'aging', 'agingTotals', 'filters', 'settlementDocument', 'settlements', 'settlementAccounts', 'settlementCreators', 'receiptCandidates', 'sourceReceiptReferences', 'mappingRevisions', 'mappingCollectors', 'mappingFinanceAccounts');
     }
 
     /** @return array<string, mixed> */
@@ -1454,7 +1516,8 @@ final class FinanceWorkbenchController extends Controller
             'storeOpeningBalance', 'cancelOpeningBalance' => ['finance.manage', 'finance.opening_balances.manage'],
             'postOpeningBalance' => ['finance.post', 'finance.opening_balances.post'],
             'storeCreditTerm', 'updateCreditTermStatus' => ['finance.manage', 'finance.credit_terms.manage'],
-            'storeReceivableSettlement' => ['finance.manage', 'finance.ar.manage'],
+            'proposeCollectionMapping', 'storeReceivableSettlement' => ['finance.manage', 'finance.ar.manage'],
+            'reviewCollectionMapping' => ['finance.approve', 'finance.approvals.approve'],
             'postReceivableSettlement' => ['finance.post', 'finance.ar.post'],
             'transitionBudget' => $request->input('action') === 'submit'
                     ? ['finance.manage', 'finance.foundation.manage']

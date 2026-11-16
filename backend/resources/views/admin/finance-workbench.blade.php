@@ -513,6 +513,52 @@ $trendMax=max(1,max(array_map(fn($r)=>max(abs((float)$r['revenue']),abs((float)$
 </details></td></tr>
 @empty<tr><td colspan="7" class="finance-empty">{{ __('finance_workbench.common.no_data') }}</td></tr>@endforelse
 </tbody></table></div><div class="finance-pagination">{{ $data['documents']->links() }}</div>
+<section class="finance-panel" data-v2-ar-custody-mapping>
+<div class="finance-panel-head"><div>
+<h3>{{ __('finance_workbench.receivables.mapping_title') }}</h3>
+<p>{{ __('finance_workbench.receivables.mapping_help') }}</p>
+</div></div>
+@if(($access['ar_manage'] ?? false) && $data['mappingCollectors']->isNotEmpty() && $data['mappingFinanceAccounts']->isNotEmpty())
+<details class="finance-details" data-foodex-operational-modal>
+<summary class="finance-button primary">{{ __('finance_workbench.receivables.mapping_propose') }}</summary>
+<div class="finance-details-body">
+<form method="post" action="{{ route('admin.erp.finance.receivables.mappings.propose') }}" class="finance-form-grid">
+@csrf
+<input type="hidden" name="store_id" value="{{ $storeId }}">
+<input type="hidden" name="request_id" value="{{ (string) \Illuminate\Support\Str::uuid() }}">
+<div class="finance-field"><label>{{ __('finance_workbench.receivables.mapping_collection_account') }}
+<select name="collection_account_id" required><option value="">{{ __('finance_workbench.common.select') }}</option>
+@foreach($data['mappingCollectors'] as $collector)
+<option value="{{ $collector->id }}">{{ $collector->collector_name ?? '—' }} · {{ $collector->currency }}</option>
+@endforeach</select></label></div>
+<div class="finance-field"><label>{{ __('finance_workbench.receivables.mapping_finance_account') }}
+<select name="finance_account_id" required><option value="">{{ __('finance_workbench.common.select') }}</option>
+@foreach($data['mappingFinanceAccounts'] as $account)
+<option value="{{ $account->id }}">{{ $account->code }} · {{ $account->name }}</option>
+@endforeach</select></label></div>
+<button class="finance-button primary" type="submit">{{ __('finance_workbench.receivables.mapping_propose') }}</button>
+</form></div></details>
+@endif
+<div class="finance-table-wrap"><table class="finance-table">
+<thead><tr><th>{{ __('finance_workbench.receivables.mapping_collection_account') }}</th><th>{{ __('finance_workbench.receivables.mapping_finance_account') }}</th><th>{{ __('finance_workbench.common.status') }}</th><th>{{ __('finance_workbench.common.actions') }}</th></tr></thead>
+<tbody>
+@forelse($data['mappingRevisions'] as $mapping)
+<tr>
+<td>{{ $data['mappingCollectors']->firstWhere('id', $mapping->collection_account_id)?->collector_name ?? '—' }} · {{ $mapping->currency_code }}</td>
+<td>{{ $data['mappingFinanceAccounts']->firstWhere('id', $mapping->finance_account_id)?->name ?? '—' }}</td>
+<td>{{ __('finance_workbench.receivables.mapping_statuses.'.strtolower((string) $mapping->status)) }}</td>
+<td>
+@if(($access['approval_decide'] ?? false) && $mapping->status === 'PROPOSED' && (int)$mapping->proposed_by !== (int)auth()->id())
+<form method="post" action="{{ route('admin.erp.finance.receivables.mappings.review', $mapping->id) }}" class="finance-inline-actions">
+@csrf<input type="hidden" name="store_id" value="{{ $storeId }}">
+<button class="finance-button primary" type="submit" name="decision" value="approve">{{ __('finance_workbench.receivables.mapping_approve') }}</button>
+<button class="finance-button" type="submit" name="decision" value="reject">{{ __('finance_workbench.receivables.mapping_reject') }}</button>
+</form>
+@endif
+</td></tr>
+@empty<tr><td colspan="4">{{ __('finance_workbench.receivables.mapping_empty') }}</td></tr>@endforelse
+</tbody></table></div>
+</section>
 @if($data['settlementDocument'] !== null)
 <section class="finance-panel" data-v2-ar-settlements>
 <div class="finance-panel-head">

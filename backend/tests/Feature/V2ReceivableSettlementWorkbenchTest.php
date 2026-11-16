@@ -5,6 +5,7 @@ namespace Tests\Feature;
 use App\Enterprise\Entitlements\EntitlementScope;
 use App\Enterprise\Entitlements\ModuleEntitlementManager;
 use App\Enterprise\Finance\AccountsReceivableService;
+use App\Enterprise\Finance\CollectionAccountSettlementMappingService;
 use App\Enterprise\Finance\FinanceFoundationService;
 use App\Enterprise\Modules\ModuleLifecycleManager;
 use App\Enterprise\Modules\ModuleRegistry;
@@ -27,6 +28,7 @@ use Illuminate\Database\Events\QueryExecuted;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
+use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
 use Tests\TestCase;
 
@@ -1039,6 +1041,162 @@ final class V2ReceivableSettlementWorkbenchTest extends TestCase
         $reject('p303-reversed-receipt');
         $this->assertDatabaseCount('enterprise_ar_allocations', 0);
         $this->assertDatabaseCount('enterprise_finance_journals', 1);
+    }
+
+    public function test_collection_account_mapping_requires_independent_finance_checker_and_never_posts_cash_ar(): void
+    {
+        $fixture = $this->fixture('P303-MAPPING');
+        $store = $fixture['store'];
+        $maker = $fixture['maker'];
+        $checker = $fixture['poster'];
+        $context = app(TenantContextResolver::class)->retail($maker, $store->id);
+        $scope = $context->enterpriseScope;
+        $this->assertNotNull($scope);
+
+        $role = Role::query()->where('code', 'B2C_STORE_ADMIN')->firstOrFail();
+        $permission = Permission::query()->firstOrCreate(
+            ['code' => 'finance.approve'], ['name' => 'Finance Approve'],
+        );
+        $role->permissions()->syncWithoutDetaching([$permission->id]);
+        app(ModuleEntitlementManager::class)->set(
+            FinanceFoundationService::MODULE,
+            new EntitlementScope(EntitlementScope::LEGAL_ENTITY, $scope->legalEntityId),
+            true,
+            [
+                'finance.foundation.read', 'finance.foundation.manage',
+                'finance.gl.read', 'finance.gl.manage', 'finance.gl.post',
+                'finance.ar.read', 'finance.ar.manage', 'finance.ar.post',
+                'finance.approvals.approve',
+            ],
+            $maker,
+        );
+
+        $driverId = DB::table('drivers')->insertGetId([
+            'user_id' => $maker->id,
+            'driver_type' => 'delivery',
+            'is_available' => true,
+            'is_active' => true,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        $wallet = CollectionAccount::query()->create([
+            'actor_type' => 'driver',
+            'actor_id' => $driverId,
+            'store_id' => $store->id,
+            'currency' => 'KWD',
+            'status' => 'active',
+        ]);
+        $payload = [
+            'store_id' => $store->id,
+            'request_id' => (string) Str::uuid(),
+            'collection_account_id' => $wallet->id,
+            'finance_account_id' => $fixture['cash_account_id'],
+        ];
+
+        $this->actingAs($maker)->post(
+            route('admin.erp.finance.receivables.mappings.propose'), $payload,
+        )->assertSessionHasNoErrors()->assertRedirect();
+        $this->assertDatabaseCount('enterprise_finance_collection_account_mappings', 1);
+        $mapping = DB::table('enterprise_finance_collection_account_mappings')->first();
+        $this->assertSame('PROPOSED', $mapping->status);
+        $this->actingAs($maker)->post(
+            route('admin.erp.finance.receivables.mappings.propose'), $payload,
+        )->assertSessionHasNoErrors();
+        $this->assertDatabaseCount('enterprise_finance_collection_account_mappings', 1);
+
+        $review = route('admin.erp.finance.receivables.mappings.review', $mapping->id);
+        $this->actingAs($maker)->post($review, [
+            'store_id' => $store->id, 'decision' => 'approve',
+        ])->assertForbidden();
+
+        foreach (['ar', 'en'] as $locale) {
+            $checker->forceFill(['locale' => $locale])->save();
+            $this->actingAs($checker->fresh())->get(route('admin.erp.finance.index', [
+                'store_id' => $store->id, 'tab' => 'receivables',
+            ]))->assertOk()->assertSee(__('finance_workbench.receivables.mapping_title', [], $locale))
+                ->assertSee('data-v2-ar-custody-mapping', false);
+        }
+
+        $this->actingAs($checker)->post($review, [
+            'store_id' => $store->id, 'decision' => 'approve',
+        ])->assertSessionHasNoErrors()->assertRedirect();
+        $this->assertDatabaseHas('enterprise_finance_collection_account_mappings', [
+            'id' => $mapping->id, 'status' => 'APPROVED', 'reviewed_by' => $checker->id,
+        ]);
+        $this->actingAs($checker)->post($review, [
+            'store_id' => $store->id, 'decision' => 'approve',
+        ])->assertSessionHasNoErrors();
+        $this->assertSame(1, DB::table('audit_logs')
+            ->where('event', 'enterprise.finance.collection_account_mapping_reviewed')
+            ->count());
+        $this->assertDatabaseCount('enterprise_finance_journals', 1);
+        $this->assertDatabaseCount('enterprise_finance_source_postings', 0);
+        $this->assertDatabaseCount('enterprise_ar_allocations', 0);
+        $this->assertSame('posted', $fixture['document']->fresh()->status);
+    }
+
+    public function test_collection_mapping_rejects_foreign_wallet_and_revenue_account_without_financial_mutation(): void
+    {
+        $fixture = $this->fixture('P303-MAP-NEG');
+        $maker = $fixture['maker'];
+        $store = $fixture['store'];
+        $service = app(CollectionAccountSettlementMappingService::class);
+        $context = app(TenantContextResolver::class)->retail($maker, $store->id);
+
+        $foreign = $this->retailStore('P303-MAP-FOREIGN');
+        $foreignWallet = CollectionAccount::query()->create([
+            'actor_type' => 'driver',
+            'actor_id' => $maker->id,
+            'store_id' => $foreign->id,
+            'currency' => 'KWD',
+            'status' => 'active',
+        ]);
+        $ownWallet = CollectionAccount::query()->create([
+            'actor_type' => 'driver',
+            'actor_id' => $maker->id,
+            'store_id' => $store->id,
+            'currency' => 'KWD',
+            'status' => 'active',
+        ]);
+
+        try {
+            $service->propose($maker, $context, [
+                'request_id' => (string) Str::uuid(),
+                'collection_account_id' => $foreignWallet->id,
+                'finance_account_id' => $fixture['cash_account_id'],
+            ]);
+            $this->fail('Foreign-store collection account may not be mapped.');
+        } catch (ModelNotFoundException $exception) {
+            $this->assertNotNull($exception);
+        }
+
+        try {
+            $service->propose($maker, $context, [
+                'request_id' => (string) Str::uuid(),
+                'collection_account_id' => $ownWallet->id,
+                'finance_account_id' => $fixture['document']->offset_account_id,
+            ]);
+            $this->fail('Revenue is not a cash/clearing asset account.');
+        } catch (ValidationException $exception) {
+            $this->assertArrayHasKey('finance_account_id', $exception->errors());
+        }
+
+        DB::table('collection_accounts')->where('id', $ownWallet->id)
+            ->update(['status' => 'disabled']);
+        try {
+            $service->propose($maker, $context, [
+                'request_id' => (string) Str::uuid(),
+                'collection_account_id' => $ownWallet->id,
+                'finance_account_id' => $fixture['cash_account_id'],
+            ]);
+            $this->fail('Disabled custody account may not be mapped.');
+        } catch (ValidationException $exception) {
+            $this->assertArrayHasKey('collection_account_id', $exception->errors());
+        }
+
+        $this->assertDatabaseCount('enterprise_finance_collection_account_mappings', 0);
+        $this->assertDatabaseCount('enterprise_finance_journals', 1);
+        $this->assertDatabaseCount('enterprise_ar_allocations', 0);
     }
 
     /** @return array{store:Store,maker:User,poster:User,document:EnterpriseAccountsReceivableDocument,cash_account_id:int} */
