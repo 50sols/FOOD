@@ -54,6 +54,13 @@ final class InventoryOwnerProvenanceReadService
         // Expose the entire balance as UNKNOWN rather than a misleading zero
         // or a certified FOODEX amount.
         if ($rows->isEmpty()) {
+            // Lack of owner provenance must not camouflage an invalid
+            // canonical stock balance. This is an accounting/inventory
+            // integrity exception, not merely unknown legal ownership.
+            $balanceConsistent = $quantity >= 0
+                && $reserved >= 0
+                && $reserved <= $quantity;
+
             return [
                 'inventory_id' => $inventoryId,
                 'store_id' => (int) $warehouse->store_id,
@@ -61,7 +68,7 @@ final class InventoryOwnerProvenanceReadService
                 'product_id' => (int) $inventory->product_id,
                 'quantity' => self::decimal($quantity),
                 'reserved_quantity' => self::decimal($reserved),
-                'state' => 'UNKNOWN',
+                'state' => $balanceConsistent ? 'UNKNOWN' : 'STALE',
                 'certified' => false,
                 'positions' => [[
                     'owner_kind' => 'UNKNOWN',

@@ -72,6 +72,45 @@ final class V2InventoryOwnerProvenanceTest extends TestCase
             ->where('inventory_id', $stock['inventory_id'])->count());
     }
 
+    public function test_missing_owner_positions_never_mask_invalid_canonical_balances_as_merely_unknown(): void
+    {
+        $this->seed(CoreReferenceSeeder::class);
+        $stock = $this->stock('INVALID-CANONICAL-NO-OWNER');
+        $actor = $this->inventoryActor($stock['store_id']);
+        $service = app(InventoryOwnerProvenanceReadService::class);
+
+        foreach ([
+            ['quantity' => 10, 'reserved_quantity' => 11, 'label' => 'over-reserved'],
+            ['quantity' => -1, 'reserved_quantity' => 0, 'label' => 'negative stock'],
+            ['quantity' => 10, 'reserved_quantity' => -1, 'label' => 'negative reservation'],
+        ] as $invalid) {
+            DB::table('inventories')->where('id', $stock['inventory_id'])->update([
+                'quantity' => $invalid['quantity'],
+                'reserved_quantity' => $invalid['reserved_quantity'],
+                'updated_at' => now()->addMinute(),
+            ]);
+
+            $result = $service->snapshot($actor, $stock['inventory_id']);
+            $this->assertSame('STALE', $result['state'], $invalid['label']);
+            $this->assertFalse($result['certified']);
+            $this->assertSame('UNKNOWN', $result['positions'][0]['owner_kind']);
+            $this->assertFalse($result['positions'][0]['certified']);
+            $this->assertSame(0, DB::table('enterprise_inventory_owner_positions')
+                ->where('inventory_id', $stock['inventory_id'])->count());
+        }
+
+        DB::table('inventories')->where('id', $stock['inventory_id'])->update([
+            'quantity' => 10,
+            'reserved_quantity' => 3,
+            'updated_at' => now()->addMinutes(2),
+        ]);
+        $restored = $service->snapshot($actor, $stock['inventory_id']);
+        $this->assertSame('UNKNOWN', $restored['state']);
+        $this->assertFalse($restored['certified']);
+        $this->assertSame('10.000', $restored['quantity']);
+        $this->assertSame('3.000', $restored['reserved_quantity']);
+    }
+
     public function test_self_approval_and_missing_provenance_cannot_certify_foodex_title(): void
     {
         $this->seed(CoreReferenceSeeder::class);
