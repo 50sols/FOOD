@@ -25,6 +25,7 @@ use App\Support\TenantContextResolver;
 use Database\Seeders\CoreReferenceSeeder;
 use Illuminate\Database\Eloquent\ModelNotFoundException;
 use Illuminate\Database\Events\QueryExecuted;
+use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
@@ -129,7 +130,7 @@ final class V2ReceivableSettlementWorkbenchTest extends TestCase
         $this->assertFalse(Schema::hasColumn('enterprise_ar_documents', 'source_invoice_id'));
         // Simulate a non-transactional MySQL deployment interrupted after
         // adding the column but before installing its FK/unique index.
-        Schema::table('enterprise_ar_documents', function (\Illuminate\Database\Schema\Blueprint $table): void {
+        Schema::table('enterprise_ar_documents', function (Blueprint $table): void {
             $table->foreignId('source_invoice_id')->nullable();
         });
         $this->assertFalse(Schema::hasIndex('enterprise_ar_documents', 'ear_doc_legal_invoice_source_uq'));
