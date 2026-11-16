@@ -115,6 +115,74 @@ final class V2InventoryOwnerProvenanceTest extends TestCase
         ]);
     }
 
+    public function test_inventory_deletion_cannot_cascade_erase_legal_owner_claims(): void
+    {
+        $this->seed(CoreReferenceSeeder::class);
+        $stock = $this->stock('OWNER-HISTORY-PARENT-FK');
+        $actor = $this->inventoryActor($stock['store_id']);
+        $supplierId = $this->supplier($stock['store_id']);
+        $now = now();
+
+        DB::table('enterprise_inventory_owner_positions')->insert([
+            [
+                'inventory_id' => $stock['inventory_id'],
+                'owner_key' => 'FOODEX',
+                'owner_kind' => 'FOODEX',
+                'supplier_id' => null,
+                'quantity' => '6.000',
+                'reserved_quantity' => '2.000',
+                'proposed_by' => $actor->id,
+                'created_at' => $now,
+                'updated_at' => $now,
+            ],
+            [
+                'inventory_id' => $stock['inventory_id'],
+                'owner_key' => 'SUPPLIER:'.$supplierId,
+                'owner_kind' => 'SUPPLIER',
+                'supplier_id' => $supplierId,
+                'quantity' => '4.000',
+                'reserved_quantity' => '1.000',
+                'proposed_by' => $actor->id,
+                'created_at' => $now,
+                'updated_at' => $now,
+            ],
+        ]);
+
+        // Assert the actual DDL rule, not an unrelated FK denial.
+        if (DB::connection()->getDriverName() === 'sqlite') {
+            $foreign = collect(DB::select('PRAGMA foreign_key_list("enterprise_inventory_owner_positions")'))
+                ->first(static fn (object $row): bool => (string) $row->{'from'} === 'inventory_id'
+                    && (string) $row->table === 'inventories');
+            $this->assertNotNull($foreign);
+            $this->assertContains(strtoupper((string) $foreign->on_delete), ['RESTRICT', 'NO ACTION']);
+        }
+
+        try {
+            DB::table('inventories')->where('id', $stock['inventory_id'])->delete();
+            $this->fail('Parent deletion must not erase FOODEX and supplier ownership claims.');
+        } catch (\Illuminate\Database\QueryException $exception) {
+            $this->assertNotEmpty($exception->getMessage());
+        }
+
+        $this->assertDatabaseHas('inventories', [
+            'id' => $stock['inventory_id'],
+            'quantity' => 10,
+            'reserved_quantity' => 3,
+        ]);
+        $this->assertSame(2, DB::table('enterprise_inventory_owner_positions')
+            ->where('inventory_id', $stock['inventory_id'])->count());
+        $this->assertDatabaseHas('enterprise_inventory_owner_positions', [
+            'inventory_id' => $stock['inventory_id'],
+            'owner_key' => 'FOODEX',
+            'quantity' => 6,
+        ]);
+        $this->assertDatabaseHas('enterprise_inventory_owner_positions', [
+            'inventory_id' => $stock['inventory_id'],
+            'owner_key' => 'SUPPLIER:'.$supplierId,
+            'quantity' => 4,
+        ]);
+    }
+
     public function test_new_inventory_without_ownership_writers_is_unclassified_not_free_foodex_stock(): void
     {
         $this->seed(CoreReferenceSeeder::class);
