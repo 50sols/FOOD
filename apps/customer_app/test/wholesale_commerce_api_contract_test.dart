@@ -117,7 +117,8 @@ void main() {
         receivedKeys.add(request.headers['Idempotency-Key']!);
         bodies.add(jsonDecode(request.body));
         if (attempts == 1) {
-          throw http.ClientException('connection lost after commit', request.url);
+          throw http.ClientException(
+              'connection lost after commit', request.url);
         }
         return http.Response('{"id":123}', 200);
       }),
@@ -144,7 +145,8 @@ void main() {
     );
     expect(attempts, 1);
     expect(await checkout(), isA<Map>());
-    expect(receivedKeys, ['checkout-fixed-intent-0001', 'checkout-fixed-intent-0001']);
+    expect(receivedKeys,
+        ['checkout-fixed-intent-0001', 'checkout-fixed-intent-0001']);
     expect(bodies[0], bodies[1]);
     final payload = bodies[1] as Map;
     expect(payload['note'], 'Warehouse');
