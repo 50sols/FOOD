@@ -193,12 +193,18 @@ final class V2ArOfficerAuthorizationContractTest extends TestCase
     {
         $this->enableFinance();
         $actor = $this->officer();
-        $wholesaleId = (int) DB::table('stores as store')
-            ->join('store_types as type', 'type.id', '=', 'store.store_type_id')
-            ->where('type.code', 'B2B')
-            ->where('store.is_active', true)
-            ->value('store.id');
-        $this->assertGreaterThan(0, $wholesaleId);
+        // CoreReferenceSeeder provides the B2B store type, not a live wholesale store.
+        // Seed an isolated active context so the negative HTTP contract cannot
+        // depend on production fixture data or accidentally skip its assertions.
+        $wholesaleTypeId = (int) DB::table('store_types')->where('code', 'B2B')->value('id');
+        $this->assertGreaterThan(0, $wholesaleTypeId);
+        $wholesaleStore = Store::query()->create([
+            'store_type_id' => $wholesaleTypeId,
+            'code' => 'V2-AR-OFFICER-WHOLESALE',
+            'name' => 'Isolated wholesale context for AR GL denial',
+            'is_active' => true,
+        ]);
+        $wholesaleId = (int) $wholesaleStore->id;
 
         $before = [
             'journals' => DB::table('enterprise_finance_journals')->count(),
