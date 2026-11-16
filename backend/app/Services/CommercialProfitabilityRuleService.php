@@ -245,7 +245,22 @@ final class CommercialProfitabilityRuleService
         ];
 
         $expected = hash('sha256', json_encode($canonical, JSON_THROW_ON_ERROR));
-        if (! hash_equals($expected, (string) $revision->content_sha256)) {
+        $status = (string) $revision->status;
+        $reviewer = $revision->reviewed_by === null ? null : (int) $revision->reviewed_by;
+        $reviewedAt = trim((string) ($revision->reviewed_at ?? ''));
+
+        // The P229 authoring flow intentionally has no ACTIVE transition.
+        // The content hash alone cannot detect a forged approval/status. Do
+        // not display or replay records with impossible maker/checker state.
+        $validLifecycle = in_array($status, ['DRAFT', 'REVIEWED_INACTIVE', 'REJECTED'], true)
+            && ($status === 'DRAFT'
+                ? $reviewer === null && $reviewedAt === ''
+                : $reviewer !== null
+                    && $reviewer > 0
+                    && $reviewer !== (int) $revision->proposed_by
+                    && $reviewedAt !== '');
+
+        if (! hash_equals($expected, (string) $revision->content_sha256) || ! $validLifecycle) {
             throw ValidationException::withMessages([
                 'revision_id' => [__('commercial.profitability.integrity_mismatch')],
             ]);
