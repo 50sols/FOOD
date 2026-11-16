@@ -14,7 +14,9 @@ body{margin:0;background:var(--foodex-background);color:var(--foodex-ink)}
 .finance-context{padding:16px;margin-bottom:16px}
 .finance-context-grid,.finance-form-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;align-items:end}
 .finance-context-grid{grid-template-columns:minmax(220px,1fr) auto}
-.finance-tabs{display:flex;gap:8px;overflow-x:auto;padding:2px 0 12px;scrollbar-width:thin}
+.finance-tabs{display:flex;flex-wrap:nowrap;gap:8px;overflow-x:auto;max-width:100%;padding:2px 0 12px;scrollbar-width:thin;overscroll-behavior-inline:contain}
+.finance-subtabs .finance-tab{flex:0 0 auto}
+.finance-subtabs .finance-tab:focus-visible{outline:2px solid var(--foodex-action-green);outline-offset:2px}
 .finance-tab{display:inline-flex;align-items:center;justify-content:center;min-height:44px;white-space:nowrap;padding:0 14px;border:1px solid var(--foodex-border);border-radius:10px;background:var(--foodex-surface);color:var(--foodex-ink);text-decoration:none;font-weight:800}
 .finance-tab.is-active{background:var(--foodex-action-green);border-color:var(--foodex-action-green);color:#fff}
 .finance-tab.is-disabled{opacity:.55;cursor:not-allowed}
@@ -494,11 +496,54 @@ $trendMax=max(1,max(array_map(fn($r)=>max(abs((float)$r['revenue']),abs((float)$
 @endif
 @endif
 
+@if(in_array($tab,['receivables','payables'],true))
+@php
+    // FinanceWorkbenchController resolves permissions, module readiness, and
+    // store/legal entity context before this presentation-only query selection.
+    $financePanelKeys = $tab === 'receivables'
+        ? ['documents','settlements','aging']
+        : ['documents','aging'];
+    $financePanelInput = request()->query('finance_panel');
+    $financePanelDefault = $tab === 'receivables' && ($data['settlementDocument'] ?? null) !== null
+        ? 'settlements'
+        : 'documents';
+    $activeFinancePanel = is_string($financePanelInput)
+        && in_array($financePanelInput, $financePanelKeys, true)
+        ? $financePanelInput
+        : $financePanelDefault;
+    $financePanelQuery = [...$routeBase,'tab'=>$tab];
+    foreach (['status','date_from','date_to','supplier_reference'] as $financeFilterKey) {
+        $financeFilterValue = $data['filters'][$financeFilterKey] ?? null;
+        if (is_string($financeFilterValue) && $financeFilterValue !== '') {
+            $financePanelQuery[$financeFilterKey] = $financeFilterValue;
+        }
+    }
+    if ($tab === 'receivables' && ($data['settlementDocument'] ?? null) !== null) {
+        $financePanelQuery['settlement_document_id'] = $data['settlementDocument']->id;
+    }
+    $financePanelLabels = [
+        'documents' => $tab === 'receivables'
+            ? 'finance_workbench.receivables.document'
+            : 'finance_workbench.payables.document',
+        'settlements' => 'finance_workbench.receivables.settlements',
+        'aging' => 'finance_workbench.dashboard.aging',
+    ];
+@endphp
+<nav class="finance-tabs foodex-tabs finance-subtabs" aria-label="{{ __($tab === 'receivables' ? 'finance_workbench.receivables.title' : 'finance_workbench.payables.title') }}" data-finance-subtabs>
+@foreach($financePanelKeys as $financePanelKey)
+<a class="finance-tab foodex-tab {{ $activeFinancePanel === $financePanelKey ? 'is-active active' : '' }}"
+   data-finance-subtab="{{ $financePanelKey }}"
+   href="{{ route('admin.erp.finance.index',[...$financePanelQuery,'finance_panel'=>$financePanelKey]) }}"
+   @if($activeFinancePanel === $financePanelKey) aria-current="page" @endif>{{ __($financePanelLabels[$financePanelKey]) }}</a>
+@endforeach
+</nav>
+@endif
+
 @if($tab==='receivables')
 <section class="finance-panel">
 <div class="finance-panel-head"><div><h2>{{ __('finance_workbench.receivables.title') }}</h2><p>{{ __('finance_workbench.receivables.help') }}</p></div></div>
 <div class="finance-notice"><strong>{{ __('finance_workbench.source_truth') }}</strong></div>
-<form method="get" action="{{ route('admin.erp.finance.index') }}" class="finance-filter"><input type="hidden" name="store_id" value="{{ $storeId }}"><input type="hidden" name="tab" value="receivables">
+<form method="get" action="{{ route('admin.erp.finance.index') }}" class="finance-filter"><input type="hidden" name="store_id" value="{{ $storeId }}"><input type="hidden" name="tab" value="receivables"><input type="hidden" name="finance_panel" value="{{ $activeFinancePanel }}">
 <div class="finance-field"><label>{{ __('finance_workbench.common.status') }}</label><select name="status"><option value=""></option>@foreach(['draft','posted','cancelled'] as $value)<option value="{{ $value }}" @selected(($data['filters']['status'] ?? '')===$value)>{{ $statusLabel($value) }}</option>@endforeach</select></div>
 <div class="finance-field"><label>{{ __('finance_workbench.common.from') }}</label><input type="date" name="date_from" value="{{ $data['filters']['date_from'] ?? '' }}"></div><div class="finance-field"><label>{{ __('finance_workbench.common.to') }}</label><input type="date" name="date_to" value="{{ $data['filters']['date_to'] ?? '' }}"></div>
 <button class="finance-button" type="submit">{{ __('finance_workbench.actions.filter') }}</button></form>
@@ -674,7 +719,7 @@ $trendMax=max(1,max(array_map(fn($r)=>max(abs((float)$r['revenue']),abs((float)$
 <section class="finance-panel">
 <div class="finance-panel-head"><div><h2>{{ __('finance_workbench.payables.title') }}</h2><p>{{ __('finance_workbench.payables.help') }}</p></div></div>
 <div class="finance-notice"><strong>{{ __('finance_workbench.source_truth') }}</strong></div>
-<form method="get" action="{{ route('admin.erp.finance.index') }}" class="finance-filter"><input type="hidden" name="store_id" value="{{ $storeId }}"><input type="hidden" name="tab" value="payables">
+<form method="get" action="{{ route('admin.erp.finance.index') }}" class="finance-filter"><input type="hidden" name="store_id" value="{{ $storeId }}"><input type="hidden" name="tab" value="payables"><input type="hidden" name="finance_panel" value="{{ $activeFinancePanel }}">
 <div class="finance-field"><label>{{ __('finance_workbench.payables.supplier_reference') }}</label><input name="supplier_reference" value="{{ $data['filters']['supplier_reference'] ?? '' }}" maxlength="128"></div>
 <div class="finance-field"><label>{{ __('finance_workbench.common.status') }}</label><select name="status"><option value=""></option>@foreach(['draft','posted','cancelled'] as $value)<option value="{{ $value }}" @selected(($data['filters']['status'] ?? '')===$value)>{{ $statusLabel($value) }}</option>@endforeach</select></div>
 <div class="finance-field"><label>{{ __('finance_workbench.common.from') }}</label><input type="date" name="date_from" value="{{ $data['filters']['date_from'] ?? '' }}"></div><div class="finance-field"><label>{{ __('finance_workbench.common.to') }}</label><input type="date" name="date_to" value="{{ $data['filters']['date_to'] ?? '' }}"></div>
