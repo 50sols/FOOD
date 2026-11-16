@@ -668,8 +668,7 @@ void main() {
     }
   });
 
-  test('Scoped B2B statement refuses 200 rows from another store',
-      () async {
+  test('Scoped B2B statement refuses 200 rows from another store', () async {
     for (final locale in ['ar', 'en']) {
       for (final store in [99, '7']) {
         var requests = 0;
