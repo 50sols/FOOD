@@ -58,9 +58,9 @@ void main() {
             return http.Response('{"message":"transient"}', transientStatus);
           }
           return http.Response(
-          '{"store_id":12,"channel":"b2b","items":[],"quote":{"grand_total":0}}',
-          200,
-        );
+            '{"store_id":12,"channel":"b2b","items":[],"quote":{"grand_total":0}}',
+            200,
+          );
         }),
       );
 
@@ -309,8 +309,8 @@ void main() {
             client: MockClient((request) async {
               calls++;
               expect(request.url.path, endpoint);
-              expect(request.method,
-                  endpoint == '/api/v1/cart' ? 'GET' : 'POST');
+              expect(
+                  request.method, endpoint == '/api/v1/cart' ? 'GET' : 'POST');
               expect(request.headers['Authorization'], 'Bearer scoped-token');
               expect(request.headers['X-FOODEX-Customer-Domain'], 'b2b');
               expect(request.headers['X-FOODEX-Retail-Store-ID'], '17');
@@ -422,9 +422,8 @@ void main() {
                 'items': [],
               };
               return http.Response(
-                jsonEncode(endpoint == '/api/v1/quote'
-                    ? {'data': payload}
-                    : payload),
+                jsonEncode(
+                    endpoint == '/api/v1/quote' ? {'data': payload} : payload),
                 200,
                 headers: {'content-type': 'application/json'},
               );
