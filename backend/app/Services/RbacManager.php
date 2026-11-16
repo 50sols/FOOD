@@ -128,6 +128,15 @@ final class RbacManager
                 ]);
             }
 
+            // Archived is a terminal inactive lifecycle state, not a second
+            // deactivation. Reject stale/no-op status writes rather than
+            // mutating its timestamp, reason, credentials or audit trail.
+            if (! $active && $target->archived_at !== null) {
+                throw ValidationException::withMessages([
+                    'is_active' => [__('admin.security.errors.user_already_archived')],
+                ]);
+            }
+
             // The archival transition cannot strand active Driver or Van work.
             // This is checked at the canonical mutation boundary, not only in UI.
             if (! $active && (bool) $target->is_active && $this->hasOpenOperationalAssignments($target)) {
@@ -189,6 +198,12 @@ final class RbacManager
                 || $locked->roles()->where('roles.code', 'PLATFORM_OWNER')->exists()
                 || (Schema::hasTable('platform_owner_registry')
                     && DB::table('platform_owner_registry')->where('user_id', $locked->getKey())->exists()), 403);
+
+            // Typed confirmation must match the locked current identity,
+            // not the possibly stale route-model email validated upstream.
+            $request->validate([
+                'confirm_email' => ['required', 'string', 'max:190', Rule::in([(string) $locked->email])],
+            ]);
 
             if ($locked->archived_at !== null) {
                 throw ValidationException::withMessages([
