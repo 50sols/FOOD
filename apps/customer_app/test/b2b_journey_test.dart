@@ -122,6 +122,172 @@ void main() {
     );
   }
 
+  for (final locale in const <Locale>[Locale('ar'), Locale('en')]) {
+    testWidgets(
+      'MOB-C03 purchase report isolates store and period responses '
+      '${locale.languageCode}',
+      (tester) async {
+        tester.view.physicalSize = const Size(390, 844);
+        tester.view.devicePixelRatio = 1;
+        addTearDown(() {
+          tester.view.resetPhysicalSize();
+          tester.view.resetDevicePixelRatio();
+        });
+
+        final api = _DeferredPurchaseReportB2bApi();
+        final actionApi = _FakeCustomerActionApi();
+        Widget scoped(String storeId) => MaterialApp(
+              locale: locale,
+              home: AppTranslations(
+                locale: locale,
+                overrides: const <String, String>{},
+                child: B2bJourneyScreen(
+                  definition: const CustomerRouteDefinition(
+                    pattern: CustomerRoutePaths.b2bPurchaseReports,
+                    label: 'B2B purchase report',
+                    channel: CustomerChannel.b2b,
+                    requiresAuth: true,
+                  ),
+                  location: '/b2b/reports/purchases?store_id=${storeId}',
+                  actionApi: actionApi,
+                  api: api,
+                ),
+              ),
+            );
+
+        Map<String, Object?> report(num total) => {
+              'currency': 'KWD',
+              'summary': {
+                'total_purchases': total,
+                'average_order_value': total,
+                'order_count': 1,
+                'invoice_count': 1,
+              },
+              'data': <Object?>[],
+              'categories': <Object?>[],
+              'orders': <Object?>[],
+              'meta': {'page': 1, 'per_page': 5, 'has_more': false},
+            };
+
+        await tester.pumpWidget(scoped('7'));
+        await tester.pump();
+        expect(api.paths, hasLength(1));
+        expect(api.paths.single, contains('store_id=7'));
+        api.replies[0].complete(report(100.125));
+        await _pumpCustomerFrames(tester);
+        expect(find.textContaining('100.125 KWD'), findsWidgets);
+
+        final period = find.byKey(
+          const ValueKey('b2b-purchases-current-period'),
+        );
+        await tester.ensureVisible(period);
+        await tester.tap(period);
+        await tester.pump();
+        expect(api.paths, hasLength(2));
+        expect(api.paths[1], contains('store_id=7'));
+        expect(api.paths[1], contains('from='));
+
+        // The previously confirmed store is never reusable under store 9.
+        await tester.pumpWidget(scoped('9'));
+        await tester.pump();
+        expect(api.paths, hasLength(3));
+        expect(api.paths[2], contains('store_id=9'));
+        expect(find.textContaining('100.125 KWD'), findsNothing);
+        expect(find.byKey(const ValueKey('b2b-loading')), findsOneWidget);
+
+        api.replies[2].complete(report(20.375));
+        await _pumpCustomerFrames(tester);
+        expect(find.textContaining('20.375 KWD'), findsWidgets);
+
+        // Old store-7 financial data may finish after store-9 was displayed.
+        api.replies[1].complete(report(900.125));
+        await _pumpCustomerFrames(tester);
+        expect(find.textContaining('20.375 KWD'), findsWidgets);
+        expect(find.textContaining('900.125 KWD'), findsNothing);
+
+        // Only a retry of this exact scoped report may retain last-good.
+        final refresh = find.byKey(
+          const ValueKey('b2b-purchases-refresh'),
+        );
+        await tester.ensureVisible(refresh);
+        await tester.tap(refresh);
+        await tester.pump();
+        expect(api.paths, hasLength(4));
+        expect(api.paths[3], contains('store_id=9'));
+        api.replies[3].completeError(
+          const B2bApiException('http_503', statusCode: 503),
+        );
+        await _pumpCustomerFrames(tester);
+        expect(
+          find.byKey(const ValueKey('b2b-purchases-stale')),
+          findsOneWidget,
+        );
+        expect(find.textContaining('20.375 KWD'), findsWidgets);
+        expect(tester.takeException(), isNull);
+      },
+    );
+
+    testWidgets(
+      'MOB-C03 purchase report never fabricates nonfinite money '
+      '${locale.languageCode}',
+      (tester) async {
+        final api = _FakeB2bApi({
+          'currency': 'KWD',
+          'summary': {
+            'total_purchases': 'NaN',
+            'average_order_value': 20.375,
+            'order_count': 1,
+            'invoice_count': 1,
+          },
+          'data': [
+            {'period': '2026-09-01', 'purchase_total': 'Infinity'},
+          ],
+          'categories': [
+            {
+              'category_name': 'Rice',
+              'purchase_total': null,
+              'percentage': 'NaN',
+            },
+          ],
+          'orders': <Object?>[],
+          'meta': {'page': 1, 'per_page': 5, 'has_more': false},
+        });
+
+        await tester.pumpWidget(
+          FoodexCustomerApp(
+            session: b2b,
+            initialRoute: '/b2b/reports/purchases?store_id=7',
+            b2bApi: api,
+            locale: locale,
+          ),
+        );
+        await _pumpCustomerFrames(tester);
+
+        expect(api.lastPath, contains('store_id=7'));
+        expect(
+          find.byKey(const ValueKey('b2b-purchases-summary')),
+          findsOneWidget,
+        );
+        expect(find.textContaining('20.375 KWD'), findsWidgets);
+        expect(find.textContaining('NaN KWD'), findsNothing);
+        expect(find.textContaining('Infinity KWD'), findsNothing);
+        expect(find.textContaining('0.000 KWD'), findsNothing);
+        expect(find.textContaining('— · —'), findsWidgets);
+        expect(
+          Directionality.of(
+            tester.element(
+              find.byKey(const ValueKey('b2b-purchases-summary')),
+            ),
+          ),
+          locale.languageCode == 'ar'
+              ? TextDirection.rtl
+              : TextDirection.ltr,
+        );
+        expect(tester.takeException(), isNull);
+      },
+    );
+  }
+
   testWidgets(
     'MOB-C03 invoices clear last-good rows when the authorized store changes',
     (tester) async {
@@ -7022,6 +7188,22 @@ class _FakeWholesaleStorefrontApi implements StorefrontApi {
   @override
   Future<Map<String, dynamic>> b2bCheckoutOptions(int storeId) async =>
       const {};
+}
+
+class _DeferredPurchaseReportB2bApi implements B2bApi {
+  final List<String> paths = <String>[];
+  final List<Completer<Object?>> replies = <Completer<Object?>>[];
+
+  @override
+  Future<Object?> get(String path) {
+    if (!path.startsWith('/api/v1/b2b/reports/purchases')) {
+      throw StateError('Unexpected purchase report route: $path');
+    }
+    paths.add(path);
+    final reply = Completer<Object?>();
+    replies.add(reply);
+    return reply.future;
+  }
 }
 
 class _DeferredScopedB2bReadbackApi implements B2bApi {
