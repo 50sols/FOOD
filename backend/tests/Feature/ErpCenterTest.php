@@ -6,6 +6,7 @@ use App\Enterprise\Entitlements\EntitlementScope;
 use App\Enterprise\Entitlements\ModuleEntitlementManager;
 use App\Enterprise\Organization\OrganizationHierarchyService;
 use App\Models\EnterpriseModuleEntitlement;
+use App\Models\Permission;
 use App\Models\Role;
 use App\Models\Store;
 use App\Models\User;
@@ -470,6 +471,191 @@ final class ErpCenterTest extends TestCase
             'store_id' => $store->id,
             'tab' => 'suppliers',
         ]))->assertForbidden();
+    }
+
+    public function test_b2b_procurement_persona_http_enforces_channel_scope_and_explicit_store_denies(): void
+    {
+        $admin = $this->userWithGlobalRole('SUPER_ADMIN', 'en', 'p135-persona-setup@example.test');
+        $owned = $this->wholesaleStore('P135-PERSONA-A');
+        $other = $this->wholesaleStore('P135-PERSONA-B');
+        $retail = Store::query()->create([
+            'store_type_id' => (int) DB::table('store_types')->where('code', 'B2C')->value('id'),
+            'code' => 'P135-PERSONA-RETAIL',
+            'name' => 'P135 Retail isolation',
+            'is_active' => true,
+        ]);
+
+        app(EnterpriseModuleAdministration::class)->perform('procurement', 'enable', $admin);
+        app(ModuleEntitlementManager::class)->set('procurement', EntitlementScope::platform(), true);
+
+        foreach (['PROCUREMENT_BUYER', 'PROCUREMENT_MANAGER', 'PROCUREMENT_APPROVER'] as $roleCode) {
+            $actor = $this->userWithGlobalRole($roleCode, 'en', strtolower($roleCode).'@p135.test');
+            $role = Role::query()->where('code', $roleCode)->firstOrFail();
+            $this->assertSame('global', $role->scope);
+            $this->assertTrue($role->is_active);
+            $this->assertNull($role->archived_at);
+            $this->assertTrue($actor->hasRole($roleCode, $owned->id));
+            $this->assertFalse($actor->hasRole($roleCode, $retail->id));
+
+            foreach (['ar' => 'rtl', 'en' => 'ltr'] as $locale => $direction) {
+                $actor->forceFill(['locale' => $locale])->save();
+                $this->actingAs($actor->fresh())->get(route('admin.erp.procurement.index', [
+                    'store_id' => $owned->id,
+                    'tab' => 'suppliers',
+                ]))->assertOk()->assertSee('dir="'.$direction.'"', false);
+
+                $this->actingAs($actor->fresh())->get(route('admin.erp.procurement.index', [
+                    'store_id' => $retail->id,
+                    'tab' => 'suppliers',
+                ]))->assertForbidden();
+            }
+
+            $this->assertSame($roleCode !== 'PROCUREMENT_APPROVER', $actor->fresh()->hasPermission(
+                'procurement.suppliers.manage',
+                $owned->id,
+            ));
+            $this->assertSame($roleCode !== 'PROCUREMENT_BUYER', $actor->fresh()->hasPermission(
+                'procurement.purchase_requests.approve',
+                $owned->id,
+            ));
+        }
+
+        $buyer = $this->userWithGlobalRole('PROCUREMENT_BUYER', 'en', 'p135-store-deny@example.test');
+        foreach ([
+            [$owned, 'P135-SUPPLIER-OWNED'],
+            [$other, 'P135-SUPPLIER-OTHER'],
+        ] as [$store, $code]) {
+            $this->actingAs($buyer->fresh())->post(route('admin.erp.procurement.suppliers.store'), [
+                'store_id' => $store->id,
+                'scope_type' => 'store',
+                'code' => $code,
+                'name_en' => $code,
+                'name_ar' => 'مورد اختبار النطاق',
+                'payment_terms_days' => 30,
+            ])->assertRedirect();
+        }
+
+        foreach (['procurement.suppliers.view', 'procurement.suppliers.manage'] as $permission) {
+            DB::table('user_permission_overrides')->insert([
+                'user_id' => $buyer->id,
+                'permission_id' => Permission::query()->where('code', $permission)->firstOrFail()->id,
+                'scope_key' => 'store:'.$owned->id,
+                'store_id' => $owned->id,
+                'effect' => 'deny',
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+        }
+        $buyer->forceFill(['has_permission_overrides' => true])->save();
+
+        $this->assertFalse($buyer->fresh()->hasPermission('procurement.suppliers.view', $owned->id));
+        $this->assertTrue($buyer->fresh()->hasPermission('procurement.suppliers.view', $other->id));
+        $this->actingAs($buyer->fresh())->get(route('admin.erp.procurement.index', [
+            'store_id' => $owned->id,
+            'tab' => 'suppliers',
+        ]))->assertForbidden();
+
+        $this->actingAs($buyer->fresh())->post(route('admin.erp.procurement.suppliers.store'), [
+            'store_id' => $owned->id,
+            'scope_type' => 'store',
+            'code' => 'P135-FORGED-DENIED',
+            'name_en' => 'Denied Supplier',
+            'name_ar' => 'مورد محجوب',
+        ])->assertForbidden();
+        $this->assertDatabaseMissing('enterprise_suppliers', ['code' => 'P135-FORGED-DENIED']);
+
+        $page = $this->actingAs($buyer->fresh())->get(route('admin.erp.procurement.index', [
+            'store_id' => $other->id,
+            'tab' => 'suppliers',
+        ]))->assertOk();
+        $codes = $page->viewData('rows')->getCollection()->pluck('code')->all();
+        $this->assertContains('P135-SUPPLIER-OTHER', $codes);
+        $this->assertNotContains('P135-SUPPLIER-OWNED', $codes);
+    }
+
+    public function test_archived_global_procurement_role_and_inactive_user_cannot_use_http_despite_saved_assignments(): void
+    {
+        $admin = $this->userWithGlobalRole('SUPER_ADMIN', 'en', 'p135-archived-setup@example.test');
+        $store = $this->wholesaleStore('P135-ARCHIVE-STORE');
+        app(EnterpriseModuleAdministration::class)->perform('procurement', 'enable', $admin);
+        app(ModuleEntitlementManager::class)->set('procurement', EntitlementScope::platform(), true);
+
+        $inactive = $this->userWithGlobalRole('PROCUREMENT_BUYER', 'ar', 'p135-inactive-buyer@example.test');
+        $inactive->forceFill(['is_active' => false])->save();
+        $this->assertFalse($inactive->fresh()->hasPermission('procurement.suppliers.view', $store->id));
+        $this->actingAs($inactive->fresh())->get(route('admin.erp.procurement.index', [
+            'store_id' => $store->id,
+            'tab' => 'suppliers',
+        ]))->assertForbidden();
+
+        $active = $this->userWithGlobalRole('PROCUREMENT_BUYER', 'en', 'p135-archived-buyer@example.test');
+        $role = Role::query()->where('code', 'PROCUREMENT_BUYER')->firstOrFail();
+        $this->assertTrue($active->fresh()->hasPermission('procurement.suppliers.view', $store->id));
+        $this->actingAs($active->fresh())->get(route('admin.erp.procurement.index', [
+            'store_id' => $store->id,
+            'tab' => 'suppliers',
+        ]))->assertOk();
+
+        $role->forceFill(['is_active' => false, 'archived_at' => now()])->save();
+        $this->assertFalse($active->fresh()->hasPermission('procurement.suppliers.view', $store->id));
+        $this->actingAs($active->fresh())->get(route('admin.erp.procurement.index', [
+            'store_id' => $store->id,
+            'tab' => 'suppliers',
+        ]))->assertForbidden();
+        $this->assertDatabaseHas('role_user', [
+            'user_id' => $active->id,
+            'role_id' => $role->id,
+        ]);
+    }
+
+    public function test_ar_ap_and_treasury_officer_global_roles_do_not_bypass_wholesale_http_channel(): void
+    {
+        $admin = $this->userWithGlobalRole('SUPER_ADMIN', 'en', 'p135-officers-setup@example.test');
+        $store = $this->wholesaleStore('P135-OFFICER-STORE');
+
+        foreach (['finance', 'treasury'] as $module) {
+            app(EnterpriseModuleAdministration::class)->perform($module, 'enable', $admin);
+            app(ModuleEntitlementManager::class)->set($module, EntitlementScope::platform(), true);
+        }
+
+        $before = [
+            'journals' => DB::table('enterprise_finance_journals')->count(),
+            'receipts' => DB::table('enterprise_treasury_receipts')->count(),
+        ];
+
+        foreach (['AR_OFFICER', 'AP_OFFICER', 'TREASURY_OFFICER'] as $roleCode) {
+            $this->assertNotContains($roleCode, config('admin.channels.b2b.global_roles'));
+            $role = Role::query()->where('code', $roleCode)->firstOrFail();
+            $this->assertSame('global', $role->scope);
+            $this->assertTrue($role->is_active);
+            $this->assertNull($role->archived_at);
+
+            $actor = $this->userWithGlobalRole($roleCode, 'en', strtolower($roleCode).'@p135.test');
+            $this->assertTrue($actor->hasRole($roleCode));
+            $this->assertFalse($actor->hasRole($roleCode, $store->id));
+            $this->assertFalse($actor->hasPermission('finance.view', $store->id));
+            $this->assertFalse($actor->hasPermission('finance.post', $store->id));
+            $this->assertFalse($actor->hasPermission('finance.approve', $store->id));
+
+            foreach (['ar', 'en'] as $locale) {
+                $actor->forceFill(['locale' => $locale])->save();
+                foreach ([
+                    ['admin.erp.finance.index', 'accounts'],
+                    ['admin.erp.finance.index', 'payables'],
+                    ['admin.erp.finance.index', 'receivables'],
+                    ['admin.erp.treasury.index', 'receipts'],
+                ] as [$name, $tab]) {
+                    $response = $this->actingAs($actor->fresh())->get(route($name, [
+                        'store_id' => $store->id,
+                        'tab' => $tab,
+                    ]));
+                    $this->assertContains($response->status(), [403, 404]);
+                }
+            }
+        }
+
+        $this->assertSame($before['journals'], DB::table('enterprise_finance_journals')->count());
+        $this->assertSame($before['receipts'], DB::table('enterprise_treasury_receipts')->count());
     }
 
     private function wholesaleStore(string $code): Store
