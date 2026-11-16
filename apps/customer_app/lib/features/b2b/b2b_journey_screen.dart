@@ -6444,7 +6444,10 @@ class _InvoiceDetailRemoteStateState extends State<_InvoiceDetailRemoteState>
                               color: Theme.of(context).colorScheme.surface,
                               borderRadius: BorderRadius.circular(16),
                             ),
-                            child: (seller['logo_url']?.toString().trim().isNotEmpty ??
+                            child: (seller['logo_url']
+                                        ?.toString()
+                                        .trim()
+                                        .isNotEmpty ??
                                     false)
                                 ? Image.network(
                                     seller['logo_url'].toString(),
@@ -6472,13 +6475,15 @@ class _InvoiceDetailRemoteStateState extends State<_InvoiceDetailRemoteState>
                             child: Text.rich(
                               key: const ValueKey('b2b-invoice-detail-number'),
                               TextSpan(
-                                style:
-                                    Theme.of(context).textTheme.titleMedium?.copyWith(
-                                          color: Theme.of(context)
-                                              .colorScheme
-                                              .onPrimaryContainer,
-                                          fontWeight: FontWeight.w800,
-                                        ),
+                                style: Theme.of(context)
+                                    .textTheme
+                                    .titleMedium
+                                    ?.copyWith(
+                                      color: Theme.of(context)
+                                          .colorScheme
+                                          .onPrimaryContainer,
+                                      fontWeight: FontWeight.w800,
+                                    ),
                                 children: [
                                   TextSpan(
                                     text: ar ? 'رقم الفاتورة ' : 'Invoice ',
