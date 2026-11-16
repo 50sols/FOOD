@@ -114,3 +114,34 @@ Boundaries: Real Admin Settings ERP screen/route/navigation, permission registry
 **Post-review security correction:** The policy maker is not permitted to nominate an arbitrary low-privilege checker permission such as inventory.view; only the dedicated inventory_ownership_rules.review permission may be set. A negative regression confirms an attempt to downgrade the independent checker is rejected before DB writes. GCC after repair: 50 related Laravel tests / 404 assertions PASS; Pint --test all 3 touched PHP files PASS; targeted PHPStan 0 errors; git diff --check PASS. Hosted final-head MySQL/Redis Required CI must be verified independently; these local checks cannot certify full P110.
 
 **MySQL portability preflight correction:** explicit short foreign-key names eior_*_fk for every relationship in the additive policy migration to avoid MySQL/MariaDB identifier-length SQLSTATE 1059; the prior Laravel-generated supplier_document_id constraint name would exceed 64 characters. This correction is confined to a new P110-owned migration and its existing QA note, not the active P303 Finance schema. Post-fix GCC same 50 relevant Laravel tests / 404 assertions PASS, migration Pint --test PASS, PHP lint PASS, PHPStan 0 errors, git diff --check PASS. Exact-final-head MySQL/Redis CI after commit is required.
+
+
+## 2026-11-16 — signed private legal-title proof verifier (P110 source increment)
+
+The canonical read boundary now accepts a known FOODEX/supplier stock owner only if the existing
+maker/checker identity and exact inventory version reconcile **and** a single signed
+\`enterprise_inventory_title_attestations\` record binds the owner position, source
+stock revision, private file SHA-256, authorized checker, issuing trusted key ID,
+signature and expiration. Verification is RSA/ECDSA SHA-256 against an explicit
+operator-authorized public key configured on the server; it never trusts a key
+supplied by the uploaded certificate or ZIP. Private document bytes must exist
+inside the local private disk under an allowlisted path, without symlinks or path
+traversal; a digest alone is insufficient.
+
+All trust keys are intentionally absent by default, so unsigned, self-attested,
+tampered, expired, stale, or unsupported source documents **remain UNVERIFIED**.
+The signed payload includes tenant/store/warehouse/product/owner partition,
+quantities/reservations, maker/checker, evidence identity and stock update version;
+mutating these breaks signature or aggregate consistency. A positive test
+generates a test-only private signer, independently signs a private fixture,
+then checks CERTIFIED, document tampering rejection, trust-key removal rejection
+and stale owner balance rejection. No live signing key or customer document
+is included in source code or releases.
+
+**This is only an evidence-verification gate, not an active title transfer, legal
+review workflow, operational Settings UI, per-owner stock movement, Van custody,
+COGS or finance posting engine.** A real admin-managed trusted-issuer key workflow,
+document upload/certification authorization, append-only signed event source,
+owner-specific transactional stock writers and full quote/GL/Van parity remain
+mandatory before #2844 can be considered source-complete. No unsigned production
+source becomes certified. Original PR #3921 stays DRAFT and Issue #2844 OPEN.

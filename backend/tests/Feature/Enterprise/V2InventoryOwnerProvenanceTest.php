@@ -906,6 +906,82 @@ final class V2InventoryOwnerProvenanceTest extends TestCase
         $this->assertLessThanOrEqual(64, max(array_map('strlen', $names)));
     }
 
+    public function test_private_signed_title_proof_is_bound_to_owner_stock_document_and_trusted_key(): void
+    {
+        $this->seed(CoreReferenceSeeder::class);
+        $stock = $this->stock('SIGNED-LEGAL-PROOF');
+        $actor = $this->inventoryActor($stock['store_id']);
+        $checker = User::query()->create([
+            'name' => 'Independent Legal Title Checker',
+            'email' => 'title-checker@example.test',
+            'password' => 'password',
+            'is_active' => true,
+        ]);
+        $this->position($stock['inventory_id'], 'FOODEX', null, 10, 3, $actor->id, $checker->id, true);
+
+        $inventory = DB::table('inventories')->where('id', $stock['inventory_id'])->first();
+        $position = DB::table('enterprise_inventory_owner_positions')->where('inventory_id', $stock['inventory_id'])->first();
+        $verifier = app(\App\Enterprise\Wms\InventoryLegalTitleAttestationVerifier::class);
+
+        \Illuminate\Support\Facades\Storage::fake('local');
+        $path = 'inventory-title-evidence/'.Str::uuid().'.pdf';
+        $bytes = '%PDF-1.7 test-only legal title fixture; not a real certificate';
+        \Illuminate\Support\Facades\Storage::disk('local')->put($path, $bytes);
+
+        $key = openssl_pkey_new(['private_key_type' => OPENSSL_KEYTYPE_RSA, 'private_key_bits' => 2048]);
+        $this->assertNotFalse($key);
+        $details = openssl_pkey_get_details($key);
+        $this->assertIsArray($details);
+        config()->set('enterprise_inventory_title.trusted_public_keys.test-issuer', $details['key']);
+
+        $stamp = now()->subMinute()->toDateTimeString();
+        $expiry = now()->addDay()->toDateTimeString();
+        $attestation = (object) [
+            'document_kind' => 'SIGNED_CONTRACT',
+            'document_path' => $path,
+            'document_sha256' => hash('sha256', $bytes),
+            'trusted_key_id' => 'test-issuer',
+            'checked_by' => (int) $checker->id,
+            'signed_at' => $stamp,
+            'expires_at' => $expiry,
+        ];
+        $payload = $verifier->signedPayload($inventory, $position, $stock['store_id'], $attestation);
+        $this->assertTrue(openssl_sign($payload, $signature, $key, OPENSSL_ALGO_SHA256));
+        DB::table('enterprise_inventory_title_attestations')->insert([
+            'owner_position_id' => $position->id,
+            'stock_revision_sha256' => $verifier->stockRevisionSha256($inventory, $position, $stock['store_id']),
+            'document_kind' => $attestation->document_kind,
+            'document_path' => $path,
+            'document_sha256' => $attestation->document_sha256,
+            'trusted_key_id' => $attestation->trusted_key_id,
+            'signature_base64' => base64_encode($signature),
+            'checked_by' => $checker->id,
+            'signed_at' => $stamp,
+            'expires_at' => $expiry,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $read = app(InventoryOwnerProvenanceReadService::class);
+        $trusted = $read->snapshot($actor, $stock['inventory_id']);
+        $this->assertSame('CERTIFIED', $trusted['state']);
+        $this->assertTrue($trusted['certified']);
+        $this->assertTrue($trusted['positions'][0]['certified']);
+
+        \Illuminate\Support\Facades\Storage::disk('local')->put($path, 'tampered document');
+        $this->assertSame('UNVERIFIED', $read->snapshot($actor, $stock['inventory_id'])['state']);
+        \Illuminate\Support\Facades\Storage::disk('local')->put($path, $bytes);
+
+        config()->set('enterprise_inventory_title.trusted_public_keys', []);
+        $this->assertSame('UNVERIFIED', $read->snapshot($actor, $stock['inventory_id'])['state']);
+        config()->set('enterprise_inventory_title.trusted_public_keys.test-issuer', $details['key']);
+
+        DB::table('enterprise_inventory_owner_positions')->where('id', $position->id)->update([
+            'quantity' => 9,
+        ]);
+        $this->assertSame('STALE', $read->snapshot($actor, $stock['inventory_id'])['state']);
+    }
+
     /** @return array{store_id:int,inventory_id:int} */
     private function stock(string $suffix): array
     {

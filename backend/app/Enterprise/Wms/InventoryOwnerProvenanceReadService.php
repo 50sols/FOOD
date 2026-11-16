@@ -16,6 +16,7 @@ final class InventoryOwnerProvenanceReadService
 {
     public function __construct(
         private readonly WarehouseScope $warehouses,
+        private readonly InventoryLegalTitleAttestationVerifier $titleProof,
     ) {}
 
     /**
@@ -113,7 +114,7 @@ final class InventoryOwnerProvenanceReadService
                 // an independently verified, immutable legal-title document.
                 // Until the canonical provenance authority is implemented,
                 // recorded maker/checker metadata must never certify title.
-                && self::hasAuthoritativeTitleProof();
+                && $this->titleProof->verifies($inventory, $row, (int) $warehouse->store_id);
 
             // The source balance must still be the balance that was certified.
             // Ordinary inventory writers do not yet update ownership partitions.
@@ -169,16 +170,6 @@ final class InventoryOwnerProvenanceReadService
             'certified' => $certified,
             'positions' => $positions,
         ];
-    }
-
-    /**
-     * Fail closed until P110 has a real verified, immutable legal-title source.
-     * The current read-model table has no such source FK or attestation gate;
-     * free-text evidence_type/evidence_reference can be written arbitrarily.
-     */
-    private static function hasAuthoritativeTitleProof(): bool
-    {
-        return false;
     }
 
     private static function millis(mixed $value): int
