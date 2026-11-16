@@ -863,6 +863,7 @@ Route::prefix('admin')
         Route::delete('/operations/orders/{order}/driver', [OrderOperationsController::class, 'unassign'])->whereNumber('order')->name('operations.orders.unassign');
         Route::prefix('erp/treasury')->name('erp.treasury.')->group(function (): void {
             Route::get('/', [EnterpriseTreasuryController::class, 'index'])->name('index');
+            Route::post('/guarantees', [EnterpriseTreasuryController::class, 'storeGuarantee'])->middleware('throttle:30,1')->name('guarantees.store');
             Route::post('/receipts', [EnterpriseTreasuryController::class, 'storeReceipt'])->middleware('throttle:30,1')->name('receipts.store');
             Route::post('/receipts/{receipt}/post', [EnterpriseTreasuryController::class, 'postReceipt'])->whereNumber('receipt')->middleware('throttle:30,1')->name('receipts.post');
             Route::post('/receipts/{receipt}/cancel', [EnterpriseTreasuryController::class, 'cancelReceipt'])->whereNumber('receipt')->middleware('throttle:30,1')->name('receipts.cancel');
