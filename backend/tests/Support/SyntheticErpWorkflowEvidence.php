@@ -50,6 +50,7 @@ final class SyntheticErpWorkflowEvidence
             $version = $registry->manifest($code)->version;
             $attestation = [
                 'version' => $version,
+                'key_id' => 'synthetic-test',
                 'head_sha' => str_repeat('a', 40),
                 'review_issue' => 2858,
                 'ci_run' => 'https://github.com/walidatiyaai2025-gif/FOOD/actions/runs/1',
@@ -60,7 +61,6 @@ final class SyntheticErpWorkflowEvidence
                 throw new \LogicException('Invalid synthetic ERP workflow requirements.');
             }
 
-            $attestation['key_id'] = 'synthetic-test';
             $attestation['signature'] = base64_encode(sodium_crypto_sign_detached($payload, $secretKey));
             config()->set('enterprise_module_readiness.workflow_attestations.'.$code, $attestation);
         }

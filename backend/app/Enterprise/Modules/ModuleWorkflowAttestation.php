@@ -10,7 +10,8 @@ use SodiumException;
  *
  * A syntactically valid SHA, Actions URL and list of "passed" strings are
  * insufficient evidence. Verification uses a source-controlled public key;
- * private signing keys must never be shipped with the application.
+ * private signing keys must never be shipped with the application. The signer
+ * key ID itself is bound to the signature, preventing trusted-key alias replay.
  */
 final class ModuleWorkflowAttestation
 {
@@ -20,12 +21,14 @@ final class ModuleWorkflowAttestation
      */
     public static function payload(string $moduleCode, int $version, array $stages, array $attestation): ?string
     {
+        $keyId = $attestation['key_id'] ?? null;
         $sha = $attestation['head_sha'] ?? null;
         $reviewIssue = $attestation['review_issue'] ?? null;
         $ciRun = $attestation['ci_run'] ?? null;
         $checks = $attestation['checks'] ?? null;
 
         if ($moduleCode === '' || $version < 1 || ($attestation['version'] ?? null) !== $version
+            || ! is_string($keyId) || preg_match('/^[a-zA-Z0-9_.-]{1,64}$/D', $keyId) !== 1
             || ! is_string($sha) || preg_match('/^[a-f0-9]{40}$/iD', $sha) !== 1
             || ! is_int($reviewIssue) || $reviewIssue < 1
             || ! is_string($ciRun)
@@ -55,6 +58,7 @@ final class ModuleWorkflowAttestation
         try {
             return json_encode([
                 'module_code' => $moduleCode,
+                'key_id' => $keyId,
                 'version' => $version,
                 'head_sha' => $sha,
                 'review_issue' => $reviewIssue,

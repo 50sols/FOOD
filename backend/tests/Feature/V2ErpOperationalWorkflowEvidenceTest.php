@@ -151,6 +151,42 @@ final class V2ErpOperationalWorkflowEvidenceTest extends TestCase
         $this->assertSame('uncertified', $readiness->status('sample_optional', 1, ModuleState::ENABLED));
     }
 
+
+    public function test_signed_workflow_evidence_cannot_relabel_a_trusted_key_or_tamper_with_valid_looking_review_metadata(): void
+    {
+        $this->enableSample();
+        $this->requireSampleWorkflow();
+        $signed = $this->evidence();
+        $readiness = app(ModuleOperationalReadiness::class);
+
+        // A second trusted ID with the SAME public key must not be able to
+        // relabel an attestation signed for the original signer identity.
+        $publicKey = config('enterprise_module_readiness.trusted_public_keys.synthetic-test');
+        config()->set('enterprise_module_readiness.trusted_public_keys.synthetic-copy', $publicKey);
+
+        $tamperedChecks = $signed['checks'];
+        $tamperedChecks['create']['test'] = 'Forged::passing_test';
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            config()->set('enterprise_module_readiness.workflow_attestations.sample_optional', $signed);
+            $this->assertSame('ready', $readiness->status('sample_optional', 1, ModuleState::ENABLED));
+
+            foreach ([
+                ['key_id' => 'synthetic-copy'],
+                ['review_issue' => 2859],
+                ['ci_run' => 'https://github.com/walidatiyaai2025-gif/FOOD/actions/runs/2'],
+                ['checks' => $tamperedChecks],
+            ] as $mutation) {
+                config()->set('enterprise_module_readiness.workflow_attestations.sample_optional', [
+                    ...$signed,
+                    ...$mutation,
+                ]);
+                $this->assertSame('uncertified', $readiness->status('sample_optional', 1, ModuleState::ENABLED));
+            }
+        }
+    }
+
     public function test_operational_proof_never_bypasses_disabled_lifecycle_or_failing_health(): void
     {
         config()->set('enterprise_module_readiness.certified_versions.sample_optional', 1);
