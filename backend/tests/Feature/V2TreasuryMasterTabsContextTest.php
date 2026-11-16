@@ -58,7 +58,7 @@ final class V2TreasuryMasterTabsContextTest extends TestCase
                 }
                 parse_str((string) parse_url($url, PHP_URL_QUERY), $query);
                 if (in_array($query['tab'] ?? null, ['cashboxes', 'bank_accounts'], true)
-                    && ! isset($query['create'], $query['edit_cashbox'], $query['edit_bank_account'])
+                    && ! isset($query['create']) && ! isset($query['edit_cashbox']) && ! isset($query['edit_bank_account'])
                     && ($query['q'] ?? null) === 'B-CONTEXT') {
                     $matchingTabs[(string) $query['tab']] = $query;
                 }
@@ -181,6 +181,25 @@ final class V2TreasuryMasterTabsContextTest extends TestCase
         $this->assertDatabaseHas('enterprise_cashboxes', [
             'store_id' => $store->id,
             'code' => 'C-NEW',
+        ]);
+
+        $bankRecord = EnterpriseBankAccount::query()->where('store_id', $store->id)->where('code', 'B-NEW')->firstOrFail();
+        $cashRecord = EnterpriseCashbox::query()->where('store_id', $store->id)->where('code', 'C-NEW')->firstOrFail();
+        $this->actingAs($actor)->patch(route('admin.treasury.bank-accounts.update', ['bankAccount' => $bankRecord->id]), [
+            ...$valid, 'name' => 'Updated account', 'account_reference' => '',
+        ])->assertRedirect(route('admin.treasury.master.index', [
+            'tab' => 'bank_accounts', 'store_id' => $store->id,
+        ]));
+        $this->actingAs($actor)->patch(route('admin.treasury.cashboxes.update', ['cashbox' => $cashRecord->id]), [
+            ...$cashbox, 'name' => 'Updated cashbox',
+        ])->assertRedirect(route('admin.treasury.master.index', [
+            'tab' => 'cashboxes', 'store_id' => $store->id,
+        ]));
+        $this->assertDatabaseHas('enterprise_bank_accounts', [
+            'id' => $bankRecord->id, 'store_id' => $store->id, 'name' => 'Updated account',
+        ]);
+        $this->assertDatabaseHas('enterprise_cashboxes', [
+            'id' => $cashRecord->id, 'store_id' => $store->id, 'name' => 'Updated cashbox',
         ]);
     }
 
