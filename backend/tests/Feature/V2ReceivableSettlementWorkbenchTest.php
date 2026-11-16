@@ -701,7 +701,7 @@ final class V2ReceivableSettlementWorkbenchTest extends TestCase
         try {
             $migration->down();
             $this->fail('Populated AR invoice lineage must refuse schema rollback.');
-        } catch (\\RuntimeException $exception) {
+        } catch (\RuntimeException $exception) {
             $this->assertSame(
                 'Refusing to drop enterprise_ar_documents.source_invoice_id while financial invoice source links exist.',
                 $exception->getMessage(),
@@ -844,7 +844,7 @@ final class V2ReceivableSettlementWorkbenchTest extends TestCase
         try {
             $migration->down();
             $this->fail('Populated AR collection lineage must refuse schema rollback.');
-        } catch (\\RuntimeException $exception) {
+        } catch (\RuntimeException $exception) {
             $this->assertSame(
                 'Refusing to drop enterprise_ar_allocations.source_collection_allocation_id while linked collection settlements exist.',
                 $exception->getMessage(),
