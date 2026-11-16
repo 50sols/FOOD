@@ -148,7 +148,7 @@ void main() {
                     channel: CustomerChannel.b2b,
                     requiresAuth: true,
                   ),
-                  location: '/b2b/reports/purchases?store_id=${storeId}',
+                  location: '/b2b/reports/purchases?store_id=$storeId',
                   actionApi: actionApi,
                   api: api,
                 ),
