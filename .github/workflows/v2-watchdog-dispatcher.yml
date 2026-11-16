@@ -26,7 +26,7 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: Checkout immutable reviewed V2 watchdog source
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           # Deliberately NOT a mutable Foodex_V2 ref. The privileged worker
           # must never execute newly pushed feature-branch code automatically.
@@ -43,7 +43,7 @@ jobs:
           node --test watchdog-source/.github/scripts/v2-lease-watchdog.test.js watchdog-source/.github/scripts/v2-lease-watchdog.reconciliation.test.js
 
       - name: Execute narrowly scoped V2 issue lease reconciler
-        uses: actions/github-script@v7
+        uses: actions/github-script@v8
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
