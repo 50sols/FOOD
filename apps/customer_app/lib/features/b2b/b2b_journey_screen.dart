@@ -2712,6 +2712,9 @@ class _PurchaseReportRemoteStateState
     extends State<_PurchaseReportRemoteState> {
   late Future<Object?> _future;
   Map<Object?, Object?>? _lastData;
+  int _readRevision = 0;
+  B2bApi? _readApi;
+  String? _readPath;
   _PurchaseReportPeriod _period = _PurchaseReportPeriod.all;
   DateTime? _from;
   DateTime? _to;
@@ -2733,9 +2736,22 @@ class _PurchaseReportRemoteStateState
   }
 
   Future<Object?> _load() async {
-    final value = await _loadB2bRemote(widget.api, _requestEndpoint());
+    // A new Customer session, store, filter or page cannot display an old
+    // report or allow a delayed previous request to overwrite its cache.
+    final revision = ++_readRevision;
+    final api = widget.api;
+    final path = _requestEndpoint();
+    final scopeChanged = !identical(_readApi, api) || _readPath != path;
+    _readApi = api;
+    _readPath = path;
+    if (scopeChanged) _lastData = null;
+
+    final value = await _loadB2bRemote(api, path);
+    if (!mounted || revision != _readRevision) return null;
     if (value is Map) {
       _lastData = Map<Object?, Object?>.from(value);
+    } else {
+      _lastData = null;
     }
     return value;
   }
@@ -2841,9 +2857,14 @@ class _PurchaseReportRemoteStateState
             return _B2bRemoteErrorCard(error: snapshot.error, onRetry: _reload);
           }
 
-          final fresh = snapshot.data is Map
-              ? Map<Object?, Object?>.from(snapshot.data as Map)
-              : null;
+          // FutureBuilder can retain prior-future snapshot data while a
+          // different-scope request is waiting. Only a completed request
+          // may be considered fresh for this scope.
+          Map<Object?, Object?>? fresh;
+          if (snapshot.connectionState == ConnectionState.done &&
+              snapshot.data is Map) {
+            fresh = Map<Object?, Object?>.from(snapshot.data as Map);
+          }
           final data = fresh ?? _lastData;
           if (data == null) {
             return Card(
@@ -3447,7 +3468,8 @@ class _PurchaseTrendBars extends StatelessWidget {
           scrollDirection: Axis.horizontal,
           child: Row(
             children: rows.map((row) {
-              final value = _reportDouble(row['purchase_total']);
+              final amount = _reportFiniteDouble(row['purchase_total']);
+              final value = amount ?? 0;
               final period = row['period']?.toString() ?? '';
               return SizedBox(
                 key: ValueKey('b2b-purchases-bar-$period'),
@@ -3457,7 +3479,7 @@ class _PurchaseTrendBars extends StatelessWidget {
                   child: Column(
                     children: [
                       Text(
-                        _reportCompactNumber(value),
+                        amount == null ? '—' : _reportCompactNumber(value),
                         style: Theme.of(context)
                             .textTheme
                             .labelSmall
@@ -3526,7 +3548,7 @@ class _PurchaseCategoryDistribution extends StatelessWidget {
           final row = entry.value;
           final color = FoodexChartPalette
               .series[entry.key % FoodexChartPalette.series.length];
-          final percentage = _reportDouble(row['percentage']);
+          final percentage = _reportFiniteDouble(row['percentage']);
           return Padding(
             padding: const EdgeInsets.symmetric(vertical: 5),
             child: Row(
@@ -3555,7 +3577,7 @@ class _PurchaseCategoryDistribution extends StatelessWidget {
                   ),
                 ),
                 Text(
-                  '${percentage.toStringAsFixed(1)}% · '
+                  '${percentage == null ? '—' : '${percentage.toStringAsFixed(1)}%'} · '
                   '${_reportMoney(row['purchase_total'], currency)}',
                   style: Theme.of(context).textTheme.bodySmall?.copyWith(
                         fontSize:
@@ -3584,11 +3606,20 @@ List<Map<Object?, Object?>> _reportRows(Object? value) => value is List
         .toList(growable: false)
     : const <Map<Object?, Object?>>[];
 
-double _reportDouble(Object? value) =>
-    value is num ? value.toDouble() : double.tryParse('$value') ?? 0;
+double? _reportFiniteDouble(Object? value) {
+  if (value is! num && value is! String) return null;
+  final amount = value is num ? value.toDouble() : double.tryParse(value.trim());
+  return amount != null && amount.isFinite ? amount : null;
+}
 
-String _reportMoney(Object? value, String currency) =>
-    foodexMoneyText(_reportDouble(value), currency);
+// The chart geometry may use zero as a harmless empty bar, but displayed
+// financial totals must never turn an unknown or nonfinite value into money.
+double _reportDouble(Object? value) => _reportFiniteDouble(value) ?? 0;
+
+String _reportMoney(Object? value, String currency) {
+  final amount = _reportFiniteDouble(value);
+  return amount == null ? '—' : foodexMoneyText(amount, currency);
+}
 
 String _reportCompactNumber(double value) {
   if (value.abs() >= 1000000) {
