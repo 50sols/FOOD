@@ -1394,6 +1394,61 @@ final class V2ReceivableSettlementWorkbenchTest extends TestCase
             'finance_account_id' => $fixture['cash_account_id'],
         ];
 
+        // The existing Save form also has a write-free Test action: both
+        // languages surface a real preflight, not a false approval or posting.
+        $mappingRoute = route('admin.erp.finance.receivables.mappings.propose');
+        $auditBeforeTest = DB::table('audit_logs')
+            ->where('event', 'enterprise.finance.collection_account_mapping_proposed')->count();
+        foreach (['ar', 'en'] as $locale) {
+            $maker->forceFill(['locale' => $locale])->save();
+            $this->actingAs($maker->fresh())->get(route('admin.erp.finance.index', [
+                'store_id' => $store->id, 'tab' => 'receivables',
+            ]))->assertOk()
+                ->assertSee(__('finance_workbench.receivables.mapping_test', [], $locale))
+                ->assertSee(__('finance_workbench.receivables.mapping_test_help', [], $locale))
+                ->assertSee('name="mapping_action" value="test"', false);
+            $this->actingAs($maker->fresh())->post($mappingRoute, [
+                ...$payload, 'mapping_action' => 'test',
+            ])->assertRedirect()->assertSessionHasNoErrors()
+                ->assertSessionHas('success', __('finance_workbench.messages.mapping_tested', [], $locale));
+        }
+        $this->assertDatabaseCount('enterprise_finance_collection_account_mappings', 0);
+        $this->assertSame($auditBeforeTest, DB::table('audit_logs')
+            ->where('event', 'enterprise.finance.collection_account_mapping_proposed')->count());
+        $this->assertDatabaseCount('enterprise_ar_allocations', 0);
+        $this->assertDatabaseCount('enterprise_finance_source_postings', 0);
+
+        // A forbidden form operation cannot silently become a Save, and
+        // direct HTTP Test checks the same account/role/store constraints.
+        $this->actingAs($maker)->post($mappingRoute, [
+            ...$payload, 'mapping_action' => 'approve',
+        ])->assertSessionHasErrors('mapping_action');
+        $this->actingAs($maker)->post($mappingRoute, [
+            ...$payload, 'mapping_action' => 'test',
+            'finance_account_id' => $fixture['document']->offset_account_id,
+        ])->assertSessionHasErrors('finance_account_id');
+        $wallet->forceFill(['status' => 'inactive'])->save();
+        $this->actingAs($maker)->post($mappingRoute, [
+            ...$payload, 'mapping_action' => 'test',
+        ])->assertSessionHasErrors('collection_account_id');
+        $wallet->forceFill(['status' => 'active'])->save();
+
+        $foreign = $this->retailStore('P303-MAP-TEST-FOREIGN');
+        $foreignWallet = CollectionAccount::query()->create([
+            'actor_type' => 'driver',
+            'actor_id' => $driverId,
+            'store_id' => $foreign->id,
+            'currency' => 'KWD',
+            'status' => 'active',
+        ]);
+        $this->actingAs($maker)->post($mappingRoute, [
+            ...$payload, 'mapping_action' => 'test',
+            'collection_account_id' => $foreignWallet->id,
+        ])->assertNotFound();
+        $this->assertDatabaseCount('enterprise_finance_collection_account_mappings', 0);
+        $this->assertSame($auditBeforeTest, DB::table('audit_logs')
+            ->where('event', 'enterprise.finance.collection_account_mapping_proposed')->count());
+
         $this->actingAs($maker)->post(
             route('admin.erp.finance.receivables.mappings.propose'), $payload,
         )->assertSessionHasNoErrors()->assertRedirect();
