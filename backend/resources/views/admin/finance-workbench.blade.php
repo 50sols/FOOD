@@ -170,6 +170,7 @@ $kpis = array_values(array_filter(
             3 => (bool) ($access['ar_read'] ?? false),
             4 => (bool) ($access['ap_read'] ?? false),
             5 => (bool) ($access['gl_read'] ?? false),
+            6 => (bool) (($access['approval_request'] ?? false) || ($access['approval_decide'] ?? false)),
             7, 8, 9 => (bool) ($access['reports_read'] ?? false),
             default => true,
         };
@@ -199,7 +200,7 @@ $trendMax=max(1,max(array_map(fn($r)=>max(abs((float)$r['revenue']),abs((float)$
 @foreach($kpis as $metric) @include('admin._module-dashboard-kpi',['metric'=>$metric]) @endforeach
 </div>
 <div class="foodex-module-panels">
-@if($legalEntityReports)
+@if($legalEntityReports && ($access['reports_read'] ?? false))
 <article class="foodex-viz-card foodex-module-chart" data-foodex-module-chart="finance-pnl">
 <div class="foodex-viz-header"><div><h2 class="foodex-viz-title">{{ __('finance_workbench.dashboard.pnl_trend') }}</h2><p class="foodex-viz-subtitle">{{ __('finance_workbench.dashboard.pnl_trend_help') }}</p></div></div>
 @if($data['trend']===[])
@@ -220,15 +221,15 @@ $trendMax=max(1,max(array_map(fn($r)=>max(abs((float)$r['revenue']),abs((float)$
 @endif
 <article class="foodex-viz-card foodex-module-chart">
 <div class="foodex-viz-header"><div><h2 class="foodex-viz-title">{{ __('finance_workbench.dashboard.aging') }}</h2><p class="foodex-viz-subtitle">{{ __('finance_workbench.dashboard.aging_help') }}</p></div></div>
-<div class="foodex-module-chart-table-wrap"><table class="foodex-module-chart-table"><thead><tr><th>{{ __('finance_workbench.common.aging_bucket') }}</th><th>{{ __('finance_workbench.dashboard.ar') }}</th><th>{{ __('finance_workbench.dashboard.ap') }}</th></tr></thead><tbody>
+<div class="foodex-module-chart-table-wrap"><table class="foodex-module-chart-table"><thead><tr><th>{{ __('finance_workbench.common.aging_bucket') }}</th>@if($access['ar_read'] ?? false)<th>{{ __('finance_workbench.dashboard.ar') }}</th>@endif@if($access['ap_read'] ?? false)<th>{{ __('finance_workbench.dashboard.ap') }}</th>@endif</tr></thead><tbody>
 @foreach(['current','1_30','31_60','61_90','91_plus'] as $bucket)
 @php $arRow=collect($data['aging']['ar'])->firstWhere('bucket',$bucket); $apRow=collect($data['aging']['ap'])->firstWhere('bucket',$bucket); @endphp
-<tr><td>{{ $statusLabel($bucket) }}</td><td class="finance-money">{{ $money($arRow['amount'] ?? 0) }}</td><td class="finance-money">{{ $money($apRow['amount'] ?? 0) }}</td></tr>
+<tr><td>{{ $statusLabel($bucket) }}</td>@if($access['ar_read'] ?? false)<td class="finance-money">{{ $money($arRow['amount'] ?? 0) }}</td>@endif@if($access['ap_read'] ?? false)<td class="finance-money">{{ $money($apRow['amount'] ?? 0) }}</td>@endif</tr>
 @endforeach
 </tbody></table></div>
 </article>
 </div>
-@if($legalEntityReports)
+@if($legalEntityReports && ($access['reports_read'] ?? false))
 <div class="finance-subgrid">
 <section class="finance-panel"><div class="finance-panel-head"><div><h2>{{ __('finance_workbench.dashboard.expense_centers') }}</h2><p>{{ __('finance_workbench.dashboard.expense_centers_help') }}</p></div></div>
 <div class="finance-table-wrap"><table class="finance-table"><thead><tr><th>{{ __('finance_workbench.common.code') }}</th><th>{{ __('finance_workbench.common.name') }}</th><th>{{ __('finance_workbench.common.amount') }}</th></tr></thead><tbody>
