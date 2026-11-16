@@ -101,7 +101,7 @@ final class StockReservationService
 
             // The canonical row is locked in this transaction. Synchronize only
             // wholly UNKNOWN title; a claimed FOODEX/supplier owner stays stale.
-            $this->ownerProjection->afterUnattributedInventoryMutation((int) $inventory->getKey());
+            $this->ownerProjection->afterReservationMutation($inventory);
 
             DB::table('stock_movements')->insert([
                 'inventory_id' => $inventory->getKey(),

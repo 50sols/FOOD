@@ -15,6 +15,77 @@ use LogicException;
  */
 final class UnknownInventoryOwnerProjection
 {
+    /**
+     * Keep reservation hot paths within their SQL query budget while preserving
+     * the legal-title fail-closed boundary. The caller holds the canonical
+     * inventory row lock; the single conditional upsert touches only UNKNOWN
+     * title when it is the sole position (or there are no positions yet).
+     * Known/mixed owner positions remain deliberately stale.
+     */
+    public function afterReservationMutation(Inventory $lockedInventory): void
+    {
+        $inventoryId = (int) $lockedInventory->getKey();
+        if ($inventoryId < 1 || ! $lockedInventory->exists || DB::transactionLevel() < 1) {
+            throw new LogicException('Reservation owner projection requires the locked canonical stock transaction.');
+        }
+
+        // A single statement is essential: the existing WMS reservation
+        // performance contract allows no extra SELECT+INSERT/UPDATE sequence.
+        // Use the already-locked canonical snapshot, never user-supplied stock.
+        $sql = <<<'SQL'
+INSERT INTO enterprise_inventory_owner_positions (
+    inventory_id, owner_key, owner_kind, supplier_id, quantity, reserved_quantity,
+    source_inventory_updated_at, created_at, updated_at
+)
+SELECT ?, 'UNKNOWN', 'UNKNOWN', NULL, ?, ?, ?, ?, ?
+FROM (SELECT 1 AS seed) AS projection_seed
+LEFT JOIN enterprise_inventory_owner_positions AS existing
+    ON existing.inventory_id = ?
+GROUP BY projection_seed.seed
+HAVING COUNT(existing.id) = 0
+    OR (
+        COUNT(existing.id) = 1
+        AND MIN(existing.owner_key) = 'UNKNOWN'
+        AND MIN(existing.owner_kind) = 'UNKNOWN'
+        AND COUNT(existing.supplier_id) = 0
+    )
+SQL;
+
+        $driver = DB::connection()->getDriverName();
+        if (in_array($driver, ['mysql', 'mariadb'], true)) {
+            $sql .= <<<'SQL'
+
+ON DUPLICATE KEY UPDATE
+    quantity = VALUES(quantity),
+    reserved_quantity = VALUES(reserved_quantity),
+    source_inventory_updated_at = VALUES(source_inventory_updated_at),
+    updated_at = VALUES(updated_at)
+SQL;
+        } elseif (in_array($driver, ['sqlite', 'pgsql'], true)) {
+            $sql .= <<<'SQL'
+
+ON CONFLICT (inventory_id, owner_key) DO UPDATE SET
+    quantity = excluded.quantity,
+    reserved_quantity = excluded.reserved_quantity,
+    source_inventory_updated_at = excluded.source_inventory_updated_at,
+    updated_at = excluded.updated_at
+SQL;
+        } else {
+            throw new LogicException('Unsupported inventory owner projection database driver.');
+        }
+
+        $now = now();
+        DB::statement($sql, [
+            $inventoryId,
+            $lockedInventory->quantity,
+            $lockedInventory->reserved_quantity,
+            $lockedInventory->updated_at,
+            $now,
+            $now,
+            $inventoryId,
+        ]);
+    }
+
     public function afterProcurementMutation(Inventory $inventory): void
     {
         $this->afterUnattributedInventoryMutation((int) $inventory->getKey());

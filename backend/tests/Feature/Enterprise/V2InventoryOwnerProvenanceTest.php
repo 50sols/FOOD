@@ -592,6 +592,46 @@ final class V2InventoryOwnerProvenanceTest extends TestCase
         $this->assertFalse($snapshot['certified']);
     }
 
+    public function test_wms_reservation_does_not_refresh_unknown_when_mixed_legal_title_is_present(): void
+    {
+        $this->seed(CoreReferenceSeeder::class);
+        $stock = $this->stock('RESERVE-MIXED');
+        $actor = $this->inventoryActor($stock['store_id']);
+        $checker = User::query()->create([
+            'name' => 'Mixed Title Checker',
+            'email' => 'p110-reservation-mixed-title-checker@example.test',
+            'password' => 'password',
+            'is_active' => true,
+        ]);
+        $this->position($stock['inventory_id'], 'UNKNOWN', null, 6, 2, $actor->id, $checker->id, false);
+        $this->position($stock['inventory_id'], 'FOODEX', null, 4, 1, $actor->id, $checker->id, true);
+        $inventory = DB::table('inventories')->where('id', $stock['inventory_id'])
+            ->first(['warehouse_id', 'product_id']);
+
+        app(StockReservationService::class)->ensureReservation(
+            $actor, (int) $inventory->warehouse_id, (int) $inventory->product_id,
+            2.0, 'p110_mixed_title_reservation', 1102848,
+        );
+
+        $this->assertDatabaseHas('inventories', [
+            'id' => $stock['inventory_id'], 'quantity' => 10, 'reserved_quantity' => 5,
+        ]);
+        $this->assertDatabaseHas('enterprise_inventory_owner_positions', [
+            'inventory_id' => $stock['inventory_id'], 'owner_key' => 'UNKNOWN',
+            'quantity' => 6, 'reserved_quantity' => 2,
+        ]);
+        $this->assertDatabaseHas('enterprise_inventory_owner_positions', [
+            'inventory_id' => $stock['inventory_id'], 'owner_key' => 'FOODEX',
+            'quantity' => 4, 'reserved_quantity' => 1,
+        ]);
+        $this->assertSame(2, DB::table('enterprise_inventory_owner_positions')
+            ->where('inventory_id', $stock['inventory_id'])->count());
+        $snapshot = app(InventoryOwnerProvenanceReadService::class)
+            ->snapshot($actor, $stock['inventory_id']);
+        $this->assertSame('STALE', $snapshot['state']);
+        $this->assertFalse($snapshot['certified']);
+    }
+
     public function test_other_store_inventory_is_never_exposed_through_owner_read_service(): void
     {
         $this->seed(CoreReferenceSeeder::class);
