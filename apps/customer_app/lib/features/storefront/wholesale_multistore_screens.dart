@@ -2499,11 +2499,11 @@ class _WholesaleProductCardState extends State<_WholesaleProductCard> {
     final amount = row['account_price'] ?? row['unit_price'] ?? row['price'];
     // A missing or malformed server price is unknown, not a genuine zero.
     // Display validation only: the quote/checkout API owns final pricing.
-    final displayAmount = switch (amount) {
-      num value => value.toDouble(),
-      String value => double.tryParse(value.trim()),
-      _ => null,
-    };
+    final displayAmount = amount is num
+        ? amount.toDouble()
+        : amount is String
+            ? double.tryParse(amount.trim())
+            : null;
     final priceLabel =
         displayAmount == null || !displayAmount.isFinite || displayAmount < 0
             ? '—'
