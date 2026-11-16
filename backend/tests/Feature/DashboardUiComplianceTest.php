@@ -273,7 +273,7 @@ class DashboardUiComplianceTest extends TestCase
         $this->assertIsString($sidebar);
         $this->assertStringContainsString("@include('admin._sidebar',['sidebarDefaultCollapsed'=>true])", $view);
         $this->assertStringContainsString('const defaultCollapsed = @json((bool)($sidebarDefaultCollapsed ?? false));', $sidebar);
-        $this->assertStringContainsString("setExpanded(compactMedia.matches || (!defaultCollapsed && localStorage.getItem(stateKey) === '1'), false);", $sidebar);
+        $this->assertStringContainsString("setExpanded(compactMedia.matches || (!defaultCollapsed && readPreference(stateKey) === '1'), false);", $sidebar);
     }
 
     public function test_order_management_grid_has_internal_lines_and_borderless_status_controls(): void
