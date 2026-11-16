@@ -4,10 +4,12 @@ namespace Tests\Feature;
 
 use App\Models\B2bAccount;
 use App\Models\B2bCustomer;
+use App\Models\CollectionAccount;
 use App\Models\Customer;
 use App\Models\Invoice;
 use App\Models\User;
 use App\Services\B2bAccountLedgerService;
+use App\Services\CollectionCustodyService;
 use App\Services\CustomerDomainResolver;
 use App\Services\WholesalePrincipal;
 use Database\Seeders\CoreReferenceSeeder;
@@ -304,6 +306,109 @@ final class B2bAccountLedgerContractTest extends TestCase
 
         $this->assertSame('issued', $invoice->fresh()->status);
         $this->assertDatabaseHas('payments', ['id' => $capturedId, 'status' => 'captured']);
+    }
+
+    public function test_real_van_multi_invoice_collection_allocates_exact_mills_once_in_credit_statement_and_customer_api(): void
+    {
+        [$user, $legacyCustomer, $customer, $storeId] = $this->account(200);
+        $first = $this->invoice($legacyCustomer->id, $customer->id, $storeId, 80, now()->addWeek());
+        $second = $this->invoice($legacyCustomer->id, $customer->id, $storeId, 50, now()->addWeek());
+
+        $wallet = CollectionAccount::query()->create([
+            'actor_type' => 'van_rep',
+            'actor_id' => $user->getKey(),
+            'store_id' => $storeId,
+            'currency' => 'EGP',
+            'status' => 'active',
+        ]);
+        $custody = app(CollectionCustodyService::class);
+        $allocationRequest = [
+            ['invoice_id' => $first->id, 'amount' => 30.001],
+            ['invoice_id' => $second->id, 'amount' => 20.000],
+        ];
+        $receipt = $custody->collect(
+            $wallet, $user, 'p303-van-split-collection-1', 50.001, 'EGP', 'van_app',
+            $allocationRequest,
+        );
+        $replay = $custody->collect(
+            $wallet, $user, 'p303-van-split-collection-1', 50.001, 'EGP', 'van_app',
+            $allocationRequest,
+        );
+        $this->assertSame($receipt->id, $replay->id);
+        $this->assertDatabaseHas('payments', ['id' => $receipt->payment_id, 'invoice_id' => null]);
+        $this->assertSame(2, DB::table('collection_allocations')
+            ->where('collection_transaction_id', $receipt->id)->count());
+
+        $ledger = app(B2bAccountLedgerService::class);
+        $this->assertSame(30.001, $ledger->invoiceAmounts($first)['paid_amount']);
+        $this->assertSame(49.999, $ledger->invoiceAmounts($first)['outstanding_amount']);
+        $this->assertSame(20.0, $ledger->invoiceAmounts($second)['paid_amount']);
+        $this->assertSame(30.0, $ledger->invoiceAmounts($second)['outstanding_amount']);
+        $summary = $ledger->summary($customer, $storeId);
+        $this->assertSame(50.001, $summary['total_credits']);
+        $this->assertSame(-79.999, $summary['balance']);
+        $this->assertSame(79.999, $summary['open_amount']);
+        $statement = $ledger->statement($customer, null, null, $storeId);
+        $splitRows = collect($statement['transactions'])
+            ->where('source', 'field_collection_allocation')
+            ->values();
+        $this->assertCount(2, $splitRows);
+        $this->assertSame(30.001, $splitRows[0]['credit']);
+        $this->assertSame(20.0, $splitRows[1]['credit']);
+
+        Sanctum::actingAs($user);
+        $this->getJson('/api/v1/b2b/invoices/'.$first->id.'?store_id='.$storeId)
+            ->assertOk()
+            ->assertJsonPath('data.paid_amount', 30.001)
+            ->assertJsonPath('data.outstanding_amount', 49.999)
+            ->assertJsonPath('data.payments.0.id', $receipt->payment_id)
+            ->assertJsonPath('data.payments.0.amount', 30.001);
+        $this->getJson('/api/v1/b2b/invoices/'.$second->id.'?store_id='.$storeId)
+            ->assertOk()
+            ->assertJsonPath('data.paid_amount', 20)
+            ->assertJsonPath('data.outstanding_amount', 30)
+            ->assertJsonPath('data.payments.0.id', $receipt->payment_id)
+            ->assertJsonPath('data.payments.0.amount', 20);
+        $this->getJson('/api/v1/b2b/account-summary?store_id='.$storeId)
+            ->assertOk()
+            ->assertJsonPath('data.total_credits', 50.001)
+            ->assertJsonPath('data.outstanding_receivable', 79.999);
+        $this->getJson('/api/v1/b2b/invoices/'.$first->id.'?store_id='.($storeId + 10000))
+            ->assertNotFound();
+
+        // The entire receipt becomes invalid if even one allocation's
+        // persisted currency is forged; the bad line must not count.
+        $sourceId = DB::table('collection_allocations')
+            ->where('collection_transaction_id', $receipt->id)
+            ->where('invoice_id', $first->id)
+            ->value('id');
+        DB::table('collection_allocations')->where('id', $sourceId)
+            ->update(['currency' => 'KWD']);
+        $this->assertSame(0.0, $ledger->invoiceAmounts($first)['paid_amount']);
+        $this->assertSame(20.0, $ledger->invoiceAmounts($second)['paid_amount']);
+        DB::table('collection_allocations')->where('id', $sourceId)
+            ->update(['currency' => 'EGP']);
+
+        // A posted reversal must remove the original field receipt from
+        // readback without producing a second payment or a Finance journal.
+        DB::table('collection_transactions')->insert([
+            'collection_account_id' => $wallet->id,
+            'payment_id' => null,
+            'idempotency_key' => 'p303-van-split-reversal-1',
+            'type' => 'reversal',
+            'status' => 'posted',
+            'amount' => '-50.001',
+            'currency' => 'EGP',
+            'source' => 'van_app',
+            'reversal_of_id' => $receipt->id,
+            'created_by' => $user->id,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        $this->assertSame(0.0, $ledger->invoiceAmounts($first)['paid_amount']);
+        $this->assertSame(0.0, $ledger->invoiceAmounts($second)['paid_amount']);
+        $this->assertSame(0.0, $ledger->summary($customer, $storeId)['total_credits']);
+        $this->assertSame(1, DB::table('payments')->where('id', $receipt->payment_id)->count());
     }
 
     public function test_opening_notes_returns_and_adjustments_are_append_only_supported_types(): void

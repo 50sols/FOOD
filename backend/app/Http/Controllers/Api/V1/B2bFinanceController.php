@@ -472,6 +472,8 @@ class B2bFinanceController extends Controller
                     'currency' => (string) ($payment->currency ?: $invoice->currency),
                     'paid_at' => $payment->created_at,
                 ])
+                ->concat($this->ledger->splitFieldCollectionPaymentsForInvoice($invoice))
+                ->sortBy(static fn (array $row): string => (string) $row['paid_at'])
                 ->values();
             $payload['ledger_entries'] = $this->ledger->invoiceLedgerEntries($invoice)->values();
         }
