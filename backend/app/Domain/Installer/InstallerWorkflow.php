@@ -266,20 +266,36 @@ final class InstallerWorkflow
         // rerunning migrate merely to diagnose a 422 can hit a partially
         // created table and disguise the original failure (or mutate data).
         $output = new BufferedOutput;
-        if (Artisan::call('migrate', ['--force' => true], $output) !== 0) {
-            $diagnostic = $output->fetch();
-            preg_match('/SQLSTATE\\[([A-Z0-9]{5})\\]/', $diagnostic, $sqlState);
-            preg_match('/\\b([0-9]{4}_[0-9]{2}_[0-9]{2}_[0-9]{6}_[a-z0-9_]+)\\b/i', $diagnostic, $migration);
 
-            // Preserve only a fixed SQLSTATE and migration filename. Never log
-            // raw SQL, connection details, passwords or the command output.
-            Log::error('Installer migration failed', [
-                'sqlstate' => $sqlState[1] ?? 'unknown',
-                'migration' => $migration[1] ?? 'unknown',
-            ]);
+        try {
+            $exitCode = Artisan::call('migrate', ['--force' => true], $output);
+        } catch (Throwable $exception) {
+            // Some database/console failures throw before Artisan returns an
+            // exit code. Preserve only the same allowlisted metadata; never
+            // expose the exception, SQL, connection details or credentials.
+            $this->logSanitizedMigrationFailure($output->fetch()."\n".$exception->getMessage());
 
             throw new RuntimeException((string) __('installer.errors.migrations'));
         }
+
+        if ($exitCode !== 0) {
+            $this->logSanitizedMigrationFailure($output->fetch());
+
+            throw new RuntimeException((string) __('installer.errors.migrations'));
+        }
+    }
+
+    private function logSanitizedMigrationFailure(string $diagnostic): void
+    {
+        preg_match('/SQLSTATE\\[([A-Z0-9]{5})\\]/', $diagnostic, $sqlState);
+        preg_match('/\\b([0-9]{4}_[0-9]{2}_[0-9]{2}_[0-9]{6}_[a-z0-9_]+)\\b/i', $diagnostic, $migration);
+
+        // Persist only a fixed SQLSTATE and migration filename. Never log raw
+        // SQL, connection details, passwords or command/exception contents.
+        Log::error('Installer migration failed', [
+            'sqlstate' => $sqlState[1] ?? 'unknown',
+            'migration' => $migration[1] ?? 'unknown',
+        ]);
     }
 
     public function seedRequiredCoreData(): void
