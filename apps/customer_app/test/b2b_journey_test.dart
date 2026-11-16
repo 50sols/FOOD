@@ -7024,7 +7024,6 @@ class _FakeWholesaleStorefrontApi implements StorefrontApi {
       const {};
 }
 
-
 class _DeferredScopedB2bReadbackApi implements B2bApi {
   final List<String> paths = <String>[];
   final List<Completer<Object?>> replies = <Completer<Object?>>[];
