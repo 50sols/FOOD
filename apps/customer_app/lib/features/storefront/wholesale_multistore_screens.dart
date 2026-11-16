@@ -2497,9 +2497,20 @@ class _WholesaleProductCardState extends State<_WholesaleProductCard> {
         ? (row['promotion'] as Map)['name']?.toString().trim()
         : row['promotion_name']?.toString().trim();
     final amount = row['account_price'] ?? row['unit_price'] ?? row['price'];
-    final priceLabel = widget.homeWholeNumberPrice
-        ? '${doubleValue(amount, 0).toStringAsFixed(0)} $currency'
-        : money(amount, currency: currency);
+    // A missing or malformed server price is unknown, not a genuine zero.
+    // Display validation only: the quote/checkout API owns final pricing.
+    final displayAmount = switch (amount) {
+      num value => value.toDouble(),
+      String value => double.tryParse(value.trim()),
+      _ => null,
+    };
+    final priceLabel = displayAmount == null ||
+            !displayAmount.isFinite ||
+            displayAmount < 0
+        ? '—'
+        : widget.homeWholeNumberPrice
+            ? '${displayAmount.toStringAsFixed(0)} $currency'
+            : money(displayAmount, currency: currency);
     final twoColumns = widget.gridColumns == 2;
     final singleColumn = widget.gridColumns == 1;
     final imageHeight = singleColumn ? 176.0 : (twoColumns ? 126.0 : 96.0);
