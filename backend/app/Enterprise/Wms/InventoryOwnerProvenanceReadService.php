@@ -91,12 +91,31 @@ final class InventoryOwnerProvenanceReadService
         // Tenant-scoped supplier identity is for display and validation only:
         // a supplier record/name is not proof of legal title. Load the names
         // in one bounded query, not one unscoped lookup per owner partition.
-        $supplierIds = $rows->pluck('supplier_id')->filter(fn ($id) => $id !== null)
-            ->map(fn ($id) => (int) $id)->unique()->values()->all();
-        $suppliers = $supplierIds === [] ? collect() : DB::table('enterprise_suppliers')
-            ->where('store_id', (int) $warehouse->store_id)
-            ->whereIn('id', $supplierIds)
-            ->get(['id', 'name_en', 'name_ar'])->keyBy('id');
+        $supplierIds = $rows->pluck('supplier_id')
+            ->filter(fn ($id) => $id !== null)
+            ->map(fn ($id) => (int) $id)
+            ->unique()
+            ->values()
+            ->all();
+        $suppliers = collect();
+        if ($supplierIds !== []) {
+            $companyId = DB::table('enterprise_store_scopes as scope')
+                ->join('enterprise_business_units as unit', 'unit.id', '=', 'scope.business_unit_id')
+                ->join('enterprise_legal_entities as entity', 'entity.id', '=', 'unit.legal_entity_id')
+                ->where('scope.store_id', (int) $warehouse->store_id)
+                ->value('entity.company_id');
+
+            if ($companyId !== null) {
+                // Supplier identity must belong to the authorized legal
+                // company, not merely share a manually assigned store_id.
+                $suppliers = DB::table('enterprise_suppliers')
+                    ->where('store_id', (int) $warehouse->store_id)
+                    ->where('company_id', (int) $companyId)
+                    ->whereIn('id', $supplierIds)
+                    ->get(['id', 'name_en', 'name_ar'])
+                    ->keyBy('id');
+            }
+        }
 
         foreach ($rows as $row) {
             $kind = (string) $row->owner_kind;
