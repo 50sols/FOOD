@@ -5257,6 +5257,9 @@ class _B2bAccountStatementRemoteStateState
   String? _from;
   String? _to;
   String? _storeId;
+  int _readRevision = 0;
+  B2bApi? _readApi;
+  String? _readPath;
 
   @override
   void initState() {
@@ -5298,18 +5301,31 @@ class _B2bAccountStatementRemoteStateState
   }
 
   Future<void> _load() async {
+    // A new session/store/filter must never reuse the previous statement.
+    // Only a refresh of the exact same scoped request may retain last-good
+    // values with an explicit stale indicator if that refresh fails.
+    final revision = ++_readRevision;
+    final api = widget.api;
+    final path = _requestPath;
+    final scopeChanged = !identical(_readApi, api) || _readPath != path;
+    _readApi = api;
+    _readPath = path;
     if (mounted) {
       setState(() {
+        if (scopeChanged) {
+          _data = null;
+          _stale = false;
+        }
         _loading = _data == null;
         _error = null;
       });
     }
     try {
-      final value = await _loadB2bRemote(widget.api, _requestPath);
+      final value = await _loadB2bRemote(api, path);
       final envelope = value is Map ? Map<Object?, Object?>.from(value) : null;
       final raw = envelope?['data'];
       final statement = raw is Map ? Map<Object?, Object?>.from(raw) : envelope;
-      if (!mounted) return;
+      if (!mounted || revision != _readRevision) return;
       setState(() {
         _data = statement;
         _error = null;
@@ -5317,7 +5333,7 @@ class _B2bAccountStatementRemoteStateState
         _stale = false;
       });
     } catch (error) {
-      if (!mounted) return;
+      if (!mounted || revision != _readRevision) return;
       setState(() {
         _error = error;
         _loading = false;
@@ -6127,6 +6143,7 @@ class _InvoiceDetailRemoteStateState extends State<_InvoiceDetailRemoteState>
     with WidgetsBindingObserver {
   late Future<Object?> _future;
   Object? _lastGood;
+  int _readRevision = 0;
   bool _sharingPdf = false;
 
   @override
@@ -6157,8 +6174,11 @@ class _InvoiceDetailRemoteStateState extends State<_InvoiceDetailRemoteState>
   }
 
   Future<Object?> _fetch() async {
-    final value = await _loadB2bRemote(widget.api, widget.endpoint);
-    _lastGood = value;
+    final revision = ++_readRevision;
+    final api = widget.api;
+    final endpoint = widget.endpoint;
+    final value = await _loadB2bRemote(api, endpoint);
+    if (mounted && revision == _readRevision) _lastGood = value;
     return value;
   }
 
@@ -6895,6 +6915,7 @@ class _InvoicesRemoteStateState extends State<_InvoicesRemoteState>
   late TextEditingController _searchController;
   late Future<Object?> _future;
   Object? _lastGood;
+  int _readRevision = 0;
   DateTime? _from;
   DateTime? _to;
   String _status = '';
@@ -6914,6 +6935,7 @@ class _InvoicesRemoteStateState extends State<_InvoicesRemoteState>
   void didUpdateWidget(covariant _InvoicesRemoteState oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.api != widget.api || oldWidget.endpoint != widget.endpoint) {
+      _lastGood = null;
       _searchController.dispose();
       _syncFromEndpoint();
       _future = _fetch();
@@ -6966,8 +6988,11 @@ class _InvoicesRemoteStateState extends State<_InvoicesRemoteState>
   }
 
   Future<Object?> _fetch() async {
-    final value = await widget.api.get(_effectiveEndpoint());
-    _lastGood = value;
+    final revision = ++_readRevision;
+    final api = widget.api;
+    final endpoint = _effectiveEndpoint();
+    final value = await api.get(endpoint);
+    if (mounted && revision == _readRevision) _lastGood = value;
     return value;
   }
 
