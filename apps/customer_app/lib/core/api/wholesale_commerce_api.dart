@@ -211,6 +211,16 @@ class HttpWholesaleCommerceApi
           pending = _client.get(uri, headers: headers);
         }
         response = await pending.timeout(requestTimeout);
+        // Safe reads may be retried on transient upstream HTTP failures.
+        // Never replay quote, checkout, or cart mutations automatically.
+        if (method == 'GET' &&
+            attempt < attempts &&
+            (response.statusCode == 502 ||
+                response.statusCode == 503 ||
+                response.statusCode == 504)) {
+          await Future<void>.delayed(Duration(milliseconds: 200 * attempt));
+          continue;
+        }
         break;
       } on TimeoutException {
         if (attempt == attempts) {
@@ -250,11 +260,31 @@ class HttpWholesaleCommerceApi
     }
 
     if (response.statusCode < 200 || response.statusCode >= 300) {
-      final message = value is Map && value['message'] is String
-          ? value['message'] as String
-          : locale == 'en'
-              ? 'Unable to complete the request.'
-              : 'تعذر تنفيذ العملية.';
+      // Do not expose internal upstream error text or a foreign-store
+      // authorization reason through the Customer interface.
+      final String message;
+      if (response.statusCode == 401) {
+        message = locale == 'en'
+            ? 'Your session has expired. Sign in again.'
+            : 'انتهت صلاحية جلستك. سجّل الدخول مرة أخرى.';
+      } else if (response.statusCode == 403) {
+        message = locale == 'en'
+            ? 'You do not have permission to perform this action.'
+            : 'ليس لديك صلاحية لتنفيذ هذا الإجراء.';
+      } else if (response.statusCode >= 500) {
+        message = locale == 'en'
+            ? 'The server is temporarily unavailable. Try again.'
+            : 'الخادم غير متاح مؤقتًا. حاول مرة أخرى.';
+      } else {
+        final serverMessage = value is Map && value['message'] is String
+            ? (value['message'] as String).trim()
+            : '';
+        message = serverMessage.isNotEmpty
+            ? serverMessage
+            : locale == 'en'
+                ? 'Unable to complete the request.'
+                : 'تعذر تنفيذ العملية.';
+      }
       throw WholesaleCommerceException(
         message,
         statusCode: response.statusCode,
