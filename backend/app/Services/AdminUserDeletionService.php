@@ -158,14 +158,19 @@ final class AdminUserDeletionService
                 }
             }
 
-            // Polymorphic audit/identity links are not necessarily declared as
-            // foreign keys. All known model morph conventions fail closed.
-            foreach (['auditable', 'subject', 'model', 'owner', 'target', 'tokenable', 'notifiable', 'actor', 'causer', 'recipient'] as $prefix) {
-                if (! isset($columnSet[$prefix.'_type'], $columnSet[$prefix.'_id'])) {
+            // Discover every conventional morph pair, not just a fixed
+            // list: Sanctum tokenable, notifications notifiable, audit
+            // auditable and future module-specific *_type / *_id pairs.
+            foreach ($columns as $typeColumn) {
+                if (! str_ends_with($typeColumn, '_type')) {
+                    continue;
+                }
+                $prefix = substr($typeColumn, 0, -5);
+                if (! isset($columnSet[$prefix.'_id'])) {
                     continue;
                 }
                 if (DB::table($table)
-                    ->whereIn($prefix.'_type', [User::class, 'user', 'users'])
+                    ->whereIn($typeColumn, [User::class, 'App\\User', 'user', 'users'])
                     ->where($prefix.'_id', $userId)
                     ->exists()) {
                     return true;
