@@ -5719,7 +5719,13 @@ void main() {
               .data,
           '—',
         );
-        expect(tester.takeException(), isNull);
+        final layoutError = tester.takeException();
+        if (layoutError is FlutterError) {
+          // Diagnostic for the one failing compact English layout on CI.
+          // ignore: avoid_print
+          print(layoutError.toStringDeep());
+        }
+        expect(layoutError, isNull);
       },
     );
   }
