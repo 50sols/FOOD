@@ -308,7 +308,9 @@ final class ErpCenterController extends Controller
             $status = 'not_entitled';
             // Neither a platform entitlement nor one in the actor's authorized
             // store scope is effective. Do not inspect or disclose other tenants.
-            $denialReason = 'entitlement_scope';
+            $denialReason = $moduleCode === 'finance' && $this->hasUnusableFinanceScope($actor)
+                ? 'missing_scope'
+                : 'entitlement_scope';
         } else {
             $status = match ($state) {
                 ModuleState::NOT_INSTALLED, ModuleState::INSTALLED, ModuleState::ENABLING => 'setup_required',
@@ -418,6 +420,29 @@ final class ErpCenterController extends Controller
                 )) {
                     return true;
                 }
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Read-only diagnostic distinction: an effective grant without an
+     * authorized Finance legal/store context cannot create a Workbench URL.
+     */
+    private function hasUnusableFinanceScope(User $actor): bool
+    {
+        if ($this->isEntitled($actor, 'finance')) {
+            return true;
+        }
+
+        foreach (app(OperationalTenantScope::class)->allowedStoreIds($actor, 'finance.view') as $storeId) {
+            if ($actor->hasPermission('finance.view', $storeId)
+                && $this->entitlements->allows(
+                    'finance',
+                    new EntitlementScope(EntitlementScope::STORE, $storeId),
+                )) {
+                return true;
             }
         }
 

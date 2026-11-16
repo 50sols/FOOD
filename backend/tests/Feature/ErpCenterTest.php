@@ -827,6 +827,46 @@ final class ErpCenterTest extends TestCase
         }
     }
 
+
+    public function test_finance_missing_scope_has_distinct_localized_reason_and_no_denied_workbench_button(): void
+    {
+        config()->set('security.mfa.enforce_privileged', false);
+        $admin = $this->userWithGlobalRole('SUPER_ADMIN', 'en', 'p135-finance-missing-scope@example.test');
+        $this->app['env'] = 'production';
+        app(EnterpriseModuleAdministration::class)->perform('finance', 'enable', $admin);
+
+        $card = collect($this->actingAs($admin)->get(route('admin.erp.index'))
+            ->assertOk()->viewData('cards'))->firstWhere('key', 'finance');
+        $this->assertIsArray($card);
+        $this->assertSame('entitlement_scope', $card['denial_reason']);
+        $this->assertNull($card['url']);
+
+        app(ModuleEntitlementManager::class)->set('finance', EntitlementScope::platform(), true, null, $admin);
+
+        foreach (['ar' => 'rtl', 'en' => 'ltr'] as $locale => $direction) {
+            $admin->forceFill(['locale' => $locale])->save();
+            $response = $this->actingAs($admin->fresh())->get(route('admin.erp.index'));
+            $response->assertOk()
+                ->assertSee('dir="'.$direction.'"', false)
+                ->assertSee(__('admin.erp_center.denial_reasons.missing_scope', [], $locale));
+            $card = collect($response->viewData('cards'))->firstWhere('key', 'finance');
+            $this->assertIsArray($card);
+            $this->assertSame('not_entitled', $card['status']);
+            $this->assertSame('missing_scope', $card['denial_reason']);
+            $this->assertNull($card['url']);
+            $this->assertSame(1, preg_match(
+                '/<article class="foodex-card erp-module[^"]*" data-erp-key="finance".*?<\/article>/s',
+                (string) $response->getContent(),
+                $markup,
+            ));
+            $this->assertStringNotContainsString('foodex-action-primary', $markup[0]);
+            $this->assertStringNotContainsString('{"', $markup[0]);
+            $this->assertSame(0, preg_match('/\b[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\b/i', $markup[0]));
+        }
+
+        $this->assertDatabaseCount('enterprise_finance_journals', 0);
+    }
+
     private function wholesaleStore(string $code): Store
     {
         $typeId = (int) DB::table('store_types')->where('code', 'B2B')->value('id');
