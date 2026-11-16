@@ -25,7 +25,7 @@ return new class extends Migration
             $table->string('checker_permission', 96);
             $table->timestamp('effective_at');
             $table->string('status', 24)->default('DRAFT');
-            $table->uuid('request_uuid')->unique();
+            $table->uuid('request_uuid');
             $table->char('payload_sha256', 64);
             $table->foreignId('proposed_by')->constrained('users', 'id', 'eior_proposer_fk')->restrictOnDelete();
             $table->foreignId('reviewed_by')->nullable()->constrained('users', 'id', 'eior_reviewer_fk')->restrictOnDelete();
@@ -33,6 +33,7 @@ return new class extends Migration
             $table->timestamps();
 
             $table->unique(['rule_uuid', 'revision'], 'eior_rule_revision_uq');
+            $table->unique('request_uuid', 'eior_request_uuid_uq');
             $table->index(['store_id', 'channel', 'status', 'effective_at'], 'eior_active_scope_idx');
         });
     }
