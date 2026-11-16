@@ -5648,6 +5648,22 @@ void main() {
               'currency': 'KWD',
               'paid_at': '2026-10-02T10:00:00Z',
             },
+            {
+              'id': 10,
+              'method': 'field_collection',
+              'reference': 'PAY-NEGATIVE',
+              'amount': -2.0,
+              'currency': 'KWD',
+              'paid_at': '2026-10-03T10:00:00Z',
+            },
+            {
+              'id': 11,
+              'method': 'field_collection',
+              'reference': 'PAY-WRONG-CURRENCY',
+              'amount': 2.0,
+              'currency': 'USD',
+              'paid_at': '2026-10-04T10:00:00Z',
+            },
           ],
           'ledger_entries': [
             {
@@ -5707,6 +5723,14 @@ void main() {
               'debit': 0.0,
               'credit': 0.0,
               'currency': 'KWD',
+            },
+            {
+              'id': 88,
+              'type': 'credit_note',
+              'reference': 'CN-WRONG-CURRENCY',
+              'debit': 0.0,
+              'credit': 2.0,
+              'currency': 'USD',
             },
           ],
         },
@@ -5779,6 +5803,24 @@ void main() {
         findsOneWidget,
       );
       expect(find.textContaining('PAY-31'), findsOneWidget);
+      expect(
+        tester
+            .widget<Text>(
+              find.byKey(const ValueKey('b2b-invoice-payment-amount-9')),
+            )
+            .data,
+        '5.000 KWD',
+      );
+      for (final id in <int>[10, 11]) {
+        expect(
+          tester
+              .widget<Text>(
+                find.byKey(ValueKey('b2b-invoice-payment-amount-$id')),
+              )
+              .data,
+          '—',
+        );
+      }
       expect(find.byKey(const ValueKey('b2b-invoice-ledger')), findsOneWidget);
       expect(find.textContaining('CN-31'), findsOneWidget);
       final ledgerCard = find.byKey(const ValueKey('b2b-invoice-ledger'));
@@ -5792,7 +5834,7 @@ void main() {
             .data,
         'دائن 1.000 KWD',
       );
-      for (final id in <int>[82, 83, 84, 85, 86, 87]) {
+      for (final id in <int>[82, 83, 84, 85, 86, 87, 88]) {
         expect(
           tester
               .widget<Text>(

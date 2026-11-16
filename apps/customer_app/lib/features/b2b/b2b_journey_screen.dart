@@ -6179,9 +6179,1462 @@ class _InvoiceDetailRemoteStateState extends State<_InvoiceDetailRemoteState>
   }
 
   String _money(Object? value, String currency) {
+    final amount = WholesaleFinancialSummary.nonNegativeAmount(value);
+    final normalizedCurrency = currency.trim().toUpperCase();
+    if (amount == null ||
+        !RegExp(r'^[A-Z]{3}
+
+  String _displayDate(Object? value) {
+    final parsed = DateTime.tryParse(value?.toString() ?? '');
+    if (parsed == null) return '—';
+    final local = parsed.toLocal();
+    return '${local.year.toString().padLeft(4, '0')}-'
+        '${local.month.toString().padLeft(2, '0')}-'
+        '${local.day.toString().padLeft(2, '0')}';
+  }
+
+  String _statusLabel(String value, bool ar) => switch (value) {
+        'paid' => ar ? 'مسددة' : 'Settled',
+        'partially_paid' => ar ? 'مسددة جزئيًا' : 'Partially settled',
+        'overdue' => ar ? 'متأخرة السداد' : 'Overdue',
+        'cancelled' => ar ? 'ملغاة' : 'Cancelled',
+        'credited' => ar ? 'رصيد دائن' : 'Credit balance',
+        _ => ar ? 'مستحقة' : 'Due',
+      };
+
+  String _ledgerTypeLabel(String value, bool ar) =>
+      switch (value.trim().toLowerCase()) {
+        'invoice' => ar ? 'فاتورة' : 'Invoice',
+        'payment' => ar ? 'دفعة' : 'Payment',
+        'collection' => ar ? 'تحصيل' : 'Collection',
+        'credit' || 'credit_note' => ar ? 'إشعار دائن' : 'Credit note',
+        'debit' || 'debit_note' => ar ? 'إشعار مدين' : 'Debit note',
+        'adjustment' => ar ? 'تسوية' : 'Adjustment',
+        _ => ar ? 'حركة مالية' : 'Ledger entry',
+      };
+
+  Future<void> _sharePdf(Map<Object?, Object?> data) async {
+    if (_sharingPdf) return;
+    final ar = Localizations.localeOf(context).languageCode == 'ar';
+    final rawPath = data['pdf_path']?.toString() ?? '';
+    if (rawPath.isEmpty) return;
+    final documentApi = widget.api;
+    if (documentApi is! B2bDocumentApi) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            ar
+                ? 'تنزيل PDF غير متاح في وضع المعاينة.'
+                : 'PDF download is unavailable in preview mode.',
+          ),
+        ),
+      );
+      return;
+    }
+
+    final path =
+        '$rawPath${rawPath.contains('?') ? '&' : '?'}locale=${ar ? 'ar' : 'en'}';
+    final number = data['display_invoice_number']?.toString() ??
+        (data['id'] == null ? 'invoice' : 'invoice-${data['id']}');
+    setState(() => _sharingPdf = true);
+    try {
+      final bytes = await (documentApi as B2bDocumentApi).getBytes(path);
+      final name = '$number.pdf';
+      await SharePlus.instance.share(
+        ShareParams(
+          files: [
+            XFile.fromData(
+              Uint8List.fromList(bytes),
+              mimeType: 'application/pdf',
+              name: name,
+            ),
+          ],
+          fileNameOverrides: [name],
+          subject: number,
+        ),
+      );
+    } catch (_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            ar
+                ? 'تعذر تنزيل ملف الفاتورة. أعد المحاولة.'
+                : 'Invoice PDF could not be downloaded. Try again.',
+          ),
+        ),
+      );
+    } finally {
+      if (mounted) setState(() => _sharingPdf = false);
+    }
+  }
+
+  Widget _summaryRow(String label, String value, {bool strong = false}) =>
+      Padding(
+        padding: const EdgeInsets.symmetric(vertical: 4),
+        child: Row(
+          children: [
+            Expanded(child: Text(label)),
+            Text(
+              value,
+              style:
+                  strong ? const TextStyle(fontWeight: FontWeight.w800) : null,
+            ),
+          ],
+        ),
+      );
+
+  Widget _settlementMetric({
+    required String label,
+    required String value,
+    required IconData icon,
+    bool emphasized = false,
+  }) {
+    final scheme = Theme.of(context).colorScheme;
+    return Expanded(
+      child: Container(
+        constraints: const BoxConstraints(minHeight: 88),
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 12),
+        decoration: BoxDecoration(
+          color: emphasized
+              ? scheme.primaryContainer
+              : scheme.surfaceContainerHighest,
+          borderRadius: BorderRadius.circular(18),
+          border: Border.all(
+            color: emphasized ? scheme.primary : scheme.outlineVariant,
+          ),
+        ),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(
+              icon,
+              size: 20,
+              color: emphasized
+                  ? scheme.onPrimaryContainer
+                  : scheme.onSurfaceVariant,
+            ),
+            const SizedBox(height: 6),
+            Text(
+              label,
+              textAlign: TextAlign.center,
+              style: Theme.of(context).textTheme.labelMedium?.copyWith(
+                    color: emphasized ? scheme.onPrimaryContainer : null,
+                  ),
+            ),
+            const SizedBox(height: 3),
+            FittedBox(
+              fit: BoxFit.scaleDown,
+              child: Text(
+                value,
+                maxLines: 1,
+                style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                      color: emphasized ? scheme.onPrimaryContainer : null,
+                      fontWeight: FontWeight.w900,
+                    ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _body(Object? raw, {bool stale = false}) {
+    final ar = Localizations.localeOf(context).languageCode == 'ar';
+    final envelope = _map(raw);
+    final data = _map(envelope['data']);
+    if (data.isEmpty) {
+      return Card(
+        key: const ValueKey('b2b-empty'),
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Text(ar ? 'الفاتورة غير متاحة.' : 'Invoice is unavailable.'),
+        ),
+      );
+    }
+
+    final currency = data['currency']?.toString() ?? '';
+    final seller = _map(data['seller']);
+    final customer = _map(data['customer']);
+    final items = _rows(data['items']);
+    final payments = _rows(data['payments']);
+    final ledger = _rows(data['ledger_entries']);
+    final status =
+        data['display_status']?.toString() ?? data['status']?.toString() ?? '';
+    // A missing or contradictory settlement position is not a zero balance.
+    // Only the server can certify invoice debt versus customer credit.
+    final credit =
+        WholesaleFinancialSummary.nonNegativeAmount(data['credit_amount']);
+    final outstanding = WholesaleFinancialSummary.nonNegativeAmount(
+      data['outstanding_amount'],
+    );
+    final confirmedBalance = credit != null &&
+        outstanding != null &&
+        !(credit > 0.0005 && outstanding > 0.0005);
+    final hasCredit = confirmedBalance && credit > 0.0005;
+    final hasDebt = confirmedBalance && outstanding > 0.0005;
+    final rawInvoiceNumber =
+        data['display_invoice_number']?.toString().trim().isNotEmpty == true
+            ? data['display_invoice_number'].toString().trim()
+            : data['invoice_number']?.toString().trim().isNotEmpty == true
+                ? data['invoice_number'].toString().trim()
+                : data['id']?.toString() ?? '—';
+    final invoiceNumber = rawInvoiceNumber.startsWith('#')
+        ? rawInvoiceNumber.substring(1).trim()
+        : rawInvoiceNumber;
+
+    return Column(
+      key: const ValueKey('b2b-invoice-detail-data'),
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        if (stale)
+          Card(
+            key: const ValueKey('b2b-invoice-detail-stale'),
+            child: ListTile(
+              leading: const Icon(Icons.cloud_off_outlined),
+              title: Text(
+                ar
+                    ? 'تعذر التحديث؛ يتم عرض آخر بيانات فاتورة مؤكدة.'
+                    : 'Refresh failed; showing the last confirmed invoice.',
+              ),
+              trailing: IconButton(
+                onPressed: _reload,
+                icon: const Icon(Icons.refresh_rounded),
+              ),
+            ),
+          ),
+        Container(
+          key: const ValueKey('b2b-invoice-hero'),
+          padding: const EdgeInsets.all(16),
+          decoration: BoxDecoration(
+            color: Theme.of(context).colorScheme.primaryContainer,
+            borderRadius: BorderRadius.circular(24),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Container(
+                    key: const ValueKey('b2b-invoice-brand'),
+                    width: 72,
+                    height: 54,
+                    padding: const EdgeInsets.all(6),
+                    decoration: BoxDecoration(
+                      color: Theme.of(context).colorScheme.surface,
+                      borderRadius: BorderRadius.circular(16),
+                    ),
+                    child: (seller['logo_url']?.toString().trim().isNotEmpty ??
+                            false)
+                        ? Image.network(
+                            seller['logo_url'].toString(),
+                            fit: BoxFit.contain,
+                            semanticLabel:
+                                seller['name']?.toString() ?? 'FOODEX',
+                            errorBuilder: (_, __, ___) => Image.asset(
+                              'assets/branding/foodex-economical-group.webp',
+                              fit: BoxFit.contain,
+                              semanticLabel: context.tr(
+                                'customer.brand.economic_group',
+                              ),
+                            ),
+                          )
+                        : Image.asset(
+                            'assets/branding/foodex-economical-group.webp',
+                            fit: BoxFit.contain,
+                            semanticLabel: context.tr(
+                              'customer.brand.economic_group',
+                            ),
+                          ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Text.rich(
+                      key: const ValueKey('b2b-invoice-detail-number'),
+                      TextSpan(
+                        style:
+                            Theme.of(context).textTheme.titleMedium?.copyWith(
+                                  color: Theme.of(context)
+                                      .colorScheme
+                                      .onPrimaryContainer,
+                                  fontWeight: FontWeight.w800,
+                                ),
+                        children: [
+                          TextSpan(
+                            text: ar ? 'رقم الفاتورة ' : 'Invoice ',
+                          ),
+                          TextSpan(
+                            text: invoiceNumber,
+                            style: const TextStyle(
+                              fontWeight: FontWeight.w900,
+                            ),
+                          ),
+                        ],
+                      ),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                  Chip(
+                    key: const ValueKey('b2b-invoice-status-chip'),
+                    label: Text(_statusLabel(status, ar)),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 14),
+              Wrap(
+                spacing: 12,
+                runSpacing: 8,
+                children: [
+                  Text(
+                    '${ar ? 'الإصدار' : 'Issued'} · ${_displayDate(data['issued_at'])}',
+                    style: TextStyle(
+                      color: Theme.of(context).colorScheme.onPrimaryContainer,
+                    ),
+                  ),
+                  Text(
+                    '${ar ? 'العملة' : 'Currency'} · $currency',
+                    style: TextStyle(
+                      color: Theme.of(context).colorScheme.onPrimaryContainer,
+                    ),
+                  ),
+                ],
+              ),
+              if ((customer['name']?.toString() ?? '').isNotEmpty) ...[
+                const SizedBox(height: 12),
+                const Divider(height: 1),
+                const SizedBox(height: 12),
+              ],
+              if ((customer['name']?.toString() ?? '').isNotEmpty)
+                Text(
+                  '${ar ? 'العميل' : 'Customer'} · ${customer['name']}',
+                  key: const ValueKey('b2b-invoice-customer'),
+                  style: TextStyle(
+                    color: Theme.of(context).colorScheme.onPrimaryContainer,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              const SizedBox(height: 14),
+              Wrap(
+                textDirection: TextDirection.ltr,
+                spacing: 8,
+                runSpacing: 8,
+                crossAxisAlignment: WrapCrossAlignment.center,
+                children: [
+                  FilledButton.icon(
+                    key: const ValueKey('b2b-invoice-detail-pdf'),
+                    onPressed: _sharingPdf ? null : () => _sharePdf(data),
+                    icon: _sharingPdf
+                        ? const SizedBox.square(
+                            dimension: 18,
+                            child: FoodexWaveLoading(),
+                          )
+                        : const Icon(Icons.picture_as_pdf_rounded),
+                    label: Text(
+                        ar ? 'تحميل الفاتورة PDF' : 'Download invoice PDF'),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 12),
+        Row(
+          key: const ValueKey('b2b-invoice-settlement-strip'),
+          children: [
+            _settlementMetric(
+              label: ar ? 'الإجمالي' : 'Total',
+              value: _money(data['total'], currency),
+              icon: Icons.receipt_long_outlined,
+            ),
+            const SizedBox(width: 8),
+            _settlementMetric(
+              label: ar ? 'المدفوع' : 'Paid',
+              value: _money(data['paid_amount'], currency),
+              icon: Icons.check_circle_outline_rounded,
+            ),
+            const SizedBox(width: 8),
+            _settlementMetric(
+              label: !confirmedBalance
+                  ? context.tr('b2b.invoice.balance_unverified')
+                  : hasCredit
+                      ? (ar ? 'رصيد دائن' : 'Credit')
+                      : (ar ? 'المديونية' : 'Debt'),
+              value: !confirmedBalance
+                  ? '—'
+                  : hasCredit
+                      ? _money(data['credit_amount'], currency)
+                      : _money(data['outstanding_amount'], currency),
+              icon: !confirmedBalance
+                  ? Icons.error_outline_rounded
+                  : hasCredit
+                      ? Icons.savings_outlined
+                      : Icons.account_balance_wallet_outlined,
+              emphasized: hasCredit || hasDebt,
+            ),
+          ],
+        ),
+        Card(
+          key: const ValueKey('b2b-invoice-detail-totals'),
+          child: Padding(
+            padding: const EdgeInsets.all(14),
+            child: Column(
+              children: [
+                _summaryRow(
+                  ar ? 'الإجمالي الفرعي' : 'Subtotal',
+                  _money(data['subtotal'], currency),
+                ),
+                _summaryRow(
+                  ar ? 'الخصومات' : 'Discounts',
+                  _money(data['discount_total'], currency),
+                ),
+                _summaryRow(
+                  ar ? 'التوصيل / الرسوم' : 'Delivery / fees',
+                  _money(data['delivery_total'], currency),
+                ),
+                const Divider(),
+                _summaryRow(
+                  ar ? 'الإجمالي' : 'Total',
+                  _money(data['total'], currency),
+                  strong: true,
+                ),
+                _summaryRow(
+                  ar ? 'المدفوع' : 'Paid',
+                  _money(data['paid_amount'], currency),
+                ),
+                if (hasDebt)
+                  _summaryRow(
+                    ar ? 'المديونية' : 'Debt',
+                    _money(data['outstanding_amount'], currency),
+                    strong: true,
+                  ),
+                if (hasCredit)
+                  _summaryRow(
+                    ar ? 'رصيد لك' : 'Credit to you',
+                    _money(data['credit_amount'], currency),
+                    strong: true,
+                  ),
+              ],
+            ),
+          ),
+        ),
+        const SizedBox(height: 8),
+        Text(
+          ar ? 'بنود الفاتورة' : 'Invoice items',
+          style: Theme.of(context)
+              .textTheme
+              .titleMedium
+              ?.copyWith(fontWeight: FontWeight.w800),
+        ),
+        const SizedBox(height: 6),
+        if (items.isEmpty)
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.all(14),
+              child: Text(ar ? 'لا توجد بنود.' : 'No invoice items.'),
+            ),
+          )
+        else
+          ...items.map((item) {
+            final rawItemCurrency = item['currency'];
+            final itemCurrency = rawItemCurrency is String &&
+                    rawItemCurrency.trim().isNotEmpty
+                ? rawItemCurrency.trim().toUpperCase()
+                : currency.trim().toUpperCase();
+            final itemCurrencyMatches =
+                itemCurrency == currency.trim().toUpperCase();
+            final imageUrl = item['image_url']?.toString().trim() ?? '';
+            return Card(
+              key: ValueKey('b2b-invoice-item-${item['id']}'),
+              child: Padding(
+                padding: const EdgeInsets.all(10),
+                child: Row(
+                  children: [
+                    ClipRRect(
+                      borderRadius: BorderRadius.circular(10),
+                      child: SizedBox(
+                        width: 56,
+                        height: 56,
+                        child: imageUrl.isEmpty
+                            ? const ColoredBox(
+                                color: CustomerUiColors.mint,
+                                child: Icon(Icons.inventory_2_outlined),
+                              )
+                            : Image.network(
+                                imageUrl,
+                                fit: BoxFit.cover,
+                                errorBuilder: (_, __, ___) => const ColoredBox(
+                                  color: CustomerUiColors.mint,
+                                  child: Icon(Icons.inventory_2_outlined),
+                                ),
+                              ),
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Text(
+                        '${ar ? 'الكمية' : 'Qty'}: ${item['quantity']}',
+                        style: const TextStyle(
+                          color: CustomerUiColors.muted,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Text(
+                      _money(
+                        item['line_total'],
+                        itemCurrencyMatches ? itemCurrency : '',
+                      ),
+                      key: ValueKey('b2b-invoice-item-amount-${item['id']}'),
+                      style: const TextStyle(fontWeight: FontWeight.w900),
+                    ),
+                  ],
+                ),
+              ),
+            );
+          }),
+        const SizedBox(height: 8),
+        Text(
+          ar ? 'سجل المدفوعات' : 'Payment history',
+          style: Theme.of(context)
+              .textTheme
+              .titleMedium
+              ?.copyWith(fontWeight: FontWeight.w800),
+        ),
+        Card(
+          key: const ValueKey('b2b-invoice-payments'),
+          child: payments.isEmpty
+              ? Padding(
+                  padding: const EdgeInsets.all(14),
+                  child: Text(ar ? 'لا توجد مدفوعات.' : 'No payments yet.'),
+                )
+              : Column(
+                  children: payments.map((payment) {
+                    final rawPaymentCurrency = payment['currency'];
+                    final paymentCurrency = rawPaymentCurrency is String &&
+                            rawPaymentCurrency.trim().isNotEmpty
+                        ? rawPaymentCurrency.trim().toUpperCase()
+                        : currency.trim().toUpperCase();
+                    final paymentCurrencyMatches =
+                        paymentCurrency == currency.trim().toUpperCase();
+                    final method = payment['method']?.toString() ?? '';
+                    final reference = payment['reference']?.toString() ?? '';
+                    return ListTile(
+                      key: ValueKey('b2b-invoice-payment-${payment['id']}'),
+                      leading: const Icon(Icons.payments_outlined),
+                      title: Text(
+                        _money(
+                          payment['amount'],
+                          paymentCurrencyMatches ? paymentCurrency : '',
+                        ),
+                        key: ValueKey(
+                          'b2b-invoice-payment-amount-${payment['id']}',
+                        ),
+                        style: const TextStyle(fontWeight: FontWeight.w800),
+                      ),
+                      subtitle: Text(
+                        [
+                          if (method.isNotEmpty) method,
+                          if (reference.isNotEmpty) reference,
+                          _displayDate(payment['paid_at']),
+                        ].join(' · '),
+                      ),
+                    );
+                  }).toList(growable: false),
+                ),
+        ),
+        if (ledger.isNotEmpty) ...[
+          const SizedBox(height: 8),
+          Text(
+            ar ? 'التسويات والحركات المرتبطة' : 'Related adjustments',
+            style: Theme.of(context)
+                .textTheme
+                .titleMedium
+                ?.copyWith(fontWeight: FontWeight.w800),
+          ),
+          Card(
+            key: const ValueKey('b2b-invoice-ledger'),
+            child: Column(
+              children: ledger.map((entry) {
+                final rawEntryCurrency = entry['currency'];
+                final entryCurrency = rawEntryCurrency is String &&
+                        rawEntryCurrency.trim().isNotEmpty
+                    ? rawEntryCurrency.trim().toUpperCase()
+                    : currency.trim().toUpperCase();
+                final entryCurrencyMatches =
+                    entryCurrency == currency.trim().toUpperCase();
+                final debit =
+                    WholesaleFinancialSummary.nonNegativeAmount(entry['debit']);
+                final creditAmount =
+                    WholesaleFinancialSummary.nonNegativeAmount(
+                        entry['credit']);
+                // The server ledger contract requires exactly one finite,
+                // non-negative side to be positive. Never invent a zero entry.
+                final amountText = entryCurrencyMatches &&
+                        debit != null &&
+                        creditAmount != null &&
+                        ((debit > 0.0005) != (creditAmount > 0.0005))
+                    ? debit > 0.0005
+                        ? (ar ? 'مدين ' : 'Debit ') +
+                            _money(debit, entryCurrency)
+                        : (ar ? 'دائن ' : 'Credit ') +
+                            _money(creditAmount, entryCurrency)
+                    : '—';
+                return ListTile(
+                  title: Text(
+                    _ledgerTypeLabel(entry['type']?.toString() ?? '', ar),
+                  ),
+                  subtitle: Text(
+                    [
+                      if ((entry['reference']?.toString() ?? '').isNotEmpty)
+                        entry['reference'].toString(),
+                      if ((entry['description']?.toString() ?? '').isNotEmpty)
+                        entry['description'].toString(),
+                      _displayDate(entry['occurred_at']),
+                    ].join(' · '),
+                  ),
+                  trailing: Text(
+                    amountText,
+                    key: ValueKey('b2b-invoice-ledger-amount-${entry['id']}'),
+                  ),
+                );
+              }).toList(growable: false),
+            ),
+          ),
+        ],
+      ],
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) => FutureBuilder<Object?>(
+        future: _future,
+        builder: (context, snapshot) {
+          if (snapshot.connectionState != ConnectionState.done &&
+              _lastGood == null) {
+            return const Center(
+              key: ValueKey('b2b-loading'),
+              child: FoodexWaveLoading(),
+            );
+          }
+
+          if (snapshot.hasError) {
+            if (_lastGood != null) {
+              return _body(_lastGood, stale: true);
+            }
+            return _B2bRemoteErrorCard(error: snapshot.error, onRetry: _reload);
+          }
+
+          final value = snapshot.connectionState == ConnectionState.done
+              ? snapshot.data
+              : _lastGood;
+          return _body(value);
+        },
+      );
+}
+
+class _InvoicesRemoteState extends StatefulWidget {
+  const _InvoicesRemoteState({required this.api, required this.endpoint});
+
+  final B2bApi api;
+  final String endpoint;
+
+  @override
+  State<_InvoicesRemoteState> createState() => _InvoicesRemoteStateState();
+}
+
+class _InvoicesRemoteStateState extends State<_InvoicesRemoteState>
+    with WidgetsBindingObserver {
+  late TextEditingController _searchController;
+  late Future<Object?> _future;
+  Object? _lastGood;
+  DateTime? _from;
+  DateTime? _to;
+  String _status = '';
+  int _page = 1;
+  int _perPage = 20;
+  bool _sharingPdf = false;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    _syncFromEndpoint();
+    _future = _fetch();
+  }
+
+  @override
+  void didUpdateWidget(covariant _InvoicesRemoteState oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.api != widget.api || oldWidget.endpoint != widget.endpoint) {
+      _searchController.dispose();
+      _syncFromEndpoint();
+      _future = _fetch();
+    }
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) _reload();
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _searchController.dispose();
+    super.dispose();
+  }
+
+  void _syncFromEndpoint() {
+    final uri = Uri.parse(widget.endpoint);
+    _from = DateTime.tryParse(uri.queryParameters['from'] ?? '');
+    _to = DateTime.tryParse(uri.queryParameters['to'] ?? '');
+    _status = uri.queryParameters['status'] ?? '';
+    _page = int.tryParse(uri.queryParameters['page'] ?? '') ?? 1;
+    _perPage = int.tryParse(uri.queryParameters['per_page'] ?? '') ?? 20;
+    _searchController = TextEditingController(
+      text: uri.queryParameters['q'] ?? '',
+    );
+  }
+
+  String _effectiveEndpoint({int? page}) {
+    final uri = Uri.parse(widget.endpoint);
+    final params = Map<String, String>.from(uri.queryParameters)
+      ..remove('from')
+      ..remove('to')
+      ..remove('status')
+      ..remove('q')
+      ..remove('page')
+      ..remove('per_page');
+    if (_from != null) params['from'] = _date(_from!);
+    if (_to != null) params['to'] = _date(_to!);
+    if (_status.isNotEmpty) params['status'] = _status;
+    final search = _searchController.text.trim();
+    if (search.isNotEmpty) params['q'] = search;
+    final targetPage = page ?? _page;
+    if (targetPage > 1) params['page'] = targetPage.toString();
+    if (_perPage != 20) params['per_page'] = _perPage.toString();
+    if (params.isEmpty) return uri.path;
+    return uri.replace(queryParameters: params).toString();
+  }
+
+  Future<Object?> _fetch() async {
+    final value = await widget.api.get(_effectiveEndpoint());
+    _lastGood = value;
+    return value;
+  }
+
+  void _reload({int? page}) {
+    final targetPage = page ?? _page;
+    setState(() {
+      _page = targetPage;
+      _future = _fetch();
+    });
+  }
+
+  Future<void> _pickDate({required bool from}) async {
+    final initial = from ? (_from ?? DateTime.now()) : (_to ?? DateTime.now());
+    final picked = await showDatePicker(
+      context: context,
+      initialDate: initial,
+      firstDate: DateTime(2020),
+      lastDate: DateTime.now().add(const Duration(days: 366)),
+    );
+    if (picked == null) return;
+    setState(() {
+      if (from) {
+        _from = picked;
+        if (_to != null && picked.isAfter(_to!)) _to = picked;
+      } else {
+        _to = picked;
+        if (_from != null && picked.isBefore(_from!)) _from = picked;
+      }
+    });
+    _reload(page: 1);
+  }
+
+  void _clearFilters() {
+    setState(() {
+      _from = null;
+      _to = null;
+      _status = '';
+      _searchController.clear();
+    });
+    _reload(page: 1);
+  }
+
+  Future<void> _sharePdf(Map<Object?, Object?> row) async {
+    if (_sharingPdf) return;
+    final ar = Localizations.localeOf(context).languageCode == 'ar';
+    final documentApi = widget.api;
+    if (documentApi is! B2bDocumentApi) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            ar
+                ? 'تنزيل PDF غير متاح في وضع المعاينة.'
+                : 'PDF download is unavailable in preview mode.',
+          ),
+        ),
+      );
+      return;
+    }
+    final rawPath = row['pdf_path']?.toString() ?? '';
+    if (rawPath.isEmpty) return;
+    final path =
+        '$rawPath${rawPath.contains('?') ? '&' : '?'}locale=${ar ? 'ar' : 'en'}';
+    final number = row['display_invoice_number']?.toString() ??
+        (row['id'] == null ? 'invoice' : 'invoice-${row['id']}');
+    setState(() => _sharingPdf = true);
+    try {
+      final bytes = await (documentApi as B2bDocumentApi).getBytes(path);
+      final name = '$number.pdf';
+      await SharePlus.instance.share(
+        ShareParams(
+          files: [
+            XFile.fromData(
+              Uint8List.fromList(bytes),
+              mimeType: 'application/pdf',
+              name: name,
+            ),
+          ],
+          fileNameOverrides: [name],
+          subject: number,
+        ),
+      );
+    } catch (_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            ar
+                ? 'تعذر تنزيل ملف الفاتورة. أعد المحاولة.'
+                : 'Invoice PDF could not be downloaded. Try again.',
+          ),
+        ),
+      );
+    } finally {
+      if (mounted) setState(() => _sharingPdf = false);
+    }
+  }
+
+  String _detailRoute(Map<Object?, Object?> row) {
+    final source = Uri.parse(widget.endpoint);
+    final params = <String, String>{'channel': 'wholesale'};
+    final storeId =
+        row['store_id']?.toString() ?? source.queryParameters['store_id'];
+    if (storeId != null && storeId.isNotEmpty) params['store_id'] = storeId;
+    return Uri(
+      path: '/b2b/invoices/${row['id']}',
+      queryParameters: params,
+    ).toString();
+  }
+
+  String _statusLabel(BuildContext context, String value) {
+    final ar = Localizations.localeOf(context).languageCode == 'ar';
+    return switch (value) {
+      'paid' => ar ? 'مسددة' : 'Settled',
+      'partially_paid' => ar ? 'مسددة جزئيًا' : 'Partially settled',
+      'overdue' => ar ? 'متأخرة السداد' : 'Overdue',
+      'cancelled' => ar ? 'ملغاة' : 'Cancelled',
+      'credited' => ar ? 'رصيد دائن' : 'Credit balance',
+      _ => ar ? 'مستحقة' : 'Due',
+    };
+  }
+
+  String _money(Object? value, String currency) {
     final amount = double.tryParse(value?.toString() ?? '');
     if (amount == null || !amount.isFinite) return '—';
-    return foodexMoneyText(amount, currency);
+    return foodexMoneyText(amount, currency).trim();
+  }
+
+  String _date(DateTime date) => '${date.year.toString().padLeft(4, '0')}-'
+      '${date.month.toString().padLeft(2, '0')}-'
+      '${date.day.toString().padLeft(2, '0')}';
+
+  String _displayDate(Object? value) {
+    final parsed = DateTime.tryParse(value?.toString() ?? '');
+    return parsed == null ? '—' : _date(parsed.toLocal());
+  }
+
+  List<Map<Object?, Object?>> _rows(Object? raw) {
+    if (raw is! List) return const [];
+    return raw
+        .whereType<Map>()
+        .map((row) => Map<Object?, Object?>.from(row))
+        .toList(growable: false);
+  }
+
+  Widget _body(Object? raw, {bool stale = false}) {
+    final ar = Localizations.localeOf(context).languageCode == 'ar';
+    final envelope =
+        raw is Map ? Map<Object?, Object?>.from(raw) : <Object?, Object?>{};
+    final rows = _rows(envelope['data']);
+    final summary = envelope['summary'] is Map
+        ? Map<Object?, Object?>.from(envelope['summary'] as Map)
+        : <Object?, Object?>{};
+    final meta = envelope['meta'] is Map
+        ? Map<Object?, Object?>.from(envelope['meta'] as Map)
+        : <Object?, Object?>{};
+    final totals = _rows(summary['totals']);
+    final hasMore = meta['has_more'] == true;
+
+    return Column(
+      key: const ValueKey('b2b-invoices-data'),
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        if (stale)
+          Card(
+            key: const ValueKey('b2b-invoices-stale'),
+            child: ListTile(
+              leading: const Icon(Icons.cloud_off_outlined),
+              title: Text(
+                ar
+                    ? 'تعذر التحديث؛ يتم عرض آخر بيانات مؤكدة.'
+                    : 'Refresh failed; showing the last confirmed data.',
+              ),
+              trailing: IconButton(
+                onPressed: _reload,
+                icon: const Icon(Icons.refresh_rounded),
+              ),
+            ),
+          ),
+        Card(
+          key: const ValueKey('b2b-invoices-filters'),
+          margin: EdgeInsets.zero,
+          color: CustomerUiColors.white,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(22),
+            side: const BorderSide(color: CustomerUiColors.border),
+          ),
+          child: Padding(
+            padding: const EdgeInsets.all(10),
+            child: LayoutBuilder(
+              builder: (context, constraints) {
+                final narrow = constraints.maxWidth < 330;
+                final inputBorder = OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(24),
+                  borderSide: const BorderSide(color: CustomerUiColors.border),
+                );
+                final searchField = TextField(
+                  key: const ValueKey('b2b-invoices-search'),
+                  controller: _searchController,
+                  textInputAction: TextInputAction.search,
+                  decoration: InputDecoration(
+                    hintText:
+                        ar ? 'بحث برقم الفاتورة' : 'Search invoice number',
+                    prefixIcon: const Icon(Icons.search_rounded, size: 22),
+                    prefixIconConstraints: const BoxConstraints(
+                      minWidth: 40,
+                      minHeight: 40,
+                    ),
+                    isDense: true,
+                    contentPadding: const EdgeInsets.symmetric(
+                      horizontal: 12,
+                      vertical: 12,
+                    ),
+                    border: inputBorder,
+                    enabledBorder: inputBorder,
+                  ),
+                  onSubmitted: (_) => _reload(page: 1),
+                );
+                final statusField = DropdownButtonFormField<String>(
+                  key: const ValueKey('b2b-invoices-status'),
+                  initialValue: _status,
+                  isExpanded: true,
+                  decoration: InputDecoration(
+                    labelText: ar ? 'الحالة' : 'Status',
+                    isDense: true,
+                    contentPadding: const EdgeInsets.symmetric(
+                      horizontal: 12,
+                      vertical: 10,
+                    ),
+                    border: inputBorder,
+                    enabledBorder: inputBorder,
+                  ),
+                  items: [
+                    DropdownMenuItem(
+                      value: '',
+                      child: Text(
+                        ar ? 'كل الحالات' : 'All statuses',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                    for (final value in const [
+                      'open',
+                      'partially_paid',
+                      'paid',
+                      'overdue',
+                      'credited',
+                      'cancelled',
+                    ])
+                      DropdownMenuItem(
+                        value: value,
+                        child: Text(
+                          _statusLabel(context, value),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                  ],
+                  onChanged: (value) {
+                    setState(() => _status = value ?? '');
+                    _reload(page: 1);
+                  },
+                );
+                final outlineStyle = OutlinedButton.styleFrom(
+                  minimumSize: const Size(0, 42),
+                  padding: const EdgeInsets.symmetric(horizontal: 8),
+                  visualDensity: VisualDensity.compact,
+                );
+                final fromButton = OutlinedButton.icon(
+                  key: const ValueKey('b2b-invoices-from'),
+                  style: outlineStyle,
+                  onPressed: () => _pickDate(from: true),
+                  icon: const Icon(Icons.date_range_outlined, size: 18),
+                  label: Text(
+                    _from == null ? (ar ? 'من' : 'From') : _date(_from!),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                );
+                final toButton = OutlinedButton.icon(
+                  key: const ValueKey('b2b-invoices-to'),
+                  style: outlineStyle,
+                  onPressed: () => _pickDate(from: false),
+                  icon: const Icon(Icons.event_outlined, size: 18),
+                  label: Text(
+                    _to == null ? (ar ? 'إلى' : 'To') : _date(_to!),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                );
+                final clearButton = FilledButton.icon(
+                  key: const ValueKey('b2b-invoices-clear-filters'),
+                  style: FilledButton.styleFrom(
+                    minimumSize: const Size(0, 42),
+                    padding: const EdgeInsets.symmetric(horizontal: 8),
+                    visualDensity: VisualDensity.compact,
+                    backgroundColor: CustomerUiColors.deepGreen,
+                    foregroundColor: CustomerUiColors.white,
+                  ),
+                  onPressed: _clearFilters,
+                  icon: const Icon(Icons.filter_alt_off_outlined, size: 18),
+                  label: Text(
+                    ar ? 'مسح الفلتر' : 'Clear filters',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                );
+                final refreshButton = SizedBox(
+                  width: 42,
+                  height: 42,
+                  child: IconButton(
+                    key: const ValueKey('b2b-invoices-refresh'),
+                    tooltip: ar ? 'تحديث' : 'Refresh',
+                    style: IconButton.styleFrom(
+                      backgroundColor: CustomerUiColors.mint,
+                      foregroundColor: CustomerUiColors.deepGreen,
+                    ),
+                    onPressed: _reload,
+                    icon: const Icon(Icons.refresh_rounded),
+                  ),
+                );
+
+                final primaryRow = narrow
+                    ? Column(
+                        children: [
+                          searchField,
+                          const SizedBox(height: 8),
+                          statusField,
+                        ],
+                      )
+                    : Row(
+                        children: [
+                          Expanded(flex: 5, child: searchField),
+                          const SizedBox(width: 8),
+                          Expanded(flex: 3, child: statusField),
+                        ],
+                      );
+
+                final actionRow = narrow
+                    ? Column(
+                        children: [
+                          Row(
+                            children: [
+                              Expanded(child: fromButton),
+                              const SizedBox(width: 6),
+                              Expanded(child: toButton),
+                            ],
+                          ),
+                          const SizedBox(height: 6),
+                          Row(
+                            children: [
+                              Expanded(child: clearButton),
+                              const SizedBox(width: 6),
+                              refreshButton,
+                            ],
+                          ),
+                        ],
+                      )
+                    : Row(
+                        children: [
+                          Expanded(flex: 3, child: fromButton),
+                          const SizedBox(width: 6),
+                          Expanded(flex: 3, child: toButton),
+                          const SizedBox(width: 6),
+                          Expanded(flex: 4, child: clearButton),
+                          const SizedBox(width: 6),
+                          refreshButton,
+                        ],
+                      );
+
+                return Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [primaryRow, const SizedBox(height: 8), actionRow],
+                );
+              },
+            ),
+          ),
+        ),
+        const SizedBox(height: 10),
+        ...totals.map((total) {
+          final currency = total['currency']?.toString() ?? '';
+          return Card(
+            key: ValueKey('b2b-invoices-summary-$currency'),
+            child: Padding(
+              padding: const EdgeInsets.all(12),
+              child: Wrap(
+                spacing: 16,
+                runSpacing: 8,
+                children: [
+                  Text(
+                    '${ar ? 'الإجمالي' : 'Total'}: ${_money(total['total'], currency)}',
+                  ),
+                  Text(
+                    '${ar ? 'المدفوع' : 'Paid'}: ${_money(total['paid'], currency)}',
+                  ),
+                  Text(
+                    '${ar ? 'المديونية' : 'Debt'}: ${_money(total['outstanding'], currency)}',
+                  ),
+                  Text(
+                    '${ar ? 'المتأخر' : 'Overdue'}: ${_money(total['overdue'], currency)}',
+                  ),
+                  if ((double.tryParse(total['credit'].toString()) ?? 0) > 0)
+                    Text(
+                      '${ar ? 'لك' : 'Credit'}: ${_money(total['credit'], currency)}',
+                    ),
+                ],
+              ),
+            ),
+          );
+        }),
+        if (rows.isEmpty)
+          Semantics(
+            container: true,
+            label: ar
+                ? 'لا توجد فواتير مطابقة للفلاتر الحالية.'
+                : 'No invoices match the current filters.',
+            child: Container(
+              key: const ValueKey('b2b-empty'),
+              alignment: Alignment.center,
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 54),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Container(
+                    width: 72,
+                    height: 72,
+                    decoration: const BoxDecoration(
+                      color: CustomerUiColors.mint,
+                      shape: BoxShape.circle,
+                    ),
+                    alignment: Alignment.center,
+                    child: const Icon(
+                      Icons.find_in_page_outlined,
+                      key: ValueKey('b2b-invoices-empty-icon'),
+                      size: 38,
+                      color: CustomerUiColors.deepGreen,
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  Text(
+                    ar
+                        ? 'لا توجد فواتير مطابقة للفلاتر الحالية.'
+                        : 'No invoices match the current filters.',
+                    textAlign: TextAlign.center,
+                    style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                          color: CustomerUiColors.ink,
+                          fontWeight: FontWeight.w700,
+                        ),
+                  ),
+                ],
+              ),
+            ),
+          )
+        else
+          ...rows.map((row) {
+            final currency = row['currency']?.toString() ?? '';
+            final status = row['display_status']?.toString() ??
+                row['status']?.toString() ??
+                'open';
+            final rawInvoiceNumber = row['display_invoice_number']
+                        ?.toString()
+                        .trim()
+                        .isNotEmpty ==
+                    true
+                ? row['display_invoice_number'].toString().trim()
+                : row['invoice_number']?.toString().trim().isNotEmpty == true
+                    ? row['invoice_number'].toString().trim()
+                    : row['id']?.toString() ?? '—';
+            final invoiceNumber = rawInvoiceNumber.startsWith('#')
+                ? rawInvoiceNumber.substring(1).trim()
+                : rawInvoiceNumber;
+            final bodyStyle = Theme.of(context).textTheme.bodyMedium;
+            final labelStyle = Theme.of(context).textTheme.labelLarge;
+            final compactBodyStyle = bodyStyle?.copyWith(
+              fontSize: (bodyStyle.fontSize ?? 14) * .70,
+              height: 1.15,
+            );
+            final compactStrongStyle = compactBodyStyle?.copyWith(
+              color: CustomerUiColors.ink,
+              fontWeight: FontWeight.w800,
+            );
+            final compactButtonStyle = labelStyle?.copyWith(
+              fontSize: (labelStyle.fontSize ?? 14) * .70,
+              fontWeight: FontWeight.w800,
+            );
+
+            return Card(
+              key: ValueKey('b2b-invoice-${row['id']}'),
+              child: InkWell(
+                onTap: () => Navigator.of(context).pushNamed(_detailRoute(row)),
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(10, 9, 10, 9),
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          children: [
+                            Text(
+                              '${ar ? 'رقم الفاتورة' : 'Invoice'} $invoiceNumber',
+                              key: ValueKey(
+                                'b2b-invoice-number-${row['id']}',
+                              ),
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: compactStrongStyle?.copyWith(
+                                fontSize: (bodyStyle?.fontSize ?? 14) * .70,
+                                fontWeight: FontWeight.w900,
+                              ),
+                            ),
+                            const SizedBox(height: 4),
+                            Text(
+                              '${ar ? 'تاريخ الإصدار' : 'Issued'}: ${_displayDate(row['issued_at'])}',
+                              style: compactBodyStyle,
+                            ),
+                            const SizedBox(height: 4),
+                            Text(
+                              '${ar ? 'الإجمالي' : 'Total'}: ${_money(row['total'], currency)}',
+                              style: compactStrongStyle,
+                            ),
+                            Text.rich(
+                              key: ValueKey(
+                                'b2b-invoice-paid-${row['id']}',
+                              ),
+                              TextSpan(
+                                style: compactBodyStyle,
+                                children: [
+                                  TextSpan(
+                                    text: '${ar ? 'المدفوع' : 'Paid'}: ',
+                                  ),
+                                  TextSpan(
+                                    text: _money(
+                                      row['paid_amount'],
+                                      currency,
+                                    ),
+                                    style: const TextStyle(
+                                      color: CustomerUiColors.success,
+                                      fontWeight: FontWeight.w900,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                            Text.rich(
+                              key: ValueKey(
+                                'b2b-invoice-outstanding-${row['id']}',
+                              ),
+                              TextSpan(
+                                style: compactBodyStyle,
+                                children: [
+                                  TextSpan(
+                                    text: '${ar ? 'المديونية' : 'Debt'}: ',
+                                  ),
+                                  TextSpan(
+                                    text: _money(
+                                      row['outstanding_amount'],
+                                      currency,
+                                    ),
+                                    style: const TextStyle(
+                                      color: CustomerUiColors.destructive,
+                                      fontWeight: FontWeight.w900,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                            if ((double.tryParse(
+                                      row['credit_amount'].toString(),
+                                    ) ??
+                                    0) >
+                                0)
+                              Text(
+                                '${ar ? 'لك' : 'Credit'}: ${_money(row['credit_amount'], currency)}',
+                                style: compactBodyStyle,
+                              ),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Column(
+                        mainAxisSize: MainAxisSize.min,
+                        crossAxisAlignment: CrossAxisAlignment.center,
+                        children: [
+                          Chip(
+                            key: ValueKey(
+                              'b2b-invoice-status-${row['id']}',
+                            ),
+                            visualDensity: VisualDensity.compact,
+                            labelPadding:
+                                const EdgeInsets.symmetric(horizontal: 2),
+                            label: Text(
+                              _statusLabel(context, status),
+                              style: compactButtonStyle,
+                            ),
+                          ),
+                          const SizedBox(height: 4),
+                          Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              OutlinedButton.icon(
+                                key: ValueKey(
+                                  'b2b-invoice-pdf-${row['id']}',
+                                ),
+                                onPressed:
+                                    _sharingPdf ? null : () => _sharePdf(row),
+                                style: OutlinedButton.styleFrom(
+                                  minimumSize: const Size(0, 28),
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 6,
+                                    vertical: 3,
+                                  ),
+                                  tapTargetSize:
+                                      MaterialTapTargetSize.shrinkWrap,
+                                  textStyle: compactButtonStyle,
+                                ),
+                                icon: const Icon(
+                                  Icons.picture_as_pdf_outlined,
+                                  size: 12,
+                                ),
+                                label: const Text('PDF'),
+                              ),
+                              const SizedBox(width: 4),
+                              FilledButton.tonalIcon(
+                                key: ValueKey(
+                                  'b2b-invoice-open-${row['id']}',
+                                ),
+                                onPressed: () => Navigator.of(context)
+                                    .pushNamed(_detailRoute(row)),
+                                style: FilledButton.styleFrom(
+                                  minimumSize: const Size(0, 28),
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 6,
+                                    vertical: 3,
+                                  ),
+                                  tapTargetSize:
+                                      MaterialTapTargetSize.shrinkWrap,
+                                  textStyle: compactButtonStyle,
+                                ),
+                                icon: const Icon(
+                                  Icons.open_in_new_rounded,
+                                  size: 12,
+                                ),
+                                label: Text(
+                                  ar ? 'التفاصيل' : 'Details',
+                                ),
+                              ),
+                            ],
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            );
+          }),
+        const SizedBox(height: 8),
+        Row(
+          children: [
+            OutlinedButton(
+              key: const ValueKey('b2b-invoices-previous'),
+              onPressed: _page > 1 ? () => _reload(page: _page - 1) : null,
+              child: Text(ar ? 'السابق' : 'Previous'),
+            ),
+            const Spacer(),
+            Text('${ar ? 'صفحة' : 'Page'} $_page'),
+            const Spacer(),
+            OutlinedButton(
+              key: const ValueKey('b2b-invoices-next'),
+              onPressed: hasMore ? () => _reload(page: _page + 1) : null,
+              child: Text(ar ? 'التالي' : 'Next'),
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) => FutureBuilder<Object?>(
+        future: _future,
+        builder: (context, snapshot) {
+          if (snapshot.connectionState != ConnectionState.done &&
+              _lastGood == null) {
+            return const Center(
+              key: ValueKey('b2b-loading'),
+              child: FoodexWaveLoading(),
+            );
+          }
+          if (snapshot.hasError) {
+            if (_lastGood != null) return _body(_lastGood, stale: true);
+            return _B2bRemoteErrorCard(error: snapshot.error, onRetry: _reload);
+          }
+          final value = snapshot.data ?? _lastGood;
+          if (value is! Map) {
+            return Card(
+              key: const ValueKey('b2b-empty'),
+              child: Padding(
+                padding: const EdgeInsets.all(16),
+                child: Text(context.tr('b2b.remote.empty')),
+              ),
+            );
+          }
+          return _body(value);
+        },
+      );
+}
+).hasMatch(normalizedCurrency)) {
+      return '—';
+    }
+    return foodexMoneyText(amount, normalizedCurrency);
   }
 
   String _displayDate(Object? value) {
