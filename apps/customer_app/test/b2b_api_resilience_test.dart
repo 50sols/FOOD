@@ -206,7 +206,12 @@ void main() {
       (format: 'pdf', mime: 'application/pdf', body: ''),
       (format: 'pdf', mime: 'application/pdf', body: 'not-pdf'),
       (format: 'xlsx', mime: 'text/html', body: '<html>Login</html>'),
-      (format: 'xlsx', mime: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', body: 'not-xlsx'),
+      (
+        format: 'xlsx',
+        mime:
+            'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        body: 'not-xlsx'
+      ),
       (format: 'xlsx', mime: 'application/pdf', body: '%PDF-1.4'),
     ];
     for (final language in ['ar', 'en']) {
