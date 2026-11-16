@@ -1397,6 +1397,9 @@ final class V2ReceivableSettlementWorkbenchTest extends TestCase
         // The existing Save form also has a write-free Test action: both
         // languages surface a real preflight, not a false approval or posting.
         $mappingRoute = route('admin.erp.finance.receivables.mappings.propose');
+        $mappingPanelUrl = route('admin.erp.finance.index', [
+            'store_id' => $store->id, 'tab' => 'receivables', 'finance_panel' => 'settlements',
+        ]);
         $auditBeforeTest = DB::table('audit_logs')
             ->where('event', 'enterprise.finance.collection_account_mapping_proposed')->count();
         foreach (['ar', 'en'] as $locale) {
@@ -1409,7 +1412,7 @@ final class V2ReceivableSettlementWorkbenchTest extends TestCase
                 ->assertSee('name="mapping_action" value="test"', false);
             $this->actingAs($maker->fresh())->post($mappingRoute, [
                 ...$payload, 'mapping_action' => 'test',
-            ])->assertRedirect()->assertSessionHasNoErrors()
+            ])->assertRedirect($mappingPanelUrl)->assertSessionHasNoErrors()
                 ->assertSessionHas('success', __('finance_workbench.messages.mapping_tested', [], $locale));
         }
         $this->assertDatabaseCount('enterprise_finance_collection_account_mappings', 0);
@@ -1451,7 +1454,7 @@ final class V2ReceivableSettlementWorkbenchTest extends TestCase
 
         $this->actingAs($maker)->post(
             route('admin.erp.finance.receivables.mappings.propose'), $payload,
-        )->assertSessionHasNoErrors()->assertRedirect();
+        )->assertSessionHasNoErrors()->assertRedirect($mappingPanelUrl);
         $this->assertDatabaseCount('enterprise_finance_collection_account_mappings', 1);
         $mapping = DB::table('enterprise_finance_collection_account_mappings')->first();
         $this->assertSame('PROPOSED', $mapping->status);
