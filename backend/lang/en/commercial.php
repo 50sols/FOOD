@@ -13,7 +13,7 @@ return [
         'help_default' => 'Default: no preset margin or dates. Every field is required when creating a proposal.',
         'help_permissions' => 'Access: an authorized wholesale store catalogue maker, with independent order and finance checker approval. Makers cannot review their own drafts, and platform administration cannot override the separation.',
         'help_test' => 'Test Inputs checks fields and permission on the server without saving a proposal or certifying operational readiness. Save creates an inactive draft only.',
-        'validation_hint' => 'Enter 0–100 with at most two decimal places. Both dates are required, and the end must be after the start.',
+        'validation_hint' => 'Enter 0–100 with at most two decimal places. Both dates are required, and the end may be the same day or later.',
         'test_inputs' => 'Test inputs without saving',
         'validated_inactive' => 'Draft inputs passed server validation without any save. Operational activation is still blocked.',
         'inactive_explanation' => 'These versioned drafts and independent reviews are NOT active price restrictions. Trusted WMS ownership and cost valuation and credit/discount approval are required before activation.',
@@ -30,6 +30,7 @@ return [
         'idempotency_conflict' => 'This request identifier belongs to a different rule proposal.',
         'already_reviewed' => 'This proposal was already reviewed and cannot be changed.',
         'overlapping_window' => 'This product already has an independently reviewed profitability rule for an overlapping effective-date window. Reject or resolve the conflicting draft before review.',
+        'integrity_mismatch' => 'Stored profitability proposal details changed after creation. Viewing or reviewing is blocked until the record integrity is investigated.',
         'statuses' => [
             'draft' => 'Draft — not active',
             'reviewed_inactive' => 'Independently reviewed — not active',
