@@ -63,7 +63,6 @@ final class V2ErpOperationalWorkflowEvidenceTest extends TestCase
         }
     }
 
-
     public function test_missing_or_malformed_manifest_category_cannot_bypass_erp_workflow_gate(): void
     {
         $this->enableSample();
