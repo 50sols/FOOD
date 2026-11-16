@@ -216,6 +216,61 @@ final class V2DistinctUserArchiveLifecycleTest extends TestCase
         }
     }
 
+
+    public function test_archived_account_rejects_noop_deactivation_without_changing_audit_or_reason(): void
+    {
+        $admin = $this->withRole('SUPER_ADMIN');
+        $target = $this->withRole('B2B_ADMIN');
+
+        $this->actingAs($admin)->patch(route('admin.security.users.archive', $target), $this->archivePayload($target))
+            ->assertRedirect();
+
+        $before = $target->fresh();
+        $auditCount = DB::table('audit_logs')->where('auditable_id', $target->id)->count();
+
+        $this->actingAs($admin)->patch(route('admin.security.users.status', $target), [
+            'is_active' => false,
+            'reason' => 'Attempt to overwrite archived account reason',
+            'impact_reviewed' => '1',
+            'confirm_email' => $target->email,
+        ])->assertRedirect()->assertSessionHasErrors('is_active');
+
+        $after = $target->fresh();
+        $this->assertSame($before->deactivated_at->toIso8601String(), $after->deactivated_at->toIso8601String());
+        $this->assertSame($before->deactivation_reason, $after->deactivation_reason);
+        $this->assertSame($before->archived_at->toIso8601String(), $after->archived_at->toIso8601String());
+        $this->assertSame($auditCount, DB::table('audit_logs')->where('auditable_id', $target->id)->count());
+    }
+
+    public function test_archive_revalidates_email_under_locked_row_when_route_snapshot_is_stale(): void
+    {
+        $admin = $this->withRole('SUPER_ADMIN');
+        $target = $this->withRole('B2B_ADMIN');
+        $staleSnapshot = $target->fresh();
+        $oldEmail = $target->email;
+        $target->forceFill(['email' => 'changed-'.$target->id.'@example.test'])->save();
+
+        try {
+            app(RbacManager::class)->archiveUser(
+                $admin,
+                $staleSnapshot,
+                'Authorized account archival with reviewed impact',
+                Request::create('/admin/security/users/'.$target->id.'/archive', 'PATCH', [
+                    'confirm_email' => $oldEmail,
+                    'confirm_archive' => 'ARCHIVE',
+                    'impact_reviewed' => '1',
+                ]),
+            );
+            $this->fail('A stale email confirmation must not archive the identity.');
+        } catch (ValidationException $e) {
+            $this->assertArrayHasKey('confirm_email', $e->errors());
+        }
+
+        $this->assertTrue((bool) $target->fresh()->is_active);
+        $this->assertNull($target->fresh()->archived_at);
+        $this->assertDatabaseMissing('audit_logs', ['event' => 'user.archived']);
+    }
+
     private function withRole(string $code): User
     {
         $user = User::factory()->create(['is_active' => true, 'locale' => 'en']);
