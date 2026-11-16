@@ -466,6 +466,105 @@ class VanFinanceSupportTest extends TestCase
         $this->assertSame(2, DB::table('custody_ledger_entries')->where('collection_account_id', $accountId)->count());
     }
 
+    public function test_reconciled_van_remittance_currency_mismatch_blocks_false_ledger_clear(): void
+    {
+        $admin = $this->superAdmin();
+        $now = now();
+        $b2b = (int) DB::table('store_types')->where('code', 'B2B')->value('id');
+        $storeId = (int) DB::table('stores')->insertGetId([
+            'store_type_id' => $b2b,
+            'code' => 'P277-REMIT-CURRENCY',
+            'name' => 'P277 Remittance Currency Store',
+            'is_active' => true,
+            'created_at' => $now,
+            'updated_at' => $now,
+        ]);
+        $vanId = (int) DB::table('vans')->insertGetId([
+            'public_id' => (string) Str::uuid(),
+            'code' => 'P277-REMIT-CURRENCY-VAN',
+            'plate_number' => 'P277-550',
+            'status' => 'active',
+            'created_at' => $now,
+            'updated_at' => $now,
+        ]);
+        $accountId = (int) DB::table('collection_accounts')->insertGetId([
+            'actor_type' => 'van',
+            'actor_id' => $vanId,
+            'store_id' => $storeId,
+            'currency' => 'KWD',
+            'status' => 'active',
+            'custody_limit' => 500,
+            'created_at' => $now,
+            'updated_at' => $now,
+        ]);
+        $remittanceId = (int) DB::table('remittances')->insertGetId([
+            'collection_account_id' => $accountId,
+            'idempotency_key' => 'P277-RECONCILED-CURRENCY',
+            'amount' => 21,
+            'currency' => 'KWD',
+            'method' => 'cash',
+            'reference' => 'P277-REM-550',
+            'status' => 'reconciled',
+            'submitted_by' => $admin->id,
+            'reviewed_by' => $admin->id,
+            'created_at' => $now,
+            'updated_at' => $now,
+        ]);
+        DB::table('custody_ledger_entries')->insert([
+            [
+                'collection_account_id' => $accountId,
+                'entry_type' => 'collection',
+                'amount' => 21,
+                'currency' => 'KWD',
+                'reference_type' => 'collection_transaction',
+                'reference_id' => 5501,
+                'created_by' => $admin->id,
+                'created_at' => $now,
+                'updated_at' => $now,
+            ],
+            [
+                'collection_account_id' => $accountId,
+                'entry_type' => 'remittance',
+                'amount' => -21,
+                'currency' => 'KWD',
+                'reference_type' => 'remittance',
+                'reference_id' => $remittanceId,
+                'created_by' => $admin->id,
+                'created_at' => $now,
+                'updated_at' => $now,
+            ],
+        ]);
+
+        $service = app(FieldOperationsFinanceService::class);
+        $review = fn (): array => $service->viewModel([$storeId], ['ops_tab' => 'closeout'])['rows'];
+
+        $this->assertSame('ledger_clear', $review()[0]['review_state']);
+        $this->assertSame(0, (int) $review()[0]['remittance_currency_mismatch_entries']);
+
+        // Reconciled entries have no pending/approved count. A historical
+        // foreign-currency remittance must nevertheless block a false clear.
+        DB::table('remittances')->where('id', $remittanceId)->update(['currency' => 'USD']);
+        $after = $review();
+        $this->assertSame('needs_review', $after[0]['review_state']);
+        $this->assertSame(1, (int) $after[0]['remittance_currency_mismatch_entries']);
+        $this->assertSame(0, (int) $after[0]['pending_remittance_count']);
+        $this->assertSame(0, (int) $after[0]['awaiting_reconciliation']);
+        $this->actingAs($admin)
+            ->get('/admin/van-finance-support?ops_tab=closeout')
+            ->assertOk()
+            ->assertSee('Financial review required');
+
+        $this->assertDatabaseHas('remittances', [
+            'id' => $remittanceId,
+            'status' => 'reconciled',
+            'currency' => 'USD',
+        ]);
+        $this->assertSame(2, DB::table('custody_ledger_entries')->where('collection_account_id', $accountId)->count());
+
+        DB::table('remittances')->where('id', $remittanceId)->update(['currency' => 'KWD']);
+        $this->assertSame('ledger_clear', $review()[0]['review_state']);
+    }
+
     private function superAdmin(): User
     {
         $user = User::query()->create([
