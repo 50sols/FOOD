@@ -169,6 +169,49 @@ final class V2FinanceWorkbenchPanelAuthorityTest extends TestCase
         ]))->assertForbidden();
     }
 
+    public function test_ar_ap_reader_without_gl_entitlement_sees_no_journal_navigation(): void
+    {
+        [$viewer, $store] = $this->authorizedViewer('FIN-P303-UX-NO-GL');
+        $context = app(TenantContextResolver::class)->retail($viewer, $store->id);
+        $scope = $context->enterpriseScope;
+        $this->assertNotNull($scope);
+
+        // Change a disposable test-only entitlement, never production readiness
+        // or the enterprise role definitions.
+        app(ModuleEntitlementManager::class)->set(
+            FinanceFoundationService::MODULE,
+            new EntitlementScope(EntitlementScope::LEGAL_ENTITY, $scope->legalEntityId),
+            true,
+            ['finance.ar.read', 'finance.ap.read', 'finance.foundation.read'],
+            $viewer,
+        );
+
+        $journalUrl = route('admin.erp.finance.index', [
+            'store_id' => $store->id,
+            'tab' => 'journals',
+        ]);
+        $this->actingAs($viewer)->get($journalUrl)->assertForbidden();
+
+        foreach (['ar' => 'receivables', 'ap' => 'payables'] as $key => $tab) {
+            $response = $this->actingAs($viewer)->get(route('admin.erp.finance.index', [
+                'store_id' => $store->id,
+                'tab' => $tab,
+                'finance_panel' => 'documents',
+            ]))->assertOk();
+            $markup = html_entity_decode($response->getContent(), ENT_QUOTES | ENT_HTML5, 'UTF-8');
+            $this->assertStringNotContainsString('href="'.$journalUrl.'"', $markup, $key);
+        }
+
+        $overview = $this->actingAs($viewer)->get(route('admin.erp.finance.index', [
+            'store_id' => $store->id,
+            'tab' => 'overview',
+        ]))->assertOk();
+        $this->assertStringNotContainsString(
+            'href="'.$journalUrl.'&status=draft"',
+            html_entity_decode($overview->getContent(), ENT_QUOTES | ENT_HTML5, 'UTF-8'),
+        );
+    }
+
     public function test_gl_links_project_existing_read_permission_not_journal_ids_alone(): void
     {
         $template = file_get_contents(resource_path('views/admin/finance-workbench.blade.php'));
