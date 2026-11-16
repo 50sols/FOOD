@@ -895,7 +895,12 @@ final class B2bAccountLedgerService
             ->whereColumn('allocation.currency', 'invoice.currency')
             ->whereColumn('payment.provider_reference', 'receipt.idempotency_key')
             ->whereColumn('payment.amount', 'receipt.amount')
-            ->whereRaw('(SELECT COALESCE(SUM(other_allocation.amount), 0) FROM collection_allocations AS other_allocation WHERE other_allocation.collection_transaction_id = receipt.id) <= receipt.amount')
+            // All persisted money is DECIMAL(14,3). SQLite's SUM may turn
+            // 30.001 + 20.000 into 50.001000000000005 and wrongly reject a
+            // fully funded receipt. Quantize the aggregate back to the
+            // authoritative mill scale before comparing; 0.001 overcollection
+            // must still fail closed on both SQLite and MySQL/MariaDB.
+            ->whereRaw('(SELECT ROUND(COALESCE(SUM(other_allocation.amount), 0), 3) FROM collection_allocations AS other_allocation WHERE other_allocation.collection_transaction_id = receipt.id) <= receipt.amount')
             ->whereNotExists(static function (QueryBuilder $query): void {
                 $query->selectRaw('1')
                     ->from('collection_transactions as reversal')

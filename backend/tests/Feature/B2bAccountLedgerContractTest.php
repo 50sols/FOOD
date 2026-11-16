@@ -389,6 +389,22 @@ final class B2bAccountLedgerContractTest extends TestCase
         DB::table('collection_allocations')->where('id', $sourceId)
             ->update(['currency' => 'EGP']);
 
+        // The fix for binary SUM drift must not relax the 3-decimal source
+        // cap. A single mill of over-allocation voids the whole receipt.
+        $otherSourceId = DB::table('collection_allocations')
+            ->where('collection_transaction_id', $receipt->id)
+            ->where('invoice_id', $second->id)
+            ->value('id');
+        DB::table('collection_allocations')->where('id', $otherSourceId)
+            ->update(['amount' => '20.001']);
+        $this->assertSame(0.0, $ledger->invoiceAmounts($first)['paid_amount']);
+        $this->assertSame(0.0, $ledger->invoiceAmounts($second)['paid_amount']);
+        $this->assertSame(0.0, $ledger->summary($customer, $storeId)['total_credits']);
+        DB::table('collection_allocations')->where('id', $otherSourceId)
+            ->update(['amount' => '20.000']);
+        $this->assertSame(30.001, $ledger->invoiceAmounts($first)['paid_amount']);
+        $this->assertSame(20.0, $ledger->invoiceAmounts($second)['paid_amount']);
+
         // A posted reversal must remove the original field receipt from
         // readback without producing a second payment or a Finance journal.
         DB::table('collection_transactions')->insert([
