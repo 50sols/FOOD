@@ -160,12 +160,24 @@ final class InventoryLegalTitleAttestationVerifier
     /** @param object $inventory @param object $position */
     private function stockIdentity(object $inventory, object $position, int $storeId): string
     {
+        // Canonical balances can change and return to the same quantity within
+        // a timestamp's SQL precision. A later stock movement must invalidate
+        // the old title proof even when on-hand/reserved and updated_at match.
+        // This is a detection watermark, not an immutable owner-event ledger.
+        $movementVersion = DB::table('stock_movements')
+            ->where('inventory_id', (int) $inventory->id)
+            ->selectRaw('COUNT(*) as movement_count, MAX(id) as last_movement_id')
+            ->first();
+
         return json_encode([
             'inventory_id' => (int) $inventory->id,
             'owner_position_id' => (int) $position->id,
             'store_id' => $storeId,
             'warehouse_id' => (int) $inventory->warehouse_id,
             'product_id' => (int) $inventory->product_id,
+            'stock_movement_count' => (int) ($movementVersion->movement_count ?? 0),
+            'last_stock_movement_id' => $movementVersion->last_movement_id === null
+                ? null : (int) $movementVersion->last_movement_id,
             'owner_key' => (string) $position->owner_key,
             'owner_kind' => (string) $position->owner_kind,
             'supplier_id' => $position->supplier_id === null ? null : (int) $position->supplier_id,
