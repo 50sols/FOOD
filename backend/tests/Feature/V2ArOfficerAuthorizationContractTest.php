@@ -257,9 +257,10 @@ final class V2ArOfficerAuthorizationContractTest extends TestCase
         $this->enableFinance();
         $actor = $this->officer();
 
-        // OPERATIONS admits the actor to the ordinary B2B context but cannot
-        // transform the AR officer's shared finance.manage grant into GL/AP.
-        $actor->roles()->attach(Role::query()->where('code', 'OPERATIONS')->firstOrFail());
+        // FINANCE admits the actor to B2B and independently grants finance.manage.
+        // The concurrent AR_OFFICER duty must fail closed for GL/AP operations
+        // rather than inheriting this broad permission until P127 SoD resolves.
+        $actor->roles()->attach(Role::query()->where('code', 'FINANCE')->firstOrFail());
         $store = Store::query()->create([
             'store_type_id' => (int) DB::table('store_types')->where('code', 'B2B')->value('id'),
             'code' => 'V2-AR-OFFICER-SCOPE',
@@ -297,7 +298,7 @@ final class V2ArOfficerAuthorizationContractTest extends TestCase
             $actor, $store->id, 'finance.manage', 'finance.ar.manage',
         ));
 
-        // Reach a real B2B store through a separately granted operational
+        // Reach a real B2B store through a separately granted Finance
         // channel role. The AR tab must read with AR-specific entitlement,
         // whereas a direct GL create must be rejected at authorization (403)
         // rather than hitting request validation (422) or a missing row (404).
