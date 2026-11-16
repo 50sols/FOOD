@@ -7308,10 +7308,19 @@ class _WholesaleCheckoutDesignScreenState
                   final ar =
                       Localizations.localeOf(context).languageCode == 'ar';
                   final orderId = intValue(success['id']);
-                  final currency =
-                      success['currency']?.toString().trim().isNotEmpty == true
-                          ? success['currency'].toString()
-                          : 'KWD';
+                  // The order ID proves creation, not its accounting
+                  // denomination. Never show synthetic KWD for an absent or
+                  // contradictory server-confirmed receipt currency.
+                  final receiptCurrency = success['currency'];
+                  final cartCurrency = _latestCheckoutPayload?.cart['currency'];
+                  final currency = receiptCurrency is String &&
+                          cartCurrency is String &&
+                          RegExp(r'^[A-Z]{3}$')
+                              .hasMatch(receiptCurrency.trim().toUpperCase()) &&
+                          receiptCurrency.trim().toUpperCase() ==
+                              cartCurrency.trim().toUpperCase()
+                      ? receiptCurrency.trim().toUpperCase()
+                      : null;
                   final reference = success['order_number']
                               ?.toString()
                               .trim()
@@ -7325,10 +7334,14 @@ class _WholesaleCheckoutDesignScreenState
                               true
                           ? success['display_order_number'].toString().trim()
                           : '#$orderId');
-                  final subtotal = doubleValue(success['subtotal'], 0);
-                  final discount = doubleValue(success['discount_total'], 0);
-                  final delivery = doubleValue(success['delivery_total'], 0);
-                  final total = doubleValue(success['grand_total'], 0);
+                  final subtotal = _verifiedCheckoutMoney(success['subtotal']);
+                  final discount =
+                      _verifiedCheckoutMoney(success['discount_total']);
+                  final delivery =
+                      _verifiedCheckoutMoney(success['delivery_total']);
+                  final total = _verifiedCheckoutMoney(success['grand_total']);
+                  final verifiedReceiptMoney =
+                      currency != null && total != null;
 
                   return CustomerOrderSuccessPanel(
                     title: ar ? 'تم تأكيد طلبك' : 'Order confirmed',
@@ -7358,33 +7371,52 @@ class _WholesaleCheckoutDesignScreenState
                         },
                       ).toString(),
                     ),
-                    summary: CustomerCheckoutTotalsCard(
-                      rows: [
-                        CustomerCheckoutTotalRow(
-                          label:
-                              ar ? 'السعر قبل الخصم' : 'Price before discount',
-                          value: foodexMoneyText(subtotal, currency),
-                          valueColor: CustomerUiColors.wholesalePositiveValue,
-                        ),
-                        if (discount > 0)
-                          CustomerCheckoutTotalRow(
-                            label: ar ? 'الخصم' : 'Discount',
-                            value: '-${foodexMoneyText(discount, currency)}',
-                            valueColor: CustomerUiColors.wholesaleNegativeValue,
+                    summary: verifiedReceiptMoney
+                        ? CustomerCheckoutTotalsCard(
+                            rows: [
+                              if (subtotal != null)
+                                CustomerCheckoutTotalRow(
+                                  label: ar
+                                      ? 'السعر قبل الخصم'
+                                      : 'Price before discount',
+                                  value: foodexMoneyText(subtotal, currency),
+                                  valueColor:
+                                      CustomerUiColors.wholesalePositiveValue,
+                                ),
+                              if (discount != null && discount > 0)
+                                CustomerCheckoutTotalRow(
+                                  label: ar ? 'الخصم' : 'Discount',
+                                  value:
+                                      '-${foodexMoneyText(discount, currency)}',
+                                  valueColor:
+                                      CustomerUiColors.wholesaleNegativeValue,
+                                ),
+                              if (delivery != null && delivery > 0)
+                                CustomerCheckoutTotalRow(
+                                  label: ar ? 'التوصيل' : 'Delivery',
+                                  value: foodexMoneyText(delivery, currency),
+                                ),
+                              CustomerCheckoutTotalRow(
+                                label: ar ? 'السعر النهائي' : 'Final price',
+                                value: foodexMoneyText(total, currency),
+                                emphasized: true,
+                                valueColor:
+                                    CustomerUiColors.wholesaleFinalValue,
+                              ),
+                            ],
+                          )
+                        : Padding(
+                            padding: const EdgeInsets.all(12),
+                            child: Text(
+                              ar
+                                  ? 'تم تأكيد الطلب، لكن تفاصيل المبالغ غير موثقة في الاستجابة. راجع تفاصيل الطلب.'
+                                  : 'Order confirmed, but monetary totals were not verified in the response. View order details.',
+                              key: const ValueKey(
+                                'b2b-order-receipt-amounts-unverified',
+                              ),
+                              textAlign: TextAlign.center,
+                            ),
                           ),
-                        if (delivery > 0)
-                          CustomerCheckoutTotalRow(
-                            label: ar ? 'التوصيل' : 'Delivery',
-                            value: foodexMoneyText(delivery, currency),
-                          ),
-                        CustomerCheckoutTotalRow(
-                          label: ar ? 'السعر النهائي' : 'Final price',
-                          value: foodexMoneyText(total, currency),
-                          emphasized: true,
-                          valueColor: CustomerUiColors.wholesaleFinalValue,
-                        ),
-                      ],
-                    ),
                   );
                 }
 

@@ -2478,6 +2478,11 @@ void main() {
         findsOneWidget,
       );
       expect(find.text('FDX-B2B-4'), findsOneWidget);
+      // A complete, same-currency server confirmation keeps real totals.
+      expect(
+        find.byKey(const ValueKey('b2b-order-receipt-amounts-unverified')),
+        findsNothing,
+      );
       expect(api.lastPath, isNot('/api/v1/b2b/orders/4'));
 
       await tester.ensureVisible(
@@ -2500,6 +2505,88 @@ void main() {
       expect(find.text('/orders/4/track'), findsNothing);
     },
   );
+
+  // MOB-C03: a successful order identifier does not attest currency or
+  // monetary totals. Never manufacture a KWD/zero-value receipt in the UI.
+  for (final language in <String>['ar', 'en']) {
+    for (final scenario in <Map<String, Object?>>[
+      {
+        'name': 'missing currency',
+        'order': <String, Object?>{
+          'id': 4,
+          'order_number': 'FDX-B2B-4',
+          'subtotal': 25.5,
+          'grand_total': 25.5,
+        },
+      },
+      {
+        'name': 'conflicting currency',
+        'order': <String, Object?>{
+          'id': 4,
+          'order_number': 'FDX-B2B-4',
+          'currency': 'USD',
+          'subtotal': 25.5,
+          'grand_total': 25.5,
+        },
+      },
+      {
+        'name': 'unverified total',
+        'order': <String, Object?>{
+          'id': 4,
+          'order_number': 'FDX-B2B-4',
+          'currency': 'KWD',
+          'subtotal': 25.5,
+          'grand_total': 'not-a-number',
+        },
+      },
+    ]) {
+      testWidgets(
+        'MOB-C03 confirmation hides unverified receipt money ${scenario['name']} $language',
+        (tester) async {
+          tester.view.physicalSize = const Size(900, 1900);
+          tester.view.devicePixelRatio = 1;
+          addTearDown(() {
+            tester.view.resetPhysicalSize();
+            tester.view.resetDevicePixelRatio();
+          });
+          await tester.pumpWidget(FoodexCustomerApp(
+            session: b2b,
+            locale: Locale(language),
+            initialRoute: '/b2b/checkout?store=7',
+            b2bApi: _FakeB2bApi(const <String, Object?>{'id': 4}),
+            storefrontApi: const _CheckoutStorefrontApi(),
+            wholesaleCommerceApi: _FakeWholesaleCommerceApi(scenario['order']),
+          ));
+          await _pumpCustomerFrames(tester);
+          final submit = find.byKey(const ValueKey('b2b-checkout-submit'));
+          await tester.scrollUntilVisible(
+            submit,
+            300,
+            scrollable: find
+                .descendant(
+                  of: find.byKey(const ValueKey('b2b-checkout-data')),
+                  matching: find.byType(Scrollable),
+                )
+                .first,
+          );
+          await tester.tap(submit);
+          await _pumpCustomerFrames(tester);
+
+          expect(
+            find.byKey(const ValueKey('customer-order-success')),
+            findsOneWidget,
+          );
+          expect(find.text('FDX-B2B-4'), findsOneWidget);
+          expect(
+            find.byKey(
+              const ValueKey('b2b-order-receipt-amounts-unverified'),
+            ),
+            findsOneWidget,
+          );
+        },
+      );
+    }
+  }
 
   testWidgets('B2B checkout rejects missing authoritative order reference', (
     tester,
