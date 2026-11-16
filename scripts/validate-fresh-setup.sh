@@ -522,6 +522,31 @@ wizard_post() {
     if [[ "$status" != "000" ]]; then
       echo "::error::Web installer step $step returned HTTP $status, expected 302"
       tail -n 100 "$fresh/backend/storage/logs/laravel.log" 2>/dev/null || true
+      # On disposable CI only, diagnose a real migration failure instead of
+      # reporting a bare 422. This does NOT retry the HTTP wizard or allow
+      # the test to pass. Never print .env, form fields or database passwords.
+      if [[ "$step" == "11" ]]; then
+        (
+          cd "$fresh/backend"
+          php artisan migrate --force --no-interaction > /tmp/foodex-g004-migration-diagnostic.log 2>&1 || true
+        )
+        python3 - <<'PY'
+import re
+from pathlib import Path
+log = Path("/tmp/foodex-g004-migration-diagnostic.log").read_text(encoding="utf-8", errors="replace")
+for line in log.splitlines():
+    if "SQLSTATE[" in line or "QueryException" in line or "FAILED" in line or "ERROR" in line:
+        # Public CI may inspect this output; redact SQL values/connection data.
+        code = re.search(r"SQLSTATE\[[A-Z0-9]+\]", line)
+        migration = re.search(r"(?:[12][0-9]{3}_[0-9_]+_[a-z0-9_]+)", line)
+        sqlcode = re.search(r"\b(?:1059|42S01|42S02|42S22|1061|1062|1071|1215|1824|3780|HY000)\b", line)
+        details = [part for part in (code.group(0) if code else None, migration.group(0) if migration else None, sqlcode.group(0) if sqlcode else None) if part]
+        print("::error::G004 disposable MySQL migration failed: " + (", ".join(details) if details else "review migration schema compatibility"))
+        break
+else:
+    print("::error::G004 MySQL migration failed with no safely printable SQLSTATE; inspect migration acceptance tests")
+PY
+      fi
       return 1
     fi
     sleep 1
