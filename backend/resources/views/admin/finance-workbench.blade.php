@@ -554,7 +554,7 @@ $trendMax=max(1,max(array_map(fn($r)=>max(abs((float)$r['revenue']),abs((float)$
 <details class="foodex-ops-actions">
 <summary aria-label="{{ __('finance_workbench.common.actions') }}: {{ $document->document_number }}">⋮</summary>
 <div class="foodex-ops-menu">
-@if($document->journal_id)<a href="{{ route('admin.erp.finance.index',[...$routeBase,'tab'=>'journals','journal'=>$document->journal_id]) }}">{{ __('finance_workbench.actions.view_ledger') }}</a>@endif
+@if($document->journal_id && ($access['gl_read'] ?? false))<a href="{{ route('admin.erp.finance.index',[...$routeBase,'tab'=>'journals','journal'=>$document->journal_id]) }}">{{ __('finance_workbench.actions.view_ledger') }}</a>@endif
 <a href="{{ route('admin.erp.finance.index',[...$routeBase,'tab'=>'receivables','finance_panel'=>'settlements','settlement_document_id'=>$document->id]) }}">{{ __('finance_workbench.receivables.settlements') }}</a>
 </div>
 </details></td></tr>
@@ -695,7 +695,7 @@ $trendMax=max(1,max(array_map(fn($r)=>max(abs((float)$r['revenue']),abs((float)$
 </td>
 <td><span class="finance-status">{{ $statusLabel($settlement->status) }}</span></td>
 <td>{{ $data['settlementCreators']->get($settlement->created_by, '—') }}</td>
-<td>@if($settlement->journal_id)<a class="finance-button" href="{{ route('admin.erp.finance.index',[...$routeBase,'tab'=>'journals','journal'=>$settlement->journal_id]) }}">{{ __('finance_workbench.actions.view_ledger') }}</a>@else—@endif</td>
+<td>@if($settlement->journal_id && ($access['gl_read'] ?? false))<a class="finance-button" href="{{ route('admin.erp.finance.index',[...$routeBase,'tab'=>'journals','journal'=>$settlement->journal_id]) }}">{{ __('finance_workbench.actions.view_ledger') }}</a>@else—@endif</td>
 <td>
 @if(($access['ar_post'] ?? false) && $settlement->status==='draft' && (int)$settlement->created_by !== (int)$user->id)
 <span class="finance-notice" data-v2-ar-source-unverified>{{ __('finance_workbench.receivables.verification_pending') }}</span>
@@ -739,7 +739,7 @@ $trendMax=max(1,max(array_map(fn($r)=>max(abs((float)$r['revenue']),abs((float)$
 @if($activeFinancePanel === 'documents')
 <div data-finance-subpanel="documents">
 <div class="finance-table-wrap"><table class="finance-table"><thead><tr><th>{{ __('finance_workbench.payables.document') }}</th><th>{{ __('finance_workbench.common.supplier') }}</th><th>{{ __('finance_workbench.common.date') }}</th><th>{{ __('finance_workbench.common.due_date') }}</th><th>{{ __('finance_workbench.common.amount') }}</th><th>{{ __('finance_workbench.common.status') }}</th><th>{{ __('finance_workbench.actions.view_ledger') }}</th></tr></thead><tbody>
-@forelse($data['documents'] as $document)<tr><td><strong>{{ $document->document_number }}</strong></td><td>{{ $document->supplier_name ?: $document->supplier_reference }}</td><td>{{ optional($document->entry_date)->format('Y-m-d') }}</td><td>{{ optional($document->due_date)->format('Y-m-d') }}</td><td class="finance-money">{{ $money($document->amount) }} {{ $document->currency_code }}</td><td><span class="finance-status">{{ $statusLabel($document->status) }}</span></td><td>@if($document->journal_id)<a class="finance-button" href="{{ route('admin.erp.finance.index',[...$routeBase,'tab'=>'journals','journal'=>$document->journal_id]) }}">{{ __('finance_workbench.actions.view_ledger') }}</a>@else—@endif</td></tr>
+@forelse($data['documents'] as $document)<tr><td><strong>{{ $document->document_number }}</strong></td><td>{{ $document->supplier_name ?: $document->supplier_reference }}</td><td>{{ optional($document->entry_date)->format('Y-m-d') }}</td><td>{{ optional($document->due_date)->format('Y-m-d') }}</td><td class="finance-money">{{ $money($document->amount) }} {{ $document->currency_code }}</td><td><span class="finance-status">{{ $statusLabel($document->status) }}</span></td><td>@if($document->journal_id && ($access['gl_read'] ?? false))<a class="finance-button" href="{{ route('admin.erp.finance.index',[...$routeBase,'tab'=>'journals','journal'=>$document->journal_id]) }}">{{ __('finance_workbench.actions.view_ledger') }}</a>@else—@endif</td></tr>
 @empty<tr><td colspan="7" class="finance-empty">{{ __('finance_workbench.common.no_data') }}</td></tr>@endforelse
 </tbody></table></div><div class="finance-pagination">{{ $data['documents']->links() }}</div>
 </div>
