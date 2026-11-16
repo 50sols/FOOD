@@ -1313,8 +1313,32 @@ final class V2InventoryOwnerProvenanceTest extends TestCase
             $verifier->stockRevisionSha256($inventory, $position, $stock['store_id']),
         );
         $this->assertSame('UNVERIFIED', $read->snapshot($actor, $stock['inventory_id'])['state']);
-        DB::table('stock_movements')->where('id', $movementId)->delete();
-        $this->assertSame('CERTIFIED', $read->snapshot($actor, $stock['inventory_id'])['state']);
+        // Database authority, not just the read-side watermark, must reject
+        // erasing an evidence-linked movement. Otherwise a movement's
+        // INSERT→DELETE would re-certify a superseded signed legal title.
+        try {
+            DB::table('stock_movements')->where('id', $movementId)->delete();
+            $this->fail('Attested stock movement deletion must fail at the SQL boundary.');
+        } catch (QueryException $exception) {
+            $this->assertNotEmpty($exception->getMessage());
+        }
+        $this->assertDatabaseHas('stock_movements', ['id' => $movementId]);
+        $this->assertSame('UNVERIFIED', $read->snapshot($actor, $stock['inventory_id'])['state']);
+
+        // Mutating the movement payload or its inventory scope must likewise
+        // fail, without changing canonical stock or owner evidence.
+        try {
+            DB::table('stock_movements')->where('id', $movementId)
+                ->update(['quantity' => '0.002']);
+            $this->fail('Attested movement history must not be rewritten.');
+        } catch (QueryException $exception) {
+            $this->assertNotEmpty($exception->getMessage());
+        }
+        $this->assertDatabaseHas('stock_movements', [
+            'id' => $movementId,
+            'quantity' => '0.001',
+        ]);
+        $this->assertSame('UNVERIFIED', $read->snapshot($actor, $stock['inventory_id'])['state']);
 
         // Legal-owner entity is independent of the store/warehouse holder.
         // An attested store cannot move under another legal entity and keep
