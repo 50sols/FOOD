@@ -160,7 +160,7 @@ final class AdminUserDeletionService
 
             // Polymorphic audit/identity links are not necessarily declared as
             // foreign keys. All known model morph conventions fail closed.
-            foreach (['auditable', 'subject', 'model', 'owner', 'target'] as $prefix) {
+            foreach (['auditable', 'subject', 'model', 'owner', 'target', 'tokenable', 'notifiable', 'actor', 'causer', 'recipient'] as $prefix) {
                 if (! isset($columnSet[$prefix.'_type'], $columnSet[$prefix.'_id'])) {
                     continue;
                 }
