@@ -548,8 +548,7 @@ void main() {
           );
         }),
       );
-      final result =
-          await api.get('/api/v1/b2b/invoices/31?store_id=7') as Map;
+      final result = await api.get('/api/v1/b2b/invoices/31?store_id=7') as Map;
       final data = result['data'] as Map;
       expect(data['paid_amount'], 20.125);
       expect(data['outstanding_amount'], 0.001);
