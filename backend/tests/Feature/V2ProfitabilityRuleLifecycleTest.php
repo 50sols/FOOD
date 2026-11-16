@@ -27,6 +27,72 @@ final class V2ProfitabilityRuleLifecycleTest extends TestCase
         ]);
     }
 
+    public function test_profitability_configuration_help_and_blocked_readiness_are_bilingual_without_default_margin(): void
+    {
+        [$maker, $store, $product] = $this->fixture();
+        $page = route('admin.commercial.sales-control', ['store_id' => $store, 'product' => $product]);
+
+        foreach (['ar', 'en'] as $locale) {
+            $maker->forceFill(['locale' => $locale])->save();
+            app()->setLocale($locale);
+
+            $this->actingAs($maker->fresh())->get($page)->assertOk()
+                ->assertSee(__('commercial.profitability.readiness_label', [], $locale))
+                ->assertSee(__('commercial.profitability.readiness_blocked', [], $locale))
+                ->assertSee(__('commercial.profitability.help_source', [], $locale))
+                ->assertSee(__('commercial.profitability.help_default', [], $locale))
+                ->assertSee(__('commercial.profitability.help_permissions', [], $locale))
+                ->assertSee(__('commercial.profitability.test_inputs', [], $locale))
+                ->assertSee('data-v2-p229-readiness', false)
+                ->assertSee('data-readiness-state="blocked"', false)
+                ->assertSee('name="profitability_action" value="validate_proposal"', false)
+                ->assertSee('placeholder="12.50"', false);
+        }
+
+        $this->assertSame(0, DB::table('commercial_profitability_rule_revisions')->count());
+    }
+
+    public function test_scoped_test_inputs_uses_save_validator_without_finance_or_audit_writes(): void
+    {
+        [$maker, $store, $product] = $this->fixture();
+        $save = $this->saveRoute($store, $product);
+        $payload = [
+            ...$this->proposal((string) Str::uuid(), '12.50'),
+            'profitability_action' => 'validate_proposal',
+        ];
+
+        foreach (['en', 'ar'] as $locale) {
+            $maker->forceFill(['locale' => $locale])->save();
+            app()->setLocale($locale);
+
+            $this->actingAs($maker->fresh())->put($save, $payload)
+                ->assertRedirect()
+                ->assertSessionHasNoErrors()
+                ->assertSessionHas('status', __('commercial.profitability.validated_inactive', [], $locale));
+
+            $this->assertSame(0, DB::table('commercial_profitability_rule_revisions')->count());
+            $this->assertSame(0, DB::table('audit_logs')->where('event', 'commercial.profitability_rule.proposed')->count());
+            $this->assertSame(0, DB::table('product_commercial_policies')->count());
+
+            $this->actingAs($maker->fresh())->put($save, [
+                ...$payload, 'minimum_margin_percent' => '100.01',
+            ])->assertSessionHasErrors('minimum_margin_percent');
+            $this->actingAs($maker->fresh())->put($save, [
+                ...$payload, 'untrusted_cost_basis' => '42',
+            ])->assertSessionHasErrors('untrusted_cost_basis');
+            $this->assertSame(0, DB::table('commercial_profitability_rule_revisions')->count());
+        }
+
+        // Testing never consumes the hidden idempotency key: Save uses the
+        // same original UUID but still creates only an inactive draft.
+        $this->actingAs($maker->fresh())->put($save, [
+            ...$payload, 'profitability_action' => 'propose',
+        ])->assertSessionHasNoErrors();
+        $this->assertDatabaseHas('commercial_profitability_rule_revisions', [
+            'request_id' => $payload['request_id'], 'status' => 'DRAFT',
+        ]);
+    }
+
     public function test_catalog_view_only_role_cannot_read_confidential_profitability_revisions(): void
     {
         [$maker, $store, $product] = $this->fixture();
