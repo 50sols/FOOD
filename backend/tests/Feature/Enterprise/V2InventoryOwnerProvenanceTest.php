@@ -1186,21 +1186,16 @@ final class V2InventoryOwnerProvenanceTest extends TestCase
         $this->assertFalse($advisory['certified']);
         $this->assertSame($approved->id, $advisory['policy']->id);
 
-        // Existing policy evidence must not survive an intervening legal
-        // company change (or a corrupted company scope), even for a store
-        // whose numeric ID and warehouse are unchanged.
-        $originalCompany = (int) DB::table('enterprise_inventory_ownership_rule_revisions')
-            ->where('id', $approved->id)->value('company_id');
-        DB::table('enterprise_inventory_ownership_rule_revisions')
-            ->where('id', $approved->id)->update(['company_id' => $originalCompany + 987654]);
-        $foreignLegalPolicy = $service->advisoryFor(
-            $checker, $stock['store_id'], 'B2C', null, (int) $request['warehouse_id'],
-        );
-        $this->assertNull($foreignLegalPolicy['policy']);
-        $this->assertSame('UNKNOWN', $foreignLegalPolicy['state']);
-        $this->assertFalse($foreignLegalPolicy['certified']);
-        DB::table('enterprise_inventory_ownership_rule_revisions')
-            ->where('id', $approved->id)->update(['company_id' => $originalCompany]);
+        // An ownership policy for a different sales channel cannot be
+        // presented as title guidance for the current warehouse/store.
+        try {
+            $service->advisoryFor(
+                $checker, $stock['store_id'], 'B2B', null, (int) $request['warehouse_id'],
+            );
+            $this->fail('A B2C store must reject a B2B legal-title policy query.');
+        } catch (HttpException $exception) {
+            $this->assertSame(422, $exception->getStatusCode());
+        }
 
         $this->assertSame('UNKNOWN', app(InventoryOwnerProvenanceReadService::class)
             ->snapshot($this->inventoryActor($stock['store_id']), $stock['inventory_id'])['state']);
