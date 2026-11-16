@@ -1365,7 +1365,7 @@ final class V2ReceivableSettlementWorkbenchTest extends TestCase
         foreach (['ar', 'en'] as $locale) {
             $maker->forceFill(['locale' => $locale])->save();
             $this->actingAs($maker->fresh())->get(route('admin.erp.finance.index', [
-                'store_id' => $store->id, 'tab' => 'receivables',
+                'store_id' => $store->id, 'tab' => 'receivables', 'finance_panel' => 'settlements',
             ]))->assertOk()
                 ->assertSee(__('finance_workbench.receivables.mapping_readiness_label', [], $locale))
                 ->assertSee(__('finance_workbench.receivables.mapping_readiness_missing_wallet', [], $locale))
@@ -1402,7 +1402,7 @@ final class V2ReceivableSettlementWorkbenchTest extends TestCase
         foreach (['ar', 'en'] as $locale) {
             $maker->forceFill(['locale' => $locale])->save();
             $this->actingAs($maker->fresh())->get(route('admin.erp.finance.index', [
-                'store_id' => $store->id, 'tab' => 'receivables',
+                'store_id' => $store->id, 'tab' => 'receivables', 'finance_panel' => 'settlements',
             ]))->assertOk()
                 ->assertSee(__('finance_workbench.receivables.mapping_test', [], $locale))
                 ->assertSee(__('finance_workbench.receivables.mapping_test_help', [], $locale))
@@ -1468,7 +1468,7 @@ final class V2ReceivableSettlementWorkbenchTest extends TestCase
         foreach (['ar', 'en'] as $locale) {
             $checker->forceFill(['locale' => $locale])->save();
             $this->actingAs($checker->fresh())->get(route('admin.erp.finance.index', [
-                'store_id' => $store->id, 'tab' => 'receivables',
+                'store_id' => $store->id, 'tab' => 'receivables', 'finance_panel' => 'settlements',
             ]))->assertOk()
                 ->assertSee(__('finance_workbench.receivables.mapping_title', [], $locale))
                 ->assertSee(__('finance_workbench.receivables.mapping_access_help', [], $locale))
