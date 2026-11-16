@@ -191,7 +191,12 @@ final class InventoryOwnershipRuleService
     public function advisoryFor(User $actor, int $storeId, string $channel, ?int $supplierId, ?int $warehouseId): array
     {
         $this->authorize($actor, $storeId, 'inventory.view');
+        // A store's legal entity can change after a rule was approved.
+        // Never serve a previous company's policy as current title guidance.
+        $this->assertChannel($storeId, $channel);
+        $companyId = $this->companyForStore($storeId);
         $rules = DB::table('enterprise_inventory_ownership_rule_revisions')
+            ->where('company_id', $companyId)
             ->where('store_id', $storeId)->where('channel', $channel)
             ->where('status', 'APPROVED_RULE')
             ->where('effective_at', '<=', now())
