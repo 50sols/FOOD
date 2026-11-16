@@ -41,9 +41,11 @@
                 <p class="wms-sub" role="status">{{ __('enterprise_wms.record360.ownership.notice') }}</p>
                 <div class="wms-360-facts">
                     <span>{{ __('enterprise_wms.record360.ownership.state_label') }}<strong>{{ __('enterprise_wms.record360.ownership.states.'.$ownerTitle['state']) }}</strong></span>
+                    <span data-v2-stock-custodian="warehouse">{{ __('enterprise_wms.record360.ownership.custodian') }}<strong>{{ __('enterprise_wms.record360.ownership.warehouse_custodian') }} · {{ $record->warehouse_name }}</strong></span>
                     <span>{{ __('enterprise_wms.common.quantity') }}<strong>{{ $ownerTitle['quantity'] }}</strong></span>
                     <span>{{ __('enterprise_wms.common.reserved') }}<strong>{{ $ownerTitle['reserved_quantity'] }}</strong></span>
                 </div>
+                <p class="wms-sub" data-v2-legal-valuation-status="unavailable">{{ __('enterprise_wms.record360.ownership.owner_valuation_unavailable') }}</p>
                 <div class="wms-table-wrap"><table class="wms-table foodex-table" data-pagination-exempt="bounded-record-360">
                     <thead><tr>
                         <th scope="col">{{ __('enterprise_wms.record360.ownership.owner') }}</th>
@@ -54,7 +56,7 @@
                     <tbody>
                     @foreach($ownerTitle['positions'] as $ownerPosition)
                         <tr>
-                            <td>{{ __('enterprise_wms.record360.ownership.kinds.'.$ownerPosition['owner_kind']) }}@if($ownerPosition['supplier_id'] !== null) · #{{ $ownerPosition['supplier_id'] }}@endif</td>
+                            <td>{{ __('enterprise_wms.record360.ownership.kinds.'.$ownerPosition['owner_kind']) }}@if($ownerPosition['supplier_name'] !== null) · {{ $ownerPosition['supplier_name'] }}@endif</td>
                             <td>{{ $ownerPosition['quantity'] }}</td>
                             <td>{{ $ownerPosition['reserved_quantity'] }}</td>
                             <td>
