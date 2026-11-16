@@ -3579,7 +3579,7 @@ class _PurchaseCategoryDistribution extends StatelessWidget {
                   ),
                 ),
                 Text(
-                  '${percentageLabel} · '
+                  '$percentageLabel · '
                   '${_reportMoney(row['purchase_total'], currency)}',
                   style: Theme.of(context).textTheme.bodySmall?.copyWith(
                         fontSize:
@@ -3609,9 +3609,11 @@ List<Map<Object?, Object?>> _reportRows(Object? value) => value is List
     : const <Map<Object?, Object?>>[];
 
 double? _reportFiniteDouble(Object? value) {
-  if (value is! num && value is! String) return null;
-  final amount =
-      value is num ? value.toDouble() : double.tryParse(value.trim());
+  final amount = switch (value) {
+    num number => number.toDouble(),
+    String text => double.tryParse(text.trim()),
+    _ => null,
+  };
   return amount != null && amount.isFinite ? amount : null;
 }
 
