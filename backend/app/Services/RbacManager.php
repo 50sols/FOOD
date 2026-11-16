@@ -7,6 +7,7 @@ use App\Models\Role;
 use App\Models\User;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Str;
 use Illuminate\Validation\Rule;
 use Illuminate\Validation\ValidationException;
@@ -60,6 +61,12 @@ final class RbacManager
     public function setUserActive(User $actor, User $target, bool $active, ?string $reason, Request $request): User
     {
         abort_if($target->isPlatformOwner(), 403, 'Platform Owner status is internally managed.');
+        // An archived identity is a separate state: restoration is a global
+        // control-plane action, never an implicit store-operator reactivation.
+        if ($active && $target->archived_at !== null) {
+            abort_unless($actor->hasRole('SUPER_ADMIN'), 403);
+        }
+
         if (! $active && $actor->is($target)) {
             throw ValidationException::withMessages(['is_active' => [__('admin.security.errors.self_deactivate')]]);
         }
@@ -87,6 +94,10 @@ final class RbacManager
         // The audit and lifecycle mutation form one DB transaction. A failed
         // audit write must not leave an untraceable archive or revoked session.
         return DB::transaction(function () use ($target, $actor, $active, $reason, $request): User {
+            if ($active && $target->archived_at !== null) {
+                $target = User::query()->lockForUpdate()->findOrFail($target->getKey());
+                abort_unless($actor->hasRole('SUPER_ADMIN'), 403);
+            }
             if (! $active) {
                 // Lock the same persistent row as role demotions before re-reading
                 // the live Super Admin count. Two independent offboarding requests
@@ -111,6 +122,10 @@ final class RbacManager
                 'is_active' => $active,
                 'deactivated_at' => $active ? null : now(),
                 'deactivation_reason' => $active ? null : ($reason !== null && trim($reason) !== '' ? trim($reason) : null),
+                // Restoring a deliberately archived identity clears the marker
+                // only after the existing typed reason/email confirmation.
+                'archived_at' => $active ? null : $target->archived_at,
+                'archived_by' => $active ? null : $target->archived_by,
                 // A former remember-me cookie must not authenticate after reactivation.
                 'remember_token' => $active ? $target->getRememberToken() : Str::random(60),
             ])->save();
@@ -132,6 +147,71 @@ final class RbacManager
 
             return $fresh;
         });
+    }
+
+    /**
+     * P068: Archive is a separate, explicit state from temporary deactivation.
+     * No identity, financial record, assignment or audit row is deleted.
+     */
+    public function archiveUser(User $actor, User $target, string $reason, Request $request): User
+    {
+        abort_unless($actor->is_active && $actor->hasRole('SUPER_ADMIN')
+            && $actor->hasPermission('users.status.manage'), 403);
+
+        return DB::transaction(function () use ($actor, $target, $reason, $request): User {
+            // Keep the same role-first lock order as ordinary deactivation
+            // and role removal, preventing last-admin concurrent transitions.
+            $this->lockSuperAdminRoleForMutation();
+            $locked = User::query()->lockForUpdate()->findOrFail($target->getKey());
+
+            abort_if($actor->is($locked), 403);
+            abort_if((bool) $locked->is_platform_customer, 403);
+            abort_if($locked->isPlatformOwner()
+                || $locked->roles()->where('roles.code', 'PLATFORM_OWNER')->exists()
+                || (Schema::hasTable('platform_owner_registry')
+                    && DB::table('platform_owner_registry')->where('user_id', $locked->getKey())->exists()), 403);
+
+            if ($locked->archived_at !== null) {
+                throw ValidationException::withMessages([
+                    'user' => [__('admin.security.errors.user_already_archived')],
+                ]);
+            }
+            if ($this->isLastActiveSuperAdmin($locked)) {
+                throw ValidationException::withMessages([
+                    'user' => [__('admin.security.errors.last_super_admin')],
+                ]);
+            }
+            // Inactive accounts can still hold unfinished custody; verify the
+            // same operational guard before marking them archived.
+            if ($this->hasOpenOperationalAssignments($locked)) {
+                throw ValidationException::withMessages([
+                    'user' => [__('admin.security.errors.open_operational_assignments')],
+                ]);
+            }
+
+            $before = $this->userSnapshot($locked);
+            if ($locked->is_active) {
+                $locked = $this->setUserActive($actor, $locked, false, $reason, $request);
+            } else {
+                // Preserve the original deactivation timestamp; explicitly
+                // rotate any unexpected credentials left on a dormant account.
+                $locked->forceFill(['remember_token' => Str::random(60)])->save();
+                $locked->tokens()->delete();
+                $this->securitySessions->revokeForUser($locked, $actor);
+            }
+
+            $locked->forceFill([
+                'archived_at' => now(),
+                'archived_by' => $actor->getKey(),
+            ])->save();
+
+            $after = $this->userSnapshot($locked->refresh());
+            $after['change_reason'] = trim($reason);
+            $after['impact_reviewed'] = $request->boolean('impact_reviewed');
+            $this->audit->record('user.archived', $actor, $locked, $before, $after, $request);
+
+            return $locked;
+        }, 3);
     }
 
     /**
@@ -889,6 +969,8 @@ final class RbacManager
             'id' => (int) $user->getKey(),
             'is_active' => (bool) $user->is_active,
             'deactivated_at' => $user->deactivated_at?->toIso8601String(),
+            'archived_at' => $user->archived_at?->toIso8601String(),
+            'archived_by' => $user->archived_by,
             'deactivation_reason' => $user->deactivation_reason,
             'global_roles' => $user->roles->pluck('code')->sort()->values()->all(),
             'store_roles' => $user->storeRoleAssignments
