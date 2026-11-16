@@ -12,6 +12,7 @@ use App\Services\EnterpriseModuleAdministration;
 use Database\Seeders\CoreReferenceSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
+use Tests\Support\SyntheticErpWorkflowEvidence;
 use Tests\TestCase;
 
 /**
@@ -85,6 +86,8 @@ final class V2ErpWorkflowReadinessCertificationTest extends TestCase
     {
         $actor = $this->privilegedActor();
         $this->enableAndEntitle($actor);
+        // Explicit proof fixture only for this positive revocation scenario.
+        SyntheticErpWorkflowEvidence::install();
         $registry = app(ModuleRegistry::class);
         $readiness = app(ModuleOperationalReadiness::class);
 
