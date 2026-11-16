@@ -4,7 +4,6 @@ use Illuminate\Database\Migrations\Migration;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
-use RuntimeException;
 
 return new class extends Migration
 {
@@ -28,7 +27,7 @@ return new class extends Migration
                 && DB::table('users')->whereNotNull('archived_at')->exists())
             || (Schema::hasColumn('users', 'archived_by')
                 && DB::table('users')->whereNotNull('archived_by')->exists())) {
-            throw new RuntimeException('Cannot roll back user archival metadata while retained archival history exists.');
+            throw new \RuntimeException('Cannot roll back user archival metadata while retained archival history exists.');
         }
 
         Schema::table('users', function (Blueprint $table): void {
