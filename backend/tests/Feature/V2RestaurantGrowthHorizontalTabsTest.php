@@ -86,7 +86,7 @@ final class V2RestaurantGrowthHorizontalTabsTest extends TestCase
 
         $this->actingAs($actor)
             ->get(route('admin.smart-ordering.growth.index', ['site' => $foreignSite, 'tab' => 'accounting']))
-            ->assertForbidden();
+            ->assertNotFound();
 
         $wholesale = User::query()->create([
             'name' => 'Wholesale Only',
@@ -98,7 +98,7 @@ final class V2RestaurantGrowthHorizontalTabsTest extends TestCase
 
         $this->actingAs($wholesale)
             ->get(route('admin.smart-ordering.growth.index', ['site' => $site, 'tab' => 'gift_cards']))
-            ->assertForbidden();
+            ->assertNotFound();
 
         $this->assertDatabaseCount('restaurant_saas_gift_cards', 0);
     }
