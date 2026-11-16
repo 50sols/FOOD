@@ -31,6 +31,7 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
+use Symfony\Component\HttpKernel\Exception\HttpException;
 use Tests\TestCase;
 
 final class V2ReceivableSettlementWorkbenchTest extends TestCase
@@ -1615,7 +1616,7 @@ final class V2ReceivableSettlementWorkbenchTest extends TestCase
         try {
             $service->review($maker, $context, $mapping->id, 'approve');
             $this->fail('Mapping maker must not self-approve.');
-        } catch (\Symfony\Component\HttpKernel\Exception\HttpException $exception) {
+        } catch (HttpException $exception) {
             $this->assertSame(403, $exception->getStatusCode());
         }
 
