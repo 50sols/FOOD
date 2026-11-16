@@ -99,6 +99,10 @@ final class V2ProcurementWorkbenchTabLayoutTest extends TestCase
             $this->assertStringContainsString('name="tab" value="'.$tab.'"', $html);
             $this->assertStringContainsString('name="store_id" value="'.$store->id.'"', $html);
             $this->assertStringContainsString('name="q" value="SAFE-PREFIX"', $html);
+            parse_str((string) parse_url((string) $response->viewData('rows')->url(2), PHP_URL_QUERY), $pageQuery);
+            $this->assertSame($tab, $pageQuery['tab'] ?? null);
+            $this->assertSame((string) $store->id, (string) ($pageQuery['store_id'] ?? ''));
+            $this->assertSame('SAFE-PREFIX', $pageQuery['q'] ?? null);
         }
 
         foreach (self::FOOTER_PAGINATION_TABS as $tab) {
@@ -114,6 +118,10 @@ final class V2ProcurementWorkbenchTabLayoutTest extends TestCase
             $this->assertStringContainsString('name="tab" value="'.$tab.'"', $html);
             $this->assertStringContainsString('name="store_id" value="'.$store->id.'"', $html);
             $this->assertStringContainsString('name="q" value="SAFE-PREFIX"', $html);
+            parse_str((string) parse_url((string) $response->viewData('rows')->url(2), PHP_URL_QUERY), $pageQuery);
+            $this->assertSame($tab, $pageQuery['tab'] ?? null);
+            $this->assertSame((string) $store->id, (string) ($pageQuery['store_id'] ?? ''));
+            $this->assertSame('SAFE-PREFIX', $pageQuery['q'] ?? null);
         }
 
         foreach (['overview', 'statements', 'reports'] as $tab) {
@@ -146,6 +154,40 @@ final class V2ProcurementWorkbenchTabLayoutTest extends TestCase
             'store_id' => $own->id,
             'q' => 'forged',
         ]))->assertForbidden();
+    }
+
+    public function test_denied_tab_permission_never_appears_as_a_link_or_opens_by_direct_url(): void
+    {
+        $this->enableProcurement();
+        [$actor, $store] = $this->operator('V2-PROC-3964-DENY');
+
+        foreach ([
+            'procurement.purchase_requests.view' => ['requests', 'rfqs'],
+            'procurement.purchase_invoices.view' => ['invoices', 'matches'],
+        ] as $permissionCode => $deniedTabs) {
+            DB::table('user_permission_overrides')->insert([
+                'user_id' => $actor->id,
+                'permission_id' => Permission::query()->where('code', $permissionCode)->firstOrFail()->id,
+                'scope_key' => 'global',
+                'store_id' => null,
+                'effect' => 'deny',
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+            $actor->forceFill(['has_permission_overrides' => true])->save();
+            $response = $this->actingAs($actor->fresh())->get(route('admin.erp.procurement.index', [
+                'tab' => 'suppliers',
+                'store_id' => $store->id,
+            ]))->assertOk();
+
+            foreach ($deniedTabs as $tab) {
+                $response->assertDontSee('data-procurement-tab="'.$tab.'"', false);
+                $this->actingAs($actor->fresh())->get(route('admin.erp.procurement.index', [
+                    'tab' => $tab,
+                    'store_id' => $store->id,
+                ]))->assertForbidden();
+            }
+        }
     }
 
     private function enableProcurement(): void
