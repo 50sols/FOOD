@@ -1255,6 +1255,18 @@ final class V2ReceivableSettlementWorkbenchTest extends TestCase
             $maker,
         );
 
+        // The existing AR settings page explains required setup in both
+        // languages without asking users for raw wallet/account identifiers.
+        foreach (['ar', 'en'] as $locale) {
+            $maker->forceFill(['locale' => $locale])->save();
+            $this->actingAs($maker->fresh())->get(route('admin.erp.finance.index', [
+                'store_id' => $store->id, 'tab' => 'receivables',
+            ]))->assertOk()
+                ->assertSee(__('finance_workbench.receivables.mapping_readiness_label', [], $locale))
+                ->assertSee(__('finance_workbench.receivables.mapping_readiness_missing_wallet', [], $locale))
+                ->assertDontSee('id="p303-collector-wallet"', false);
+        }
+
         $driverId = DB::table('drivers')->insertGetId([
             'user_id' => $maker->id,
             'driver_type' => 'delivery',
@@ -1297,8 +1309,15 @@ final class V2ReceivableSettlementWorkbenchTest extends TestCase
             $checker->forceFill(['locale' => $locale])->save();
             $this->actingAs($checker->fresh())->get(route('admin.erp.finance.index', [
                 'store_id' => $store->id, 'tab' => 'receivables',
-            ]))->assertOk()->assertSee(__('finance_workbench.receivables.mapping_title', [], $locale))
-                ->assertSee('data-v2-ar-custody-mapping', false);
+            ]))->assertOk()
+                ->assertSee(__('finance_workbench.receivables.mapping_title', [], $locale))
+                ->assertSee(__('finance_workbench.receivables.mapping_access_help', [], $locale))
+                ->assertSee(__('finance_workbench.receivables.mapping_readiness_ready', [], $locale))
+                ->assertSee(__('finance_workbench.receivables.mapping_wallet_source_help', [], $locale))
+                ->assertSee(__('finance_workbench.receivables.mapping_finance_source_help', [], $locale))
+                ->assertSee('data-v2-ar-mapping-readiness', false)
+                ->assertSee('aria-describedby="p303-wallet-source"', false)
+                ->assertSee('aria-describedby="p303-finance-source"', false);
         }
 
         $this->actingAs($checker)->post($review, [
