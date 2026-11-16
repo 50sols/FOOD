@@ -160,3 +160,12 @@ Original #2844, original Draft PR #3921, Foodex_V2 only. SOURCE_COMPLETE=FALSE, 
 **File impact:** 1 additive migration, 1 existing P110 verifier and 1 existing P110 feature suite plus this QA entry; no peer Finance, Van, Driver, Customer, route, Sidebar or backend stock writer edit. Any new CI success must be verified on the final SHA and cannot be inferred from the previous green head. App jobs SKIPPED are not mobile parity PASS.
 
 **Still missing full P110:** registered trusted issuer/rotation/revocation with independently authorized maker/checker HTTP, immutable per-owner posted legal events across GRN/returns/transfers/adjustments/sales, Van cargo custody and owner valuation/COGS/GL/quote/reports and full mobile API contract parity. Source and technical review FAIL for full scope; NO MERGE, issue close, main, tag, release or production. Foodex_V2 server-side branch protection is currently off, a separate merge blocker.
+
+
+## 2026-11-16 — P110 V2 isolation PR-body broken-pipe audit and repair
+
+Original P110 Issue #2844 / Draft PR #3921, base Foodex_V2 ONLY. Exact HEAD 7118534bdbd2fad76e9284e3b52699cce888abab failed the V2 Isolation Gate #43899662925 (job #133412525412) in the first validation step: the workflow used Bash set -euo pipefail and printf V2_BODY piped to grep -q; the 60 KB-plus historical PR description generated printf Broken pipe despite containing an issue link. This is a CI metadata/pipeline interaction, not evidence that title is source-complete.
+
+Mitigation without modifying shared CI workflow source: reduce the existing PR #3921 description to a concise, issue-scoped 3,277-character contract, starting with literal Refs #2844 and MOBILE IMPACT: Customer / Driver / Van. Preserve the actual 25 changed-file source audit and complete source gaps in PR comment #6921260552 and the existing QA file. This scoped QA update makes a new original-branch commit to trigger fresh exact-head Required/Policy/Isolation CI against the corrected PR metadata; previous green #43893715624 is only evidence for older HEAD 7789d457, not the source plus attestation SQL guards introduced after it.
+
+Still SOURCE_COMPLETE=FALSE and TECHNICAL_REVIEW FAIL/HIGH. The new MySQL/SQLite attestation UPDATE/DELETE guards and verification of four SQL guards must pass final Laravel/SQL tests before they may be described as source-tested. Foodex_V2 branch protection remains disabled; no merge/issue close/main/tag/release/deployment.
