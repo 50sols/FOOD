@@ -25,6 +25,7 @@ final class AdminUserDeletionService
      */
     public function inspect(User $actor, User $target): array
     {
+        $this->assertActorCanDelete($actor);
         $reasons = [];
 
         if ($actor->is($target)) {
@@ -67,6 +68,8 @@ final class AdminUserDeletionService
 
     public function permanentlyDelete(User $actor, User $candidate, string $reason, Request $request): void
     {
+        $this->assertActorCanDelete($actor);
+
         DB::transaction(function () use ($actor, $candidate, $reason, $request): void {
             // Parent locking makes concurrent FK child inserts and reactivation
             // wait until this complete preflight + mutation commits on InnoDB.
@@ -101,6 +104,14 @@ final class AdminUserDeletionService
             // CASCADE: every discoverable direct user reference must be empty.
             $target->delete();
         }, 3);
+    }
+
+    private function assertActorCanDelete(User $actor): void
+    {
+        // Service-level enforcement protects against future callers bypassing
+        // the Dashboard controller's Gate; no store-scoped or dormant actor.
+        abort_unless($actor->is_active && $actor->hasRole('SUPER_ADMIN')
+            && $actor->hasPermission('users.delete'), 403);
     }
 
     private function hasAnyRetainedReference(User $target): bool
