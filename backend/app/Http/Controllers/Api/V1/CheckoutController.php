@@ -100,17 +100,6 @@ class CheckoutController extends Controller
             }
         }
 
-        if (! in_array($paymentMethod, $allowedMethods, true)) {
-            $userLocale = $user->locale;
-            $locale = in_array($userLocale, ['ar', 'en'], true)
-                ? $userLocale
-                : strtolower((string) $request->getPreferredLanguage(['ar', 'en']));
-
-            throw ValidationException::withMessages([
-                'payment_method' => [__('checkout_errors.payment_method_not_configured', [], $locale === 'ar' ? 'ar' : 'en')],
-            ]);
-        }
-
         $requestHash = hash('sha256', json_encode([
             'store_id' => $storeId,
             'address_id' => $addressId,
@@ -133,6 +122,7 @@ class CheckoutController extends Controller
             $storeId,
             $channel,
             $paymentMethod,
+            $allowedMethods,
             $requestedDeliveryDate,
             $note,
             $idempotencyKey,
@@ -202,6 +192,20 @@ class CheckoutController extends Controller
                 }
 
                 return [$existing, false];
+            }
+
+            // A previously committed order must be replayable even if the
+            // current credit balance or permitted payment methods have since
+            // changed. New checkouts still require current method eligibility.
+            if (! in_array($paymentMethod, $allowedMethods, true)) {
+                $userLocale = $user->locale;
+                $locale = in_array($userLocale, ['ar', 'en'], true)
+                    ? $userLocale
+                    : strtolower((string) $request->getPreferredLanguage(['ar', 'en']));
+    
+                throw ValidationException::withMessages([
+                    'payment_method' => [__('checkout_errors.payment_method_not_configured', [], $locale === 'ar' ? 'ar' : 'en')],
+                ]);
             }
 
             $cart = Cart::query()
