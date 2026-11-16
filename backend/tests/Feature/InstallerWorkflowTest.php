@@ -209,6 +209,26 @@ class InstallerWorkflowTest extends TestCase
         app(InstallerWorkflow::class)->runMigrations();
     }
 
+    public function test_thrown_migration_exception_records_only_redacted_first_failure_and_never_retries(): void
+    {
+        Artisan::shouldReceive('call')->once()
+            ->with('migrate', ['--force' => true], \Mockery::type(BufferedOutput::class))
+            ->andThrow(new \RuntimeException(
+                'SQLSTATE[42S02]: Base table or view not found: 1146 2026_09_24_000100_create_identity_store_foundation password=secret-should-not-appear'
+            ));
+
+        Log::shouldReceive('error')->once()
+            ->with('Installer migration failed', [
+                'sqlstate' => '42S02',
+                'migration' => '2026_09_24_000100_create_identity_store_foundation',
+            ]);
+
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage((string) __('installer.errors.migrations'));
+
+        app(InstallerWorkflow::class)->runMigrations();
+    }
+
     public function test_database_step_refuses_to_replace_unlocked_live_environment_and_preserves_secrets(): void
     {
         $environment = app(InstallerEnvironment::class);
