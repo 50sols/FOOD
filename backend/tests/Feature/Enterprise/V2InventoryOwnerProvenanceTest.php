@@ -838,6 +838,21 @@ final class V2InventoryOwnerProvenanceTest extends TestCase
         $this->assertSame(0, DB::table('enterprise_inventory_ownership_rule_revisions')->count());
     }
 
+    public function test_owner_policy_request_uuid_index_uses_mysql_safe_identifier(): void
+    {
+        $this->seed(CoreReferenceSeeder::class);
+
+        $indexes = Schema::getIndexes('enterprise_inventory_ownership_rule_revisions');
+        $names = array_values(array_map(
+            static fn (array $index): string => (string) $index['name'],
+            $indexes,
+        ));
+
+        $this->assertContains('eior_request_uuid_uq', $names);
+        $this->assertNotContains('enterprise_inventory_ownership_rule_revisions_request_uuid_unique', $names);
+        $this->assertLessThanOrEqual(64, max(array_map('strlen', $names)));
+    }
+
     /** @return array{store_id:int,inventory_id:int} */
     private function stock(string $suffix): array
     {
