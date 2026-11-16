@@ -8,7 +8,11 @@ on:
       - 'scripts/tests/test_v2_upgrade_package_provenance.py'
       - 'scripts/v2_g006_patch_historical_recovery.py'
       - 'scripts/tests/test_v2_g006_patch_historical_recovery.py'
+      - 'scripts/ci-125-recovery-upgrade.sh'
+      - 'scripts/ci-127-upgrade.sh'
       - 'scripts/v2_g006_reconcile_interrupted_125.php'
+      - 'scripts/v2_g006_patch_continuous_127.py'
+      - 'scripts/tests/test_v2_g006_patch_continuous_127.py'
       - 'docs/v2/qa/2747-upgrade-package-provenance-g006.md'
       - '.github/workflows/v2-g006-package-provenance.yml'
   push:
@@ -42,11 +46,13 @@ jobs:
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
       - name: Validate Python source syntax
-        run: python3 -m py_compile scripts/v2_upgrade_package_provenance.py scripts/tests/test_v2_upgrade_package_provenance.py scripts/v2_g006_patch_historical_recovery.py scripts/tests/test_v2_g006_patch_historical_recovery.py
+        run: python3 -m py_compile scripts/v2_upgrade_package_provenance.py scripts/tests/test_v2_upgrade_package_provenance.py scripts/v2_g006_patch_historical_recovery.py scripts/tests/test_v2_g006_patch_historical_recovery.py scripts/v2_g006_patch_continuous_127.py scripts/tests/test_v2_g006_patch_continuous_127.py
       - name: Execute positive and adversarial ZIP unit tests
         run: python3 -m unittest discover -s scripts/tests -p 'test_v2_upgrade_package_provenance.py' -v
       - name: Verify fail-closed historical fixture patch contracts
         run: python3 -m unittest discover -s scripts/tests -p 'test_v2_g006_patch_historical_recovery.py' -v
+      - name: Verify fail-closed continuous-chain database patch contract
+        run: python3 -m unittest discover -s scripts/tests -p 'test_v2_g006_patch_continuous_127.py' -v
 
   verify-published-historical-bytes:
     name: Real v125/v127 archived Update ZIP integrity (not deploy/upgrade)
@@ -97,7 +103,7 @@ jobs:
           echo 'Historical archive-integrity evidence only; no signature authentication or MySQL upgrade performed.'
 
   verify-real-historical-mysql-upgrades:
-    name: Real pinned v124-to-v125 and v125-to-v127 ZIP MySQL recovery
+    name: Real pinned v124-to-v125-to-v127 ZIP MySQL recovery on one database
     needs: verify-published-historical-bytes
     runs-on: ubuntu-latest
     timeout-minutes: 60
@@ -129,7 +135,7 @@ jobs:
           extensions: pdo_mysql, mysqli, mbstring, zip, bcmath, intl, gd, fileinfo, openssl
           coverage: none
           tools: composer:v2
-      - name: Verify the pinned source chain and create disposable MySQL databases
+      - name: Verify the pinned source chain and create one disposable MySQL database
         shell: bash
         env:
           CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
@@ -140,9 +146,7 @@ jobs:
           test "$(git rev-parse 'v1.0.127^{commit}')" = 'a75d3780a8cf1eeb702781adbb17a5dcfd7d8130'
           php -r '
           $dbh = new PDO("mysql:host=127.0.0.1;port=3306", "root", "foodex_ci_only", [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]);
-          foreach (["foodex_recovery_125", "foodex_upgrade_127"] as $name) {
-              $dbh->exec("CREATE DATABASE `" . $name . "` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci");
-          }
+          $dbh->exec("CREATE DATABASE `foodex_recovery_125` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci");
           '
       - name: Download historical released ZIPs read-only with pinned checksums
         shell: bash
@@ -170,7 +174,7 @@ jobs:
           gh api "repos/$GITHUB_REPOSITORY/git/blobs/484a7cb5ba6258d810aaaf7b6a14540962e5e66b" --jq .content |
             tr -d '\n' | base64 -d > "$base/verified-recovery-manifest-preflight.py"
           test "$(git hash-object "$base/verified-recovery-manifest-preflight.py")" = '484a7cb5ba6258d810aaaf7b6a14540962e5e66b'
-      - name: Apply real published ZIPs on populated historical MySQL installs
+      - name: Apply both published ZIP edges sequentially on the same populated MySQL database
         shell: bash
         run: |
           set -euo pipefail
@@ -195,6 +199,8 @@ jobs:
               php -l "$target/scripts/v2_g006_reconcile_interrupted_125.php"
             else
               cp "$GITHUB_WORKSPACE/scripts/ci-127-upgrade.sh" "$target/scripts/"
+              python3 "$GITHUB_WORKSPACE/scripts/v2_g006_patch_continuous_127.py" "$target/scripts/ci-127-upgrade.sh"
+              bash -n "$target/scripts/ci-127-upgrade.sh"
             fi
           done
           # Historical shell harness derives root from its current directory.
@@ -206,5 +212,35 @@ jobs:
             cd "$base/tag-127"
             bash scripts/ci-127-upgrade.sh
           )
-          echo "PASS: two real pinned historical ZIPs exercised on nonempty MySQL; the v125 interruption first FAILED as published, then guarded CI-only schema/ledger reconciliation and retry verified .env, uploads, and audit retention."
-          echo "NOT PROVEN: continuous same-DB chain, trusted publisher signature, general production-safe automatic recovery, full Update Center recovery, production upgrade."
+          # Prove the first transition's order and immutable discount audit survived the second transition.
+          php <<'PHP'
+          <?php
+          $db = new PDO("mysql:host=127.0.0.1;dbname=foodex_recovery_125", "root", "foodex_ci_only", [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]);
+          $firstOrder = $db->query("SELECT id FROM orders WHERE order_number='RECOVERY-125-CI'")->fetchColumn();
+          if (!$firstOrder) {
+              throw new RuntimeException('v124->v125 order disappeared during the subsequent v125->v127 upgrade');
+          }
+          $firstAudit = $db->prepare("SELECT reason FROM order_customer_service_discounts WHERE order_id=? AND idempotency_key=?");
+          $firstAudit->execute([$firstOrder, '6b676f27-84ec-4aba-8507-5e62d7b44f23']);
+          if ($firstAudit->fetchColumn() !== 'preserve discount audit across interrupted deployment') {
+              throw new RuntimeException('v124->v125 discount audit disappeared during the subsequent v125->v127 upgrade');
+          }
+          $secondOrder = $db->query("SELECT id FROM orders WHERE order_number='UPGRADE-125-127-CI'")->fetchColumn();
+          if (!$secondOrder) {
+              throw new RuntimeException('v125->v127 order fixture is missing from the continuous database');
+          }
+          $secondAudit = $db->prepare("SELECT reason FROM order_customer_service_discounts WHERE order_id=? AND idempotency_key=?");
+          $secondAudit->execute([$secondOrder, '4bf3e1bc-0d57-473b-a99d-b4c21125b127']);
+          if ($secondAudit->fetchColumn() !== 'keep customer discount audit') {
+              throw new RuntimeException('v125->v127 discount audit is missing from the continuous database');
+          }
+          $ownerId = $db->query("SELECT id FROM users WHERE email='upgrade-125@example.invalid'")->fetchColumn();
+          $owner = $db->prepare("SELECT COUNT(*) FROM platform_owner_registry WHERE id=1 AND user_id=?");
+          $owner->execute([$ownerId]);
+          if (!$ownerId || (int) $owner->fetchColumn() !== 1) {
+              throw new RuntimeException('v127 platform owner identity is not preserved in the continuous database');
+          }
+          echo "PASS: both historical transitions and both audit datasets coexist in the same MySQL database" . PHP_EOL;
+          PHP
+          echo "PASS: actual pinned v124 -> v125 interrupted recovery -> v127 update chain ran sequentially on one populated MySQL database; first-edge order/audit survived second edge."
+          echo "NOT PROVEN: trusted publisher signature, general production-safe automatic recovery, full Admin Update Center backup/rollback/recovery, final V2 release or production upgrade."
