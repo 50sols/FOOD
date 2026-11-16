@@ -3610,7 +3610,8 @@ List<Map<Object?, Object?>> _reportRows(Object? value) => value is List
 
 double? _reportFiniteDouble(Object? value) {
   if (value is! num && value is! String) return null;
-  final amount = value is num ? value.toDouble() : double.tryParse(value.trim());
+  final amount =
+      value is num ? value.toDouble() : double.tryParse(value.trim());
   return amount != null && amount.isFinite ? amount : null;
 }
 
