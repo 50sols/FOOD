@@ -24,6 +24,10 @@ html[dir=ltr] .catalog-header-filters{grid-column:2;grid-row:1}
 .tabs a.active,.btn.primary{background:var(--foodex-action-green);color:#fff;border-color:var(--foodex-action-green)}
 .catalog-tabs-row{direction:ltr;display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:12px;align-items:center;margin-bottom:16px}
 .catalog-tabs-row .tabs{direction:rtl;margin-bottom:0;min-width:0;justify-content:flex-end}
+.catalog-workspace-tabs{flex-wrap:nowrap;max-width:100%;overflow-x:auto;overscroll-behavior-inline:contain;scrollbar-width:thin}
+.catalog-workspace-tabs .foodex-tab{min-height:44px;display:inline-flex;align-items:center;flex:0 0 auto;white-space:nowrap}
+.catalog-workspace-tabs .foodex-tab:focus-visible{outline:2px solid var(--foodex-green);outline-offset:-2px}
+.catalog-tabs-action{flex-wrap:wrap;gap:8px;align-items:center}
 html[dir=ltr] .catalog-tabs-row .tabs{direction:ltr;justify-content:flex-start}
 .catalog-tabs-meta{display:flex;justify-content:flex-start;min-width:0}
 .catalog-tabs-action{display:flex;justify-content:flex-end;min-width:0}
@@ -112,6 +116,25 @@ html[dir=ltr] .catalog-header-filters{direction:ltr}
 <main>
 @include('admin._global-header')
 @php($hasProductFilters=$productFilters['q']!=='' || $productFilters['category_id']>0 || $productFilters['brand_id']>0 || $productFilters['status']!=='' || $productFilters['availability']!=='' || $productFilters['health']!=='')
+@php
+// Preserve already-normalized filter state across real Catalog sibling tabs.
+// Do not propagate record-detail, import commit, or pagination intent.
+$catalogNavigationQuery=array_merge($scopeParams,array_filter([
+    'product_q'=>$productFilters['q'],
+    'product_category_id'=>$productFilters['category_id'],
+    'product_brand_id'=>$productFilters['brand_id'],
+    'product_status'=>$productFilters['status'],
+    'product_availability'=>$productFilters['availability'],
+    'product_health'=>$productFilters['health'],
+    'product_sort'=>$productFilters['sort'],
+    'product_dir'=>$productFilters['dir'],
+    'category_q'=>$categoryFilters['q'],
+    'category_status'=>$categoryFilters['status'],
+    'category_parent'=>$categoryFilters['parent'],
+    'category_sort'=>$categoryFilters['sort'],
+    'category_dir'=>$categoryFilters['dir'],
+],static fn($value)=>$value!=='' && $value!==0 && $value!==null));
+@endphp
 <div class="header foodex-page-toolbar catalog-page-header">
 @if($tab==='products')
 <form method="get" class="catalog-filterbar catalog-header-filters" data-catalog-product-filters>
@@ -134,20 +157,17 @@ html[dir=ltr] .catalog-header-filters{direction:ltr}
 @if($errors->any())<div class="notice err">@foreach($errors->all() as $error)<div>{{ $error }}</div>@endforeach</div>@endif
 <div class="catalog-tabs-row">
 <div class="catalog-tabs-meta">@if($tab==='products')<span class="catalog-count">{{ $products->total() }} {{ app()->getLocale()==='ar'?'منتج':'products' }}</span>@endif</div>
-<nav class="tabs" aria-label="{{ __('catalog_completion.title') }}">
+<nav class="tabs foodex-tabs catalog-workspace-tabs" aria-label="{{ __('catalog_completion.title') }}" data-catalog-workspace-tabs>
 @foreach(['overview','products','app_products','categories','attributes','import'] as $catalogTab)
-<a class="{{ $tab===$catalogTab?'active':'' }}" href="{{ route('admin.catalog.index', array_merge(['tab'=>$catalogTab], $scopeParams)) }}">{{ $catalogTab==='app_products' ? (app()->getLocale()==='ar'?'المنتجات المتاحة في التطبيق':'Products available in the app') : __('catalog_completion.tabs.'.$catalogTab) }}</a>
+<a class="foodex-tab {{ $tab===$catalogTab?'active':'' }}" href="{{ route('admin.catalog.index', array_merge($catalogNavigationQuery,['tab'=>$catalogTab])) }}" @if($tab===$catalogTab) aria-current="page" @endif>{{ $catalogTab==='app_products' ? (app()->getLocale()==='ar'?'المنتجات المتاحة في التطبيق':'Products available in the app') : __('catalog_completion.tabs.'.$catalogTab) }}</a>
 @endforeach
-@if($canManageStores)
-<a class="{{ $tab==='stores'?'active':'' }}" href="{{ route('admin.catalog.index',['tab'=>'stores']) }}">{{ app()->getLocale()==='ar'?'المتاجر':'Stores' }}</a>
-@endif
-<a href="{{ route('admin.lookups.index', $scopeParams) }}">{{ app()->getLocale()==='ar'?'العلامات والوحدات':'Brands & Units' }}</a>
-@if($inventoryUrl)<a href="{{ $inventoryUrl }}">{{ app()->getLocale()==='ar'?'إدارة المخزون':'Inventory Management' }}</a>@endif
 </nav>
 <div class="catalog-tabs-action">
 @if($tab==='products')
 <button type="button" class="btn primary catalog-tabs-add" data-dialog-open="catalog-add-product">＋ {{ app()->getLocale()==='ar'?'إضافة منتج':'Add Product' }}</button>
 @endif
+<a class="btn" href="{{ route('admin.lookups.index', $scopeParams) }}">{{ app()->getLocale()==='ar'?'العلامات والوحدات':'Brands & Units' }}</a>
+@if($inventoryUrl)<a class="btn" href="{{ $inventoryUrl }}">{{ app()->getLocale()==='ar'?'إدارة المخزون':'Inventory Management' }}</a>@endif
 </div>
 </div>
 
