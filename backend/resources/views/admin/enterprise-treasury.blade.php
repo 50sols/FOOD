@@ -50,6 +50,67 @@ $targetOptions=[
 @endforeach
 </nav>
 
+@if($activeTab==='guarantees')
+<section class="foodex-card" style="padding:14px">
+<h2>{{ __('enterprise_treasury.guarantees.title') }}</h2>
+<p>{{ __('enterprise_treasury.guarantees.disclaimer') }}</p>
+@if($canManageGuarantees)
+<details class="erp-create"><summary>{{ __('enterprise_treasury.guarantees.new') }}</summary>
+<form class="erp-form" action="{{ route('admin.erp.treasury.guarantees.store') }}" method="post">
+@csrf
+<input type="hidden" name="store_id" value="{{ $selectedStoreId }}">
+<input type="hidden" name="_operation_key" value="{{ $guaranteeToken }}">
+<label>{{ __('enterprise_treasury.guarantees.type') }}
+<select name="instrument_type" required>
+<option value="bank_guarantee">{{ __('enterprise_treasury.guarantees.bank_guarantee') }}</option>
+<option value="secured_commercial_contract">{{ __('enterprise_treasury.guarantees.secured_commercial_contract') }}</option>
+</select></label>
+<label>{{ __('enterprise_treasury.guarantees.direction') }}
+<select name="direction"><option value="issued">{{ __('enterprise_treasury.guarantees.issued') }}</option><option value="received">{{ __('enterprise_treasury.guarantees.received') }}</option></select></label>
+<label>{{ __('enterprise_treasury.reference') }} <input name="reference" maxlength="120" required></label>
+<label>{{ __('enterprise_treasury.guarantees.underlying') }} <input name="underlying_reference" maxlength="120" required></label>
+<label>{{ __('enterprise_treasury.guarantees.issuer') }} <input name="issuer_name" maxlength="190"></label>
+<label>{{ __('enterprise_treasury.guarantees.applicant') }} <input name="applicant_name" maxlength="190" required></label>
+<label>{{ __('enterprise_treasury.beneficiary') }} <input name="beneficiary_name" maxlength="190" required></label>
+<label>{{ __('enterprise_treasury.guarantees.security') }} <input name="security_description" maxlength="500"></label>
+<label>{{ __('enterprise_treasury.currency') }} <input name="currency_code" pattern="[A-Za-z]{3}" maxlength="3" required></label>
+<label>{{ __('enterprise_treasury.guarantees.face_amount') }} <input name="face_amount" inputmode="decimal" pattern="[0-9]{1,15}(\.[0-9]{1,3})?" required></label>
+<label>{{ __('enterprise_treasury.guarantees.effective_date') }} <input type="date" name="effective_date" required></label>
+<label>{{ __('enterprise_treasury.guarantees.expiry_date') }} <input type="date" name="expiry_date" required></label>
+<div class="erp-actions"><button class="foodex-primary" type="submit">{{ __('enterprise_treasury.create') }}</button></div>
+</form>
+</details>
+@endif
+<div class="erp-table-wrap">
+<table class="erp-table"><thead><tr>
+<th>{{ __('enterprise_treasury.guarantees.type') }}</th>
+<th>{{ __('enterprise_treasury.reference') }}</th>
+<th>{{ __('enterprise_treasury.guarantees.underlying') }}</th>
+<th>{{ __('enterprise_treasury.guarantees.applicant') }}</th>
+<th>{{ __('enterprise_treasury.beneficiary') }}</th>
+<th>{{ __('enterprise_treasury.guarantees.face_amount') }}</th>
+<th>{{ __('enterprise_treasury.guarantees.expiry_date') }}</th>
+<th>{{ __('enterprise_treasury.status') }}</th>
+</tr></thead><tbody>
+@forelse($rows as $item)
+<tr>
+<td>{{ __('enterprise_treasury.guarantees.'.$item->instrument_type) }}</td>
+<td>{{ $item->reference }}</td>
+<td>{{ $item->underlying_reference }}</td>
+<td>{{ $item->applicant_name }}</td>
+<td>{{ $item->beneficiary_name }}</td>
+<td class="erp-numeric">{{ $item->face_amount }} {{ $item->currency_code }}</td>
+<td>{{ $item->expiry_date }}</td>
+<td>{{ __('enterprise_treasury.guarantees.draft') }}</td>
+</tr>
+@empty
+<tr><td colspan="8">{{ __('enterprise_treasury.empty') }}</td></tr>
+@endforelse
+</tbody></table></div>
+{{ $rows->links() }}
+</section>
+@endif
+
 @if(in_array($activeTab,['receipts','payments','cheques','reconciliation','cash_closing'],true))
 <form method="get" class="foodex-card erp-filter">
 <input type="hidden" name="store_id" value="{{ $selectedStoreId }}"><input type="hidden" name="tab" value="{{ $activeTab }}">
