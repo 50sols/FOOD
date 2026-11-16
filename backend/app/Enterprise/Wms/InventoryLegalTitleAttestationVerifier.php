@@ -45,7 +45,8 @@ final class InventoryLegalTitleAttestationVerifier
     {
         if (! isset($position->id) || ! isset($position->certified_by)
             || ! isset($position->source_inventory_updated_at)
-            || $this->legalScopeForStore($storeId) === null) {
+            || $this->legalScopeForStore($storeId) === null
+            || ! $this->hasProtectedStockMovementHistory()) {
             // Store/warehouse existence alone is not a legal entity identity.
             return false;
         }
@@ -139,6 +140,57 @@ final class InventoryLegalTitleAttestationVerifier
             $publicKey,
             OPENSSL_ALGO_SHA256,
         ) === 1;
+    }
+
+    /**
+     * A signed snapshot is not authority when canonical movement history
+     * can be deleted and recreated (ABA replay). Both SQL guards are required
+     * before ANY owner title is returned as CERTIFIED.
+     *
+     * Some MySQL shared-hosting accounts cannot install triggers with binary
+     * logging (1419/SUPER). The migration permits deployment in that case,
+     * but certification remains disabled rather than claiming provenance.
+     */
+    private function hasProtectedStockMovementHistory(): bool
+    {
+        try {
+            $driver = DB::connection()->getDriverName();
+            if ($driver === 'sqlite') {
+                return DB::table('sqlite_master')
+                    ->where('type', 'trigger')
+                    ->where('tbl_name', 'stock_movements')
+                    ->whereIn('name', [
+                        'p110_attested_movement_no_delete',
+                        'p110_attested_movement_no_update',
+                    ])
+                    ->where('sql', 'like', '%enterprise_inventory_title_attestations%')
+                    ->where('sql', 'like', '%RAISE(ABORT%')
+                    ->count() === 2;
+            }
+
+            if (in_array($driver, ['mysql', 'mariadb'], true)) {
+                return DB::table('information_schema.TRIGGERS')
+                    ->where('TRIGGER_SCHEMA', DB::connection()->getDatabaseName())
+                    ->where('EVENT_OBJECT_TABLE', 'stock_movements')
+                    ->where('ACTION_TIMING', 'BEFORE')
+                    ->whereRaw(
+                        '((TRIGGER_NAME = ? AND EVENT_MANIPULATION = ?) OR (TRIGGER_NAME = ? AND EVENT_MANIPULATION = ?))',
+                        [
+                            'p110_attested_movement_no_delete', 'DELETE',
+                            'p110_attested_movement_no_update', 'UPDATE',
+                        ],
+                    )
+                    ->where('ACTION_STATEMENT', 'like', '%enterprise_inventory_title_attestations%')
+                    ->where('ACTION_STATEMENT', 'like', '%SIGNAL%')
+                    ->count() === 2;
+            }
+        } catch (Throwable) {
+            // Missing metadata privilege, corrupted/missing triggers, or
+            // unsupported schema must never certify legal title.
+            return false;
+        }
+
+        return false;
     }
 
     /**
