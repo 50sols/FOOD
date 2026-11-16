@@ -1,6 +1,7 @@
 <?php
 
 use Illuminate\Database\Migrations\Migration;
+use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 
@@ -29,40 +30,56 @@ return new class extends Migration
         DB::unprepared('DROP TRIGGER IF EXISTS p110_attested_movement_no_update');
 
         if (in_array($driver, ['mysql', 'mariadb'], true)) {
-            DB::unprepared(<<<'SQL'
-CREATE TRIGGER p110_attested_movement_no_delete
-BEFORE DELETE ON stock_movements
-FOR EACH ROW
-BEGIN
-    IF EXISTS (
-        SELECT 1
-        FROM enterprise_inventory_owner_positions AS owner_position
-        INNER JOIN enterprise_inventory_title_attestations AS evidence
-            ON evidence.owner_position_id = owner_position.id
-        WHERE owner_position.inventory_id = OLD.inventory_id
-    ) THEN
-        SIGNAL SQLSTATE '45000'
-            SET MESSAGE_TEXT = 'Cannot delete stock movement with attested legal title';
-    END IF;
-END
-SQL);
-            DB::unprepared(<<<'SQL'
-CREATE TRIGGER p110_attested_movement_no_update
-BEFORE UPDATE ON stock_movements
-FOR EACH ROW
-BEGIN
-    IF EXISTS (
-        SELECT 1
-        FROM enterprise_inventory_owner_positions AS owner_position
-        INNER JOIN enterprise_inventory_title_attestations AS evidence
-            ON evidence.owner_position_id = owner_position.id
-        WHERE owner_position.inventory_id IN (OLD.inventory_id, NEW.inventory_id)
-    ) THEN
-        SIGNAL SQLSTATE '45000'
-            SET MESSAGE_TEXT = 'Cannot rewrite stock movement with attested legal title';
-    END IF;
-END
-SQL);
+            // MySQL 8 with binary logging may refuse CREATE TRIGGER (1419)
+            // for a least-privilege cPanel/CI database user. Never alter
+            // server-wide log_bin_trust_function_creators or demand SUPER.
+            // The verifier must deny certification unless both guards EXIST.
+            try {
+                DB::unprepared(<<<'SQL'
+    CREATE TRIGGER p110_attested_movement_no_delete
+    BEFORE DELETE ON stock_movements
+    FOR EACH ROW
+    BEGIN
+        IF EXISTS (
+            SELECT 1
+            FROM enterprise_inventory_owner_positions AS owner_position
+            INNER JOIN enterprise_inventory_title_attestations AS evidence
+                ON evidence.owner_position_id = owner_position.id
+            WHERE owner_position.inventory_id = OLD.inventory_id
+        ) THEN
+            SIGNAL SQLSTATE '45000'
+                SET MESSAGE_TEXT = 'Cannot delete stock movement with attested legal title';
+        END IF;
+    END
+    SQL);
+                DB::unprepared(<<<'SQL'
+    CREATE TRIGGER p110_attested_movement_no_update
+    BEFORE UPDATE ON stock_movements
+    FOR EACH ROW
+    BEGIN
+        IF EXISTS (
+            SELECT 1
+            FROM enterprise_inventory_owner_positions AS owner_position
+            INNER JOIN enterprise_inventory_title_attestations AS evidence
+                ON evidence.owner_position_id = owner_position.id
+            WHERE owner_position.inventory_id IN (OLD.inventory_id, NEW.inventory_id)
+        ) THEN
+            SIGNAL SQLSTATE '45000'
+                SET MESSAGE_TEXT = 'Cannot rewrite stock movement with attested legal title';
+        END IF;
+    END
+    SQL);
+
+            } catch (QueryException $exception) {
+                if ((int) ($exception->errorInfo[1] ?? 0) !== 1419) {
+                    throw $exception;
+                }
+
+                // An incomplete pair is not sufficient for legal title.
+                // Remove partial installation so the verifier fails closed.
+                DB::unprepared('DROP TRIGGER IF EXISTS p110_attested_movement_no_update');
+                DB::unprepared('DROP TRIGGER IF EXISTS p110_attested_movement_no_delete');
+            }
 
             return;
         }
