@@ -3,6 +3,7 @@
 namespace Tests\Feature;
 
 use App\Domain\Installer\InstallerChecklist;
+use App\Domain\Installer\InstallerEnvironment;
 use App\Domain\Installer\InstallerWorkflow;
 use App\Domain\Installer\InstallState;
 use Illuminate\Support\Facades\Artisan;
@@ -318,7 +319,7 @@ final class V2InstallerLocaleLayoutParityTest extends TestCase
         ])->assertRedirect(route('install.index', ['step' => 11, 'lang' => 'en']));
 
         $this->assertSame(10, $state->progress()['completed_step']);
-        $this->assertSame('log', app(\App\Domain\Installer\InstallerEnvironment::class)->read(['MAIL_MAILER'])['MAIL_MAILER']);
+        $this->assertSame('log', app(InstallerEnvironment::class)->read(['MAIL_MAILER'])['MAIL_MAILER']);
         $this->assertFalse($state->isInstalled());
     }
 
