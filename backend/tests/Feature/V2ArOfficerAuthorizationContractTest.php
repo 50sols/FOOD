@@ -297,6 +297,26 @@ final class V2ArOfficerAuthorizationContractTest extends TestCase
             $actor, $store->id, 'finance.manage', 'finance.ar.manage',
         ));
 
+        // Reach a real B2B store through a separately granted operational
+        // channel role. The AR tab must read with AR-specific entitlement,
+        // whereas a direct GL create must be rejected at authorization (403)
+        // rather than hitting request validation (422) or a missing row (404).
+        $journalCount = DB::table('enterprise_finance_journals')->count();
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            $actor->forceFill(['locale' => $locale])->save();
+            $this->actingAs($actor->fresh())->get(route('admin.erp.finance.index', [
+                'store_id' => $store->id,
+                'tab' => 'receivables',
+            ], false))->assertOk();
+            $this->actingAs($actor->fresh())->post(route('admin.erp.finance.journals.store', [], false), [
+                'store_id' => $store->id,
+                'description' => 'AR cannot forge general ledger entry',
+                'idempotency_key' => 'v2-2696-ar-mixed-role-gl-deny',
+            ])->assertForbidden();
+        }
+        $this->assertSame($journalCount, DB::table('enterprise_finance_journals')->count());
+
         foreach ([
             'finance.gl.read',
             'finance.gl.manage',
