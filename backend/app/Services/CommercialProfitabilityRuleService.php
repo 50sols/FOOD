@@ -137,6 +137,13 @@ final class CommercialProfitabilityRuleService
         $status = $data['decision'] === 'review' ? 'REVIEWED_INACTIVE' : 'REJECTED';
 
         DB::transaction(function () use ($actor, $storeId, $productId, $request, $data, $status): void {
+            // Two separate revision rows can otherwise be reviewed
+            // concurrently into incompatible floor policies for the same
+            // product and dates. Serialize on the stable parent store row,
+            // in the same lock order already used by propose().
+            abort_if(DB::table('stores')->where('id', $storeId)
+                ->lockForUpdate()->first(['id']) === null, 404);
+
             $query = DB::table('commercial_profitability_rule_revisions')
                 ->where('id', (int) $data['revision_id'])
                 ->where('store_id', $storeId)
@@ -153,6 +160,26 @@ final class CommercialProfitabilityRuleService
                 throw ValidationException::withMessages([
                     'revision_id' => [__('commercial.profitability.already_reviewed')],
                 ]);
+            }
+
+            if ($status === 'REVIEWED_INACTIVE') {
+                // Date ranges are inclusive and stored as canonical SQL DATE.
+                // No independent reviewer may sign conflicting future rule
+                // windows. Reject drafts only at review; a conflicting draft
+                // remains available for explicit rejection/audited correction.
+                $overlaps = DB::table('commercial_profitability_rule_revisions')
+                    ->where('store_id', $storeId)
+                    ->where('product_id', $productId)
+                    ->where('id', '!=', (int) $rule->id)
+                    ->whereIn('status', ['REVIEWED_INACTIVE', 'ACTIVE'])
+                    ->where('effective_from', '<=', $rule->effective_until)
+                    ->where('effective_until', '>=', $rule->effective_from)
+                    ->exists();
+                if ($overlaps) {
+                    throw ValidationException::withMessages([
+                        'revision_id' => [__('commercial.profitability.overlapping_window')],
+                    ]);
+                }
             }
 
             // A commercial reviewer verifies only the human rule revision.

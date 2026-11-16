@@ -17,6 +17,7 @@ return [
         'unsupported_field' => 'This profitability action does not accept the supplied field.',
         'idempotency_conflict' => 'This request identifier belongs to a different rule proposal.',
         'already_reviewed' => 'This proposal was already reviewed and cannot be changed.',
+        'overlapping_window' => 'This product already has an independently reviewed profitability rule for an overlapping effective-date window. Reject or resolve the conflicting draft before review.',
         'statuses' => [
             'draft' => 'Draft — not active',
             'reviewed_inactive' => 'Independently reviewed — not active',

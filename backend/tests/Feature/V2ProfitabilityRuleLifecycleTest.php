@@ -177,6 +177,80 @@ final class V2ProfitabilityRuleLifecycleTest extends TestCase
         ]);
     }
 
+    public function test_independent_review_prevents_overlapping_inactive_margin_windows_in_both_locales(): void
+    {
+        foreach (['en', 'ar'] as $locale) {
+            [$maker, $store, $product] = $this->fixture();
+            $checker = $this->user('SUPER_ADMIN');
+            $route = $this->saveRoute($store, $product);
+
+            // Multiple proposals can coexist before commercial review; only
+            // one overlapping period may receive reviewed-inactive status.
+            $this->actingAs($maker)->put(
+                $route, $this->proposal((string) Str::uuid(), '15.00'),
+            )->assertSessionHasNoErrors();
+            $this->actingAs($maker)->put(
+                $route, $this->proposal((string) Str::uuid(), '25.00'),
+            )->assertSessionHasNoErrors();
+
+            $ids = DB::table('commercial_profitability_rule_revisions')
+                ->where('store_id', $store)->where('product_id', $product)
+                ->orderBy('revision')->pluck('id')->all();
+            $review = static fn (int $id, string $decision): array => [
+                'profitability_action' => 'review',
+                'revision_id' => $id,
+                'decision' => $decision,
+            ];
+
+            $checker->forceFill(['locale' => $locale])->save();
+            app()->setLocale($locale);
+            $this->actingAs($checker->fresh())->put(
+                $route, $review((int) $ids[0], 'review'),
+            )->assertSessionHasNoErrors();
+
+            $this->actingAs($checker->fresh())->put(
+                $route, $review((int) $ids[1], 'review'),
+            )->assertSessionHasErrors([
+                'revision_id' => __('commercial.profitability.overlapping_window', [], $locale),
+            ]);
+            $this->assertDatabaseHas('commercial_profitability_rule_revisions', [
+                'id' => $ids[1], 'status' => 'DRAFT', 'reviewed_by' => null,
+            ]);
+
+            // Rejection of the conflicting draft is still allowed.
+            $this->actingAs($checker->fresh())->put(
+                $route, $review((int) $ids[1], 'reject'),
+            )->assertSessionHasNoErrors();
+
+            // An adjacent period starting on the next day is not overlapping.
+            $next = [
+                ...$this->proposal((string) Str::uuid(), '30.00'),
+                'effective_from' => now()->addMonth()->addDay()->toDateString(),
+                'effective_until' => now()->addMonths(2)->toDateString(),
+            ];
+            $this->actingAs($maker)->put($route, $next)
+                ->assertSessionHasNoErrors();
+            $third = (int) DB::table('commercial_profitability_rule_revisions')
+                ->where('store_id', $store)->where('product_id', $product)
+                ->orderByDesc('revision')->value('id');
+            $this->actingAs($checker->fresh())->put(
+                $route, $review($third, 'review'),
+            )->assertSessionHasNoErrors();
+
+            $this->assertSame(2, DB::table('commercial_profitability_rule_revisions')
+                ->where('store_id', $store)->where('product_id', $product)
+                ->where('status', 'REVIEWED_INACTIVE')->count());
+            $this->assertSame(1, DB::table('commercial_profitability_rule_revisions')
+                ->where('store_id', $store)->where('product_id', $product)
+                ->where('status', 'REJECTED')->count());
+            $this->assertSame(3, DB::table('audit_logs')
+                ->where('event', 'commercial.profitability_rule.reviewed')
+                ->count() - (($locale === 'ar') ? 3 : 0));
+            $this->assertSame(0, DB::table('product_commercial_policies')
+                ->where('product_id', $product)->count());
+        }
+    }
+
     public function test_bilingual_review_and_rejection_states_are_visible_and_non_operational(): void
     {
         [$maker, $store, $product] = $this->fixture();
