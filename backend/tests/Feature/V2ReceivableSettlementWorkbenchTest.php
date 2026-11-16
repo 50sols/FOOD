@@ -1511,6 +1511,123 @@ final class V2ReceivableSettlementWorkbenchTest extends TestCase
         $this->assertDatabaseCount('enterprise_ar_allocations', 0);
     }
 
+    public function test_wholesale_collection_mapping_accepts_van_only_and_rejects_driver_fallback(): void
+    {
+        // B2B is fulfilled and collected by Van representatives only. A
+        // wholesale Finance maker must never map a Driver wallet as fallback,
+        // even when the Driver wallet belongs to the same store.
+        $b2bType = (int) DB::table('store_types')->where('code', 'B2B')->value('id');
+        $this->assertGreaterThan(0, $b2bType);
+        $store = Store::query()->create([
+            'store_type_id' => $b2bType,
+            'code' => 'P303-WHOLESALE',
+            'name' => 'P303 Wholesale',
+            'is_active' => true,
+        ]);
+        $foreignStore = Store::query()->create([
+            'store_type_id' => $b2bType,
+            'code' => 'P303-WHOLESALE-FOREIGN',
+            'name' => 'P303 Wholesale Foreign',
+            'is_active' => true,
+        ]);
+        $organizations = app(OrganizationHierarchyService::class);
+        $organizations->ensureDefaultScopeForStore($store);
+        $organizations->ensureDefaultScopeForStore($foreignStore);
+
+        $role = Role::query()->where('code', 'B2B_ADMIN')->firstOrFail();
+        foreach (['finance.view', 'finance.manage', 'finance.approve'] as $code) {
+            $permission = Permission::query()->firstOrCreate(['code' => $code], ['name' => $code]);
+            $role->permissions()->syncWithoutDetaching([$permission->id]);
+        }
+        $maker = User::factory()->create(['is_active' => true]);
+        $checker = User::factory()->create(['is_active' => true]);
+        $maker->roles()->attach($role->id);
+        $checker->roles()->attach($role->id);
+
+        $tenants = app(TenantContextResolver::class);
+        $context = $tenants->wholesale($maker, $store->id);
+        $checkerContext = $tenants->wholesale($checker, $store->id);
+        $this->enableFinance($maker, $context);
+        $scope = $context->enterpriseScope;
+        $this->assertNotNull($scope);
+        app(ModuleEntitlementManager::class)->set(
+            FinanceFoundationService::MODULE,
+            new EntitlementScope(EntitlementScope::LEGAL_ENTITY, $scope->legalEntityId),
+            true,
+            [
+                'finance.foundation.read', 'finance.foundation.manage',
+                'finance.gl.read', 'finance.gl.manage', 'finance.gl.post',
+                'finance.ar.read', 'finance.ar.manage', 'finance.ar.post',
+                'finance.approvals.approve',
+            ],
+            $maker,
+        );
+
+        $clearing = app(FinanceFoundationService::class)->createAccount($maker, $context, [
+            'code' => 'P303-1150', 'name' => 'Wholesale Van Cash Clearing',
+            'type' => 'asset', 'normal_balance' => 'debit', 'allow_posting' => true,
+        ]);
+        $vanWallet = CollectionAccount::query()->create([
+            'actor_type' => 'van_rep', 'actor_id' => $maker->id,
+            'store_id' => $store->id, 'currency' => 'KWD', 'status' => 'active',
+        ]);
+        $driverWallet = CollectionAccount::query()->create([
+            'actor_type' => 'driver', 'actor_id' => $maker->id,
+            'store_id' => $store->id, 'currency' => 'KWD', 'status' => 'active',
+        ]);
+        $foreignVan = CollectionAccount::query()->create([
+            'actor_type' => 'van_rep', 'actor_id' => $maker->id,
+            'store_id' => $foreignStore->id, 'currency' => 'KWD', 'status' => 'active',
+        ]);
+
+        $service = app(CollectionAccountSettlementMappingService::class);
+        $mapping = $service->propose($maker, $context, [
+            'request_id' => (string) Str::uuid(),
+            'collection_account_id' => $vanWallet->id,
+            'finance_account_id' => $clearing->id,
+        ]);
+        $this->assertSame('PROPOSED', $mapping->status);
+        $this->assertSame((int) $store->id, (int) $mapping->store_id);
+        $this->assertSame('KWD', $mapping->currency_code);
+
+        try {
+            $service->propose($maker, $context, [
+                'request_id' => (string) Str::uuid(),
+                'collection_account_id' => $driverWallet->id,
+                'finance_account_id' => $clearing->id,
+            ]);
+            $this->fail('B2B collection account may not fall back to a Driver wallet.');
+        } catch (ValidationException $exception) {
+            $this->assertArrayHasKey('collection_account_id', $exception->errors());
+        }
+
+        try {
+            $service->propose($maker, $context, [
+                'request_id' => (string) Str::uuid(),
+                'collection_account_id' => $foreignVan->id,
+                'finance_account_id' => $clearing->id,
+            ]);
+            $this->fail('A foreign-store Van wallet may not be mapped.');
+        } catch (ModelNotFoundException) {
+            // The account must not be resolved outside the requested store.
+        }
+
+        try {
+            $service->review($maker, $context, $mapping->id, 'approve');
+            $this->fail('Mapping maker must not self-approve.');
+        } catch (\\Symfony\\Component\\HttpKernel\\Exception\\HttpException $exception) {
+            $this->assertSame(403, $exception->getStatusCode());
+        }
+
+        $approved = $service->review($checker, $checkerContext, $mapping->id, 'approve');
+        $this->assertSame('APPROVED', $approved->status);
+        $this->assertSame((int) $checker->id, (int) $approved->reviewed_by);
+
+        $this->assertDatabaseCount('enterprise_finance_collection_account_mappings', 1);
+        $this->assertDatabaseCount('enterprise_finance_journals', 0);
+        $this->assertDatabaseCount('enterprise_ar_allocations', 0);
+    }
+
     /** @return array{store:Store,maker:User,poster:User,document:EnterpriseAccountsReceivableDocument,cash_account_id:int} */
     private function fixture(string $prefix): array
     {
