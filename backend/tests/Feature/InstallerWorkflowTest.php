@@ -6,6 +6,7 @@ use App\Domain\Installer\InstallerChecklist;
 use App\Domain\Installer\InstallerEnvironment;
 use App\Domain\Installer\InstallerWorkflow;
 use App\Domain\Installer\InstallState;
+use App\Services\CommercialFeatureFlags;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
@@ -238,7 +239,7 @@ class InstallerWorkflowTest extends TestCase
     {
         // Disposable RefreshDatabase fixture only: never reseed a live site.
         $workflow = app(InstallerWorkflow::class);
-        $flags = app(\App\Services\CommercialFeatureFlags::class);
+        $flags = app(CommercialFeatureFlags::class);
         $workflow->seedRequiredCoreData();
 
         $this->assertSame([
