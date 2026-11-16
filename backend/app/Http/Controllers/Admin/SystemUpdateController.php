@@ -60,6 +60,7 @@ final class SystemUpdateController extends Controller
             'backupRows' => $this->systemRuntime->backups(50),
             'recoveryOperations' => $this->systemRuntime->recentOperations(50),
             'isProduction' => app()->environment('production'),
+            'hostingChecks' => $this->hostingPermissionChecks(),
         ]);
     }
 
@@ -198,6 +199,70 @@ final class SystemUpdateController extends Controller
                 ->route('admin.system-update.index')
                 ->withErrors(['restore' => __('admin.system_update_surface.restore_failed')]);
         }
+    }
+
+    /**
+     * cPanel/shared-host preflight: inspect only, never create probes, chmod
+     * files or mutate the configured environment during a GET request.
+     * A positive result is a permission hint, NOT an update/restore signoff.
+     *
+     * @return array<string, bool>
+     */
+    private function hostingPermissionChecks(): array
+    {
+        return [
+            'zip_extension' => extension_loaded('zip') && class_exists(ZipArchive::class),
+            'app_storage' => $this->hostPathWritableWithoutMutation(storage_path()),
+            'cache' => $this->hostPathWritableWithoutMutation(base_path('bootstrap/cache')),
+            'update_upload' => $this->hostPathWritableWithoutMutation(storage_path('app/private/updates/incoming')),
+            'update_lock' => $this->hostPathWritableWithoutMutation(
+                (string) config('foodex.updater_execution_lock', storage_path('app/private/updates/execution.lock')),
+                true,
+            ),
+            'backup_directory' => $this->hostPathWritableWithoutMutation(
+                (string) config('foodex.update_backup_path', storage_path('app/system/update-backups')),
+            ),
+            'release_directory' => $this->hostPathWritableWithoutMutation(dirname(base_path())),
+        ];
+    }
+
+    /**
+     * Refuse symlinks, non-directory ancestors and unwritable lock files.
+     * A missing nested directory may be created later if the nearest existing
+     * ancestor is writable; this check intentionally does NOT create it.
+     */
+    private function hostPathWritableWithoutMutation(string $path, bool $file = false): bool
+    {
+        if ($path === '' || (! str_starts_with($path, '/') && preg_match('/^[A-Za-z]:[\\\\\\/]/', $path) !== 1)) {
+            return false;
+        }
+
+        for ($candidate = $path; ; $candidate = dirname($candidate)) {
+            if (is_link($candidate)) {
+                return false;
+            }
+            if (dirname($candidate) === $candidate) {
+                break;
+            }
+        }
+
+        if ($file && file_exists($path) && (! is_file($path) || ! is_writable($path))) {
+            return false;
+        }
+
+        $directory = $file ? dirname($path) : $path;
+        while (! is_dir($directory)) {
+            if (file_exists($directory) || is_link($directory)) {
+                return false;
+            }
+            $parent = dirname($directory);
+            if ($parent === $directory) {
+                return false;
+            }
+            $directory = $parent;
+        }
+
+        return is_writable($directory);
     }
 
     private function packageContainsMigrations(string $packagePath): bool
