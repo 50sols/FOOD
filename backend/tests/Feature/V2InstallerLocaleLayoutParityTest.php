@@ -5,6 +5,8 @@ namespace Tests\Feature;
 use App\Domain\Installer\InstallerChecklist;
 use App\Domain\Installer\InstallState;
 use Illuminate\Support\Facades\Artisan;
+use Mockery;
+use Symfony\Component\Console\Output\BufferedOutput;
 use Tests\TestCase;
 
 final class V2InstallerLocaleLayoutParityTest extends TestCase
@@ -164,7 +166,7 @@ final class V2InstallerLocaleLayoutParityTest extends TestCase
 
         Artisan::shouldReceive('call')
             ->once()
-            ->with('migrate', ['--force' => true])
+            ->with('migrate', ['--force' => true], Mockery::type(BufferedOutput::class))
             ->andReturn(1);
 
         $this->post('/install/step/11?lang=ar', ['installer_token' => $token])
