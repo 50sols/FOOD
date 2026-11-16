@@ -57,8 +57,12 @@ class HttpVanWalletRepository implements VanWalletRepository {
       );
     }).toList(growable: false);
 
+    final scopedStoreId = _requiredInt(data['store_id']);
+    if (scopedStoreId != customer.storeId) {
+      throw const VanApiException('Van collection store scope mismatch.');
+    }
     return VanCollectionContext(
-      storeId: _requiredInt(data['store_id']),
+      storeId: scopedStoreId,
       invoices: invoices,
     );
   }
@@ -143,8 +147,22 @@ class HttpVanWalletRepository implements VanWalletRepository {
   }
 
   VanReceipt _receipt(Map<String, dynamic> data) {
+    final receiptId = _requiredInt(data['id']);
+    if (receiptId <= 0) {
+      throw const VanApiException('Invalid Van finance receipt identifier.');
+    }
+
+    // The server issues the immutable payment link. Some older wallet rows
+    // lack it; a present but invalid ID must never be treated as verified.
+    final rawPaymentId = data['payment_id'];
+    final paymentId = rawPaymentId == null ? null : _int(rawPaymentId);
+    if (rawPaymentId != null && (paymentId == null || paymentId <= 0)) {
+      throw const VanApiException('Invalid Van receipt payment reference.');
+    }
+
     return VanReceipt(
-      id: _requiredInt(data['id']),
+      id: receiptId,
+      paymentId: paymentId,
       amount: _double(data['amount']),
       currency: _string(data['currency']),
       status: _string(data['status']),
@@ -177,9 +195,10 @@ class HttpVanWalletRepository implements VanWalletRepository {
   }
 
   double _double(Object? value) {
-    if (value is num) return value.toDouble();
-    final parsed = double.tryParse(value?.toString() ?? '');
-    if (parsed == null) {
+    final parsed = value is num
+        ? value.toDouble()
+        : double.tryParse(value?.toString() ?? '');
+    if (parsed == null || !parsed.isFinite) {
       throw const VanApiException('Invalid Van finance amount.');
     }
     return parsed;
