@@ -7068,11 +7068,22 @@ class _WholesaleCheckoutDesignScreenState
       final product = item['product'];
       final productId =
           item['product_id'] ?? (product is Map ? product['id'] : null);
+      final quantity = item['quantity'];
+      // A server may render the same quantity as 1 or "1.000".
+      // Normalize that representation before comparing retry intent.
+      final quantityNumber = quantity is num
+          ? quantity.toDouble()
+          : double.tryParse(quantity?.toString() ?? '');
       return jsonEncode(<String>[
         (item['id'] ?? '').toString(),
         (productId ?? '').toString(),
+        (item['sku'] ??
+                (product is Map ? product['sku'] : null) ??
+                item['name'] ??
+                '')
+            .toString(),
         (item['selling_unit_code'] ?? '').toString(),
-        (item['quantity'] ?? '').toString(),
+        quantityNumber?.toString() ?? (quantity ?? '').toString(),
       ]);
     }).toList()
       ..sort();
@@ -7081,7 +7092,8 @@ class _WholesaleCheckoutDesignScreenState
       storeId,
       addressId,
       paymentMethod,
-      note.text,
+      // HttpWholesaleCommerceApi omits whitespace-only notes entirely.
+      note.text.trim().isEmpty ? null : note.text,
       appliedCouponCode,
       itemIdentities,
     ]);

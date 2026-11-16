@@ -2706,6 +2706,23 @@ void main() {
         // Uncertain network failure: identical retries MUST keep the same
         // key so the server can return the original order, not double-post.
         await attempt();
+        // The actual HTTP client omits whitespace-only notes, so changing
+        // the UI from empty to spaces is NOT a new server request intent.
+        final noteField = find.byWidgetPredicate((widget) =>
+            widget is TextField &&
+            widget.minLines == 3 &&
+            widget.maxLines == 4);
+        await tester.ensureVisible(noteField);
+        await tester.enterText(noteField, '   ');
+        await tester.pump();
+        // The same server quantity may be serialized as a number or decimal
+        // string on the next GET; do not make an at-most-once retry distinct.
+        final currentItems = commerce.cartValue['items'] as List;
+        (currentItems.first as Map)['quantity'] = '1.000';
+        tester.binding
+            .handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+        await _pumpCustomerFrames(tester);
+
         await attempt();
         expect(commerce.checkoutKeys, hasLength(2));
         expect(commerce.checkoutKeys[0], commerce.checkoutKeys[1]);
