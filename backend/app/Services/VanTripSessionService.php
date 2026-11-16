@@ -193,6 +193,11 @@ final class VanTripSessionService
             $this->tenantScope->assertStore($actor, (int) $trip->store_id, 'drivers.b2b.manage', 'b2b');
             $this->tenantScope->assertStore($actor, (int) $trip->store_id, 'customers.view', 'b2b');
             abort_unless((int) $trip->van_assignment_id === (int) $assignment->id, 404);
+            // A store-scoped permission is necessary but not a transfer of
+            // physical custody. Until an immutable, audited handoff is
+            // implemented, a peer administrator cannot consume the trip
+            // starter's identity to authorize stock movements.
+            abort_unless((int) $trip->started_by_user_id === (int) $actor->id, 409);
 
             // Operational ending keeps the physical reservation. It does not
             // authorize new loads, even if the reserved Van slot still exists.

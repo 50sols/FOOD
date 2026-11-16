@@ -305,6 +305,30 @@ final class V2VanTripSessionIdentityTest extends TestCase
         $this->assertDatabaseCount('stock_movements', 0);
     }
 
+    public function test_unassigned_privileged_peer_cannot_impersonate_trip_starter_for_custody_writes(): void
+    {
+        [$starter, $assignment] = $this->fixture();
+        $service = app(VanTripSessionService::class);
+        $trip = $service->start($starter, (int) $assignment->id, 'P276-custody-actor-001');
+
+        // Being another fully privileged B2B user is NOT an audited trip
+        // transfer. Without a maker/checker handoff contract the immutable
+        // starter is the only custody consumer permitted by this service.
+        $peer = $this->superAdmin();
+        $this->assertNotSame($starter->id, $peer->id);
+        $this->expectHttpConflict(fn () => $service->requireActiveCustodyContext(
+            $peer, (int) $assignment->id, $trip->public_id
+        ));
+
+        $accepted = $service->requireActiveCustodyContext(
+            $starter, (int) $assignment->id, $trip->public_id
+        );
+        $this->assertSame($trip->id, $accepted->id);
+        $this->assertDatabaseCount('van_trip_sessions', 1);
+        $this->assertDatabaseCount('van_trip_session_events', 1);
+        $this->assertDatabaseCount('stock_movements', 0);
+    }
+
     public function test_custody_consumer_refuses_assignment_rebinding_expiry_and_mutated_warehouse(): void
     {
         [$actor, $assignment] = $this->fixture();

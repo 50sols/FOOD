@@ -135,3 +135,18 @@ Van offline app (#2739), trip payment and AR/GL settlement checker
 (#2602/#2607), real end-to-end and AR/EN device acceptance are still
 missing. Keep original PR DRAFT and #2606 OPEN; no main, release, tag,
 production, branch duplication or ownership of Worker D's files.
+
+
+## 2026-11-16 — Worker E P276 privileged-peer custody impersonation
+
+Original #2606 / DRAFT #3311 branch `feat/2606-v2-authorized-van-trips` was reused at `79b56559fb873800b0970d5ef38ce92716d77f68` with the verified handoff lease. This increment addresses a **real source authorization defect** in the original P276 trip identity writer, not CI-only coverage.
+
+**Problem, demonstrated RED:** `VanTripSessionService::requireActiveCustodyContext()` correctly enforced B2B store, assignment, active reservation and audit event, but accepted *another* active SUPER_ADMIN (not the immutable trip starter) because both had store scope. The service describes itself as a prerequisite to future physical custody posting, and there is no audited custody transfer/handoff authority. Different privileged actors cannot implicitly take over a trip's physical-custody identity. New feature test `test_unassigned_privileged_peer_cannot_impersonate_trip_starter_for_custody_writes` FAILED on the exact original source with `Expected an HTTP 409` (test assertion 2).
+
+**Correction and negative guard:** After validating tenant permissions and the exact original assignment, the custody consumer now rejects an actor whose ID differs from the trip's immutable `started_by_user_id` with HTTP 409. Same-actor audited active custody remains allowed; no owner override, alternate assignment, stock transfer, payment, AR/GL posting, Van reservation release or user delegation is introduced. The future cross-user handoff must first provide a separate trusted immutable maker/checker custody-transfer contract.
+
+**GCC real RED/GREEN:** Isolated original branch worktree, local copied production/development Composer dependencies and PHP 8.3.33 + pdo_sqlite. New negative test **RED** before service change; after fix targeted Van trip identity suite **13 tests/95 assertions PASS**. Related `V2VanTrip*` and `V2VanVisitsAuthorizedSidebar` suites **31 tests/242 assertions PASS** after supplying an ephemeral test-only APP_KEY and increased local PHP memory budget. No secrets or fixture environment settings committed. PHP syntax for both files PASS; Pint --test for both after LF-normalized working copies PASS, git diff --check PASS. The earlier first wide-run errors were local APP_KEY absence, not accepted as a green suite. See exact GitHub head workflows for definitive CI evidence.
+
+**Review risk and scope:** HIGH (future physical stock authorization). Only original source `backend/app/Services/VanTripSessionService.php`, `backend/tests/Feature/V2VanTripSessionIdentityTest.php` and this append-only QA note are modified. No modifications to #2604 / PR #3330 / Worker D, #2844 stock title, WMS, finance, Customer/Driver/Van apps, navigation or public routes. Customer and Driver have no code/API change; Van has no live mobile/API change from this isolated service guard; wholesale VAN ONLY and retail DRIVER ONLY preserved.
+
+**FULL P276 SOURCE STILL INCOMPLETE:** authenticated Dashboard + Van trip lifecycle UI/API, physical stock/legal title and loads #2588/#2604/#2844, offline replay #2739, maker-checker GL/settlement #2602/#2607, physical staging, Arabic/English end-to-end and exact-head final acceptance. Keep original #2606 OPEN and #3311 DRAFT; do not merge, close, sign/release/tag or deploy from this scoped guard.
