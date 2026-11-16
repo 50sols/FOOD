@@ -172,6 +172,76 @@ final class V2ArOfficerAuthorizationContractTest extends TestCase
             ->assertForbidden();
     }
 
+    public function test_ar_officer_with_a_retail_finance_assignment_cannot_borrow_b2c_ar_authority(): void
+    {
+        $this->enableFinance();
+        config()->set(
+            'enterprise_module_readiness.certified_versions.finance',
+            app(ModuleRegistry::class)->manifest('finance')->version,
+        );
+
+        $store = Store::query()->create([
+            'store_type_id' => (int) DB::table('store_types')->where('code', 'B2C')->value('id'),
+            'business_profile' => 'RETAIL_STORE',
+            'code' => 'V2-AR-OFFICER-CROSS-CHANNEL',
+            'name' => 'Cross-channel AR guard retail store',
+            'is_active' => true,
+        ]);
+        $hierarchy = app(OrganizationHierarchyService::class);
+        $hierarchy->ensureDefaultScopeForStore($store);
+        $scope = $hierarchy->scopeForStore($store->id);
+        $this->assertNotNull($scope);
+        app(ModuleEntitlementManager::class)->set(
+            FinanceFoundationService::MODULE,
+            new EntitlementScope(EntitlementScope::LEGAL_ENTITY, (int) $scope['legal_entity_id']),
+            true,
+            ['finance.ar.read', 'finance.ar.manage', 'finance.gl.read'],
+        );
+
+        $retailFinance = Role::query()->where('code', 'RETAIL_FINANCE')->firstOrFail();
+        $actor = $this->officer();
+        $retailOnly = User::factory()->create(['is_active' => true]);
+
+        foreach ([$actor, $retailOnly] as $principal) {
+            DB::table('user_store_roles')->insert([
+                'user_id' => $principal->id,
+                'store_id' => $store->id,
+                'role_id' => $retailFinance->id,
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+        }
+
+        $access = app(FinanceWorkbenchAccess::class);
+        $actor = $actor->fresh();
+        $retailOnly = $retailOnly->fresh();
+        // Both identities have a real, effective store Finance grant. The
+        // AR_OFFICER duty is the sole difference: it may not borrow B2C scope.
+        $this->assertTrue($actor->hasPermission('finance.view', $store->id));
+        $this->assertTrue($actor->hasPermission('finance.manage', $store->id));
+        $this->assertTrue($retailOnly->hasPermission('finance.view', $store->id));
+        $this->assertTrue($access->canRead($retailOnly, $store->id));
+        $this->assertFalse($access->canRead($actor, $store->id));
+        $this->assertFalse($access->canPerform(
+            $actor, $store->id, 'finance.manage', 'finance.ar.manage',
+        ));
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            $actor->forceFill(['locale' => $locale])->save();
+
+            $this->actingAs($actor->fresh())->get(route('admin.erp.finance.index', [
+                'store_id' => $store->id,
+                'tab' => 'receivables',
+            ], false))->assertForbidden();
+        }
+
+        // Removing the AR duty does not silently revoke the legitimate
+        // store-scoped Retail Finance role: this is a specific SoD ceiling.
+        $actor->roles()->detach(Role::query()->where('code', 'AR_OFFICER')->firstOrFail());
+        $this->assertTrue($access->canRead($actor->fresh(), $store->id));
+    }
+
     public function test_deactivated_officer_role_cannot_keep_finance_privileges(): void
     {
         $this->enableFinance();
