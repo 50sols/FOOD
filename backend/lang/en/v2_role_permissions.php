@@ -22,6 +22,8 @@ return [
     'preview_denied' => 'Role or Sidebar conditions not met',
     'preview_hidden_status' => 'Hidden by existing Sidebar preference; route access is separate',
     'preview_disabled' => 'The Sidebar group or page is disabled.',
+    'preview_role_inactive' => 'This role is inactive; stored grants do not make it eligible for display or access.',
+    'preview_role_archived' => 'This role is archived; historical grants remain for audit and cannot enable display or access.',
     'preview_excluded' => 'This role is excluded from the page.',
     'preview_scope' => 'The role scope does not match this page.',
     'preview_channel' => 'The role is not permitted in this channel.',
