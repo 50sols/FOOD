@@ -5,6 +5,7 @@ namespace App\Services;
 use App\Models\Permission;
 use App\Models\Role;
 use App\Models\User;
+use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
@@ -987,7 +988,7 @@ final class RbacManager
             'id' => (int) $user->getKey(),
             'is_active' => (bool) $user->is_active,
             'deactivated_at' => $user->deactivated_at?->toIso8601String(),
-            'archived_at' => $user->archived_at?->toIso8601String(),
+            'archived_at' => $user->archived_at === null ? null : Carbon::parse((string) $user->archived_at)->toIso8601String(),
             'archived_by' => $user->archived_by,
             'deactivation_reason' => $user->deactivation_reason,
             'global_roles' => $user->roles->pluck('code')->sort()->values()->all(),
