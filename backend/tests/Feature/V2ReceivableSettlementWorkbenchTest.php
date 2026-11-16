@@ -117,6 +117,44 @@ final class V2ReceivableSettlementWorkbenchTest extends TestCase
         $this->assertLessThanOrEqual(64, strlen('ear_alloc_coll_src_fk'));
     }
 
+    public function test_empty_invoice_source_migration_down_and_retry_preserve_schema_contract(): void
+    {
+        if (DB::getDriverName() !== 'sqlite') {
+            $this->markTestSkipped('SQLite schema rebuild isolation; hosted MySQL deployment validates the DDL.');
+        }
+
+        $migration = require database_path('migrations/2026_11_15_230000_add_ar_invoice_source_identity.php');
+        $migration->down();
+
+        $this->assertFalse(Schema::hasColumn('enterprise_ar_documents', 'source_invoice_id'));
+        $migration->up();
+        $migration->up();
+
+        $this->assertTrue(Schema::hasColumn('enterprise_ar_documents', 'source_invoice_id'));
+        $this->assertTrue(Schema::hasIndex('enterprise_ar_documents', 'ear_doc_legal_invoice_source_uq'));
+        $this->assertContains('source_invoice_id', collect(Schema::getForeignKeys('enterprise_ar_documents'))
+            ->flatMap(static fn (array $key): array => (array) ($key['columns'] ?? []))->all());
+    }
+
+    public function test_empty_collection_source_migration_down_and_retry_preserve_schema_contract(): void
+    {
+        if (DB::getDriverName() !== 'sqlite') {
+            $this->markTestSkipped('SQLite schema rebuild isolation; hosted MySQL deployment validates the DDL.');
+        }
+
+        $migration = require database_path('migrations/2026_11_16_010000_add_collection_source_identity_to_enterprise_ar_allocations.php');
+        $migration->down();
+
+        $this->assertFalse(Schema::hasColumn('enterprise_ar_allocations', 'source_collection_allocation_id'));
+        $migration->up();
+        $migration->up();
+
+        $this->assertTrue(Schema::hasColumn('enterprise_ar_allocations', 'source_collection_allocation_id'));
+        $this->assertTrue(Schema::hasIndex('enterprise_ar_allocations', 'ear_alloc_collection_source_unique'));
+        $this->assertContains('source_collection_allocation_id', collect(Schema::getForeignKeys('enterprise_ar_allocations'))
+            ->flatMap(static fn (array $key): array => (array) ($key['columns'] ?? []))->all());
+    }
+
     public function test_bilingual_ar_draft_refuses_unverified_collection_posting_without_journal(): void
     {
         $fixture = $this->fixture('P303-SETTLEMENT');
@@ -656,6 +694,22 @@ final class V2ReceivableSettlementWorkbenchTest extends TestCase
 
         $linked = $ar->createDraft($maker, $context, $payload);
         $this->assertSame($invoiceId, (int) $linked->source_invoice_id);
+
+        // P303: rollback must reject populated source identity before the
+        // first DROP INDEX / FOREIGN KEY. No migration can erase AR provenance.
+        $migration = require database_path('migrations/2026_11_15_230000_add_ar_invoice_source_identity.php');
+        try {
+            $migration->down();
+            $this->fail('Populated AR invoice lineage must refuse schema rollback.');
+        } catch (\\RuntimeException $exception) {
+            $this->assertSame(
+                'Refusing to drop enterprise_ar_documents.source_invoice_id while financial invoice source links exist.',
+                $exception->getMessage(),
+            );
+        }
+        $this->assertTrue(Schema::hasColumn('enterprise_ar_documents', 'source_invoice_id'));
+        $this->assertTrue(Schema::hasIndex('enterprise_ar_documents', 'ear_doc_legal_invoice_source_uq'));
+        $this->assertDatabaseHas('enterprise_ar_documents', ['id' => $linked->id, 'source_invoice_id' => $invoiceId]);
         $this->assertSame('draft', $linked->status);
         $this->assertNull($original->source_invoice_id);
         $this->assertSame($linked->id, $ar->createDraft($maker, $context, $payload)->id);
@@ -783,6 +837,23 @@ final class V2ReceivableSettlementWorkbenchTest extends TestCase
         $draft = $ar->createAllocation($maker, $context, $document->id, $payload);
         $this->assertSame('draft', $draft->status);
         $this->assertSame($sourceId, (int) $draft->getAttribute('source_collection_allocation_id'));
+
+        // A posted operational receipt identity is financial provenance even
+        // while the Finance AR allocation is draft. Rollback must not unlink it.
+        $migration = require database_path('migrations/2026_11_16_010000_add_collection_source_identity_to_enterprise_ar_allocations.php');
+        try {
+            $migration->down();
+            $this->fail('Populated AR collection lineage must refuse schema rollback.');
+        } catch (\\RuntimeException $exception) {
+            $this->assertSame(
+                'Refusing to drop enterprise_ar_allocations.source_collection_allocation_id while linked collection settlements exist.',
+                $exception->getMessage(),
+            );
+        }
+        $this->assertTrue(Schema::hasColumn('enterprise_ar_allocations', 'source_collection_allocation_id'));
+        $this->assertTrue(Schema::hasIndex('enterprise_ar_allocations', 'ear_alloc_collection_source_unique'));
+        $this->assertDatabaseHas('enterprise_ar_allocations', ['id' => $draft->id, 'source_collection_allocation_id' => $sourceId]);
+
         $this->assertSame($draft->id, $ar->createAllocation($maker, $context, $document->id, $payload)->id);
         $this->assertDatabaseCount('enterprise_ar_allocations', 1);
 
