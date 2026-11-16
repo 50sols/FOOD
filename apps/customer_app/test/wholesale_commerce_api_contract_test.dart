@@ -26,7 +26,10 @@ void main() {
         if (attempts == 1) {
           throw http.ClientException('transient network failure', request.url);
         }
-        return http.Response('{"data":[]}', 200);
+        return http.Response(
+          '{"store_id":12,"channel":"b2b","items":[],"quote":{"grand_total":0}}',
+          200,
+        );
       }),
     );
 
@@ -54,7 +57,10 @@ void main() {
           if (attempts == 1) {
             return http.Response('{"message":"transient"}', transientStatus);
           }
-          return http.Response('{"data":[]}', 200);
+          return http.Response(
+          '{"store_id":12,"channel":"b2b","items":[],"quote":{"grand_total":0}}',
+          200,
+        );
         }),
       );
 
@@ -215,7 +221,7 @@ void main() {
           throw http.ClientException(
               'connection lost after commit', request.url);
         }
-        return http.Response('{"id":123}', 200);
+        return http.Response('{"id":123,"store_id":12,"channel":"b2b"}', 200);
       }),
     );
 
@@ -369,7 +375,7 @@ void main() {
           expect(body, isNot(contains('credit_limit')));
           expect(body, isNot(contains('discount_total')));
           return http.Response(
-            '{"data":{"grand_total":20.125,"discount_total":0.001,"pricing_source":"backend_authoritative_quote_v1"}}',
+            '{"data":{"store_id":12,"channel":"b2b","grand_total":20.125,"discount_total":0.001,"pricing_source":"backend_authoritative_quote_v1"}}',
             200,
             headers: {'content-type': 'application/json'},
           );
@@ -380,6 +386,110 @@ void main() {
       expect(data['grand_total'], 20.125);
       expect(data['discount_total'], 0.001);
       expect(data['pricing_source'], 'backend_authoritative_quote_v1');
+    }
+  });
+
+  test('Commerce rejects foreign-store and cross-channel 200 snapshots',
+      () async {
+    for (final locale in ['ar', 'en']) {
+      for (final endpoint in [
+        '/api/v1/cart',
+        '/api/v1/quote',
+        '/api/v1/checkout',
+      ]) {
+        for (final mismatch in [
+          (store: 99, channel: 'b2b'),
+          (store: 12, channel: 'b2c'),
+        ]) {
+          var calls = 0;
+          final api = HttpWholesaleCommerceApi(
+            baseUrl: 'https://foodex.example',
+            token: 'scoped-token',
+            retailStoreContextId: 17,
+            locale: locale,
+            maxGetAttempts: 3,
+            client: MockClient((request) async {
+              calls++;
+              expect(request.url.path, endpoint);
+              expect(request.headers['Authorization'], 'Bearer scoped-token');
+              expect(request.headers['X-FOODEX-Customer-Domain'], 'b2b');
+              expect(request.headers['X-FOODEX-Retail-Store-ID'], '17');
+              expect(request.headers['Accept-Language'], locale);
+              final payload = {
+                'id': 101,
+                'store_id': mismatch.store,
+                'channel': mismatch.channel,
+                'items': [],
+              };
+              return http.Response(
+                jsonEncode(endpoint == '/api/v1/quote'
+                    ? {'data': payload}
+                    : payload),
+                200,
+                headers: {'content-type': 'application/json'},
+              );
+            }),
+          );
+
+          Future<Object?> action;
+          if (endpoint == '/api/v1/cart') {
+            action = api.cart(12);
+          } else if (endpoint == '/api/v1/quote') {
+            action = api.quote(storeId: 12);
+          } else {
+            action = api.checkout(
+              storeId: 12,
+              addressId: 9,
+              paymentMethod: 'account_credit',
+              idempotencyKey: 'scope-unchanged-checkout-01',
+            );
+          }
+          await expectLater(
+            action,
+            throwsA(isA<WholesaleCommerceException>().having(
+              (error) => error.message,
+              'localized wrong store/channel',
+              locale == 'en'
+                  ? 'The server returned a different store or invalid order. Refresh and try again.'
+                  : 'أعاد الخادم بيانات متجر مختلف أو طلبًا غير صالح. حدّث الصفحة وحاول مرة أخرى.',
+            )),
+          );
+          expect(calls, 1);
+        }
+      }
+    }
+  });
+
+  test('Commerce rejects checkout success without a server order identity',
+      () async {
+    for (final locale in ['ar', 'en']) {
+      var calls = 0;
+      final api = HttpWholesaleCommerceApi(
+        baseUrl: 'https://foodex.example',
+        token: 'scoped-token',
+        locale: locale,
+        maxGetAttempts: 3,
+        client: MockClient((request) async {
+          calls++;
+          expect(request.headers['Idempotency-Key'],
+              'checkout-server-order-identity');
+          return http.Response(
+            '{"id":0,"store_id":12,"channel":"b2b"}',
+            200,
+            headers: {'content-type': 'application/json'},
+          );
+        }),
+      );
+      await expectLater(
+        api.checkout(
+          storeId: 12,
+          addressId: 9,
+          paymentMethod: 'account_credit',
+          idempotencyKey: 'checkout-server-order-identity',
+        ),
+        throwsA(isA<WholesaleCommerceException>()),
+      );
+      expect(calls, 1);
     }
   });
 }
