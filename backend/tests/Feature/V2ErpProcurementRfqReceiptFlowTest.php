@@ -107,6 +107,24 @@ final class V2ErpProcurementRfqReceiptFlowTest extends TestCase
         $this->assertSame(1, DB::table('enterprise_purchase_orders')
             ->where('procurement_rfq_id', $rfqId)->count());
 
+        // A different quote ID is not a replay of the awarded quote.
+        // It must be rejected without changing the existing PO or audit trail.
+        $awardAuditCount = DB::table('audit_logs')
+            ->where('event', 'enterprise.procurement.rfq.awarded')->count();
+        $this->actingAs($checker)->post(route('admin.erp.procurement.rfqs.award', [
+            'rfq' => $rfqId, 'quote' => $quoteId + 100000,
+        ]), ['store_id' => $store->id])->assertRedirect()->assertSessionHasErrors('quote_id');
+        $this->assertDatabaseHas('enterprise_procurement_rfqs', [
+            'id' => $rfqId, 'status' => 'awarded', 'awarded_quote_id' => $quoteId,
+        ]);
+        $this->assertDatabaseHas('enterprise_purchase_orders', [
+            'id' => $order->id, 'procurement_rfq_id' => $rfqId, 'awarded_quote_id' => $quoteId,
+        ]);
+        $this->assertSame(1, DB::table('enterprise_purchase_orders')
+            ->where('procurement_rfq_id', $rfqId)->count());
+        $this->assertSame($awardAuditCount, DB::table('audit_logs')
+            ->where('event', 'enterprise.procurement.rfq.awarded')->count());
+
         $this->actingAs($checker)->post(route('admin.erp.procurement.orders.issue', $order->id), [
             'store_id' => $store->id,
         ])->assertRedirect();

@@ -542,6 +542,14 @@ final class ProcurementCompletionManager
             }
 
             if ($rfq->status === 'awarded') {
+                // An idempotent retry must reference the original winning quote.
+                // A different quote ID is not an authorized re-award.
+                if ((int) $rfq->awarded_quote_id !== $quoteId) {
+                    throw ValidationException::withMessages([
+                        'quote_id' => [__('enterprise_procurement.errors.quote_source_invalid')],
+                    ]);
+                }
+
                 $existingOrder = DB::table('enterprise_purchase_orders')
                     ->where('procurement_rfq_id', $rfq->id)
                     ->first();
