@@ -64,7 +64,8 @@ final class GuaranteedContractService
         $data['currency_code'] = strtoupper($data['currency_code']);
         $data['reference'] = trim($data['reference']);
         $data['underlying_reference'] = trim($data['underlying_reference']);
-        $data['face_amount'] = number_format((float) $data['face_amount'], 3, '.', '');
+        [$whole, $fraction] = array_pad(explode('.', (string) $data['face_amount'], 2), 2, '');
+        $data['face_amount'] = (ltrim($whole, '0') ?: '0').'.'.str_pad($fraction, 3, '0');
         if ($data['instrument_type'] === 'secured_commercial_contract') {
             $data['direction'] = null;
             $data['issuer_name'] = null;
