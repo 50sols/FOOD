@@ -396,6 +396,95 @@ final class V2ProfitabilityRuleLifecycleTest extends TestCase
         $this->assertSame(0, DB::table('commercial_profitability_rule_revisions')->count());
     }
 
+    public function test_store_scoped_deny_overrides_b2b_global_maker_grant_without_affecting_other_stores(): void
+    {
+        [$maker, $deniedStore, $deniedProduct] = $this->fixture();
+        [, $allowedStore, $allowedProduct] = $this->fixture();
+        $maker->forceFill(['has_permission_overrides' => true])->save();
+
+        DB::table('user_permission_overrides')->insert([
+            'user_id' => $maker->id,
+            'permission_id' => Permission::query()->where('code', 'catalog.manage')->firstOrFail()->id,
+            'scope_key' => 'store:'.$deniedStore,
+            'store_id' => $deniedStore,
+            'effect' => 'deny',
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $this->actingAs($maker)->put(
+            $this->saveRoute($deniedStore, $deniedProduct),
+            $this->proposal((string) Str::uuid(), '18.50'),
+        )->assertStatus(404);
+        $this->assertSame(0, DB::table('commercial_profitability_rule_revisions')->count());
+
+        $this->actingAs($maker)->put(
+            $this->saveRoute($allowedStore, $allowedProduct),
+            $this->proposal((string) Str::uuid(), '18.50'),
+        )->assertSessionHasNoErrors();
+
+        $this->assertDatabaseHas('commercial_profitability_rule_revisions', [
+            'store_id' => $allowedStore,
+            'product_id' => $allowedProduct,
+            'status' => 'DRAFT',
+            'proposed_by' => $maker->id,
+        ]);
+        $this->assertDatabaseMissing('commercial_profitability_rule_revisions', [
+            'store_id' => $deniedStore,
+            'product_id' => $deniedProduct,
+        ]);
+    }
+
+    public function test_store_scoped_deny_blocks_b2b_finance_checker_only_in_denied_store(): void
+    {
+        [$maker, $deniedStore, $deniedProduct] = $this->fixture();
+        [, $allowedStore, $allowedProduct] = $this->fixture();
+
+        $this->actingAs($maker)->put(
+            $this->saveRoute($deniedStore, $deniedProduct),
+            $this->proposal((string) Str::uuid(), '16.75'),
+        )->assertSessionHasNoErrors();
+        $deniedRevision = (int) DB::table('commercial_profitability_rule_revisions')
+            ->where('store_id', $deniedStore)->where('product_id', $deniedProduct)->value('id');
+
+        $this->actingAs($maker)->put(
+            $this->saveRoute($allowedStore, $allowedProduct),
+            $this->proposal((string) Str::uuid(), '16.75'),
+        )->assertSessionHasNoErrors();
+        $allowedRevision = (int) DB::table('commercial_profitability_rule_revisions')
+            ->where('store_id', $allowedStore)->where('product_id', $allowedProduct)->value('id');
+
+        $this->restrictB2bAdminToIndependentChecker();
+        $checker = $this->user('B2B_ADMIN');
+        $checker->forceFill(['has_permission_overrides' => true])->save();
+        DB::table('user_permission_overrides')->insert([
+            'user_id' => $checker->id,
+            'permission_id' => Permission::query()->where('code', 'finance.approve')->firstOrFail()->id,
+            'scope_key' => 'store:'.$deniedStore,
+            'store_id' => $deniedStore,
+            'effect' => 'deny',
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $review = ['profitability_action' => 'review', 'decision' => 'review'];
+        $this->actingAs($checker)->put($this->saveRoute($deniedStore, $deniedProduct), [
+            ...$review, 'revision_id' => $deniedRevision,
+        ])->assertForbidden();
+        $this->assertDatabaseHas('commercial_profitability_rule_revisions', [
+            'id' => $deniedRevision, 'status' => 'DRAFT', 'reviewed_by' => null,
+        ]);
+
+        $this->actingAs($checker)->put($this->saveRoute($allowedStore, $allowedProduct), [
+            ...$review, 'revision_id' => $allowedRevision,
+        ])->assertSessionHasNoErrors();
+        $this->assertDatabaseHas('commercial_profitability_rule_revisions', [
+            'id' => $allowedRevision, 'status' => 'REVIEWED_INACTIVE', 'reviewed_by' => $checker->id,
+        ]);
+        $this->assertSame(1, DB::table('audit_logs')
+            ->where('event', 'commercial.profitability_rule.reviewed')->count());
+    }
+
     public function test_super_admin_and_registry_platform_owner_cannot_act_as_p229_makers_or_checkers(): void
     {
         [$maker, $store, $product] = $this->fixture();
