@@ -383,7 +383,6 @@ final class ErpCenterTest extends TestCase
         $this->assertNotNull(collect($erpGroup['children'])->firstWhere('key', 'erp_center'));
     }
 
-
     public function test_wholesale_procurement_store_entitlement_projects_existing_read_route_without_platform_grant(): void
     {
         $admin = $this->userWithGlobalRole('SUPER_ADMIN', 'en', 'erp-wholesale-setup@example.test');
