@@ -1,5 +1,5 @@
 {
-  "$comment": "FOODEX V2 parallel coordination; no fixed issue, branch or worker count cap. Lane slots are advisory categories, not numeric limits. Retain one issue/worker/branch/PR, disjoint fences, lease and resource checks.",
+  "$comment": "FOODEX V2 worker coordination contract: no fixed issue/branch/worker count cap; machine-readable policy is not an executable scheduler. Unknown ownership and resource states still fail closed.",
   "version": 1,
   "owner_approved_utc_date": "2026-11-16",
   "program": "FOODEX V2",
@@ -43,7 +43,7 @@
   "coordinator_occupies_slot_when_running": true,
   "heartbeat_minutes": 10,
   "idle_lease_minutes": 30,
-  "admission_on_unknown_state": "fail_closed_for_ownership_or_resource_uncertainty",
+  "admission_on_unknown_state": "fail_closed",
   "requires_distinct_worker_identity": true,
   "requires_nonoverlapping_issue_and_file_scope": true,
   "requires_exact_head_ci_for_merge": true,
