@@ -31,6 +31,14 @@ REQUIRED = frozenset({
     "backend/vendor/autoload.php",
     "backend/.env.production.example",
 })
+REQUIRED_PUBLIC_ASSETS = frozenset({
+    "backend/public/assets/admin/assistant-chat.css",
+    "backend/public/assets/admin/assistant-chat.js",
+    "backend/public/assets/wholesale/foodex-wholesale.css",
+    "backend/public/assets/wholesale/foodex-wholesale.js",
+    "backend/public/css/smart-ordering-storefront.css",
+    "backend/public/js/smart-ordering-storefront.js",
+})
 MAX_ENTRIES = 100_000
 MAX_ENTRY_SIZE = 512 * 1024 * 1024
 MAX_TOTAL_SIZE = 4 * 1024 * 1024 * 1024
@@ -322,6 +330,14 @@ def verify_setup_zip(zip_path: Path, version_path: Path, source_sha: str) -> dic
                              f"File/directory path collision in Setup ZIP: {name!r}")
             _require(REQUIRED.issubset(files),
                      f"Missing Setup ZIP files: {sorted(REQUIRED - files)}")
+            # These files are *already* served by existing Dashboard and
+            # storefront routes. They must be shipped with the one-ZIP
+            # Laravel install, not accidentally omitted by a build step.
+            _require(REQUIRED_PUBLIC_ASSETS.issubset(files),
+                     f"Missing compiled/public frontend assets: {sorted(REQUIRED_PUBLIC_ASSETS - files)}")
+            for asset_name in sorted(REQUIRED_PUBLIC_ASSETS):
+                _require(archive.getinfo(asset_name).file_size > 0,
+                         f"Empty compiled/public frontend asset: {asset_name}")
             try:
                 instructions = archive.read("INSTALL-FIRST.txt").decode("utf-8").casefold()
             except (KeyError, UnicodeDecodeError) as exc:
