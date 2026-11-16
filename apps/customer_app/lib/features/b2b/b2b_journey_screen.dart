@@ -3549,6 +3549,8 @@ class _PurchaseCategoryDistribution extends StatelessWidget {
           final color = FoodexChartPalette
               .series[entry.key % FoodexChartPalette.series.length];
           final percentage = _reportFiniteDouble(row['percentage']);
+          final percentageLabel =
+              percentage == null ? '—' : '${percentage.toStringAsFixed(1)}%';
           return Padding(
             padding: const EdgeInsets.symmetric(vertical: 5),
             child: Row(
@@ -3577,7 +3579,7 @@ class _PurchaseCategoryDistribution extends StatelessWidget {
                   ),
                 ),
                 Text(
-                  '${percentage == null ? '—' : '${percentage.toStringAsFixed(1)}%'} · '
+                  '${percentageLabel} · '
                   '${_reportMoney(row['purchase_total'], currency)}',
                   style: Theme.of(context).textTheme.bodySmall?.copyWith(
                         fontSize:
