@@ -125,6 +125,15 @@ class HttpB2bApi implements B2bApi, B2bDocumentApi, B2bDownloadApi {
             segments[3] == 'invoices' &&
             (segments.length == 4 ||
                 (segments.length == 5 && (int.tryParse(segments[4]) ?? 0) > 0));
+        // An authorized store response can still describe a different
+        // invoice. The detail route must echo the requested server ID.
+        if (invoiceEndpoint && segments.length == 5) {
+          final detail = decoded['data'];
+          if (detail is! Map<String, dynamic> ||
+              detail['id'] != int.tryParse(segments[4])) {
+            throw const B2bApiException('invalid_response');
+          }
+        }
         if (requestedStore != null && invoiceEndpoint) {
           final data = decoded['data'];
           final Iterable<Object?> invoices;
