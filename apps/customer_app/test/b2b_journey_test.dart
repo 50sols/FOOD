@@ -12,8 +12,11 @@ import 'package:foodex_customer_app/core/api/wholesale_commerce_api.dart';
 import 'package:foodex_customer_app/core/auth/customer_session.dart';
 import 'package:foodex_customer_app/core/config/customer_app_release.dart';
 import 'package:foodex_customer_app/core/diagnostics/customer_diagnostics.dart';
+import 'package:foodex_customer_app/core/localization/app_translations.dart';
+import 'package:foodex_customer_app/core/routing/customer_routes.dart';
 import 'package:foodex_customer_app/core/routing/customer_pending_action.dart';
 import 'package:foodex_customer_app/core/theme/customer_ui_v3_tokens.dart';
+import 'package:foodex_customer_app/features/b2b/b2b_journey_screen.dart';
 import 'package:foodex_customer_app/features/storefront/wholesale_multistore_screens.dart';
 
 Future<void> _scrollUntilBuilt(
@@ -35,6 +38,146 @@ Future<void> _pumpCustomerFrames(WidgetTester tester) async {
 
 void main() {
   const b2b = CustomerSession.authenticated(CustomerChannel.b2b);
+
+  for (final locale in const <Locale>[Locale('ar'), Locale('en')]) {
+    testWidgets(
+      'MOB-C03 statement hides previous store and discards late responses '
+      '${locale.languageCode}',
+      (tester) async {
+        tester.view.physicalSize = const Size(390, 844);
+        tester.view.devicePixelRatio = 1;
+        addTearDown(() {
+          tester.view.resetPhysicalSize();
+          tester.view.resetDevicePixelRatio();
+        });
+
+        final api = _DeferredScopedB2bReadbackApi();
+        final actionApi = _FakeCustomerActionApi();
+        Widget scoped(String storeId) => MaterialApp(
+              locale: locale,
+              home: AppTranslations(
+                locale: locale,
+                overrides: const <String, String>{},
+                child: B2bJourneyScreen(
+                  definition: const CustomerRouteDefinition(
+                    pattern: CustomerRoutePaths.b2bAccountStatement,
+                    label: 'B2B account statement',
+                    channel: CustomerChannel.b2b,
+                    requiresAuth: true,
+                  ),
+                  location: '/b2b/account-statement?store_id=$storeId',
+                  actionApi: actionApi,
+                  api: api,
+                ),
+              ),
+            );
+        Map<String, Object?> statement(num balance) => {
+              'data': {
+                'currency': 'EGP',
+                'opening_balance': balance,
+                'period_debits': 0,
+                'period_credits': 0,
+                'closing_balance': balance,
+                'balance': balance,
+                'transactions': <Object?>[],
+                'pagination': {'current_page': 1, 'last_page': 1},
+              },
+            };
+
+        await tester.pumpWidget(scoped('7'));
+        await tester.pump();
+        expect(api.paths, hasLength(1));
+        expect(api.paths.single, contains('store_id=7'));
+        api.replies[0].complete(statement(100));
+        await _pumpCustomerFrames(tester);
+        expect(find.textContaining('100.00 EGP'), findsWidgets);
+
+        final monthly = find.byKey(
+          const ValueKey('b2b-statement-preset-month'),
+        );
+        await tester.ensureVisible(monthly);
+        await tester.tap(monthly);
+        await tester.pump();
+        expect(api.paths, hasLength(2));
+        expect(api.paths[1], contains('store_id=7'));
+
+        await tester.pumpWidget(scoped('9'));
+        await tester.pump();
+        expect(api.paths, hasLength(3));
+        expect(api.paths[2], contains('store_id=9'));
+        expect(find.textContaining('100.00 EGP'), findsNothing);
+        expect(find.byKey(const ValueKey('b2b-loading')), findsOneWidget);
+
+        api.replies[2].complete(statement(20));
+        await _pumpCustomerFrames(tester);
+        expect(find.textContaining('20.00 EGP'), findsWidgets);
+
+        // The old store-7 refresh completes after the store-9 result.
+        api.replies[1].complete(statement(900));
+        await _pumpCustomerFrames(tester);
+        expect(find.textContaining('20.00 EGP'), findsWidgets);
+        expect(find.textContaining('900.00 EGP'), findsNothing);
+        expect(tester.takeException(), isNull);
+      },
+    );
+  }
+
+  testWidgets(
+    'MOB-C03 invoices clear last-good rows when the authorized store changes',
+    (tester) async {
+      final api = _DeferredScopedB2bReadbackApi();
+      final actionApi = _FakeCustomerActionApi();
+      Widget scoped(String storeId) => MaterialApp(
+            home: AppTranslations(
+              locale: const Locale('ar'),
+              overrides: const <String, String>{},
+              child: B2bJourneyScreen(
+                definition: const CustomerRouteDefinition(
+                  pattern: CustomerRoutePaths.b2bInvoices,
+                  label: 'B2B invoices',
+                  channel: CustomerChannel.b2b,
+                  requiresAuth: true,
+                ),
+                location: '/b2b/invoices?store_id=$storeId',
+                actionApi: actionApi,
+                api: api,
+              ),
+            ),
+          );
+      Map<String, Object?> invoices(String label) => {
+            'data': [
+              {
+                'id': label == 'INV-S7' ? 7 : 9,
+                'invoice_number': label,
+                'display_invoice_number': label,
+                'status': 'issued',
+                'total': 42.0,
+                'currency': 'EGP',
+              },
+            ],
+            'pagination': {'current_page': 1, 'last_page': 1},
+          };
+
+      await tester.pumpWidget(scoped('7'));
+      await tester.pump();
+      expect(api.paths.single, contains('store_id=7'));
+      api.replies[0].complete(invoices('INV-S7'));
+      await _pumpCustomerFrames(tester);
+      expect(find.textContaining('INV-S7'), findsWidgets);
+
+      await tester.pumpWidget(scoped('9'));
+      await tester.pump();
+      expect(api.paths, hasLength(2));
+      expect(api.paths[1], contains('store_id=9'));
+      expect(find.textContaining('INV-S7'), findsNothing);
+
+      api.replies[1].complete(invoices('INV-S9'));
+      await _pumpCustomerFrames(tester);
+      expect(find.textContaining('INV-S9'), findsWidgets);
+      expect(find.textContaining('INV-S7'), findsNothing);
+      expect(tester.takeException(), isNull);
+    },
+  );
 
   testWidgets(
     'B2B unauthenticated protected route hides internal redirect details',
@@ -6879,6 +7022,24 @@ class _FakeWholesaleStorefrontApi implements StorefrontApi {
   @override
   Future<Map<String, dynamic>> b2bCheckoutOptions(int storeId) async =>
       const {};
+}
+
+
+class _DeferredScopedB2bReadbackApi implements B2bApi {
+  final List<String> paths = <String>[];
+  final List<Completer<Object?>> replies = <Completer<Object?>>[];
+
+  @override
+  Future<Object?> get(String path) {
+    if (!path.startsWith('/api/v1/b2b/account-statement') &&
+        !path.startsWith('/api/v1/b2b/invoices')) {
+      throw StateError('Unexpected B2B financial readback path: $path');
+    }
+    paths.add(path);
+    final reply = Completer<Object?>();
+    replies.add(reply);
+    return reply.future;
+  }
 }
 
 class _FakeB2bApi implements B2bApi {
