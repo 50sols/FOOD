@@ -51,6 +51,9 @@ final class V2WmsReportsHorizontalPanelScopeTest extends TestCase
                     ->assertSee(__('enterprise_wms.reports.'.$panel));
 
                 $html = html_entity_decode($response->getContent(), ENT_QUOTES | ENT_HTML5, 'UTF-8');
+                $this->assertSame(2, substr_count($html, 'class="wms-tabs foodex-tabs"'));
+                $this->assertStringContainsString('.wms-tabs{display:flex;flex-wrap:nowrap;', $html);
+                $this->assertStringContainsString('min-height:44px', $html);
                 $this->assertSame(1, preg_match(
                     '/<nav class="wms-tabs foodex-tabs"[^>]*data-wms-report-tabs[^>]*>(.*?)<\\/nav>/s',
                     $html,
