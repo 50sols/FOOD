@@ -6727,6 +6727,14 @@ class _InvoiceDetailRemoteStateState extends State<_InvoiceDetailRemoteState>
                         paymentCurrency == currency.trim().toUpperCase();
                     final method = payment['method']?.toString() ?? '';
                     final reference = payment['reference']?.toString() ?? '';
+                    // Payment state comes from the scoped invoice API only.
+                    // "captured" must never be relabeled as "paid" or
+                    // interpreted locally as Treasury/GL settlement.
+                    final paymentStatusLabel = switch (payment['status']) {
+                      'paid' => ar ? 'مدفوع' : 'Paid',
+                      'captured' => ar ? 'تم التحصيل' : 'Captured',
+                      _ => ar ? 'حالة الدفع غير مؤكدة' : 'Payment status unverified',
+                    };
                     return ListTile(
                       key: ValueKey('b2b-invoice-payment-${payment['id']}'),
                       leading: const Icon(Icons.payments_outlined),
@@ -6742,10 +6750,14 @@ class _InvoiceDetailRemoteStateState extends State<_InvoiceDetailRemoteState>
                       ),
                       subtitle: Text(
                         [
+                          paymentStatusLabel,
                           if (method.isNotEmpty) method,
                           if (reference.isNotEmpty) reference,
                           _displayDate(payment['paid_at']),
                         ].join(' · '),
+                        key: ValueKey(
+                          'b2b-invoice-payment-status-${payment['id']}',
+                        ),
                       ),
                     );
                   }).toList(growable: false),
