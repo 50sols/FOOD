@@ -29,7 +29,7 @@ void main() {
             return http.Response('{"message":"upstream transient"}', code);
           }
           return http.Response(
-            '{"data":{"id":31,"payments":[{"status":"captured","amount":20.125,"currency":"KWD"}]}}',
+            '{"data":{"id":31,"store_id":7,"payments":[{"status":"captured","amount":20.125,"currency":"KWD"}]}}',
             200,
           );
         }),
@@ -41,6 +41,7 @@ void main() {
         (result as Map<String, dynamic>)['data'],
         {
           'id': 31,
+          'store_id': 7,
           'payments': [
             {'status': 'captured', 'amount': 20.125, 'currency': 'KWD'},
           ],
@@ -542,7 +543,7 @@ void main() {
           expect(request.headers['X-FOODEX-Retail-Store-ID'], '17');
           expect(request.headers['Accept-Language'], language);
           return http.Response(
-            '{"data":{"id":31,"paid_amount":20.125,"outstanding_amount":0.001,"payments":[{"status":"captured","amount":20.125}]}}',
+            '{"data":{"id":31,"store_id":7,"paid_amount":20.125,"outstanding_amount":0.001,"payments":[{"status":"captured","amount":20.125}]}}',
             200,
             headers: {'content-type': 'application/json; charset=utf-8'},
           );
