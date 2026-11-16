@@ -257,3 +257,41 @@ The initial sections above record bounded Customer snapshot/readback increments.
 3. Van is **affected** as the B2B partial-collection/custody and flash reservation execution app; its work remains with #2739/#2602/#2633 owners.
 4. The current mobile increment does not close the server-side checkout idempotency, captured-payment readback, concurrent partial-collection, supplier-cost/override, approval or profitability gaps. Keep #2732 OPEN and PR #3337 DRAFT until the existing source owners resolve those gates and the resulting cross-app acceptance is proven.
 5. This audit and QA update introduce no feature, API, route, sidebar, Issue, branch or PR. No peer-owned backend, Driver or Van source files were modified. Only exact-head CI on the final commit can be used for acceptance; earlier CI/APK evidence on a superseded head is not final evidence.
+
+## 2026-11-16 — Source-level transport and checkout idempotency completion increment (HIGH risk)
+
+**Scope:** existing MOB-C03 #2732 / original Draft PR #3337 / `Foodex_V2` only. This section supersedes the earlier *checkout hash omitted cart lines* finding for this PR head. It does **not** supersede open upstream pricing, margin, custody and finance blockers, or certify full Stage 2 source completion.
+
+### Customer API authority, errors, retries and localization
+
+- `HttpWholesaleCommerceApi` now sends an explicit `X-FOODEX-Customer-Domain: b2b` and `Accept-Language` from the active Customer locale; the authorized Retail wholesale context header remains attached when applicable. Bearer token remains provided through the existing session HTTP client, never a locally synthesized user/store identity.
+- Network requests use a bounded timeout; only GET/cart readbacks may retry a transient ClientException/timeout up to a capped number of attempts. Quote POST, cart POST/PATCH/DELETE and checkout POST **never retry automatically**; checkout intent re-submission is caller-directed and preserves the original `Idempotency-Key`. HTTP 401/403/409/422/5xx responses are not automatically retried; user-visible fallback transport errors are bilingual Arabic/English.
+- New `apps/customer_app/test/wholesale_commerce_api_contract_test.dart` uses `MockClient` to assert transport scope, English/Arabic locale, bounded GET recovery and timeout, no POST/PATCH/DELETE replay, identical checkout key/body on explicit same-intent retry, no financial source fields in checkout body and foreign/unauthorized read fail-closed.
+- The existing Customer app passes `_locale.languageCode` to the commerce transport; no new UI, new route, sidebar or local business price/credit/discount decision.
+
+### Checkout API — server-owned request and physical-line identity
+
+- `CheckoutController` still validates store/domain/customer and destination address on the server, locks cart/items, recomputes quote/credit/inventory and issues order/payment/invoice transactionally. Client-provided price, discount, tier and credit fields never enter the validated checkout command.
+- New checkouts persist a **version 2 SHA-256 request digest** bound to normalized, sorted **server-observed** product IDs, base quantities, selling-unit codes and selling-unit quantities. It uses the existing `checkout_request_hash` field without schema change; it never accepts a client-provided hash.
+- A same-key replay with the original cart consumed verifies the immutable saved `OrderItem` snapshot and returns the same order without reposting payments, stock or notifications. When a new cart exists, a changed product/quantity/unit combination under the old key is rejected with HTTP 409 and leaves the new cart and financial records untouched. Original request-only hashes from preexisting orders remain readable for backward-compatible replay; a new changed cart still conflicts when a legacy order has immutable lines.
+- Current payment-method/credit eligibility is enforced **after** the same-key replay lookup, preventing a legitimate original account-credit order from being rejected merely because purchasing power or configured payment options changed after successful issuance. A **new** credit checkout remains subject to the current authoritative account and ledger check.
+- `CheckoutDomainTest` adds B2C forged price/credit command, consumed-cart replay, changed-cart/same-key denial and a fresh-key second purchase with exact row/stock assertions. `AuthoritativePricingQuoteTest` adds B2B tier-price authority, altered physical cart/same-key denial, immutable financial snapshots, and same-key replay after withdrawal of credit eligibility while disallowing a fresh credit purchase.
+
+### Updated app parity and source acceptance matrix
+
+| Area | Source status on original #3337 | Required CI / regression boundary | Unresolved owner |
+|---|---|---|---|
+| Customer Flutter transport/session/AR-EN | **Implemented in this PR**, awaiting exact-final-HEAD CI | New MockClient suite, all Customer Flutter tests, strict Dart format, analyzer, AR/EN, session/store context and checkout key replay | #2732 |
+| Server cart-bound idempotency/forged price+credit | **Implemented in this PR**, awaiting exact-final-HEAD Backend CI (MySQL/Redis and PHPUnit/Pint/PHPStan) | `CheckoutDomainTest` + `AuthoritativePricingQuoteTest`; red tests should block merge; verify old order replay and new cart denial | #2732 |
+| B2B=Van and B2C=Driver | **Unchanged**, executable middleware and routing tests already exist | Customer B2B `awaiting_dispatch` and `DriverAssignmentLifecycleTest`; no B2B Driver fallback or manual exception | Existing dispatch owner |
+| Van partial collection & custody replay | **Not modified in this PR; source-incomplete** | Distinct-key concurrency, locked outstanding, payload-bound replay, receipt status/amount parity, legitimate Van token | #2602 / #2739 |
+| Invoice payment/ledger/receipt settlement | **Not modified in this PR; source-incomplete** | Captured+paid invoice payment rows, same invoice vs statement/ledger/custody, Treasury→GL/AR provenance | #2633 |
+| Owner-aware cost, discount/credit exceptions and quote margin HOLD | **Not completed** | Legal-owner source, independent maker/checker and active quote-time deny with negative-cross-store/no-write checks | #2844 / #2853 / #2559 |
+
+### HIGH security/financial technical review — current source delta
+
+**Threats addressed:** forged client-side monetary payloads; reused checkout key on a different physical cart; duplicate order/payment after a lost checkout response; stale/revoked credit permission during legitimate readback; accidental automatic POST replay; cross-channel/retail-store scope disclosure and untranslated transport failure. No new payment/GL posting, no reinterpretation of partial-cash vs account-credit and no driver fallback is introduced.
+
+**Remaining risk:** Versioned hash binds the *semantics of physical lines*, not deleted cart row primary keys. It intentionally normalizes line order and equivalent quantity spellings to preserve replay; two genuinely identical physical baskets under a reused key intentionally resolve to the original purchase, so clients must continue issuing a new key for a new intent. Legacy pre-v2 request-only hashes can only be compared to immutable saved order lines when a live new cart exists. Server-side account/permission checks on initial request remain authoritative. Concurrent Van collection, financial journal identity, approved cost/margin and Maker/Checker are outside this PR and remain fail-closed owner dependencies.
+
+**Review decision:** `REVIEW_RISK: HIGH`; `TECHNICAL_REVIEW: SOURCE_DELTA_REVIEWED_PENDING_EXACT_HEAD_TESTS`; `FULL_2732_SOURCE_ACCEPTANCE: FAIL / DEPENDENCIES_OPEN`. The changes and tests are committed as source, but must **not** be marked PASS or merged until applicable exact-final-HEAD Required CI, Backend MySQL/Redis acceptance, Customer Flutter tests and AR/EN localization are terminal SUCCESS. Device GCC is offline; no invented local PHPUnit/Flutter success. No new issue/branch/PR, no main/release/tag/production.
