@@ -24,10 +24,6 @@ final class InventoryLegalTitleAttestationVerifier
 
     /**
      * Canonical data signed by the independent legal-title authority.
-     *
-     * @param object $inventory
-     * @param object $position
-     * @param object $attestation
      */
     public function signedPayload(object $inventory, object $position, int $storeId, object $attestation): string
     {

@@ -4,6 +4,7 @@ namespace Tests\Feature\Enterprise;
 
 use App\Enterprise\Wms\InventoryAdjustmentService;
 use App\Enterprise\Wms\InventoryCountService;
+use App\Enterprise\Wms\InventoryLegalTitleAttestationVerifier;
 use App\Enterprise\Wms\InventoryOwnerProvenanceReadService;
 use App\Enterprise\Wms\InventoryOwnershipRuleService;
 use App\Enterprise\Wms\StockReservationService;
@@ -17,6 +18,7 @@ use Database\Seeders\CoreReferenceSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
+use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
 use Symfony\Component\HttpKernel\Exception\HttpException;
@@ -921,12 +923,12 @@ final class V2InventoryOwnerProvenanceTest extends TestCase
 
         $inventory = DB::table('inventories')->where('id', $stock['inventory_id'])->first();
         $position = DB::table('enterprise_inventory_owner_positions')->where('inventory_id', $stock['inventory_id'])->first();
-        $verifier = app(\App\Enterprise\Wms\InventoryLegalTitleAttestationVerifier::class);
+        $verifier = app(InventoryLegalTitleAttestationVerifier::class);
 
-        \Illuminate\Support\Facades\Storage::fake('local');
+        Storage::fake('local');
         $path = 'inventory-title-evidence/'.Str::uuid().'.pdf';
         $bytes = '%PDF-1.7 test-only legal title fixture; not a real certificate';
-        \Illuminate\Support\Facades\Storage::disk('local')->put($path, $bytes);
+        Storage::disk('local')->put($path, $bytes);
 
         $key = openssl_pkey_new(['private_key_type' => OPENSSL_KEYTYPE_RSA, 'private_key_bits' => 2048]);
         $this->assertNotFalse($key);
@@ -968,9 +970,9 @@ final class V2InventoryOwnerProvenanceTest extends TestCase
         $this->assertTrue($trusted['certified']);
         $this->assertTrue($trusted['positions'][0]['certified']);
 
-        \Illuminate\Support\Facades\Storage::disk('local')->put($path, 'tampered document');
+        Storage::disk('local')->put($path, 'tampered document');
         $this->assertSame('UNVERIFIED', $read->snapshot($actor, $stock['inventory_id'])['state']);
-        \Illuminate\Support\Facades\Storage::disk('local')->put($path, $bytes);
+        Storage::disk('local')->put($path, $bytes);
 
         config()->set('enterprise_inventory_title.trusted_public_keys', []);
         $this->assertSame('UNVERIFIED', $read->snapshot($actor, $stock['inventory_id'])['state']);
