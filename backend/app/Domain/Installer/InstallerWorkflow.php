@@ -71,6 +71,17 @@ final class InstallerWorkflow
      */
     public function saveDatabaseConfiguration(array $data): void
     {
+        // Losing installed.lock must never turn a configured live site back
+        // into a first-install wizard with permission to replace its .env.
+        // Inspect BEFORE the first write; the next step's DB probe is too
+        // late to preserve the original database credentials and APP_KEY.
+        $existing = $this->environment->read(['APP_ENV', 'APP_KEY']);
+        abort_if($this->state->isInstalled(), 404);
+        if (strtolower(trim((string) ($existing['APP_ENV'] ?? ''))) === 'production'
+            || trim((string) ($existing['APP_KEY'] ?? '')) !== '') {
+            throw new RuntimeException((string) __('installer.environment_already_configured'));
+        }
+
         $this->environment->write([
             'DB_CONNECTION' => 'mysql',
             'DB_HOST' => $data['host'],

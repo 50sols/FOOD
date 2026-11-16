@@ -152,6 +152,87 @@ class InstallerWorkflowTest extends TestCase
         ]);
     }
 
+    public function test_database_step_refuses_to_replace_unlocked_live_environment_and_preserves_secrets(): void
+    {
+        $environment = app(InstallerEnvironment::class);
+        $environment->write([
+            'APP_ENV' => 'production',
+            'APP_KEY' => 'base64:'.base64_encode(random_bytes(32)),
+            'DB_CONNECTION' => 'mysql',
+            'DB_HOST' => 'previous-production-host.invalid',
+            'DB_DATABASE' => 'live_foodex',
+            'DB_USERNAME' => 'previous_owner',
+            'DB_PASSWORD' => 'previous-secret-test-only',
+        ]);
+        $original = file_get_contents($environment->path());
+        $this->assertFalse(app(InstallState::class)->isInstalled());
+
+        $state = app(InstallState::class);
+        $state->markStepComplete(3);
+        $this->post('/install/step/4', [
+            'installer_token' => $state->token(),
+            'db_host' => 'attacker.invalid',
+            'db_port' => 3306,
+            'db_database' => 'new_database',
+            'db_username' => 'new_operator',
+            'db_password' => 'new-password-test-only',
+        ])->assertStatus(422)
+            ->assertSee(__('installer.environment_already_configured'), false)
+            ->assertDontSee('previous-secret-test-only')
+            ->assertDontSee('new-password-test-only');
+
+        $this->assertSame($original, file_get_contents($environment->path()));
+        $this->assertSame(3, $state->progress()['completed_step']);
+    }
+
+    public function test_database_configuration_refuses_nonempty_app_key_even_when_env_is_not_production(): void
+    {
+        app()->setLocale('en');
+        $environment = app(InstallerEnvironment::class);
+        $environment->write([
+            'APP_ENV' => 'local',
+            'APP_KEY' => 'base64:'.base64_encode(random_bytes(32)),
+        ]);
+        $original = file_get_contents($environment->path());
+
+        try {
+            app(InstallerWorkflow::class)->saveDatabaseConfiguration([
+                'host' => 'localhost',
+                'port' => 3306,
+                'database' => 'new_foodex',
+                'username' => 'fresh_user',
+                'password' => 'new-password-test-only',
+            ]);
+            $this->fail('An existing APP_KEY must protect .env before DB configuration writes.');
+        } catch (\RuntimeException $exception) {
+            $this->assertSame(__('installer.environment_already_configured'), $exception->getMessage());
+        }
+
+        $this->assertSame($original, file_get_contents($environment->path()));
+    }
+
+    public function test_database_configuration_refuses_production_marker_without_app_key(): void
+    {
+        $environment = app(InstallerEnvironment::class);
+        $environment->write(['APP_ENV' => 'production', 'APP_KEY' => '']);
+        $original = file_get_contents($environment->path());
+
+        try {
+            app(InstallerWorkflow::class)->saveDatabaseConfiguration([
+                'host' => 'localhost',
+                'port' => 3306,
+                'database' => 'new_foodex',
+                'username' => 'fresh_user',
+                'password' => 'new-password-test-only',
+            ]);
+            $this->fail('An unlocked production .env must be treated as a protected site.');
+        } catch (\RuntimeException $exception) {
+            $this->assertSame(__('installer.environment_already_configured'), $exception->getMessage());
+        }
+
+        $this->assertSame($original, file_get_contents($environment->path()));
+    }
+
     public function test_database_configuration_persists_mysql_production_defaults(): void
     {
         $workflow = app(InstallerWorkflow::class);
