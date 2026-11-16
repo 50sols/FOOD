@@ -44,7 +44,9 @@ final class InventoryLegalTitleAttestationVerifier
     public function verifies(object $inventory, object $position, int $storeId): bool
     {
         if (! isset($position->id) || ! isset($position->certified_by)
-            || ! isset($position->source_inventory_updated_at)) {
+            || ! isset($position->source_inventory_updated_at)
+            || $this->legalScopeForStore($storeId) === null) {
+            // Store/warehouse existence alone is not a legal entity identity.
             return false;
         }
 
@@ -160,6 +162,8 @@ final class InventoryLegalTitleAttestationVerifier
     /** @param object $inventory @param object $position */
     private function stockIdentity(object $inventory, object $position, int $storeId): string
     {
+        $legalScope = $this->legalScopeForStore($storeId);
+
         // Canonical balances can change and return to the same quantity within
         // a timestamp's SQL precision. A later stock movement must invalidate
         // the old title proof even when on-hand/reserved and updated_at match.
@@ -173,6 +177,8 @@ final class InventoryLegalTitleAttestationVerifier
             'inventory_id' => (int) $inventory->id,
             'owner_position_id' => (int) $position->id,
             'store_id' => $storeId,
+            'legal_entity_id' => $legalScope === null ? null : (int) $legalScope->legal_entity_id,
+            'company_id' => $legalScope === null ? null : (int) $legalScope->company_id,
             'warehouse_id' => (int) $inventory->warehouse_id,
             'product_id' => (int) $inventory->product_id,
             'stock_movement_count' => (int) ($movementVersion->movement_count ?? 0),
@@ -190,5 +196,20 @@ final class InventoryLegalTitleAttestationVerifier
             'certified_by' => (int) $position->certified_by,
             'certified_at' => (string) $position->certified_at,
         ], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
+    }
+
+    /**
+     * Legal title belongs to an enterprise legal entity (or independently
+     * identified supplier), not a tenant store or warehouse custodian. An
+     * attestation must become invalid when an otherwise identical store is
+     * reassigned to a different legal entity.
+     */
+    private function legalScopeForStore(int $storeId): ?object
+    {
+        return DB::table('enterprise_store_scopes as scope')
+            ->join('enterprise_business_units as unit', 'unit.id', '=', 'scope.business_unit_id')
+            ->join('enterprise_legal_entities as entity', 'entity.id', '=', 'unit.legal_entity_id')
+            ->where('scope.store_id', $storeId)
+            ->first(['entity.id as legal_entity_id', 'entity.company_id']);
     }
 }
