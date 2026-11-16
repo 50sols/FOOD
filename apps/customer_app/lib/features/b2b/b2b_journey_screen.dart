@@ -6644,10 +6644,10 @@ class _InvoiceDetailRemoteStateState extends State<_InvoiceDetailRemoteState>
         else
           ...items.map((item) {
             final rawItemCurrency = item['currency'];
-            final itemCurrency = rawItemCurrency is String &&
-                    rawItemCurrency.trim().isNotEmpty
-                ? rawItemCurrency.trim().toUpperCase()
-                : currency.trim().toUpperCase();
+            final itemCurrency =
+                rawItemCurrency is String && rawItemCurrency.trim().isNotEmpty
+                    ? rawItemCurrency.trim().toUpperCase()
+                    : currency.trim().toUpperCase();
             final itemCurrencyMatches =
                 itemCurrency == currency.trim().toUpperCase();
             final imageUrl = item['image_url']?.toString().trim() ?? '';
