@@ -151,7 +151,6 @@ final class V2ErpOperationalWorkflowEvidenceTest extends TestCase
         $this->assertSame('uncertified', $readiness->status('sample_optional', 1, ModuleState::ENABLED));
     }
 
-
     public function test_signed_workflow_evidence_cannot_relabel_a_trusted_key_or_tamper_with_valid_looking_review_metadata(): void
     {
         $this->enableSample();
