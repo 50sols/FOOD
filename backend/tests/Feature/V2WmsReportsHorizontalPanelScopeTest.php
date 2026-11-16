@@ -200,7 +200,7 @@ final class V2WmsReportsHorizontalPanelScopeTest extends TestCase
             'product_id' => $productId,
             'quantity' => 10,
             'reserved_quantity' => 2,
-            'created_at' => now()->subDays(30),
+            'created_at' => now()->subDays(120),
             'updated_at' => now(),
         ]);
         $this->enableEnterpriseWmsForStore($storeId);
