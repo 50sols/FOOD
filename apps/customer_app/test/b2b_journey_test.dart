@@ -279,9 +279,7 @@ void main() {
               find.byKey(const ValueKey('b2b-purchases-summary')),
             ),
           ),
-          locale.languageCode == 'ar'
-              ? TextDirection.rtl
-              : TextDirection.ltr,
+          locale.languageCode == 'ar' ? TextDirection.rtl : TextDirection.ltr,
         );
         expect(tester.takeException(), isNull);
       },
