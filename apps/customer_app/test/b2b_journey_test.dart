@@ -5785,16 +5785,20 @@ void main() {
       // The valid credit note remains authoritative; every malformed or
       // contradictory row is unverified rather than a synthetic zero.
       expect(
-        tester.widget<Text>(
-          find.byKey(const ValueKey('b2b-invoice-ledger-amount-81')),
-        ).data,
+        tester
+            .widget<Text>(
+              find.byKey(const ValueKey('b2b-invoice-ledger-amount-81')),
+            )
+            .data,
         'دائن 1.000 KWD',
       );
       for (final id in <int>[82, 83, 84, 85, 86, 87]) {
         expect(
-          tester.widget<Text>(
-            find.byKey(ValueKey('b2b-invoice-ledger-amount-$id')),
-          ).data,
+          tester
+              .widget<Text>(
+                find.byKey(ValueKey('b2b-invoice-ledger-amount-$id')),
+              )
+              .data,
           '—',
         );
       }

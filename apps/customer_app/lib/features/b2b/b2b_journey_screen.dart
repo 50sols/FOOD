@@ -6743,14 +6743,16 @@ class _InvoiceDetailRemoteStateState extends State<_InvoiceDetailRemoteState>
                 final debit =
                     WholesaleFinancialSummary.nonNegativeAmount(entry['debit']);
                 final creditAmount =
-                    WholesaleFinancialSummary.nonNegativeAmount(entry['credit']);
+                    WholesaleFinancialSummary.nonNegativeAmount(
+                        entry['credit']);
                 // The server ledger contract requires exactly one finite,
                 // non-negative side to be positive. Never invent a zero entry.
                 final amountText = debit != null &&
                         creditAmount != null &&
                         ((debit > 0.0005) != (creditAmount > 0.0005))
                     ? debit > 0.0005
-                        ? (ar ? 'مدين ' : 'Debit ') + _money(debit, entryCurrency)
+                        ? (ar ? 'مدين ' : 'Debit ') +
+                            _money(debit, entryCurrency)
                         : (ar ? 'دائن ' : 'Credit ') +
                             _money(creditAmount, entryCurrency)
                     : '—';
