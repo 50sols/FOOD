@@ -42,9 +42,11 @@ final class ModuleOperationalReadiness
         $category = config('enterprise_modules.modules.'.$code.'.category');
         $required = config('enterprise_module_readiness.required_workflows', []);
 
-        // A missing or malformed manifest category must not make an unknown
-        // ERP module appear optional and evade its workflow evidence gate.
-        if (! is_string($category) || trim($category) === '') {
+        // A missing, malformed or unreviewed manifest category must not
+        // downgrade an ERP module to optional and evade workflow proof.
+        if (! is_string($category) || ! in_array($category, [
+            'operations', 'finance', 'analytics', 'platform', 'restaurant',
+        ], true)) {
             return false;
         }
 

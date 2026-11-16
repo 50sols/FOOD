@@ -74,7 +74,7 @@ final class V2ErpOperationalWorkflowEvidenceTest extends TestCase
 
         // No workflow matrix exists for this optional module. A missing category
         // must not let a future ERP manifest be mistaken for a certified optional.
-        foreach ([null, '', '   ', []] as $invalidCategory) {
+        foreach ([null, '', '   ', [], 'unreviewed_domain'] as $invalidCategory) {
             config()->set('enterprise_modules.modules.sample_optional.category', $invalidCategory);
 
             foreach (['ar', 'en'] as $locale) {
