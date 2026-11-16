@@ -203,7 +203,9 @@ final class V2FinanceWorkbenchPanelAuthorityTest extends TestCase
         $overview = $this->actingAs($viewer)->get(route('admin.erp.finance.index', [
             'store_id' => $store->id,
             'tab' => 'overview',
-        ]))->assertOk();
+        ]))->assertOk()
+            ->assertDontSee(__('finance_workbench.metrics.unposted_journals'))
+            ->assertDontSee(__('finance_workbench.metrics.pending_approvals'));
         $this->assertStringNotContainsString(
             'href="'.$journalUrl.'&status=draft"',
             html_entity_decode($overview->getContent(), ENT_QUOTES | ENT_HTML5, 'UTF-8'),
