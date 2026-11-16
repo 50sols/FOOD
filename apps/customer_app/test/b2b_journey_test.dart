@@ -5782,12 +5782,22 @@ void main() {
       expect(find.byKey(const ValueKey('b2b-invoice-ledger')), findsOneWidget);
       expect(find.textContaining('CN-31'), findsOneWidget);
       final ledgerCard = find.byKey(const ValueKey('b2b-invoice-ledger'));
-      // Missing, negative, non-finite, zero-sided and dual-sided rows are
-      // unverified; none may be rendered as a synthetic debit/credit zero.
+      // The valid credit note remains authoritative; every malformed or
+      // contradictory row is unverified rather than a synthetic zero.
       expect(
-        find.descendant(of: ledgerCard, matching: find.text('—')),
-        findsNWidgets(6),
+        tester.widget<Text>(
+          find.byKey(const ValueKey('b2b-invoice-ledger-amount-81')),
+        ).data,
+        'دائن 1.000 KWD',
       );
+      for (final id in <int>[82, 83, 84, 85, 86, 87]) {
+        expect(
+          tester.widget<Text>(
+            find.byKey(ValueKey('b2b-invoice-ledger-amount-$id')),
+          ).data,
+          '—',
+        );
+      }
       expect(
         find.descendant(
           of: ledgerCard,

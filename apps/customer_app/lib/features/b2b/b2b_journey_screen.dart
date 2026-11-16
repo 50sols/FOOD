@@ -6767,7 +6767,10 @@ class _InvoiceDetailRemoteStateState extends State<_InvoiceDetailRemoteState>
                       _displayDate(entry['occurred_at']),
                     ].join(' · '),
                   ),
-                  trailing: Text(amountText),
+                  trailing: Text(
+                    amountText,
+                    key: ValueKey('b2b-invoice-ledger-amount-${entry['id']}'),
+                  ),
                 );
               }).toList(growable: false),
             ),
