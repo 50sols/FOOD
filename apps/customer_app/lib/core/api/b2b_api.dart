@@ -64,7 +64,20 @@ class HttpB2bApi implements B2bApi, B2bDocumentApi, B2bDownloadApi {
         supportReference: _supportReference(response.headers),
       );
     }
-    return response.bodyBytes;
+    // An expired session or reverse-proxy error can redirect a successful
+    // HTTP GET to an HTML/JSON login page. Never share that response as an
+    // invoice PDF: the server alone owns the actual document contents.
+    final bytes = response.bodyBytes;
+    final contentType =
+        response.headers['content-type']?.split(';').first.trim().toLowerCase();
+    final supportedType = contentType == null ||
+        contentType.isEmpty ||
+        contentType == 'application/pdf' ||
+        contentType == 'application/octet-stream';
+    if (!supportedType || !_hasPdfSignature(bytes)) {
+      throw const B2bApiException('invalid_document');
+    }
+    return bytes;
   }
 
   @override
@@ -161,6 +174,14 @@ class HttpB2bApi implements B2bApi, B2bDocumentApi, B2bDownloadApi {
     );
   }
 }
+
+bool _hasPdfSignature(Uint8List bytes) =>
+    bytes.length >= 5 &&
+    bytes[0] == 0x25 &&
+    bytes[1] == 0x50 &&
+    bytes[2] == 0x44 &&
+    bytes[3] == 0x46 &&
+    bytes[4] == 0x2D;
 
 class B2bApiException implements Exception {
   const B2bApiException(
