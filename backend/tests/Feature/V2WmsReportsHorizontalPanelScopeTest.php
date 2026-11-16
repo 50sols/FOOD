@@ -157,6 +157,43 @@ final class V2WmsReportsHorizontalPanelScopeTest extends TestCase
         $this->assertSame($beforeMovements, DB::table('stock_movements')->count());
     }
 
+    public function test_dual_store_viewer_can_switch_reports_without_leaking_the_other_authorized_store(): void
+    {
+        $a = $this->fixture('V2-3966-SCOPE-A');
+        $b = $this->fixture('V2-3966-SCOPE-B');
+        $actor = $this->operator($a['store_id']);
+        UserStoreRole::query()->create([
+            'user_id' => $actor->id,
+            'store_id' => $b['store_id'],
+            'role_id' => Role::query()->where('code', 'RETAIL_INVENTORY')->firstOrFail()->id,
+        ]);
+
+        foreach ([$a, $b] as $selected) {
+            foreach (self::PANELS as $panel) {
+                $response = $this->actingAs($actor->fresh())
+                    ->get($this->url($selected, $panel))
+                    ->assertOk()
+                    ->assertViewHas('storeId', $selected['store_id'])
+                    ->assertViewHas('warehouseId', $selected['warehouse_id']);
+
+                $this->assertSame(
+                    1,
+                    substr_count($response->getContent(), 'data-wms-report-panel="'),
+                );
+            }
+        }
+
+        $this->actingAs($actor)->get($this->url($a, 'stock_aging'))
+            ->assertOk()
+            ->assertSee('SKU-V2-3966-SCOPE-A')
+            ->assertDontSee('SKU-V2-3966-SCOPE-B');
+
+        $this->actingAs($actor)->get($this->url($b, 'stock_aging'))
+            ->assertOk()
+            ->assertSee('SKU-V2-3966-SCOPE-B')
+            ->assertDontSee('SKU-V2-3966-SCOPE-A');
+    }
+
     /** @return array{store_id:int,warehouse_id:int,inventory_id:int} */
     private function fixture(string $code): array
     {
