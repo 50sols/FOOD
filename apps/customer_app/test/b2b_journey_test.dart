@@ -574,6 +574,60 @@ void main() {
 
   for (final locale in const <Locale>[Locale('ar'), Locale('en')]) {
     testWidgets(
+      'MOB-C03 dashboard denies mismatched signed credit currency in ${locale.languageCode}',
+      (tester) async {
+        final api = _FakeB2bApi({
+          'customer': {'name': 'Buyer'},
+          'account': {'company_name': 'Buyer Co', 'status': 'active'},
+          'finance': {
+            'currency': 'KWD',
+            'balance': 20,
+            'balance_direction': 'company_owes_customer',
+            'customer_credit_balance': 20,
+            'open_amount': 0,
+            'overdue_amount': 0,
+          },
+          'operations': {
+            'purchases_this_month': 0,
+            'payments_this_month': 0,
+            'invoice_count': 0,
+            'order_count': 0,
+            'active_orders': 0,
+          },
+          'currency': 'USD',
+          'purchase_total': 10,
+          'freshness': {
+            'generated_at': DateTime.now().toUtc().toIso8601String(),
+            'stale': false,
+          },
+        });
+        await tester.pumpWidget(FoodexCustomerApp(
+          session: b2b,
+          locale: locale,
+          initialRoute: '/b2b/dashboard',
+          b2bApi: api,
+        ));
+        await _pumpCustomerFrames(tester);
+        expect(
+          find.descendant(
+            of: find.byKey(const ValueKey('b2b-dashboard-credit-balance')),
+            matching: find.text('—'),
+          ),
+          findsOneWidget,
+        );
+        expect(
+          find.descendant(
+            of: find.byKey(const ValueKey('b2b-dashboard-credit-balance')),
+            matching: find.text('20.000 KWD'),
+          ),
+          findsNothing,
+        );
+      },
+    );
+  }
+
+  for (final locale in const <Locale>[Locale('ar'), Locale('en')]) {
+    testWidgets(
       'B2B dashboard rejects forged credit on signed customer debt in ${locale.languageCode}',
       (tester) async {
         final api = _FakeB2bApi({
@@ -672,6 +726,7 @@ void main() {
         'stale': false,
       },
       'purchase_total': 88,
+      'currency': 'KWD',
     });
 
     await tester.pumpWidget(

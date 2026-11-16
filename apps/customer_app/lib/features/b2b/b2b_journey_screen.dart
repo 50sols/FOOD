@@ -1325,7 +1325,12 @@ class _B2bDashboardRemoteStateState extends State<_B2bDashboardRemoteState>
           // The server owns the customer credit balance. An absent or
           // contradictory snapshot must not be recalculated on the device.
           final creditBalance =
-              WholesaleFinancialSummary.dashboardCustomerCredit(finance);
+              WholesaleFinancialSummary.dashboardCustomerCredit(
+            finance,
+            // The backend supplies both from the same authoritative ledger.
+            // Missing or contradictory top-level currency is not a credit proof.
+            dashboardCurrency: data['currency']?.toString() ?? '',
+          );
           final purchaseValue =
               data['purchase_total'] ?? operations['purchases_this_month'];
           final generatedAt = freshness['generated_at']?.toString();

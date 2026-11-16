@@ -83,6 +83,7 @@ void main() {
 
   test('dashboard credit requires a signed, consistent server snapshot', () {
     Map<Object?, Object?> credit() => {
+          'currency': 'KWD',
           'balance': 20.0,
           'balance_direction': 'company_owes_customer',
           'customer_credit_balance': 20.0,
@@ -119,6 +120,32 @@ void main() {
     final boolCredit = credit()..['customer_credit_balance'] = true;
     expect(
         WholesaleFinancialSummary.dashboardCustomerCredit(boolCredit), isNull);
+  });
+
+  test(
+      'dashboard customer credit rejects absent and nonportable finance currency',
+      () {
+    Map<Object?, Object?> valid() => {
+          'currency': 'KWD',
+          'balance': 20,
+          'balance_direction': 'company_owes_customer',
+          'customer_credit_balance': 20,
+        };
+    expect(WholesaleFinancialSummary.dashboardCustomerCredit(valid()), 20);
+    expect(
+      WholesaleFinancialSummary.dashboardCustomerCredit(valid(),
+          dashboardCurrency: 'USD'),
+      isNull,
+    );
+    expect(
+      WholesaleFinancialSummary.dashboardCustomerCredit(valid(),
+          dashboardCurrency: ''),
+      isNull,
+    );
+    for (final invalid in <Object?>[null, '', 'kwd', 'KWD\u202E', 200]) {
+      final forged = valid()..['currency'] = invalid;
+      expect(WholesaleFinancialSummary.dashboardCustomerCredit(forged), isNull);
+    }
   });
 
   test('required display totals reject invalid and fabricated zeros', () {

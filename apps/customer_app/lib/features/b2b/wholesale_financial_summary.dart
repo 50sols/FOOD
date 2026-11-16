@@ -83,7 +83,20 @@ class WholesaleFinancialSummary {
 
   /// Validates the dashboard credit against signed, server-owned balance and
   /// direction, without inventing an amount when the source is incomplete.
-  static double? dashboardCustomerCredit(Map<Object?, Object?> finance) {
+  static double? dashboardCustomerCredit(
+    Map<Object?, Object?> finance, {
+    String? dashboardCurrency,
+  }) {
+    // The dashboard endpoint returns both denominations from one ledger.
+    // Do not present a signed balance under an absent, forged or conflicting
+    // currency label, even when its numeric fields are internally consistent.
+    final rawCurrency = finance['currency'];
+    final currency = rawCurrency is String ? rawCurrency.trim() : '';
+    if (!RegExp(r'^[A-Z]{3}$').hasMatch(currency) ||
+        (dashboardCurrency != null && dashboardCurrency.trim() != currency)) {
+      return null;
+    }
+
     final balance = _amount(finance['balance']);
     final credit = _amount(finance['customer_credit_balance']);
     if (balance == null || credit == null || credit < 0) return null;
