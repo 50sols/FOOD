@@ -115,7 +115,8 @@ class HttpB2bApi implements B2bApi, B2bDocumentApi, B2bDownloadApi {
         // The server enforces access. Reject an inconsistent, explicitly
         // scoped invoice response before it is displayed to the customer.
         final uri = Uri.parse(path);
-        final requestedStore = int.tryParse(uri.queryParameters['store_id'] ?? '');
+        final requestedStore =
+            int.tryParse(uri.queryParameters['store_id'] ?? '');
         final segments = uri.pathSegments;
         final invoiceEndpoint = segments.length >= 4 &&
             segments[0] == 'api' &&
@@ -123,8 +124,7 @@ class HttpB2bApi implements B2bApi, B2bDocumentApi, B2bDownloadApi {
             segments[2] == 'b2b' &&
             segments[3] == 'invoices' &&
             (segments.length == 4 ||
-                (segments.length == 5 &&
-                    (int.tryParse(segments[4]) ?? 0) > 0));
+                (segments.length == 5 && (int.tryParse(segments[4]) ?? 0) > 0));
         if (requestedStore != null && invoiceEndpoint) {
           final data = decoded['data'];
           final Iterable<Object?> invoices;
