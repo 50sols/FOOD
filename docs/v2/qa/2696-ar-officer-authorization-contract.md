@@ -34,3 +34,41 @@ If subsequently implementing AR mutations/API contracts, separately re-evaluate 
 ## Verification and completion policy
 
 Run focused Laravel tests, syntax and Pint/PHPStan, AR/EN localization, V2 isolation and repository policy, plus the exact-head Required CI and MySQL/Redis fresh install, upgrade and recovery checks. Merge **only** on green exact head into `Foodex_V2`. Keep #2696 **OPEN** unless all T122R16 source/financial/approval, role scope and cross-app acceptance criteria have actually been completed; manual device/browser UAT is deferred under #2503.
+
+
+## 2026-11-16 owner-requested source completion checkpoint
+
+The original issue-scoped branch was restored from the preserved historical HEAD,
+merged with the latest isolated Foodex_V2 commit (without rewriting its two original
+files), and original draft PR #3221 was reopened. Its historical green CI did **not**
+represent acceptance of the current isolated head.
+
+**Least-privilege acceptance decision pending source integration:** the merged #3872
+negative-channel contract intentionally does not admit AR_OFFICER to the broad B2B
+\`global_roles\` or any Retail store role. Existing \`FinanceWorkbenchController::contextOptions\`
+requires \`AdminNavigation::canAccess(actor, 'b2b')\` before enumerating wholesale
+Finance contexts. Consequently, an otherwise valid AR-only user cannot follow a
+positive Finance → Receivables journey today; merely adding \`finance.view\` or
+Finance legal-entity entitlements does not fix the admission path. An AR-only
+workflow must respect explicit module readiness, legal-entity + store-scoped
+AR entitlements, no AP/GL/Treasury access, and deny Retail or foreign company scope.
+Global B2B channel admission is **not** a safe substitute.
+
+An additional bilingual real-HTTP regression now exercises direct GL create,
+approval-request, posting, opening-balance approval/post attempts and ensures
+these are denied to the standalone AR_OFFICER without changing journal/ledger rows.
+This covers a negative SoD invariant, **not** the outstanding positive workflow.
+
+**Owned-file coordination:** issue #2633 original PR #3309 is actively editing
+\`FinanceWorkbenchController.php\`, \`AccountsReceivableService.php\`,
+Finance routes, view and locale files. #2696 has notified its owner and must wait
+for integration or explicit file-fence handoff before altering those shared paths.
+In parallel, #2696 may edit only its own regression file and this trace.
+
+**Still required before merging/closing:** a real authorized B2B AR-only positive
+HTTP and Sidebar journey; per-action draft/manage versus post/approve; legal-entity,
+cross-company, store and channel negative evidence; actual maker/checker and
+audited collection/recovery boundaries; any required API/app impact trace; reviewed
+HIGH-risk changed-file audit; exact-final-head CI. No source-scoped acceptance
+is waived by this test increment. Customer/Driver/Van runtime/API remain unchanged
+by this test/document-only patch.

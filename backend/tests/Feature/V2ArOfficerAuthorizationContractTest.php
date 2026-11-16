@@ -183,6 +183,62 @@ final class V2ArOfficerAuthorizationContractTest extends TestCase
         ]);
     }
 
+    /**
+     * A global AR operator can prepare receivables only through an authorized
+     * AR workflow. It cannot forge generic GL posting or maker/checker
+     * decisions through direct HTTP requests, regardless of locale.
+     */
+    public function test_ar_officer_cannot_post_or_approve_general_ledger_operations_by_direct_http(): void
+    {
+        $this->enableFinance();
+        $actor = $this->officer();
+        $wholesaleId = (int) DB::table('stores as store')
+            ->join('store_types as type', 'type.id', '=', 'store.store_type_id')
+            ->where('type.code', 'B2B')
+            ->where('store.is_active', true)
+            ->value('store.id');
+        $this->assertGreaterThan(0, $wholesaleId);
+
+        $before = [
+            'journals' => DB::table('enterprise_finance_journals')->count(),
+            'ledger' => DB::table('enterprise_finance_ledger_entries')->count(),
+        ];
+
+        $attempts = [
+            ['admin.erp.finance.journals.store', []],
+            ['admin.erp.finance.journals.approval', ['journal' => 999999]],
+            ['admin.erp.finance.journals.post', ['journal' => 999999]],
+            ['admin.erp.finance.opening-balances.approval', ['batch' => 999999]],
+            ['admin.erp.finance.opening-balances.post', ['batch' => 999999]],
+        ];
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            $actor->forceFill(['locale' => $locale])->save();
+            $principal = $actor->fresh();
+
+            $this->assertTrue($principal->hasPermission('finance.manage'));
+            $this->assertFalse($principal->hasPermission('finance.post'));
+            $this->assertFalse($principal->hasPermission('finance.approve'));
+
+            foreach ($attempts as [$routeName, $routeParameters]) {
+                $this->assertTrue(\Illuminate\Support\Facades\Route::has($routeName), $routeName);
+                $response = $this->actingAs($principal)->post(
+                    route($routeName, $routeParameters, false),
+                    ['store_id' => $wholesaleId, 'idempotency_key' => '2696-gl-denied'],
+                );
+                $this->assertContains(
+                    $response->getStatusCode(),
+                    [403, 404],
+                    "{$routeName}: {$locale}: direct GL operation must remain denied.",
+                );
+            }
+        }
+
+        $this->assertSame($before['journals'], DB::table('enterprise_finance_journals')->count());
+        $this->assertSame($before['ledger'], DB::table('enterprise_finance_ledger_entries')->count());
+    }
+
     private function officer(): User
     {
         $actor = User::factory()->create(['locale' => 'en', 'is_active' => true]);
