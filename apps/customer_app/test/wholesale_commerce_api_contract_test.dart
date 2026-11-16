@@ -34,6 +34,102 @@ void main() {
     expect(attempts, 2);
   });
 
+  test('GET retries HTTP 502/503/504 with scoped headers', () async {
+    for (final transientStatus in [502, 503, 504]) {
+      var attempts = 0;
+      final api = HttpWholesaleCommerceApi(
+        baseUrl: 'https://foodex.example',
+        token: 'opaque-token',
+        retailStoreContextId: 17,
+        locale: 'en',
+        client: MockClient((request) async {
+          attempts++;
+          expect(request.method, 'GET');
+          expect(request.url.path, '/api/v1/cart');
+          expect(request.url.queryParameters['store'], '12');
+          expect(request.headers['Authorization'], 'Bearer opaque-token');
+          expect(request.headers['X-FOODEX-Customer-Domain'], 'b2b');
+          expect(request.headers['X-FOODEX-Retail-Store-ID'], '17');
+          expect(request.headers['Accept-Language'], 'en');
+          if (attempts == 1) {
+            return http.Response('{"message":"transient"}', transientStatus);
+          }
+          return http.Response('{"data":[]}', 200);
+        }),
+      );
+
+      expect(await api.cart(12), isA<Map>());
+      expect(attempts, 2);
+    }
+  });
+
+  test('GET HTTP 503 exhaustion is bounded and bilingual', () async {
+    for (final language in ['ar', 'en']) {
+      var attempts = 0;
+      final api = HttpWholesaleCommerceApi(
+        baseUrl: 'https://foodex.example',
+        token: 'opaque-token',
+        locale: language,
+        maxGetAttempts: 2,
+        client: MockClient((request) async {
+          attempts++;
+          expect(request.headers['Accept-Language'], language);
+          return http.Response('{"message":"internal stack trace"}', 503);
+        }),
+      );
+
+      await expectLater(
+        api.cart(12),
+        throwsA(
+          isA<WholesaleCommerceException>()
+              .having((error) => error.statusCode, 'status', 503)
+              .having(
+                (error) => error.message,
+                'localized server error',
+                language == 'en'
+                    ? 'The server is temporarily unavailable. Try again.'
+                    : 'الخادم غير متاح مؤقتًا. حاول مرة أخرى.',
+              ),
+        ),
+      );
+      expect(attempts, 2);
+    }
+  });
+
+  test('HTTP 401 requires a fresh session without retry', () async {
+    for (final language in ['ar', 'en']) {
+      var attempts = 0;
+      final api = HttpWholesaleCommerceApi(
+        baseUrl: 'https://foodex.example',
+        token: 'expired-token',
+        locale: language,
+        maxGetAttempts: 3,
+        client: MockClient((request) async {
+          attempts++;
+          expect(request.headers['Authorization'], 'Bearer expired-token');
+          expect(request.headers['X-FOODEX-Customer-Domain'], 'b2b');
+          return http.Response('{"message":"internal auth context"}', 401);
+        }),
+      );
+
+      await expectLater(
+        api.cart(12),
+        throwsA(
+          isA<WholesaleCommerceException>()
+              .having((error) => error.statusCode, 'status', 401)
+              .having(
+                (error) => error.message,
+                'localized session error',
+                language == 'en'
+                    ? 'Your session has expired. Sign in again.'
+                    : 'انتهت صلاحية جلستك. سجّل الدخول مرة أخرى.',
+              ),
+        ),
+      );
+      expect(attempts, 1);
+    }
+  });
+
   test('Wholesale GET timeout is bounded and localized', () async {
     var attempts = 0;
     final api = HttpWholesaleCommerceApi(
