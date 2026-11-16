@@ -101,7 +101,7 @@ $erpTabLabels = [
 @endphp
 <nav class="foodex-tabs erp-workspace-tabs" aria-label="{{ __('admin.erp_center.title') }}" data-erp-tabs>
 @foreach($erpTabKeys as $erpTabKey)
-<a class="foodex-tab {{ $activeErpTab === $erpTabKey ? 'is-active' : '' }}"
+<a class="foodex-tab {{ $activeErpTab === $erpTabKey ? 'active' : '' }}"
    id="erp-tab-{{ $erpTabKey }}" data-erp-tab="{{ $erpTabKey }}"
    href="{{ route('admin.erp.index', array_merge($erpTabContext, ['tab' => $erpTabKey])) }}"
    @if($activeErpTab === $erpTabKey) aria-current="page" @endif>{{ __($erpTabLabels[$erpTabKey]) }}</a>
