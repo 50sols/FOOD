@@ -1204,6 +1204,56 @@ final class V2InventoryOwnerProvenanceTest extends TestCase
         $this->assertSame(0, DB::table('enterprise_inventory_ownership_rule_revisions')->count());
     }
 
+    public function test_owner_rules_accept_only_canonical_company_or_store_supplier_scopes(): void
+    {
+        $this->seed(CoreReferenceSeeder::class);
+        $stock = $this->stock('P110-POLICY-SUPPLIER-SCOPE');
+        DB::table('enterprise_store_scopes')->insert([
+            'store_id' => $stock['store_id'],
+            'business_unit_id' => DB::table('enterprise_business_units')->value('id'),
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        $maker = User::query()->create([
+            'name' => 'Title Rule Maker',
+            'email' => 'p110-scoped-maker@example.test',
+            'password' => 'password',
+            'is_active' => true,
+        ]);
+        $role = Role::query()->where('code', 'SUPER_ADMIN')->firstOrFail();
+        DB::table('role_user')->insert(['user_id' => $maker->id, 'role_id' => $role->id]);
+        $supplierId = $this->supplier($stock['store_id']);
+        $input = [
+            'store_id' => $stock['store_id'],
+            'channel' => 'B2C',
+            'initial_owner_kind' => 'SUPPLIER',
+            'supplier_id' => $supplierId,
+            'title_transfer_trigger' => 'CONTRACT_EVENT',
+            'required_evidence_classes' => ['SIGNED_CONTRACT'],
+            'checker_permission' => 'inventory_ownership_rules.review',
+            'effective_at' => now()->addDay()->toDateTimeString(),
+            'request_uuid' => (string) Str::uuid(),
+        ];
+        $service = app(InventoryOwnershipRuleService::class);
+        DB::table('enterprise_suppliers')->where('id', $supplierId)->update([
+            'scope_type' => 'store', 'store_id' => null,
+        ]);
+        try {
+            $service->propose($maker, $input);
+            $this->fail('Malformed store-scoped supplier must not masquerade as a company supplier.');
+        } catch (HttpException $exception) {
+            $this->assertSame(404, $exception->getStatusCode());
+        }
+
+        DB::table('enterprise_suppliers')->where('id', $supplierId)->update([
+            'scope_type' => 'company', 'store_id' => null,
+        ]);
+        $rule = $service->propose($maker, $input);
+        $this->assertSame('DRAFT', $rule->status);
+        $this->assertSame($supplierId, (int) $rule->supplier_id);
+        $this->assertSame(1, DB::table('enterprise_inventory_ownership_rule_revisions')->count());
+    }
+
     public function test_owner_policy_request_uuid_index_uses_mysql_safe_identifier(): void
     {
         $this->seed(CoreReferenceSeeder::class);
@@ -1230,6 +1280,10 @@ final class V2InventoryOwnerProvenanceTest extends TestCase
             'password' => 'password',
             'is_active' => true,
         ]);
+        // The signature names a checker; only an active, independently
+        // authorized reviewer can actually certify stock in this store.
+        $checkerRole = Role::query()->where('code', 'SUPER_ADMIN')->firstOrFail();
+        DB::table('role_user')->insert(['user_id' => $checker->id, 'role_id' => $checkerRole->id]);
         $supplierId = $this->supplier($stock['store_id']);
         $this->position($stock['inventory_id'], 'SUPPLIER', $supplierId, 10, 3, $actor->id, $checker->id, true);
 
@@ -1288,6 +1342,20 @@ final class V2InventoryOwnerProvenanceTest extends TestCase
         $this->assertTrue($certified['certified']);
         $this->assertSame('SUPPLIER', $certified['positions'][0]['owner_kind']);
         $this->assertSame($supplierId, $certified['positions'][0]['supplier_id']);
+
+        // A signed checker ID cannot override current RBAC or disabled-user
+        // status. These read decisions must never mutate the stored proof.
+        DB::table('role_user')->where('user_id', $checker->id)->where('role_id', $checkerRole->id)->delete();
+        $roleless = $read->snapshot($actor, $stock['inventory_id']);
+        $this->assertSame('UNVERIFIED', $roleless['state']);
+        $this->assertFalse($roleless['certified']);
+        DB::table('role_user')->insert(['user_id' => $checker->id, 'role_id' => $checkerRole->id]);
+        $this->assertSame('CERTIFIED', $read->snapshot($actor, $stock['inventory_id'])['state']);
+
+        $checker->forceFill(['is_active' => false])->save();
+        $this->assertSame('UNVERIFIED', $read->snapshot($actor, $stock['inventory_id'])['state']);
+        $checker->forceFill(['is_active' => true])->save();
+        $this->assertSame('CERTIFIED', $read->snapshot($actor, $stock['inventory_id'])['state']);
 
         // A normal migration rollback must never remove SQL evidence guards
         // while a signed title claim is persisted in this same store.
@@ -1373,6 +1441,8 @@ final class V2InventoryOwnerProvenanceTest extends TestCase
             'password' => 'password',
             'is_active' => true,
         ]);
+        $checkerRole = Role::query()->where('code', 'SUPER_ADMIN')->firstOrFail();
+        DB::table('role_user')->insert(['user_id' => $checker->id, 'role_id' => $checkerRole->id]);
         $this->position($stock['inventory_id'], 'FOODEX', null, 10, 3, $actor->id, $checker->id, true);
 
         $inventory = DB::table('inventories')->where('id', $stock['inventory_id'])->first();

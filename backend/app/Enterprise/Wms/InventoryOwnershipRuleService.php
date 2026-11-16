@@ -53,9 +53,15 @@ final class InventoryOwnershipRuleService
         }
         if ($supplierId !== null) {
             abort_unless(DB::table('enterprise_suppliers')->where('id', $supplierId)
-                ->where('company_id', $companyId)->where(function ($query) use ($storeId): void {
-                    $query->whereNull('store_id')->orWhere('store_id', $storeId);
-                })->where('status', 'active')->exists(), 404);
+                ->where('company_id', $companyId)
+                ->where('status', 'active')
+                ->where(function ($scope) use ($storeId): void {
+                    $scope->where(function ($company): void {
+                        $company->where('scope_type', 'company')->whereNull('store_id');
+                    })->orWhere(function ($store) use ($storeId): void {
+                        $store->where('scope_type', 'store')->where('store_id', $storeId);
+                    });
+                })->exists(), 404);
         }
         if ($warehouseId !== null) {
             abort_unless(DB::table('warehouses')->where('id', $warehouseId)

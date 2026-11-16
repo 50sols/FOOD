@@ -2,6 +2,8 @@
 
 namespace App\Enterprise\Wms;
 
+use App\Models\User;
+use App\Services\OperationalTenantScope;
 use Carbon\CarbonImmutable;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
@@ -69,6 +71,10 @@ final class InventoryLegalTitleAttestationVerifier
         }
 
         $attestation = $attestations->first();
+        if (! $this->hasIndependentLegalTitleChecker($position, $attestation, $storeId)) {
+            return false;
+        }
+
         $keyId = (string) $attestation->trusted_key_id;
         $digest = (string) $attestation->document_sha256;
         $path = (string) $attestation->document_path;
@@ -140,6 +146,43 @@ final class InventoryLegalTitleAttestationVerifier
             $publicKey,
             OPENSSL_ALGO_SHA256,
         ) === 1;
+    }
+
+    /**
+     * A correctly signed document is not permission to impersonate a legal
+     * title approver. The checker in the signed payload must be a real active
+     * user with this store's independent ownership-review authority, distinct
+     * from the proposing operator. Historical authority at signing time still
+     * requires the missing immutable approval-event contract.
+     */
+    private function hasIndependentLegalTitleChecker(object $position, object $attestation, int $storeId): bool
+    {
+        $checkerId = (int) ($attestation->checked_by ?? 0);
+        $proposerId = (int) ($position->proposed_by ?? 0);
+
+        if ($checkerId < 1 || $proposerId < 1 || $checkerId === $proposerId
+            || $checkerId !== (int) ($position->certified_by ?? 0)) {
+            return false;
+        }
+
+        try {
+            $checker = User::query()->whereKey($checkerId)->where('is_active', true)->first();
+            if ($checker === null || ! $checker->hasPermission('inventory_ownership_rules.review', $storeId)) {
+                return false;
+            }
+
+            app(OperationalTenantScope::class)->assertStore(
+                $checker,
+                $storeId,
+                'inventory_ownership_rules.review',
+            );
+
+            return true;
+        } catch (Throwable) {
+            // No role, user revoked, inactive store, cross-tenant permission or
+            // unavailable RBAC scope must leave title UNVERIFIED.
+            return false;
+        }
     }
 
     /**
