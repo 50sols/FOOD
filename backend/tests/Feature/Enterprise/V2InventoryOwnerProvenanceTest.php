@@ -984,6 +984,69 @@ final class V2InventoryOwnerProvenanceTest extends TestCase
         $this->assertSame('STALE', $read->snapshot($actor, $stock['inventory_id'])['state']);
     }
 
+    public function test_owner_snapshot_preserves_decimal_milli_units_and_denies_divergent_partition(): void
+    {
+        $this->seed(CoreReferenceSeeder::class);
+        $stock = $this->stock('MILLI-READ');
+        $actor = $this->inventoryActor($stock['store_id']);
+
+        DB::table('inventories')->where('id', $stock['inventory_id'])->update([
+            'quantity' => '10.001',
+            'reserved_quantity' => '3.002',
+            'updated_at' => now(),
+        ]);
+
+        $read = app(InventoryOwnerProvenanceReadService::class);
+        $unattributed = $read->snapshot($actor, $stock['inventory_id']);
+        $this->assertSame('UNKNOWN', $unattributed['state']);
+        $this->assertFalse($unattributed['certified']);
+        $this->assertSame('10.001', $unattributed['quantity']);
+        $this->assertSame('3.002', $unattributed['reserved_quantity']);
+
+        DB::table('enterprise_inventory_owner_positions')->insert([
+            'inventory_id' => $stock['inventory_id'],
+            'owner_key' => 'UNKNOWN',
+            'owner_kind' => 'UNKNOWN',
+            'supplier_id' => null,
+            'quantity' => '10.001',
+            'reserved_quantity' => '3.002',
+            'source_inventory_updated_at' => DB::table('inventories')
+                ->where('id', $stock['inventory_id'])->value('updated_at'),
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $matched = $read->snapshot($actor, $stock['inventory_id']);
+        $this->assertSame('UNKNOWN', $matched['state']);
+        $this->assertSame('10.001', $matched['positions'][0]['quantity']);
+        $this->assertSame('3.002', $matched['positions'][0]['reserved_quantity']);
+        $this->assertFalse($matched['positions'][0]['certified']);
+
+        // A one-milli-unit owner-row tamper cannot be rounded into a
+        // consistent balance or mistaken for legal title.
+        DB::table('enterprise_inventory_owner_positions')
+            ->where('inventory_id', $stock['inventory_id'])
+            ->update(['quantity' => '10.002']);
+        $tampered = $read->snapshot($actor, $stock['inventory_id']);
+        $this->assertSame('STALE', $tampered['state']);
+        $this->assertFalse($tampered['certified']);
+        $this->assertSame('10.002', $tampered['positions'][0]['quantity']);
+        $this->assertSame('10.001', $tampered['quantity']);
+    }
+
+    public function test_owner_balance_conversion_remains_exact_at_decimal_14_3_boundary(): void
+    {
+        $millis = new \ReflectionMethod(InventoryOwnerProvenanceReadService::class, 'millis');
+        $decimal = new \ReflectionMethod(InventoryOwnerProvenanceReadService::class, 'decimal');
+
+        $this->assertSame(99999999999001, $millis->invoke(null, '99999999999.001'));
+        $this->assertSame(99999999999002, $millis->invoke(null, '99999999999.002'));
+        $this->assertSame('99999999999.001', $decimal->invoke(null, 99999999999001));
+        $this->assertSame('-0.001', $decimal->invoke(null, -1));
+        $this->expectException(\UnexpectedValueException::class);
+        $millis->invoke(null, '99999999999.0001');
+    }
+
     public function test_signed_owner_revision_hash_preserves_exact_large_milli_unit_differences(): void
     {
         $verifier = app(InventoryLegalTitleAttestationVerifier::class);
