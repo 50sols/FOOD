@@ -6188,6 +6188,7 @@ class _InvoiceDetailRemoteStateState extends State<_InvoiceDetailRemoteState>
     }
     return foodexMoneyText(amount, normalizedCurrency);
   }
+
   String _displayDate(Object? value) {
     final parsed = DateTime.tryParse(value?.toString() ?? '');
     return parsed == null ? '—' : _date(parsed.toLocal());
