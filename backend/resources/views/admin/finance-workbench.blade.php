@@ -160,6 +160,22 @@ $kpis=[
  ['label'=>__('finance_workbench.metrics.budget_variance'),'value'=>$money($data['metrics']['budget_variance']),'comparison'=>['value'=>$money($data['metrics']['budget_actual']),'label'=>__('finance_workbench.metrics.actual'),'trend'=>abs((float)$data['metrics']['budget_variance'])>0.001?'down':'neutral'],'drilldown_url'=>route('admin.erp.finance.index',[...$routeBase,'tab'=>'reports','report'=>'budget_vs_actual','period_id'=>$periodId])],
  ['label'=>__('finance_workbench.metrics.tax_position'),'value'=>$money($data['metrics']['tax_position']),'drilldown_url'=>route('admin.erp.finance.index',[...$routeBase,'tab'=>'reports','report'=>'tax_vat','period_id'=>$periodId])],
 ];
+// Finance overview links must project the same server-authorized capability as
+// the destination tab; a KPI is not an entitlement or a GL disclosure grant.
+$kpis = array_values(array_filter(
+    $kpis,
+    static function (array $metric, int $index) use ($access): bool {
+        return match ($index) {
+            0, 1, 2 => (bool) ($access['statements_read'] ?? false),
+            3 => (bool) ($access['ar_read'] ?? false),
+            4 => (bool) ($access['ap_read'] ?? false),
+            5 => (bool) ($access['gl_read'] ?? false),
+            7, 8, 9 => (bool) ($access['reports_read'] ?? false),
+            default => true,
+        };
+    },
+    ARRAY_FILTER_USE_BOTH,
+));
 // A Retail store has real AR/AP provenance but no authoritative store-level
 // posted GL attribution. Hide company metrics and their drill-through links.
 $legalEntityReports = (bool)($data['legal_entity_reporting_available'] ?? true);
