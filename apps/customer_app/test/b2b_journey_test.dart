@@ -5660,6 +5660,54 @@ void main() {
               'currency': 'KWD',
               'occurred_at': '2026-10-03T10:00:00Z',
             },
+            {
+              'id': 82,
+              'type': 'credit_note',
+              'reference': 'CN-MISSING-DEBIT',
+              'debit': null,
+              'credit': 0.0,
+              'currency': 'KWD',
+            },
+            {
+              'id': 83,
+              'type': 'credit_note',
+              'reference': 'CN-NAN-DEBIT',
+              'debit': double.nan,
+              'credit': 0.0,
+              'currency': 'KWD',
+            },
+            {
+              'id': 84,
+              'type': 'credit_note',
+              'reference': 'CN-INFINITE-DEBIT',
+              'debit': double.infinity,
+              'credit': 0.0,
+              'currency': 'KWD',
+            },
+            {
+              'id': 85,
+              'type': 'debit_note',
+              'reference': 'DN-NEGATIVE-DEBIT',
+              'debit': -1.0,
+              'credit': 0.0,
+              'currency': 'KWD',
+            },
+            {
+              'id': 86,
+              'type': 'adjustment_positive',
+              'reference': 'ADJ-BOTH-SIDES',
+              'debit': 2.0,
+              'credit': 1.0,
+              'currency': 'KWD',
+            },
+            {
+              'id': 87,
+              'type': 'credit_note',
+              'reference': 'CN-ZERO-SIDES',
+              'debit': 0.0,
+              'credit': 0.0,
+              'currency': 'KWD',
+            },
           ],
         },
         'account': {
@@ -5733,6 +5781,27 @@ void main() {
       expect(find.textContaining('PAY-31'), findsOneWidget);
       expect(find.byKey(const ValueKey('b2b-invoice-ledger')), findsOneWidget);
       expect(find.textContaining('CN-31'), findsOneWidget);
+      final ledgerCard = find.byKey(const ValueKey('b2b-invoice-ledger'));
+      // Missing, negative, non-finite, zero-sided and dual-sided rows are
+      // unverified; none may be rendered as a synthetic debit/credit zero.
+      expect(
+        find.descendant(of: ledgerCard, matching: find.text('—')),
+        findsNWidgets(6),
+      );
+      expect(
+        find.descendant(
+          of: ledgerCard,
+          matching: find.text('دائن 0.000 KWD'),
+        ),
+        findsNothing,
+      );
+      expect(
+        find.descendant(
+          of: ledgerCard,
+          matching: find.text('مدين 2.000 KWD'),
+        ),
+        findsNothing,
+      );
       expect(
         find.byKey(const ValueKey('b2b-invoice-detail-pdf')),
         findsOneWidget,

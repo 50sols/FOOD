@@ -6741,13 +6741,19 @@ class _InvoiceDetailRemoteStateState extends State<_InvoiceDetailRemoteState>
               children: ledger.map((entry) {
                 final entryCurrency = entry['currency']?.toString() ?? currency;
                 final debit =
-                    double.tryParse(entry['debit']?.toString() ?? '') ?? 0;
+                    WholesaleFinancialSummary.nonNegativeAmount(entry['debit']);
                 final creditAmount =
-                    double.tryParse(entry['credit']?.toString() ?? '') ?? 0;
-                final amountText = debit > 0.0005
-                    ? (ar ? 'مدين ' : 'Debit ') + _money(debit, entryCurrency)
-                    : (ar ? 'دائن ' : 'Credit ') +
-                        _money(creditAmount, entryCurrency);
+                    WholesaleFinancialSummary.nonNegativeAmount(entry['credit']);
+                // The server ledger contract requires exactly one finite,
+                // non-negative side to be positive. Never invent a zero entry.
+                final amountText = debit != null &&
+                        creditAmount != null &&
+                        ((debit > 0.0005) != (creditAmount > 0.0005))
+                    ? debit > 0.0005
+                        ? (ar ? 'مدين ' : 'Debit ') + _money(debit, entryCurrency)
+                        : (ar ? 'دائن ' : 'Credit ') +
+                            _money(creditAmount, entryCurrency)
+                    : '—';
                 return ListTile(
                   title: Text(
                     _ledgerTypeLabel(entry['type']?.toString() ?? '', ar),
