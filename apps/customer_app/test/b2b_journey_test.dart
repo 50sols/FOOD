@@ -2643,6 +2643,107 @@ void main() {
     }
   }
 
+  for (final language in const <String>['ar', 'en']) {
+    testWidgets(
+      'MOB-C03 checkout key reuses identical retry but rotates changed payment/cart $language',
+      (tester) async {
+        tester.view.physicalSize = const Size(900, 1900);
+        tester.view.devicePixelRatio = 1;
+        addTearDown(() {
+          tester.view.resetPhysicalSize();
+          tester.view.resetDevicePixelRatio();
+        });
+
+        final commerce = _RetryIntentWholesaleCommerceApi(cartValue: {
+          'store_id': 7,
+          'currency': 'EGP',
+          'minimum_order_egp': 0.0,
+          'subtotal': 100.0,
+          'has_unavailable_items': false,
+          'quote': {'grand_total': 100.0, 'currency': 'EGP'},
+          'items': [
+            {
+              'id': 31,
+              'product': {'id': 301, 'name': 'Wholesale item', 'sku': 'WS-301'},
+              'quantity': 1.0,
+              'unit_price_snapshot': 100.0,
+              'line_total': 100.0,
+              'is_available': true,
+              'minimum_order_quantity': 1.0,
+              'ordering_increment': 1.0,
+            }
+          ],
+        });
+        final storefront = _C13CheckoutStorefrontApi({
+          'store_id': 7,
+          'currency': 'EGP',
+          'minimum_order_egp': 0.0,
+          'addresses': [
+            {'id': 1, 'label': 'Warehouse', 'line1': 'Street 1'}
+          ],
+          'payment_methods': ['cash_on_delivery', 'account_credit'],
+          'purchasing_power': 300.0,
+        });
+        await tester.pumpWidget(FoodexCustomerApp(
+          session: b2b,
+          locale: Locale(language),
+          initialRoute: '/b2b/checkout?store_id=7',
+          storefrontApi: storefront,
+          wholesaleCommerceApi: commerce,
+        ));
+        await _pumpCustomerFrames(tester);
+
+        Future<void> attempt() async {
+          final submit = find.byKey(const ValueKey('b2b-checkout-submit'));
+          await tester.ensureVisible(submit);
+          await tester.tap(submit);
+          await _pumpCustomerFrames(tester);
+          expect(find.byType(AlertDialog), findsOneWidget);
+          await tester.tap(find.text(language == 'ar' ? 'حسنًا' : 'OK'));
+          await _pumpCustomerFrames(tester);
+        }
+
+        // Uncertain network failure: identical retries MUST keep the same
+        // key so the server can return the original order, not double-post.
+        await attempt();
+        await attempt();
+        expect(commerce.checkoutKeys, hasLength(2));
+        expect(commerce.checkoutKeys[0], commerce.checkoutKeys[1]);
+        expect(commerce.checkoutKeys[0].length, greaterThanOrEqualTo(16));
+
+        // Backend request hash includes payment_method; key reuse here is a
+        // real HTTP 409 rather than a safe retry.
+        await tester.tap(find.byType(DropdownButtonFormField<String>));
+        await tester.pump();
+        await tester.tap(find
+            .text(language == 'ar' ? 'الرصيد الائتماني' : 'Account credit')
+            .last);
+        await _pumpCustomerFrames(tester);
+        await attempt();
+        expect(commerce.checkoutPayments.last, 'account_credit');
+        expect(commerce.checkoutKeys, hasLength(3));
+        expect(commerce.checkoutKeys[2], isNot(commerce.checkoutKeys[1]));
+
+        // A different cart is a new purchase intent even if the customer's
+        // delivery address and payment method have not changed.
+        final items = commerce.cartValue['items'] as List;
+        (items.first as Map)['quantity'] = 2.0;
+        (items.first as Map)['line_total'] = 200.0;
+        commerce.cartValue['subtotal'] = 200.0;
+        commerce.cartValue['quote'] = {
+          'grand_total': 200.0,
+          'currency': 'EGP',
+        };
+        tester.binding
+            .handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+        await _pumpCustomerFrames(tester);
+        await attempt();
+        expect(commerce.checkoutKeys, hasLength(4));
+        expect(commerce.checkoutKeys[3], isNot(commerce.checkoutKeys[2]));
+      },
+    );
+  }
+
   testWidgets('B2B checkout rejects missing authoritative order reference', (
     tester,
   ) async {
@@ -6017,6 +6118,38 @@ class _C13WholesaleCommerceApi implements WholesaleCommerceApi {
       return checkoutCompleter!.future;
     }
     return <String, Object?>{};
+  }
+}
+
+class _RetryIntentWholesaleCommerceApi extends _C13WholesaleCommerceApi {
+  _RetryIntentWholesaleCommerceApi({required super.cartValue});
+
+  final List<String> checkoutPayments = <String>[];
+
+  @override
+  Future<Object?> checkout({
+    required int storeId,
+    required int addressId,
+    required String paymentMethod,
+    String? requestedDeliveryDate,
+    String? note,
+    String? couponCode,
+    required String idempotencyKey,
+  }) async {
+    checkoutPayments.add(paymentMethod);
+    await super.checkout(
+      storeId: storeId,
+      addressId: addressId,
+      paymentMethod: paymentMethod,
+      requestedDeliveryDate: requestedDeliveryDate,
+      note: note,
+      couponCode: couponCode,
+      idempotencyKey: idempotencyKey,
+    );
+    throw const WholesaleCommerceException(
+      'Network response not confirmed',
+      statusCode: 503,
+    );
   }
 }
 

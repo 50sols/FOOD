@@ -1,6 +1,7 @@
 // ignore_for_file: prefer_interpolation_to_compose_strings, deprecated_member_use
 
 import 'dart:async';
+import 'dart:convert';
 import 'dart:math' as math;
 import 'dart:ui' as ui;
 
@@ -7010,7 +7011,9 @@ class _WholesaleCheckoutDesignScreenState
     extends State<WholesaleCheckoutDesignScreen> with WidgetsBindingObserver {
   late int storeId = wholesaleStoreId(widget.location);
   late Future<_CheckoutPayload> future = _load();
-  late final String idempotencyKey;
+  late String idempotencyKey;
+  String? _submittedCheckoutIntent;
+  int _checkoutKeySerial = 0;
   int? addressId;
   String? paymentMethod;
   bool submitting = false;
@@ -7027,10 +7030,7 @@ class _WholesaleCheckoutDesignScreenState
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    idempotencyKey = 'fdx-b2b-' +
-        DateTime.now().microsecondsSinceEpoch.toString() +
-        '-' +
-        math.Random().nextInt(1 << 32).toString();
+    idempotencyKey = _newCheckoutIdempotencyKey();
   }
 
   @override
@@ -7048,6 +7048,43 @@ class _WholesaleCheckoutDesignScreenState
     note.dispose();
     coupon.dispose();
     super.dispose();
+  }
+
+  String _newCheckoutIdempotencyKey() =>
+      'fdx-b2b-' +
+      DateTime.now().microsecondsSinceEpoch.toString() +
+      '-' +
+      (_checkoutKeySerial++).toString() +
+      '-' +
+      math.Random().nextInt(1 << 32).toString();
+
+  String _checkoutIntent(_CheckoutPayload payload) {
+    // The server binds a key to the checkout request fields. Include a
+    // canonical representation of the cart as well: an old successful key
+    // must not replay its old order after a distinct cart is submitted.
+    // Sorting stable item identities avoids rotating keys just because a
+    // fresh GET returned the same cart rows in a different order.
+    final itemIdentities = mapRows(payload.cart['items']).map((item) {
+      final product = item['product'];
+      final productId =
+          item['product_id'] ?? (product is Map ? product['id'] : null);
+      return jsonEncode(<String>[
+        (item['id'] ?? '').toString(),
+        (productId ?? '').toString(),
+        (item['selling_unit_code'] ?? '').toString(),
+        (item['quantity'] ?? '').toString(),
+      ]);
+    }).toList()
+      ..sort();
+
+    return jsonEncode(<Object?>[
+      storeId,
+      addressId,
+      paymentMethod,
+      note.text,
+      appliedCouponCode,
+      itemIdentities,
+    ]);
   }
 
   Future<void> _openAddressBook() async {
@@ -7251,6 +7288,17 @@ class _WholesaleCheckoutDesignScreenState
         return;
       }
     }
+
+    // Reuse the same idempotency key only for the same checkout intent,
+    // including a retry after an ambiguous network failure. A modified
+    // address, payment method, note, coupon or cart is a new intent and
+    // must not replay the old order (or trigger a server 409 conflict).
+    final checkoutIntent = _checkoutIntent(payload);
+    if (_submittedCheckoutIntent != null &&
+        _submittedCheckoutIntent != checkoutIntent) {
+      idempotencyKey = _newCheckoutIdempotencyKey();
+    }
+    _submittedCheckoutIntent = checkoutIntent;
 
     setState(() => submitting = true);
     try {
