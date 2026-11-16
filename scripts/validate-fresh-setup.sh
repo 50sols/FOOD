@@ -442,19 +442,33 @@ wait_for_http() {
   local url="$4"
   local output_file="$5"
   local expected_code="$6"
-  local pid code
+  local pid code consecutive=0
   pid="$(cat "$pid_file")"
 
-  for _ in {1..45}; do
+  # Laravel's development server can briefly return one stale 200 while it is
+  # asynchronously restarting after the installer rewrites .env. Require two
+  # consecutive successful GETs before posting the next wizard step; this is
+  # especially important before non-transactional MySQL migration step 11.
+  for _ in {1..60}; do
     if ! kill -0 "$pid" 2>/dev/null; then
       echo "::error::$label server exited before becoming ready."
       cat "$log_file" || true
       tail -n 200 "$fresh/backend/storage/logs/laravel.log" 2>/dev/null || true
       return 1
     fi
-    code="$(curl -s -o "$output_file" -w '%{http_code}' "$url" || true)"
+    code="$(curl -s --connect-timeout 2 --max-time 10 -o "$output_file" -w '%{http_code}' "$url" || true)"
     if [[ "$code" == "$expected_code" ]]; then
-      return 0
+      consecutive=$((consecutive + 1))
+      if [[ "$consecutive" -ge 2 ]]; then
+        kill -0 "$pid" 2>/dev/null || {
+          echo "::error::$label server exited after readiness responses."
+          cat "$log_file" || true
+          return 1
+        }
+        return 0
+      fi
+    else
+      consecutive=0
     fi
     sleep 1
   done
