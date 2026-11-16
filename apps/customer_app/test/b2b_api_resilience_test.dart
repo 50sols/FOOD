@@ -4,7 +4,9 @@ import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 
 void main() {
-  test('Invoice detail GET retries only transient HTTP failures with stable scope', () async {
+  test(
+      'Invoice detail GET retries only transient HTTP failures with stable scope',
+      () async {
     for (final code in [502, 503, 504]) {
       var attempts = 0;
       final api = HttpB2bApi(
@@ -47,7 +49,8 @@ void main() {
     }
   });
 
-  test('B2B GET 503 exhaustion retains status and safe support reference', () async {
+  test('B2B GET 503 exhaustion retains status and safe support reference',
+      () async {
     for (final language in ['ar', 'en']) {
       var attempts = 0;
       final api = HttpB2bApi(
@@ -115,7 +118,8 @@ void main() {
     }
   });
 
-  test('B2B statement PDF retries a safe GET with locale and authorized scope', () async {
+  test('B2B statement PDF retries a safe GET with locale and authorized scope',
+      () async {
     var attempts = 0;
     final api = HttpB2bApi(
       baseUrl: 'https://foodex.example',
@@ -156,7 +160,8 @@ void main() {
     expect(file.bytes, isNotEmpty);
   });
 
-  test('B2B GET retries one transient client failure and preserves retail context',
+  test(
+      'B2B GET retries one transient client failure and preserves retail context',
       () async {
     var attempts = 0;
     final api = HttpB2bApi(
