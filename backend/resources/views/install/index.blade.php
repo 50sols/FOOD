@@ -44,6 +44,15 @@
         code { direction: ltr; unicode-bidi: embed; }
         ul { line-height: 1.8; }
         @media (max-width: 820px) { .layout { grid-template-columns: minmax(0, 1fr); } aside { padding: 12px 16px; } aside p { margin-bottom: 8px; } aside ol { display: flex; gap: 6px; overflow-x: auto; overscroll-behavior-x: contain; padding-bottom: 6px; } aside li { flex: 0 0 auto; } .step-link, .step-disabled { white-space: nowrap; } main { padding: 16px; } .card { padding: 22px; } .fields { grid-template-columns: minmax(0, 1fr); } }
+            .field-help { margin-top: 20px; padding: 14px; border: 1px solid #cbd5e1; border-radius: 10px; }
+        .field-help summary { display: flex; align-items: center; min-height: 44px; cursor: pointer; font-weight: 700; }
+        .field-help dl { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+        .field-help dl > div { padding: 10px; border-radius: 8px; background: #f8fafc; }
+        .field-help dt { font-weight: 700; }
+        .field-help dd { margin: 6px 0 0; line-height: 1.6; overflow-wrap: anywhere; color: #475569; }
+        .readiness { margin-top: 20px; }
+        @media (max-width: 820px) { .field-help dl { grid-template-columns: minmax(0, 1fr); } }
+        summary:focus-visible { outline: 3px solid #059669; outline-offset: 3px; }
     </style>
 </head>
 <body>
@@ -170,17 +179,19 @@
                         </label>
                     </div>
                 @elseif ($currentStep === 9)
+                    @php($selectedCache = $input['cache_store'] ?? (in_array($values['CACHE_STORE'] ?? null, ['redis', 'file'], true) ? $values['CACHE_STORE'] : 'file'))
+                    @php($selectedQueue = $input['queue_connection'] ?? (in_array($values['QUEUE_CONNECTION'] ?? null, ['redis', 'sync'], true) ? $values['QUEUE_CONNECTION'] : 'sync'))
                     <div class="fields">
                         <label>{{ __('installer.fields.cache_store') }}
                             <select name="cache_store">
-                                <option value="redis" @selected(($input['cache_store'] ?? ($values['CACHE_STORE'] ?: 'redis')) === 'redis')>redis</option>
-                                <option value="file" @selected(($input['cache_store'] ?? $values['CACHE_STORE']) === 'file')>file</option>
+                                <option value="redis" @selected($selectedCache === 'redis')>redis</option>
+                                <option value="file" @selected($selectedCache === 'file')>file</option>
                             </select>
                         </label>
                         <label>{{ __('installer.fields.queue_connection') }}
                             <select name="queue_connection">
-                                <option value="redis" @selected(($input['queue_connection'] ?? ($values['QUEUE_CONNECTION'] ?: 'redis')) === 'redis')>redis</option>
-                                <option value="sync" @selected(($input['queue_connection'] ?? $values['QUEUE_CONNECTION']) === 'sync')>sync</option>
+                                <option value="redis" @selected($selectedQueue === 'redis')>redis</option>
+                                <option value="sync" @selected($selectedQueue === 'sync')>sync</option>
                             </select>
                         </label>
                         <label>{{ __('installer.fields.redis_host') }}<input name="redis_host" value="{{ $input['redis_host'] ?? ($values['REDIS_HOST'] ?: '127.0.0.1') }}"></label>
@@ -222,9 +233,52 @@
                     <div class="notice">{{ __('installer.wizard.finish_notice') }}</div>
                 @endif
 
+
+                @php
+                    $configurationFields = [
+                        4 => ['db_host', 'db_port', 'db_database', 'db_username', 'db_password'],
+                        6 => ['app_name', 'app_url', 'app_locale'],
+                        7 => ['admin_name', 'admin_email', 'admin_locale', 'admin_password', 'admin_password_confirmation'],
+                        8 => ['filesystem_disk'],
+                        9 => ['cache_store', 'queue_connection', 'redis_host', 'redis_port', 'redis_password'],
+                        10 => ['mail_mailer', 'mail_scheme', 'mail_host', 'mail_port', 'mail_username', 'mail_password', 'mail_from_address', 'mail_from_name'],
+                    ][$currentStep] ?? [];
+                    $readinessKey = match ($currentStep) {
+                        4, 5 => $completedStep >= 5 ? 'db_tested' : ($completedStep >= 4 ? 'db_saved' : 'not_saved'),
+                        6 => $completedStep >= 6 ? 'platform_saved' : 'not_saved',
+                        7 => $completedStep >= 7 ? 'admin_prepared' : 'not_saved',
+                        8 => $completedStep >= 14 ? 'storage_checked' : ($completedStep >= 8 ? 'storage_pending' : 'not_saved'),
+                        9 => $completedStep >= 14 ? 'queue_checked' : ($completedStep >= 9 ? 'queue_pending' : 'not_saved'),
+                        10 => $completedStep >= 10 ? (($values['MAIL_MAILER'] ?? 'log') === 'smtp' ? 'smtp_unverified' : 'mail_non_delivery') : 'not_saved',
+                        default => null,
+                    };
+                @endphp
+                @if ($configurationFields !== [])
+                    <details class="field-help">
+                        <summary>{{ __('installer.wizard.help_summary') }}</summary>
+                        <dl>
+                            @foreach ($configurationFields as $fieldKey)
+                                <div>
+                                    <dt>{{ __('installer.fields.'.$fieldKey) }}</dt>
+                                    <dd>{{ __('installer.help.'.$fieldKey) }}</dd>
+                                </div>
+                            @endforeach
+                        </dl>
+                    </details>
+                @endif
+                @if ($readinessKey !== null)
+                    <div class="notice readiness" role="status"><strong>{{ __('installer.wizard.readiness_label') }}:</strong> {{ __('installer.readiness.'.$readinessKey) }}</div>
+                @endif
+
                 <div class="actions">
                     <button type="submit">
-                        {{ $currentStep === 15 ? __('installer.wizard.finish') : __('installer.wizard.continue') }}
+                        {{ match ($currentStep) {
+                            4, 6, 7, 8, 9, 10 => __('installer.wizard.save_continue'),
+                            5 => __('installer.wizard.test_database'),
+                            14 => __('installer.wizard.test_health'),
+                            15 => __('installer.wizard.finish'),
+                            default => __('installer.wizard.continue'),
+                        } }}
                     </button>
                 </div>
             </form>

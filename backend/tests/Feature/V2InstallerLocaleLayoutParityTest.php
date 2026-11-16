@@ -158,6 +158,57 @@ final class V2InstallerLocaleLayoutParityTest extends TestCase
         $this->assertFalse(app(InstallState::class)->isInstalled());
     }
 
+
+    public function test_configuration_help_and_readiness_are_localized_without_changing_secrets_or_progress(): void
+    {
+        $state = app(InstallState::class);
+        $path = $this->fixtureDirectory.'/.env';
+        $before = file_get_contents($path);
+        $state->markStepComplete(3);
+
+        foreach (['ar', 'en'] as $locale) {
+            $this->get('/install?step=4&lang='.$locale)
+                ->assertOk()
+                ->assertSee(__('installer.wizard.help_summary', [], $locale))
+                ->assertSee(__('installer.help.db_database', [], $locale))
+                ->assertSee(__('installer.readiness.not_saved', [], $locale))
+                ->assertSee(__('installer.wizard.save_continue', [], $locale));
+        }
+
+        $state->markStepComplete(4);
+        $this->get('/install?step=5&lang=en')
+            ->assertOk()
+            ->assertSee(__('installer.readiness.db_saved', [], 'en'))
+            ->assertSee(__('installer.wizard.test_database', [], 'en'));
+
+        $state->markStepComplete(9);
+        foreach (['ar', 'en'] as $locale) {
+            $this->get('/install?step=10&lang='.$locale)
+                ->assertOk()
+                ->assertSee(__('installer.help.mail_from_address', [], $locale))
+                ->assertSee(__('installer.readiness.not_saved', [], $locale));
+        }
+
+        $state->markStepComplete(10);
+        $this->get('/install?step=10&lang=en')
+            ->assertOk()
+            ->assertSee(__('installer.readiness.mail_non_delivery', [], 'en'));
+
+        $this->assertSame($before, file_get_contents($path));
+        $this->assertFalse($state->isInstalled());
+    }
+
+    public function test_shared_host_fallback_does_not_select_unprovisioned_redis(): void
+    {
+        app(InstallState::class)->markStepComplete(8);
+
+        $this->get('/install?step=9&lang=en')
+            ->assertOk()
+            ->assertSee('value="file" selected', false)
+            ->assertSee('value="sync" selected', false)
+            ->assertSee(__('installer.help.cache_store', [], 'en'));
+    }
+
     public function test_explicit_language_survives_links_and_post_redirect_without_changing_platform_locale(): void
     {
         $state = app(InstallState::class);
