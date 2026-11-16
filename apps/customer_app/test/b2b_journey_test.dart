@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:foodex_visualization/foodex_visualization.dart';
 import 'package:foodex_customer_app/app.dart';
@@ -5724,6 +5725,7 @@ void main() {
           // Diagnostic for the one failing compact English layout on CI.
           // ignore: avoid_print
           print(layoutError.toStringDeep());
+          debugDumpRenderTree();
         }
         expect(layoutError, isNull);
       },
