@@ -6,10 +6,10 @@ use App\Enterprise\Entitlements\EntitlementScope;
 use App\Enterprise\Entitlements\ModuleEntitlementManager;
 use App\Enterprise\Finance\FinanceFoundationService;
 use App\Enterprise\Finance\FinanceWorkbenchAccess;
-use App\Enterprise\Organization\OrganizationHierarchyService;
 use App\Enterprise\Modules\ModuleLifecycleManager;
 use App\Enterprise\Modules\ModuleRegistry;
 use App\Enterprise\Modules\ModuleState;
+use App\Enterprise\Organization\OrganizationHierarchyService;
 use App\Models\Permission;
 use App\Models\Role;
 use App\Models\Store;
@@ -250,7 +250,6 @@ final class V2ArOfficerAuthorizationContractTest extends TestCase
         $this->assertSame($before['journals'], DB::table('enterprise_finance_journals')->count());
         $this->assertSame($before['ledger'], DB::table('enterprise_finance_ledger_entries')->count());
     }
-
 
     public function test_ar_officer_finance_access_remains_ar_only_with_a_second_b2b_channel_role(): void
     {
