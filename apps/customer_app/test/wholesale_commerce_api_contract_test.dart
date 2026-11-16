@@ -275,4 +275,111 @@ void main() {
     );
     expect(attempts, 1);
   });
+
+  test('200 invalid quote checkout and cart responses fail closed in AR/EN',
+      () async {
+    final invalidResponses = <({String mime, String body})>[
+      (mime: 'text/html', body: '<html>Log in</html>'),
+      (mime: 'application/json', body: ''),
+      (mime: 'application/json', body: '{"data":'),
+      (mime: 'application/json', body: '[]'),
+      (mime: 'application/json', body: 'null'),
+      (mime: 'text/plain', body: '{"data":{"grand_total":0}}'),
+    ];
+    for (final locale in ['ar', 'en']) {
+      for (final endpoint in [
+        '/api/v1/cart',
+        '/api/v1/quote',
+        '/api/v1/checkout',
+      ]) {
+        for (final invalid in invalidResponses) {
+          var calls = 0;
+          final api = HttpWholesaleCommerceApi(
+            baseUrl: 'https://foodex.example',
+            token: 'scoped-token',
+            retailStoreContextId: 17,
+            locale: locale,
+            maxGetAttempts: 3,
+            client: MockClient((request) async {
+              calls++;
+              expect(request.url.path, endpoint);
+              expect(request.method,
+                  endpoint == '/api/v1/cart' ? 'GET' : 'POST');
+              expect(request.headers['Authorization'], 'Bearer scoped-token');
+              expect(request.headers['X-FOODEX-Customer-Domain'], 'b2b');
+              expect(request.headers['X-FOODEX-Retail-Store-ID'], '17');
+              expect(request.headers['Accept-Language'], locale);
+              if (endpoint == '/api/v1/checkout') {
+                expect(request.headers['Idempotency-Key'],
+                    'fixed-financial-intent-0001');
+              }
+              return http.Response(invalid.body, 200,
+                  headers: {'content-type': invalid.mime});
+            }),
+          );
+
+          Future<Object?> action;
+          if (endpoint == '/api/v1/cart') {
+            action = api.cart(12);
+          } else if (endpoint == '/api/v1/quote') {
+            action = api.quote(storeId: 12);
+          } else {
+            action = api.checkout(
+              storeId: 12,
+              addressId: 9,
+              paymentMethod: 'account_credit',
+              idempotencyKey: 'fixed-financial-intent-0001',
+            );
+          }
+          await expectLater(
+            action,
+            throwsA(isA<WholesaleCommerceException>().having(
+              (error) => error.message,
+              'localized invalid response',
+              locale == 'en'
+                  ? 'The server returned an invalid response. Try again.'
+                  : 'أعاد الخادم استجابة غير صالحة. حاول مرة أخرى.',
+            )),
+          );
+          // Never retry a committed POST, or disguise a malformed 200 as
+          // a valid empty cart / approved credit checkout.
+          expect(calls, 1);
+        }
+      }
+    }
+  });
+
+  test('Scoped commerce API does not recalculate three-decimal quote money',
+      () async {
+    for (final locale in ['ar', 'en']) {
+      final api = HttpWholesaleCommerceApi(
+        baseUrl: 'https://foodex.example',
+        token: 'scoped-token',
+        retailStoreContextId: 17,
+        locale: locale,
+        client: MockClient((request) async {
+          expect(request.url.path, '/api/v1/quote');
+          expect(request.headers['Authorization'], 'Bearer scoped-token');
+          expect(request.headers['X-FOODEX-Customer-Domain'], 'b2b');
+          expect(request.headers['X-FOODEX-Retail-Store-ID'], '17');
+          expect(request.headers['Accept-Language'], locale);
+          final body = jsonDecode(request.body) as Map;
+          expect(body['store_id'], 12);
+          expect(body, isNot(contains('unit_price')));
+          expect(body, isNot(contains('credit_limit')));
+          expect(body, isNot(contains('discount_total')));
+          return http.Response(
+            '{"data":{"grand_total":20.125,"discount_total":0.001,"pricing_source":"backend_authoritative_quote_v1"}}',
+            200,
+            headers: {'content-type': 'application/json'},
+          );
+        }),
+      );
+      final quote = await api.quote(storeId: 12) as Map;
+      final data = quote['data'] as Map;
+      expect(data['grand_total'], 20.125);
+      expect(data['discount_total'], 0.001);
+      expect(data['pricing_source'], 'backend_authoritative_quote_v1');
+    }
+  });
 }
