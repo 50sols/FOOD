@@ -174,7 +174,7 @@ $roleLabel = static function ($role): string {
 @endif
 </div></td>
 <td>
-<span class="badge {{ $managedUser->is_active?'active':'inactive' }}">{{ $managedUser->is_active?__('admin.security.active'):__('admin.security.inactive') }}</span>
+<span class="badge {{ $managedUser->is_active?'active':'inactive' }}" data-v2-user-lifecycle-state="{{ $managedUser->archived_at ? 'archived' : ($managedUser->is_active ? 'active' : 'inactive') }}">{{ $managedUser->archived_at ? __('admin.security.archived_badge') : ($managedUser->is_active ? __('admin.security.active') : __('admin.security.inactive')) }}</span>
 <span class="badge {{ $mfaByUser->has($managedUser->id)?'active':'inactive' }}">{{ $mfaByUser->has($managedUser->id)?__('security_governance.mfa_admin.enabled'):__('security_governance.mfa_admin.missing') }}</span>
 </td>
 <td><div class="security-user-actions" data-v2-user-action-row>
@@ -186,7 +186,10 @@ $roleLabel = static function ($role): string {
 <button type="button" data-v2-open-user-dialog="manage">{{ __('admin.security.manage') }}</button>
 @endcan
 @can('users.status.manage')
-<button type="button" data-v2-open-user-dialog="status" class="{{ $managedUser->is_active ? 'danger' : '' }}">{{ $managedUser->is_active ? __('admin.security.deactivate') : __('admin.security.activate') }}</button>
+<button type="button" data-v2-open-user-dialog="status" class="{{ $managedUser->is_active ? 'danger' : '' }}">{{ $managedUser->is_active ? __('admin.security.deactivate') : ($managedUser->archived_at ? __('admin.security.restore_archive') : __('admin.security.activate')) }}</button>
+@if(auth()->user()->hasRole('SUPER_ADMIN') && ! auth()->user()->is($managedUser) && ! $managedUser->isPlatformOwner() && ! $managedUser->is_platform_customer && ! $managedUser->archived_at)
+<button type="button" data-v2-open-user-dialog="archive" class="danger">{{ __('admin.security.archive') }}</button>
+@endif
 @endcan
 @can('users.delete')
 @if(auth()->user()->hasRole('SUPER_ADMIN') && ! $managedUser->is_active)
@@ -327,7 +330,7 @@ $roleLabel = static function ($role): string {
 </form>
 </details>
 @else
-<details data-foodex-operational-modal data-v2-user-dialog="status"><summary class="btn success">{{ __('admin.security.activate') }}</summary>
+<details data-foodex-operational-modal data-v2-user-dialog="status"><summary class="btn success">{{ $managedUser->archived_at ? __('admin.security.restore_archive') : __('admin.security.activate') }}</summary>
 <form method="post" action="{{ route('admin.security.users.status',$managedUser) }}" class="security-modal-stack" onsubmit="return confirm(@js(__('admin.security.confirm_activate')))">
 @csrf @method('patch')
 <input type="hidden" name="is_active" value="1">
@@ -335,7 +338,20 @@ $roleLabel = static function ($role): string {
 <label>{{ __('admin.security.lifecycle_reason_label') }} <input type="text" name="reason" minlength="8" maxlength="500" required></label>
 <label><input type="checkbox" name="impact_reviewed" value="1" required> {{ __('admin.security.lifecycle_impact_acknowledge') }}</label>
 <label>{{ __('admin.security.lifecycle_confirm_email', ['email' => $managedUser->email]) }} <input type="email" name="confirm_email" required autocomplete="off"></label>
-<button class="btn success" type="submit">{{ __('admin.security.activate') }}</button>
+<button class="btn success" type="submit">{{ $managedUser->archived_at ? __('admin.security.restore_archive') : __('admin.security.activate') }}</button>
+</form>
+</details>
+@endif
+@if(auth()->user()->hasRole('SUPER_ADMIN') && ! auth()->user()->is($managedUser) && ! $managedUser->isPlatformOwner() && ! $managedUser->is_platform_customer && ! $managedUser->archived_at)
+<details data-foodex-operational-modal data-v2-user-dialog="archive"><summary class="btn danger">{{ __('admin.security.archive') }}</summary>
+<form method="post" action="{{ route('admin.security.users.archive', $managedUser) }}" class="security-modal-stack" onsubmit="return confirm(@js(__('admin.security.archive_confirm_warning')))">
+@csrf @method('patch')
+<p class="note" role="note">{{ __('admin.security.archive_description') }}</p>
+<label>{{ __('admin.security.lifecycle_reason_label') }} <input name="reason" type="text" minlength="8" maxlength="500" required autocomplete="off"></label>
+<label><input type="checkbox" name="impact_reviewed" value="1" required> {{ __('admin.security.lifecycle_impact_acknowledge') }}</label>
+<label>{{ __('admin.security.lifecycle_confirm_email', ['email' => $managedUser->email]) }} <input name="confirm_email" type="email" required autocomplete="off"></label>
+<label>{{ __('admin.security.archive_confirm_word') }} <input name="confirm_archive" type="text" pattern="ARCHIVE" required autocomplete="off"></label>
+<button type="submit" class="btn danger">{{ __('admin.security.archive') }}</button>
 </form>
 </details>
 @endif

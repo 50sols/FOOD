@@ -123,6 +123,15 @@ final class AdminUserDeletionService
 
         $userId = (int) $target->getKey();
 
+        // P068 introduces a retained identity reference inside the users table.
+        // The generic table scan skips users to avoid treating the target's own
+        // row as a reference; explicitly inspect the archival actor FK before
+        // permitting an otherwise unlinked former administrator to be deleted.
+        if (in_array('archived_by', Schema::getColumnListing('users'), true)
+            && DB::table('users')->where('archived_by', $userId)->exists()) {
+            return true;
+        }
+
         foreach ($tables as $metadata) {
             $table = (string) $metadata['name'];
             if ($table === '' || ! preg_match('/^[a-zA-Z_][a-zA-Z0-9_]*$/', $table)) {
