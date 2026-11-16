@@ -162,15 +162,43 @@ class HttpB2bApi implements B2bApi, B2bDocumentApi, B2bDownloadApi {
       );
     }
 
+    // A successful HTTP status can be an HTML authentication redirect or
+    // JSON gateway error. Verify the declared format before sharing bytes.
+    final requestedFormat =
+        Uri.parse(path).queryParameters['format']?.toLowerCase();
+    final bytes = response.bodyBytes;
+    final mime =
+        response.headers['content-type']?.split(';').first.trim().toLowerCase();
+    const xlsxMime =
+        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+    final binaryMime = mime == 'application/octet-stream';
+    final isPdf = requestedFormat != 'xlsx' &&
+        _hasPdfSignature(bytes) &&
+        (mime == 'application/pdf' || binaryMime);
+    final isXlsx = requestedFormat != 'pdf' &&
+        _hasXlsxSignature(bytes) &&
+        (mime == xlsxMime || binaryMime);
+    if (!isPdf && !isXlsx) {
+      throw const B2bApiException('invalid_document');
+    }
+
+    final extension = isPdf ? 'pdf' : 'xlsx';
     final disposition = response.headers['content-disposition'] ?? '';
     final filenameMatch = RegExp(r'filename="?([^";]+)"?', caseSensitive: false)
         .firstMatch(disposition);
-    final mime = response.headers['content-type']?.split(';').first.trim();
+    final candidate = filenameMatch?.group(1)?.trim();
+    final safeFilename = candidate != null &&
+            candidate.isNotEmpty &&
+            candidate.length <= 180 &&
+            !candidate.startsWith('.') &&
+            !RegExp(r'[/\\\x00-\x1f\x7f]').hasMatch(candidate) &&
+            candidate.toLowerCase().endsWith('.$extension')
+        ? candidate
+        : 'foodex-account-statement.$extension';
     return B2bDownload(
-      bytes: response.bodyBytes,
-      mimeType:
-          mime == null || mime.isEmpty ? 'application/octet-stream' : mime,
-      filename: filenameMatch?.group(1) ?? 'foodex-account-statement',
+      bytes: bytes,
+      mimeType: isPdf ? 'application/pdf' : xlsxMime,
+      filename: safeFilename,
     );
   }
 }
@@ -182,6 +210,13 @@ bool _hasPdfSignature(Uint8List bytes) =>
     bytes[2] == 0x44 &&
     bytes[3] == 0x46 &&
     bytes[4] == 0x2D;
+
+bool _hasXlsxSignature(Uint8List bytes) =>
+    bytes.length >= 4 &&
+    bytes[0] == 0x50 &&
+    bytes[1] == 0x4b &&
+    bytes[2] == 0x03 &&
+    bytes[3] == 0x04;
 
 class B2bApiException implements Exception {
   const B2bApiException(

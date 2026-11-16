@@ -160,6 +160,133 @@ void main() {
     expect(file.bytes, isNotEmpty);
   });
 
+  test('B2B statement XLSX passes scoped AR/EN binary transport', () async {
+    for (final language in ['ar', 'en']) {
+      var calls = 0;
+      final api = HttpB2bApi(
+        baseUrl: 'https://foodex.example',
+        token: 'opaque-token',
+        retailStoreContextId: 17,
+        locale: language,
+        maxGetAttempts: 1,
+        client: MockClient((request) async {
+          calls++;
+          expect(request.url.queryParameters['format'], 'xlsx');
+          expect(request.url.queryParameters['store_id'], '7');
+          expect(request.headers['Authorization'], 'Bearer opaque-token');
+          expect(request.headers['X-FOODEX-Customer-Domain'], 'b2b');
+          expect(request.headers['X-FOODEX-Retail-Store-ID'], '17');
+          expect(request.headers['Accept-Language'], language);
+          return http.Response.bytes(
+            [0x50, 0x4b, 0x03, 0x04, 0x00],
+            200,
+            headers: {
+              'content-type':
+                  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+              'content-disposition': 'attachment; filename="statement.xlsx"',
+            },
+          );
+        }),
+      );
+      final file = await api.download(
+        '/api/v1/b2b/account-statement/export?store_id=7&format=xlsx',
+      );
+      expect(calls, 1);
+      expect(file.filename, 'statement.xlsx');
+      expect(file.mimeType,
+          'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    }
+  });
+
+  test('B2B statement export rejects 200 wrong MIME and corrupt bytes',
+      () async {
+    final cases = <({String format, String mime, String body})>[
+      (format: 'pdf', mime: 'text/html', body: '<html>Login</html>'),
+      (format: 'pdf', mime: 'application/json', body: '{"error":"denied"}'),
+      (format: 'pdf', mime: 'application/pdf', body: ''),
+      (format: 'pdf', mime: 'application/pdf', body: 'not-pdf'),
+      (format: 'xlsx', mime: 'text/html', body: '<html>Login</html>'),
+      (format: 'xlsx', mime: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', body: 'not-xlsx'),
+      (format: 'xlsx', mime: 'application/pdf', body: '%PDF-1.4'),
+    ];
+    for (final language in ['ar', 'en']) {
+      for (final failure in cases) {
+        var calls = 0;
+        final api = HttpB2bApi(
+          baseUrl: 'https://foodex.example',
+          token: 'opaque-token',
+          locale: language,
+          retailStoreContextId: 17,
+          maxGetAttempts: 3,
+          client: MockClient((request) async {
+            calls++;
+            expect(request.headers['Authorization'], 'Bearer opaque-token');
+            expect(request.headers['X-FOODEX-Retail-Store-ID'], '17');
+            expect(request.headers['Accept-Language'], language);
+            return http.Response(failure.body, 200,
+                headers: {'content-type': failure.mime});
+          }),
+        );
+        await expectLater(
+          api.download(
+            '/api/v1/b2b/account-statement/export?store_id=7&format=' +
+                failure.format,
+          ),
+          throwsA(isA<B2bApiException>()
+              .having((error) => error.code, 'code', 'invalid_document')),
+        );
+        expect(calls, 1);
+      }
+    }
+  });
+
+  test('B2B statement export rejects malicious filenames', () async {
+    final api = HttpB2bApi(
+      baseUrl: 'https://foodex.example',
+      token: 'opaque-token',
+      maxGetAttempts: 1,
+      client: MockClient((_) async => http.Response(
+            '%PDF-1.4',
+            200,
+            headers: {
+              'content-type': 'application/octet-stream',
+              'content-disposition': 'attachment; filename="../../data.exe"',
+            },
+          )),
+    );
+    final file = await api.download(
+      '/api/v1/b2b/account-statement/export?format=pdf',
+    );
+    expect(file.mimeType, 'application/pdf');
+    expect(file.filename, 'foodex-account-statement.pdf');
+  });
+
+  test('B2B statement export 401/403 denies without retry', () async {
+    for (final language in ['ar', 'en']) {
+      for (final status in [401, 403]) {
+        var calls = 0;
+        final api = HttpB2bApi(
+          baseUrl: 'https://foodex.example',
+          token: 'opaque-token',
+          locale: language,
+          maxGetAttempts: 3,
+          client: MockClient((request) async {
+            calls++;
+            expect(request.headers['Accept-Language'], language);
+            return http.Response('<html>Denied</html>', status);
+          }),
+        );
+        await expectLater(
+          api.download('/api/v1/b2b/account-statement/export?format=pdf'),
+          throwsA(isA<B2bApiException>()
+              .having((error) => error.code, 'code', 'not_authorized')
+              .having((error) => error.statusCode, 'status', status)),
+        );
+        expect(calls, 1);
+      }
+    }
+  });
+
   test(
       'B2B GET retries one transient client failure and preserves retail context',
       () async {
