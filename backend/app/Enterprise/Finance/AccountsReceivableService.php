@@ -1087,6 +1087,10 @@ final class AccountsReceivableService
             || strtoupper((string) $account->currency) !== $currency
             || (string) $transaction->type !== 'collection'
             || (string) $transaction->status !== 'posted'
+            // A wallet actor_type alone cannot attest a source: a forged
+            // driver-origin collection must never become Wholesale Van cash,
+            // nor can a Van-origin receipt be claimed for a Retail Driver.
+            || (string) $transaction->source !== ($context->isRetail() ? 'driver_app' : 'van_app')
             || strtoupper((string) $transaction->currency) !== $currency
             || (string) $payment->status !== 'paid'
             || (string) $payment->provider !== 'field_collection'
