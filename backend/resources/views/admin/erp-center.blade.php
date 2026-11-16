@@ -14,6 +14,11 @@ body{margin:0}
 .erp-section{display:grid;gap:var(--foodex-space-3);min-width:0}
 .erp-section-head{display:flex;align-items:flex-start;justify-content:space-between;gap:var(--foodex-space-3);flex-wrap:wrap}
 .erp-section-head h2,.erp-section-head p{margin:0}
+.erp-workspace-tabs{display:flex;flex-wrap:nowrap;max-width:100%;overflow-x:auto;gap:var(--foodex-space-2);margin-block:var(--foodex-space-4);padding-block:var(--foodex-space-2);scrollbar-width:thin}
+.erp-workspace-tabs .foodex-tab{flex:0 0 auto;white-space:nowrap;min-height:44px}
+.erp-workspace-tabs .foodex-tab:focus-visible{outline:2px solid var(--foodex-green);outline-offset:2px}
+.erp-center [data-erp-panel][hidden]{display:none!important}
+.erp-center [data-erp-panel]{min-width:0}
 .erp-kpis{grid-template-columns:repeat(5,minmax(0,1fr))}
 .erp-kpi-link{color:inherit;text-decoration:none}
 .erp-kpi-link:focus-visible{outline:3px solid color-mix(in srgb,var(--foodex-green) 38%,transparent);outline-offset:3px}
@@ -74,8 +79,37 @@ body{margin:0}
 
 </div>
 
+@php
+// Tab selection is server-rendered and strictly allowlisted. The ERP controller
+// remains the single authority for module visibility, entitlement and data.
+$erpTabKeys = ['snapshot', 'analytics', 'follow_up', 'modules'];
+$erpTabInput = request()->query('tab');
+$erpTabFallback = $selectedStatus !== '' ? 'modules' : 'snapshot';
+$activeErpTab = is_string($erpTabInput) && in_array($erpTabInput, $erpTabKeys, true)
+    ? $erpTabInput
+    : $erpTabFallback;
+$erpTabContext = $selectedStatus !== '' ? ['status' => $selectedStatus] : [];
+if (is_string(request()->query('module')) && in_array($selectedModule, array_column($cards, 'key'), true)) {
+    $erpTabContext['module'] = $selectedModule;
+}
+$erpTabLabels = [
+    'snapshot' => 'admin.erp_center.snapshot.title',
+    'analytics' => 'admin.erp_center.analytics.label',
+    'follow_up' => 'admin.erp_center.follow_up.label',
+    'modules' => 'admin.erp_center.modules_title',
+];
+@endphp
+<nav class="foodex-tabs erp-workspace-tabs" aria-label="{{ __('admin.erp_center.title') }}" data-erp-tabs>
+@foreach($erpTabKeys as $erpTabKey)
+<a class="foodex-tab {{ $activeErpTab === $erpTabKey ? 'is-active' : '' }}"
+   id="erp-tab-{{ $erpTabKey }}" data-erp-tab="{{ $erpTabKey }}"
+   href="{{ route('admin.erp.index', array_merge($erpTabContext, ['tab' => $erpTabKey])) }}"
+   @if($activeErpTab === $erpTabKey) aria-current="page" @endif>{{ __($erpTabLabels[$erpTabKey]) }}</a>
+@endforeach
+</nav>
+
 <div class="foodex-module-overview">
-<section class="erp-section" aria-labelledby="erp-snapshot-title">
+<section class="erp-section" aria-labelledby="erp-tab-snapshot" data-erp-panel="snapshot" @if($activeErpTab !== 'snapshot') hidden @endif>
 <div class="erp-section-head">
 <div>
 <h2 id="erp-snapshot-title">{{ __('admin.erp_center.snapshot.title') }}</h2>
@@ -121,7 +155,7 @@ body{margin:0}
 </div>
 </section>
 
-<section class="erp-analytics" aria-label="{{ __('admin.erp_center.analytics.label') }}">
+<section class="erp-analytics" aria-labelledby="erp-tab-analytics" data-erp-panel="analytics" @if($activeErpTab !== 'analytics') hidden @endif>
 <article class="foodex-viz-card" data-erp-chart="workload">
 <div class="foodex-viz-header">
 <div>
@@ -172,7 +206,7 @@ body{margin:0}
 @foreach($summary as $state => $count)
 <a
     class="erp-state-link {{ $selectedStatus === $state ? 'is-active' : '' }}"
-    href="{{ route('admin.erp.index',['status'=>$state]) }}#erp-modules"
+    href="{{ route('admin.erp.index',['status'=>$state,'tab'=>'modules']) }}#erp-modules"
     data-erp-state="{{ $state }}"
 >
 <span>{{ __('admin.erp_center.statuses.'.$state) }}</span>
@@ -183,7 +217,7 @@ body{margin:0}
 </article>
 </section>
 
-<section class="erp-preview-grid" aria-label="{{ __('admin.erp_center.follow_up.label') }}">
+<section class="erp-preview-grid" aria-labelledby="erp-tab-follow_up" data-erp-panel="follow_up" @if($activeErpTab !== 'follow_up') hidden @endif>
 <article class="foodex-card erp-section" data-erp-my-work>
 <div class="erp-section-head">
 <div>
@@ -242,17 +276,17 @@ body{margin:0}
 </article>
 </section>
 
-<section class="erp-section" aria-labelledby="erp-modules-title" id="erp-modules">
+<section class="erp-section" aria-labelledby="erp-tab-modules" id="erp-modules" data-erp-panel="modules" @if($activeErpTab !== 'modules') hidden @endif>
 <div class="erp-section-head">
 <div>
 <h2 id="erp-modules-title">{{ __('admin.erp_center.modules_title') }}</h2>
 <p class="erp-subtitle">{{ __('admin.erp_center.modules_description') }}</p>
 </div>
 <div class="erp-filter-rail" aria-label="{{ __('admin.erp_center.filters.label') }}">
-<a class="erp-filter {{ $selectedStatus === '' ? 'is-active' : '' }}" href="{{ route('admin.erp.index') }}#erp-modules">{{ __('admin.erp_center.filters.all') }} <span class="foodex-number">{{ count($cards) }}</span></a>
+<a class="erp-filter {{ $selectedStatus === '' ? 'is-active' : '' }}" href="{{ route('admin.erp.index',['tab'=>'modules']) }}#erp-modules">{{ __('admin.erp_center.filters.all') }} <span class="foodex-number">{{ count($cards) }}</span></a>
 @foreach($summary as $state => $count)
 @if($count > 0)
-<a class="erp-filter {{ $selectedStatus === $state ? 'is-active' : '' }}" href="{{ route('admin.erp.index',['status'=>$state]) }}#erp-modules">{{ __('admin.erp_center.statuses.'.$state) }} <span class="foodex-number">{{ $count }}</span></a>
+<a class="erp-filter {{ $selectedStatus === $state ? 'is-active' : '' }}" href="{{ route('admin.erp.index',['status'=>$state,'tab'=>'modules']) }}#erp-modules">{{ __('admin.erp_center.statuses.'.$state) }} <span class="foodex-number">{{ $count }}</span></a>
 @endif
 @endforeach
 </div>
