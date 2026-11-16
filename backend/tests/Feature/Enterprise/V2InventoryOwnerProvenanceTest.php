@@ -1104,6 +1104,38 @@ final class V2InventoryOwnerProvenanceTest extends TestCase
         DB::table('stock_movements')->where('id', $movementId)->delete();
         $this->assertSame('CERTIFIED', $read->snapshot($actor, $stock['inventory_id'])['state']);
 
+        // Legal-owner entity is independent of the store/warehouse holder.
+        // An attested store cannot move under another legal entity and keep
+        // using the old signed title proof without a new independent review.
+        $originalScope = DB::table('enterprise_store_scopes as scope')
+            ->join('enterprise_business_units as unit', 'unit.id', '=', 'scope.business_unit_id')
+            ->join('enterprise_legal_entities as entity', 'entity.id', '=', 'unit.legal_entity_id')
+            ->where('scope.store_id', $stock['store_id'])
+            ->first(['scope.business_unit_id', 'entity.company_id']);
+        $this->assertNotNull($originalScope);
+        $newLegalEntityId = DB::table('enterprise_legal_entities')->insertGetId([
+            'company_id' => $originalScope->company_id,
+            'code' => 'P110-OTHER-LEGAL-TITLE-ENTITY',
+            'name' => 'Alternative Legal Title Entity',
+            'is_active' => true,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        $newBusinessUnitId = DB::table('enterprise_business_units')->insertGetId([
+            'legal_entity_id' => $newLegalEntityId,
+            'code' => 'P110-OTHER-TITLE-UNIT',
+            'name' => 'Alternative Legal Title Business Unit',
+            'is_active' => true,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        DB::table('enterprise_store_scopes')->where('store_id', $stock['store_id'])
+            ->update(['business_unit_id' => $newBusinessUnitId]);
+        $this->assertSame('UNVERIFIED', $read->snapshot($actor, $stock['inventory_id'])['state']);
+        DB::table('enterprise_store_scopes')->where('store_id', $stock['store_id'])
+            ->update(['business_unit_id' => $originalScope->business_unit_id]);
+        $this->assertSame('CERTIFIED', $read->snapshot($actor, $stock['inventory_id'])['state']);
+
         Storage::disk('local')->put($path, 'tampered document');
         $this->assertSame('UNVERIFIED', $read->snapshot($actor, $stock['inventory_id'])['state']);
         Storage::disk('local')->put($path, $bytes);
