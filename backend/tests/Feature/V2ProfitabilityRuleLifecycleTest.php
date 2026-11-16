@@ -9,6 +9,7 @@ use App\Services\CommercialFeatureFlags;
 use Database\Seeders\CoreReferenceSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Str;
 use Tests\TestCase;
 
@@ -455,6 +456,58 @@ final class V2ProfitabilityRuleLifecycleTest extends TestCase
             ->where('event', 'commercial.profitability_rule.proposed')->count());
         $this->assertSame(0, DB::table('audit_logs')
             ->where('event', 'commercial.profitability_rule.reviewed')->count());
+    }
+
+    public function test_migration_can_drop_an_empty_profitability_revision_table(): void
+    {
+        $migration = require database_path(
+            'migrations/2026_11_16_000001_create_commercial_profitability_rule_revisions.php',
+        );
+
+        $migration->down();
+
+        $this->assertFalse(Schema::hasTable('commercial_profitability_rule_revisions'));
+
+        $migration->up();
+
+        $this->assertTrue(Schema::hasTable('commercial_profitability_rule_revisions'));
+        $this->assertSame(0, DB::table('commercial_profitability_rule_revisions')->count());
+    }
+
+    public function test_migration_refuses_to_drop_non_empty_profitability_revision_history(): void
+    {
+        [$maker, $store, $product] = $this->fixture();
+        $this->actingAs($maker)->put(
+            $this->saveRoute($store, $product),
+            $this->proposal((string) Str::uuid(), '12.34'),
+        )->assertSessionHasNoErrors();
+
+        $migration = require database_path(
+            'migrations/2026_11_16_000001_create_commercial_profitability_rule_revisions.php',
+        );
+        $exception = null;
+
+        try {
+            $migration->down();
+        } catch (\RuntimeException $caught) {
+            $exception = $caught;
+        }
+
+        $this->assertInstanceOf(\RuntimeException::class, $exception);
+        $this->assertSame(
+            'Refusing to drop commercial_profitability_rule_revisions because immutable proposal/review history exists. Archive it explicitly before rollback.',
+            $exception->getMessage(),
+        );
+        $this->assertSame(1, DB::table('commercial_profitability_rule_revisions')->count());
+        $this->assertDatabaseHas('commercial_profitability_rule_revisions', [
+            'store_id' => $store,
+            'product_id' => $product,
+            'status' => 'DRAFT',
+            'minimum_margin_basis_points' => 1234,
+            'proposed_by' => $maker->id,
+        ]);
+        $this->assertSame(1, DB::table('audit_logs')
+            ->where('event', 'commercial.profitability_rule.proposed')->count());
     }
 
     /** @return array{User,int,int} */
