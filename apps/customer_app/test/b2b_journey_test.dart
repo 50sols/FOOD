@@ -5638,6 +5638,17 @@ void main() {
               'line_total': 20.0,
               'currency': 'KWD',
             },
+            {
+              'id': 502,
+              'sku': 'WHO-502',
+              'description': 'Wrong currency item',
+              'quantity': 1.0,
+              'unit_price': 4.0,
+              'discount_total': 0.0,
+              'tax_total': 0.0,
+              'line_total': 4.0,
+              'currency': 'USD',
+            },
           ],
           'payments': [
             {
@@ -5792,6 +5803,22 @@ void main() {
       expect(
         find.byKey(const ValueKey('b2b-invoice-item-501')),
         findsOneWidget,
+      );
+      expect(
+        tester
+            .widget<Text>(
+              find.byKey(const ValueKey('b2b-invoice-item-amount-501')),
+            )
+            .data,
+        '20.000 KWD',
+      );
+      expect(
+        tester
+            .widget<Text>(
+              find.byKey(const ValueKey('b2b-invoice-item-amount-502')),
+            )
+            .data,
+        '—',
       );
       expect(find.text('Wholesale item'), findsNothing);
       expect(find.textContaining('WHO-501'), findsNothing);
