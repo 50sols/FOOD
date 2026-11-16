@@ -1467,6 +1467,40 @@ final class V2ReceivableSettlementWorkbenchTest extends TestCase
         $this->actingAs($checker)->post($secondReview, [
             'store_id' => $store->id, 'decision' => 'approve',
         ])->assertSessionHasNoErrors();
+
+        // Revoking a previously approved Finance posting destination must
+        // invalidate both Arabic and English retries, even with the original
+        // independent reviewer and exact same approval request. A retry is
+        // not an authorization to re-attest a stale financial account.
+        DB::table('enterprise_finance_accounts')->where('id', $clearingAccount->id)
+            ->update(['allow_posting' => false]);
+        foreach (['ar', 'en'] as $locale) {
+            $checker->forceFill(['locale' => $locale])->save();
+            $this->actingAs($checker->fresh())->post($secondReview, [
+                'store_id' => $store->id, 'decision' => 'approve',
+            ])->assertSessionHasErrors([
+                'finance_account_id' => __('finance_workbench.receivables.mapping_account_invalid', [], $locale),
+            ]);
+        }
+        $this->assertDatabaseHas('enterprise_finance_collection_account_mappings', [
+            'id' => $secondMapping->id, 'status' => 'APPROVED', 'reviewed_by' => $checker->id,
+        ]);
+        $this->assertSame(2, DB::table('audit_logs')
+            ->where('event', 'enterprise.finance.collection_account_mapping_reviewed')
+            ->count());
+        $this->assertSame(1, DB::table('audit_logs')
+            ->where('event', 'enterprise.finance.collection_account_mapping_superseded')
+            ->count());
+        $this->assertDatabaseCount('enterprise_finance_journals', 1);
+
+        // Valid restoration preserves normal idempotent review and adds no
+        // financial posting, mapping revision or duplicate audit record.
+        DB::table('enterprise_finance_accounts')->where('id', $clearingAccount->id)
+            ->update(['allow_posting' => true]);
+        $this->actingAs($checker->fresh())->post($secondReview, [
+            'store_id' => $store->id, 'decision' => 'approve',
+        ])->assertSessionHasNoErrors();
+        $this->assertDatabaseCount('enterprise_finance_collection_account_mappings', 3);
         $this->assertSame(2, DB::table('audit_logs')
             ->where('event', 'enterprise.finance.collection_account_mapping_reviewed')
             ->count());
