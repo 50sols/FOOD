@@ -129,8 +129,8 @@ final class V2WmsReportsHorizontalPanelScopeTest extends TestCase
 
     public function test_forged_legal_owner_query_cannot_filter_or_reclassify_authoritative_physical_stock(): void
     {
-        $own = $this->fixture('V2-3966-OWNED');
-        $foreign = $this->fixture('V2-3966-CONSIGN');
+        $own = $this->fixture('V2-3966-LOCAL');
+        $foreign = $this->fixture('V2-3966-FOREIGN');
         $actor = $this->operator($own['store_id']);
 
         $before = DB::table('inventories')->where('id', $own['inventory_id'])->first();
@@ -147,8 +147,8 @@ final class V2WmsReportsHorizontalPanelScopeTest extends TestCase
             ]))->assertOk();
 
             $response->assertSee('data-wms-report-panel="stock_aging"', false)
-                ->assertSee('SKU-V2-3966-OWNED')
-                ->assertDontSee('SKU-V2-3966-CONSIGN');
+                ->assertSee('SKU-V2-3966-LOCAL')
+                ->assertDontSee('SKU-V2-3966-FOREIGN');
         }
 
         $after = DB::table('inventories')->where('id', $own['inventory_id'])->first();
