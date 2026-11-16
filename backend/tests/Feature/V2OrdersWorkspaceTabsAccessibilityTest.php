@@ -2,12 +2,15 @@
 
 namespace Tests\Feature;
 
+use App\Models\Order;
 use App\Models\Role;
 use App\Models\User;
+use App\Services\FulfillmentActorPolicy;
 use App\Services\WholesalePrincipal;
 use Database\Seeders\CoreReferenceSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Validation\ValidationException;
 use Tests\TestCase;
 
 /**
@@ -157,6 +160,37 @@ final class V2OrdersWorkspaceTabsAccessibilityTest extends TestCase
         ]))->assertForbidden();
 
         $this->assertSame($before, $this->readOnlyCounts());
+    }
+
+    public function test_dispatch_choice_ui_is_channel_scoped_and_server_policy_denies_cross_executor(): void
+    {
+        $source = file_get_contents(resource_path('views/admin/order-operations.blade.php'));
+        $this->assertIsString($source);
+        $this->assertStringContainsString(
+            "@if(\$row['channel']==='b2c' && (int)\$driver->store_id===(int)\$row['store_id']",
+            $source,
+        );
+        $this->assertStringContainsString("@if(\$row['channel']==='b2b')", $source);
+        $this->assertStringContainsString('value="van:{{ $van->id }}"', $source);
+
+        $policy = app(FulfillmentActorPolicy::class);
+        $this->assertSame(FulfillmentActorPolicy::VAN, $policy->actorForChannel('b2b'));
+        $this->assertSame(FulfillmentActorPolicy::DRIVER, $policy->actorForChannel('b2c'));
+
+        foreach ([
+            ['b2b', FulfillmentActorPolicy::DRIVER],
+            ['b2c', FulfillmentActorPolicy::VAN],
+        ] as [$channel, $wrongActor]) {
+            $order = new Order;
+            $order->channel = $channel;
+
+            try {
+                $policy->assertManualDispatchActor($order, $wrongActor);
+                $this->fail('Cross-channel dispatch must be rejected by existing server policy.');
+            } catch (ValidationException $exception) {
+                $this->assertArrayHasKey('assignee_type', $exception->errors());
+            }
+        }
     }
 
     private function readOnlyCounts(): array
