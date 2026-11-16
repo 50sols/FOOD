@@ -116,6 +116,14 @@ final class V2ReceivableSettlementWorkbenchTest extends TestCase
         $this->assertTrue(Schema::hasColumn('enterprise_ar_allocations', 'source_collection_allocation_id'));
         $this->assertTrue(Schema::hasIndex('enterprise_ar_allocations', 'ear_alloc_collection_source_unique'));
         $this->assertLessThanOrEqual(64, strlen('ear_alloc_coll_src_fk'));
+        $sourceForeignKeys = collect(Schema::getForeignKeys('enterprise_ar_allocations'))
+            ->filter(static fn (array $key): bool => in_array(
+                'source_collection_allocation_id',
+                (array) ($key['columns'] ?? []),
+                true,
+            ));
+        $this->assertCount(1, $sourceForeignKeys);
+        $this->assertSame('collection_allocations', $sourceForeignKeys->first()['foreign_table']);
     }
 
     public function test_empty_invoice_source_migration_down_and_retry_preserve_schema_contract(): void

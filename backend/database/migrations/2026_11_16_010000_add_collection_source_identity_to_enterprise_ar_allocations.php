@@ -28,12 +28,19 @@ return new class extends Migration
             });
         }
 
+        // SQLite PRAGMA foreign_key_list does not expose constraint names.
+        // Identify the canonical source FK by its actual column AND target,
+        // not a driver-specific synthetic name or editable receipt reference.
         $hasForeignKey = false;
         foreach (Schema::getForeignKeys(self::TABLE) as $foreignKey) {
-            if (($foreignKey['name'] ?? null) === self::FOREIGN_KEY) {
-                $hasForeignKey = true;
-                break;
+            if (! in_array(self::SOURCE, (array) ($foreignKey['columns'] ?? []), true)) {
+                continue;
             }
+            if (($foreignKey['foreign_table'] ?? null) !== 'collection_allocations') {
+                throw new RuntimeException('Unexpected foreign key on collection settlement source identity.');
+            }
+            $hasForeignKey = true;
+            break;
         }
 
         if (! $hasForeignKey) {
@@ -70,12 +77,28 @@ return new class extends Migration
         }
 
         foreach (Schema::getForeignKeys(self::TABLE) as $foreignKey) {
-            if (($foreignKey['name'] ?? null) === self::FOREIGN_KEY) {
-                Schema::table(self::TABLE, function (Blueprint $table): void {
-                    $table->dropForeign(self::FOREIGN_KEY);
-                });
-                break;
+            if (! in_array(self::SOURCE, (array) ($foreignKey['columns'] ?? []), true)) {
+                continue;
             }
+
+            // SQLite does not support dropping a foreign key by name. Laravel
+            // must rebuild the table using a column-based drop BEFORE the
+            // source column can be dropped. MySQL uses the actual FK name.
+            if (($foreignKey['foreign_table'] ?? null) !== 'collection_allocations') {
+                throw new RuntimeException('Refusing to drop an unexpected collection source foreign key.');
+            }
+            $name = (string) ($foreignKey['name'] ?? '');
+            if (DB::getDriverName() !== 'sqlite' && $name !== self::FOREIGN_KEY) {
+                throw new RuntimeException('Refusing to drop an unexpected collection source foreign key name.');
+            }
+            Schema::table(self::TABLE, function (Blueprint $table) use ($name): void {
+                if (DB::getDriverName() === 'sqlite') {
+                    $table->dropForeign([self::SOURCE]);
+                } else {
+                    $table->dropForeign($name);
+                }
+            });
+            break;
         }
 
         if (Schema::hasIndex(self::TABLE, self::UNIQUE_KEY)) {
