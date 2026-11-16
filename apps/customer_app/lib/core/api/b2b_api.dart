@@ -151,6 +151,31 @@ class HttpB2bApi implements B2bApi, B2bDocumentApi, B2bDownloadApi {
             }
           }
         }
+        // Statement rows are also financial identities. A scoped response
+        // must not contain an explicitly different store, even if HTTP 200.
+        // Null store IDs are valid for shared payments/account adjustments
+        // and must remain the server's decision, not be remapped by Flutter.
+        final statementEndpoint = segments.length == 4 &&
+            segments[0] == 'api' &&
+            segments[1] == 'v1' &&
+            segments[2] == 'b2b' &&
+            segments[3] == 'account-statement';
+        if (requestedStore != null && statementEndpoint) {
+          final statement = decoded['data'];
+          final rows = statement is Map<String, dynamic>
+              ? statement['transactions']
+              : null;
+          if (rows is! List) {
+            throw const B2bApiException('invalid_response');
+          }
+          for (final row in rows) {
+            if (row is! Map<String, dynamic> ||
+                (row['store_id'] != null &&
+                    row['store_id'] != requestedStore)) {
+              throw const B2bApiException('invalid_response');
+            }
+          }
+        }
         return decoded;
       }
     } on FormatException {
