@@ -5396,7 +5396,9 @@ class _B2bAccountStatementRemoteStateState
     if (!mounted ||
         selected == null ||
         revision != _readRevision ||
-        !identical(widget.api, api)) return;
+        !identical(widget.api, api)) {
+      return;
+    }
     setState(() {
       if (from) {
         _from = _isoDate(selected);
@@ -5465,7 +5467,7 @@ class _B2bAccountStatementRemoteStateState
       if (api is! B2bDownloadApi) {
         throw UnsupportedError('B2B statement export is unavailable.');
       }
-      final download = await api.download(
+      final download = await (api as B2bDownloadApi).download(
         Uri(
           path: '/api/v1/b2b/account-statement/export',
           queryParameters: query,
@@ -5476,7 +5478,9 @@ class _B2bAccountStatementRemoteStateState
       if (!mounted ||
           exportRevision != _exportRevision ||
           !identical(widget.api, api) ||
-          scopePath != _requestPath) return;
+          scopePath != _requestPath) {
+        return;
+      }
       await SharePlus.instance.share(
         ShareParams(
           files: [
@@ -5493,7 +5497,9 @@ class _B2bAccountStatementRemoteStateState
       if (!mounted ||
           exportRevision != _exportRevision ||
           !identical(widget.api, api) ||
-          scopePath != _requestPath) return;
+          scopePath != _requestPath) {
+        return;
+      }
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text(context.tr('b2b.statement.export_failed'))),
       );
