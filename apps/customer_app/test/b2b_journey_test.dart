@@ -2703,33 +2703,55 @@ void main() {
           await _pumpCustomerFrames(tester);
         }
 
-        // Uncertain network failure: identical retries MUST keep the same
-        // key so the server can return the original order, not double-post.
-        await attempt();
-        // The actual HTTP client omits whitespace-only notes, so changing
-        // the UI from empty to spaces is NOT a new server request intent.
         final noteField = find.byWidgetPredicate((widget) =>
             widget is TextField &&
             widget.minLines == 3 &&
             widget.maxLines == 4);
         await tester.ensureVisible(noteField);
+
+        // A successful server order may be hidden behind an ambiguous 503.
+        // Retrying the identical intent must replay the same key.
+        await attempt();
+        // The actual HTTP client omits whitespace-only notes, and the same
+        // server quantity may be serialized as 1 or "1.000".
         await tester.enterText(noteField, '   ');
         await tester.pump();
-        // The same server quantity may be serialized as a number or decimal
-        // string on the next GET; do not make an at-most-once retry distinct.
         final currentItems = commerce.cartValue['items'] as List;
         (currentItems.first as Map)['quantity'] = '1.000';
         tester.binding
             .handleAppLifecycleStateChanged(AppLifecycleState.resumed);
         await _pumpCustomerFrames(tester);
-
         await attempt();
         expect(commerce.checkoutKeys, hasLength(2));
         expect(commerce.checkoutKeys[0], commerce.checkoutKeys[1]);
         expect(commerce.checkoutKeys[0].length, greaterThanOrEqualTo(16));
 
-        // Backend request hash includes payment_method; key reuse here is a
-        // real HTTP 409 rather than a safe retry.
+        // A nonblank note is trimmed by HttpWholesaleCommerceApi before it
+        // reaches the backend. Whitespace-only surrounding text is therefore
+        // not a distinct idempotency intent.
+        await tester.enterText(noteField, 'Warehouse note ');
+        await tester.pump();
+        await attempt();
+        expect(commerce.checkoutKeys, hasLength(3));
+        final noteIntentKey = commerce.checkoutKeys[2];
+        expect(noteIntentKey, isNot(commerce.checkoutKeys[0]));
+        await tester.enterText(noteField, 'Warehouse note');
+        await tester.pump();
+        await attempt();
+        expect(commerce.checkoutKeys, hasLength(4));
+        expect(commerce.checkoutKeys[3], noteIntentKey);
+
+        // A -> B -> A must recover A's original key. Otherwise a previously
+        // created order whose response was lost could be posted a second time.
+        await tester.enterText(noteField, '');
+        await tester.pump();
+        await attempt();
+        expect(commerce.checkoutKeys, hasLength(5));
+        expect(commerce.checkoutKeys[4], commerce.checkoutKeys[0]);
+
+        // Backend request hash includes payment_method; changing it creates
+        // a distinct request, and returning to the original method must reuse
+        // the original key for that original request.
         await tester.tap(find.byType(DropdownButtonFormField<String>));
         await tester.pump();
         await tester.tap(find
@@ -2738,8 +2760,19 @@ void main() {
         await _pumpCustomerFrames(tester);
         await attempt();
         expect(commerce.checkoutPayments.last, 'account_credit');
-        expect(commerce.checkoutKeys, hasLength(3));
-        expect(commerce.checkoutKeys[2], isNot(commerce.checkoutKeys[1]));
+        expect(commerce.checkoutKeys, hasLength(6));
+        expect(commerce.checkoutKeys[5], isNot(commerce.checkoutKeys[0]));
+
+        await tester.tap(find.byType(DropdownButtonFormField<String>));
+        await tester.pump();
+        await tester.tap(find
+            .text(language == 'ar' ? 'الدفع عند الاستلام' : 'Cash on delivery')
+            .last);
+        await _pumpCustomerFrames(tester);
+        await attempt();
+        expect(commerce.checkoutPayments.last, 'cash_on_delivery');
+        expect(commerce.checkoutKeys, hasLength(7));
+        expect(commerce.checkoutKeys[6], commerce.checkoutKeys[0]);
 
         // A different cart is a new purchase intent even if the customer's
         // delivery address and payment method have not changed.
@@ -2755,8 +2788,8 @@ void main() {
             .handleAppLifecycleStateChanged(AppLifecycleState.resumed);
         await _pumpCustomerFrames(tester);
         await attempt();
-        expect(commerce.checkoutKeys, hasLength(4));
-        expect(commerce.checkoutKeys[3], isNot(commerce.checkoutKeys[2]));
+        expect(commerce.checkoutKeys, hasLength(8));
+        expect(commerce.checkoutKeys[7], isNot(commerce.checkoutKeys[0]));
       },
     );
   }

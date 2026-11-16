@@ -7011,8 +7011,7 @@ class _WholesaleCheckoutDesignScreenState
     extends State<WholesaleCheckoutDesignScreen> with WidgetsBindingObserver {
   late int storeId = wholesaleStoreId(widget.location);
   late Future<_CheckoutPayload> future = _load();
-  late String idempotencyKey;
-  String? _submittedCheckoutIntent;
+  final Map<String, String> _checkoutIdempotencyKeys = <String, String>{};
   int _checkoutKeySerial = 0;
   int? addressId;
   String? paymentMethod;
@@ -7030,7 +7029,6 @@ class _WholesaleCheckoutDesignScreenState
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    idempotencyKey = _newCheckoutIdempotencyKey();
   }
 
   @override
@@ -7092,8 +7090,9 @@ class _WholesaleCheckoutDesignScreenState
       storeId,
       addressId,
       paymentMethod,
-      // HttpWholesaleCommerceApi omits whitespace-only notes entirely.
-      note.text.trim().isEmpty ? null : note.text,
+      // The HTTP client trims non-empty notes and omits blank notes.
+      // Fingerprint the exact normalized value the server receives.
+      note.text.trim().isEmpty ? null : note.text.trim(),
       appliedCouponCode,
       itemIdentities,
     ]);
@@ -7301,16 +7300,16 @@ class _WholesaleCheckoutDesignScreenState
       }
     }
 
-    // Reuse the same idempotency key only for the same checkout intent,
-    // including a retry after an ambiguous network failure. A modified
-    // address, payment method, note, coupon or cart is a new intent and
-    // must not replay the old order (or trigger a server 409 conflict).
+    // Cache one key for every checkout intent seen during this screen's
+    // lifetime. A network timeout may hide a successful order creation; if
+    // the buyer edits the intent and later returns to the original values,
+    // replaying that original key is essential to prevent a duplicate order.
+    // The server remains authoritative for payload validation and replay.
     final checkoutIntent = _checkoutIntent(payload);
-    if (_submittedCheckoutIntent != null &&
-        _submittedCheckoutIntent != checkoutIntent) {
-      idempotencyKey = _newCheckoutIdempotencyKey();
-    }
-    _submittedCheckoutIntent = checkoutIntent;
+    final idempotencyKey = _checkoutIdempotencyKeys.putIfAbsent(
+      checkoutIntent,
+      _newCheckoutIdempotencyKey,
+    );
 
     setState(() => submitting = true);
     try {
