@@ -139,7 +139,12 @@ void main() {
               wholesaleCommerceApi: const _ResponsiveWholesaleApi(),
             ),
           );
-          await tester.pumpAndSettle();
+          // The wholesale Home has a continuously animated ticker. Drive a
+          // bounded set of frames to resolve the remote product cards instead
+          // of waiting indefinitely for every animation to settle.
+          for (var frame = 0; frame < 30; frame++) {
+            await tester.pump(const Duration(milliseconds: 50));
+          }
 
           expect(
               api.productPaths, contains('/api/v1/b2b/products?store_id=70'));
