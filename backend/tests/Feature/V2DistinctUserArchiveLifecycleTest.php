@@ -7,6 +7,9 @@ use App\Models\User;
 use App\Models\VanVisit;
 use Database\Seeders\CoreReferenceSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Validation\ValidationException;
 use Tests\TestCase;
 
 final class V2DistinctUserArchiveLifecycleTest extends TestCase
@@ -146,7 +149,40 @@ final class V2DistinctUserArchiveLifecycleTest extends TestCase
             ->assertRedirect()
             ->assertSessionHasErrors('user');
 
-        $this->assertSame(1, \DB::table('audit_logs')->where('event', 'user.archived')->count());
+        $this->assertSame(1, DB::table('audit_logs')->where('event', 'user.archived')->count());
+    }
+
+    public function test_stale_activation_cannot_bypass_archive_confirmation_after_concurrent_offboarding(): void
+    {
+        $admin = $this->withRole('SUPER_ADMIN');
+        $target = $this->withRole('B2B_ADMIN');
+        $staleBeforeArchival = $target->fresh();
+
+        $this->actingAs($admin)->patch(route('admin.security.users.archive', $target), $this->archivePayload($target))
+            ->assertRedirect();
+
+        // Simulate an old route-model snapshot loaded before the archive.
+        // The service must lock/reload the real row, requiring a fresh typed
+        // restoration confirmation rather than silently re-enabling access.
+        $unconfirmed = Request::create('/admin/security/users/'.$target->id.'/status', 'PATCH', [
+            'is_active' => true,
+        ]);
+        try {
+            app(\App\Services\RbacManager::class)->setUserActive(
+                $admin,
+                $staleBeforeArchival,
+                true,
+                null,
+                $unconfirmed,
+            );
+            $this->fail('A stale activation snapshot must not restore an archived account.');
+        } catch (ValidationException) {
+            // Required reason/email/impact confirmation denied before write.
+        }
+
+        $this->assertFalse((bool) $target->fresh()->is_active);
+        $this->assertNotNull($target->fresh()->archived_at);
+        $this->assertSame(1, DB::table('audit_logs')->where('event', 'user.archived')->count());
     }
 
     public function test_existing_security_users_menu_and_archived_badge_are_bilingual(): void
