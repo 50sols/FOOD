@@ -158,6 +158,7 @@ final class V2ProfitabilityRuleInputGuardTest extends TestCase
             'created_at' => now(),
             'updated_at' => now(),
         ]);
+        /** @var User $actor */
         $actor = User::factory()->create(['locale' => 'en', 'is_active' => true]);
         $actor->roles()->attach(Role::query()->where('code', 'B2B_ADMIN')->firstOrFail());
 
