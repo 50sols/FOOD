@@ -6,6 +6,7 @@ use App\Enterprise\Entitlements\EntitlementScope;
 use App\Enterprise\Entitlements\EntitlementScopeResolver;
 use App\Enterprise\Entitlements\ModuleEntitlementResolver;
 use App\Models\User;
+use Illuminate\Support\Facades\DB;
 
 /**
  * Finance Workbench entitlement decisions use the exact operational store.
@@ -53,7 +54,10 @@ final class FinanceWorkbenchAccess
         // A combined operational role must not turn the AR officer's shared
         // finance.view grant into a GL/AP/Foundation overview.
         if ($actor->hasRole('AR_OFFICER')) {
-            return $this->allowsAtStore($storeId, 'finance.ar.read');
+            // AR_OFFICER is a B2B company duty. A second Retail store role
+            // cannot make that global duty a B2C receivables entitlement.
+            return $this->isWholesaleStore($storeId)
+                && $this->allowsAtStore($storeId, 'finance.ar.read');
         }
 
         foreach (self::READ_CAPABILITIES as $capability) {
@@ -71,13 +75,29 @@ final class FinanceWorkbenchAccess
         // credit terms and Treasury, while AR_OFFICER is authorized for AR only.
         // Other role grants must not silently enlarge its Finance duties.
         if ($actor->hasRole('AR_OFFICER')
-            && ! in_array($capability, self::AR_OFFICER_CAPABILITIES, true)) {
+            && (! in_array($capability, self::AR_OFFICER_CAPABILITIES, true)
+                || ! $this->isWholesaleStore($storeId))) {
             return false;
         }
 
         return $actor->is_active
             && $actor->hasPermission($permission, $storeId)
             && $this->allowsAtStore($storeId, $capability);
+    }
+
+    /**
+     * An active B2B store is the only Finance context for a global AR_OFFICER.
+     * Keep this check in the canonical Finance access service, not a Sidebar
+     * projection, so direct HTTP callers cannot borrow Retail grants.
+     */
+    private function isWholesaleStore(int $storeId): bool
+    {
+        return $storeId > 0 && DB::table('stores as store')
+            ->join('store_types as type', 'type.id', '=', 'store.store_type_id')
+            ->where('store.id', $storeId)
+            ->where('store.is_active', true)
+            ->where('type.code', 'B2B')
+            ->exists();
     }
 
     public function allowsAtStore(int $storeId, string $capability): bool
