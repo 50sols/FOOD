@@ -60,6 +60,59 @@ final class V2InventoryOwnerProvenanceTest extends TestCase
         $this->assertSame('3.000', $snapshot['reserved_quantity']);
     }
 
+    public function test_populated_owner_positions_refuse_destructive_migration_rollback(): void
+    {
+        $this->seed(CoreReferenceSeeder::class);
+        $stock = $this->stock('ROLLBACK-GUARD');
+        $now = now();
+        DB::table('enterprise_inventory_owner_positions')->insert([
+            [
+                'inventory_id' => $stock['inventory_id'],
+                'owner_key' => 'UNKNOWN',
+                'owner_kind' => 'UNKNOWN',
+                'supplier_id' => null,
+                'quantity' => 6,
+                'reserved_quantity' => 2,
+                'created_at' => $now,
+                'updated_at' => $now,
+            ],
+            [
+                'inventory_id' => $stock['inventory_id'],
+                'owner_key' => 'FOODEX',
+                'owner_kind' => 'FOODEX',
+                'supplier_id' => null,
+                'quantity' => 4,
+                'reserved_quantity' => 1,
+                'created_at' => $now,
+                'updated_at' => $now,
+            ],
+        ]);
+
+        $migration = require database_path('migrations/2026_11_15_000100_create_inventory_owner_provenance_positions.php');
+
+        try {
+            $migration->down();
+            $this->fail('Rollback must not delete nonempty owner position history.');
+        } catch (\RuntimeException $exception) {
+            $this->assertStringContainsString('preserved', $exception->getMessage());
+        }
+
+        $this->assertTrue(Schema::hasTable('enterprise_inventory_owner_positions'));
+        $this->assertSame(2, DB::table('enterprise_inventory_owner_positions')
+            ->where('inventory_id', $stock['inventory_id'])->count());
+        $this->assertDatabaseHas('enterprise_inventory_owner_positions', [
+            'inventory_id' => $stock['inventory_id'],
+            'owner_key' => 'FOODEX',
+            'quantity' => 4,
+            'reserved_quantity' => 1,
+        ]);
+        $this->assertDatabaseHas('inventories', [
+            'id' => $stock['inventory_id'],
+            'quantity' => 10,
+            'reserved_quantity' => 3,
+        ]);
+    }
+
     public function test_new_inventory_without_ownership_writers_is_unclassified_not_free_foodex_stock(): void
     {
         $this->seed(CoreReferenceSeeder::class);

@@ -61,6 +61,14 @@ return new class extends Migration
 
     public function down(): void
     {
+        // Owner allocations and legal-title assertions are audit data, even
+        // when still UNKNOWN or UNVERIFIED. A downgrade must never silently
+        // discard them before a verified backup/recovery plan exists.
+        if (Schema::hasTable('enterprise_inventory_owner_positions')
+            && DB::table('enterprise_inventory_owner_positions')->exists()) {
+            throw new \RuntimeException('Inventory owner positions must be explicitly preserved before rollback.');
+        }
+
         Schema::dropIfExists('enterprise_inventory_owner_positions');
     }
 };
