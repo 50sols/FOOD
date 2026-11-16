@@ -153,7 +153,7 @@ class DashboardDateRangeTest extends TestCase
             ['SER-DAY-2-CANCEL', 'b2b', 'cancelled', 5.0, '2026-09-11 21:00:00', $storeId, $b2bCustomerId],
             ['SER-DAY-2', 'b2b', 'delivered', 7.005, '2026-09-12 20:59:59', $storeId, $b2bCustomerId],
             ['SER-DAY-3', 'b2b', 'delivered', 8.5, '2026-09-12 21:00:00', $storeId, $b2bCustomerId],
-            ['SER-OTHER-CHANNEL', 'b2c', 'delivered', 100.0, '2026-09-12 12:00:00', $storeId, null],
+            ['SER-OTHER-CHANNEL', 'b2c', 'delivered', 100.0, '2026-09-12 12:00:00', $storeId, $b2bCustomerId],
             ['SER-OTHER-STORE', 'b2b', 'delivered', 200.0, '2026-09-11 12:00:00', $otherStoreId, $b2bCustomerId],
             ['SER-MISSING-B2B', 'b2b', 'delivered', 300.0, '2026-09-11 12:00:00', $storeId, null],
             ['SER-OUT-AFTER', 'b2b', 'delivered', 400.0, '2026-09-14 21:00:00', $storeId, $b2bCustomerId],
