@@ -7,7 +7,6 @@ use App\Models\User;
 use App\Services\AuditLogger;
 use Database\Seeders\CoreReferenceSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
-use Illuminate\Support\Facades\DB;
 use Tests\TestCase;
 
 final class V2UserPermanentDeletionGuardTest extends TestCase
@@ -101,6 +100,58 @@ final class V2UserPermanentDeletionGuardTest extends TestCase
         }
 
         $this->assertDatabaseMissing('audit_logs', ['event' => 'user.permanently_deleted']);
+    }
+
+    public function test_consumer_identity_is_routed_to_the_separate_privacy_deletion_workflow(): void
+    {
+        $admin = $this->makeUser('SUPER_ADMIN');
+        $customerIdentity = User::factory()->create([
+            'is_active' => false,
+            'is_platform_customer' => true,
+        ]);
+
+        $this->actingAs($admin)
+            ->get(route('admin.security.index', ['section' => 'users', 'deletion_preview' => $customerIdentity->id]))
+            ->assertOk()
+            ->assertSee(__('v2_user_deletion.consumer'))
+            ->assertDontSee('data-v2-user-deletion-form', false);
+
+        $this->actingAs($admin)
+            ->delete(route('admin.security.users.destroy', $customerIdentity), [
+                'reason' => 'Attempting to bypass customer privacy review',
+                'confirm_email' => $customerIdentity->email,
+                'confirm_delete' => 'DELETE',
+                'impact_reviewed' => '1',
+            ])
+            ->assertRedirect()
+            ->assertSessionHasErrors('user');
+
+        $this->assertDatabaseHas('users', ['id' => $customerIdentity->id]);
+    }
+
+    public function test_historical_audit_target_alone_blocks_permanent_deletion_even_without_role_links(): void
+    {
+        $admin = $this->makeUser('SUPER_ADMIN');
+        $target = User::factory()->create(['is_active' => false]);
+        app(AuditLogger::class)->record('user.privacy_history_retained', $admin, $target);
+
+        $this->actingAs($admin)
+            ->get(route('admin.security.index', ['section' => 'users', 'deletion_preview' => $target->id]))
+            ->assertOk()
+            ->assertSee('data-v2-user-deletion-blocked', false);
+
+        $this->actingAs($admin)
+            ->delete(route('admin.security.users.destroy', $target), [
+                'reason' => 'Try deletion of a historically audited identity',
+                'confirm_email' => $target->email,
+                'confirm_delete' => 'DELETE',
+                'impact_reviewed' => '1',
+            ])
+            ->assertRedirect()
+            ->assertSessionHasErrors('user');
+
+        $this->assertDatabaseHas('users', ['id' => $target->id]);
+        $this->assertDatabaseHas('audit_logs', ['event' => 'user.privacy_history_retained']);
     }
 
     public function test_direct_forbidden_requests_cannot_preview_or_delete_user_from_unprivileged_account(): void
