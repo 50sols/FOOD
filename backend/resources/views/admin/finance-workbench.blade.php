@@ -547,17 +547,23 @@ $trendMax=max(1,max(array_map(fn($r)=>max(abs((float)$r['revenue']),abs((float)$
 <div class="finance-field"><label>{{ __('finance_workbench.common.status') }}</label><select name="status"><option value=""></option>@foreach(['draft','posted','cancelled'] as $value)<option value="{{ $value }}" @selected(($data['filters']['status'] ?? '')===$value)>{{ $statusLabel($value) }}</option>@endforeach</select></div>
 <div class="finance-field"><label>{{ __('finance_workbench.common.from') }}</label><input type="date" name="date_from" value="{{ $data['filters']['date_from'] ?? '' }}"></div><div class="finance-field"><label>{{ __('finance_workbench.common.to') }}</label><input type="date" name="date_to" value="{{ $data['filters']['date_to'] ?? '' }}"></div>
 <button class="finance-button" type="submit">{{ __('finance_workbench.actions.filter') }}</button></form>
+@if($activeFinancePanel === 'documents')
+<div data-finance-subpanel="documents">
 <div class="finance-table-wrap"><table class="finance-table"><thead><tr><th>{{ __('finance_workbench.receivables.document') }}</th><th>{{ __('finance_workbench.common.customer') }}</th><th>{{ __('finance_workbench.common.date') }}</th><th>{{ __('finance_workbench.common.due_date') }}</th><th>{{ __('finance_workbench.common.amount') }}</th><th>{{ __('finance_workbench.common.status') }}</th><th>{{ __('finance_workbench.common.actions') }}</th></tr></thead><tbody>
 @forelse($data['documents'] as $document)<tr><td><strong>{{ $document->document_number }}</strong></td><td>{{ $document->customer?->name ?? '—' }}</td><td>{{ optional($document->entry_date)->format('Y-m-d') }}</td><td>{{ optional($document->due_date)->format('Y-m-d') }}</td><td class="finance-money">{{ $money($document->amount) }} {{ $document->currency_code }}</td><td><span class="finance-status">{{ $statusLabel($document->status) }}</span></td><td>
 <details class="foodex-ops-actions">
 <summary aria-label="{{ __('finance_workbench.common.actions') }}: {{ $document->document_number }}">⋮</summary>
 <div class="foodex-ops-menu">
 @if($document->journal_id)<a href="{{ route('admin.erp.finance.index',[...$routeBase,'tab'=>'journals','journal'=>$document->journal_id]) }}">{{ __('finance_workbench.actions.view_ledger') }}</a>@endif
-<a href="{{ route('admin.erp.finance.index',[...$routeBase,'tab'=>'receivables','settlement_document_id'=>$document->id]) }}">{{ __('finance_workbench.receivables.settlements') }}</a>
+<a href="{{ route('admin.erp.finance.index',[...$routeBase,'tab'=>'receivables','finance_panel'=>'settlements','settlement_document_id'=>$document->id]) }}">{{ __('finance_workbench.receivables.settlements') }}</a>
 </div>
 </details></td></tr>
 @empty<tr><td colspan="7" class="finance-empty">{{ __('finance_workbench.common.no_data') }}</td></tr>@endforelse
 </tbody></table></div><div class="finance-pagination">{{ $data['documents']->links() }}</div>
+</div>
+@endif
+@if($activeFinancePanel === 'settlements')
+<div data-finance-subpanel="settlements">
 <section class="finance-panel" data-v2-ar-custody-mapping>
 <div class="finance-panel-head"><div>
 <h3>{{ __('finance_workbench.receivables.mapping_title') }}</h3>
@@ -638,7 +644,7 @@ $trendMax=max(1,max(array_map(fn($r)=>max(abs((float)$r['revenue']),abs((float)$
 <div class="finance-panel-head">
 <div><h3>{{ __('finance_workbench.receivables.settlements') }} · {{ $data['settlementDocument']->document_number }}</h3>
 <p>{{ __('finance_workbench.receivables.settlement_help') }}</p></div>
-<a class="finance-button" href="{{ route('admin.erp.finance.index',[...$routeBase,'tab'=>'receivables']) }}">{{ __('finance_workbench.actions.reset') }}</a>
+<a class="finance-button" href="{{ route('admin.erp.finance.index',[...$routeBase,'tab'=>'receivables','finance_panel'=>'settlements']) }}">{{ __('finance_workbench.actions.reset') }}</a>
 </div>
 @if(($access['ar_manage'] ?? false) && $data['settlementDocument']->status==='posted' && $data['settlementAccounts']->isNotEmpty())
 <details data-foodex-operational-modal>
@@ -701,6 +707,10 @@ $trendMax=max(1,max(array_map(fn($r)=>max(abs((float)$r['revenue']),abs((float)$
 <div class="finance-pagination">{{ $data['settlements']->links() }}</div>
 </section>
 @endif
+</div>
+@endif
+@if($activeFinancePanel === 'aging')
+<div data-finance-subpanel="aging">
 <h3>{{ __('finance_workbench.dashboard.aging') }}</h3>
 <div class="finance-table-wrap"><table class="finance-table"><thead><tr><th>{{ __('finance_workbench.common.aging_bucket') }}</th><th>{{ __('finance_workbench.common.currency') }}</th><th>{{ __('finance_workbench.common.outstanding') }}</th></tr></thead><tbody>
 @forelse($data['agingTotals'] as $bucket)<tr><td>{{ $statusLabel($bucket->aging_bucket) }}</td><td>{{ $bucket->currency_code }}</td><td class="finance-money">{{ $money($bucket->outstanding_amount) }}</td></tr>
@@ -712,6 +722,8 @@ $trendMax=max(1,max(array_map(fn($r)=>max(abs((float)$r['revenue']),abs((float)$
 @empty<tr><td colspan="6" class="finance-empty">{{ __('finance_workbench.common.no_data') }}</td></tr>@endforelse
 </tbody></table></div>
 <div class="finance-pagination">{{ $data['aging']->links() }}</div>
+</div>
+@endif
 </section>
 @endif
 
@@ -724,15 +736,23 @@ $trendMax=max(1,max(array_map(fn($r)=>max(abs((float)$r['revenue']),abs((float)$
 <div class="finance-field"><label>{{ __('finance_workbench.common.status') }}</label><select name="status"><option value=""></option>@foreach(['draft','posted','cancelled'] as $value)<option value="{{ $value }}" @selected(($data['filters']['status'] ?? '')===$value)>{{ $statusLabel($value) }}</option>@endforeach</select></div>
 <div class="finance-field"><label>{{ __('finance_workbench.common.from') }}</label><input type="date" name="date_from" value="{{ $data['filters']['date_from'] ?? '' }}"></div><div class="finance-field"><label>{{ __('finance_workbench.common.to') }}</label><input type="date" name="date_to" value="{{ $data['filters']['date_to'] ?? '' }}"></div>
 <button class="finance-button" type="submit">{{ __('finance_workbench.actions.filter') }}</button></form>
+@if($activeFinancePanel === 'documents')
+<div data-finance-subpanel="documents">
 <div class="finance-table-wrap"><table class="finance-table"><thead><tr><th>{{ __('finance_workbench.payables.document') }}</th><th>{{ __('finance_workbench.common.supplier') }}</th><th>{{ __('finance_workbench.common.date') }}</th><th>{{ __('finance_workbench.common.due_date') }}</th><th>{{ __('finance_workbench.common.amount') }}</th><th>{{ __('finance_workbench.common.status') }}</th><th>{{ __('finance_workbench.actions.view_ledger') }}</th></tr></thead><tbody>
 @forelse($data['documents'] as $document)<tr><td><strong>{{ $document->document_number }}</strong></td><td>{{ $document->supplier_name ?: $document->supplier_reference }}</td><td>{{ optional($document->entry_date)->format('Y-m-d') }}</td><td>{{ optional($document->due_date)->format('Y-m-d') }}</td><td class="finance-money">{{ $money($document->amount) }} {{ $document->currency_code }}</td><td><span class="finance-status">{{ $statusLabel($document->status) }}</span></td><td>@if($document->journal_id)<a class="finance-button" href="{{ route('admin.erp.finance.index',[...$routeBase,'tab'=>'journals','journal'=>$document->journal_id]) }}">{{ __('finance_workbench.actions.view_ledger') }}</a>@else—@endif</td></tr>
 @empty<tr><td colspan="7" class="finance-empty">{{ __('finance_workbench.common.no_data') }}</td></tr>@endforelse
 </tbody></table></div><div class="finance-pagination">{{ $data['documents']->links() }}</div>
+</div>
+@endif
+@if($activeFinancePanel === 'aging')
+<div data-finance-subpanel="aging">
 <h3>{{ __('finance_workbench.common.aging_bucket') }}</h3>
 <div class="finance-table-wrap"><table class="finance-table"><thead><tr><th>{{ __('finance_workbench.payables.document') }}</th><th>{{ __('finance_workbench.common.supplier') }}</th><th>{{ __('finance_workbench.common.due_date') }}</th><th>{{ __('finance_workbench.common.outstanding') }}</th><th>{{ __('finance_workbench.common.aging_bucket') }}</th></tr></thead><tbody>
 @forelse($data['aging'] as $row)<tr><td>{{ $row->document_number }}</td><td>{{ $row->supplier_name ?: $row->supplier_reference }}</td><td>{{ $row->due_date }}</td><td class="finance-money">{{ $money($row->outstanding_amount) }} {{ $row->currency_code }}</td><td><span class="finance-status">{{ $statusLabel($row->aging_bucket) }}</span></td></tr>
 @empty<tr><td colspan="5" class="finance-empty">{{ __('finance_workbench.common.no_data') }}</td></tr>@endforelse
 </tbody></table></div>
+</div>
+@endif
 </section>
 @endif
 
