@@ -177,6 +177,99 @@ final class V2ErpProcurementRfqReceiptFlowTest extends TestCase
         }
     }
 
+    public function test_receipt_http_rejects_extra_precision_and_overreceipt_without_duplicate_stock_posting(): void
+    {
+        $store = $this->store();
+        $maker = $this->actor('PROCUREMENT_BUYER', 'ar');
+        $checker = $this->actor('PROCUREMENT_MANAGER', 'en');
+        [, $requestId, $rfqId, $quoteId] = $this->quotedRequest($maker, $store);
+
+        $this->actingAs($checker)->post(route('admin.erp.procurement.requests.decision', $requestId), [
+            'store_id' => $store->id, 'decision' => 'approve',
+        ])->assertRedirect();
+        $this->actingAs($checker)->post(route('admin.erp.procurement.rfqs.award', [
+            'rfq' => $rfqId, 'quote' => $quoteId,
+        ]), ['store_id' => $store->id])->assertRedirect();
+
+        $order = DB::table('enterprise_purchase_orders')->where('procurement_rfq_id', $rfqId)->first();
+        $this->assertNotNull($order);
+        $this->actingAs($checker)->post(route('admin.erp.procurement.orders.issue', $order->id), [
+            'store_id' => $store->id,
+        ])->assertRedirect();
+        $this->assertDatabaseHas('enterprise_purchase_orders', [
+            'id' => $order->id, 'status' => 'issued',
+        ]);
+        $line = DB::table('enterprise_purchase_order_lines')->where('purchase_order_id', $order->id)->first();
+        $this->assertNotNull($line);
+        [$product, $warehouse] = $this->stockTarget($store);
+
+        // The database stores three decimal places; never silently round a
+        // sub-milliquantity or a four-decimal receipt into real inventory.
+        foreach (['0.0009', '0.6251'] as $invalidQuantity) {
+            $this->actingAs($checker)->post(route('admin.erp.procurement.receipts.store', $order->id), [
+                'store_id' => $store->id, 'warehouse_id' => $warehouse->id,
+                'lines' => [[
+                    'purchase_order_line_id' => $line->id,
+                    'quantity' => $invalidQuantity,
+                ]],
+            ])->assertRedirect()->assertSessionHasErrors('lines.0.quantity');
+        }
+        $this->assertDatabaseCount('enterprise_goods_receipts', 0);
+        $this->assertDatabaseCount('stock_movements', 0);
+
+        $this->actingAs($checker)->post(route('admin.erp.procurement.receipts.store', $order->id), [
+            'store_id' => $store->id, 'warehouse_id' => $warehouse->id,
+            'owner_key' => 'FOODEX', 'discount_percent' => 100,
+            'lines' => [[
+                'purchase_order_line_id' => $line->id, 'quantity' => '0.625',
+                'unit' => 'case', 'unit_price' => '0.000',
+            ]],
+        ])->assertRedirect();
+        $receipt = DB::table('enterprise_goods_receipts')->where('purchase_order_id', $order->id)->first();
+        $this->assertNotNull($receipt);
+        $receiptLine = DB::table('enterprise_goods_receipt_lines')->where('goods_receipt_id', $receipt->id)->first();
+        $this->assertNotNull($receiptLine);
+        $this->assertSame('each', $receiptLine->unit);
+        $this->assertSame('4.250', number_format((float) $receiptLine->unit_price, 3, '.', ''));
+        $this->assertSame('0.625', number_format((float) $receiptLine->received_quantity, 3, '.', ''));
+
+        // A buyer cannot post stock by forging the route/actor. The
+        // authorized poster may retry, but one GRN line produces one entry.
+        $this->actingAs($maker)->post(route('admin.erp.procurement.receipts.post', $receipt->id), [
+            'store_id' => $store->id,
+        ])->assertForbidden();
+        $this->actingAs($checker)->post(route('admin.erp.procurement.receipts.post', $receipt->id), [
+            'store_id' => $store->id,
+        ])->assertRedirect();
+        $this->actingAs($checker)->post(route('admin.erp.procurement.receipts.post', $receipt->id), [
+            'store_id' => $store->id,
+        ])->assertRedirect();
+
+        // Even a three-decimal amount must not over-receive the PO remainder.
+        $this->actingAs($checker)->post(route('admin.erp.procurement.receipts.store', $order->id), [
+            'store_id' => $store->id, 'warehouse_id' => $warehouse->id,
+            'lines' => [[
+                'purchase_order_line_id' => $line->id, 'quantity' => '1.376',
+            ]],
+        ])->assertRedirect()->assertSessionHasErrors('lines');
+
+        $this->assertDatabaseCount('enterprise_goods_receipts', 1);
+        $this->assertDatabaseHas('enterprise_goods_receipts', [
+            'id' => $receipt->id, 'status' => 'posted', 'posted_by' => $checker->id,
+        ]);
+        $this->assertSame(1, DB::table('stock_movements')
+            ->where('store_id', $store->id)
+            ->where('type', 'purchase_receipt')
+            ->where('reference_type', 'enterprise_goods_receipt_line')
+            ->where('reference_id', $receiptLine->id)->count());
+        $this->assertSame(1, DB::table('audit_logs')
+            ->where('event', 'enterprise.goods_receipt.posted')
+            ->where('auditable_id', $receipt->id)->count());
+        $this->assertSame('0.625', number_format((float) DB::table('inventories')
+            ->where('warehouse_id', $warehouse->id)
+            ->where('product_id', $product->id)->value('quantity'), 3, '.', ''));
+    }
+
     public function test_posted_receipt_fails_closed_for_tampered_foreign_warehouse_then_recovers_without_stock_or_audit_duplication(): void
     {
         $store = $this->store();
