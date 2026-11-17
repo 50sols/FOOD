@@ -6211,6 +6211,7 @@ class _InvoiceDetailRemoteStateState extends State<_InvoiceDetailRemoteState>
   late Future<Object?> _future;
   Object? _lastGood;
   int _readRevision = 0;
+  int _pdfRevision = 0;
   bool _sharingPdf = false;
 
   @override
@@ -6224,6 +6225,10 @@ class _InvoiceDetailRemoteStateState extends State<_InvoiceDetailRemoteState>
   void didUpdateWidget(covariant _InvoiceDetailRemoteState oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.api != widget.api || oldWidget.endpoint != widget.endpoint) {
+      // A PDF obtained for an old login, invoice, or store must never reach
+      // the OS share sheet after the protected route changes.
+      ++_pdfRevision;
+      _sharingPdf = false;
       _lastGood = null;
       _future = _fetch();
     }
@@ -6236,6 +6241,7 @@ class _InvoiceDetailRemoteStateState extends State<_InvoiceDetailRemoteState>
 
   @override
   void dispose() {
+    ++_pdfRevision;
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
   }
@@ -6328,9 +6334,18 @@ class _InvoiceDetailRemoteStateState extends State<_InvoiceDetailRemoteState>
         '$rawPath${rawPath.contains('?') ? '&' : '?'}locale=${ar ? 'ar' : 'en'}';
     final number = data['display_invoice_number']?.toString() ??
         (data['id'] == null ? 'invoice' : 'invoice-${data['id']}');
+    final pdfRevision = ++_pdfRevision;
+    final scopeApi = widget.api;
+    final scopeEndpoint = widget.endpoint;
     setState(() => _sharingPdf = true);
     try {
       final bytes = await (documentApi as B2bDocumentApi).getBytes(path);
+      if (!mounted ||
+          pdfRevision != _pdfRevision ||
+          !identical(widget.api, scopeApi) ||
+          widget.endpoint != scopeEndpoint) {
+        return;
+      }
       final name = '$number.pdf';
       await SharePlus.instance.share(
         ShareParams(
@@ -6346,7 +6361,7 @@ class _InvoiceDetailRemoteStateState extends State<_InvoiceDetailRemoteState>
         ),
       );
     } catch (_) {
-      if (!mounted) return;
+      if (!mounted || pdfRevision != _pdfRevision) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(
@@ -6357,7 +6372,9 @@ class _InvoiceDetailRemoteStateState extends State<_InvoiceDetailRemoteState>
         ),
       );
     } finally {
-      if (mounted) setState(() => _sharingPdf = false);
+      if (mounted && pdfRevision == _pdfRevision) {
+        setState(() => _sharingPdf = false);
+      }
     }
   }
 
@@ -6983,6 +7000,7 @@ class _InvoicesRemoteStateState extends State<_InvoicesRemoteState>
   late Future<Object?> _future;
   Object? _lastGood;
   int _readRevision = 0;
+  int _pdfRevision = 0;
   DateTime? _from;
   DateTime? _to;
   String _status = '';
@@ -7002,6 +7020,8 @@ class _InvoicesRemoteStateState extends State<_InvoicesRemoteState>
   void didUpdateWidget(covariant _InvoicesRemoteState oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.api != widget.api || oldWidget.endpoint != widget.endpoint) {
+      ++_pdfRevision;
+      _sharingPdf = false;
       _lastGood = null;
       _searchController.dispose();
       _syncFromEndpoint();
@@ -7016,6 +7036,7 @@ class _InvoicesRemoteStateState extends State<_InvoicesRemoteState>
 
   @override
   void dispose() {
+    ++_pdfRevision;
     WidgetsBinding.instance.removeObserver(this);
     _searchController.dispose();
     super.dispose();
@@ -7072,6 +7093,8 @@ class _InvoicesRemoteStateState extends State<_InvoicesRemoteState>
   }
 
   Future<void> _pickDate({required bool from}) async {
+    final scopeApi = widget.api;
+    final scopeEndpoint = widget.endpoint;
     final initial = from ? (_from ?? DateTime.now()) : (_to ?? DateTime.now());
     final picked = await showDatePicker(
       context: context,
@@ -7079,7 +7102,12 @@ class _InvoicesRemoteStateState extends State<_InvoicesRemoteState>
       firstDate: DateTime(2020),
       lastDate: DateTime.now().add(const Duration(days: 366)),
     );
-    if (picked == null) return;
+    if (picked == null ||
+        !mounted ||
+        !identical(widget.api, scopeApi) ||
+        widget.endpoint != scopeEndpoint) {
+      return;
+    }
     setState(() {
       if (from) {
         _from = picked;
@@ -7124,9 +7152,18 @@ class _InvoicesRemoteStateState extends State<_InvoicesRemoteState>
         '$rawPath${rawPath.contains('?') ? '&' : '?'}locale=${ar ? 'ar' : 'en'}';
     final number = row['display_invoice_number']?.toString() ??
         (row['id'] == null ? 'invoice' : 'invoice-${row['id']}');
+    final pdfRevision = ++_pdfRevision;
+    final scopeApi = widget.api;
+    final scopeEndpoint = widget.endpoint;
     setState(() => _sharingPdf = true);
     try {
       final bytes = await (documentApi as B2bDocumentApi).getBytes(path);
+      if (!mounted ||
+          pdfRevision != _pdfRevision ||
+          !identical(widget.api, scopeApi) ||
+          widget.endpoint != scopeEndpoint) {
+        return;
+      }
       final name = '$number.pdf';
       await SharePlus.instance.share(
         ShareParams(
@@ -7142,7 +7179,7 @@ class _InvoicesRemoteStateState extends State<_InvoicesRemoteState>
         ),
       );
     } catch (_) {
-      if (!mounted) return;
+      if (!mounted || pdfRevision != _pdfRevision) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(
@@ -7153,7 +7190,9 @@ class _InvoicesRemoteStateState extends State<_InvoicesRemoteState>
         ),
       );
     } finally {
-      if (mounted) setState(() => _sharingPdf = false);
+      if (mounted && pdfRevision == _pdfRevision) {
+        setState(() => _sharingPdf = false);
+      }
     }
   }
 
