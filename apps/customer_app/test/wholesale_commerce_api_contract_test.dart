@@ -287,6 +287,67 @@ void main() {
     ]);
   });
 
+  test('Wholesale cart removal requires canonical 204 in AR/EN', () async {
+    for (final language in ['ar', 'en']) {
+      for (final invalid in [
+        (status: 200, mime: 'text/html', body: '<html>Sign in</html>'),
+        (status: 200, mime: 'application/json', body: '{"success":true}'),
+        (status: 202, mime: 'application/json', body: '{"queued":true}'),
+      ]) {
+        var calls = 0;
+        final api = HttpWholesaleCommerceApi(
+          baseUrl: 'https://foodex.example',
+          token: 'scoped-customer',
+          locale: language,
+          retailStoreContextId: 17,
+          maxGetAttempts: 3,
+          client: MockClient((request) async {
+            calls++;
+            expect(request.method, 'DELETE');
+            expect(request.url.path, '/api/v1/cart/items/55');
+            expect(request.headers['Authorization'], 'Bearer scoped-customer');
+            expect(request.headers['X-FOODEX-Customer-Domain'], 'b2b');
+            expect(request.headers['X-FOODEX-Retail-Store-ID'], '17');
+            expect(request.headers['Accept-Language'], language);
+            return http.Response(
+              invalid.body,
+              invalid.status,
+              headers: {'content-type': invalid.mime},
+            );
+          }),
+        );
+        await expectLater(
+          api.removeItem(55),
+          throwsA(isA<WholesaleCommerceException>().having(
+            (error) => error.message,
+            'localized missing deletion confirmation',
+            language == 'en'
+                ? 'The server did not confirm the cart change. Refresh and try again.'
+                : 'لم يؤكد الخادم تعديل السلة. حدّث الصفحة وحاول مرة أخرى.',
+          )),
+        );
+        expect(calls, 1);
+      }
+
+      var confirmedCalls = 0;
+      final api = HttpWholesaleCommerceApi(
+        baseUrl: 'https://foodex.example',
+        token: 'scoped-customer',
+        locale: language,
+        retailStoreContextId: 17,
+        client: MockClient((request) async {
+          confirmedCalls++;
+          expect(request.method, 'DELETE');
+          expect(request.headers['X-FOODEX-Customer-Domain'], 'b2b');
+          expect(request.headers['Accept-Language'], language);
+          return http.Response('', 204);
+        }),
+      );
+      await api.removeItem(55);
+      expect(confirmedCalls, 1);
+    }
+  });
+
   test('B2B cart PATCH validates server channel and JSON in AR/EN', () async {
     for (final locale in ['ar', 'en']) {
       for (final invalid in [
