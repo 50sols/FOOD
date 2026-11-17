@@ -127,7 +127,7 @@ final class V2RetailDashboardTabShapeScopeTest extends TestCase
     }
 
     /**
-     * @param list<int> $storeIds
+     * @param  list<int>  $storeIds
      */
     private function retailActor(array $storeIds): User
     {
