@@ -143,12 +143,16 @@ final class V2ErpProcurementTabRouteMatrixTest extends TestCase
                 ->assertSee('dir="'.$direction.'"', false)
                 ->assertSee('name="viewport"', false)
                 ->assertSee('data-erp-procurement-workbench="true"', false)
+                ->assertSee(__('enterprise_procurement.title', [], $locale))
+                ->assertSee(__('enterprise_procurement.description', [], $locale))
+                ->assertSee(__('enterprise_procurement.empty', [], $locale))
                 ->assertSee('role="status"', false)
                 ->assertSee('P135_WORKBENCH_SAVED')
                 ->assertSee('role="alert"', false)
                 ->assertSee('P135_WORKBENCH_ERROR')
                 ->assertSee('@media(max-width:767px)', false)
                 ->assertSee('.erp-table-wrap{overflow:auto}', false)
+                ->assertSee(':focus-visible', false)
                 ->assertSee('<noscript>', false);
 
             $this->assertSame('requests', $response->viewData('activeTab'));
@@ -167,6 +171,28 @@ final class V2ErpProcurementTabRouteMatrixTest extends TestCase
             );
             $this->assertSame(1, substr_count($rail, 'aria-current="page"'));
             $this->assertStringNotContainsString('tabindex="-1"', $rail);
+            $this->assertStringNotContainsString('role="tab"', $rail);
+            $this->assertStringNotContainsString('<button', $rail);
+            $this->assertStringNotContainsString('javascript:', $rail);
+
+            // Active keyboard-reachable link must be the actual authorized
+            // Requests route, not an inert visual tab or a fabricated URL.
+            $this->assertSame(1, preg_match_all(
+                '/<a\\b[^>]*aria-current="page"[^>]*>.*?<\\/a>/s',
+                $rail,
+                $activeLinks,
+            ));
+            $this->assertStringContainsString(
+                'href="'.e(route('admin.erp.procurement.index', [
+                    'tab' => 'requests',
+                    'store_id' => $store->id,
+                ])).'"',
+                $activeLinks[0][0],
+            );
+            $this->assertStringContainsString(
+                e(__('enterprise_procurement.tabs.requests', [], $locale)),
+                $activeLinks[0][0],
+            );
 
             $tabs = $response->viewData('tabs');
             $this->assertIsArray($tabs);
