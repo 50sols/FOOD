@@ -123,7 +123,7 @@
                     <span class="foodex-status-badge" data-state="{{ $runtimeBadgeState }}">{{ $runtimeStateLabel }}</span>
                     @if($user->is_active && $user->hasRole('SUPER_ADMIN'))
                         @can('system.update')
-                            <a class="foodex-action-secondary button secondary" href="{{ route('admin.system-update.index') }}">{{ __('admin.system_update_surface.backup_center') }}</a>
+                            <a class="foodex-action-secondary button secondary" data-inspector-backup-center-link href="{{ route('admin.system-update.index') }}">{{ __('admin.system_update_surface.backup_center') }}</a>
                         @endcan
                     @endif
                 </div>
