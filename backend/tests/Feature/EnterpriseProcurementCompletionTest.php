@@ -670,6 +670,16 @@ final class EnterpriseProcurementCompletionTest extends TestCase
         $this->assertSame([$visible->order_number], array_column($bridge['rows'], 'order_number'));
         $this->assertSame('2.500', $bridge['rows'][0]['order_value']);
 
+        // Dashboard KPI and status chart must inherit the same company/org
+        // boundary. A row with an authorized store ID but foreign company ID
+        // must not inflate even a read-only aggregate.
+        $dashboard = $manager->dashboard($actor, $context);
+        $openOrderMetric = collect($dashboard['kpis'])->firstWhere('key', 'open_orders');
+        $this->assertNotNull($openOrderMetric);
+        $this->assertSame(1, $openOrderMetric['value']);
+        $statusChart = collect($dashboard['charts']['po_status'])->keyBy('label');
+        $this->assertSame(1, $statusChart['draft']['value']);
+
         [$otherActor, , $otherContext] = $this->scopedUser(
             $this->allPermissions(),
             'P135-REPORT-COMPANY-B',
