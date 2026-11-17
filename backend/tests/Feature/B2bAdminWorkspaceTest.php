@@ -143,6 +143,36 @@ class B2bAdminWorkspaceTest extends TestCase
         $this->assertSame($auditBefore, DB::table('audit_logs')->count());
 
         $this->actingAs($admin)->post('/admin/b2b/pricing', $candidate + [
+            'setup_action' => 'delete',
+        ])->assertSessionHasErrors('setup_action');
+        $this->assertDatabaseCount('b2b_price_rules', 0);
+
+        $otherStore = (int) DB::table('stores')->insertGetId([
+            'store_type_id' => DB::table('store_types')->where('code', 'B2B')->value('id'),
+            'code' => 'PRICE-CROSS-STORE',
+            'name' => 'Disposable other wholesale store',
+            'is_active' => true,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        $otherCatalog = app(CatalogOwnership::class)->defaultCatalogForStore($otherStore, 'b2b');
+        $otherProduct = (int) DB::table('products')->insertGetId([
+            'catalog_id' => $otherCatalog->id,
+            'unit_id' => $unit,
+            'sku' => 'CROSS-STORE-CANDIDATE',
+            'name' => 'Unauthorized other store product',
+            'is_active' => true,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        $this->actingAs($admin)->post('/admin/b2b/pricing', array_replace($candidate, [
+            'product_id' => $otherProduct,
+            'setup_action' => 'test',
+        ]))->assertStatus(422);
+        $this->assertDatabaseCount('b2b_price_rules', 0);
+        $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+
+        $this->actingAs($admin)->post('/admin/b2b/pricing', $candidate + [
             'setup_action' => 'save',
         ])->assertRedirect()->assertSessionHasNoErrors();
         $this->assertDatabaseHas('b2b_price_rules', [
