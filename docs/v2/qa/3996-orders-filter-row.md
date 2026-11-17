@@ -14,7 +14,7 @@
 | Extra filters | Existing details popover stays independent and uses the same GET | Preserve its Store, origin (B2B only), period, dispatch status and exception fields; no nested form |
 | Search / scope / reset / pagination | Existing GET form uses channel, authorized store, action_required and #order-tab-orders | Preserve unchanged, do not introduce a new tab, query API or pagination path |
 
-Placement: REUSE existing PAGE_TAB workbench and single-row filter; not a new tab inside order details. The main Orders/Analytics tabs and nested analytics panels remain from #3972; this leaf changes no tab state logic.
+Placement: REUSE existing PAGE_TAB workbench and single-row filter; not a new tab inside order details. The existing Orders toolbar makes the filter slot nonshrinking below 1180px; a scoped CSS parent constraint keeps it bounded at tablet width. On phone, the preexisting Orders tabs remain their own horizontally scrollable rail; New Order remains a separate action above one single-row filter form (rather than hiding primary search/status/driver fields or causing document-level overflow). The filter rail is explicitly keyboard-focusable; native controls remain reachable. The main Orders/Analytics tabs and nested analytics panels remain from #3972; this leaf changes no tab state logic.
 
 ## Security & business acceptance
 - Existing OrderOperationsController, OperationalTenantScope and FulfillmentActorPolicy continue to authorize all reads and state transitions. Switching a tab or applying GET filters never writes to orders, audit, driver, van or dispatch.
