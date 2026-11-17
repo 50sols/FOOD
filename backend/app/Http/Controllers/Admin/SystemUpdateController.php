@@ -17,6 +17,7 @@ use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Gate;
+use Illuminate\Support\ViewErrorBag;
 use RuntimeException;
 use Symfony\Component\Process\ExecutableFinder;
 use Throwable;
@@ -62,6 +63,10 @@ final class SystemUpdateController extends Controller
 
         return view('admin.system-update', [
             'user' => $actor,
+            // optimize:clear inside the updater may reset the view factory's
+            // middleware-shared globals for the next request in the same PHP
+            // process. Retain the current session's validation error bag.
+            'errors' => $request->session()->get('errors', new ViewErrorBag),
             'currentVersion' => $currentVersion,
             'historyRows' => UpdateHistory::query()->latest('id')->paginate(20)->withQueryString(),
             'updateStatusCounts' => $statusCounts,
