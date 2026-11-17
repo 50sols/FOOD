@@ -6,14 +6,24 @@ use App\Enterprise\Entitlements\EntitlementScope;
 use App\Enterprise\Entitlements\ModuleEntitlementManager;
 use App\Enterprise\Modules\ModuleRegistry;
 use App\Enterprise\Organization\OrganizationHierarchyService;
+use App\Enterprise\Procurement\GoodsReceiptManager;
+use App\Enterprise\Procurement\PurchaseInvoiceHandoffManager;
+use App\Enterprise\Procurement\PurchaseOrderManager;
+use App\Enterprise\Procurement\PurchaseRequestManager;
+use App\Enterprise\Procurement\SupplierDirectory;
+use App\Models\Catalog;
+use App\Models\Product;
 use App\Models\Role;
 use App\Models\Store;
 use App\Models\User;
+use App\Models\Warehouse;
 use App\Services\EnterpriseModuleAdministration;
 use App\Services\WholesalePrincipal;
+use App\Support\TenantContextResolver;
 use Database\Seeders\CoreReferenceSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
+use Tests\Support\SyntheticErpWorkflowEvidence;
 use Tests\TestCase;
 
 /**
@@ -219,6 +229,146 @@ final class V2ErpEntitlementCheckerBoundaryTest extends TestCase
         $this->assertDatabaseHas('enterprise_purchase_requests', [
             'store_id' => $sibling->id,
             'reason' => $request['reason'],
+        ]);
+    }
+
+    public function test_historical_unmatched_invoice_get_keeps_pending_row_without_creating_or_approving_review_in_ar_en(): void
+    {
+        // An imported/legacy invoice can have no match-review row. A GET must
+        // never materialize a decision, even if it could be auto-approved.
+        // The write-only sync remains in the explicit invoice/review lifecycle.
+        $store = $this->wholesaleStore();
+        $maker = $this->actor('PROCUREMENT_BUYER');
+        $checker = $this->actor('PROCUREMENT_APPROVER');
+        $admin = $this->actor('SUPER_ADMIN');
+
+        app(EnterpriseModuleAdministration::class)->perform('procurement', 'enable', $admin);
+        app(ModuleEntitlementManager::class)->set(
+            'procurement',
+            EntitlementScope::platform(),
+            true,
+            null,
+            $admin,
+        );
+        if (class_exists(SyntheticErpWorkflowEvidence::class)) {
+            SyntheticErpWorkflowEvidence::install();
+        }
+
+        $adminContext = app(TenantContextResolver::class)->wholesale($admin, $store->id);
+        $makerContext = app(TenantContextResolver::class)->wholesale($maker, $store->id);
+        $checkerContext = app(TenantContextResolver::class)->wholesale($checker, $store->id);
+
+        $sku = 'P111-NO-GET-WRITE';
+        $catalog = Catalog::query()->create([
+            'store_id' => $store->id,
+            'channel' => 'b2b',
+            'code' => 'p111-no-get-write',
+            'name' => 'P111 source stock',
+            'is_active' => true,
+            'is_migration_quarantine' => false,
+        ]);
+        $unitId = (int) DB::table('units')->insertGetId([
+            'store_id' => null,
+            'scope' => 'global',
+            'scope_key' => 'global',
+            'code' => 'P111-EACH-GET',
+            'name' => 'Each',
+            'name_ar' => 'قطعة',
+            'name_en' => 'Each',
+            'decimal_places' => 3,
+            'is_active' => true,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        Product::query()->create([
+            'catalog_id' => $catalog->id,
+            'unit_id' => $unitId,
+            'sku' => $sku,
+            'name' => 'P111 source stock',
+            'is_active' => true,
+        ]);
+        $warehouse = Warehouse::query()->create([
+            'store_id' => $store->id,
+            'code' => 'P111-GET-WH',
+            'name' => 'P111 match source',
+            'is_active' => true,
+        ]);
+
+        $supplier = app(SupplierDirectory::class)->create($admin, $adminContext, [
+            'scope_type' => 'store',
+            'code' => 'P111-GET-SUP',
+            'name_en' => 'P111 supplier',
+        ]);
+        $requests = app(PurchaseRequestManager::class);
+        $request = $requests->create($maker, $makerContext, [
+            'supplier_id' => $supplier->id,
+            'currency_code' => 'KWD',
+            'reason' => 'P111 unmatched invoice direct GET',
+            'lines' => [[
+                'item_code' => $sku,
+                'description' => 'P111 source stock',
+                'quantity' => 2,
+                'unit' => 'each',
+                'estimated_unit_cost' => 1.250,
+            ]],
+        ]);
+        $requests->submit($maker, $makerContext, $request->id);
+        $requests->approve($checker, $checkerContext, $request->id);
+
+        $orders = app(PurchaseOrderManager::class);
+        $order = $orders->createFromApprovedRequest($admin, $adminContext, $request->id);
+        $order = $orders->issue($admin, $adminContext, $order->id);
+        $receipts = app(GoodsReceiptManager::class);
+        $receipt = $receipts->createFromIssuedOrder($admin, $adminContext, $order->id, [
+            'lines' => [[
+                'purchase_order_line_id' => $order->lines()->firstOrFail()->id,
+                'warehouse_id' => $warehouse->id,
+                'quantity' => 2,
+            ]],
+        ]);
+        $receipt = $receipts->post($admin, $adminContext, $receipt->id);
+        $invoice = app(PurchaseInvoiceHandoffManager::class)->createFromPostedReceipt(
+            $admin,
+            $adminContext,
+            $receipt->id,
+            [
+                'supplier_invoice_number' => 'P111-GET-NOWRITE',
+                'invoice_date' => '2026-11-17',
+                'lines' => [[
+                    'goods_receipt_line_id' => $receipt->lines()->firstOrFail()->id,
+                    'quantity' => 2,
+                ]],
+            ],
+        );
+
+        // Simulate a genuine historical invoice imported before matching was
+        // materialized, after the normal authorized write workflow has ended.
+        DB::table('enterprise_procurement_match_reviews')
+            ->where('purchase_invoice_id', $invoice->id)
+            ->delete();
+        $this->assertDatabaseMissing('enterprise_procurement_match_reviews', [
+            'purchase_invoice_id' => $invoice->id,
+        ]);
+        $auditCount = DB::table('audit_logs')->count();
+
+        foreach (['ar' => 'rtl', 'en' => 'ltr'] as $locale => $direction) {
+            $admin->forceFill(['locale' => $locale])->save();
+            $this->actingAs($admin->fresh())->get(route('admin.erp.procurement.index', [
+                'store_id' => $store->id,
+                'tab' => 'matches',
+            ]))
+                ->assertOk()
+                ->assertSee('dir="'.$direction.'"', false)
+                ->assertSee($invoice->invoice_number);
+
+            $this->assertDatabaseMissing('enterprise_procurement_match_reviews', [
+                'purchase_invoice_id' => $invoice->id,
+            ]);
+            $this->assertSame($auditCount, DB::table('audit_logs')->count());
+        }
+        $this->assertDatabaseHas('enterprise_purchase_invoices', [
+            'id' => $invoice->id,
+            'status' => 'draft',
         ]);
     }
 
