@@ -611,6 +611,13 @@ return [
     ],
 
     'connections' => [
+        'section_navigation' => 'WhatsApp settings sections',
+        'setup_purpose_help' => 'Purpose: configure a trusted provider connection. Save creates a Draft; it does not enable messaging or certify delivery.',
+        'provider_source_help' => 'Provider: use meta_cloud (default), from your Meta WhatsApp Cloud API integration. Use a supported provider code (letters, numbers, underscores or hyphens; at most 40 characters).',
+        'external_identifiers_help' => 'Get the phone number ID and WhatsApp Business account ID from WhatsApp Manager, and the App ID from Meta for Developers. These are external provider references, not FOODEX database IDs; leave optional values blank if not issued. Limit: 128 characters each.',
+        'credentials_help' => 'Get the access token and webhook secrets from the authorized Meta app administrator. Enter them only in protected password fields; never in notes or metadata. No prefilled examples. Testing contacts the provider; Save alone is not a connection test.',
+        'metadata_preserved_help' => 'Advanced provider/webhook metadata is not requested as raw JSON. Existing saved metadata is preserved when editing this form.',
+        'readiness_truth_help' => 'Readiness comes from the last real Test connection result and profile state. Draft, never tested, disabled or degraded is not operational readiness; global lifecycle and emergency stop still apply.',
         'title' => 'WhatsApp connections',
         'description' => 'Manage saved provider and phone-number profiles without changing source code or redeploying FOOD.',
         'module_controls' => 'Module controls',
