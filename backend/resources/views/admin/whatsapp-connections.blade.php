@@ -36,11 +36,11 @@
                 $activeTab = 'profiles';
             }
         @endphp
-        <nav class="foodex-tabs" aria-label="{{ __('whatsapp.connections.section_navigation') }}">
-            <a class="foodex-tab" href="{{ route('admin.whatsapp.connections.index', ['tab' => 'profiles']) }}" @if($activeTab === 'profiles') aria-current="page" @endif>{{ __('whatsapp.connections.saved_profiles') }}</a>
-            <a class="foodex-tab" href="{{ route('admin.whatsapp.connections.index', ['tab' => 'health']) }}" @if($activeTab === 'health') aria-current="page" @endif>{{ __('whatsapp.connections.transport_health') }}</a>
+        <nav class="foodex-tabs" style="flex-wrap:nowrap;overflow-x:auto;white-space:nowrap" aria-label="{{ __('whatsapp.connections.section_navigation') }}">
+            <a class="foodex-tab {{ $activeTab === 'profiles' ? 'active' : '' }}" href="{{ route('admin.whatsapp.connections.index', ['tab' => 'profiles']) }}" @if($activeTab === 'profiles') aria-current="page" @endif>{{ __('whatsapp.connections.saved_profiles') }}</a>
+            <a class="foodex-tab {{ $activeTab === 'health' ? 'active' : '' }}" href="{{ route('admin.whatsapp.connections.index', ['tab' => 'health']) }}" @if($activeTab === 'health') aria-current="page" @endif>{{ __('whatsapp.connections.transport_health') }}</a>
             @if($canManage)
-            <a class="foodex-tab" href="{{ route('admin.whatsapp.connections.index', ['tab' => 'create']) }}" @if($activeTab === 'create') aria-current="page" @endif>{{ __('whatsapp.connections.create') }}</a>
+            <a class="foodex-tab {{ $activeTab === 'create' ? 'active' : '' }}" href="{{ route('admin.whatsapp.connections.index', ['tab' => 'create']) }}" @if($activeTab === 'create') aria-current="page" @endif>{{ __('whatsapp.connections.create') }}</a>
             @endif
         </nav>
         <div data-whatsapp-panel="health" @if($activeTab !== 'health') hidden @endif>
