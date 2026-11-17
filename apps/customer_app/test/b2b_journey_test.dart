@@ -1548,7 +1548,7 @@ void main() {
     }
   }
 
-  testWidgets('B2B More keeps the compact hub without inline account sections',
+  testWidgets('B2B profile is the complete visible account and finance hub',
       (
     tester,
   ) async {
@@ -1614,9 +1614,12 @@ void main() {
     expect(find.text('إجمالي مديونيتك'), findsOneWidget);
     expect(find.text('125.000 KWD'), findsOneWidget);
     expect(find.text('الحساب المالي'), findsNothing);
-    expect(find.text('1000.000 KWD'), findsNothing);
-    expect(find.text('875.000 KWD'), findsNothing);
-    expect(find.text('كشف الحساب'), findsNothing);
+    expect(find.text('1000.000 KWD'), findsOneWidget);
+    expect(find.text('875.000 KWD'), findsNWidgets(2));
+    expect(
+      find.byKey(const ValueKey('b2b-profile-open-statement')),
+      findsOneWidget,
+    );
     expect(find.text('تقرير المشتريات'), findsOneWidget);
     expect(find.text('العناوين'), findsOneWidget);
     expect(find.text('الإشعارات'), findsNothing);

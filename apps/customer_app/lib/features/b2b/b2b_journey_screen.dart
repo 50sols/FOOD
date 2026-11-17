@@ -4252,7 +4252,6 @@ class _B2bMorePageState extends State<_B2bMorePage> {
   static const deep = CustomerUiColors.deepGreen;
   static const dark = CustomerUiColors.deepGreenStrong;
   static const soft = CustomerUiColors.limeSoft;
-  static const border = CustomerUiColors.border;
 
   late Future<Object?> finance = widget.api.get(widget.financeEndpoint);
 
@@ -4731,12 +4730,28 @@ class _FinanceCard extends StatelessWidget {
             final currency = summary.currency;
             final values = <(String, String)>[
               (
-                ar ? 'إجمالي مشترياتك' : 'Total purchases',
+                context.tr('b2b.profile.total_purchases'),
                 _money(totalPurchases, currency),
               ),
               (
-                ar ? 'إجمالي مديونيتك' : 'Total debt',
+                context.tr('b2b.profile.total_debt'),
                 _money(totalDebt, currency),
+              ),
+              (
+                context.tr('b2b.dashboard.balance'),
+                _money(summary.balance, currency),
+              ),
+              (
+                context.tr('b2b.dashboard.credit_limit'),
+                _money(summary.creditLimit, currency),
+              ),
+              (
+                context.tr('b2b.dashboard.available_credit'),
+                _money(summary.availableCreditLine, currency),
+              ),
+              (
+                context.tr('b2b.checkout.purchasing_power'),
+                _money(summary.purchasingPower, currency),
               ),
             ];
             return Column(
@@ -4759,7 +4774,7 @@ class _FinanceCard extends StatelessWidget {
                     const SizedBox(width: 9),
                     Expanded(
                       child: Text(
-                        ar ? 'ملخص الحساب المالي' : 'Financial account summary',
+                        context.tr('b2b.profile.financial_summary'),
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                         style: TextStyle(
@@ -4796,19 +4811,17 @@ class _FinanceCard extends StatelessWidget {
                   ],
                 ),
                 const SizedBox(height: 12),
-                Row(
-                  children: [
-                    for (var i = 0; i < values.length; i++) ...[
-                      if (i > 0)
-                        Container(
-                          width: 1,
-                          height: 48,
-                          color: _B2bMorePageState.border,
-                        ),
-                      Expanded(
-                        child: Padding(
-                          padding: const EdgeInsets.symmetric(horizontal: 3),
-                          child: Column(
+                LayoutBuilder(
+                  builder: (context, constraints) {
+                    final itemWidth = (constraints.maxWidth - 12) / 2;
+                    return Wrap(
+                      spacing: 12,
+                      runSpacing: 12,
+                      children: [
+                        for (var i = 0; i < values.length; i++)
+                          SizedBox(
+                            width: itemWidth,
+                            child: Column(
                             children: [
                               Text(
                                 values[i].$1,
@@ -4837,17 +4850,18 @@ class _FinanceCard extends StatelessWidget {
                                 ),
                               ),
                             ],
+                            ),
                           ),
-                        ),
-                      ),
-                    ],
-                  ],
+                      ],
+                    );
+                  },
                 ),
                 const SizedBox(height: 10),
                 Material(
                   color: _B2bMorePageState.soft,
                   borderRadius: BorderRadius.circular(15),
                   child: InkWell(
+                    key: const ValueKey('b2b-profile-open-statement'),
                     onTap: () => open(statementRoute),
                     borderRadius: BorderRadius.circular(15),
                     child: Padding(
