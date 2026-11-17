@@ -47,11 +47,18 @@ final class SyntheticErpWorkflowEvidence
                 ];
             }
 
-            $version = $registry->manifest($code)->version;
+            $manifest = $registry->manifest($code);
+            $version = $manifest->version;
+            $manifestSha256 = ModuleWorkflowAttestation::manifestSha256($manifest);
+            if ($manifestSha256 === null) {
+                throw new \LogicException('Invalid canonical ERP test manifest.');
+            }
+
             $attestation = [
                 'version' => $version,
                 'key_id' => 'synthetic-test',
                 'head_sha' => str_repeat('a', 40),
+                'manifest_sha256' => $manifestSha256,
                 'review_issue' => 2858,
                 'ci_run' => 'https://github.com/walidatiyaai2025-gif/FOOD/actions/runs/1',
                 'checks' => $checks,
