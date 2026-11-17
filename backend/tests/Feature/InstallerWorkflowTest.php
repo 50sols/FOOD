@@ -307,7 +307,7 @@ class InstallerWorkflowTest extends TestCase
         try {
             $workflow->seedRequiredCoreData();
             $this->fail('A live database must never be reseeded through /install.');
-        } catch (\\RuntimeException $exception) {
+        } catch (\RuntimeException $exception) {
             $this->assertSame((string) __('installer.errors.existing_business_data'), $exception->getMessage());
         }
 
@@ -332,7 +332,7 @@ class InstallerWorkflowTest extends TestCase
         try {
             app(InstallerWorkflow::class)->seedRequiredCoreData();
             $this->fail('Configured sites must not be treated as first-install seeds.');
-        } catch (\\RuntimeException $exception) {
+        } catch (\RuntimeException $exception) {
             $this->assertSame((string) __('installer.environment_already_configured'), $exception->getMessage());
         }
 
@@ -345,7 +345,7 @@ class InstallerWorkflowTest extends TestCase
         app(InstallState::class)->writeLock('1.0.0');
         Artisan::shouldReceive('call')->never();
 
-        $this->expectException(\\Symfony\\Component\\HttpKernel\\Exception\\HttpException::class);
+        $this->expectException(\Symfony\Component\HttpKernel\Exception\HttpException::class);
         $this->expectExceptionCode(0);
 
         app(InstallerWorkflow::class)->seedRequiredCoreData();
