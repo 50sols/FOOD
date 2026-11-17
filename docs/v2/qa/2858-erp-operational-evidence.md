@@ -137,3 +137,110 @@ Finance source dependency audit: \`GeneralLedgerService::post\` uses DB locks, b
 
 ## P135 Finance /admin/erp missing-scope follow-up
 The existing exact HTTP Finance read context stays authoritative. A Finance module grant with no authorized legal/store context is now diagnosed as localized `missing_scope`, distinct from absent `entitlement_scope`. Both deny the Workbench URL. Existing `uncertified`, `disabled`, and `unhealthy` states remain independently gated, not manufactured from a role/entitlement. Added seeded AR/EN real GET negative test for denial reason, no Open button, no raw UUID/JSON or journal writes; existing Finance positive and STORE DENY tests remain. No API, sidebar, view markup, migration, finance SoD or frontend/mobile changes. Customer/Driver/Van individually unchanged. The wider P135 source and exact-head Required CI still govern merge; this is only a bounded increment.
+
+
+## P135 — genuine G0–G13 certification ledger and manifest SHA guard (2026-11-17)
+
+**Authority:** `docs/execution/FOODEX_ENTERPRISE_ERP_PROGRAM.md` G0–G13 and
+`docs/execution/FOODEX_ENTERPRISE_MODULE_GATES.json`; this is distinct from
+the narrower `required_workflows` stages. G14/main promotion is **not
+authorized** for V2. No source test, synthetic CI attestation or this ledger
+automatically marks a promotion gate PASS.
+
+### Identity and provenance contract
+
+- The source `enterprise_modules.modules` manifest is the configured
+  *candidate* version, **not proof of the version installed on any external
+  environment**. Verify the target's `enterprise_modules.manifest_version`
+  and the persisted canonical `manifest` for the same module before
+  certification. A module that is ENABLED but has a stale installed version or
+  different persisted contract is **uncertified**.
+- `ModuleWorkflowAttestation::manifestSha256` hashes canonical
+  `ModuleManifest::toArray()` with JSON_THROW_ON_ERROR, unescaped
+  Unicode/slashes and SHA-256. This is a **content hash**, not GitHub's Git
+  blob SHA-1. The signed attestation must carry `manifest_sha256` and match
+  the current source AND installed manifest; the Ed25519 signature binds
+  `module_code`, `version`, `head_sha`, `manifest_sha256`,
+  `review_issue`, `ci_run`, and exact required per-stage tests. A silent
+  same-version change to a hard/optional dependency, required core,
+  capability, permission or declared health check fails closed. Git SHA is
+  separately required and must be the **tested** final commit.
+- Actual Composer production lock hash, migrations/seed ordering, upgrade
+  artifact checksums, external Actions status/commit, reviewer authenticity,
+  stage-to-real-test lineage, cPanel health/queue and Pilot are **NOT**
+  established by the manifest hash. Verify them separately with signed,
+  reproducible CI evidence and ownership review. An arbitrary signed record
+  is not sufficient; the runtime intentionally does not fetch GitHub.
+- `certified_versions=[]`, `trusted_public_keys=[]` and
+  `workflow_attestations=[]` **stay EMPTY** in production source. The
+  synthetic Ed25519 keys and test-only CI placeholder from
+  `Tests\\Support\\SyntheticErpWorkflowEvidence` are never deployable proof.
+  Store no private keys or provider secrets in release/config/attestations.
+
+### Five independently assessed candidate manifests
+
+| Module | Candidate source version | Required core (in addition to identity/tenant_context/rbac/audit/module_registry) | Hard dependencies | Optional integration contracts | Real G0–G13 readiness |
+| --- | --- | --- | --- | --- | --- |
+| `procurement` | v2 | none | `[]` | inventory, accounting, treasury | **NOT CERTIFIED** |
+| `inventory_wms` | v1 | catalog | `[]` | procurement, accounting, reporting_bi | **NOT CERTIFIED** |
+| `finance` | v1 | none | `[]` | sales, procurement, inventory, treasury | **NOT CERTIFIED** |
+| `treasury` | v1 | none | `[]` | finance | **NOT CERTIFIED** |
+| `enterprise_bi` | v1 | entitlements | `[]` | sales, inventory, procurement, finance, treasury | **NOT CERTIFIED** |
+
+All modules default to `DISABLED`; a source version does not establish
+the deployed/installed version on cPanel, staging or production. The
+`health_checks` manifest list is `database` for procurement and empty
+for the other four; generic registry/health-service checks are not evidence
+of every module-specific worker, finance, supplier, reporting or provider
+probe. The empty `hard_dependencies` lists are configuration facts, not
+proof that optional accounting/stock/treasury/BI source integrations work.
+
+### Original G0–G13 acceptance ledger — apply separately to EACH module
+
+| Gate | Original acceptance domain | Current auditable evidence / indispensable blocker | Decision |
+| --- | --- | --- | --- |
+| G0 | Ownership/convergence | P135 #2858 and one original PR #3065 exist, but dependent implementation leaves remain OPEN and integration proof is incomplete | **BLOCKED** |
+| G1 | Architecture/manifest/dependencies | Five normalized manifests exist; signed canonical SHA-256 and persisted-version guards now reject drift. Real required-core/hard and optional integration contracts still require source/CI review | **PARTIAL** |
+| G2 | Migration/seed/data/upgrade | No certified per-module fresh/upgrade/backfill/resume/rollback evidence over the real final Setup/Update ZIP; no proof seed data maps safely to admin pages | **BLOCKED** |
+| G3 | RBAC/tenant/store/channel | Existing direct HTTP+DB role/store-DENY tests and scoped routes are partial; cross-store/legal entity/SoD and permission/entitlement parity for each operational action are not fully verified | **PARTIAL** |
+| G4 | Canonical functional journeys | `required_workflows` enumerates stages; none has full externally verified exact-commit passing tests and complete real source. Never replace missing receipt/title/ledger/settlement/reconciliation outcomes with synthetic stage names | **BLOCKED** |
+| G5 | Enterprise UX | Some AR/EN RTL/LTR authenticated HTTP + responsive page source exists. All task journeys, errors, viewport and accessibility evidence still need final gate | **PARTIAL** |
+| G6 | Audit/workflow/SoD | Procurement maker/checker and accounting/treasury posting guards exist in partial tests; independent checker, denial, replay, compensation and audit for complete journeys remain unresolved | **PARTIAL** |
+| G7 | Failure isolation | Individual failed health/disabled/uncertified tests protect HTTP; real provider outage, queue/scheduler interruption, cross-module failure isolation and data preservation remain unproven | **PARTIAL** |
+| G8 | Performance/cPanel | A green generic smoke benchmark never substitutes module-specific seeded p95/p99, query/memory, queue/scheduler/disabled overhead, cPanel install and thresholds on the accepted head | **BLOCKED** |
+| G9 | Security | Authentication, entitlement and signature negative regression exists; full secret/PII, uploads, replay, mass assignment, injection, rate limits and privilege escalation review remains open | **PARTIAL** |
+| G10 | Regression | Must pass exact-final-head Required CI + Policy/Isolation, Laravel AR/EN, actual ZIP install/upgrade, applicable Orders/Finance/Catalog/Inventory/WhatsApp/mobile regressions. A prior Required CI failure cannot be promoted | **BLOCKED** |
+| G11 | Monitoring/operational readiness | Health gateway exists but genuine module probes, jobs/metrics, support runbook, failed-job diagnostics, backups and recovery evidence per module incomplete | **BLOCKED** |
+| G12 | Disable/re-enable/data preservation | Lifecycle tests alone do not prove ON→OFF→ON retains uploaded files, audit, stock/ledger/posted records and fails safely across every module | **BLOCKED** |
+| G13 | Selected-tenant pilot | No owner-authorized, verified staging/live pilot, monitoring window, incident acceptance, emergency disable and independent tenant data isolation results; NEVER simulate this in PHPUnit | **BLOCKED** |
+
+No gate here is marked full PASS merely because a unit/feature test exists.
+The integrated V2 branch, current source and exact-head CI are inspected per
+cycle; the final G13 pilot needs explicit owner deployment authorization
+outside this coding-only PR. **G14/main is prohibited by V2 isolation.**
+
+### Module-specific source/test dependency blockers
+
+| Module | Partial positive/security evidence | Blocking original owner / acceptance |
+| --- | --- | --- |
+| Procurement v2 | `V2ErpProcurementRfqReceiptFlowTest`, `V2ErpProcurementTabRouteMatrixTest`, exact B2B scope and RFQ award → PO/GRN checks | #2844/#3921 P110 legal title vs warehouse custody/COGS, procurement returns and source-finance invoice mapping, all stages/rollback/real CI |
+| Inventory WMS v1 | WMS transfer/count/reservation and warehouse-scope test fixtures; unknown-owner projection is fail-closed | #2844/#3921 owner/title provenance, stock movement valuation and supplier/FOODEX attribution; #2588/#3317 Van target and #2602/#3332 custody; genuine count/post/reverse/GL evidence |
+| Finance v1 | Existing `GeneralLedgerService` SoD/money guards, scoped Finance Workbench HTTP fixtures and P135 card parity | #2633/#3309 AR collections, #2696/#3221 AR role, #2697 AP role, #2851 SoD, typed receipts/ledger exact-once, reversal and crash recovery |
+| Treasury v1 | Receipt/payment/reconciliation services have scoped entitlements, maker/checker and 3dp; some HTTP fixtures | #2632/#3942 upstream guards, #2602/#3332 collection provenance, independent reconciliation/receipt/post/reverse and live bank/GL source evidence |
+| Enterprise BI v1 | `V2BiExplicitScopeScheduleAuthorityTest` in original #3958/#3959 tests Store A allow/Store B deny, roleless/inactive and schedule write denial | #3958/#3959 still needs source+merge acceptance, P135 version-specific evidence compatibility, report/export multi-store privacy, scheduled jobs and complete analytics provenance |
+
+The separate existing stage matrix remains authoritative; it is **not** an
+assertion that request/review/post/reverse/export/audit actually passed.
+For each stage attach the exact original test file/method, CI job and
+tested Git SHA, migration/seed and fixture provenance, reviewer/SoD signoff,
+negative store/channel test, health result, manifest SHA-256 and installed
+version, plus fresh/upgrade/recovery/Pilot evidence when applicable.
+Resolve cross-owner files in their original PRs; do not cherry-pick or edit
+an active peer's source. Customer, Driver and Van have NO_DIRECT_API_DIFF
+from this manifest-gate change, but true full-chain mobile readbacks must
+be proven under their original V2 issues before G10/G13 acceptance.
+
+**Disposition:** `SOURCE_COMPLETE: FALSE` for the whole P135; high-risk
+`TECHNICAL_REVIEW: FAIL_FOR_FULL_SOURCE`; zero production module
+certifications. Keep original #3065 DRAFT; no main, tag, release,
+live cPanel, or production modification.
