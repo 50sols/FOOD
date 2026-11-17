@@ -7685,6 +7685,7 @@ class _WholesaleCheckoutDesignScreenState
                     ],
                     const SizedBox(height: 12),
                     DropdownButtonFormField<String>(
+                      isExpanded: true,
                       value: paymentMethod,
                       decoration: InputDecoration(
                         labelText: context.tr('b2b.checkout.payment_method'),
