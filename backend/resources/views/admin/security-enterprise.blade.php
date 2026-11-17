@@ -7,8 +7,8 @@
 <style>
 body{margin:0;background:var(--foodex-background);color:var(--foodex-ink)}
 .es-page{padding:clamp(16px,2.4vw,34px)}.es-head{display:flex;justify-content:space-between;gap:18px;align-items:flex-start;margin-block:18px 18px}.es-head h1{margin:4px 0 8px;font-size:clamp(1.55rem,2.5vw,2.15rem)}.es-head p{margin:0;color:var(--foodex-muted);max-width:820px}
-.es-back,.es-link{display:inline-flex;min-height:42px;align-items:center;justify-content:center;padding-inline:13px;border:1px solid var(--foodex-border);border-radius:10px;background:#fff;color:var(--foodex-green-dark);text-decoration:none;font-weight:800}
-.es-tabs{display:flex;gap:8px;overflow:auto;margin-bottom:18px}.es-tabs a{white-space:nowrap}.es-tabs .active{background:var(--foodex-green-soft);border-color:var(--foodex-green);color:var(--foodex-green-dark)}
+.es-back,.es-link{display:inline-flex;min-height:var(--foodex-touch-target);align-items:center;justify-content:center;padding-inline:13px;border:1px solid var(--foodex-border);border-radius:10px;background:#fff;color:var(--foodex-green-dark);text-decoration:none;font-weight:800}
+.es-tabs{margin-bottom:18px}.es-tabs .active{background:var(--foodex-green-soft);border-color:var(--foodex-green);color:var(--foodex-green-dark)}
 .es-notice{padding:12px 14px;border:1px solid var(--foodex-border);border-radius:10px;background:#fff;margin-bottom:12px}.es-note{padding:12px;border-radius:10px;background:var(--foodex-green-soft);color:var(--foodex-green-dark);margin-bottom:16px}
 .es-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px;margin-bottom:16px}.es-card{background:#fff;border:1px solid var(--foodex-border);border-radius:var(--foodex-radius-card);padding:17px;box-shadow:var(--foodex-shadow-sm);min-width:0}.es-card h2,.es-card h3{margin-top:0}.es-help{color:var(--foodex-muted);line-height:1.55;margin-top:-5px}
 .es-form{display:grid;gap:10px}.es-form label{display:grid;gap:5px;font-weight:700}.es-form select,.es-form input,.es-form textarea{min-height:42px;border:1px solid var(--foodex-border);border-radius:9px;padding:8px 10px;background:#fff;color:var(--foodex-ink);font:inherit;max-width:100%}.es-form textarea{min-height:72px;resize:vertical}
@@ -25,7 +25,7 @@ body{margin:0;background:var(--foodex-background);color:var(--foodex-ink)}
 @include('admin._global-header')
 @include('admin._admin-center-switcher',['active'=>'administration'])
 <div class="es-head foodex-page-toolbar"><div><div class="foodex-subtitle">FOODEX · {{ __('enterprise_security.eyebrow') }}</div><h1>{{ __('enterprise_security.title') }}</h1><p>{{ __('enterprise_security.description') }}</p></div><a class="es-back" href="{{ route('admin.security.index') }}">{{ __('enterprise_security.back') }}</a></div>
-<nav class="es-tabs foodex-tabs" aria-label="{{ __('enterprise_security.eyebrow') }}"><a class="es-link" href="{{ route('admin.security.index') }}">{{ __('admin.security.title') }}</a><a class="es-link active" aria-current="page" href="{{ route('admin.enterprise-security.index') }}">{{ __('enterprise_security.title') }}</a></nav>
+<nav class="es-tabs foodex-tabs foodex-tabs--horizontal" aria-label="{{ __('enterprise_security.eyebrow') }}"><a class="es-link" href="{{ route('admin.security.index') }}">{{ __('admin.security.title') }}</a><a class="es-link active" aria-current="page" href="{{ route('admin.enterprise-security.index') }}">{{ __('enterprise_security.title') }}</a></nav>
 
 @if(session('status'))<div class="es-notice" role="status">{{ session('status') }}</div>@endif
 @if($errors->any())<div class="es-notice" role="alert"><ul>@foreach($errors->all() as $error)<li>{{ $error }}</li>@endforeach</ul></div>@endif
