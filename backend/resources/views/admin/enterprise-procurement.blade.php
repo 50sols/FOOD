@@ -78,7 +78,7 @@ $base=['store_id'=>$selectedStoreId,'tab'=>$activeTab];
 <p class="foodex-subtitle span-all" role="status">{{ __('supplier_setup_help.readiness') }}</p>
 <label>{{ __('enterprise_procurement.scope') }}<select name="scope_type" required><option value="store">{{ __('enterprise_procurement.store_scope') }}</option><option value="company">{{ __('enterprise_procurement.company_scope') }}</option></select></label>
 <p class="foodex-subtitle span-all">{{ __('supplier_setup_help.scope_help') }}</p>
-<label>{{ __('enterprise_procurement.code') }}<input name="code" required maxlength="64" pattern="[A-Za-z0-9][A-Za-z0-9._-]*" placeholder="SUP-EXAMPLE"></label>
+<label>{{ __('enterprise_procurement.code') }}<input name="code" required maxlength="64" pattern="[A-Za-z0-9][A-Za-z0-9._-]*" placeholder="{{ __('supplier_setup_help.code_example') }}"></label>
 <p class="foodex-subtitle span-all">{{ __('supplier_setup_help.code_help') }}</p>
 <label>{{ __('enterprise_procurement.name_en') }}<input name="name_en" required maxlength="190"></label> {{-- localization-gate: allow form field name identifies persisted bilingual attribute; visible label is translated --}}
 <p class="foodex-subtitle span-all">{{ __('supplier_setup_help.name_help') }}</p>
