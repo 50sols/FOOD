@@ -116,6 +116,9 @@ final class SignedAdminZipMySqlDeploymentTest extends TestCase
             $this->assertTrue($user->is_active, 'Updater deactivated the original administrator.');
             $this->assertTrue($user->hasRole('SUPER_ADMIN'), 'Updater removed effective Super Admin role.');
             $this->assertTrue($user->hasPermission('system.update'), 'Updater removed system.update authority.');
+            // Preserve the actual middleware and Gate; an unhandled 403 here
+            // identifies the exact server denial point in MySQL CI logs.
+            $this->withoutExceptionHandling();
             $this->actingAs($user)->get(route('admin.system-update.index'))->assertOk();
 
             $migration = <<<'PHP'
