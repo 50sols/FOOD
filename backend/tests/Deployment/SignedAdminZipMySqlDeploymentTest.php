@@ -242,7 +242,11 @@ PHP;
                 'update_signatures.publisher_public_key_b64' => $wrongPublicKey,
             ]);
 
-            $faultRuntime = $this->failAfterApplyRuntime($email);
+            $faultRuntime = $this->failAfterApplyRuntime(
+                $email,
+                $this->directory.'/backups',
+                $this->directory.'/execution.lock',
+            );
             app()->instance(UpdateRuntime::class, $faultRuntime);
 
             $this->signedPost($user, $pair, $keyId, $archivePath, '1.0.127', '1.0.125', true)
@@ -293,11 +297,11 @@ PHP;
         }
     }
 
-    private function failAfterApplyRuntime(string $email): UpdateRuntime
+    private function failAfterApplyRuntime(string $email, string $backupRoot, string $executionLock): UpdateRuntime
     {
         $runtime = app(LaravelUpdateRuntime::class);
 
-        return new class($runtime, $email) implements UpdateRuntime
+        return new class($runtime, $email, $backupRoot, $executionLock) implements UpdateRuntime
         {
             private bool $healthFailureInjected = false;
 
@@ -308,6 +312,8 @@ PHP;
             public function __construct(
                 private readonly LaravelUpdateRuntime $runtime,
                 private readonly string $email,
+                private readonly string $backupRoot,
+                private readonly string $executionLock,
             ) {}
 
             public function preflight(UpdatePackageManifest $manifest, string $packagePath): void
@@ -343,6 +349,15 @@ PHP;
             public function rebuildCaches(): void
             {
                 $this->runtime->rebuildCaches();
+                // config:cache replaces the test's in-memory overrides with
+                // repository defaults. A real host's .env values survive that
+                // command, so restore this disposable path/lock fixture before
+                // exercising the post-apply rollback.
+                config([
+                    'foodex.update_backup_path' => $this->backupRoot,
+                    'foodex.updater_execution_lock' => $this->executionLock,
+                ]);
+
                 $changed = DB::table('users')->where('email', $this->email)->update([
                     'name' => 'Disposable post-apply fault mutation',
                 ]);
