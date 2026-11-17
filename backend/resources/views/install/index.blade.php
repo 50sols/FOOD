@@ -103,6 +103,10 @@
                 </div>
             @endif
 
+            @if ($currentStep === 9 && !empty($cacheQueueInputTestPassed))
+                <div class="success" role="status">{{ __('installer.wizard.cache_queue_test_inputs_passed') }}</div>
+            @endif
+
             @if ($currentStep === 10 && !empty($mailInputTestPassed))
                 <div class="success" role="status">{{ __('installer.wizard.mail_test_inputs_passed') }}</div>
             @endif
@@ -184,6 +188,7 @@
                         </label>
                     </div>
                 @elseif ($currentStep === 9)
+                    <div class="notice" role="note">{{ __('installer.wizard.cache_queue_test_inputs_help') }}</div>
                     <div class="fields">
                         <label>{{ __('installer.fields.cache_store') }}
                             <select name="cache_store">
@@ -256,6 +261,9 @@
                 @endif
 
                 <div class="actions">
+                    @if ($currentStep === 9)
+                        <button type="submit" class="test-only" name="cache_action" value="test_inputs" formnovalidate>{{ __('installer.wizard.cache_queue_test_inputs') }}</button>
+                    @endif
                     @if ($currentStep === 10)
                         <button type="submit" class="test-only" name="mail_action" value="test_inputs" formnovalidate>{{ __('installer.wizard.mail_test_inputs') }}</button>
                     @endif

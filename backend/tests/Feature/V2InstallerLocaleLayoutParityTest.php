@@ -199,6 +199,122 @@ final class V2InstallerLocaleLayoutParityTest extends TestCase
         $this->assertFalse($state->isInstalled());
     }
 
+    public function test_cache_queue_inputs_reuse_save_validation_without_persisting_in_ar_en(): void
+    {
+        $state = app(InstallState::class);
+        $state->markStepComplete(8);
+        $token = $state->token();
+        $envPath = $this->fixtureDirectory.'/.env';
+        $beforeEnvironment = file_get_contents($envPath);
+        $beforeProgress = $state->progress();
+
+        foreach (['ar', 'en'] as $locale) {
+            $this->get('/install?step=9&lang='.$locale)
+                ->assertOk()
+                ->assertSee('<html lang="'.$locale.'" dir="'.($locale === 'ar' ? 'rtl' : 'ltr').'">', false)
+                ->assertSee(__('installer.wizard.cache_queue_test_inputs_help', [], $locale))
+                ->assertSee('name="cache_action" value="test_inputs"', false)
+                ->assertSee(__('installer.wizard.cache_queue_test_inputs', [], $locale));
+
+            $this->post('/install/step/9?lang='.$locale, [
+                'installer_token' => $token,
+                'cache_action' => 'test_inputs',
+                'cache_store' => 'redis',
+                'queue_connection' => 'redis',
+                'redis_host' => 'redis.example.com',
+                'redis_port' => 6379,
+                'redis_password' => 'example-test-secret-never-persist',
+            ])
+                ->assertOk()
+                ->assertSee(__('installer.wizard.cache_queue_test_inputs_passed', [], $locale))
+                ->assertSee(__('installer.readiness.not_saved', [], $locale))
+                ->assertDontSee('example-test-secret-never-persist')
+                ->assertDontSee(__('installer.readiness.queue_checked', [], $locale));
+
+            $this->assertSame($beforeEnvironment, file_get_contents($envPath));
+            $this->assertSame($beforeProgress, $state->progress());
+        }
+
+        $this->assertFalse($state->isInstalled());
+    }
+
+    public function test_cache_queue_inputs_reject_missing_provider_invalid_action_and_forged_token(): void
+    {
+        $state = app(InstallState::class);
+        $state->markStepComplete(8);
+        $token = $state->token();
+        $envPath = $this->fixtureDirectory.'/.env';
+        $beforeEnvironment = file_get_contents($envPath);
+        $beforeProgress = $state->progress();
+
+        foreach (['ar', 'en'] as $locale) {
+            $this->post('/install/step/9?lang='.$locale, [
+                'installer_token' => $token,
+                'cache_action' => 'test_inputs',
+                'cache_store' => 'redis',
+                'queue_connection' => 'redis',
+                'redis_host' => '',
+                'redis_port' => 0,
+                'redis_password' => 'invalid-secret-never-persist',
+            ])
+                ->assertUnprocessable()
+                ->assertSee(__('installer.wizard.error', [], $locale))
+                ->assertDontSee('invalid-secret-never-persist');
+
+            $this->assertSame($beforeEnvironment, file_get_contents($envPath));
+            $this->assertSame($beforeProgress, $state->progress());
+        }
+
+        $this->post('/install/step/9?lang=en', [
+            'installer_token' => $token,
+            'cache_action' => 'bypass_save',
+            'cache_store' => 'file',
+            'queue_connection' => 'sync',
+        ])->assertUnprocessable();
+
+        $this->post('/install/step/9?lang=en', [
+            'cache_action' => 'test_inputs',
+            'cache_store' => 'file',
+            'queue_connection' => 'sync',
+        ])->assertStatus(419);
+
+        $this->assertSame($beforeEnvironment, file_get_contents($envPath));
+        $this->assertSame($beforeProgress, $state->progress());
+        $this->assertFalse($state->isInstalled());
+    }
+
+    public function test_cache_queue_inputs_step_order_and_existing_save_behavior_are_preserved(): void
+    {
+        $state = app(InstallState::class);
+        $state->markStepComplete(7);
+        $token = $state->token();
+        $envPath = $this->fixtureDirectory.'/.env';
+        $beforeEnvironment = file_get_contents($envPath);
+
+        $this->post('/install/step/9?lang=en', [
+            'installer_token' => $token,
+            'cache_action' => 'test_inputs',
+            'cache_store' => 'file',
+            'queue_connection' => 'sync',
+        ])->assertStatus(409);
+
+        $this->assertSame(7, $state->progress()['completed_step']);
+        $this->assertSame($beforeEnvironment, file_get_contents($envPath));
+
+        $state->markStepComplete(8);
+        $this->post('/install/step/9?lang=en', [
+            'installer_token' => $token,
+            'cache_action' => 'save',
+            'cache_store' => 'file',
+            'queue_connection' => 'sync',
+        ])->assertRedirect(route('install.index', ['step' => 10, 'lang' => 'en']));
+
+        $this->assertSame(9, $state->progress()['completed_step']);
+        $this->assertSame('file', app(InstallerEnvironment::class)->read(['CACHE_STORE'])['CACHE_STORE']);
+        $this->assertSame('sync', app(InstallerEnvironment::class)->read(['QUEUE_CONNECTION'])['QUEUE_CONNECTION']);
+        $this->assertFalse($state->isInstalled());
+    }
+
     public function test_mail_test_inputs_uses_existing_validator_in_both_locales_without_saving_or_sending(): void
     {
         $state = app(InstallState::class);

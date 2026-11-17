@@ -137,12 +137,38 @@ class InstallerController extends Controller
 
                 case 9:
                     $validated = $this->validated($request, [
+                        'cache_action' => ['sometimes', 'in:save,test_inputs'],
                         'cache_store' => ['required', 'in:redis,file'],
                         'queue_connection' => ['required', 'in:redis,sync'],
                         'redis_host' => ['nullable', 'required_if:cache_store,redis', 'required_if:queue_connection,redis', 'string', 'max:255'],
                         'redis_port' => ['nullable', 'required_if:cache_store,redis', 'required_if:queue_connection,redis', 'integer', 'between:1,65535'],
                         'redis_password' => ['nullable', 'string', 'max:512'],
                     ]);
+                    // Test Inputs is intentionally write-free. It reuses the exact
+                    // Save validator and installer token/step-order checks, but it
+                    // does not probe Redis, start a worker, schedule Cron or certify
+                    // any provider connection. Real runtime checks run at step 14.
+                    if (($validated['cache_action'] ?? 'save') === 'test_inputs') {
+                        return response()->view('install.index', [
+                            ...$this->viewData(
+                                $state,
+                                $environment,
+                                $workflow,
+                                $step,
+                                [],
+                                $request->except([
+                                    'installer_token',
+                                    'db_password',
+                                    'admin_password',
+                                    'admin_password_confirmation',
+                                    'redis_password',
+                                    'mail_password',
+                                ]),
+                            ),
+                            'cacheQueueInputTestPassed' => true,
+                        ]);
+                    }
+
                     $workflow->saveCacheQueueConfiguration([
                         'cache' => (string) $validated['cache_store'],
                         'queue' => (string) $validated['queue_connection'],
