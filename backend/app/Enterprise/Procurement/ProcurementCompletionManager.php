@@ -1717,9 +1717,9 @@ final class ProcurementCompletionManager
                 ->where('organization_id', $organizationId)
                 ->where('company_id', $companyId)
                 ->where('status', 'on_hold')
-                ->where(function ($query) use ($storeId): void {
+                ->where(function ($query) use ($storeId, $organizationId, $companyId): void {
                     $query->where('scope_type', 'company')
-                        ->orWhere(function ($store) use ($storeId): void {
+                        ->orWhere(function ($store) use ($storeId, $organizationId, $companyId): void {
                             $store->where('scope_type', 'store')->where('organization_id', $organizationId)
                                 ->where('company_id', $companyId)
                                 ->where('store_id', $storeId);
