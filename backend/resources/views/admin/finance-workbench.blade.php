@@ -555,7 +555,7 @@ $trendMax=max(1,max(array_map(fn($r)=>max(abs((float)$r['revenue']),abs((float)$
             ? 'finance_workbench.receivables.document'
             : 'finance_workbench.payables.document',
         'settlements' => 'finance_workbench.receivables.settlements',
-        'aging' => 'finance_workbench.dashboard.aging',
+        'aging' => 'finance_workbench.common.aging_bucket',
     ];
 @endphp
 <nav class="finance-tabs foodex-tabs finance-subtabs" aria-label="{{ __($tab === 'receivables' ? 'finance_workbench.receivables.title' : 'finance_workbench.payables.title') }}" data-finance-subtabs>
