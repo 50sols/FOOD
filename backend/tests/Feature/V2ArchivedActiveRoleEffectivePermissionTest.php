@@ -6,6 +6,7 @@ use App\Models\Permission;
 use App\Models\Role;
 use App\Models\Store;
 use App\Models\User;
+use App\Services\PlatformOwnerProvisioner;
 use Database\Seeders\CoreReferenceSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
@@ -95,6 +96,37 @@ final class V2ArchivedActiveRoleEffectivePermissionTest extends TestCase
             'scope_key' => 'store:'.$storeA->id,
             'effect' => 'allow',
         ]);
+    }
+
+    public function test_archived_but_active_platform_owner_role_cannot_retain_registry_control_plane_authority(): void
+    {
+        $owner = app(PlatformOwnerProvisioner::class)->provision(
+            'archived-owner@example.test',
+            'LongStrongSecret!2026#Unique',
+        );
+        $role = Role::query()->where('code', 'PLATFORM_OWNER')->firstOrFail();
+
+        $this->assertTrue($owner->isPlatformOwner());
+        $this->assertTrue($owner->hasRole('PLATFORM_OWNER'));
+        $this->assertTrue($owner->hasRole('SUPER_ADMIN'));
+        $this->assertTrue($owner->hasPermission('platform.manage'));
+
+        $this->archiveWithoutClearingActive($role);
+        $owner = $owner->fresh();
+
+        $this->assertFalse($owner->isPlatformOwner());
+        $this->assertFalse($owner->hasRole('PLATFORM_OWNER'));
+        $this->assertFalse($owner->hasRole('SUPER_ADMIN'));
+        $this->assertFalse($owner->hasPermission('platform.manage'));
+        $this->assertDatabaseHas('platform_owner_registry', [
+            'id' => 1,
+            'user_id' => $owner->id,
+        ]);
+        $this->assertDatabaseHas('roles', [
+            'id' => $role->id,
+            'is_active' => true,
+        ]);
+        $this->assertNotNull(DB::table('roles')->where('id', $role->id)->value('archived_at'));
     }
 
     public function test_mixed_active_and_archived_roles_keep_active_authority_but_explicit_deny_wins_on_direct_urls(): void
