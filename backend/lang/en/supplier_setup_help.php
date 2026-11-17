@@ -1,6 +1,7 @@
 <?php
 
 return [
+    'code_example' => 'SUP-EXAMPLE',
     'readiness' => 'Setup readiness: unique supplier code, English name and an authorized company/store scope are required. Legal registration fields are optional in current validation and are not certified without genuine documents.',
     'scope_help' => 'Choose Store for a supplier serving the selected store, or Company for a supplier shared within the authorized company. Source: supplier contract and approved organization hierarchy. This form cannot switch companies.',
     'code_help' => 'Enter the approved internal reference from your supplier register; fictional example: SUP-EXAMPLE. Latin letters, digits, dot, dash and underscore only, maximum 64 characters.',
