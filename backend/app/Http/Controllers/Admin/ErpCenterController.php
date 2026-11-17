@@ -240,7 +240,7 @@ final class ErpCenterController extends Controller
      * or serialized payloads. Keep the canonical work item and deep link
      * unchanged; this projection only sanitizes the two summary previews.
      *
-     * @param Collection<int, array<string, mixed>> $items
+     * @param  Collection<int, array<string, mixed>>  $items
      * @return Collection<int, array<string, mixed>>
      */
     private function safePreviewReferences(Collection $items): Collection
