@@ -122,6 +122,35 @@ class InstallerWorkflowTest extends TestCase
         $this->assertDirectoryDoesNotExist($lockDirectory);
     }
 
+    public function test_permission_preflight_rejects_posix_readonly_parent_even_when_privileged_php_can_write(): void
+    {
+        if (PHP_OS_FAMILY === 'Windows') {
+            $this->markTestSkipped('POSIX directory permissions are not available on Windows.');
+        }
+
+        $readonly = $this->testDirectory.'/readonly-installer-locks';
+        mkdir($readonly, 0750);
+        $environment = $this->testDirectory.'/.env';
+        $before = file_get_contents($environment);
+        $lock = $readonly.'/env.lock';
+
+        config(['foodex.installer_env_lock_path' => $lock]);
+
+        chmod($readonly, 0555);
+        try {
+            clearstatcache(true, $readonly);
+            $this->assertSame(0, fileperms($readonly) & 0222);
+            $failures = app(InstallerWorkflow::class)->writablePathFailures();
+
+            $this->assertContains(__('installer.errors.env_lock_directory_writable'), $failures);
+            $this->assertNotContains(__('installer.errors.env_directory_writable'), $failures);
+            $this->assertSame($before, file_get_contents($environment));
+            $this->assertFileDoesNotExist($lock);
+        } finally {
+            chmod($readonly, 0750);
+        }
+    }
+
     public function test_permission_preflight_rejects_directory_at_each_existing_target_without_mutation(): void
     {
         $initialEnv = file_get_contents($this->testDirectory.'/.env');
