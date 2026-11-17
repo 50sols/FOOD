@@ -1,0 +1,30 @@
+# V2 #3956 — WhatsApp Settings configuration/readiness acceptance
+
+- Source: #3956 / UX G009 #2750 / #2503. **Foodex_V2 only; FEATURE FREEZE.**
+- Existing owner: Administration Hub → WhatsApp settings and connections; canonical GET `/admin/settings/whatsapp` and `/admin/settings/whatsapp/connections`.
+- Placement: **Reuse → Extend**. Domain Communications; entity global WhatsApp provider profile; actor `whatsapp.view` reader / `whatsapp.settings` editor; Super Admin for credential replacement, primary switch and emergency/lifecycle transitions. Navigation type `ADMIN_SETTINGS` + existing page-level tabs; no new URL path, sidebar entry, entitlement, permission, business feature or phone-message operation.
+- Responsive/locale: existing FOODEX shell, `.foodex-tabs` single horizontal strip, native URL anchors with keyboard Tab/Enter and focus-visible, one selected panel per existing route, AR/EN and page dir RTL/LTR. Narrow mobile scroll is constrained to shared tab strip. No JS-generated authority; hidden controls are **not** an authorization boundary.
+- UI state: page reads existing server `RuntimePolicy`, profile `status`, `health_status`, real validator timestamps and durable transport counters. An unvalidated Draft is not called Ready; no guessed provider connectivity. Credentials stay password inputs, are never printed as sample or re-rendered into form controls.
+
+## User configuration map
+
+| Value | Class | Existing source / operator guidance | Validation and safe default | Permission / readiness |
+|---|---|---|---|---|
+| Profile name, display phone, international phone | Required name/display, optional normalized | Operator's approved WhatsApp Business number; E.164 country-code format | Name 120, phone 32, normalized 24; normalized derives from displayed number when absent and server validates | `whatsapp.settings`; new record Draft |
+| Provider type | Required, preconfigured default | Meta WhatsApp Cloud API; `meta_cloud` default | Server regex (letters/numbers/_/-), 40 char cap; actual registry supports Meta aliases only; unsupported provider fails during real provider call | Save is not certification |
+| Phone Number ID, WhatsApp Business Account ID, App ID | External, optional | Meta WhatsApp Manager and Meta for Developers, **not internal FOODEX DB IDs** | Max 128 each; blank when Meta has not issued the value; do not invent values | Provider Test required for real readiness |
+| Provider access token, webhook verify/signing secrets | External, optional at Draft creation | Authorized Meta app administrator; entered only as passwords | Max 10,000; blank does not rotate an existing encrypted secret; no secrets in help/release/artifacts | Existing Super Admin gate for credential replacement, `whatsapp.settings` on create |
+| Provider/webhook advanced metadata | Preconfigured/internal | Existing stored structured metadata in authoritative connection profile | **No business-facing raw JSON editor**; omission on update preserves prior maps from the **transactionally locked record**. Legacy explicit JSON API validation/secret-key prohibition remains | Same manager audit/revalidation logic; no silent reset |
+| Capability flags, lifecycle, emergency state, test numbers | Configured/preexisting | Existing WhatsApp module controls; `RuntimePolicy` and `StateManager` authoritative | Existing server enums, revision and confirm guards unchanged | `whatsapp.settings`; Super Admin on privileged controls; never activate just by choosing a tab |
+
+## Security/QA evidence and limitations
+
+- Existing controllers decide `whatsapp.view`, `whatsapp.settings`, active user, Super Admin; `ConnectionProfileManager` transaction/locking/secret masking/audit is preserved.
+- Strict scalar tab allowlists mean malformed `tab[]` cannot select a privileged/create panel. Tab navigation changes **rendering only**, not server route/POST action, provider state, queue or credentials.
+- Existing provider metadata is updated only when explicitly supplied by a trusted caller; omitted form fields do not clear metadata and the locked-row values win over stale snapshots. Existing explicit JSON validator rejects malformed payloads and manager rejects secret-looking metadata keys.
+- Verification path in `backend/tests/Feature/V2WhatsAppSettingsReadinessTabsTest.php`: English/Arabic, LTR/RTL, valid/invalid/array tabs, no JSON editor, metadata persistence after save, true Draft/unvalidated state, unauthorized and inactive user denial. Existing `WhatsAppConnectionProfileTest` covers provider validation, encryption, health and audit.
+- Customer App: **NO_DIRECT_IMPACT** — no public/mobile API contract, credentials, runtime customer UX or consent change.
+- Driver App: **NO_DIRECT_IMPACT** — no B2C dispatch/message API, roles or Flutter change.
+- Van App: **NO_DIRECT_IMPACT** — no B2B Van path, role or Flutter change.
+- Risk: **HIGH** because profile configuration and credential-adjacent UX; independent runtime/browser verification (320/360/390/412/430px, screen-reader focus) still requires test evidence. This scoped PR does not certify Meta service access, webhook provisioning, ERP company/tax/stock-owner settings, or full V2 launch readiness.
+- Source completeness and integration are **not claimed** until exact-final-head Required CI, Repository Policy, V2 Isolation and technical review are all green/passed and the original PR is merged exclusively into `Foodex_V2`.
