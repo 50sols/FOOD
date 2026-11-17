@@ -7,7 +7,7 @@ ROOT=Path(__file__).resolve().parents[1]
 CONFIG_PATH=ROOT/".ci"/"ci-map.json"
 
 def git(*args:str)->str:
-    return subprocess.check_output(["git","-C",str(ROOT),*args],text=True)
+    return subprocess.check_output(["git","-C",str(ROOT),*args],text=True,stderr=subprocess.PIPE)
 
 def load_config()->dict:
     return json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
@@ -41,7 +41,15 @@ def changed_files(base:str,head:str)->list[str]:
         tracked=git("diff","--name-only",base).splitlines()
         untracked=git("ls-files","--others","--exclude-standard").splitlines()
         return sorted(set(x for x in tracked+untracked if x))
-    return [x for x in git("diff","--name-only",base,head).splitlines() if x]
+    # Match GitHub's PR file set; two-tree diffs also include base-only commits
+    # when an outdated pull request and its target branch have diverged.
+    merge_base_diff=f"{base}...{head}"
+    try:
+        names=git("diff","--name-only",merge_base_diff).splitlines()
+    except subprocess.CalledProcessError as exc:
+        reason=(exc.stderr or "").strip()
+        raise ValueError(f"Cannot compute merge-base diff {merge_base_diff}: {reason}") from exc
+    return [x for x in names if x]
 
 def resolve(config:dict,paths:list[str],branch:str="")->dict:
     areas={name:any(re.search(spec["path_regex"],p) for p in paths) for name,spec in config["areas"].items()}
