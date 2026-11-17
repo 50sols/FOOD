@@ -25,7 +25,7 @@ void main() {
             expect(request.headers['X-FOODEX-Retail-Store-ID'], '17');
             expect(request.headers['Accept-Language'], language);
             return http.Response(
-              '{"data":{"store_id":${statementStore == null ? 'null' : statementStore},"transactions":[],"closing_balance":-39.875,"currency":"KWD"}}',
+              '{"data":{"store_id":${statementStore ?? 'null'},"transactions":[],"closing_balance":-39.875,"currency":"KWD"}}',
               200,
               headers: {'content-type': 'application/json'},
             );
