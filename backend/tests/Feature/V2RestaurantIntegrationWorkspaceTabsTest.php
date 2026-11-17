@@ -3,6 +3,7 @@
 namespace Tests\Feature;
 
 use App\Domain\SmartOrdering\Models\SmartOrderingSite;
+use App\Models\Permission;
 use App\Models\Role;
 use App\Models\Store;
 use App\Models\User;
@@ -269,6 +270,48 @@ final class V2RestaurantIntegrationWorkspaceTabsTest extends TestCase
             ->assertSee('Safe Partner')
             ->assertSee('One-time API credential');
         $this->assertDatabaseCount('restaurant_saas_api_clients', 1);
+    }
+
+    public function test_one_time_credentials_never_leak_to_a_view_only_operator_after_manage_deny(): void
+    {
+        $site = $this->restaurantSite();
+        $viewer = $this->roleUser('B2C_STORE_ADMIN');
+        DB::table('user_store_roles')->insert([
+            'user_id' => $viewer->id,
+            'store_id' => $site->store_id,
+            'role_id' => Role::query()->where('code', 'B2C_STORE_ADMIN')->firstOrFail()->id,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        DB::table('user_permission_overrides')->insert([
+            'user_id' => $viewer->id,
+            'permission_id' => Permission::query()->where('code', 'smart_ordering.manage')->firstOrFail()->id,
+            'scope_key' => 'global',
+            'store_id' => null,
+            'effect' => 'deny',
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        $viewer->forceFill(['has_permission_overrides' => true])->save();
+
+        $this->assertTrue($viewer->fresh()->hasPermission('smart_ordering.view', (int) $site->store_id));
+        $this->assertFalse($viewer->fresh()->hasPermission('smart_ordering.manage', (int) $site->store_id));
+
+        foreach (['api-clients', 'webhooks', 'not-a-tab', ['api-clients']] as $tab) {
+            $this->actingAs($viewer->fresh())->withSession([
+                'restaurant_api_credential' => 'EXAMPLE-TOKEN-MUST-NOT-LEAK',
+                'restaurant_webhook_secret' => 'EXAMPLE-WEBHOOK-MUST-NOT-LEAK',
+            ])->get(route('admin.smart-ordering.integrations.index', [
+                'site' => $site->getKey(),
+                'tab' => $tab,
+            ]))->assertOk()
+                ->assertDontSee('EXAMPLE-TOKEN-MUST-NOT-LEAK')
+                ->assertDontSee('EXAMPLE-WEBHOOK-MUST-NOT-LEAK')
+                ->assertDontSee('name="_integration_form"', false);
+        }
+
+        $this->assertDatabaseCount('restaurant_saas_api_clients', 0);
+        $this->assertDatabaseCount('restaurant_saas_webhook_subscriptions', 0);
     }
 
     public function test_cross_store_and_wholesale_roles_cannot_bypass_site_authority_using_tab_query(): void
