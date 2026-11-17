@@ -68,8 +68,9 @@ final class V2Customer360TabHistoryContextTest extends TestCase
 
             // The existing statement/date and finance subflow are not replaced
             // by invented History/Credit routes or new client-side data sources.
-            $this->assertStringContainsString('name="statement_from"', $html);
-            $this->assertStringContainsString('name="statement_to"', $html);
+            $response->assertViewHas('statementFilters', fn (mixed $filters): bool => is_array($filters)
+                && ($filters['statement_from'] ?? null) === '2026-01-01'
+                && ($filters['statement_to'] ?? null) === '2026-02-28');
             $this->assertStringContainsString('data-c360-panel="orders"', $html);
             $this->assertStringContainsString('data-c360-panel="invoices"', $html);
             $this->assertStringContainsString('data-c360-panel="statement"', $html);
