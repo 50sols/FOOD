@@ -145,6 +145,11 @@
             @if ($hostingGuidance !== null)
                 <div class="notice" role="note">{{ __('installer.hosting.'.$hostingGuidance) }}</div>
             @endif
+            @if (in_array($currentStep, [1, 12, 15], true))
+                <div class="notice" role="note" data-installer-master-data-readiness="review-required">
+                    {{ __('installer.wizard.seed_admin_readiness') }}
+                </div>
+            @endif
 
             <form method="post" action="{{ route('install.step', array_filter(['step' => $currentStep, 'lang' => $languageQuery])) }}" autocomplete="off">
                 <input type="hidden" name="installer_token" value="{{ $installerToken }}">

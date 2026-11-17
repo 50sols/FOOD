@@ -19,6 +19,7 @@ return [
         'database_test_notice' => 'The saved database connection will be tested.',
         'migrations_notice' => 'Only approved migrations will be run with --force.',
         'seed_notice' => 'Approved roles, permissions and core reference data will be seeded.',
+        'seed_admin_readiness' => 'Initial reference data are store types and built-in roles/permissions, not approved company, legal, tax or trading data. The organization migration can create provisional FOODEX Platform, Default Company, Default Legal Entity and Legacy Operations records. Review and correct them after setup in the existing Administration → Organization hierarchy before enabling ERP workflows. Genuine legal identity, stock title, approved finance policy and provider setup require authorized input/approval. Never treat placeholders as production or rerun demo/launch seeders on live data.',
         'key_notice' => 'A new secure APP_KEY will be generated for this installation.',
         'health_notice' => 'Database, storage, cache and queue will be checked before finishing.',
         'finish_notice' => 'The Super Admin account and installed version will be saved, the installer locked, and setup closed.',

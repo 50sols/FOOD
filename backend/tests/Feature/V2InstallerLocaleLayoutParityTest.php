@@ -71,6 +71,8 @@ final class V2InstallerLocaleLayoutParityTest extends TestCase
             ->assertSee('<html lang="ar" dir="rtl">', false)
             ->assertSee('الخطوة 1 من 15')
             ->assertSee('مرحبًا')
+            ->assertSee('data-installer-master-data-readiness="review-required"', false)
+            ->assertSee(__('installer.wizard.seed_admin_readiness', [], 'ar'))
             ->assertSee('إنهاء التثبيت')
             ->assertDontSee('First-run Setup Wizard');
 
@@ -79,6 +81,8 @@ final class V2InstallerLocaleLayoutParityTest extends TestCase
             ->assertSee('<html lang="en" dir="ltr">', false)
             ->assertSee('Step 1 of 15')
             ->assertSee('Welcome')
+            ->assertSee('data-installer-master-data-readiness="review-required"', false)
+            ->assertSee(__('installer.wizard.seed_admin_readiness', [], 'en'))
             ->assertSee('Finish')
             ->assertDontSee('معالج الإعداد الأولي');
 
