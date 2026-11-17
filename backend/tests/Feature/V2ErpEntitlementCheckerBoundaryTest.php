@@ -2093,6 +2093,31 @@ final class V2ErpEntitlementCheckerBoundaryTest extends TestCase
             ->where('auditable_id', $supplier->id)
             ->count());
         $this->assertSame($auditBefore + 3, DB::table('audit_logs')->count());
+        $supplierAuditAfterArchive = DB::table('audit_logs')->count();
+
+        // Retries (including by another authorized actor) must not replace
+        // the historical updater or produce another successful audit.
+        foreach ([$buyer, $owner] as $replayingActor) {
+            $this->actingAs($replayingActor->fresh())->post(route('admin.erp.procurement.suppliers.archive', $supplier->id), [
+                'store_id' => $storeA->id,
+            ])->assertRedirect();
+        }
+        $this->assertSame($supplierAuditAfterArchive, DB::table('audit_logs')->count());
+        $this->assertDatabaseHas('enterprise_suppliers', [
+            'id' => $supplier->id,
+            'status' => 'inactive',
+            'updated_by' => $buyer->id,
+        ]);
+
+        // The company-wide natural key remains reserved even if the
+        // inactive supplier was originally scoped to another B2B store.
+        $this->actingAs($buyer->fresh())->post(route('admin.erp.procurement.suppliers.store'), [
+            ...$legal,
+            'store_id' => $storeB->id,
+            'scope_type' => 'store',
+        ])->assertSessionHasErrors(['code']);
+        $this->assertSame($supplierAuditAfterArchive, DB::table('audit_logs')->count());
+        $this->assertSame(1, DB::table('enterprise_suppliers')->where('code', $legal['code'])->count());
     }
 
     public function test_purchase_request_http_create_submit_replay_and_forged_supplier_price_credit_actor_are_scoped_and_audited(): void
