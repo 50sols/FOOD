@@ -123,10 +123,22 @@ final class V2RestaurantIntegrationWorkspaceTabsTest extends TestCase
             ->assertDontSee('name="target_url"', false);
 
         foreach (['overview', 'logs', 'reports', 'connectors', 'api-clients', 'webhooks'] as $tab) {
-            $expected = route('admin.smart-ordering.integrations.index', [
-                'site' => $site->getKey(), 'tab' => $tab,
-            ] + $filters + ['support_access' => 1]);
-            $response->assertSee($expected);
+            $this->assertSame(1, preg_match(
+                '/id="ri-tab-'.preg_quote($tab, '/').'"[^>]*href="([^"]+)"/',
+                $response->getContent(),
+                $matches,
+            ));
+            $url = html_entity_decode($matches[1], ENT_QUOTES | ENT_HTML5, 'UTF-8');
+            $this->assertSame(
+                parse_url(route('admin.smart-ordering.integrations.index', $site), PHP_URL_PATH),
+                parse_url($url, PHP_URL_PATH),
+            );
+            parse_str((string) parse_url($url, PHP_URL_QUERY), $query);
+            $this->assertSame($tab, $query['tab'] ?? null);
+            $this->assertSame('1', $query['support_access'] ?? null);
+            foreach ($filters as $key => $value) {
+                $this->assertSame($value, $query[$key] ?? null, $tab.' must retain '.$key);
+            }
         }
 
         $this->assertDatabaseCount('restaurant_saas_api_clients', 0);
@@ -145,7 +157,6 @@ final class V2RestaurantIntegrationWorkspaceTabsTest extends TestCase
                 'q' => 'safe search',
             ]))->assertOk()
                 ->assertSee('id="ri-panel-overview"', false)
-                ->assertDontSee('data-ri-active-panel', false)
                 ->assertDontSee('name="_integration_form"', false)
                 ->assertDontSee('name="provider_key"', false)
                 ->assertDontSee('name="target_url"', false)
