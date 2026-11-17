@@ -57,6 +57,11 @@ body{margin:0}.sidebar-access{padding:24px;max-width:1500px;margin:auto}.hero,.r
 </select></label>
 <noscript><button type="submit">{{ __('sidebar_admin.load_role') }}</button></noscript>
 <div class="muted">{{ __('sidebar_admin.role_scope') }}: <strong>{{ __('v2_role_permissions.scope_'.$selectedRole->scope) }}</strong></div>
+@if($selectedRole->archived_at !== null)
+<p class="read-only-note" role="status" data-v2-role-status="archived">{{ __('v2_role_permissions.preview_role_archived') }}</p>
+@elseif(! $selectedRole->is_active)
+<p class="read-only-note" role="status" data-v2-role-status="inactive">{{ __('v2_role_permissions.preview_role_inactive') }}</p>
+@endif
 </form>
 
 @php
@@ -131,7 +136,7 @@ body{margin:0}.sidebar-access{padding:24px;max-width:1500px;margin:auto}.hero,.r
 <article class="access-item {{ $item['global_enabled']?'':'unavailable' }}" data-v2-role-preview-node data-v2-role-node="{{ $item['key'] }}"
     data-preview-permissions="{{ implode('|', $item['permissions']) }}" data-preview-mode="{{ $item['permission_mode'] }}"
     data-preview-scope-ok="{{ $nodeScopeAllowed ? '1' : '0' }}" data-preview-channel-ok="{{ $nodeChannelAllowed ? '1' : '0' }}"
-    data-preview-excluded="{{ $nodeRoleExcluded ? '1' : '0' }}" data-preview-privileged="{{ $selectedRole->code === 'SUPER_ADMIN' ? '1' : '0' }}"
+    data-preview-excluded="{{ $nodeRoleExcluded ? '1' : '0' }}" data-preview-role-state="{{ $selectedRole->archived_at !== null ? 'archived' : (! $selectedRole->is_active ? 'inactive' : 'active') }}" data-preview-privileged="{{ $selectedRole->code === 'SUPER_ADMIN' ? '1' : '0' }}"
     data-preview-enabled="{{ $item['global_enabled'] ? '1' : '0' }}" data-preview-hidden="{{ $item['override'] === false ? '1' : '0' }}"
     data-preview-module="{{ $nodeModule !== '' ? '1' : '0' }}" data-preview-module-ready="{{ $nodeModuleReady === null ? 'unknown' : ($nodeModuleReady ? '1' : '0') }}">
 <div class="access-check">
@@ -235,6 +240,8 @@ body{margin:0}.sidebar-access{padding:24px;max-width:1500px;margin:auto}.hero,.r
         denied: @json(__('v2_role_permissions.preview_denied')),
         hiddenStatus: @json(__('v2_role_permissions.preview_hidden_status')),
         disabled: @json(__('v2_role_permissions.preview_disabled')),
+        roleInactive: @json(__('v2_role_permissions.preview_role_inactive')),
+        roleArchived: @json(__('v2_role_permissions.preview_role_archived')),
         excluded: @json(__('v2_role_permissions.preview_excluded')),
         scope: @json(__('v2_role_permissions.preview_scope')),
         channel: @json(__('v2_role_permissions.preview_channel')),
@@ -258,6 +265,10 @@ body{margin:0}.sidebar-access{padding:24px;max-width:1500px;margin:auto}.hero,.r
         let restrictedCount = 0;
         for (const node of nodes) {
             const reasons = [];
+            // Recorded grants cannot make a disabled or archived role eligible.
+            // This mirrors AdminSidebarManager::roleCanUseItem, not an HTTP grant.
+            if (node.dataset.previewRoleState === 'archived') reasons.push(copy.roleArchived);
+            else if (node.dataset.previewRoleState !== 'active') reasons.push(copy.roleInactive);
             if (node.dataset.previewEnabled !== '1') reasons.push(copy.disabled);
             if (node.dataset.previewExcluded === '1') reasons.push(copy.excluded);
             if (node.dataset.previewScopeOk !== '1') reasons.push(copy.scope);
