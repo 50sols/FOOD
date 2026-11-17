@@ -27,6 +27,8 @@ return [
     'rule_default' => 'Defaults: ordering increment 1.000 and a new rule is active upon save; no default contracted unit price is supplied. Confirm approval before saving.',
     'rule_validation' => 'Server checks: existing tier and product, nonnegative unit price, positive minimum quantity and ordering increment, up to 12 quantity breaks with positive thresholds and nonnegative prices. Store scope applies.',
     'rule_permissions' => 'Authorization: b2b.pricing.manage within the authorized Wholesale store; price/margin/credit approvals and maker-checker remain independent.',
-    'rule_test_help' => 'To precheck without saving, use Test without saving in the existing Pricing Mode Settings. It tests mode and existence of active store rules only; it does NOT validate or approve the candidate rule entered here. Saving a rule makes a real change.',
+    'rule_test_help' => 'Use Test rule without saving beside Save. The server checks the candidate fields, store-owned B2B product, enabled tier pricing and volume breaks without persisting records or an audit event. PASS is only input validation; cost, profitability, credit and customer agreement approvals remain pending.',
+    'rule_test' => 'Test rule without saving',
+    'rule_test_valid' => 'Rule inputs passed server authorization and validation. No price rule or setting was saved, no audit event was written. Commercial, margin and credit approvals remain unverified.',
     'test_partial' => 'Precheck partial: active Wholesale tier price rules exist, but customer/product coverage, margin, credit and approvals are not certified. Nothing was saved.',
 ];
