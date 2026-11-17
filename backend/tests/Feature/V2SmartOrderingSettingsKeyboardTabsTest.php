@@ -47,7 +47,7 @@ final class V2SmartOrderingSettingsKeyboardTabsTest extends TestCase
         }
         $this->assertSame(5, substr_count($source, 'role="tabpanel"'));
         $this->assertSame(5, substr_count($source, 'role="tab"'));
-        $this->assertSame(1, substr_count($source, 'aria-selected="true"'));
+        $this->assertSame(1, substr_count($source, 'aria-selected="true" tabindex="0"'));
         $this->assertSame(1, substr_count($source, 'tabindex="0" data-so-settings-tab'));
         $this->assertSame(4, substr_count($source, 'tabindex="-1" data-so-settings-tab'));
     }
@@ -80,10 +80,16 @@ final class V2SmartOrderingSettingsKeyboardTabsTest extends TestCase
             $store = $this->store('B2C', 'SO-TAB-'.strtoupper($locale));
             $otherStore = $this->store('B2C', 'SO-OTHER-'.strtoupper($locale));
             $manager = $this->storeAdmin($store->id, $locale);
+            app()->setLocale($locale);
+            // An authenticated store manager must not bypass the server's
+            // real entitlement check even though the tab markup is client-side.
+            $this->actingAs($manager)
+                ->get(route('admin.smart-ordering.index', ['store_id' => $store->id]))
+                ->assertForbidden();
+
             $this->enableRestaurantSaasForTestStore($store->id);
             app(SmartOrderingSiteService::class)->ensureForStore($store->id, $manager);
 
-            app()->setLocale($locale);
             $this->actingAs($manager)
                 ->get(route('admin.smart-ordering.index', ['store_id' => $store->id]))
                 ->assertOk()
@@ -97,15 +103,6 @@ final class V2SmartOrderingSettingsKeyboardTabsTest extends TestCase
                 ->get(route('admin.smart-ordering.index', ['store_id' => $otherStore->id]))
                 ->assertNotFound();
 
-            DB::table('enterprise_module_entitlements')
-                ->where('module_code', 'smart_ordering')
-                ->where('scope_type', 'store')
-                ->where('scope_id', $store->id)
-                ->update(['is_enabled' => false]);
-
-            $this->actingAs($manager)
-                ->get(route('admin.smart-ordering.index', ['store_id' => $store->id]))
-                ->assertForbidden();
         }
     }
 
