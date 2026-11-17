@@ -613,6 +613,7 @@ return [
     'connections' => [
         'section_navigation' => 'WhatsApp settings sections',
         'setup_purpose_help' => 'Purpose: configure a trusted provider connection. Save creates a Draft; it does not enable messaging or certify delivery.',
+        'safe_phone_example_help' => 'Format example only, not a real contact: +9655XXXXXXX. Use your actual registered business number; leave the normalized field blank to derive it from the displayed number.',
         'provider_source_help' => 'Provider: use meta_cloud (default), from your Meta WhatsApp Cloud API integration. Use a supported provider code (letters, numbers, underscores or hyphens; at most 40 characters).',
         'external_identifiers_help' => 'Get the phone number ID and WhatsApp Business account ID from WhatsApp Manager, and the App ID from Meta for Developers. These are external provider references, not FOODEX database IDs; leave optional values blank if not issued. Limit: 128 characters each.',
         'credentials_help' => 'Get the access token and webhook secrets from the authorized Meta app administrator. Enter them only in protected password fields; never in notes or metadata. No prefilled examples. Testing contacts the provider; Save alone is not a connection test.',
