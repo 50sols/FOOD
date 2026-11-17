@@ -124,7 +124,7 @@ jobs:
               raise SystemExit("Expected a full immutable Git SHA.")
           version = sha
           quoted = re.compile(
-              r"""(?P<prefix>\b(?:const|let|var)\s+serviceWorkerVersion\s*=\s*)"""
+              r"""(?P<prefix>\b(?:(?:const|let|var)\s+serviceWorkerVersion\s*=|serviceWorkerVersion\s*:)\s*)"""
               r"""(?P<quote>['"])[^'"\r\n]*(?P=quote)"""
           )
           paths = [
