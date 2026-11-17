@@ -37,6 +37,10 @@ abstract interface class WholesaleCommerceApi {
   });
 }
 
+abstract interface class WholesaleStoreScopedCartMutationApi {
+  Future<Object?> updateItemForStore(int storeId, int itemId, double quantity);
+}
+
 abstract interface class WholesaleSellingUnitCommerceApi {
   Future<Object?> addSellingUnitItem(
     int storeId,
@@ -50,7 +54,8 @@ class HttpWholesaleCommerceApi
     implements
         WholesaleCommerceApi,
         WholesaleQuoteApi,
-        WholesaleSellingUnitCommerceApi {
+        WholesaleSellingUnitCommerceApi,
+        WholesaleStoreScopedCartMutationApi {
   HttpWholesaleCommerceApi({
     required this.baseUrl,
     required this.token,
@@ -157,6 +162,21 @@ class HttpWholesaleCommerceApi
           '/api/v1/cart/items/$itemId',
           body: {'quantity': quantity},
         ),
+      );
+
+  @override
+  Future<Object?> updateItemForStore(
+    int storeId,
+    int itemId,
+    double quantity,
+  ) async =>
+      _scopedResponse(
+        await _request(
+          'PATCH',
+          '/api/v1/cart/items/$itemId',
+          body: {'quantity': quantity},
+        ),
+        storeId: storeId,
       );
 
   @override
