@@ -1721,8 +1721,8 @@ final class ProcurementCompletionManager
                     $query->where('scope_type', 'company')
                         ->orWhere(function ($store) use ($storeId): void {
                             $store->where('scope_type', 'store')->where('organization_id', $organizationId)
-                ->where('company_id', $companyId)
-                ->where('store_id', $storeId);
+                                ->where('company_id', $companyId)
+                                ->where('store_id', $storeId);
                         });
                 })
                 ->count();
@@ -1964,8 +1964,8 @@ final class ProcurementCompletionManager
             ['label' => '61-90', 'value' => $this->contractCountBetween($storeId, $today->addDays(61), $today->addDays(90), $organizationId, $companyId)],
             ['label' => '90+', 'value' => DB::table('enterprise_procurement_contracts')
                 ->where('organization_id', $organizationId)
-            ->where('company_id', $companyId)
-            ->where('store_id', $storeId)
+                ->where('company_id', $companyId)
+                ->where('store_id', $storeId)
                 ->where('status', 'active')
                 ->whereDate('ends_on', '>', $today->addDays(90)->toDateString())
                 ->count()],
