@@ -2,6 +2,8 @@
 
 namespace Tests\Feature;
 
+use App\Enterprise\Entitlements\EntitlementScope;
+use App\Enterprise\Entitlements\ModuleEntitlementManager;
 use App\Enterprise\Modules\ModuleLifecycleManager;
 use App\Enterprise\Modules\ModuleState;
 use App\Enterprise\Organization\OrganizationHierarchyService;
@@ -247,6 +249,12 @@ final class EnterprisePurchaseOrderFoundationTest extends TestCase
         $lifecycle->transition('procurement', ModuleState::ENABLED);
 
         [$actor, $store, $context] = $this->scopedUser($this->allPermissions(), 'PO-POSTED');
+        app(ModuleEntitlementManager::class)->set(
+            'procurement',
+            new EntitlementScope(EntitlementScope::STORE, (int) $store->id),
+            true,
+            actor: $actor,
+        );
         $sku = 'PO-POSTED-SKU';
         $catalog = Catalog::query()->create([
             'store_id' => $store->id,
