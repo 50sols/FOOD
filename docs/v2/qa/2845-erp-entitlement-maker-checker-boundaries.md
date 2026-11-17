@@ -48,3 +48,46 @@ The P111 requirement also demands a complete ERP module/role/company/branch/lega
 3. `SyntheticErpWorkflowEvidence::install()` is used in PHPUnit setup only to model positive signed evidence when PR #2858's future readiness validator is present; production `certified_versions`, trust keys and attestations remain untouched and unapproved.
 
 **CI truth:** Previous original #3206 HEAD `cec76fe4` had Required #44022523691, Policy #44022523712 and V2 Isolation #44022523666 SUCCESS, but those results do **not** cover these new commits. Recheck new exact-head required workflows and review risk HIGH before any merger. Original #2845 remains OPEN; #2858/#3065 owns the separate workflow-certification tests, and only an integrated exact-head build can discharge its current 200/409 regressions. Neither local runtime, real tenant data nor browser UAT has been tested. No main/tags/release/deployment/production.
+
+
+## 2026-11-17 — P111 unified Procurement admission / 403–409 source contract
+
+This change is strictly in **original Issue #2845 / original PR #3206 / branch `test/2845-v2-erp-entitlement-maker-checker-boundaries`**; branch merges only to `Foodex_V2`. Current authorized code/test commits: `2834930e105cea33df7022a7eb17235cc8ce295d` (Controller), `dcc964cf23e60aa26e349fd0969189b4260ca3a7` and `e81cd9db6a7fdbbc2a8707d14a7347e214df39b9` (HTTP tests).
+
+### Existing authoritative gates composed, not bypassed
+
+1. **Identity:** `EnsureManagementDashboardAccess` and P111 `EnterpriseProcurementController::actor` deny inactive users with HTTP 403; `User::hasPermission` already handles active Super Admin, effective roles, scoped permission, and GLOBAL/STORE explicit DENY. The Controller no longer repeats an unchecked `hasRole('SUPER_ADMIN') ||` bypass in tab/action projections.
+2. **Tenant/store:** `TenantContextResolver::wholesale/retail` validates active B2B global role/channel or B2C assigned store/support context. P111 `context()` starts from actual candidate stores, filters using effective `procurement.*` permission and the **selected STORE entitlement**, and never accepts an explicit `store_id` outside the eligible set. An explicit zero, negative, nonnumeric, inaccessible, inactive or cross-channel selector yields 403 rather than silently using a default store. When no selector is present the default and visible store choices come from the same eligible set.
+3. **Module:** existing `ModuleRegistry` ENABLED gate and `EnsureErpOperationalReadiness` enforce exact module state/operational readiness for HTTP. A mere registered route, sidebar item, ENABLED flag, synthetic PHPUnit evidence or healthy probe never replaces a reviewed P135 certificate. No production readiness/config edits.
+4. **Entitlement:** `ModuleEntitlementResolver::allows(procurement, STORE)` enforces lineage with narrowest explicit STORE DENY over PLATFORM ALLOW. The pre-existing **zero-policy legacy compatibility contract** remains only while no Procurement enrollment row exists; once policies exist, missing/revoked STORE coverage denies requests. No Finance/AP capability or maker/checker exception is introduced.
+5. **Business write/read scope:** `SupplierDirectory` and `PurchaseRequestManager` already use `EnterpriseScopeAuthorizer` and `EnterpriseDataScope` to authorize exact action, organization/company/store visibility and IDOR protection. `request/approval/PO/GRN/invoice` services own their own transaction/SoD checks. P111 does not rewrite peer-owned P135/P110 services. The existing Sidebar is **a projection only**, never a grant.
+
+### HTTP outcome contract
+
+| Input / state | Expected | Owner and rationale |
+|---|---|---|
+| Unauthenticated | 302 to existing management login / 401 when applicable | Existing authentication middleware; never authorize |
+| Authenticated inactive user or unauthorized action/role/tenant/store/channel | **403** | Identity/RBAC/tenant/context |
+| Explicit malformed/zero/negative/forged `store_id` | **403** | No fallback to a different store |
+| Revoked STORE or explicit STORE DENY, even with Platform ALLOW | **403** | ModuleEntitlementResolver selected STORE |
+| Disabled/uncertified/unhealthy module entry | **403** operational route | Existing readiness middleware; no fake certificate |
+| Authorized actor + entitled selected store, but genuinely missing `EnterpriseDataScope` hierarchy | **409** | Configuration fault *after* authorization; 409 is not a security-denial success |
+| Fully authorized/ready GET | **200** | Read-only; no match/audit changes |
+| Fully authorized maker POST | Existing workflow 302 / documented business status | Canonical manager, idempotency and SoD enforced separately |
+
+### Real Laravel HTTP regression suite
+
+The original `backend/tests/Feature/V2ErpEntitlementCheckerBoundaryTest.php` retains all existing global permission DENY, Store DENY, sibling B2B, Retail forged supplier, positive maker/independent-checker, historical invoice read-only, readiness/module health negative, AR/EN RTL/LTR cases **without relaxing asserted 403**. It now adds:
+
+- `test_forged_nonpositive_or_malformed_store_id_never_falls_back_to_an_authorized_store`: production-like CSRF session/header, valid GET first, malformed/zero/negative GET+POST `403` across AR/EN, zero request/audit mutation.
+- `test_default_procurement_store_picker_excludes_store_deny_and_uses_entitled_sibling`: Platform ALLOW + primary B2B STORE DENY, only sibling B2B appears as selectable default and GET `200`; direct denied store GET `403`.
+- `test_deactivated_super_admin_cannot_read_or_mutate_procurement_even_with_historical_role`: authenticated historical SUPER_ADMIN role cannot execute GET/POST after deactivation, with no request creation.
+- `test_authorized_b2b_store_without_enterprise_hierarchy_returns_409_after_authority_checks`: valid B2B global role+Platform entitlement+readiness, store lacks company hierarchy: AR/EN GET+POST `409`, no request/audit write; separate valid configured store GET `200`.
+
+The earlier `test_missing_store_entitlement_and_missing_required_certification_cannot_be_bypassed_by_reenable` incorrectly compared audit counts across an **authorized `ModuleEntitlementManager::set` grant**, which itself writes a legitimate audit row. It now captures a fresh audit baseline *after* that grant, while preserving strict no-audit assertions around unauthorized GET/POST and later read-only requests. This is not an authorization waiver.
+
+### Merge and ownership constraints
+
+P135 #2858 / PR #3065 actively owns `ErpCenterController.php`, `AdminNavigation.php`, module workflow readiness/certification and its own suites. P110 #2844 / PR #3921 owns legal stock title; #3960 / PR #3961 owns existing ERP tabs. **None of those files are modified here.** Two pre-existing exact-head failures remain in P111 tests until a peer-approved source integration: Super Admin diagnostic Sidebar expectation vs real navigation, and Store DENY actual HTTP 403 vs ERP Center card `available` instead of `not_entitled`. The P135 branch's historical 403→200 and 403→409 failures require combining accepted P111 Controller security in the original branch integration, not weakening tests. C13 Customer and Operational #734 integrated required jobs also have separate owners.
+
+`SOURCE_COMPLETE:NO`, `REVIEW_RISK:HIGH`, `TECHNICAL_REVIEW: NOT PASS`, `NOT_CERTIFIED`. No actual local PHP runtime executed through GitHub Connector, and no claim of CI green on these commits before terminal exact-head checks. No merge/close/main/tag/release/deployment/production.
