@@ -28,6 +28,7 @@ use Illuminate\Support\Facades\Schema;
 use Illuminate\Validation\ValidationException;
 use Symfony\Component\HttpKernel\Exception\HttpExceptionInterface;
 use Tests\Support\ProcurementSecondApprover;
+use Tests\Support\SyntheticErpWorkflowEvidence;
 use Tests\TestCase;
 
 final class EnterprisePurchaseReturnFoundationTest extends TestCase
@@ -598,6 +599,13 @@ final class EnterprisePurchaseReturnFoundationTest extends TestCase
 
     private function enableProcurement(): void
     {
+        // P135 adds a signed workflow prerequisite. Keep this P110 test branch
+        // independently runnable until that test-only helper is integrated.
+        // Never provision trust keys or certification in live configuration.
+        if (class_exists(SyntheticErpWorkflowEvidence::class)) {
+            SyntheticErpWorkflowEvidence::install();
+        }
+
         $lifecycle = app(ModuleLifecycleManager::class);
         $lifecycle->transition('procurement', ModuleState::ENABLING);
         $lifecycle->transition('procurement', ModuleState::ENABLED);
