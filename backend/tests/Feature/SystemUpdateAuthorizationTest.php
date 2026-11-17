@@ -3,8 +3,8 @@
 namespace Tests\Feature;
 
 use App\Domain\Updater\TrustedUpdateSignatureVerifier;
-use App\Http\Controllers\Admin\SystemUpdateController;
 use App\Domain\Updater\UpdatePackageManifest;
+use App\Http\Controllers\Admin\SystemUpdateController;
 use App\Models\Role;
 use App\Models\SystemVersion;
 use App\Models\UpdateHistory;
