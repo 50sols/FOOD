@@ -1326,29 +1326,33 @@ final class FinanceWorkbenchController extends Controller
             new EntitlementScope(EntitlementScope::LEGAL_ENTITY, $scope->legalEntityId),
             $capability,
         ) && $this->financeAccess->allowsAtStore($storeId, $capability);
-        $permitted = fn (string $permission): bool => $actor->hasPermission($permission, $storeId);
+        // The same server-scoped Finance access verdict governs every visible tab
+        // and direct HTTP mutation, including restricted combined duty roles.
+        $permitted = fn (string $permission, string $capability): bool => $this->financeAccess->canPerform(
+            $actor, $storeId, $permission, $capability,
+        );
 
         return [
-            'foundation_read' => $permitted('finance.view') && $entitled('finance.foundation.read'),
+            'foundation_read' => $permitted('finance.view', 'finance.foundation.read') && $entitled('finance.foundation.read'),
             // Posted GL has legal-entity, not immutable Retail store, source scope.
             // Report/statement tab visibility must match server-side 403 checks.
-            'reports_read' => ! $context->isRetail() && $permitted('finance.view') && $entitled('finance.foundation.read'),
-            'statements_read' => ! $context->isRetail() && $permitted('finance.view') && $entitled('finance.gl.read'),
-            'foundation_manage' => $permitted('finance.manage') && $entitled('finance.foundation.manage'),
-            'gl_read' => $permitted('finance.view') && $entitled('finance.gl.read'),
-            'gl_manage' => $permitted('finance.manage') && $entitled('finance.gl.manage'),
-            'gl_post' => $permitted('finance.post') && $entitled('finance.gl.post'),
-            'opening_read' => $permitted('finance.view') && $entitled('finance.opening_balances.read'),
-            'opening_manage' => $permitted('finance.manage') && $entitled('finance.opening_balances.manage'),
-            'opening_post' => $permitted('finance.post') && $entitled('finance.opening_balances.post'),
-            'ar_read' => $permitted('finance.view') && $entitled('finance.ar.read'),
-            'ar_manage' => $permitted('finance.manage') && $entitled('finance.ar.manage'),
-            'ar_post' => $permitted('finance.post') && $entitled('finance.ar.post'),
-            'ap_read' => $permitted('finance.view') && $entitled('finance.ap.read'),
-            'credit_read' => $permitted('finance.view') && $entitled('finance.credit_terms.read'),
-            'credit_manage' => $permitted('finance.manage') && $entitled('finance.credit_terms.manage'),
-            'approval_request' => $permitted('finance.manage') && $entitled('finance.approvals.manage'),
-            'approval_decide' => $permitted('finance.approve') && $entitled('finance.approvals.approve'),
+            'reports_read' => ! $context->isRetail() && $permitted('finance.view', 'finance.foundation.read') && $entitled('finance.foundation.read'),
+            'statements_read' => ! $context->isRetail() && $permitted('finance.view', 'finance.gl.read') && $entitled('finance.gl.read'),
+            'foundation_manage' => $permitted('finance.manage', 'finance.foundation.manage') && $entitled('finance.foundation.manage'),
+            'gl_read' => $permitted('finance.view', 'finance.gl.read') && $entitled('finance.gl.read'),
+            'gl_manage' => $permitted('finance.manage', 'finance.gl.manage') && $entitled('finance.gl.manage'),
+            'gl_post' => $permitted('finance.post', 'finance.gl.post') && $entitled('finance.gl.post'),
+            'opening_read' => $permitted('finance.view', 'finance.opening_balances.read') && $entitled('finance.opening_balances.read'),
+            'opening_manage' => $permitted('finance.manage', 'finance.opening_balances.manage') && $entitled('finance.opening_balances.manage'),
+            'opening_post' => $permitted('finance.post', 'finance.opening_balances.post') && $entitled('finance.opening_balances.post'),
+            'ar_read' => $permitted('finance.view', 'finance.ar.read') && $entitled('finance.ar.read'),
+            'ar_manage' => $permitted('finance.manage', 'finance.ar.manage') && $entitled('finance.ar.manage'),
+            'ar_post' => $permitted('finance.post', 'finance.ar.post') && $entitled('finance.ar.post'),
+            'ap_read' => $permitted('finance.view', 'finance.ap.read') && $entitled('finance.ap.read'),
+            'credit_read' => $permitted('finance.view', 'finance.credit_terms.read') && $entitled('finance.credit_terms.read'),
+            'credit_manage' => $permitted('finance.manage', 'finance.credit_terms.manage') && $entitled('finance.credit_terms.manage'),
+            'approval_request' => $permitted('finance.manage', 'finance.approvals.manage') && $entitled('finance.approvals.manage'),
+            'approval_decide' => $permitted('finance.approve', 'finance.approvals.approve') && $entitled('finance.approvals.approve'),
         ];
     }
 
