@@ -429,6 +429,56 @@ void main() {
     }
   });
 
+
+  test('Store-scoped PATCH rejects foreign B2B store without retry in AR/EN',
+      () async {
+    for (final locale in ['ar', 'en']) {
+      for (final responseStore in [12, 99]) {
+        var calls = 0;
+        final api = HttpWholesaleCommerceApi(
+          baseUrl: 'https://foodex.example',
+          token: 'scoped-token',
+          locale: locale,
+          retailStoreContextId: 17,
+          maxGetAttempts: 3,
+          client: MockClient((request) async {
+            calls++;
+            expect(request.method, 'PATCH');
+            expect(request.url.path, '/api/v1/cart/items/55');
+            expect(jsonDecode(request.body), {'quantity': 1.125});
+            expect(request.headers['Authorization'], 'Bearer scoped-token');
+            expect(request.headers['X-FOODEX-Customer-Domain'], 'b2b');
+            expect(request.headers['X-FOODEX-Retail-Store-ID'], '17');
+            expect(request.headers['Accept-Language'], locale);
+            return http.Response(
+              '{"store_id":$responseStore,"channel":"b2b","items":[],"quote":{"grand_total":20.125,"discount_total":0.001}}',
+              200,
+              headers: {'content-type': 'application/json'},
+            );
+          }),
+        );
+        if (responseStore != 12) {
+          await expectLater(
+            api.updateItemForStore(12, 55, 1.125),
+            throwsA(isA<WholesaleCommerceException>().having(
+              (error) => error.message,
+              'localized store rejection',
+              locale == 'en'
+                  ? 'The server returned a different store or invalid order. Refresh and try again.'
+                  : 'أعاد الخادم بيانات متجر مختلف أو طلبًا غير صالح. حدّث الصفحة وحاول مرة أخرى.',
+            )),
+          );
+        } else {
+          final result = await api.updateItemForStore(12, 55, 1.125) as Map;
+          expect(result['store_id'], 12);
+          expect((result['quote'] as Map)['grand_total'], 20.125);
+          expect((result['quote'] as Map)['discount_total'], 0.001);
+        }
+        expect(calls, 1);
+      }
+    }
+  });
+
   test('Checkout never auto-retries; explicit replay retains the caller key',
       () async {
     var attempts = 0;
