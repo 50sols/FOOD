@@ -91,7 +91,7 @@ final class V2RetailDashboardTabShapeScopeTest extends TestCase
                     preg_match('/<nav class="dashboard-tabs"[^>]*>(.*?)<\\/nav>/s', $html, $matches),
                 );
                 $nav = $matches[1];
-                $this->assertSame(5, preg_match_all('/<a\\b[^>]*class="dashboard-tab(?: active)?"[^>]*>/s', $nav));
+                $this->assertSame(5, preg_match_all('/<a\\b[^>]*class="dashboard-tab(?: active)?\\s*"[^>]*>/s', $nav));
                 $this->assertSame(
                     1,
                     preg_match_all('/<a\\b[^>]*class="dashboard-tab active"[^>]*aria-current="page"/s', $nav),
