@@ -1042,6 +1042,37 @@ class AdminNavigation
             ];
         }
 
+        // The Procurement HTTP chooser defaults to the first active B2B
+        // store, not the first store with an effective module entitlement.
+        // For a Wholesale store-only grant, bind the existing Sidebar link
+        // to an actual permitted, entitled and provisioned B2B store. This is
+        // a navigation projection only; the HTTP controller still authorizes.
+        if ($moduleCode === 'procurement'
+            && ! $user->isPlatformOwner()
+            && ! $this->enterpriseEntitlements->allows($moduleCode, EntitlementScope::platform())) {
+            foreach (app(OperationalTenantScope::class)->allowedStoreIds($user, $permission, 'b2b') as $storeId) {
+                if (! $user->hasPermission($permission, $storeId)
+                    || ! $this->enterpriseEntitlements->allows(
+                        $moduleCode,
+                        new EntitlementScope(EntitlementScope::STORE, $storeId),
+                    )) {
+                    continue;
+                }
+
+                try {
+                    if (app(OrganizationHierarchyService::class)->scopeForStore($storeId) === null) {
+                        continue;
+                    }
+                } catch (Throwable) {
+                    continue;
+                }
+
+                $params['store_id'] = (string) $storeId;
+
+                break;
+            }
+        }
+
         // The Treasury workbench resolves a concrete store on HTTP entry.
         // Project an actually authorized and entitled Wholesale store into the
         // existing Sidebar route instead of exposing a dead/default-store link.
