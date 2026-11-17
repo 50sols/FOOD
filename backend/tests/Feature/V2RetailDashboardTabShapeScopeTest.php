@@ -98,10 +98,20 @@ final class V2RetailDashboardTabShapeScopeTest extends TestCase
                 );
                 $this->assertStringNotContainsString('role="tab"', $nav);
                 $this->assertStringNotContainsString('aria-selected', $nav);
-                $this->assertStringContainsString(
-                    'href="'.e(route('admin.b2c.dashboard', $query)).'"',
-                    $nav,
+                // The server deliberately includes authoritative selected_from /
+                // selected_to in tab hrefs even when the request omitted dates.
+                // Inspect parameters instead of relying on query-string ordering.
+                $this->assertSame(
+                    1,
+                    preg_match('/<a\\b[^>]*class="dashboard-tab active"[^>]*href="([^"]+)"[^>]*aria-current="page"/s', $nav, $currentLink),
                 );
+                $queryString = parse_url(
+                    html_entity_decode($currentLink[1], ENT_QUOTES, 'UTF-8'),
+                    PHP_URL_QUERY,
+                );
+                parse_str((string) $queryString, $actualQuery);
+                $this->assertSame((string) $storeId, (string) ($actualQuery['store_id'] ?? ''));
+                $this->assertSame($selectedTab, $actualQuery['dashboard_tab'] ?? null);
 
                 // This is a native GET navigation rail, not a client-side tab widget.
                 // Enter follows an anchor; Space and arrows retain browser scrolling.
