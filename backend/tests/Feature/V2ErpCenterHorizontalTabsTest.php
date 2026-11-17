@@ -126,19 +126,26 @@ final class V2ErpCenterHorizontalTabsTest extends TestCase
     {
         $actor = $this->globalSuperAdmin();
         $this->actingAs($actor)->get(route('admin.erp.index'))->assertOk();
+        // Row counts alone miss a tab GET that silently changes an existing
+        // module state or entitlement value. Snapshot every persisted column
+        // after the permitted initial local Super Admin bootstrap.
         $before = [
-            DB::table('enterprise_modules')->count(),
-            DB::table('enterprise_module_entitlements')->count(),
+            DB::table('enterprise_modules')->orderBy('id')->get()->toJson(),
+            DB::table('enterprise_module_entitlements')->orderBy('id')->get()->toJson(),
         ];
 
-        foreach (self::PANELS as $tab) {
-            $this->actingAs($actor)->get(route('admin.erp.index', ['tab' => $tab]))->assertOk();
+        foreach ([
+            ...array_map(static fn (string $tab): array => ['tab' => $tab], self::PANELS),
+            ['tab' => ['modules']],
+            ['tab' => 'modules', 'status' => 'available', 'module' => 'procurement'],
+        ] as $query) {
+            $this->actingAs($actor)->get(route('admin.erp.index', $query))->assertOk();
         }
 
         $this->assertSame($before, [
-            DB::table('enterprise_modules')->count(),
-            DB::table('enterprise_module_entitlements')->count(),
-        ]);
+            DB::table('enterprise_modules')->orderBy('id')->get()->toJson(),
+            DB::table('enterprise_module_entitlements')->orderBy('id')->get()->toJson(),
+        ], 'Read-only ERP tab navigation must not modify persisted module state or entitlement values.');
     }
 
     public function test_unauthenticated_and_store_only_actor_cannot_reach_erp_via_tab_query(): void
