@@ -50,6 +50,15 @@ body{margin:0}
 .erp-status[data-state="setup_required"]{background:rgba(75,140,245,.12);color:var(--foodex-blue)}
 .erp-status[data-state="disabled"],.erp-status[data-state="not_entitled"]{background:var(--foodex-background);color:var(--foodex-muted);border:1px solid var(--foodex-border)}
 .erp-note{font-size:var(--foodex-text-sm);color:var(--foodex-muted)}
+.erp-readiness-report{display:grid;gap:6px;padding:10px 12px;border-inline-start:3px solid var(--foodex-orange);border-radius:var(--foodex-radius-control);background:var(--foodex-orange-soft);font-size:var(--foodex-text-sm)}
+.erp-readiness-report[data-complete="true"]{border-inline-start-color:var(--foodex-green);background:var(--foodex-green-soft)}
+.erp-readiness-report ul{margin:0;padding-inline-start:1.25rem}
+.erp-readiness-report li{color:var(--foodex-ink);line-height:var(--foodex-leading-normal)}
+.erp-readiness-steps{display:grid;gap:8px;list-style:none;padding:0!important}
+.erp-readiness-step{display:grid;grid-template-columns:auto minmax(0,1fr) auto;align-items:start;gap:8px;padding:8px 10px;border:1px solid color-mix(in srgb,var(--foodex-orange) 24%,transparent);border-radius:var(--foodex-radius-control);background:var(--foodex-surface)}
+.erp-readiness-step[data-complete="true"]{border-color:color-mix(in srgb,var(--foodex-green) 30%,transparent)}
+.erp-readiness-step-state{font-weight:800;white-space:nowrap}
+.erp-readiness-step a{font-weight:800;white-space:nowrap}
 .erp-health{font-size:var(--foodex-text-xs);font-weight:800;color:var(--foodex-muted)}
 .erp-table-details{margin-top:12px}
 .erp-table-details summary{cursor:pointer;color:var(--foodex-green-dark);font-weight:800}
@@ -132,7 +141,9 @@ body{margin:0}
 @if($workload === [])
 <div class="foodex-viz-empty">{{ __('admin.erp_center.analytics.workload.empty') }}</div>
 @else
-@php($workMax = max(1, (int) collect($workload)->max('total')))
+@php
+$workMax = max(1, (int) collect($workload)->max('total'));
+@endphp
 <div class="erp-bars">
 @foreach($workload as $row)
 <a class="erp-bar-row" data-erp-work-module="{{ $row['key'] }}" data-exceptions="{{ $row['exceptions'] > 0 ? 'true' : 'false' }}" href="{{ $row['url'] }}">
@@ -263,6 +274,20 @@ body{margin:0}
 @else
 <div class="erp-grid" data-erp-modules>
 @foreach($visibleCards as $card)
+@php
+$readinessModuleCode = match ($card['key']) {
+    'wms' => 'inventory_wms',
+    'bi' => 'enterprise_bi',
+    'procurement', 'finance', 'treasury' => $card['key'],
+    default => null,
+};
+$readinessManifestVersion = $readinessModuleCode
+    ? config('enterprise_modules.modules.'.$readinessModuleCode.'.version')
+    : null;
+$readinessCertifiedVersion = $readinessModuleCode
+    ? config('enterprise_module_readiness.certified_versions.'.$readinessModuleCode)
+    : null;
+@endphp
 <article class="foodex-card erp-module {{ $selectedModule === $card['key'] ? 'is-selected' : '' }}" data-erp-key="{{ $card['key'] }}" data-erp-status="{{ $card['status'] }}"> {{-- localization-gate: allow — data attributes are deterministic non-user-facing state tokens; visible state labels are translated. --}}
 <div>
 <h3>{{ $card['title'] }}</h3>
@@ -276,11 +301,70 @@ body{margin:0}
 @if($card['url'])
 <a class="foodex-action-primary" href="{{ $card['url'] }}">{{ __('admin.erp_center.open') }}</a>
 @else
+@if($card['status'] !== 'degraded')
 <span class="erp-note">{{ $card['denial_reason']
     ? __('admin.erp_center.denial_reasons.'.$card['denial_reason'])
     : __('admin.erp_center.status_help.'.$card['status']) }}</span>
 @endif
+@endif
 </div>
+@if($card['status'] === 'degraded' || in_array($card['key'], ['treasury','procurement','wms','finance','bi'], true))
+@php
+$treasuryReadinessComplete = $card['key'] === 'treasury' && collect($treasuryReadinessSteps)->every(fn ($step) => $step['complete']);
+$moduleReadinessSteps = $moduleReadinessReports[$card['key']] ?? [];
+$moduleReadinessComplete = $moduleReadinessSteps !== [] && collect($moduleReadinessSteps)->every(fn ($step) => $step['complete']);
+$readinessComplete = $card['key'] === 'treasury' ? $treasuryReadinessComplete : $moduleReadinessComplete;
+@endphp
+<aside class="erp-readiness-report" aria-label="{{ __('enterprise_modules.readiness') }}" data-erp-readiness-report data-complete="{{ $readinessComplete ? 'true' : 'false' }}">
+<strong>{{ __('enterprise_modules.readiness') }}</strong>
+@if($card['key'] === 'treasury')
+<strong>{{ $treasuryReadinessComplete
+    ? __('admin.erp_center.treasury_readiness.ready')
+    : __('admin.erp_center.treasury_readiness.summary', ['complete' => collect($treasuryReadinessSteps)->where('complete', true)->count(), 'total' => count($treasuryReadinessSteps)]) }}</strong>
+<ul class="erp-readiness-steps">
+@foreach($treasuryReadinessSteps as $step)
+<li class="erp-readiness-step" data-complete="{{ $step['complete'] ? 'true' : 'false' }}" data-step="{{ $step['key'] }}">
+<span class="erp-readiness-step-state">{{ $step['complete'] ? __('admin.erp_center.treasury_readiness.complete') : __('admin.erp_center.treasury_readiness.incomplete') }}</span>
+<span><strong>{{ __('admin.erp_center.treasury_readiness.steps.'.$step['key'].'.title') }}</strong><br>{{ $step['detail'] }}</span>
+@if($step['url'])<a href="{{ $step['url'] }}">{{ __('admin.erp_center.treasury_readiness.open_step') }}</a>@endif
+</li>
+@endforeach
+</ul>
+@elseif($moduleReadinessSteps !== [])
+<strong>{{ $moduleReadinessComplete
+    ? __('admin.erp_center.module_readiness.complete')
+    : __('admin.erp_center.module_readiness.summary', ['complete' => collect($moduleReadinessSteps)->where('complete', true)->count(), 'total' => count($moduleReadinessSteps)]) }}</strong>
+<ul class="erp-readiness-steps">
+@foreach($moduleReadinessSteps as $step)
+<li class="erp-readiness-step" data-complete="{{ $step['complete'] ? 'true' : 'false' }}" data-step="{{ $step['key'] }}">
+<span class="erp-readiness-step-state">{{ $step['complete'] ? __('admin.erp_center.module_readiness.done') : __('admin.erp_center.module_readiness.missing') }}</span>
+<span><strong>{{ $step['title'] }}</strong><br>{{ $step['detail'] }}</span>
+@if($step['url'])<a href="{{ $step['url'] }}">{{ __('admin.erp_center.module_readiness.open_step') }}</a>@endif
+</li>
+@endforeach
+</ul>
+@else
+<ul>
+@if($card['denial_reason'] === 'uncertified' && $readinessModuleCode && is_int($readinessManifestVersion))
+<li>{{ __('enterprise_modules.readiness_report.missing_version_certification', [
+    'current' => __('enterprise_modules.readiness_report.version_value', ['version' => $readinessManifestVersion]),
+    'certified' => is_int($readinessCertifiedVersion)
+        ? __('enterprise_modules.readiness_report.version_value', ['version' => $readinessCertifiedVersion])
+        : __('enterprise_modules.readiness_report.no_certified_version'),
+]) }}</li>
+<li>{{ __('enterprise_modules.readiness_report.certification_requirement') }}</li>
+@else
+<li>{{ $card['denial_reason']
+    ? __('admin.erp_center.denial_reasons.'.$card['denial_reason'])
+    : __('admin.erp_center.status_help.'.$card['status']) }}</li>
+@endif
+@if($card['health'] && $card['health'] !== 'healthy')
+<li>{{ __('admin.erp_center.health_statuses.'.$card['health']) }}</li>
+@endif
+</ul>
+@endif
+</aside>
+@endif
 </article>
 @endforeach
 </div>
