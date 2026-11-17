@@ -69,26 +69,38 @@ final class EnterpriseTreasuryController extends Controller
         abort_unless($this->modules->isEnabled('treasury'), 404, 'Treasury module is disabled.');
 
         [$context, $storeOptions, $storeId] = $this->context($request, $actor);
-        $tab = (string) $request->query('tab', 'overview');
-        abort_unless(in_array($tab, self::TABS, true), 404);
+        $tab = $request->query('tab', 'overview');
+        abort_unless(is_string($tab) && in_array($tab, self::TABS, true), 404);
         abort_unless($this->allowed($actor, $storeId, 'finance.view'), 403);
 
         // The selected store must authorize this *tab's* read capability before
         // even loading cashbox/bank metadata. A broad Finance role, healthy
         // module or a different Treasury tab's grant is never sufficient.
         // Match the capability already enforced by each downstream service.
-        $readCapability = match ($tab) {
+        $readCapabilityForTab = static fn (string $tabKey): string => match ($tabKey) {
             'overview', 'receipts', 'forecast', 'reports' => 'treasury.receipts.read',
             'payments', 'financing', 'guarantees', 'investments' => 'treasury.payments.read',
             'cheques' => 'treasury.cheques.read',
             'reconciliation' => 'treasury.reconciliation.read',
             'cash_closing' => 'treasury.cash_closing.read',
         };
+        $treasuryStoreScope = new EntitlementScope(EntitlementScope::STORE, $storeId);
         abort_unless($this->entitlements->allows(
             'treasury',
-            new EntitlementScope(EntitlementScope::STORE, $storeId),
-            $readCapability,
+            $treasuryStoreScope,
+            $readCapabilityForTab($tab),
         ), 403);
+
+        // Only project tabs that the same selected-store HTTP read guard admits.
+        // A disabled link is not a substitute for capability-specific permission.
+        $visibleTabs = array_values(array_filter(
+            self::TABS,
+            fn (string $candidate): bool => $this->entitlements->allows(
+                'treasury',
+                $treasuryStoreScope,
+                $readCapabilityForTab($candidate),
+            ),
+        ));
 
         $cashboxes = EnterpriseCashbox::query()
             ->where('store_id', $storeId)
@@ -123,7 +135,7 @@ final class EnterpriseTreasuryController extends Controller
             'navGroups' => $this->navigation->groupsFor($actor),
             'navContext' => 'erp_treasury',
             'activeTab' => $tab,
-            'tabs' => self::TABS,
+            'tabs' => $visibleTabs,
             'storeOptions' => $storeOptions,
             'selectedStoreId' => $storeId,
             'cashboxes' => $cashboxes,
