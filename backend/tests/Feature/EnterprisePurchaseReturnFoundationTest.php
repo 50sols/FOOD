@@ -846,7 +846,15 @@ final class EnterprisePurchaseReturnFoundationTest extends TestCase
         // The application channel check needs a canonical Wholesale persona.
         // Keep its built-in permissions empty so each scoped test role remains
         // the sole source of document permissions.
-        $channelRole = Role::query()->where('code', 'PROCUREMENT_BUYER')->firstOrFail();
+        $channelRole = Role::query()->firstOrCreate(
+            ['code' => 'PROCUREMENT_BUYER'],
+            [
+                'name' => 'Wholesale Procurement Buyer',
+                'scope' => 'global',
+                'is_active' => true,
+                'is_system' => false,
+            ],
+        );
         $channelRole->permissions()->sync([]);
         $user->roles()->syncWithoutDetaching([$channelRole->id]);
 
