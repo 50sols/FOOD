@@ -51,11 +51,14 @@ class CiPlanTest(unittest.TestCase):
             "scripts/capture_web_screenshots.mjs",
             "scripts/foodex-ui-pr-plan.py",
             ".ai/uiux/visual-evidence-matrix.json",
-            ".github/workflows/ui-visual-qa.yml",
         ):
             p=module.resolve(self.config,[path],"test/1943-responsive-runtime-gate")
             self.assertTrue(p["areas"]["dashboard_ui"],path)
             self.assertFalse(p["areas"]["mobile_ui"],path)
+        workflow=module.resolve(self.config,[".github/workflows/ui-visual-qa.yml"],"test/1943-responsive-runtime-gate")
+        self.assertTrue(workflow["areas"]["dashboard_ui"])
+        self.assertTrue(workflow["areas"]["mobile_ui"])
+        self.assertFalse(workflow["backend_dashboard_only"])
 
     def test_v2_g003_final_matrix_includes_all_three_mobile_apps_and_backend(self):
         """Final isolated V2 head must not silently skip Flutter for a CI-only diff."""
@@ -121,4 +124,38 @@ class CiPlanTest(unittest.TestCase):
         self.assertFalse(p["backend_dashboard_only"])
         for area in ("customer","driver","van"):
             self.assertTrue(p["areas"][area],area)
+
+    def test_v2_ci_routing_matrix_and_unknown_paths_fail_closed(self):
+        cases={
+            "dashboard-only": (["backend/resources/views/admin/orders/index.blade.php"], ("backend","dashboard_ui"), ("customer","driver","van")),
+            "backend-only": (["backend/app/Services/OrderService.php"], ("backend",), ("customer","driver","van")),
+            "customer-only": (["apps/customer_app/lib/features/orders/orders_screen.dart"], ("customer","mobile_ui"), ("backend","driver","van")),
+            "driver-only": (["apps/driver_app/lib/features/navigation/navigation_page.dart"], ("driver","mobile_ui"), ("backend","customer","van")),
+            "van-only": (["apps/van_app/lib/features/orders/van_order_screen.dart"], ("van","mobile_ui"), ("backend","customer","driver")),
+            "shared-flutter-dependency": (["packages/design_tokens/lib/src/colors.dart"], ("customer","driver","van","mobile_ui"), ("backend",)),
+            "finance-rbac-security": (["backend/app/Services/Finance/PaymentApprovalService.php","backend/app/Http/Middleware/EffectivePermission.php"], ("backend",), ("customer","driver","van")),
+            "installer-updater-zip": (["scripts/validate_release_artifact_contract.py"], ("backend","customer","driver","van"), ()),
+            "ci-configuration": ([".github/workflows/backend-ci.yml"], ("backend","customer","driver","van","mobile_ui","enterprise_performance"), ()),
+        }
+        for name,(paths,required,forbidden) in cases.items():
+            with self.subTest(scenario=name):
+                plan=module.resolve(self.config,paths,"fix/4013-composer-ci-cache")
+                self.assertEqual([],plan["unclassified_paths"])
+                for area in required: self.assertTrue(plan["areas"][area],area)
+                for area in forbidden: self.assertFalse(plan["areas"][area],area)
+                if name=="ci-configuration": self.assertFalse(plan["backend_dashboard_only"])
+        for malformed in ("unknown/path.txt","../backend/app/Services/Finance.php",""):
+            with self.subTest(scenario="malformed-or-unknown",path=malformed):
+                plan=module.resolve(self.config,[malformed],"fix/4013-composer-ci-cache")
+                self.assertEqual([malformed],plan["unclassified_paths"])
+                for area in self.config["areas"]: self.assertTrue(plan["areas"][area],area)
+                self.assertFalse(plan["backend_dashboard_only"])
+
+    def test_required_laravel_jobs_cache_exact_composer_vendor_with_install_fallback(self):
+        workflow=(ROOT/".github/workflows/backend-ci.yml").read_text(encoding="utf-8")
+        self.assertEqual(3,workflow.count("- name: Cache installed Composer dependencies"))
+        self.assertEqual(3,workflow.count("composer-vendor-v1-${{ runner.os }}-php-8.3-${{ hashFiles('backend/composer.json', 'backend/composer.lock') }}"))
+        self.assertEqual(3,workflow.count("if [[ ! -f vendor/autoload.php ]]; then"))
+        self.assertEqual(3,workflow.count("composer install --no-interaction --prefer-dist --no-progress"))
+        self.assertNotIn("restore-keys:",workflow.split("- name: Cache installed Composer dependencies",1)[1].split("- name:",1)[0])
 if __name__=="__main__": unittest.main()
