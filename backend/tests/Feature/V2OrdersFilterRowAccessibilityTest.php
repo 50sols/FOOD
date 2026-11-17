@@ -99,6 +99,9 @@ final class V2OrdersFilterRowAccessibilityTest extends TestCase
         $this->assertStringContainsString('overflow-x:auto;overflow-y:hidden;', $source);
         $this->assertStringContainsString('.order-grid-filter-primary>label{flex:0 0 auto}', $source);
         $this->assertStringContainsString('scrollbar-width:thin', $source);
+        $this->assertStringContainsString('.order-workspace-filter-slot:has([data-order-grid-filter-controls]){flex:0 1 60%;max-width:60%;min-width:0}', $source);
+        $this->assertStringContainsString('.order-workspace-bar:has([data-order-grid-filter-controls]){flex-wrap:wrap}', $source);
+        $this->assertStringContainsString('.order-grid-filter-form{order:2;flex:1 1 100%;width:100%}', $source);
         $this->assertStringContainsString('height:44px!important;min-height:44px!important;', $source);
         $this->assertStringContainsString('font-size:1rem!important', $source);
         $this->assertStringContainsString('type="submit">{{ __(\'order_operations.filters.apply\') }}</button>', $source);
