@@ -150,10 +150,13 @@ class HttpWholesaleCommerceApi
       );
 
   @override
-  Future<Object?> updateItem(int itemId, double quantity) => _request(
-        'PATCH',
-        '/api/v1/cart/items/$itemId',
-        body: {'quantity': quantity},
+  Future<Object?> updateItem(int itemId, double quantity) async =>
+      _scopedCartMutationResponse(
+        await _request(
+          'PATCH',
+          '/api/v1/cart/items/$itemId',
+          body: {'quantity': quantity},
+        ),
       );
 
   @override
@@ -205,6 +208,23 @@ class HttpWholesaleCommerceApi
         value['store_id'] != storeId ||
         value['channel'] != 'b2b' ||
         (requireOrder && (value['id'] is! int || (value['id'] as int) <= 0))) {
+      throw WholesaleCommerceException(
+        locale == 'en'
+            ? 'The server returned a different store or invalid order. Refresh and try again.'
+            : 'أعاد الخادم بيانات متجر مختلف أو طلبًا غير صالح. حدّث الصفحة وحاول مرة أخرى.',
+      );
+    }
+    return raw;
+  }
+
+  Object? _scopedCartMutationResponse(Object? raw) {
+    // Cart PATCH returns GuestCartController::cartPayload. There is no store
+    // argument on this legacy method, so the server must authorize the item;
+    // never display a response from another channel as a Wholesale cart.
+    if (raw is! Map<String, dynamic> ||
+        raw['store_id'] is! int ||
+        (raw['store_id'] as int) <= 0 ||
+        raw['channel'] != 'b2b') {
       throw WholesaleCommerceException(
         locale == 'en'
             ? 'The server returned a different store or invalid order. Refresh and try again.'
@@ -336,6 +356,7 @@ class HttpWholesaleCommerceApi
     // Other cart mutations keep their existing response contract (including
     // the valid empty response on DELETE).
     if (method == 'GET' ||
+        method == 'PATCH' ||
         path == '/api/v1/quote' ||
         path == '/api/v1/checkout') {
       final mime = response.headers['content-type']
