@@ -1048,7 +1048,10 @@ class AdminNavigation
         // existing read route instead of hiding the whole business domain.
         // This is navigation only: direct HTTP, readiness, RBAC and SoD remain
         // authoritative and there is no fallback to another store.
-        if ($moduleCode === 'procurement' && ! $user->isPlatformOwner()) {
+        if ($moduleCode === 'procurement'
+            && ! $user->isPlatformOwner()
+            && (! $this->enterpriseEntitlements->allows($moduleCode, EntitlementScope::platform())
+                || ! $this->hasPermission($user, $permission))) {
             $storeId = $this->procurementNavigationStoreId($user);
             if ($storeId === null || ! Route::has($route)) {
                 return null;
