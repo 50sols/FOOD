@@ -7362,12 +7362,13 @@ class _WholesaleCheckoutDesignScreenState
     } catch (error) {
       if (!mounted) return;
       setState(() => submitting = false);
+      // A checkout POST can commit on the server even when its response is
+      // lost. Do not reload the cart or discard the authorized coupon quote:
+      // that would silently rotate the next explicit retry to a new intent
+      // and could create a duplicate order. Keep the original intent and
+      // idempotency key; the server resolves a replay or rejects a changed
+      // cart with 409. Never issue an automatic second POST.
       await showOperationalError(context, error);
-      if (mounted) {
-        setState(() {
-          future = _load();
-        });
-      }
     }
   }
 
