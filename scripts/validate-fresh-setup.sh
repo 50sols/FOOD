@@ -492,6 +492,26 @@ wait_for_port_free() {
   return 1
 }
 
+# Prove the actual extracted Setup ZIP keeps Laravel internals outside the
+# public web root. Test unauthenticated HTTP before and after installation,
+# without ever downloading/printing potentially sensitive file bodies.
+assert_backend_private_paths_not_served() {
+  local phase="$1" path code
+  for path in .env composer.lock vendor/autoload.php bootstrap/app.php config/app.php; do
+    if [[ ! -f "$fresh/backend/$path" ]]; then
+      echo "::error::G004 $phase private-path fixture is missing: $path"
+      return 1
+    fi
+    code="$(curl --silent --show-error --path-as-is --connect-timeout 2 --max-time 10 \
+      -o /dev/null -w '%{http_code}' "http://127.0.0.1:8099/$path")"
+    if [[ "$code" != "403" && "$code" != "404" ]]; then
+      echo "::error::G004 $phase exposed backend-private path $path (HTTP $code; expected 403/404)."
+      return 1
+    fi
+  done
+  echo "PASS: $phase actual HTTP public root denied backend-private Laravel files"
+}
+
 rm -f /tmp/foodex-install-server.log /tmp/foodex-install-server.pid
 (
   cd "$fresh/backend"
@@ -502,6 +522,7 @@ trap 'stop_server /tmp/foodex-install-server.pid; stop_server /tmp/foodex-instal
 
 wait_for_http             "Pre-finish installer"             /tmp/foodex-install-server.pid             /tmp/foodex-install-server.log             http://127.0.0.1:8099/install             /tmp/install-before.html             200
 grep -Fq 'FOODEX' /tmp/install-before.html
+assert_backend_private_paths_not_served pre-install
 
 # Unpacked Setup ZIP must complete the *actual* web wizard. No PHP CLI
 # prepare/finish shortcut may satisfy this acceptance gate.
@@ -728,6 +749,8 @@ rm -f /tmp/foodex-installed-server.log /tmp/foodex-installed-server.pid
 )
 
 wait_for_http             "Post-finish dashboard"             /tmp/foodex-installed-server.pid             /tmp/foodex-installed-server.log             'http://127.0.0.1:8099/admin/b2c/login?locale=en'             /tmp/login.html             200
+
+assert_backend_private_paths_not_served post-install
 
 rm -f /tmp/foodex-cookies.txt
 code="$(curl -sS -c /tmp/foodex-cookies.txt -o /tmp/login.html -w '%{http_code}' 'http://127.0.0.1:8099/admin/b2c/login?locale=en')"
