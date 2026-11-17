@@ -30,6 +30,7 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
 use Symfony\Component\HttpKernel\Exception\HttpException;
 use Tests\Support\ProcurementSecondApprover;
@@ -733,7 +734,7 @@ final class EnterpriseProcurementCompletionTest extends TestCase
             $actor, $scope, $store, $order, $orderLine, $warehouseId
         ): void {
             $receiptId = DB::table('enterprise_goods_receipts')->insertGetId([
-                'public_id' => (string) \Illuminate\Support\Str::uuid(),
+                'public_id' => (string) Str::uuid(),
                 'receipt_number' => $number,
                 'purchase_order_id' => $order->id,
                 'source_order_number' => $order->order_number,
