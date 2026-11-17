@@ -76,6 +76,13 @@ final class V2InspectorBackupLinkAuthorityTest extends TestCase
         $actor = $this->actor('V2_4002_PLATFORM_UPDATER', ['platform.manage', 'settings.view', 'system.update']);
         $this->assertTrue($actor->hasPermission('system.update'));
 
+        // A non-Super Admin may inherit the permission, but the read-only
+        // Inspector must not advertise this high-risk update action.
+        $this->actingAs($actor->fresh())
+            ->get(route('admin.inspector.index'))
+            ->assertOk()
+            ->assertDontSee('data-inspector-backup-center-link', false);
+
         DB::table('user_permission_overrides')->insert([
             'user_id' => $actor->id,
             'permission_id' => Permission::query()->where('code', 'system.update')->firstOrFail()->id,
