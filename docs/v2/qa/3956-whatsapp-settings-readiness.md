@@ -3,7 +3,7 @@
 - Source: #3956 / UX G009 #2750 / #2503. **Foodex_V2 only; FEATURE FREEZE.**
 - Existing owner: Administration Hub → WhatsApp settings and connections; canonical GET `/admin/settings/whatsapp` and `/admin/settings/whatsapp/connections`.
 - Placement: **Reuse → Extend**. Domain Communications; entity global WhatsApp provider profile; actor `whatsapp.view` reader / `whatsapp.settings` editor; Super Admin for credential replacement, primary switch and emergency/lifecycle transitions. Navigation type `ADMIN_SETTINGS` + existing page-level tabs; no new URL path, sidebar entry, entitlement, permission, business feature or phone-message operation.
-- Responsive/locale: existing FOODEX shell, `.foodex-tabs` single horizontal strip, native URL anchors with keyboard Tab/Enter and focus-visible, one selected panel per existing route, AR/EN and page dir RTL/LTR. Narrow mobile scroll is constrained to shared tab strip. No JS-generated authority; hidden controls are **not** an authorization boundary.
+- Responsive/locale: existing FOODEX shell, `.foodex-tabs` single horizontal strip, native URL anchors with keyboard Tab/Enter and focus-visible, **only the server-selected pane is emitted in HTML** on either existing route, AR/EN and page dir RTL/LTR. Narrow mobile scroll is constrained to shared tab strip. No JS-generated authority; inactive pane data/forms are not emitted and panel selection does not grant POST authorization.
 - UI state: page reads existing server `RuntimePolicy`, profile `status`, `health_status`, real validator timestamps and durable transport counters. An unvalidated Draft is not called Ready; no guessed provider connectivity. Credentials stay password inputs, are never printed as sample or re-rendered into form controls.
 
 ## User configuration map
@@ -16,6 +16,12 @@
 | Provider access token, webhook verify/signing secrets | External, optional at Draft creation | Authorized Meta app administrator; entered only as passwords | Max 10,000; blank does not rotate an existing encrypted secret; no secrets in help/release/artifacts | Existing Super Admin gate for credential replacement, `whatsapp.settings` on create |
 | Provider/webhook advanced metadata | Preconfigured/internal | Existing stored structured metadata in authoritative connection profile | **No business-facing raw JSON editor**; omission on update preserves prior maps from the **transactionally locked record**. Legacy explicit JSON API validation/secret-key prohibition remains | Same manager audit/revalidation logic; no silent reset |
 | Capability flags, lifecycle, emergency state, test numbers | Configured/preexisting | Existing WhatsApp module controls; `RuntimePolicy` and `StateManager` authoritative | Existing server enums, revision and confirm guards unchanged | `whatsapp.settings`; Super Admin on privileged controls; never activate just by choosing a tab |
+
+### Server-side tab isolation and CI regression contract
+
+- For `/admin/settings/whatsapp/connections`, `profiles`, `health`, and `create` now use **exclusive Blade `@if` branches**. Default/malformed/array `tab` shows Profiles only. Create is never selected for a viewer lacking `whatsapp.settings`; no hidden Create password form, profile list, or health pane exists in an inactive pane's response.
+- For `/admin/settings/whatsapp`, only Readiness or Controls is returned, never both. An unavailable runtime forces Readiness and does not return control forms. Explicit View/Settings/Super Admin HTTP checks and mutation-side SoD still govern access; hiding an inactive panel alone is not authorization.
+- HTTP feature tests assert response-HTML **absence**, not only CSS `hidden`, across EN/AR, invalid tabs, Create/Profiles/Health, module Readiness/Controls and unsafe input. Actual provider Test is still required, and its failure does not create a Ready status. The bilingual provider-test regression uses separate nonproduction phone numbers per locale so test records obey the canonical provider+normalized-number UNIQUE constraint, not a relaxed schema.
 
 ### Validation context and protected provider diagnostics (Device D continuation)
 
