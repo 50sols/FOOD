@@ -123,4 +123,84 @@ final class V2WhatsAppSettingsReadinessTabsTest extends TestCase
         $inactive->forceFill(['is_active' => false])->save();
         $this->actingAs($inactive)->get(route('admin.whatsapp.connections.index'))->assertForbidden();
     }
+
+    public function test_invalid_create_preserves_only_nonsecret_fields_and_returns_to_create_tab_in_both_locales(): void
+    {
+        foreach (['en', 'ar'] as $locale) {
+            $actor = $this->superAdmin($locale);
+            $privateToken = 'confidential-'.strtoupper($locale).'-create-token';
+
+            $response = $this->actingAs($actor)
+                ->from(route('admin.administration.index'))
+                ->post(route('admin.whatsapp.connections.store'), [
+                    'name' => 'Test business connection',
+                    'display_phone_number' => '+96550000088',
+                    'provider_type' => 'invalid provider type',
+                    'credential_secret' => $privateToken,
+                    'webhook_verify_token' => 'private-verify-value',
+                    'webhook_signing_secret' => 'private-signing-value',
+                    'provider_metadata' => '{"access_token":"unsafe-legacy-raw-json"}',
+                ]);
+
+            $response->assertRedirect(route('admin.whatsapp.connections.index', ['tab' => 'create']))
+                ->assertSessionHasErrors('provider_type')
+                ->assertSessionHas('_old_input.name', 'Test business connection');
+
+            $old = session('_old_input', []);
+            $this->assertArrayNotHasKey('credential_secret', $old);
+            $this->assertArrayNotHasKey('webhook_verify_token', $old);
+            $this->assertArrayNotHasKey('webhook_signing_secret', $old);
+            $this->assertArrayNotHasKey('provider_metadata', $old);
+            $this->assertArrayNotHasKey('webhook_metadata', $old);
+            $this->assertStringNotContainsString($privateToken, json_encode($old, JSON_THROW_ON_ERROR));
+            $this->assertSame(0, WhatsAppConnectionProfile::query()->count());
+
+            $page = $this->actingAs($actor)
+                ->get(route('admin.whatsapp.connections.index', ['tab' => 'create']));
+            $page->assertOk()->assertSee('value="Test business connection"', false);
+            $this->assertDoesNotMatchRegularExpression(
+                '/data-whatsapp-panel="create"[^>]*hidden/',
+                $page->getContent(),
+            );
+        }
+    }
+
+    public function test_invalid_credential_rotation_and_legacy_metadata_edit_do_not_flash_sensitive_values(): void
+    {
+        $actor = $this->superAdmin();
+        $this->actingAs($actor)->post(route('admin.whatsapp.connections.store'), [
+            'name' => 'Protected profile',
+            'display_phone_number' => '+96550000089',
+            'provider_type' => 'meta_cloud',
+        ])->assertRedirect(route('admin.whatsapp.connections.index'));
+
+        $profile = WhatsAppConnectionProfile::query()->firstOrFail();
+        $before = $profile->configuration_revision;
+        $secret = str_repeat('S', 10001);
+        $this->actingAs($actor)
+            ->from(route('admin.administration.index'))
+            ->put(route('admin.whatsapp.connections.credential', $profile), [
+                'credential_secret' => $secret,
+                'webhook_verify_token' => 'not-for-session',
+            ])->assertRedirect(route('admin.whatsapp.connections.index', ['tab' => 'profiles']))
+            ->assertSessionHasErrors('credential_secret');
+
+        $this->assertSame([], session('_old_input', []));
+        $this->assertSame($before, $profile->fresh()->configuration_revision);
+
+        $this->actingAs($actor)
+            ->from(route('admin.administration.index'))
+            ->patch(route('admin.whatsapp.connections.update', $profile), [
+                'name' => 'Bad metadata',
+                'display_phone_number' => '+96550000089',
+                'provider_type' => 'meta_cloud',
+                'provider_metadata' => '{"access_token":"private-do-not-flash"}',
+            ])->assertRedirect(route('admin.whatsapp.connections.index', ['tab' => 'profiles']))
+            ->assertSessionHasErrors('provider_metadata');
+
+        $this->assertSame([], session('_old_input', []));
+        $this->assertSame('Protected profile', $profile->fresh()->name);
+        $this->assertSame($before, $profile->fresh()->configuration_revision);
+    }
+
 }
