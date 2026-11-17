@@ -312,7 +312,7 @@ final class GoodsReceiptManager
                 // immutable source price, and negative/zero receipts must
                 // never reach inventory or the finance/audit handoff.
                 $received = trim((string) $line->received_quantity);
-                if (preg_match('/\\A(?:0|[1-9][0-9]{0,10})(?:\\.[0-9]{1,3})?\\z/D', $received) !== 1
+                if (preg_match('/\A(?:0|[1-9][0-9]{0,10})(?:\.[0-9]{1,3})?\z/D', $received) !== 1
                     || $this->quantityUnits($received) <= 0
                     || (string) $line->item_code !== (string) $orderLine->item_code
                     || (string) $line->unit !== (string) $orderLine->unit
