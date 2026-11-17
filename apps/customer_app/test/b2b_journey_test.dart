@@ -175,6 +175,10 @@ void main() {
                 find.byKey(const ValueKey('b2b-invoices-refresh')),
               );
             }
+            // Deliver a revoked HTTP response only after the replacement
+            // FutureBuilder has subscribed to the refreshed request.
+            await tester.pump();
+            api.reject();
             await _pumpCustomerFrames(tester);
             expect(api.calls, 2);
             expect(find.textContaining('INV-31'), findsNothing);
@@ -7550,19 +7554,18 @@ class _ReauthInvoiceB2bApi implements B2bApi {
 
   final int denialStatus;
   int calls = 0;
+  final Completer<Object?> _revokedResponse = Completer<Object?>();
+
+  void reject() {
+    _revokedResponse.completeError(
+      B2bApiException('not_authorized', statusCode: denialStatus),
+    );
+  }
 
   @override
   Future<Object?> get(String path) async {
     calls++;
-    if (calls == 2) {
-      // Mimic an actual HTTP response: the new FutureBuilder must first
-      // subscribe before the 401/403/404 arrives.
-      await Future<void>.delayed(const Duration(milliseconds: 50));
-      throw B2bApiException(
-        'not_authorized',
-        statusCode: denialStatus,
-      );
-    }
+    if (calls == 2) return _revokedResponse.future;
     final invoice = <String, Object?>{
       'id': 31,
       'store_id': 7,
