@@ -78,6 +78,7 @@
                 <label>{{ __('whatsapp.connections.name') }}<input class="foodex-control" name="name" required maxlength="120" value="{{ old('name') }}"></label>
                 <label>{{ __('whatsapp.connections.display_phone') }}<input class="foodex-control" name="display_phone_number" required maxlength="32" value="{{ old('display_phone_number') }}"></label>
                 <label>{{ __('whatsapp.connections.normalized_phone') }}<input class="foodex-control" name="normalized_phone_number" maxlength="24" placeholder="+965..." value="{{ old('normalized_phone_number') }}"></label>
+                <p class="muted">{{ __('whatsapp.connections.safe_phone_example_help') }}</p>
                 <label>{{ __('whatsapp.connections.provider') }}<input class="foodex-control" name="provider_type" required maxlength="40" value="{{ old('provider_type', 'meta_cloud') }}"></label>
                 <p class="muted">{{ __('whatsapp.connections.provider_source_help') }}</p>
                 <label>{{ __('whatsapp.connections.phone_number_id') }}<input class="foodex-control" name="provider_phone_number_id" maxlength="128" value="{{ old('provider_phone_number_id') }}"></label>
