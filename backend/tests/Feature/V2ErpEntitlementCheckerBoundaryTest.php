@@ -3010,7 +3010,50 @@ final class V2ErpEntitlementCheckerBoundaryTest extends TestCase
         }
         $this->assertSame($auditBeforeInvalid, DB::table('audit_logs')->count());
         $this->assertDatabaseCount('enterprise_goods_receipts', 0);
-        $this->assertDatabaseCount('stock_movements', 0);
+        $this->assertSame(0, DB::table('stock_movements')
+            ->where('reference_type', 'enterprise_goods_receipt_line')->count());
+
+        // A draft receipt can be cancelled (the only receipt-side
+        // rejection transition in this domain). It must not create stock;
+        // a cancelled document can never be posted by forging the route.
+        $this->actingAs($checker->fresh())->post($receiveUrl, [
+            ...$firstPayload,
+            'lines' => [[
+                ...$firstPayload['lines'][0],
+                'quantity' => '0.125',
+            ]],
+        ])->assertRedirect();
+        $cancelledReceipt = DB::table('enterprise_goods_receipts')
+            ->where('purchase_order_id', $po->id)->first();
+        $this->assertNotNull($cancelledReceipt);
+        $this->assertSame('draft', $cancelledReceipt->status);
+        $cancelUrl = route('admin.erp.procurement.receipts.cancel', $cancelledReceipt->id);
+        $this->actingAs($checker->fresh())->post($cancelUrl, [
+            'store_id' => $storeA->id,
+            'cancelled_by' => $owner->id,
+        ])->assertRedirect();
+        $cancelledRow = DB::table('enterprise_goods_receipts')
+            ->where('id', $cancelledReceipt->id)->first();
+        $this->assertSame('cancelled', $cancelledRow->status);
+        $this->assertSame((int) $checker->id, (int) $cancelledRow->cancelled_by);
+        $this->assertNotNull($cancelledRow->cancelled_at);
+        $this->assertSame(1, DB::table('audit_logs')
+            ->where('event', 'enterprise.goods_receipt.cancelled')
+            ->where('auditable_id', $cancelledReceipt->id)->count());
+        $auditBeforeCancelRetry = DB::table('audit_logs')->count();
+        $this->actingAs($checker->fresh())->post($cancelUrl, [
+            'store_id' => $storeA->id,
+        ])->assertRedirect();
+        $this->assertSame($auditBeforeCancelRetry, DB::table('audit_logs')->count());
+        $this->assertSame((string) $cancelledRow->cancelled_at,
+            (string) DB::table('enterprise_goods_receipts')
+                ->where('id', $cancelledReceipt->id)->value('cancelled_at'));
+        $this->actingAs($checker->fresh())->post(route('admin.erp.procurement.receipts.post', $cancelledReceipt->id), [
+            'store_id' => $storeA->id,
+        ])->assertSessionHasErrors('status');
+        $this->assertSame($auditBeforeCancelRetry, DB::table('audit_logs')->count());
+        $this->assertSame(0, DB::table('stock_movements')
+            ->where('reference_type', 'enterprise_goods_receipt_line')->count());
 
         $receipts = [];
         foreach (['0.625', '0.875'] as $quantity) {
@@ -3122,7 +3165,9 @@ final class V2ErpEntitlementCheckerBoundaryTest extends TestCase
             ]],
         ])->assertSessionHasErrors('lines');
         $this->assertSame(2, DB::table('enterprise_goods_receipts')
-            ->where('purchase_order_id', $po->id)->count());
+            ->where('purchase_order_id', $po->id)->where('status', 'posted')->count());
+        $this->assertSame(1, DB::table('enterprise_goods_receipts')
+            ->where('purchase_order_id', $po->id)->where('status', 'cancelled')->count());
         $this->assertSame('1.500', number_format((float) DB::table('inventories')
             ->where('id', $inventory->id)->value('quantity'), 3, '.', ''));
         $this->assertSame(2, DB::table('stock_movements')
