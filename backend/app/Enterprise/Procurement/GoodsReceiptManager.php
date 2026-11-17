@@ -240,18 +240,19 @@ final class GoodsReceiptManager
 
         return DB::transaction(function () use ($actor, $scope, $receiptId): EnterpriseGoodsReceipt {
             $receipt = $this->lockVisible($scope, $receiptId);
-            if ($receipt->status === 'posted') {
-                return $receipt->refresh()->load('lines');
+            $alreadyPosted = $receipt->status === 'posted';
+            if (! $alreadyPosted) {
+                $this->requireStatus($receipt, ['draft'], 'posted');
             }
 
-            $this->requireStatus($receipt, ['draft'], 'posted');
-
+            // Even an idempotent retry must verify the locked PO snapshot
+            // before claiming a historically posted receipt is still valid.
             $order = $this->visibleOrderQuery($scope)
                 ->whereKey($receipt->purchase_order_id)
                 ->lockForUpdate()
                 ->firstOrFail();
 
-            if ($order->status !== 'issued') {
+            if (! $alreadyPosted && $order->status !== 'issued') {
                 throw ValidationException::withMessages([
                     'purchase_order_id' => [
                         sprintf(
@@ -276,6 +277,10 @@ final class GoodsReceiptManager
                         __('enterprise_procurement.errors.receipt_source_invalid'),
                     ],
                 ]);
+            }
+
+            if ($alreadyPosted) {
+                return $receipt->refresh()->load('lines');
             }
 
             $lines = $receipt->lines()
