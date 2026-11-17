@@ -22,7 +22,7 @@ Existing view computed `(string) request('dashboard_tab','overview')`. A GET par
 | Actor with Store A role requests foreign Store B | 404 via existing tenant context |
 | Actor requests inactive Retail store | 404 via existing store scope |
 | Roleless actor | 403 through existing permission/context guard |
-| Inactive account | 401 via existing `EnsureActiveUser` middleware |
+| Inactive account | **403** from existing `management.dashboard` / `EnsureManagementDashboardAccess`; it logs out the inactive browser actor and invalidates the session before denial |
 | GET tab navigation | No stores, orders, products, inventory or promotions business-row writes |
 
 **Important:** Source authority, role decisions, store context, permissions, entitlements, and any `support_access` audit/consent belong to existing controller/middleware; the new shape check does not replace or loosen them. No mere Sidebar appearance asserts access. Do not turn an unauthorized 403 into a 200 or alter a legitimate 404; the new input-shape 404 applies only after existing authorization. Existing Store A/B P031/P082 tests remain independently authoritative.
@@ -42,3 +42,7 @@ Mobile impact: **Customer / Driver / Van: NO_DIRECT_IMPACT individually**. Custo
 - Verify full current-head Repository Policy, FOODEX V2 Isolation Gate, Required CI terminal gate, applicable backend/Pint/static analysis/security and AR/EN. Failed/pending/skipped-required checks never count as success.
 - Validate real browser viewports 320/360/390/412/430, 768/1024/1280, keyboard focus, scroll, tab state and Arabic/English under final G009 #2750 acceptance; source/HTTP tests alone do not prove screenshots or manual UAT.
 - Merge only original PR #3979 to `Foodex_V2` once source complete, technical audit PASS, lease/file ownership revalidated and exact-head required checks green. Close #3978 only with merged SHA and CI proof. Keep #2750 and #2503 OPEN until full program acceptance. No `main`, production, release, tag, or cPanel actions.
+
+### Exact-head CI rescue (2026-11-17)
+- Required CI run `43985553502` on `f0ae4305eff57ce2aa9cdde805617502e320551a` completed **FAILURE** because `V2RetailDashboardTabShapeScopeTest` asserted 401 for inactive browser user, while the actual admin route intentionally returns 403; all 4,220 other tests passed and one was skipped. Source: `EnsureManagementDashboardAccess::handle()` logs out, invalidates session, then `abort(403)`; `EnsureActiveUser`'s 401 contract is **not** attached to this admin route. Existing route, role, module, tenant and session enforcement must not be altered to satisfy a mistaken expectation.
+- Scoped correction: assert 403 in the dedicated test, align this QA matrix with the actual administrative middleware, and keep the controller/query guard unchanged. New exact-head CI and all required gates must pass before any technical PASS or integration decision; no historic green may be reused.
