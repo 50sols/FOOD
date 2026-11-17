@@ -69,8 +69,10 @@ final class V2EnterpriseBiIndependentPageTabsTest extends TestCase
                     if ($selected !== $other) {
                         $this->assertStringNotContainsString('data-bi-workspace-panel="'.$other.'"', $html);
                     }
-                    $params['bi_tab'] = $other;
-                    $response->assertSee(e(route('admin.erp.bi', $params)), false);
+                    $linkParams = $params;
+                    unset($linkParams['bi_tab']);
+                    $linkParams['bi_tab'] = $other;
+                    $response->assertSee(e(route('admin.erp.bi', $linkParams)), false);
                 }
 
                 if ($selected === 'overview') {
