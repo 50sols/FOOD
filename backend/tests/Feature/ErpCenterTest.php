@@ -993,6 +993,85 @@ final class ErpCenterTest extends TestCase
         }
     }
 
+    public function test_treasury_default_card_requires_receipts_read_at_its_exact_store_and_denies_unprivileged_users(): void
+    {
+        config()->set('security.mfa.enforce_privileged', false);
+        $admin = $this->userWithGlobalRole('SUPER_ADMIN', 'en', 'p135-treasury-card-setup@example.test');
+        $manager = $this->userWithGlobalRole('TREASURY_MANAGER', 'en', 'p135-treasury-card-manager@example.test');
+        $storeA = $this->wholesaleStore('P135-TREAS-CARD-A');
+        $storeB = $this->wholesaleStore('P135-TREAS-CARD-B');
+
+        app(EnterpriseModuleAdministration::class)->perform('treasury', 'enable', $admin);
+        $entitlements = app(ModuleEntitlementManager::class);
+        $entitlements->set('treasury', new EntitlementScope(EntitlementScope::STORE, $storeA->id), true, [
+            'treasury.receipts.read',
+        ]);
+        $entitlements->set('treasury', new EntitlementScope(EntitlementScope::STORE, $storeB->id), true, [
+            'treasury.payments.read',
+        ]);
+
+        foreach (['ar' => 'rtl', 'en' => 'ltr'] as $locale => $direction) {
+            $manager->forceFill(['locale' => $locale])->save();
+            app()->setLocale($locale);
+            app()->forgetInstance(AdminNavigation::class);
+
+            $response = $this->actingAs($manager->fresh())->get(route('admin.erp.index'));
+            $response->assertOk()->assertSee('dir="'.$direction.'"', false);
+            $card = collect($response->viewData('cards'))->firstWhere('key', 'treasury');
+            $this->assertIsArray($card);
+            $this->assertSame('available', $card['status']);
+            $this->assertSame(
+                route('admin.erp.treasury.index', ['store_id' => $storeA->id]),
+                $card['url'],
+            );
+            // The actionable card URL must reach Treasury's real default
+            // Overview endpoint with the identical actor and store.
+            $this->actingAs($manager->fresh())->get($card['url'])->assertOk();
+            $this->actingAs($manager->fresh())->get(route('admin.erp.treasury.index', [
+                'store_id' => $storeB->id,
+                'tab' => 'overview',
+            ]))->assertForbidden();
+
+            // Payment-only access is distinct from the Overview capability.
+            $this->actingAs($manager->fresh())->get(route('admin.erp.treasury.index', [
+                'store_id' => $storeB->id,
+                'tab' => 'payments',
+            ]))->assertOk();
+        }
+
+        // No receipts.read at ANY authorized store must not create an
+        // AVAILABLE/linked Treasury Overview card from payment-only grants.
+        $entitlements->set('treasury', new EntitlementScope(EntitlementScope::STORE, $storeA->id), true, [
+            'treasury.payments.read',
+        ]);
+        app()->forgetInstance(AdminNavigation::class);
+        $response = $this->actingAs($manager->fresh())->get(route('admin.erp.index'));
+        $response->assertOk();
+        $card = collect($response->viewData('cards'))->firstWhere('key', 'treasury');
+        $this->assertIsArray($card);
+        $this->assertSame('not_entitled', $card['status']);
+        $this->assertNull($card['url']);
+        $this->actingAs($manager->fresh())->get(route('admin.erp.treasury.index', [
+            'store_id' => $storeA->id,
+            'tab' => 'overview',
+        ]))->assertForbidden();
+
+        $roleless = User::factory()->create(['is_active' => true]);
+        $this->actingAs($roleless)->get(route('admin.erp.treasury.index', [
+            'store_id' => $storeA->id,
+        ]))->assertForbidden();
+
+        Role::query()->where('code', 'TREASURY_MANAGER')->firstOrFail()
+            ->forceFill(['is_active' => false])->save();
+        app()->forgetInstance(AdminNavigation::class);
+        $this->actingAs($manager->fresh())->get(route('admin.erp.treasury.index', [
+            'store_id' => $storeA->id,
+        ]))->assertForbidden();
+
+        $this->assertDatabaseCount('enterprise_treasury_receipts', 0);
+        $this->assertDatabaseCount('enterprise_treasury_payments', 0);
+    }
+
     private function wholesaleStore(string $code): Store
     {
         $typeId = (int) DB::table('store_types')->where('code', 'B2B')->value('id');
