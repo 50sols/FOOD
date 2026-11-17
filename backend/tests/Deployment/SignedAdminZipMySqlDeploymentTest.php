@@ -116,6 +116,17 @@ final class SignedAdminZipMySqlDeploymentTest extends TestCase
             $this->assertTrue($user->is_active, 'Updater deactivated the original administrator.');
             $this->assertTrue($user->hasRole('SUPER_ADMIN'), 'Updater removed effective Super Admin role.');
             $this->assertTrue($user->hasPermission('system.update'), 'Updater removed system.update authority.');
+
+            // A real host pins its publisher public key outside the ZIP and
+            // persists it across cache rebuilds. This disposable test instead
+            // generated its Ed25519 trust anchor only in PHP memory, so restore
+            // the exact SAME CI-only pinned public key after the first update.
+            // Never accept an untrusted key from the uploaded signed sidecar.
+            config([
+                'update_signatures.publisher_key_id' => $id,
+                'update_signatures.publisher_public_key_b64' => base64_encode(sodium_crypto_sign_publickey($pair)),
+            ]);
+
             // Preserve the actual middleware and Gate; an unhandled 403 here
             // identifies the exact server denial point in MySQL CI logs.
             $this->withoutExceptionHandling();
