@@ -407,8 +407,6 @@ final class ErpCenterController extends Controller
                         $query->whereIn('store_id', $viewStoreIds);
                     } elseif ($check['scope'] === 'legal_entity') {
                         $query->whereIn('legal_entity_id', $legalEntityIds);
-                    } elseif ($check['scope'] === 'actor') {
-                        $query->where('requested_by', $actor->getKey());
                     } elseif ($check['scope'] === 'report_store') {
                         $query->where(function ($scope) use ($viewStoreIds, $legalEntityIds): void {
                             $scope->where(function ($storeScope) use ($viewStoreIds): void {
