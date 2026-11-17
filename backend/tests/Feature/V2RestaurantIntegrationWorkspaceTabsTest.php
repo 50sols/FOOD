@@ -191,14 +191,14 @@ final class V2RestaurantIntegrationWorkspaceTabsTest extends TestCase
                 '_integration_form' => 'api-clients',
                 'name' => 'Foreign Client',
                 'scopes' => ['restaurant.read'],
-            ])->assertForbidden();
+            ])->assertNotFound();
 
         $this->actingAs($retail)->from($this->indexUrl($siteB, ['tab' => 'webhooks']))
             ->post(route('admin.smart-ordering.integrations.webhooks.store', $siteB), [
                 '_integration_form' => 'webhooks',
                 'target_url' => 'https://example.test/hook',
                 'event_types' => ['order.created'],
-            ])->assertForbidden();
+            ])->assertNotFound();
 
         $this->assertDatabaseCount('restaurant_saas_api_clients', 0);
         $this->assertDatabaseCount('restaurant_saas_webhook_subscriptions', 0);
@@ -333,7 +333,7 @@ final class V2RestaurantIntegrationWorkspaceTabsTest extends TestCase
 
         $this->actingAs($retail)->get(route('admin.smart-ordering.integrations.index', [
             'site' => $siteB->getKey(), 'tab' => 'api-clients',
-        ]))->assertForbidden();
+        ]))->assertNotFound();
 
         $wholesale = $this->roleUser('B2B_ADMIN');
         $this->actingAs($wholesale)->get(route('admin.smart-ordering.integrations.index', [
