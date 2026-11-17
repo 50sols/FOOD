@@ -7259,6 +7259,15 @@ class _WholesaleCheckoutDesignScreenState
       });
     } catch (error) {
       if (!mounted) return;
+      // A failed quote for an obsolete cart, payment choice or edited coupon
+      // cannot report an error into the current checkout intent. Leave the
+      // new server-owned quote untouched and allow a fresh explicit request.
+      if (dataRevision != _checkoutDataRevision ||
+          requestedPaymentMethod != paymentMethod ||
+          code != _normalizedCoupon) {
+        setState(() => applyingCoupon = false);
+        return;
+      }
       setState(() {
         appliedCouponCode = null;
         appliedQuote = null;
