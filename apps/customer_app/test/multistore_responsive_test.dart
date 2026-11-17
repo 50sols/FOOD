@@ -1,6 +1,6 @@
-import 'dart:async';
-
 // ignore_for_file: deprecated_member_use, prefer_interpolation_to_compose_strings
+
+import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
