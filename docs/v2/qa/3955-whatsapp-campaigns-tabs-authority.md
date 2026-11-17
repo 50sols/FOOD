@@ -29,7 +29,7 @@ Placement: **Reuse → Extend** existing `.foodex-tabs/.foodex-tab`, not a new U
 
 ## Test / risk audit
 
-- Dedicated `V2WhatsAppCampaignWorkspaceTabsTest`: real authenticated GET AR/EN RTL/LTR, all three panels and link query retention, selected panel vs two hidden, builder + template form retained, malformed array/unknown fallback, roleless 403, inactive actor 401, disabled WhatsApp module 404, DB campaign/recipient/template/consent/message counts unchanged.
+- Dedicated `V2WhatsAppCampaignWorkspaceTabsTest`: real authenticated GET AR/EN RTL/LTR, all three panels and link query retention, selected panel vs two hidden, builder + template form retained, malformed array/unknown fallback, roleless 403, inactive actor 403 (existing permission gate), disabled WhatsApp module 404, DB campaign/recipient/template/consent/message counts unchanged.
 - Existing campaign send/consent tests remain authoritative: `WhatsAppCampaignTest`, `WhatsAppCampaignBuilderTest`, `V2CampaignsRuntimeNavigationContractTest`, `V2WhatsAppCampaignAudienceLiteralSearchTest`. Their success must be verified, not inferred.
 - Scope file fence: one existing Blade + one new dedicated Feature test + this new QA record. Do not edit shared sidebar/nav, modules, middleware, sales/marketing ads, notifications, bot, controllers, secrets or global CSS.
 - REVIEW_RISK: **HIGH** (message sending/consent-adjacent UI); TECHNICAL_REVIEW: **PENDING_EXACT_HEAD_CI** until final checked head and formal PR review. Verify Repository Policy, V2 Isolation, required-ci-gate, Laravel full suite, AR/EN, security, code style. Do not merge or close on pending/red/unknown checks.
