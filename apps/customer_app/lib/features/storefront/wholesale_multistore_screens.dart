@@ -6257,8 +6257,10 @@ class _WholesaleCartDesignScreenState extends State<WholesaleCartDesignScreen>
           if (storeId != scopedStoreId ||
               authoritative['store_id'] != scopedStoreId ||
               authoritative['channel'] != 'b2b') {
-            throw const WholesaleCommerceException(
-              'The cart belongs to a different store. Refresh and try again.',
+            throw WholesaleCommerceException(
+              Localizations.localeOf(context).languageCode == 'en'
+                  ? 'The cart belongs to a different store. Refresh and try again.'
+                  : 'السلة تخص متجرًا مختلفًا. حدّث الصفحة وحاول مرة أخرى.',
             );
           }
           setState(() {
