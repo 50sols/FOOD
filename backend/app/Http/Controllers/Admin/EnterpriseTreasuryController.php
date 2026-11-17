@@ -825,10 +825,68 @@ final class EnterpriseTreasuryController extends Controller
 
     private function backTo(string $tab, int $storeId): RedirectResponse
     {
-        return redirect()->route('admin.erp.treasury.index', [
-            'tab' => $tab,
-            'store_id' => $storeId,
-        ]);
+        $query = ['tab' => $tab, 'store_id' => $storeId];
+
+        // A successful POST may retain the user's current list filters, but
+        // only from this exact Treasury GET route, tab, and authorized store.
+        // Do not trust an arbitrary Referer for a redirect or store switch.
+        $previousUrl = request()->headers->get('referer');
+        $routeUrl = route('admin.erp.treasury.index');
+        if (is_string($previousUrl)) {
+            $previousParts = parse_url($previousUrl);
+            $routeParts = parse_url($routeUrl);
+            if (is_array($previousParts) && is_array($routeParts)
+                && ($previousParts['scheme'] ?? null) === ($routeParts['scheme'] ?? null)
+                && ($previousParts['host'] ?? null) === ($routeParts['host'] ?? null)
+                && ($previousParts['port'] ?? null) === ($routeParts['port'] ?? null)
+                && ($previousParts['path'] ?? null) === ($routeParts['path'] ?? null)
+                && isset($previousParts['query']) && is_string($previousParts['query'])) {
+                parse_str($previousParts['query'], $previousQuery);
+                if (($previousQuery['tab'] ?? null) === $tab
+                    && ($previousQuery['store_id'] ?? null) === (string) $storeId) {
+                    $allowed = match ($tab) {
+                        'receipts', 'payments' => ['q', 'status', 'target_type', 'date_from', 'date_to'],
+                        'cheques', 'reconciliation', 'cash_closing' => ['status', 'date_from', 'date_to'],
+                        'financing' => ['q', 'status', 'facility_id', 'repayment_status', 'date_from', 'date_to'],
+                        'investments' => ['q', 'status'],
+                        default => [],
+                    };
+                    $validStatuses = match ($tab) {
+                        'receipts', 'payments' => ['draft', 'posted', 'cancelled'],
+                        'cheques' => ['issued', 'received', 'presented', 'deposited', 'cleared', 'bounced', 'cancelled'],
+                        'reconciliation', 'cash_closing' => ['draft', 'closed'],
+                        'financing' => ['active', 'closed', 'cancelled'],
+                        'investments' => ['active', 'matured', 'settled', 'cancelled'],
+                        default => [],
+                    };
+                    foreach ($allowed as $key) {
+                        $value = $previousQuery[$key] ?? null;
+                        if (! is_string($value) || $value === '' || strlen($value) > 120) {
+                            continue;
+                        }
+                        if ($key === 'status' && ! in_array($value, $validStatuses, true)) {
+                            continue;
+                        }
+                        if ($key === 'target_type' && ! in_array($value, ['cashbox', 'bank_account'], true)) {
+                            continue;
+                        }
+                        if ($key === 'repayment_status' && ! in_array($value, ['scheduled', 'paid', 'cancelled'], true)) {
+                            continue;
+                        }
+                        if ($key === 'facility_id' && ! ctype_digit($value)) {
+                            continue;
+                        }
+                        if (in_array($key, ['date_from', 'date_to'], true)
+                            && preg_match('/^\\d{4}-\\d{2}-\\d{2}$/D', $value) !== 1) {
+                            continue;
+                        }
+                        $query[$key] = $value;
+                    }
+                }
+            }
+        }
+
+        return redirect()->route('admin.erp.treasury.index', $query);
     }
 
     private function actor(Request $request): User

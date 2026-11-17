@@ -8,6 +8,7 @@ use App\Enterprise\Modules\ModuleLifecycleManager;
 use App\Enterprise\Modules\ModuleRegistry;
 use App\Enterprise\Modules\ModuleState;
 use App\Enterprise\Organization\OrganizationHierarchyService;
+use App\Models\EnterpriseCashbox;
 use App\Models\Role;
 use App\Models\Store;
 use App\Models\User;
@@ -297,6 +298,97 @@ final class V2TreasurySelectedStoreReadEntitlementTest extends TestCase
         $this->assertDatabaseCount('enterprise_treasury_receipts', 0);
         $this->assertDatabaseCount('enterprise_treasury_payments', 0);
         $this->assertDatabaseCount('enterprise_treasury_reconciliations', 0);
+    }
+
+    public function test_successful_receipt_restores_only_same_origin_tab_and_store_filters_in_both_locales(): void
+    {
+        [$actor, $storeA, $storeB] = $this->operatorWithTwoStores();
+        $this->enableTreasury($actor);
+        app(ModuleEntitlementManager::class)->set(
+            'treasury',
+            new EntitlementScope(EntitlementScope::STORE, $storeA->id),
+            true,
+            ['treasury.receipts.read', 'treasury.receipts.manage'],
+            $actor,
+        );
+        $scope = app(OrganizationHierarchyService::class)->scopeForStore($storeA->id);
+        $this->assertNotNull($scope);
+        $cashbox = EnterpriseCashbox::query()->create([
+            'company_id' => $scope['company_id'],
+            'store_id' => $storeA->id,
+            'code' => 'P302-UX-CASH',
+            'name' => 'Treasury query context',
+            'currency_code' => 'KWD',
+            'operator_visibility' => EnterpriseCashbox::VISIBILITY_STORE,
+            'approval_visibility' => EnterpriseCashbox::VISIBILITY_STORE,
+            'is_active' => true,
+        ]);
+
+        foreach (['ar' => 'rtl', 'en' => 'ltr'] as $locale => $direction) {
+            $actor->forceFill(['locale' => $locale])->save();
+            $url = route('admin.erp.treasury.index', [
+                'tab' => 'receipts',
+                'store_id' => $storeA->id,
+                'q' => 'P302-SEARCH',
+                'status' => 'draft',
+                'target_type' => 'cashbox',
+                'date_from' => '2026-11-01',
+                'date_to' => '2026-11-30',
+                'page' => '5',
+                '_operation_key' => 'never-copy-secret',
+            ]);
+            $page = $this->actingAs($actor->fresh())->get($url)
+                ->assertOk()->assertSee('dir="'.$direction.'"', false);
+            $html = html_entity_decode($page->getContent(), ENT_QUOTES | ENT_HTML5, 'UTF-8');
+            $this->assertSame(1, preg_match('/<nav class="foodex-tabs"[^>]*>(.*?)<\\/nav>/s', $html, $nav));
+            $this->assertStringContainsString('q=P302-SEARCH', $nav[1]);
+            $this->assertStringNotContainsString('_operation_key=', $nav[1]);
+
+            $expected = route('admin.erp.treasury.index', [
+                'tab' => 'receipts',
+                'store_id' => $storeA->id,
+                'q' => 'P302-SEARCH',
+                'status' => 'draft',
+                'target_type' => 'cashbox',
+                'date_from' => '2026-11-01',
+                'date_to' => '2026-11-30',
+            ]);
+            $this->actingAs($actor->fresh())->withHeader('referer', $url)
+                ->post(route('admin.erp.treasury.receipts.store'), [
+                    'store_id' => $storeA->id,
+                    '_operation_key' => 'p302-receipt-query-'.$locale,
+                    'target_key' => 'cashbox:'.$cashbox->id,
+                    'amount' => '1.125',
+                    'value_date' => '2026-11-17',
+                    'reference' => 'P302-RECEIPT-'.$locale,
+                ])->assertRedirect($expected)->assertSessionHasNoErrors();
+            $this->assertDatabaseHas('enterprise_treasury_receipts', [
+                'store_id' => $storeA->id,
+                'reference' => 'P302-RECEIPT-'.$locale,
+                'amount' => '1.125',
+                'status' => 'draft',
+            ]);
+        }
+
+        // A forged Store B Referer is never allowed to change the post-save
+        // return scope, even for an actor assigned to both stores.
+        $foreign = route('admin.erp.treasury.index', [
+            'tab' => 'receipts', 'store_id' => $storeB->id, 'q' => 'LEAK',
+        ]);
+        $this->actingAs($actor->fresh())->withHeader('referer', $foreign)
+            ->post(route('admin.erp.treasury.receipts.store'), [
+                'store_id' => $storeA->id,
+                '_operation_key' => 'p302-receipt-foreign-return',
+                'target_key' => 'cashbox:'.$cashbox->id,
+                'amount' => '2.000',
+                'value_date' => '2026-11-17',
+                'reference' => 'P302-FOREIGN-RETURN',
+            ])->assertRedirect(route('admin.erp.treasury.index', [
+                'tab' => 'receipts', 'store_id' => $storeA->id,
+            ]))->assertSessionHasNoErrors();
+
+        $this->assertDatabaseCount('enterprise_treasury_receipts', 3);
+        $this->assertDatabaseMissing('enterprise_treasury_receipts', ['store_id' => $storeB->id]);
     }
 
     /** @return array{User, Store, Store} */

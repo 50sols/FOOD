@@ -49,7 +49,20 @@ $targetOptions=[
 
 <nav class="foodex-tabs" aria-label="{{ __('enterprise_treasury.title') }}">
 @foreach($tabs as $tab)
-<a href="{{ route('admin.erp.treasury.index',['tab'=>$tab,'store_id'=>$selectedStoreId]) }}" class="{{ $activeTab===$tab?'active':'' }}" @if($activeTab===$tab) aria-current="page" @endif>{{ __('enterprise_treasury.tabs.'.$tab) }}</a>
+@php
+    // Preserve harmless list filters only on the selected, server-authorized
+    // tab. Never carry finance actions, raw IDs or another store into links.
+    $treasuryTabQuery = ['tab'=>$tab,'store_id'=>$selectedStoreId];
+    if ($tab === $activeTab) {
+        foreach (['q','status','target_type','date_from','date_to','facility_id','repayment_status'] as $filterKey) {
+            $filterValue = request()->query($filterKey);
+            if (is_string($filterValue) && $filterValue !== '' && strlen($filterValue) <= 120) {
+                $treasuryTabQuery[$filterKey] = $filterValue;
+            }
+        }
+    }
+@endphp
+<a href="{{ route('admin.erp.treasury.index',$treasuryTabQuery) }}" class="{{ $activeTab===$tab?'active':'' }}" @if($activeTab===$tab) aria-current="page" @endif>{{ __('enterprise_treasury.tabs.'.$tab) }}</a>
 @endforeach
 </nav>
 
