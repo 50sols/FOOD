@@ -61,9 +61,9 @@
 <div class="foodex-admin-layout" data-foodex-mobile-web-page="system-update">
 <aside class="sidebar">
     @include('admin._sidebar', [
-        'navGroups' => app(\App\Support\AdminNavigation::class)->groupsFor(auth()->user()),
+        'navGroups' => app(\App\Support\AdminNavigation::class)->groupsFor($user),
         'navContext' => 'administration_hub',
-        'user' => auth()->user(),
+        'user' => $user,
     ])
 </aside>
 <main class="foodex-admin-main foodex-admin-page foodex-settings-surface foodex-module-overview" data-foodex-utility="system-update" data-foodex-module-overview>
