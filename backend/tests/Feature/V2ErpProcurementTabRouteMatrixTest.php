@@ -18,6 +18,8 @@ use App\Support\AdminNavigation;
 use Database\Seeders\CoreReferenceSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\MessageBag;
+use Illuminate\Support\ViewErrorBag;
 use Tests\Support\SyntheticErpWorkflowEvidence;
 use Tests\TestCase;
 
@@ -104,6 +106,99 @@ final class V2ErpProcurementTabRouteMatrixTest extends TestCase
                 );
             }
         }
+    }
+
+    public function test_one_authorized_sidebar_destination_renders_keyboard_focusable_localized_workbench_tabs_and_feedback(): void
+    {
+        $actor = $this->manager();
+        $store = $this->wholesaleStore();
+
+        $this->assertSame('ready', $this->readiness());
+
+        foreach (['ar' => 'rtl', 'en' => 'ltr'] as $locale => $direction) {
+            app()->setLocale($locale);
+            $actor->forceFill(['locale' => $locale])->save();
+            app()->forgetInstance(AdminNavigation::class);
+
+            // A business-domain Sidebar has ONE canonical Procurement entry,
+            // never a fabricated entry for each Workbench tab.
+            $groups = app(AdminNavigation::class)->groupsFor($actor->fresh());
+            $procurement = collect($groups)->firstWhere('key', 'procurement');
+            $this->assertIsArray($procurement);
+            $links = collect($procurement['children'])
+                ->filter(static fn (array $item): bool => ($item['route'] ?? '') === 'admin.erp.procurement.index');
+            $this->assertCount(1, $links);
+            $this->assertSame('erp_procurement', $links->first()['key']);
+            $this->actingAs($actor->fresh())
+                ->get(route($links->first()['route'], $links->first()['params'] ?? []))
+                ->assertOk();
+
+            $errors = new ViewErrorBag;
+            $errors->put('default', new MessageBag(['source' => ['P135_WORKBENCH_ERROR']]));
+            $response = $this->actingAs($actor->fresh())
+                ->withSession(['status' => 'P135_WORKBENCH_SAVED', 'errors' => $errors])
+                ->get($this->tabUrl('requests', $store));
+
+            $response->assertOk()
+                ->assertSee('dir="'.$direction.'"', false)
+                ->assertSee('name="viewport"', false)
+                ->assertSee('data-erp-procurement-workbench="true"', false)
+                ->assertSee('role="status"', false)
+                ->assertSee('P135_WORKBENCH_SAVED')
+                ->assertSee('role="alert"', false)
+                ->assertSee('P135_WORKBENCH_ERROR')
+                ->assertSee('@media(max-width:767px)', false)
+                ->assertSee('.erp-table-wrap{overflow:auto}', false)
+                ->assertSee('<noscript>', false);
+
+            $this->assertSame('requests', $response->viewData('activeTab'));
+            $this->assertSame($store->id, $response->viewData('selectedStoreId'));
+
+            $markup = (string) $response->getContent();
+            $this->assertSame(1, preg_match(
+                '/<nav class="foodex-tabs"[^>]*>(.*?)<\/nav>/s',
+                $markup,
+                $matches,
+            ));
+            $rail = $matches[1];
+            $this->assertStringContainsString(
+                'aria-label="'.e(__('enterprise_procurement.title', [], $locale)).'"',
+                $markup,
+            );
+            $this->assertSame(1, substr_count($rail, 'aria-current="page"'));
+            $this->assertStringNotContainsString('tabindex="-1"', $rail);
+
+            $tabs = $response->viewData('tabs');
+            $this->assertIsArray($tabs);
+            $this->assertGreaterThanOrEqual(count(self::TAB_READ_PERMISSIONS), count($tabs));
+            $this->assertSame(count($tabs), preg_match_all('/<a\b[^>]*href="[^"]+"[^>]*>.*?<\/a>/s', $rail));
+
+            // Native href anchors are keyboard reachable without JS, and
+            // each tab targets only its already HTTP-authorized workspace.
+            foreach ($tabs as $tab) {
+                $this->assertStringContainsString(
+                    'href="'.e(route('admin.erp.procurement.index', [
+                        'tab' => $tab['key'],
+                        'store_id' => $store->id,
+                    ])).'"',
+                    $rail,
+                );
+                $this->assertStringContainsString(e($tab['label']), $rail);
+            }
+        }
+
+        // Revoked certification removes the Sidebar destination AND causes
+        // the identical direct HTTP tab route to deny, not just be hidden.
+        config()->set('enterprise_module_readiness.certified_versions.procurement', null);
+        app()->forgetInstance(AdminNavigation::class);
+        $groups = app(AdminNavigation::class)->groupsFor($actor->fresh());
+        $procurement = collect($groups)->firstWhere('key', 'procurement');
+        if (is_array($procurement)) {
+            $this->assertNull(collect($procurement['children'])->firstWhere('key', 'erp_procurement'));
+        }
+        $this->actingAs($actor->fresh())
+            ->get($this->tabUrl('requests', $store))
+            ->assertForbidden();
     }
 
     public function test_all_eleven_direct_tabs_return_403_if_version_is_not_certified(): void
