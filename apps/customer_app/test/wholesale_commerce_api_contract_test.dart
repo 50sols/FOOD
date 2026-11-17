@@ -26,7 +26,8 @@ void main() {
                 attempts++;
                 expect(request.method, 'POST');
                 expect(request.url.path, '/api/v1/cart/items');
-                expect(request.headers['Authorization'], 'Bearer scoped-customer');
+                expect(
+                    request.headers['Authorization'], 'Bearer scoped-customer');
                 expect(request.headers['X-FOODEX-Customer-Domain'], 'b2b');
                 expect(request.headers['X-FOODEX-Retail-Store-ID'], '17');
                 expect(request.headers['Accept-Language'], language);
