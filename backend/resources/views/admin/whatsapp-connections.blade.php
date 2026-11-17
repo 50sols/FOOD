@@ -28,6 +28,22 @@
         @if(session('status'))<p class="foodex-alert success" role="status">{{ session('status') }}</p>@endif
         @if($errors->any())<div class="foodex-alert error" role="alert">{{ $errors->first() }}</div>@endif
 
+        @php
+            $requestedTab = request()->query('tab');
+            $activeTab = is_string($requestedTab) && in_array($requestedTab, ['profiles', 'health', 'create'], true)
+                ? $requestedTab : 'profiles';
+            if ($activeTab === 'create' && ! $canManage) {
+                $activeTab = 'profiles';
+            }
+        @endphp
+        <nav class="foodex-tabs" aria-label="{{ __('whatsapp.connections.section_navigation') }}">
+            <a class="foodex-tab" href="{{ route('admin.whatsapp.connections.index', ['tab' => 'profiles']) }}" @if($activeTab === 'profiles') aria-current="page" @endif>{{ __('whatsapp.connections.saved_profiles') }}</a>
+            <a class="foodex-tab" href="{{ route('admin.whatsapp.connections.index', ['tab' => 'health']) }}" @if($activeTab === 'health') aria-current="page" @endif>{{ __('whatsapp.connections.transport_health') }}</a>
+            @if($canManage)
+            <a class="foodex-tab" href="{{ route('admin.whatsapp.connections.index', ['tab' => 'create']) }}" @if($activeTab === 'create') aria-current="page" @endif>{{ __('whatsapp.connections.create') }}</a>
+            @endif
+        </nav>
+        <div data-whatsapp-panel="health" @if($activeTab !== 'health') hidden @endif>
         <section class="panel" aria-labelledby="whatsapp-global-state">
             <h2 id="whatsapp-global-state">{{ __('whatsapp.connections.global_state') }}</h2>
             <p><strong>{{ __('whatsapp.states.'.$moduleState->lifecycle->value) }}</strong></p>
@@ -49,32 +65,40 @@
             </dl>
         </section>
         @endif
+        </div>
 
         @if($canManage)
+        <div data-whatsapp-panel="create" @if($activeTab !== 'create') hidden @endif>
         <section class="panel" aria-labelledby="new-connection-profile">
             <h2 id="new-connection-profile">{{ __('whatsapp.connections.create') }}</h2>
             <p class="muted">{{ __('whatsapp.connections.create_hint') }}</p>
+            <p class="muted">{{ __('whatsapp.connections.setup_purpose_help') }}</p>
             <form class="foodex-form" method="post" action="{{ route('admin.whatsapp.connections.store') }}">
                 @csrf
                 <label>{{ __('whatsapp.connections.name') }}<input class="foodex-control" name="name" required maxlength="120" value="{{ old('name') }}"></label>
                 <label>{{ __('whatsapp.connections.display_phone') }}<input class="foodex-control" name="display_phone_number" required maxlength="32" value="{{ old('display_phone_number') }}"></label>
                 <label>{{ __('whatsapp.connections.normalized_phone') }}<input class="foodex-control" name="normalized_phone_number" maxlength="24" placeholder="+965..." value="{{ old('normalized_phone_number') }}"></label>
                 <label>{{ __('whatsapp.connections.provider') }}<input class="foodex-control" name="provider_type" required maxlength="40" value="{{ old('provider_type', 'meta_cloud') }}"></label>
+                <p class="muted">{{ __('whatsapp.connections.provider_source_help') }}</p>
                 <label>{{ __('whatsapp.connections.phone_number_id') }}<input class="foodex-control" name="provider_phone_number_id" maxlength="128" value="{{ old('provider_phone_number_id') }}"></label>
                 <label>{{ __('whatsapp.connections.account_id') }}<input class="foodex-control" name="provider_account_id" maxlength="128" value="{{ old('provider_account_id') }}"></label>
                 <label>{{ __('whatsapp.connections.app_id') }}<input class="foodex-control" name="provider_app_id" maxlength="128" value="{{ old('provider_app_id') }}"></label>
+                <p class="muted">{{ __('whatsapp.connections.external_identifiers_help') }}</p>
                 <label>{{ __('whatsapp.connections.secret') }}<input class="foodex-control" type="password" name="credential_secret" maxlength="10000" autocomplete="new-password"></label>
                 <label>{{ __('whatsapp.connections.webhook_verify_token') }}<input class="foodex-control" type="password" name="webhook_verify_token" maxlength="10000" autocomplete="new-password"></label>
                 <label>{{ __('whatsapp.connections.webhook_signing_secret') }}<input class="foodex-control" type="password" name="webhook_signing_secret" maxlength="10000" autocomplete="new-password"></label>
-                <label>{{ __('whatsapp.connections.provider_metadata') }}<textarea class="foodex-control" name="provider_metadata" rows="3">{{ old('provider_metadata') }}</textarea></label>
-                <label>{{ __('whatsapp.connections.webhook_metadata') }}<textarea class="foodex-control" name="webhook_metadata" rows="3">{{ old('webhook_metadata') }}</textarea></label>
+                <p class="muted">{{ __('whatsapp.connections.credentials_help') }}</p>
+                <p class="muted">{{ __('whatsapp.connections.metadata_preserved_help') }}</p>
                 <button class="primary" type="submit">{{ __('whatsapp.connections.create') }}</button>
             </form>
         </section>
+        </div>
         @endif
 
+        <div data-whatsapp-panel="profiles" @if($activeTab !== 'profiles') hidden @endif>
         <section class="panel" aria-labelledby="saved-connections">
             <h2 id="saved-connections">{{ __('whatsapp.connections.saved_profiles') }}</h2>
+            <p class="muted">{{ __('whatsapp.connections.readiness_truth_help') }}</p>
             @forelse($profiles as $profile)
             <article class="card" data-whatsapp-connection="{{ $profile->id }}">
                 <div class="section-head">
@@ -117,8 +141,9 @@
                             <label>{{ __('whatsapp.connections.phone_number_id') }}<input class="foodex-control" name="provider_phone_number_id" maxlength="128" value="{{ $profile->provider_phone_number_id }}"></label>
                             <label>{{ __('whatsapp.connections.account_id') }}<input class="foodex-control" name="provider_account_id" maxlength="128" value="{{ $profile->provider_account_id }}"></label>
                             <label>{{ __('whatsapp.connections.app_id') }}<input class="foodex-control" name="provider_app_id" maxlength="128" value="{{ $profile->provider_app_id }}"></label>
-                            <label>{{ __('whatsapp.connections.provider_metadata') }}<textarea class="foodex-control" name="provider_metadata" rows="3">{{ json_encode($profile->provider_metadata ?? [], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) }}</textarea></label>
-                            <label>{{ __('whatsapp.connections.webhook_metadata') }}<textarea class="foodex-control" name="webhook_metadata" rows="3">{{ json_encode($profile->webhook_metadata ?? [], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) }}</textarea></label>
+                            <p class="muted">{{ __('whatsapp.connections.provider_source_help') }}</p>
+                            <p class="muted">{{ __('whatsapp.connections.external_identifiers_help') }}</p>
+                            <p class="muted">{{ __('whatsapp.connections.metadata_preserved_help') }}</p>
                             <button class="primary" type="submit">{{ __('whatsapp.connections.save') }}</button>
                         </form>
                     </details>
@@ -200,6 +225,7 @@
                 <p class="muted">{{ __('whatsapp.connections.none') }}</p>
             @endforelse
         </section>
+        </div>
     </main>
 </div>
 </body>
