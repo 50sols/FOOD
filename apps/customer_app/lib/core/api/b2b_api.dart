@@ -182,6 +182,14 @@ class HttpB2bApi implements B2bApi, B2bDocumentApi, B2bDownloadApi {
             segments[3] == 'account-statement';
         if (requestedStore != null && statementEndpoint) {
           final statement = decoded['data'];
+          // A scoped statement can be empty. Check statement-level provenance
+          // independently of transaction rows so a foreign-store empty
+          // response cannot masquerade as a valid zero-activity statement.
+          if (statement is Map<String, dynamic> &&
+              statement['store_id'] != null &&
+              statement['store_id'] != requestedStore) {
+            throw const B2bApiException('invalid_response');
+          }
           final rows = statement is Map<String, dynamic>
               ? statement['transactions']
               : null;
