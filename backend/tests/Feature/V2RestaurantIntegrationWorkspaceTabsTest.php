@@ -335,16 +335,17 @@ final class V2RestaurantIntegrationWorkspaceTabsTest extends TestCase
             'site' => $siteB->getKey(), 'tab' => 'api-clients',
         ]))->assertNotFound();
 
+        // Tenant/store admission intentionally conceals inaccessible sites as 404.
         $wholesale = $this->roleUser('B2B_ADMIN');
         $this->actingAs($wholesale)->get(route('admin.smart-ordering.integrations.index', [
             'site' => $siteA->getKey(), 'tab' => 'webhooks',
-        ]))->assertForbidden();
+        ]))->assertNotFound();
 
         $this->actingAs($wholesale)->post(route('admin.smart-ordering.integrations.webhooks.store', $siteA), [
             '_integration_form' => 'webhooks',
             'target_url' => 'https://example.test/forged-b2b',
             'event_types' => ['order.created'],
-        ])->assertForbidden();
+        ])->assertNotFound();
         $this->assertDatabaseCount('restaurant_saas_webhook_subscriptions', 0);
     }
 
@@ -460,17 +461,18 @@ final class V2RestaurantIntegrationWorkspaceTabsTest extends TestCase
             ]))->assertOk()->assertDontSee('name="_integration_form"', false);
         }
 
+        // Explicit manage DENY is enforced before exposing write-side site resources.
         $this->actingAs($operator->fresh())->post(route('admin.smart-ordering.integrations.api-clients.store', $site), [
             '_integration_form' => 'api-clients',
             'name' => 'Forged Role',
             'scopes' => ['restaurant.read'],
-        ])->assertForbidden();
+        ])->assertNotFound();
 
         $this->actingAs($operator->fresh())->post(route('admin.smart-ordering.integrations.webhooks.store', $site), [
             '_integration_form' => 'webhooks',
             'target_url' => 'https://example.test/callback',
             'event_types' => ['order.created'],
-        ])->assertForbidden();
+        ])->assertNotFound();
 
         $operator->forceFill(['is_active' => false])->save();
 
