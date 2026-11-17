@@ -1885,7 +1885,16 @@ final class V2ErpEntitlementCheckerBoundaryTest extends TestCase
                     ]))->assertForbidden();
                 }
             }
-            foreach (['requests', 'rfqs', 'receipts', 'returns', 'statements', 'reports'] as $tab) {
+            // BUYER's canonical job_roles bundle has no returns.view. Do not
+            // invent a role grant merely to make a menu item visible.
+            $this->assertNotContains('returns', $visible);
+            $response->assertDontSee('data-procurement-tab="returns"', false);
+            $this->actingAs($buyer->fresh())->get(route('admin.erp.procurement.index', [
+                'tab' => 'returns',
+                'store_id' => $store->id,
+            ]))->assertForbidden();
+
+            foreach (['requests', 'rfqs', 'receipts', 'statements', 'reports'] as $tab) {
                 $this->assertContains($tab, $visible);
                 $this->actingAs($buyer->fresh())->get(route('admin.erp.procurement.index', [
                     'tab' => $tab,
