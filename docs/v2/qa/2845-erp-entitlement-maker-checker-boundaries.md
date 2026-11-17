@@ -91,3 +91,33 @@ The earlier `test_missing_store_entitlement_and_missing_required_certification_c
 P135 #2858 / PR #3065 actively owns `ErpCenterController.php`, `AdminNavigation.php`, module workflow readiness/certification and its own suites. P110 #2844 / PR #3921 owns legal stock title; #3960 / PR #3961 owns existing ERP tabs. **None of those files are modified here.** Two pre-existing exact-head failures remain in P111 tests until a peer-approved source integration: Super Admin diagnostic Sidebar expectation vs real navigation, and Store DENY actual HTTP 403 vs ERP Center card `available` instead of `not_entitled`. The P135 branch's historical 403→200 and 403→409 failures require combining accepted P111 Controller security in the original branch integration, not weakening tests. C13 Customer and Operational #734 integrated required jobs also have separate owners.
 
 `SOURCE_COMPLETE:NO`, `REVIEW_RISK:HIGH`, `TECHNICAL_REVIEW: NOT PASS`, `NOT_CERTIFIED`. No actual local PHP runtime executed through GitHub Connector, and no claim of CI green on these commits before terminal exact-head checks. No merge/close/main/tag/release/deployment/production.
+
+
+## 2026-11-18 — P111 concrete role assignment, B2B/B2C and maker/checker HTTP verification
+
+**Ownership:** original #2845 / original #3206; `test/2845-v2-erp-entitlement-maker-checker-boundaries` -> `Foodex_V2` exclusively. Continued same worker `gpt6-p111-unified-auth-ci-rescue-20261117` [claim](https://github.com/walidatiyaai2025-gif/FOOD/issues/2845#issuecomment-6960548674). This is regression implementation, NOT an operational certificate or a claim of green CI.
+
+### Source-of-truth role/permission matrix
+
+Source `backend/config/job_roles.php` (codes, scopes, module requirements, role grants), actually reconciled to `roles` and `permission_role` by `BuiltInJobRoleCatalog::reconcile()` and bound to the authentic principal via `role_user`. A role merely present in the administration catalog is never proof the principal possesses it.
+
+| Actual active role assigned on global pivot | purchase_requests.manage | purchase_requests.approve | purchase_orders.issue | B2C global applicability |
+|---|---|---|---|---|
+| PROCUREMENT_BUYER | Yes | No | No | No |
+| PROCUREMENT_APPROVER | No | Yes | Yes | No |
+| PROCUREMENT_MANAGER | Yes | Yes, not self | Yes, subject to independent policy | No |
+| No global `role_user` pivot | No | No | No | No |
+| Mis-scoped Global Procurement role injected as a Retail store-role pivot | No | No | No | No |
+| Archived/disabled role; inactive or archived user identity | No business HTTP access | No | No | No |
+
+Actual `User::hasPermission` checks active role, B2B/B2C channel, configured `job_roles` module gates and explicit GLOBAL/STORE user DENY. `TenantContextResolver` checks active Wholesale global-role context vs assigned Retail store role and selected channel/store. `EnterpriseProcurementController::context` independently checks selected-store effective Procurement capability + actual `ModuleEntitlementResolver::allows(procurement, STORE)` and declines forged or unassigned `store_id` with 403 before Enterprise scope setup, while middleware `EnsureErpOperationalReadiness` denies uncertified modules. P111 Controller now explicitly rejects even an `is_active=true` identity with historical non-null `archived_at`: a retained audit pivot is not permission to transact. No changes to global `User.php` or peer-owned permission engine.
+
+**New actual committed test source**: original `backend/tests/Feature/V2ErpEntitlementCheckerBoundaryTest.php`:
+- `test_canonical_procurement_global_roles_require_live_account_pivot_and_actual_job_role_permissions`: asserts seeded **`permission_role` equals `job_roles` grants**, three active global database roles and **`role_user` exact actor link**, live B2B `hasRole`/`hasPermission` matrix, AR/EN authenticated GET 200, no global pivot => HTTP GET/POST 403 with zero data/audit mutation.
+- `test_wholesale_global_role_and_retail_store_role_cannot_cross_channel_or_forge_assignment`: B2B A positive, B2B B explicit STORE DENY negative, Retail A assigned Finance store-role (but no Procurement), Retail B unassigned, Retail-only actor, and synthetic invalid store-role-pivot pointing to a GLOBAL Procurement role; AR/EN GET/POST 403 negative and no business/audit mutation. B2B owner-only global role remains exclusively B2B; neither Retail assignments nor `store_id` payload elevate authority.
+- `test_inactive_archived_procurement_identity_and_archived_global_role_are_denied_with_audit_unchanged`: archived identity with retained role and still-active legacy identity flag, disabled/archived Global Procurement role with retained pivot, and separately deactivated Approver user; AR/EN GET/POST 403 and no business/audit writes.
+- `test_multi_role_maker_checker_cannot_self_approve_or_issue_po_with_explicit_global_deny`: a real PROCUREMENT_MANAGER with additional BUYER+APPROVER actual global assignments creates/submits a request with a valid Supplier; self-approval denied and creates no approval audit; independent APPROVER 302 approves once and emits exactly one audit; manager creates draft PO, then an explicit GLOBAL DENY on `procurement.purchase_orders.issue` rejects its issuance (as does BUYER-only), leaves order `draft` and emits no issue audit; separate authorized APPROVER then issues once and emits exactly one issue audit. This asserts **no privilege expansion by role combinations, override ALLOW or changing store context**, and preserves canonical business services and SoD rules rather than adding new grants.
+
+**Source commits:** archived-identity admission guard `3d7d175dc6ba75eae3a022e0972b5f2be9c65a95`; 4 Laravel HTTP matrix tests `8754342b3ca8e17c0c29bf057490769b36c60d97`; Pint method-spacing correction `2e15cfaae57407d111980127875fd44d4b4efdef`. No edits to P135 #2858's signed readiness, ERP Center, AdminNavigation, P110 #2844 or #3960 files; no middleware/CI disabling, `certified_versions`, production data or broad role grants.
+
+**Outstanding owner-dependent acceptance:** (a) P135/P034 exact selected Wholesale STORE DENY UI card `available` vs authorized direct HTTP 403 remains a real source mismatch, do not suppress the P111 negative regression; (b) P135 original #3065's unintegrated original controller still needs P111 source reconciliation before declaring historical 403→200 and 403→409 resolved together; (c) full P111 matrix beyond Procurement/Finance/Treasury/WMS original owners; (d) all new tests **must be proven by exact-final-head GitHub Required CI**. `SOURCE_COMPLETE:NO / TECHNICAL_REVIEW:NOT PASS / REVIEW_RISK:HIGH / MERGE:BLOCKED`. No main, tag, release, deployment or production.
