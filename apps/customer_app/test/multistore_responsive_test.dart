@@ -1,3 +1,5 @@
+import 'dart:async';
+
 // ignore_for_file: deprecated_member_use, prefer_interpolation_to_compose_strings
 
 import 'package:flutter/material.dart';
@@ -243,6 +245,114 @@ void main() {
       },
     );
   }
+
+  for (final language in const <String>['ar', 'en']) {
+    testWidgets(
+      'MOB-C03 checkout ignores an obsolete failed coupon quote in $language',
+      (tester) async {
+        await tester.binding.setSurfaceSize(const Size(390, 844));
+        addTearDown(() => tester.binding.setSurfaceSize(null));
+        final api = _DelayedQuoteWholesaleApi();
+        await tester.pumpWidget(
+          FoodexCustomerApp(
+            locale: Locale(language),
+            initialRoute: '/b2b/checkout?store_id=70',
+            session: const CustomerSession.authenticated(
+              CustomerChannel.b2b,
+              accessToken: 'scoped-checkout-token',
+              b2bRetailStoreId: 7,
+            ),
+            b2cCatalogApi: const _ResponsiveCatalogApi(),
+            b2cAccountApi: const _ResponsiveAccountApi(),
+            actionApi: const _ResponsiveActionApi(),
+            b2bApi: const _ResponsiveB2bApi(),
+            storefrontApi: const _ResponsiveStorefrontApi(),
+            wholesaleCommerceApi: api,
+          ),
+        );
+        await tester.pumpAndSettle();
+        final field = find.byKey(const ValueKey('b2b-checkout-coupon'));
+        final apply = find.byKey(const ValueKey('b2b-checkout-apply-coupon'));
+        await tester.ensureVisible(field);
+        await tester.enterText(field, 'OLD');
+        await tester.ensureVisible(apply);
+        await tester.tap(apply);
+        await tester.pump();
+        expect(api.pendingQuotes, hasLength(1));
+        expect(api.couponCodes, ['OLD']);
+
+        // Editing intent while the earlier server request is still pending
+        // must not let its later error appear in this new checkout context.
+        await tester.enterText(field, 'NEW');
+        api.pendingQuotes.first.completeError(
+          StateError('obsolete quote must not appear in the new intent'),
+        );
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 100));
+        expect(find.byKey(const ValueKey('b2b-checkout-coupon-applied')),
+            findsNothing);
+        expect(tester.widget<FilledButton>(apply).onPressed, isNotNull);
+        expect(tester.takeException(), isNull);
+
+        await tester.tap(apply);
+        await tester.pump();
+        expect(api.pendingQuotes, hasLength(2));
+        expect(api.couponCodes, ['OLD', 'NEW']);
+        api.pendingQuotes.last.complete({
+          'data': {
+            'coupon': {'code': 'NEW'},
+            'currency': 'EGP',
+            'grand_total': 60.125,
+          },
+        });
+        await tester.pumpAndSettle();
+        final applied =
+            find.byKey(const ValueKey('b2b-checkout-coupon-applied'));
+        expect(applied, findsOneWidget);
+        expect(find.textContaining('NEW'), findsWidgets);
+        expect(tester.takeException(), isNull);
+      },
+    );
+  }
+}
+
+
+class _DelayedQuoteWholesaleApi extends _ResponsiveWholesaleApi
+    implements WholesaleQuoteApi {
+  final pendingQuotes = <Completer<Object?>>[];
+  final couponCodes = <String?>[];
+
+  @override
+  Future<Object?> quote({
+    required int storeId,
+    String? couponCode,
+    String? paymentMethod,
+  }) {
+    if (storeId != 70) {
+      throw StateError('unexpected store scope');
+    }
+    couponCodes.add(couponCode);
+    final pending = Completer<Object?>();
+    pendingQuotes.add(pending);
+    return pending.future;
+  }
+
+  @override
+  Future<Object?> cart(int storeId) async => {
+        'store_id': storeId,
+        'channel': 'b2b',
+        'currency': 'EGP',
+        'minimum_order_egp': 0,
+        'quote': {'grand_total': 80.125, 'currency': 'EGP'},
+        'items': [
+          {
+            'id': 1,
+            'product_id': 44,
+            'quantity': 5,
+            'unit_price': 16.025,
+          },
+        ],
+      };
 }
 
 class _PriceBadgeStorefrontApi extends _ResponsiveStorefrontApi {
