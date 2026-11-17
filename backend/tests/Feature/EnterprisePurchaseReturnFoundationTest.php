@@ -121,6 +121,135 @@ final class EnterprisePurchaseReturnFoundationTest extends TestCase
         );
     }
 
+    /**
+     * P110: supplier identity on a posted receipt does not certify legal title.
+     * A persisted draft must not return zero/negative stock or forge its source
+     * after the original positive request validation has already completed.
+     */
+    public function test_p110_fractional_supplier_return_replay_and_tampered_draft_fail_without_owner_or_stock_writes(): void
+    {
+        $this->enableProcurement();
+        [$actor, $store, $context] = $this->scopedUser($this->allPermissions(), 'PRTN-P110-MILLI');
+        [$product, $warehouse] = $this->stockTarget($store, 'PRTN-P110-MILLI-SKU');
+        $receipt = $this->postedReceipt(
+            $actor, $context, $warehouse, 'PRTN-P110-MILLI-SUP', 'PRTN-P110-MILLI-SKU', 1.500,
+        );
+        $source = $receipt->lines()->firstOrFail();
+        $manager = app(PurchaseReturnManager::class);
+
+        $first = $manager->createFromPostedReceipt($actor, $context, $receipt->id, [
+            'owner_key' => 'FOODEX',
+            'supplier_id' => 999999,
+            'lines' => [[
+                'goods_receipt_line_id' => $source->id,
+                'quantity' => '0.625',
+                'owner_key' => 'SUPPLIER:'.$receipt->supplier_id,
+                'unit_price' => 0,
+            ]],
+        ]);
+        $posted = $manager->post($actor, $context, $first->id);
+        $replayed = $manager->post($actor, $context, $first->id);
+        $this->assertSame('posted', $posted->status);
+        $this->assertSame($posted->posted_at?->toISOString(), $replayed->posted_at?->toISOString());
+        $this->assertSame((int) $receipt->supplier_id, (int) $posted->supplier_id);
+        $this->assertSame('0.625', $posted->lines[0]->returned_quantity);
+        $this->assertSame((string) $source->unit_price, (string) $posted->lines[0]->unit_price);
+
+        $inventory = DB::table('inventories')
+            ->where('warehouse_id', $warehouse->id)
+            ->where('product_id', $product->id)
+            ->firstOrFail();
+        $this->assertSame('0.875', number_format((float) $inventory->quantity, 3, '.', ''));
+        $this->assertDatabaseHas('enterprise_inventory_owner_positions', [
+            'inventory_id' => $inventory->id,
+            'owner_key' => 'UNKNOWN',
+            'owner_kind' => 'UNKNOWN',
+            'supplier_id' => null,
+            'certified_by' => null,
+        ]);
+        $this->assertSame('0.875', number_format((float) DB::table('enterprise_inventory_owner_positions')
+            ->where('inventory_id', $inventory->id)->value('quantity'), 3, '.', ''));
+        $this->assertSame(1, DB::table('enterprise_inventory_owner_positions')
+            ->where('inventory_id', $inventory->id)->count());
+
+        $draft = $manager->createFromPostedReceipt($actor, $context, $receipt->id, [
+            'lines' => [['goods_receipt_line_id' => $source->id, 'quantity' => '0.250']],
+        ]);
+        $draftLine = $draft->lines()->firstOrFail();
+
+        foreach ([
+            'returned_quantity' => '-0.250',
+            'item_code' => 'FORGED-SKU',
+            'unit' => 'case',
+            'received_quantity' => '9.000',
+            'unit_price' => '99.000',
+        ] as $column => $forged) {
+            DB::table('enterprise_purchase_return_lines')
+                ->where('id', $draftLine->id)->update([$column => $forged]);
+            try {
+                $manager->post($actor, $context, $draft->id);
+                $this->fail('Persisted supplier return source must fail closed for '.$column);
+            } catch (ValidationException $exception) {
+                $this->assertArrayHasKey('lines', $exception->errors());
+            }
+            DB::table('enterprise_purchase_return_lines')
+                ->where('id', $draftLine->id)->update([$column => $draftLine->{$column}]);
+        }
+
+        foreach (['supplier_code' => 'FOREIGN-SUP', 'currency_code' => 'USD'] as $column => $forged) {
+            DB::table('enterprise_purchase_returns')
+                ->where('id', $draft->id)->update([$column => $forged]);
+            try {
+                $manager->post($actor, $context, $draft->id);
+                $this->fail('Forged return header must fail closed for '.$column);
+            } catch (ValidationException $exception) {
+                $this->assertArrayHasKey('goods_receipt_id', $exception->errors());
+            }
+            DB::table('enterprise_purchase_returns')
+                ->where('id', $draft->id)->update([$column => $draft->{$column}]);
+        }
+
+        try {
+            $manager->createFromPostedReceipt($actor, $context, $receipt->id, [
+                'lines' => [['goods_receipt_line_id' => $source->id, 'quantity' => '0.0004']],
+            ]);
+            $this->fail('A return below one milliquantity must not round into a posting.');
+        } catch (ValidationException $exception) {
+            $this->assertArrayHasKey('lines.0.quantity', $exception->errors());
+        }
+
+        $this->assertDatabaseHas('enterprise_purchase_returns', [
+            'id' => $draft->id, 'status' => 'draft', 'posted_at' => null,
+        ]);
+        $this->assertSame('0.875', number_format((float) DB::table('inventories')
+            ->where('id', $inventory->id)->value('quantity'), 3, '.', ''));
+        $this->assertSame(1, DB::table('stock_movements')
+            ->where('type', 'purchase_return')
+            ->where('reference_type', 'enterprise_purchase_return_line')->count());
+        $this->assertSame(1, DB::table('audit_logs')
+            ->where('event', 'enterprise.purchase_return.posted')->count());
+
+        $manager->post($actor, $context, $draft->id);
+        $manager->post($actor, $context, $draft->id);
+        $this->assertSame('0.625', number_format((float) DB::table('inventories')
+            ->where('id', $inventory->id)->value('quantity'), 3, '.', ''));
+        $this->assertSame('0.625', number_format((float) DB::table('enterprise_inventory_owner_positions')
+            ->where('inventory_id', $inventory->id)->value('quantity'), 3, '.', ''));
+        $this->assertSame(1, DB::table('enterprise_inventory_owner_positions')
+            ->where('inventory_id', $inventory->id)->count());
+        $this->assertSame(2, DB::table('stock_movements')
+            ->where('type', 'purchase_return')
+            ->where('reference_type', 'enterprise_purchase_return_line')->count());
+        $this->assertSame(2, DB::table('audit_logs')
+            ->where('event', 'enterprise.purchase_return.posted')->count());
+        $this->assertDatabaseMissing('enterprise_inventory_owner_positions', [
+            'inventory_id' => $inventory->id, 'owner_key' => 'FOODEX',
+        ]);
+        $this->assertDatabaseMissing('enterprise_inventory_owner_positions', [
+            'inventory_id' => $inventory->id, 'owner_key' => 'SUPPLIER:'.$receipt->supplier_id,
+        ]);
+    }
+
     public function test_partial_returns_cannot_exceed_posted_receipt_remainder(): void
     {
         $this->enableProcurement();
