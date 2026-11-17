@@ -27,7 +27,6 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Validation\ValidationException;
 use Symfony\Component\HttpKernel\Exception\HttpExceptionInterface;
-use Tests\Support\ProcurementSecondApprover;
 use Tests\Support\SyntheticErpWorkflowEvidence;
 use Tests\TestCase;
 
@@ -631,6 +630,22 @@ final class EnterprisePurchaseReturnFoundationTest extends TestCase
         ]);
 
         [$foreign, $otherStore] = $this->scopedUser($this->allPermissions(), 'P243-SEC-FOREIGN');
+
+        // A Wholesale manager can ordinarily access multiple B2B stores.
+        // An explicit STORE DENY must still win when a forged request selects
+        // this other company's return; ordinary own-store reads remain valid.
+        DB::table('user_permission_overrides')->insert([
+            'user_id' => $foreign->id,
+            'permission_id' => Permission::query()
+                ->where('code', 'procurement.purchase_returns.view')->firstOrFail()->id,
+            'scope_key' => 'store:'.$store->id,
+            'store_id' => $store->id,
+            'effect' => 'deny',
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        $foreign->forceFill(['has_permission_overrides' => true])->save();
+
         [$limited, $limitedStore] = $this->scopedUser(['procurement.suppliers.view'], 'P243-SEC-LIMITED');
         $this->grantPlatformErpAccess($limited);
 
@@ -733,7 +748,13 @@ final class EnterprisePurchaseReturnFoundationTest extends TestCase
             ]],
         ]);
         $requests->submit($actor, $context, $request->id);
-        [$checker, $checkerContext] = ProcurementSecondApprover::forSameStore($actor, $context);
+        // Procurement is Wholesale-only. An independent B2B checker must
+        // hold its own effective global role; the Retail checker fixture
+        // cannot create a B2C context for a B2B warehouse.
+        $checker = User::factory()->create(['is_active' => true]);
+        $checkerRole = Role::query()->where('code', 'PROCUREMENT_MANAGER')->firstOrFail();
+        $checker->roles()->syncWithoutDetaching([$checkerRole->id]);
+        $checkerContext = app(TenantContextResolver::class)->wholesale($checker, $context->storeId);
         $requests->approve($checker, $checkerContext, $request->id);
 
         $orders = app(PurchaseOrderManager::class);
@@ -843,19 +864,23 @@ final class EnterprisePurchaseReturnFoundationTest extends TestCase
         $user = User::factory()->create(['is_active' => true]);
         $store = $this->createWholesaleStore($storeCode);
 
-        // The application channel check needs a canonical Wholesale persona.
-        // Keep its built-in permissions empty so each scoped test role remains
-        // the sole source of document permissions.
+        // Wholesale RBAC intentionally ignores store-role permission grants.
+        // Supply the test actor's requested permission subset through a real,
+        // channel-allowed global Procurement role, without changing production
+        // RBAC or giving the limited viewer the manager's permissions.
+        $manager = count($permissions) === count($this->allPermissions());
         $channelRole = Role::query()->firstOrCreate(
-            ['code' => 'PROCUREMENT_BUYER'],
+            ['code' => $manager ? 'PROCUREMENT_MANAGER' : 'PROCUREMENT_BUYER'],
             [
-                'name' => 'Wholesale Procurement Buyer',
+                'name' => $manager ? 'Wholesale Procurement Manager' : 'Wholesale Procurement Buyer',
                 'scope' => 'global',
                 'is_active' => true,
                 'is_system' => false,
             ],
         );
-        $channelRole->permissions()->sync([]);
+        $channelRole->permissions()->sync(
+            Permission::query()->whereIn('code', $permissions)->pluck('id')->all(),
+        );
         $user->roles()->syncWithoutDetaching([$channelRole->id]);
 
         DB::table('user_store_roles')->insert([
