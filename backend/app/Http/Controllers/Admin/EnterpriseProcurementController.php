@@ -762,7 +762,9 @@ final class EnterpriseProcurementController extends Controller
 
     private function canUseProcurementStore(User $actor, int $storeId, bool $hasEntitlementPolicy): bool
     {
-        if (! $actor->is_active) {
+        // Archived identities retain historical role rows for audit, but may
+        // not select a Procurement store or receive business authority.
+        if (! $actor->is_active || $actor->archived_at !== null) {
             return false;
         }
 
@@ -865,10 +867,11 @@ final class EnterpriseProcurementController extends Controller
 
     private function allowed(User $actor, int $storeId, string $permission): bool
     {
-        // The User policy already implements the active Super Admin exception,
-        // effective permission DENYs and role/channel restrictions. Repeating
-        // hasRole() here would let a deactivated privileged actor bypass it.
-        return $actor->hasPermission($permission, $storeId);
+        // Archive is a revocation state even if historical role assignments
+        // remain and the legacy is_active flag has not yet been reconciled.
+        // User::hasPermission applies role, channel and explicit DENY rules.
+        return $actor->is_active && $actor->archived_at === null
+            && $actor->hasPermission($permission, $storeId);
     }
 
     /** @return array<string,bool> */
@@ -900,7 +903,7 @@ final class EnterpriseProcurementController extends Controller
     {
         $actor = $request->user();
         abort_unless($actor instanceof User, 401);
-        abort_unless($actor->is_active, 403);
+        abort_unless($actor->is_active && $actor->archived_at === null, 403);
 
         return $actor;
     }
