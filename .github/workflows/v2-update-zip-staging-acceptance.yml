@@ -164,3 +164,17 @@ jobs:
             dist/update/V2_UPDATE_STAGING_EVIDENCE.json
           if-no-files-found: error
           retention-days: 7
+
+      # Failure must not make the actual generated ZIP disappear from CI.
+      # This is a PRIVATE, unsigned diagnostic artifact, never a publisher release.
+      - name: Retain unsigned source ZIP when disposable upgrade fails
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v2-update-zip-failed-untrusted-staging
+          path: |
+            dist/update/FOODEX-Update.zip
+            dist/update/FOODEX-Update.json
+            dist/update/FOODEX-Update.sha256.txt
+          if-no-files-found: warn
+          retention-days: 7
