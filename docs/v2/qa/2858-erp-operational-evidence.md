@@ -244,3 +244,45 @@ be proven under their original V2 issues before G10/G13 acceptance.
 `TECHNICAL_REVIEW: FAIL_FOR_FULL_SOURCE`; zero production module
 certifications. Keep original #3065 DRAFT; no main, tag, release,
 live cPanel, or production modification.
+
+
+## P135 security regression closeout — 2026-11-17 (exact-head CI PENDING)
+
+This is a **source/test ownership matrix, not a certification**. A committed
+test is only `IMPLEMENTED_NOT_VERIFIED` until its exact-final-HEAD GitHub
+Actions job has a terminal SUCCESS with individual cases executed. A SKIPPED
+job, old-HEAD green run, or synthetic `SyntheticErpWorkflowEvidence`
+fixture is **not** G0–G13 PASS. The prior P135 Required run #43991195019
+failed Backend Pint `ordered_imports` on
+`V2ErpOperationalWorkflowEvidenceTest.php`; Backend Tests and MySQL/Redis
+were SKIPPED on that run. The original-owned import ordering is corrected
+on the SAME PR; final test execution still requires fresh CI.
+
+| Security / failure dimension | Evidence/test within original P135 or existing V2 source | Result as of this checkpoint |
+| --- | --- | --- |
+| Inactive / archived roles | Added `V2ErpProcurementTabRouteMatrixTest::test_direct_procurement_http_revokes_inactive_and_archived_roles_even_with_signed_test_readiness`: active manager/Buyer HTTP positive, deactivate manager and archive/deactivate Buyer, same B2B URL HTTP 403 in AR/EN; permissions false, role assignment and audit history preserved | **COMMITTED; CI PENDING** |
+| Direct URL / revoked module | Extended `V2ErpWorkflowReadinessCertificationTest::ROUTES` to all five `procurement/inventory_wms/finance/treasury/enterprise_bi` routes; both AR/EN require HTTP 403 when module is uncertified or stale despite ENABLED + platform entitlement. Existing `V2ErpProcurementTabRouteMatrixTest` loops 11 actual tabs across active, unapproved and denied paths | **COMMITTED; CI PENDING** |
+| Forged `store_id`, cross-tenant & B2C vs B2B | Added `test_forged_procurement_store_ids_and_retail_to_wholesale_direct_urls_never_cross_channel`: Manager positive authorized B2B, reject retail store ID, nonexistent store ID, retail-only actor forging B2B and roleless direct URL for suppliers/orders/receipts with unchanged audit/PO/GRN counts; existing `test_all_eleven_direct_tabs_deny_an_excluded_b2b_store_without_denying_another` verifies Store A allow vs B explicit DENY for each tab | **COMMITTED; CI PENDING** |
+| Explicit DENY precedence | Existing P135 `test_all_eleven_direct_tabs_return_403_when_permission_is_explicitly_denied` and Store B scope-denial test; `ErpCenterTest` checks ERP card does not turn a denied store into actionable CTA | **EXISTING CODE; final exact-head test result PENDING** |
+| Supplier-owned vs FOODEX-owned legal stock | #2844 original P110 PR #3921 owns the stock-title provenance, attribution and purchase returns, supported by `EnterpriseWmsProfessionalCompletionTest` and `EnterprisePurchaseReturnFoundationTest`. Quantity movements/warehouse ownership **do not prove** legal stock title or COGS attribution. Do not modify those files in #2858. | **BLOCKED on #2844 source + actual P110 CI** |
+| Maker/checker, cross-domain SoD | Existing `V2FoodexAccountCrossDomainSoDAuditTest::test_multi_role_finance_maker_cannot_approve_own_request_even_with_treasury_and_procurement_roles`; `V2ProcurementTreasurySodBoundaryTest`; `Enterprise/EnterpriseFinanceApprovalFoundationTest::test_gl_approval_limit_enforces_maker_checker_poster_and_retry_safety`. Full AP-only/AR-only/GL/Treasury overlapping-role posting authority still requires #2851/#2696/#2697/#2633 original file owners | **PARTIAL SOURCE; full integration BLOCKED** |
+| Duplicate/replay | `EnterpriseGeneralLedgerFoundationTest::test_balanced_journal_create_and_post_are_idempotent_and_ledger_is_immutable`; `V2ErpProcurementRfqReceiptFlowTest::test_awarded_rfq_without_matching_purchase_order_fails_closed_instead_of_returning_phantom_id` and `test_awarded_rfq_cannot_rewrite_an_existing_issued_purchase_order_or_its_line_prices`; #2844 purchase-return retry source | **PARTIAL SOURCE; full chain not certified** |
+| Negative prices / negative finance balances | `V2ErpProcurementRfqReceiptFlowTest::test_self_approval_and_cross_store_supplier_or_negative_amount_never_persist_forged_procurement`; `EnterpriseGeneralLedgerFoundationTest::test_journal_rejects_unbalanced_closed_period_and_non_posting_accounts` tests unbalanced **journal** rejection. Neither is evidence of all negative receivable/cash/ledger balance and over-credit rejection across posted/reversed collections; #2633 and #2851 own that source | **PARTIAL; negative finance balance acceptance BLOCKED** |
+| Concurrency, retries, transaction rollback | `GeneralLedgerService::createDraft/post` use DB transactions, row `lockForUpdate`, idempotency request hash and posted replay return; `ProcurementCompletionManager::awardRfq` locks RFQ/PO in `DB::transaction`; approval service tests retry. A sequential replay test or SQLite transaction is **not** proof of two independent MySQL workers racing, partial failure rollback, exactly-once Treasury → AR → GL write-through or safe irreversible-migration recovery | **SOURCE GUARDS FOUND; MySQL concurrent/rollback acceptance BLOCKED on respective owners** |
+| Readiness attestation replay/forgery | `V2ErpOperationalWorkflowEvidenceTest` rejects untrusted signatures, alternate trusted-key identity, malformed SHA/review/CI, altered per-step tests, version drift, SHA-256 manifest content/dependency drift, and stale persisted module manifest/version. Includes test-only signed positive; live cert maps remain `[]` | **COMMITTED; CI PENDING** |
+
+**Non-mutating assertions** in the new HTTP suite check unchanged
+`audit_logs`, `enterprise_purchase_orders` and
+`enterprise_goods_receipts` for denied read requests. This is not
+evidence about POST side effects or power-loss recovery. Do NOT create a
+fake posting/approval record to satisfy the workflow checklist.
+
+**Required handoff and final gate:** #2844 P110, #2633/P303, #2602
+Van custody, #2632 Treasury, #2851 SoD, #2696 AR role, #2697 AP role,
+#3958 BI remain independent. Complete their original source and real
+authenticated positive/negative tests (including multi-connection MySQL
+race and rollback where necessary) under their original Issues/PRs.
+#2858 can certify none of the five modules until those implementations
+and G0–G13 original proofs are complete. Keep
+`certified_versions=[]`, trusted keys and workflow attestations empty.
+No source-complete claim from any test that is SKIPPED.
