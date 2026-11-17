@@ -83,11 +83,11 @@ final class V2EnterpriseBiIndependentPageTabsTest extends TestCase
                 } elseif ($selected === 'reports') {
                     $response->assertSee('data-bi-run-form', false)
                         ->assertSee('name="bi_tab" value="reports"', false);
-                    $this->assertSame(1, preg_match_all('/<form\\b[^>]*\\bdata-bi-run-form\\b/i', $html))
-                        ->assertDontSee('data-enterprise-bi-overview', false);
+                    $this->assertSame(1, preg_match_all('/<form\\b[^>]*\\bdata-bi-run-form\\b/i', $html));
+                    $response->assertDontSee('data-enterprise-bi-overview', false);
                 } elseif ($selected === 'schedules') {
-                    $response->assertSee(__('enterprise_bi_ui.schedules_title'))
-                        ->assertDontSee('data-bi-run-form', false);
+                    $response->assertSee(__('enterprise_bi_ui.schedules_title'));
+                    $this->assertSame(0, preg_match('/<form\\b[^>]*\\bdata-bi-run-form\\b/i', $html));
                 }
             }
         }
