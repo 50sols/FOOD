@@ -9,6 +9,7 @@ use App\Enterprise\Modules\ModuleManifestCatalog;
 use App\Enterprise\Modules\ModuleWorkflowAttestation;
 use App\Enterprise\Modules\ModuleOperationalReadiness;
 use App\Enterprise\Modules\ModuleState;
+use App\Models\EnterpriseModule;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\Support\SyntheticErpWorkflowEvidence;
 use Tests\TestCase;
@@ -171,6 +172,44 @@ final class V2ErpOperationalWorkflowEvidenceTest extends TestCase
         config()->set('enterprise_module_readiness.trusted_public_keys', []);
         $this->assertSame('uncertified', $readiness->status('sample_optional', 1, ModuleState::ENABLED));
         $this->assertSame([], config('enterprise_module_readiness.certified_versions.procurement', []));
+    }
+
+    public function test_signed_proof_rejects_stale_installed_manifest_version_or_contract_in_arabic_and_english(): void
+    {
+        $this->enableSample();
+        $this->requireSampleWorkflow();
+        $this->evidence();
+        $readiness = app(ModuleOperationalReadiness::class);
+        $registration = EnterpriseModule::query()->where('code', 'sample_optional')->firstOrFail();
+        $original = $registration->manifest;
+
+        $this->assertIsArray($original);
+        $this->assertSame('ready', $readiness->status('sample_optional', 1, ModuleState::ENABLED));
+
+        $registration->forceFill(['manifest_version' => 2])->save();
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            $this->assertSame('uncertified', $readiness->status('sample_optional', 1, ModuleState::ENABLED));
+        }
+        $registration->forceFill(['manifest_version' => 1])->save();
+
+        // The stored manifest itself must not lag a same-version source
+        // update or replace a reviewed permission/required-core contract.
+        $registration->forceFill([
+            'manifest' => [...$original, 'permissions' => ['unreviewed.manage']],
+        ])->save();
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            $this->assertSame('uncertified', $readiness->status('sample_optional', 1, ModuleState::ENABLED));
+        }
+
+        $registration->forceFill(['manifest' => $original])->save();
+        $this->assertSame('ready', $readiness->status('sample_optional', 1, ModuleState::ENABLED));
+
+        // Neither the installed nor source manifest can authorize an ERP
+        // module when true production certification maps are empty.
+        config()->set('enterprise_module_readiness.certified_versions', []);
+        $this->assertSame('uncertified', $readiness->status('sample_optional', 1, ModuleState::ENABLED));
     }
 
     public function test_untrusted_or_replayed_signature_never_turns_on_an_erp_module(): void
