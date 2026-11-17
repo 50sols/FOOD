@@ -241,11 +241,13 @@ final class ErpCenterController extends Controller
      * unchanged; this projection only sanitizes the two summary previews.
      *
      * @param  Collection<int, array<string, mixed>>  $items
-     * @return Collection<int, non-empty-array<string, mixed>>
+     * @return Collection<int, array<string, mixed>>
      */
     private function safePreviewReferences(Collection $items): Collection
     {
-        return $items->map(static function (array $item): array {
+        // The input is already a bounded, detached preview collection.
+        // Preserve its invariant Collection generic while sanitizing rows.
+        return $items->transform(static function (array $item): array {
             $value = is_string($item['reference'] ?? null)
                 ? trim($item['reference'])
                 : '';
