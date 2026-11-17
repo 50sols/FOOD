@@ -4,7 +4,8 @@ import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 
 void main() {
-  test('B2B scoped empty statement rejects foreign envelope in AR/EN', () async {
+  test('B2B scoped empty statement rejects foreign envelope in AR/EN',
+      () async {
     for (final language in ['ar', 'en']) {
       for (final statementStore in [99, 7, null]) {
         var requests = 0;
