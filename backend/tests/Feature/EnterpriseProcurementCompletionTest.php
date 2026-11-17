@@ -549,6 +549,88 @@ final class EnterpriseProcurementCompletionTest extends TestCase
         ]);
     }
 
+    public function test_procurement_reports_require_exact_source_document_permission_without_leaking_other_modules(): void
+    {
+        $this->enableProcurement();
+        [$statementsActor, , $statementContext] = $this->scopedUser(
+            ['procurement.supplier_statements.view', 'reports.export'],
+            'P135-REPORT-STATEMENT-ONLY',
+        );
+        $completion = app(ProcurementCompletionManager::class);
+        $sourcePermissions = [
+            'open_orders' => 'procurement.purchase_orders.view',
+            'supplier_performance' => 'procurement.purchase_orders.view',
+            'contract_expiry' => 'procurement.purchase_orders.view',
+            'spend' => 'procurement.purchase_invoices.view',
+            'match_exceptions' => 'procurement.purchase_invoices.view',
+            'savings' => 'procurement.purchase_requests.view',
+        ];
+
+        foreach (array_keys($sourcePermissions) as $report) {
+            try {
+                $completion->report($statementsActor, $statementContext, $report);
+                $this->fail('Statement read/export must never reveal '.$report.' without its document permission.');
+            } catch (HttpException $exception) {
+                $this->assertSame(403, $exception->getStatusCode());
+            }
+        }
+
+        [$ordersActor, , $ordersContext] = $this->scopedUser(
+            ['procurement.supplier_statements.view', 'procurement.purchase_orders.view'],
+            'P135-REPORT-ORDERS-ONLY',
+        );
+        foreach (['open_orders', 'supplier_performance', 'contract_expiry'] as $report) {
+            $result = $completion->report($ordersActor, $ordersContext, $report);
+            $this->assertArrayHasKey('columns', $result);
+            $this->assertSame([], $result['rows']);
+        }
+        foreach (['spend', 'match_exceptions', 'savings'] as $report) {
+            try {
+                $completion->report($ordersActor, $ordersContext, $report);
+                $this->fail('Purchase order access is not blanket invoice/RFQ report authority: '.$report);
+            } catch (HttpException $exception) {
+                $this->assertSame(403, $exception->getStatusCode());
+            }
+        }
+
+        [$invoicesActor, , $invoicesContext] = $this->scopedUser(
+            ['procurement.supplier_statements.view', 'procurement.purchase_invoices.view'],
+            'P135-REPORT-INVOICES-ONLY',
+        );
+        foreach (['spend', 'match_exceptions'] as $report) {
+            $this->assertSame([], $completion->report($invoicesActor, $invoicesContext, $report)['rows']);
+        }
+        foreach (['open_orders', 'savings'] as $report) {
+            try {
+                $completion->report($invoicesActor, $invoicesContext, $report);
+                $this->fail('Invoice viewer must not see order/RFQ report: '.$report);
+            } catch (HttpException $exception) {
+                $this->assertSame(403, $exception->getStatusCode());
+            }
+        }
+
+        [$requestActor, , $requestContext] = $this->scopedUser(
+            ['procurement.supplier_statements.view', 'procurement.purchase_requests.view'],
+            'P135-REPORT-RFQ-ONLY',
+        );
+        $this->assertSame([], $completion->report($requestActor, $requestContext, 'savings')['rows']);
+
+        [$noStatementActor, , $noStatementContext] = $this->scopedUser(
+            ['procurement.purchase_orders.view', 'reports.export'],
+            'P135-REPORT-NO-ENTRY',
+        );
+        try {
+            $completion->report($noStatementActor, $noStatementContext, 'open_orders');
+            $this->fail('Report document permission without the canonical Reports entry is insufficient.');
+        } catch (HttpException $exception) {
+            $this->assertSame(403, $exception->getStatusCode());
+        }
+
+        $this->assertSame(0, DB::table('enterprise_purchase_orders')->count());
+        $this->assertSame(0, DB::table('enterprise_purchase_invoices')->count());
+        $this->assertSame(0, DB::table('audit_logs')->count());
+    }
+
     public function test_completion_migration_is_reversible_without_leaving_parallel_authority(): void
     {
         $migration = require database_path(
