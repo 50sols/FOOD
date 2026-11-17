@@ -146,10 +146,12 @@ final class V2ErpOperationalWorkflowEvidenceTest extends TestCase
         // capabilities or health checks without a new reviewed attestation.
         foreach ([
             'hard_dependencies' => ['finance'],
+            'optional_integrations' => ['finance'],
             'required_core' => ['identity', 'tenant_context', 'audit', 'catalog'],
             'capabilities' => ['unreviewed.sensitive.action'],
             'permissions' => ['finance.post'],
             'health_checks' => ['provider.runtime'],
+            'navigation' => ['unreviewed' => ['route' => 'admin.unreviewed']],
         ] as $attribute => $unreviewedDefinition) {
             $original = config('enterprise_modules.modules.sample_optional.'.$attribute);
             config()->set('enterprise_modules.modules.sample_optional.'.$attribute, $unreviewedDefinition);
