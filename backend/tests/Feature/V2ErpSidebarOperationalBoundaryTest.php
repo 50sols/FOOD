@@ -11,6 +11,7 @@ use App\Models\Role;
 use App\Models\Store;
 use App\Models\User;
 use App\Services\EnterpriseModuleAdministration;
+use App\Services\OperationalTenantScope;
 use Database\Seeders\CoreReferenceSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
@@ -63,7 +64,7 @@ final class V2ErpSidebarOperationalBoundaryTest extends TestCase
 
         // A visibility-only exception must never create a B2B store, scope,
         // certified module or operational authorization.
-        $this->assertSame([], app(\App\Services\OperationalTenantScope::class)
+        $this->assertSame([], app(OperationalTenantScope::class)
             ->allowedStoreIds($actor, 'procurement.suppliers.view', 'B2B'));
 
         $center = $this->actingAs($actor)->get(route('admin.erp.index'));
