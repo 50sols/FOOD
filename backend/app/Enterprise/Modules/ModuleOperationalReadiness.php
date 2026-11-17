@@ -103,12 +103,18 @@ final class ModuleOperationalReadiness
         try {
             $registration = $this->registry->registration($code);
             if ($registration === null
-                || $registration->manifest_version !== $manifestVersion
-                || ! is_array($registration->manifest)) {
+                || $registration->manifest_version !== $manifestVersion) {
                 return false;
             }
 
-            $installedManifest = ModuleManifest::fromArray($registration->manifest);
+            // Model property metadata may describe the storage column as
+            // JSON text; read the cast value, then validate its real type.
+            $storedManifest = $registration->getAttribute('manifest');
+            if (! is_array($storedManifest)) {
+                return false;
+            }
+
+            $installedManifest = ModuleManifest::fromArray($storedManifest);
             $installedDigest = ModuleWorkflowAttestation::manifestSha256($installedManifest);
             if ($installedManifest->code !== $code
                 || $installedManifest->version !== $manifestVersion
