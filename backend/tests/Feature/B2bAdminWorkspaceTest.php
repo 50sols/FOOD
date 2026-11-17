@@ -62,6 +62,87 @@ class B2bAdminWorkspaceTest extends TestCase
             ->assertOk();
     }
 
+    public function test_wholesale_pricing_mode_setup_help_and_readiness_are_localized(): void
+    {
+        foreach (['ar', 'en'] as $locale) {
+            $admin = $this->user('B2B_ADMIN', $locale);
+            $this->actingAs($admin)->get('/admin/b2b/settings')
+                ->assertOk()
+                ->assertSee('data-v2-stage2-pricing-setup', false)
+                ->assertSee('data-readiness-state="base-price"', false)
+                ->assertSee(__('b2b_pricing_setup.title'))
+                ->assertSee(__('b2b_pricing_setup.source'))
+                ->assertSee(__('b2b_pricing_setup.example'))
+                ->assertSee(__('b2b_pricing_setup.default'))
+                ->assertSee(__('b2b_pricing_setup.test_help'))
+                ->assertSee(__('b2b_pricing_setup.permissions'))
+                ->assertSee($locale === 'ar' ? 'dir="rtl"' : 'dir="ltr"', false);
+        }
+    }
+
+    public function test_wholesale_pricing_mode_test_does_not_save_or_audit_and_save_still_persists(): void
+    {
+        $admin = $this->user('B2B_ADMIN', 'en');
+        $storeId = app(WholesalePrincipal::class)->storeId();
+
+        $this->actingAs($admin)
+            ->put('/admin/b2b/settings/pricing-tiers', ['enabled' => '1', 'setup_action' => 'test'])
+            ->assertRedirect()
+            ->assertSessionHasNoErrors()
+            ->assertSessionHas('status', __('b2b_pricing_setup.test_missing'));
+
+        $this->assertDatabaseMissing('settings', ['store_id' => $storeId, 'key' => 'b2b.pricing_tiers_enabled']);
+        $this->assertDatabaseMissing('audit_logs', ['event' => 'b2b.pricing_mode.updated']);
+
+        $this->actingAs($admin)
+            ->put('/admin/b2b/settings/pricing-tiers', ['enabled' => '1', 'setup_action' => 'save'])
+            ->assertRedirect()
+            ->assertSessionHasNoErrors();
+
+        $this->assertDatabaseHas('settings', [
+            'store_id' => $storeId,
+            'key' => 'b2b.pricing_tiers_enabled',
+            'value' => 'true',
+        ]);
+        $this->assertDatabaseHas('audit_logs', ['event' => 'b2b.pricing_mode.updated']);
+
+        $auditCount = DB::table('audit_logs')->where('event', 'b2b.pricing_mode.updated')->count();
+        $this->actingAs($admin)
+            ->put('/admin/b2b/settings/pricing-tiers', ['enabled' => '0', 'setup_action' => 'test'])
+            ->assertRedirect()
+            ->assertSessionHas('status', __('b2b_pricing_setup.test_base'));
+
+        $this->assertDatabaseHas('settings', [
+            'store_id' => $storeId,
+            'key' => 'b2b.pricing_tiers_enabled',
+            'value' => 'true',
+        ]);
+        $this->assertSame($auditCount, DB::table('audit_logs')->where('event', 'b2b.pricing_mode.updated')->count());
+
+        $this->actingAs($admin)->get('/admin/b2b/settings')
+            ->assertOk()
+            ->assertSee('data-readiness-state="action-required"', false);
+    }
+
+    public function test_wholesale_pricing_mode_setup_rejects_invalid_actions_and_retail_roles(): void
+    {
+        $admin = $this->user('B2B_ADMIN', 'en');
+        $this->actingAs($admin)
+            ->put('/admin/b2b/settings/pricing-tiers', ['enabled' => '1', 'setup_action' => 'delete'])
+            ->assertSessionHasErrors('setup_action');
+        $this->actingAs($admin)
+            ->put('/admin/b2b/settings/pricing-tiers', ['enabled' => 'perhaps', 'setup_action' => 'test'])
+            ->assertSessionHasErrors('enabled');
+
+        $retail = $this->user('B2C_STORE_ADMIN', 'ar');
+        $this->actingAs($retail)
+            ->put('/admin/b2b/settings/pricing-tiers', ['enabled' => '1', 'setup_action' => 'test'])
+            ->assertForbidden();
+
+        $this->assertDatabaseMissing('settings', ['key' => 'b2b.pricing_tiers_enabled']);
+        $this->assertDatabaseMissing('audit_logs', ['event' => 'b2b.pricing_mode.updated']);
+    }
+
     public function test_product_create_and_edit_own_price_stock_and_low_stock_threshold(): void
     {
         $admin = $this->user('B2B_ADMIN', 'en');
