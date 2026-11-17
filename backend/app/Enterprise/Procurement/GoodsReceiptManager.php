@@ -306,6 +306,23 @@ final class GoodsReceiptManager
                     ]);
                 }
 
+                // Imported or altered draft lines must remain an exact
+                // snapshot of the issued PO at posting time. A valid PO-line
+                // foreign key alone does not authenticate its item, unit or
+                // immutable source price, and negative/zero receipts must
+                // never reach inventory or the finance/audit handoff.
+                $received = trim((string) $line->received_quantity);
+                if (preg_match('/\\A(?:0|[1-9][0-9]{0,10})(?:\\.[0-9]{1,3})?\\z/D', $received) !== 1
+                    || $this->quantityUnits($received) <= 0
+                    || (string) $line->item_code !== (string) $orderLine->item_code
+                    || (string) $line->unit !== (string) $orderLine->unit
+                    || $this->quantityUnits($line->ordered_quantity) !== $this->quantityUnits($orderLine->quantity)
+                    || $this->quantityUnits($line->unit_price) !== $this->quantityUnits($orderLine->unit_price)) {
+                    throw ValidationException::withMessages([
+                        'lines' => [__('enterprise_procurement.errors.receipt_source_invalid')],
+                    ]);
+                }
+
                 $alreadyReceived = $postedTotals->get($orderLine->id, 0);
                 $nextReceived = $this->quantityUnits($alreadyReceived)
                     + $this->quantityUnits($line->received_quantity);
