@@ -111,7 +111,7 @@
             @endforeach
         </div>
         <p class="foodex-alert info" role="note">{{ __('admin.system_update_host.manual_verification') }}</p>
-        <p class="foodex-alert warning" role="note">{{ __('admin.system_update_host.signature_not_certified') }}</p>
+        <p class="foodex-alert warning" role="note">{{ __('update_signed_manifest.signature_caveat') }}</p>
     </section>
 
     <section aria-labelledby="runtime-health-title">
@@ -290,12 +290,13 @@
         <form class="system-runtime-form" method="post" action="{{ route('admin.system-update.store') }}" enctype="multipart/form-data" data-csrf-refresh-url="{{ route('admin.csrf-token') }}" data-mutation-lock>
             @csrf
             <label>{{ __('admin.system_update_surface.zip_package') }}<input type="file" name="package" accept=".zip,application/zip" required></label>
-            <label>{{ __('admin.system_update_surface.target_version') }}<input name="target_version" placeholder="1.2.0" required></label>
-            <label>{{ __('admin.system_update_surface.minimum_current_version') }}<input name="minimum_current_version" value="{{ $currentVersion }}" required></label>
-            <label>{{ __('admin.system_update_surface.sha256') }}<input name="sha256" maxlength="64" minlength="64" required></label>
-            <label>{{ __('admin.system_update_surface.release_notes') }}<textarea name="release_notes" rows="4"></textarea></label>
+            <label>{{ __('update_signed_manifest.manifest_label') }}<input type="file" name="signed_manifest" accept=".json,application/json" required></label>
+            <p>{{ __('update_signed_manifest.manifest_help') }}</p>
+            @unless($signatureVerificationConfigured)
+                <div class="foodex-alert warning" role="alert" data-signer-host-action-required>{{ __('update_signed_manifest.host_key_missing') }}</div>
+            @endunless
             <div class="foodex-alert info">{{ __('admin.system_update_surface.migration_notice') }}</div>
-            <button class="foodex-primary" type="submit">{{ __('admin.system_update_surface.install') }}</button>
+            <button class="foodex-primary" type="submit" @disabled(! $signatureVerificationConfigured)>{{ __('admin.system_update_surface.install') }}</button>
         </form>
     </section>
 
