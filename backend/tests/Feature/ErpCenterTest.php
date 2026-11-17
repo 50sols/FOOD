@@ -1001,6 +1001,97 @@ final class ErpCenterTest extends TestCase
         $this->assertNotContains('P135-SUPPLIER-OWNED', $codes);
     }
 
+    public function test_explicit_global_deny_cannot_be_overridden_by_store_allow_or_unrelated_retail_role_on_procurement_http(): void
+    {
+        $admin = $this->userWithGlobalRole('SUPER_ADMIN', 'en', 'p135-mixed-role-admin@example.test');
+        $buyer = $this->userWithGlobalRole('PROCUREMENT_BUYER', 'en', 'p135-mixed-role-buyer@example.test');
+        $storeA = $this->wholesaleStore('P135-MIXED-ROLE-B2B-A');
+        $storeB = $this->wholesaleStore('P135-MIXED-ROLE-B2B-B');
+        $retail = Store::query()->create([
+            'store_type_id' => (int) DB::table('store_types')->where('code', 'B2C')->value('id'),
+            'code' => 'P135-MIXED-ROLE-B2C',
+            'name' => 'P135 Mixed Role Retail',
+            'is_active' => true,
+        ]);
+        $retailRole = Role::query()->where('code', 'RETAIL_FINANCE')->firstOrFail();
+        $this->assertSame('store', $retailRole->scope);
+        $buyer->storeRoleAssignments()->create([
+            'store_id' => $retail->id,
+            'role_id' => $retailRole->id,
+        ]);
+
+        app(EnterpriseModuleAdministration::class)->perform('procurement', 'enable', $admin);
+        app(ModuleEntitlementManager::class)->set('procurement', EntitlementScope::platform(), true);
+
+        $this->assertTrue($buyer->fresh()->hasRole('PROCUREMENT_BUYER', $storeA->id));
+        $this->assertFalse($buyer->fresh()->hasRole('PROCUREMENT_BUYER', $retail->id));
+        $this->assertTrue($buyer->fresh()->hasRole('RETAIL_FINANCE', $retail->id));
+        $this->assertFalse($buyer->fresh()->hasRole('RETAIL_FINANCE', $storeB->id));
+
+        // An explicit global DENY must win even if the same identity also
+        // holds a contrary Store B ALLOW and an unrelated Retail store role.
+        foreach (['procurement.suppliers.view', 'procurement.suppliers.manage'] as $permission) {
+            $permissionId = Permission::query()->where('code', $permission)->firstOrFail()->id;
+            foreach ([
+                ['scope_key' => 'global', 'store_id' => null, 'effect' => 'deny'],
+                ['scope_key' => 'store:'.$storeB->id, 'store_id' => $storeB->id, 'effect' => 'allow'],
+            ] as $override) {
+                DB::table('user_permission_overrides')->insert([
+                    'user_id' => $buyer->id,
+                    'permission_id' => $permissionId,
+                    ...$override,
+                    'created_at' => now(),
+                    'updated_at' => now(),
+                ]);
+            }
+        }
+        $buyer->forceFill(['has_permission_overrides' => true])->save();
+        $actor = $buyer->fresh();
+
+        foreach ([$storeA, $storeB] as $store) {
+            $this->assertFalse($actor->hasPermission('procurement.suppliers.view', $store->id));
+            $this->assertFalse($actor->hasPermission('procurement.suppliers.manage', $store->id));
+            $this->assertTrue($actor->hasPermission('procurement.purchase_requests.view', $store->id));
+        }
+        $this->assertNotContains('procurement.suppliers.view', $actor->effectivePermissionCodes($storeB->id));
+        $this->assertNotContains('procurement.suppliers.manage', $actor->effectivePermissionCodes($storeB->id));
+
+        foreach (['ar' => 'rtl', 'en' => 'ltr'] as $locale => $direction) {
+            $buyer->forceFill(['locale' => $locale])->save();
+            $actor = $buyer->fresh();
+            foreach ([$storeA, $storeB] as $store) {
+                $this->actingAs($actor)->get(route('admin.erp.procurement.index', [
+                    'store_id' => $store->id,
+                    'tab' => 'suppliers',
+                ]))->assertForbidden();
+
+                // The independent, still-permitted Requests read path must
+                // remain usable; a supplier DENY does not hide all Procurement.
+                $this->actingAs($actor)->get(route('admin.erp.procurement.index', [
+                    'store_id' => $store->id,
+                    'tab' => 'requests',
+                ]))->assertOk()->assertSee('dir="'.$direction.'"', false);
+            }
+
+            $this->actingAs($actor)->get(route('admin.erp.procurement.index', [
+                'store_id' => $retail->id,
+                'tab' => 'suppliers',
+            ]))->assertForbidden();
+
+            $this->actingAs($actor)->post(route('admin.erp.procurement.suppliers.store'), [
+                'store_id' => $storeB->id,
+                'scope_type' => 'store',
+                'code' => 'P135-MIXED-ROLE-UNAUTHORIZED',
+                'name_en' => 'Denied mixed-role supplier',
+                'name_ar' => 'مورد غير مصرح',
+            ]))->assertForbidden();
+        }
+
+        $this->assertDatabaseMissing('enterprise_suppliers', [
+            'code' => 'P135-MIXED-ROLE-UNAUTHORIZED',
+        ]);
+    }
+
     public function test_archived_global_procurement_role_and_inactive_user_cannot_use_http_despite_saved_assignments(): void
     {
         $admin = $this->userWithGlobalRole('SUPER_ADMIN', 'en', 'p135-archived-setup@example.test');
