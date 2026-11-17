@@ -362,6 +362,66 @@ final class V2ErpProcurementRfqReceiptFlowTest extends TestCase
             ->where('event', 'enterprise.procurement.rfq.awarded')->count());
     }
 
+    public function test_another_wholesale_rfqs_valid_quote_cannot_be_replayed_into_the_approved_request(): void
+    {
+        $store = $this->store();
+        $otherStore = Store::query()->create([
+            'store_type_id' => (int) DB::table('store_types')->where('code', 'B2B')->value('id'),
+            'code' => 'P135-RFQ-REPLAY-FOREIGN',
+            'name' => 'Foreign Wholesale RFQ scope',
+            'is_active' => true,
+        ]);
+        app(OrganizationHierarchyService::class)->ensureDefaultScopeForStore($otherStore);
+
+        $firstMaker = $this->actor('PROCUREMENT_BUYER', 'ar');
+        $foreignMaker = $this->actor('PROCUREMENT_BUYER', 'en');
+        $checker = $this->actor('PROCUREMENT_MANAGER', 'en');
+
+        [$supplierId, $requestId, $rfqId, $quoteId] = $this->quotedRequest($firstMaker, $store);
+        [$foreignSupplierId, , $foreignRfqId, $foreignQuoteId] = $this->quotedRequest($foreignMaker, $otherStore);
+        $this->assertNotSame($rfqId, $foreignRfqId);
+        $this->assertNotSame($quoteId, $foreignQuoteId);
+        $this->assertNotSame($supplierId, $foreignSupplierId);
+
+        $this->actingAs($checker)->post(route('admin.erp.procurement.requests.decision', $requestId), [
+            'store_id' => $store->id,
+            'decision' => 'approve',
+        ])->assertRedirect();
+
+        $beforeAwardAudits = DB::table('audit_logs')
+            ->where('event', 'enterprise.procurement.rfq.awarded')->count();
+        $originalRequestPrice = DB::table('enterprise_purchase_request_lines')
+            ->where('purchase_request_id', $requestId)->value('estimated_unit_cost');
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            $checker->forceFill(['locale' => $locale])->save();
+
+            // This is a genuine submitted quote, not a made-up identifier.
+            // It belongs to a different RFQ/store and is never legal authority
+            // to award the otherwise approved purchase request in this store.
+            $this->actingAs($checker->fresh())->post(route('admin.erp.procurement.rfqs.award', [
+                'rfq' => $rfqId,
+                'quote' => $foreignQuoteId,
+            ]), ['store_id' => $store->id])->assertNotFound();
+
+            $this->assertUnawarded($requestId, $rfqId, $originalRequestPrice);
+            $this->assertDatabaseHas('enterprise_procurement_quotes', [
+                'id' => $quoteId, 'rfq_id' => $rfqId,
+                'supplier_id' => $supplierId, 'status' => 'submitted',
+            ]);
+            $this->assertDatabaseHas('enterprise_procurement_quotes', [
+                'id' => $foreignQuoteId, 'rfq_id' => $foreignRfqId,
+                'supplier_id' => $foreignSupplierId, 'status' => 'submitted',
+            ]);
+            $this->assertSame($beforeAwardAudits, DB::table('audit_logs')
+                ->where('event', 'enterprise.procurement.rfq.awarded')->count());
+        }
+
+        $this->assertDatabaseCount('enterprise_purchase_orders', 0);
+        $this->assertDatabaseCount('enterprise_goods_receipts', 0);
+    }
+
     public function test_expired_or_forged_quote_fails_http_before_award_mutates_request_supplier_or_amount(): void
     {
         $store = $this->store();
