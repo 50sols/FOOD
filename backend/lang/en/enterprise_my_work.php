@@ -6,6 +6,15 @@ return [
     'description' => 'One permission-filtered operational inbox across existing FOODEX modules, approvals, due work and delegated responsibility.',
     'export' => 'Export current view',
     'open_reports' => 'Open reporting center',
+    'tabs' => [
+        'navigation' => 'Action Center sections',
+        'summary' => 'Overview',
+        'filters' => 'Filters & saved views',
+        'queue' => 'Work inbox',
+        'analytics' => 'Analytics',
+        'activity' => 'Recent activity',
+        'approvals' => 'Approvals',
+    ],
     'summary' => [
         'title' => 'My Work snapshot',
         'total' => 'Visible work',

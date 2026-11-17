@@ -55,6 +55,13 @@ final class SecurityController extends Controller
                 'storeRoleAssignments.role.permissions:id,code',
             ]);
         }
+        // The existing page tabs and filters are presentation context only.
+        // Reject array query shapes before any string/int cast or identity lookup.
+        // Gate::authorize('security.view') above remains the sole access authority.
+        foreach (['q', 'status', 'assignment', 'section', 'deletion_preview'] as $filter) {
+            abort_unless(! $request->has($filter) || is_string($request->query($filter)), 404);
+        }
+
         $search = trim((string) $request->query('q', ''));
         $literalSearch = '%'.str_replace(['!', '%', '_'], ['!!', '!%', '!_'], $search).'%';
         $status = (string) $request->query('status', 'all');
@@ -870,6 +877,7 @@ final class SecurityController extends Controller
             'reason' => ['nullable', 'string', 'max:500'],
         ]);
 
+        $wasArchived = $user->archived_at !== null;
         try {
             $rbac->setUserActive(
                 $this->actor($request),
@@ -883,8 +891,31 @@ final class SecurityController extends Controller
         }
 
         return back()->with('status', (bool) $validated['is_active']
-            ? __('admin.security.user_activated')
+            ? ($wasArchived ? __('admin.security.user_archive_restored') : __('admin.security.user_activated'))
             : __('admin.security.user_deactivated'));
+    }
+
+    public function archiveUser(Request $request, User $user, RbacManager $rbac): RedirectResponse
+    {
+        Gate::authorize('users.status.manage');
+        $actor = $this->actor($request);
+        // Retained roles, custody, finance and users.delete stay independent;
+        // an explicit archive is never a store-delegated user offboarding.
+        abort_unless($actor->hasRole('SUPER_ADMIN'), 403);
+        $validated = $request->validate([
+            'reason' => ['required', 'string', 'min:8', 'max:500'],
+            'confirm_email' => ['required', 'string', 'max:190', Rule::in([(string) $user->email])],
+            'confirm_archive' => ['required', Rule::in(['ARCHIVE'])],
+            'impact_reviewed' => ['required', 'accepted'],
+        ]);
+
+        try {
+            $rbac->archiveUser($actor, $user, (string) $validated['reason'], $request);
+        } catch (ValidationException $exception) {
+            return back()->withErrors($exception->errors());
+        }
+
+        return back()->with('status', __('admin.security.user_archived'));
     }
 
     public function destroyUser(Request $request, User $user, AdminUserDeletionService $deletion): RedirectResponse

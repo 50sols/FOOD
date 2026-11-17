@@ -42,9 +42,10 @@
         .search-results small{color:var(--foodex-muted)}
 
         .content{width:100%;max-width:none;margin:0;padding:var(--foodex-space-5) clamp(var(--foodex-space-4),1.8vw,var(--foodex-space-8)) var(--foodex-space-8)}
-        .dashboard-tabs{display:flex;align-items:center;gap:8px;margin:0 0 var(--foodex-space-4);padding:6px;background:var(--foodex-surface);border:1px solid var(--foodex-border);border-radius:var(--foodex-radius-control);box-shadow:var(--foodex-shadow-sm);width:max-content;max-width:100%;overflow:auto}
-        .dashboard-tab{min-height:40px;display:inline-flex;align-items:center;justify-content:center;padding:0 16px;border-radius:calc(var(--foodex-radius-control) - 4px);font-weight:var(--foodex-font-weight-bold);font-size:var(--foodex-text-sm);color:var(--foodex-muted);white-space:nowrap}
+        .dashboard-tabs{display:flex;flex-wrap:nowrap;align-items:center;gap:8px;margin:0 0 var(--foodex-space-4);padding:6px;background:var(--foodex-surface);border:1px solid var(--foodex-border);border-radius:var(--foodex-radius-control);box-shadow:var(--foodex-shadow-sm);width:max-content;max-width:100%;min-width:0;overflow-x:auto;overscroll-behavior-inline:contain;scrollbar-width:thin}
+        .dashboard-tab{min-height:44px;flex:0 0 auto;display:inline-flex;align-items:center;justify-content:center;padding:0 16px;border-radius:calc(var(--foodex-radius-control) - 4px);font-weight:var(--foodex-font-weight-bold);font-size:var(--foodex-text-sm);color:var(--foodex-muted);white-space:nowrap}
         .dashboard-tab:hover{background:var(--foodex-green-soft);color:var(--foodex-green-dark)}
+        .dashboard-tab:focus-visible{outline:3px solid var(--foodex-green-dark);outline-offset:1px;scroll-margin-inline:8px}
         .dashboard-tab.active{background:var(--foodex-action-green);color:#fff;box-shadow:0 8px 18px rgba(21,138,58,.16)}
         .retail-dashboard-nav{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:var(--foodex-space-3)}
         .retail-dashboard-nav .dashboard-tabs{margin:0;min-width:0}
@@ -314,7 +315,7 @@
             <div class="retail-dashboard-nav">
                 <nav class="dashboard-tabs" aria-label="{{ __('admin.b2c_dashboard_tabs.navigation') }}">
                     @foreach(['overview','sales','inventory','customers','analytics'] as $tab)
-                        <a class="dashboard-tab {{ $dashboardTab===$tab?'active':'' }}" href="{{ route('admin.b2c.dashboard',array_merge($dashboardTabBase,['dashboard_tab'=>$tab])) }}">{{ __('admin.b2c_dashboard_tabs.'.$tab) }}</a>
+                        <a class="dashboard-tab {{ $dashboardTab===$tab?'active':'' }}" href="{{ route('admin.b2c.dashboard',array_merge($dashboardTabBase,['dashboard_tab'=>$tab])) }}" @if($dashboardTab===$tab) aria-current="page" @endif>{{ __('admin.b2c_dashboard_tabs.'.$tab) }}</a>
                     @endforeach
                 </nav>
                 <button type="button" class="dashboard-assistant-button" data-dashboard-assistant-open>

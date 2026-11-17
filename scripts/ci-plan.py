@@ -47,10 +47,21 @@ def resolve(config:dict,paths:list[str],branch:str="")->dict:
     areas={name:any(re.search(spec["path_regex"],p) for p in paths) for name,spec in config["areas"].items()}
     direct_areas=dict(areas)
     expansions=[]; branch_rules=[]
+    matched_paths=set()
+    for path in paths:
+        if any(re.search(spec["path_regex"],path) for spec in config["areas"].values()):
+            matched_paths.add(path)
     for item in config.get("expansions",[]):
-        if any(re.search(item["path_regex"],p) for p in paths):
+        matching=[p for p in paths if re.search(item["path_regex"],p)]
+        if matching:
+            matched_paths.update(matching)
             expansions.append(item["id"])
             for area in item.get("enable",[]): areas[area]=True
+    unclassified_paths=sorted(set(paths)-matched_paths)
+    if unclassified_paths:
+        # An unknown path cannot safely be treated as a docs-only change. Run
+        # every declared validation area and keep platform jobs enabled.
+        for area in areas: areas[area]=True
     for item in config.get("branch_rules",[]):
         if branch and re.search(item["branch_regex"],branch):
             branch_rules.append(item["id"])
@@ -67,6 +78,10 @@ def resolve(config:dict,paths:list[str],branch:str="")->dict:
         areas.get(name,False) and not direct_areas.get(name,False)
         for name in mobile_areas
     ) and bool(branch_rules)
+    force_mobile_validation=bool(unclassified_paths) or any(
+        item.get("force_mobile_validation",False) and item["id"] in expansions
+        for item in config.get("expansions",[])
+    )
     # Expansions such as release-contract may request cross-surface validation,
     # but they must not force platform builds when no mobile app/shared dependency
     # changed. Explicit convergence branch rules still restore those lanes.
@@ -75,8 +90,9 @@ def resolve(config:dict,paths:list[str],branch:str="")->dict:
         and bool(areas.get("backend") or areas.get("dashboard_ui"))
         and not direct_mobile
         and not explicit_mobile_branch
+        and not force_mobile_validation
     )
-    return {"schema_version":1,"branch":branch,"changed_files":paths,"areas":areas,"backend_dashboard_only":backend_dashboard_only,"expansions":expansions,"branch_rules":branch_rules,"focused_rules":focused_rules,"focused_tests":focused}
+    return {"schema_version":1,"branch":branch,"changed_files":paths,"areas":areas,"unclassified_paths":unclassified_paths,"backend_dashboard_only":backend_dashboard_only,"expansions":expansions,"branch_rules":branch_rules,"focused_rules":focused_rules,"focused_tests":focused}
 
 def emit(plan:dict,fh)->None:
     for name,value in plan["areas"].items(): fh.write(f"{name}={'true' if value else 'false'}\n")

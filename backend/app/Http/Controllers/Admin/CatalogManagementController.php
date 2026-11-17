@@ -52,15 +52,20 @@ final class CatalogManagementController extends Controller
     {
         $actor = $this->actor($request);
 
-        if ((string) $request->query('tab') === 'stores') {
+        // A malformed query parameter must never coerce an array into "Array"
+        // or select a hidden catalog workspace. Only scalar tabs are navigable.
+        $requestedTab = $request->query('tab', 'products');
+        abort_unless(is_string($requestedTab), 404);
+
+        if ($requestedTab === 'stores') {
             if ($actor->hasRole('SUPER_ADMIN')) {
                 return redirect()->route('admin.retail-stores.index');
             }
             abort(403);
         }
 
-        $tab = in_array((string) $request->query('tab'), ['overview', 'products', 'app_products', 'categories', 'attributes', 'import'], true)
-            ? (string) $request->query('tab')
+        $tab = in_array($requestedTab, ['overview', 'products', 'app_products', 'categories', 'attributes', 'import'], true)
+            ? $requestedTab
             : 'products';
 
         // Store provisioning belongs to the dedicated control-plane screen.

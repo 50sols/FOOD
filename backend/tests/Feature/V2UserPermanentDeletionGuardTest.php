@@ -4,6 +4,7 @@ namespace Tests\Feature;
 
 use App\Models\Role;
 use App\Models\User;
+use App\Services\AdminUserDeletionService;
 use App\Services\AuditLogger;
 use Database\Seeders\CoreReferenceSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -76,6 +77,46 @@ final class V2UserPermanentDeletionGuardTest extends TestCase
         $this->assertDatabaseHas('users', ['id' => $target->id, 'is_active' => 0]);
         $this->assertDatabaseHas('role_user', ['user_id' => $target->id]);
         $this->assertDatabaseHas('audit_logs', ['event' => 'user.retention_probe']);
+        $this->assertDatabaseMissing('audit_logs', ['event' => 'user.permanently_deleted']);
+    }
+
+    public function test_archival_actor_reference_blocks_deletion_without_erasing_audited_provenance(): void
+    {
+        $admin = $this->makeUser('SUPER_ADMIN');
+        // This account has no roles or independent finance/audit references.
+        // A prior archive performed before role removal retains its identity.
+        $formerArchiver = User::factory()->create(['is_active' => false, 'locale' => 'en']);
+        $archivedUser = User::factory()->create([
+            'is_active' => false,
+            'archived_at' => now(),
+            'archived_by' => $formerArchiver->id,
+        ]);
+
+        $inspection = app(AdminUserDeletionService::class)->inspect($admin, $formerArchiver);
+        $this->assertFalse($inspection['eligible']);
+        $this->assertContains('references', $inspection['reasons']);
+
+        $this->actingAs($admin)
+            ->get(route('admin.security.index', ['section' => 'users', 'deletion_preview' => $formerArchiver->id]))
+            ->assertOk()
+            ->assertSee('data-v2-user-deletion-blocked', false)
+            ->assertSee(__('v2_user_deletion.references', [], 'en'));
+
+        $this->actingAs($admin)
+            ->delete(route('admin.security.users.destroy', $formerArchiver), [
+                'reason' => 'Attempt to delete a retained archival actor identity',
+                'confirm_email' => $formerArchiver->email,
+                'confirm_delete' => 'DELETE',
+                'impact_reviewed' => '1',
+            ])
+            ->assertRedirect()
+            ->assertSessionHasErrors('user');
+
+        $this->assertDatabaseHas('users', ['id' => $formerArchiver->id]);
+        $this->assertDatabaseHas('users', [
+            'id' => $archivedUser->id,
+            'archived_by' => $formerArchiver->id,
+        ]);
         $this->assertDatabaseMissing('audit_logs', ['event' => 'user.permanently_deleted']);
     }
 

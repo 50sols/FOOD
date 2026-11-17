@@ -43,6 +43,20 @@
   },
   "expansions": [
     {
+      "id": "ci-configuration",
+      "path_regex": "^(\\.github/(workflows|scripts)/|\\.ci/|\\.ai/skill-router\\.json$|scripts/(ci-plan\\.py|detect-changed-areas\\.sh|ci-failure-registry\\.py|tests/test_ci_.*\\.py|tests/test_one_push_green_contract\\.py)$)",
+      "enable": [
+        "backend",
+        "customer",
+        "driver",
+        "van",
+        "dashboard_ui",
+        "mobile_ui",
+        "enterprise_performance"
+      ],
+      "force_mobile_validation": true
+    },
+    {
       "id": "release-contract",
       "path_regex": "^(\\.github/workflows/(release-validation|trial-distribution)\\.yml|\\.github/workflows/app-preview-acceptance-ci\\.yml|scripts/(release-readiness\\.sh|validate-premerge-release-version\\.sh|write-trial-bundle-manifest\\.py|validate_(customer_freeze_contract|release_artifact_contract)\\.py)|scripts/tests/test_(customer_freeze_contract|release_artifact_contract)\\.py|docs/release/|docs/quality/APP_PREVIEW_FINAL_ACCEPTANCE\\.md$)",
       "enable": [
