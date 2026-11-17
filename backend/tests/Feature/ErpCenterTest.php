@@ -1188,6 +1188,105 @@ final class ErpCenterTest extends TestCase
         }
     }
 
+    public function test_accountant_ar_only_card_is_the_same_authorized_legal_store_http_without_gl_or_ap_grants(): void
+    {
+        config()->set('security.mfa.enforce_privileged', false);
+        $admin = $this->userWithGlobalRole('SUPER_ADMIN', 'en', 'p135-finance-ar-only-admin@example.test');
+        $actor = $this->userWithGlobalRole('ACCOUNTANT', 'en', 'p135-finance-ar-only-accountant@example.test');
+        $store = $this->wholesaleStore('P135-FINANCE-AR-ONLY');
+        $scope = app(OrganizationHierarchyService::class)->scopeForStore($store->id);
+        $this->assertNotNull($scope);
+        app(EnterpriseModuleAdministration::class)->perform('finance', 'enable', $admin);
+
+        $this->assertTrue($actor->fresh()->hasPermission('finance.view', $store->id));
+        $this->assertFalse($actor->fresh()->hasPermission('finance.approve', $store->id));
+
+        $entitlements = app(ModuleEntitlementManager::class);
+        $entitlements->set(
+            'finance',
+            new EntitlementScope(EntitlementScope::STORE, $store->id),
+            true,
+            ['finance.ar.read'],
+        );
+
+        // Neither ACCOUNTANT nor a STORE-only grant can create a legal-entity
+        // ledger. The Center and actual HTTP must both refuse the shortcut.
+        $card = collect($this->actingAs($actor->fresh())->get(route('admin.erp.index'))
+            ->assertOk()->viewData('cards'))->firstWhere('key', 'finance');
+        $this->assertIsArray($card);
+        $this->assertSame('not_entitled', $card['status']);
+        $this->assertNull($card['url']);
+        $this->actingAs($actor->fresh())->get(route('admin.erp.finance.index', [
+            'store_id' => $store->id,
+            'tab' => 'receivables',
+        ]))->assertForbidden();
+
+        // Only the existing AR read capability is granted by the authorized
+        // legal entity. No AP/GL or posting capability is implicitly added.
+        $entitlements->set(
+            'finance',
+            new EntitlementScope(EntitlementScope::LEGAL_ENTITY, $scope['legal_entity_id']),
+            true,
+            ['finance.ar.read'],
+        );
+
+        foreach (['ar' => 'rtl', 'en' => 'ltr'] as $locale => $direction) {
+            app()->setLocale($locale);
+            $actor->forceFill(['locale' => $locale])->save();
+            $user = $actor->fresh();
+
+            $center = $this->actingAs($user)->get(route('admin.erp.index'))
+                ->assertOk()->assertSee('dir="'.$direction.'"', false);
+            $card = collect($center->viewData('cards'))->firstWhere('key', 'finance');
+            $this->assertIsArray($card);
+            $this->assertSame('available', $card['status']);
+            $this->assertSame(route('admin.erp.finance.index', [
+                'store_id' => $store->id,
+            ]), $card['url']);
+
+            $this->actingAs($user)->get($card['url'])
+                ->assertOk()
+                ->assertSee('data-finance-workbench="true"', false)
+                ->assertSee('dir="'.$direction.'"', false);
+            $this->actingAs($user)->get(route('admin.erp.finance.index', [
+                'store_id' => $store->id, 'tab' => 'receivables',
+            ]))->assertOk()->assertViewHas('tab', 'receivables');
+            $this->actingAs($user)->get(route('admin.erp.finance.index', [
+                'store_id' => $store->id, 'tab' => 'payables',
+            ]))->assertForbidden();
+            $this->actingAs($user)->get(route('admin.erp.finance.index', [
+                'store_id' => $store->id, 'tab' => 'journals',
+            ]))->assertForbidden();
+
+            $this->actingAs($user)->post(route('admin.erp.finance.accounts.store'), [
+                'store_id' => $store->id,
+                'code' => 'P135-UNAUTHORIZED-GL',
+                'name' => 'Unauthorized Finance account',
+                'type' => 'asset',
+                'normal_balance' => 'debit',
+            ])->assertForbidden();
+        }
+
+        $this->assertDatabaseCount('enterprise_finance_accounts', 0);
+        $this->assertDatabaseCount('enterprise_finance_journals', 0);
+        $this->assertDatabaseCount('enterprise_finance_ledger_entries', 0);
+
+        // Revocation at the child STORE overrides its genuine legal-entity
+        // entitlement, regardless of the actor's inherited ACCOUNTANT role.
+        $entitlements->set('finance', new EntitlementScope(EntitlementScope::STORE, $store->id), false);
+        app()->forgetInstance(AdminNavigation::class);
+        $card = collect($this->actingAs($actor->fresh())->get(route('admin.erp.index'))
+            ->assertOk()->viewData('cards'))->firstWhere('key', 'finance');
+        $this->assertIsArray($card);
+        $this->assertSame('not_entitled', $card['status']);
+        $this->assertNull($card['url']);
+        $this->actingAs($actor->fresh())->get(route('admin.erp.finance.index', [
+            'store_id' => $store->id, 'tab' => 'receivables',
+        ]))->assertForbidden();
+        $this->assertDatabaseCount('enterprise_finance_journals', 0);
+        $this->assertDatabaseCount('enterprise_finance_ledger_entries', 0);
+    }
+
     public function test_global_catalog_ap_ar_officers_without_channel_admission_have_no_finance_shortcut(): void
     {
         config()->set('security.mfa.enforce_privileged', false);
