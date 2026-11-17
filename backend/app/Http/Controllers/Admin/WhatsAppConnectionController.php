@@ -70,7 +70,7 @@ final class WhatsAppConnectionController extends Controller
     ): RedirectResponse {
         $actor = $this->actor($request);
         abort_unless($actor->hasPermission('whatsapp.settings'), 403);
-        $manager->update($actor, $profile, $this->connectionInput($request, $profile));
+        $manager->update($actor, $profile, $this->connectionInput($request));
 
         return $this->back(__('whatsapp.connections.updated'));
     }
@@ -206,7 +206,7 @@ final class WhatsAppConnectionController extends Controller
     }
 
     /** @return array<string, mixed> */
-    private function connectionInput(Request $request, ?WhatsAppConnectionProfile $profile = null): array
+    private function connectionInput(Request $request): array
     {
         $data = $request->validate([
             'name' => ['required', 'string', 'max:120'],
@@ -220,12 +220,12 @@ final class WhatsAppConnectionController extends Controller
             'webhook_metadata' => ['nullable', 'string', 'max:10000', 'json'],
         ]);
 
-        $data['provider_metadata'] = $profile !== null && ! $request->exists('provider_metadata')
-            ? ($profile->provider_metadata ?? [])
-            : $this->decodedJson($data['provider_metadata'] ?? null);
-        $data['webhook_metadata'] = $profile !== null && ! $request->exists('webhook_metadata')
-            ? ($profile->webhook_metadata ?? [])
-            : $this->decodedJson($data['webhook_metadata'] ?? null);
+        if (array_key_exists('provider_metadata', $data)) {
+            $data['provider_metadata'] = $this->decodedJson($data['provider_metadata']);
+        }
+        if (array_key_exists('webhook_metadata', $data)) {
+            $data['webhook_metadata'] = $this->decodedJson($data['webhook_metadata']);
+        }
 
         return $data;
     }
