@@ -513,7 +513,9 @@ final class GoodsReceiptManager
             'lines' => ['required', 'array', 'min:1', 'max:100'],
             'lines.*.purchase_order_line_id' => ['required', 'integer', 'min:1', 'distinct'],
             'lines.*.warehouse_id' => ['required', 'integer', 'min:1'],
-            'lines.*.quantity' => ['required', 'numeric', 'gt:0', 'max:999999999'],
+            // The receipt schema and canonical stock ledger use three decimal places.
+            // Reject extra precision before it could silently round into stock.
+            'lines.*.quantity' => ['required', 'numeric', 'gt:0', 'decimal:0,3', 'max:999999999'],
         ])->validate();
     }
 
