@@ -25,8 +25,9 @@
         .commercial-page-header h1{margin:3px 0 6px;font-size:clamp(1.55rem,2.2vw,2rem);font-weight:800;line-height:1.2}
         .commercial-page-header p{margin:0;color:var(--foodex-muted);max-width:760px}
         .commercial-eyebrow{font-size:.76rem;font-weight:800;color:var(--foodex-green-dark);letter-spacing:.02em}
-        .commercial-tabs{display:flex;gap:8px;flex-wrap:wrap;align-items:center;background:var(--foodex-surface);border:1px solid var(--foodex-border);border-radius:var(--foodex-radius-card);padding:8px;box-shadow:var(--foodex-shadow-sm)}
-        .commercial-tabs a{min-height:44px;padding:0 14px;border:1px solid transparent;border-radius:var(--foodex-radius-control);text-decoration:none;font-weight:800;display:inline-flex;align-items:center;justify-content:center;color:var(--foodex-muted)}
+        .commercial-tabs{display:flex;gap:8px;flex-wrap:nowrap;max-width:100%;min-width:0;overflow-x:auto;overscroll-behavior-inline:contain;-webkit-overflow-scrolling:touch;scrollbar-width:thin;align-items:center;background:var(--foodex-surface);border:1px solid var(--foodex-border);border-radius:var(--foodex-radius-card);padding:8px;box-shadow:var(--foodex-shadow-sm)}
+        .commercial-tabs a{flex:0 0 auto;white-space:nowrap;min-height:var(--foodex-touch-target);padding:0 14px;border:1px solid transparent;border-radius:var(--foodex-radius-control);text-decoration:none;font-weight:800;display:inline-flex;align-items:center;justify-content:center;color:var(--foodex-muted)}
+        .commercial-tabs a:focus-visible{outline:2px solid var(--foodex-action-green);outline-offset:2px}
         .commercial-tabs a:hover{background:var(--foodex-green-soft);color:var(--foodex-green-dark)}
         .commercial-tabs a.active{background:var(--foodex-action-green);color:#fff;border-color:var(--foodex-action-green);box-shadow:0 8px 18px rgba(21,138,58,.14)}
         .contract-banner{padding:14px 16px;border:1px solid #cfe5d6;border-radius:var(--foodex-radius-card);background:linear-gradient(135deg,var(--foodex-green-soft),#fff);box-shadow:var(--foodex-shadow-sm);display:grid;grid-template-columns:auto minmax(0,1fr);gap:10px 14px;align-items:center}
@@ -144,9 +145,9 @@
             </div>
             
         </header>
-    <div class="commercial-tabs" aria-label="{{ __('commercial.tabs.aria') }}">
-        <a class="{{ $section === 'sales-control' ? 'active' : '' }}" href="{{ route('admin.commercial.sales-control', $scope) }}">{{ __('commercial.tabs.sales_control') }}</a>
-        <a class="{{ $section === 'flash-offers' ? 'active' : '' }}" href="{{ route($flashRoutePrefix, $scope) }}">{{ __('commercial.tabs.flash_offers') }}</a>
+    <nav class="commercial-tabs foodex-tabs foodex-tabs--horizontal" aria-label="{{ __('commercial.tabs.aria') }}">
+        <a class="{{ $section === 'sales-control' ? 'active' : '' }}" href="{{ route('admin.commercial.sales-control', $scope) }}" @if($section === 'sales-control') aria-current="page" @endif>{{ __('commercial.tabs.sales_control') }}</a>
+        <a class="{{ $section === 'flash-offers' ? 'active' : '' }}" href="{{ route($flashRoutePrefix, $scope) }}" @if($section === 'flash-offers') aria-current="page" @endif>{{ __('commercial.tabs.flash_offers') }}</a>
         @if(!empty($pricingListsUrl))
         <a data-v2-pricing-lists-link aria-label="{{ __('commercial.tabs.price_lists') }}" href="{{ $pricingListsUrl }}">{{ __('commercial.tabs.price_lists') }}</a>
         @endif
@@ -157,7 +158,7 @@
         <a data-v2-approved-discounts-sales-link href="{{ $approvedDiscountsUrl }}">{{ __('customer_service_discount.approved_history') }}</a>
         @endif
         <a href="{{ route($storeChannel === 'b2b' ? 'admin.b2b.module' : 'admin.b2c.module', ['module' => $section === 'sales-control' ? 'products' : 'promotions'] + $scope) }}">{{ __('commercial.tabs.back_store') }}</a>
-    </div>
+    </nav>
 
     <section class="contract-banner {{ $contractReady ? '' : 'pending' }}" data-contract-ready="{{ $contractReady ? '1' : '0' }}">
         <strong>{{ $contractReady ? __('commercial.contract.ready_title') : __('commercial.contract.pending_title') }}</strong>
