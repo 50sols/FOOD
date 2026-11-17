@@ -27,8 +27,8 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
 use Symfony\Component\HttpKernel\Exception\HttpException;
 use Tests\Support\ProcurementSecondApprover;
-use Tests\TestCase;
 use Tests\Support\SyntheticErpWorkflowEvidence;
+use Tests\TestCase;
 
 final class EnterprisePurchaseOrderFoundationTest extends TestCase
 {
