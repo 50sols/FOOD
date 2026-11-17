@@ -75,19 +75,29 @@ $base=['store_id'=>$selectedStoreId,'tab'=>$activeTab];
 <details class="foodex-card erp-create"><summary>+ {{ __('enterprise_procurement.new_supplier') }}</summary>
 <form method="post" action="{{ route('admin.erp.procurement.suppliers.store') }}" class="erp-form">@csrf
 <input type="hidden" name="store_id" value="{{ $selectedStoreId }}">
+<p class="foodex-subtitle span-all" role="status">{{ __('supplier_setup_help.readiness') }}</p>
 <label>{{ __('enterprise_procurement.scope') }}<select name="scope_type" required><option value="store">{{ __('enterprise_procurement.store_scope') }}</option><option value="company">{{ __('enterprise_procurement.company_scope') }}</option></select></label>
-<label>{{ __('enterprise_procurement.code') }}<input name="code" required maxlength="64"></label>
-<label>{{ __('enterprise_procurement.name_en') }}<input name="name_en" required maxlength="190"></label> {{-- localization-gate: allow form field name identifies persisted bilingual attribute; visible label is translated --}}
+<p class="foodex-subtitle span-all">{{ __('supplier_setup_help.scope_help') }}</p>
+<label>{{ __('enterprise_procurement.code') }}<input name="code" required maxlength="64" pattern="[A-Za-z0-9][A-Za-z0-9._-]*" placeholder="SUP-EXAMPLE"></label>
+<p class="foodex-subtitle span-all">{{ __('supplier_setup_help.code_help') }}</p>
+<label>{{ __('enterprise_procurement.name_en') }}<input name="name_en" required maxlength="190"></label>
+<p class="foodex-subtitle span-all">{{ __('supplier_setup_help.name_help') }}</p> {{-- localization-gate: allow form field name identifies persisted bilingual attribute; visible label is translated --}}
 <label>{{ __('enterprise_procurement.name_ar') }}<input name="name_ar" maxlength="190" dir="rtl"></label> {{-- localization-gate: allow form field name identifies persisted bilingual attribute; visible label is translated --}}
 <label>{{ __('enterprise_procurement.contact') }}<input name="contact_name" maxlength="190"></label>
 <label>{{ __('enterprise_procurement.email') }}<input type="email" name="email" maxlength="190"></label>
 <label>{{ __('enterprise_procurement.phone') }}<input name="phone" maxlength="64"></label>
 <label>{{ __('enterprise_procurement.tax_number') }}<input name="tax_registration_number" maxlength="96"></label>
+<p class="foodex-subtitle span-all">{{ __('supplier_setup_help.tax_help') }}</p>
 <label>{{ __('enterprise_procurement.commercial_number') }}<input name="commercial_registration_number" maxlength="96"></label>
 <label>{{ __('enterprise_procurement.business_type') }}<input name="business_type" maxlength="96"></label>
 <label>{{ __('enterprise_procurement.payment_terms') }}<input type="number" name="payment_terms_days" min="0" max="3650"></label>
+<p class="foodex-subtitle span-all">{{ __('supplier_setup_help.terms_help') }}</p>
 <label class="span-all">{{ __('enterprise_procurement.notes') }}<textarea name="notes" maxlength="4000"></textarea></label>
-<div><button class="foodex-primary">{{ __('enterprise_procurement.create') }}</button></div>
+<div class="erp-actions">
+<button class="foodex-primary" type="submit" name="setup_action" value="save">{{ __('enterprise_procurement.create') }}</button>
+<button type="submit" name="setup_action" value="test">{{ __('supplier_setup_help.test') }}</button>
+</div>
+<p class="foodex-subtitle span-all">{{ __('supplier_setup_help.test_caveat') }}</p>
 </form></details>
 @endif
 <section class="foodex-card erp-table-wrap"><table class="foodex-table erp-table"><thead><tr><th>{{ __('enterprise_procurement.code') }}</th><th>{{ __('enterprise_procurement.supplier') }}</th><th>{{ __('enterprise_procurement.scope') }}</th><th>{{ __('enterprise_procurement.status') }}</th><th>{{ __('enterprise_procurement.contact') }}</th><th>{{ __('enterprise_procurement.actions') }}</th></tr></thead><tbody>
