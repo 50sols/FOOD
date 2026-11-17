@@ -3,6 +3,7 @@
 namespace Tests\Feature;
 
 use App\Domain\Updater\TrustedUpdateSignatureVerifier;
+use App\Http\Controllers\Admin\SystemUpdateController;
 use App\Domain\Updater\UpdatePackageManifest;
 use App\Models\Role;
 use App\Models\SystemVersion;
@@ -12,6 +13,7 @@ use Database\Seeders\CoreReferenceSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Routing\Middleware\ThrottleRequests;
+use ReflectionMethod;
 use Tests\TestCase;
 
 class SystemUpdateAuthorizationTest extends TestCase
@@ -204,6 +206,12 @@ class SystemUpdateAuthorizationTest extends TestCase
                     ->assertSee(__('update_host_readiness.checks.sodium_signature.help', [], $locale))
                     ->assertSee(__('update_host_readiness.checks.upload_temporary.label', [], $locale))
                     ->assertSee(__('update_host_readiness.checks.upload_temporary.help', [], $locale))
+                    ->assertSee(__('update_host_readiness.checks.process_execution.label', [], $locale))
+                    ->assertSee(__('update_host_readiness.checks.process_execution.help', [], $locale))
+                    ->assertSee(__('update_host_readiness.checks.backup_cli_tools.label', [], $locale))
+                    ->assertSee(__('update_host_readiness.checks.backup_cli_tools.help', [], $locale))
+                    ->assertSee('data-host-requirement="process_execution"', false)
+                    ->assertSee('data-host-requirement="backup_cli_tools"', false)
                     ->assertSee('data-host-requirement="upload_temporary"', false)
                     ->assertSee(
                         'data-host-requirement="sodium_signature" data-host-status="'
@@ -229,6 +237,25 @@ class SystemUpdateAuthorizationTest extends TestCase
             @unlink($blockingFile);
             @rmdir($directory);
         }
+    }
+
+    public function test_missing_mysql_backup_cli_is_reported_without_mutating_the_host(): void
+    {
+        // This is a read-only preflight; a missing PHP-accessible DB client is
+        // an explicit cPanel operator action, not a reason to weaken signing.
+        config([
+            'database.default' => 'mysql',
+            'foodex.mysql_dump_binary' => '/g005-no-such-tools/mysqldump',
+            'foodex.mysql_client_binary' => '/g005-no-such-tools/mysql',
+        ]);
+        $method = new ReflectionMethod(SystemUpdateController::class, 'hostingPermissionChecks');
+        $checks = $method->invoke(app(SystemUpdateController::class));
+
+        $this->assertFalse($checks['backup_cli_tools']);
+        $this->assertSame(
+            function_exists('proc_open') && function_exists('proc_close'),
+            $checks['process_execution'],
+        );
     }
 
     public function test_update_center_preflight_does_not_create_creatable_host_directories(): void
