@@ -80,6 +80,23 @@ final class SupplierDirectory
             ->withQueryString();
     }
 
+    /**
+     * Use exactly the Create validator, authorization and company-scoped
+     * uniqueness check without persisting a supplier or writing an audit log.
+     * This preflight never certifies an external registration/tax number.
+     *
+     * @param array<string, mixed> $attributes
+     */
+    public function validateCandidate(
+        User $actor,
+        ResolvedTenantContext $context,
+        array $attributes,
+    ): void {
+        $scope = $this->authorizedScope($actor, $context, self::MANAGE_PERMISSION);
+        $data = $this->validatedSupplier($attributes);
+        $this->assertCodeAvailable($scope, (string) $data['code']);
+    }
+
     /** @param array<string, mixed> $attributes */
     public function create(
         User $actor,
