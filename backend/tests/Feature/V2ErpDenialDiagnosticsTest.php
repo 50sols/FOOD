@@ -32,7 +32,6 @@ final class V2ErpDenialDiagnosticsTest extends TestCase
         $this->seed(CoreReferenceSeeder::class);
         config()->set('security.mfa.enforce_privileged', false);
         config()->set('enterprise_module_readiness.certified_versions', []);
-        $this->wholesaleStore('P034-ERP-DIAGNOSTICS-DEFAULT');
         // The local Super Admin bootstrap is deliberately disabled in this
         // production-like test: a diagnostic read must not fabricate access.
         $this->app['env'] = 'production';
@@ -185,19 +184,6 @@ final class V2ErpDenialDiagnosticsTest extends TestCase
         $actor->roles()->attach(Role::query()->where('code', $roleCode)->firstOrFail());
 
         return $actor;
-    }
-
-    private function wholesaleStore(string $code): Store
-    {
-        $store = Store::query()->create([
-            'store_type_id' => (int) DB::table('store_types')->where('code', 'B2B')->value('id'),
-            'code' => $code,
-            'name' => $code,
-            'is_active' => true,
-        ]);
-        app(OrganizationHierarchyService::class)->ensureDefaultScopeForStore($store);
-
-        return $store;
     }
 }
 

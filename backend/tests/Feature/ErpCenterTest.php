@@ -39,10 +39,6 @@ final class ErpCenterTest extends TestCase
         // Disposable signed evidence only for positive ERP Center test scenarios.
         // Production certification and trusted public keys stay empty by default.
         SyntheticErpWorkflowEvidence::install();
-        // ERP Center is intentionally scoped to Wholesale stores. Give every
-        // scenario a deterministic B2B context so diagnostics can render cards
-        // without relying on retail fixtures or unrelated test setup.
-        $this->wholesaleStore('P135-ERP-CENTER-DEFAULT');
     }
 
     public function test_all_erp_workbench_denial_reasons_are_plain_language_ar_en_not_raw_state_codes(): void
