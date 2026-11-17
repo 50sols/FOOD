@@ -315,6 +315,12 @@
     const valid = key => tabs.some(tab => tab.dataset.waWorkspaceTab === key);
     let rendered = tabs.find(tab => tab.getAttribute('aria-selected') === 'true')?.dataset.waWorkspaceTab || 'campaigns';
     let ticket = 0;
+    const loadError = document.createElement('div');
+    loadError.className = 'foodex-card wa-status';
+    loadError.setAttribute('role', 'alert');
+    loadError.textContent = @json(__('whatsapp.campaigns.error'));
+    loadError.hidden = true;
+    tablist?.insertAdjacentElement('afterend', loadError);
 
     const destination = (key, preserveHash = false) => {
         const url = new URL(window.location.href);
@@ -364,6 +370,7 @@
             }[key];
             if (!source?.querySelector('#' + requiredId)) throw new Error('Workspace response was incomplete');
             if (requestId !== ticket) return;
+            loadError.hidden = true;
             panels.forEach(panel => {
                 if (panel.dataset.waWorkspacePanel === key) {
                     panel.replaceChildren(...Array.from(source.childNodes).map(node => document.importNode(node, true)));
@@ -378,7 +385,10 @@
                 document.getElementById(decodeURIComponent(url.hash.slice(1)))?.scrollIntoView({block: 'start'});
             }
         } catch (error) {
-            if (requestId === ticket) window.location.assign(url.toString());
+            // A denied/failed GET must leave the existing workspace and any
+            // unsaved campaign draft/recipient selection intact. Native links
+            // remain the progressive fallback when JavaScript is unavailable.
+            if (requestId === ticket) loadError.hidden = false;
         } finally {
             if (requestId === ticket) tablist?.removeAttribute('aria-busy');
         }
