@@ -94,7 +94,7 @@ final class V2OrdersFilterRowAccessibilityTest extends TestCase
         $source = file_get_contents(resource_path('views/admin/_order-operations-order-filters.blade.php'));
         $this->assertIsString($source);
 
-        $this->assertStringContainsString('data-order-primary-filters role="group"', $source);
+        $this->assertStringContainsString('data-order-primary-filters role="group" tabindex="0"', $source);
         $this->assertStringContainsString('.order-grid-filter-primary{display:flex;', $source);
         $this->assertStringContainsString('overflow-x:auto;overflow-y:hidden;', $source);
         $this->assertStringContainsString('.order-grid-filter-primary>label{flex:0 0 auto}', $source);
