@@ -135,6 +135,15 @@ class HttpB2bApi implements B2bApi, B2bDocumentApi, B2bDownloadApi {
           }
         }
         if (requestedStore != null && invoiceEndpoint) {
+          // The list producer echoes its applied store filter. Even an empty
+          // HTTP-200 page must not be treated as scoped data for another store.
+          if (segments.length == 4 && decoded.containsKey('filters')) {
+            final filters = decoded['filters'];
+            if (filters is! Map<String, dynamic> ||
+                filters['store_id'] != requestedStore) {
+              throw const B2bApiException('invalid_response');
+            }
+          }
           final data = decoded['data'];
           final Iterable<Object?> invoices;
           if (data is Map<String, dynamic>) {
@@ -147,6 +156,16 @@ class HttpB2bApi implements B2bApi, B2bDocumentApi, B2bDownloadApi {
           for (final invoice in invoices) {
             if (invoice is! Map<String, dynamic> ||
                 invoice['store_id'] != requestedStore) {
+              throw const B2bApiException('invalid_response');
+            }
+            // Invoice details echo their server-owned seller/store identity.
+            // Reject contradictory seller provenance without inferring it
+            // from the selected Retail or Wholesale context in Flutter.
+            final seller = invoice['seller'];
+            if (seller != null &&
+                (seller is! Map<String, dynamic> ||
+                    (seller.containsKey('store_id') &&
+                        seller['store_id'] != requestedStore))) {
               throw const B2bApiException('invalid_response');
             }
           }
