@@ -104,10 +104,10 @@ final class V2WhatsAppCampaignWorkspaceTabsTest extends TestCase
         $this->assertStringContainsString('id="wa-audience-source"', $html);
         $this->assertStringContainsString('id="wa-selected-customer-inputs"', $html);
         $this->assertStringContainsString("url.searchParams.set('workspace_tab', key)", $html);
-        $this->assertStringContainsString("window.history.pushState({waWorkspaceTab: key}", $html);
+        $this->assertStringContainsString('window.history.pushState({waWorkspaceTab: key}', $html);
         $this->assertStringContainsString("window.addEventListener('popstate'", $html);
         $this->assertStringContainsString("event.key === ' '", $html);
-        $this->assertStringContainsString("panel.replaceChildren()", $html);
+        $this->assertStringContainsString('panel.replaceChildren()', $html);
         $this->assertStringContainsString('event.preventDefault();', $html);
         $this->assertStringContainsString('window.addEventListener(\'hashchange\', fromFragment)', $html);
         $this->assertStringContainsString('id="wa-template-registry"', $html);
