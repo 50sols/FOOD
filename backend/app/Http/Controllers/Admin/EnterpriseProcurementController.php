@@ -2,6 +2,8 @@
 
 namespace App\Http\Controllers\Admin;
 
+use App\Enterprise\Entitlements\EntitlementScope;
+use App\Enterprise\Entitlements\ModuleEntitlementResolver;
 use App\Enterprise\Modules\ModuleRegistry;
 use App\Enterprise\Procurement\GoodsReceiptManager;
 use App\Enterprise\Procurement\ProcurementCompletionManager;
@@ -54,6 +56,7 @@ final class EnterpriseProcurementController extends Controller
         private readonly TenantContextResolver $tenants,
         private readonly AdminNavigation $navigation,
         private readonly ModuleRegistry $modules,
+        private readonly ModuleEntitlementResolver $entitlements,
     ) {}
 
     public function index(Request $request): View
@@ -211,21 +214,17 @@ final class EnterpriseProcurementController extends Controller
                 break;
 
             case 'matches':
+                // This is a read-only GET. Materializing a three-way review can
+                // insert or auto-approve an accounting decision, so it must
+                // happen only inside the existing authorized invoice write /
+                // explicit review workflow, never while listing records.
+                // paginateMatches uses a LEFT JOIN: invoices without a review
+                // remain visible as pending in the existing view, with no
+                // fabricated variance, reviewer, or approval persisted here.
                 $data['rows'] = $this->completion->paginateMatches($actor, $context, [
                     'q' => $request->query('q'),
                     'status' => $request->query('status'),
                 ], 25);
-                foreach ($data['rows']->getCollection() as $matchRow) {
-                    if ($matchRow->match_review_id === null) {
-                        $this->completion->syncMatchForInvoice((int) $matchRow->purchase_invoice_id);
-                    }
-                }
-                if ($data['rows']->getCollection()->contains(fn ($matchRow): bool => $matchRow->match_review_id === null)) {
-                    $data['rows'] = $this->completion->paginateMatches($actor, $context, [
-                        'q' => $request->query('q'),
-                        'status' => $request->query('status'),
-                    ], 25);
-                }
                 break;
 
             case 'returns':
@@ -714,6 +713,18 @@ final class EnterpriseProcurementController extends Controller
         $selected = collect($options)->firstWhere('id', $requested > 0 ? $requested : $options[0]['id']);
         abort_unless(is_array($selected), 403);
         $storeId = (int) $selected['id'];
+
+        // Legacy deployments with no Procurement entitlement policies still
+        // use existing role/tenant authorization. Once any Procurement
+        // entitlement is configured, its hierarchical DENY/ALLOW decisions
+        // are authoritative for reads and every state-changing action.
+        // A global role (including Super Admin) cannot override store DENY.
+        if (DB::table('enterprise_module_entitlements')->where('module_code', 'procurement')->exists()) {
+            abort_unless($this->entitlements->allows(
+                'procurement',
+                new EntitlementScope(EntitlementScope::STORE, $storeId),
+            ), 403);
+        }
 
         $context = $selected['channel'] === 'b2c'
             ? $this->tenants->retail($actor, $storeId, $actor->hasRole('SUPER_ADMIN'), $request)
