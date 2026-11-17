@@ -250,7 +250,12 @@ final class EnterprisePurchaseOrderFoundationTest extends TestCase
         $lifecycle->transition('procurement', ModuleState::ENABLING);
         $lifecycle->transition('procurement', ModuleState::ENABLED);
 
-        [$actor, $store, $context] = $this->scopedUser($this->allPermissions(), 'PO-POSTED');
+        [$actor, $store, $context] = $this->scopedUser([
+            ...$this->allPermissions(),
+            'procurement.goods_receipts.view',
+            'procurement.goods_receipts.manage',
+            'procurement.goods_receipts.post',
+        ], 'PO-POSTED');
         app(ModuleEntitlementManager::class)->set(
             'procurement',
             new EntitlementScope(EntitlementScope::STORE, (int) $store->id),
