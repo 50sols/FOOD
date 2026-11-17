@@ -190,6 +190,13 @@ jobs:
           require 'backend/app/Domain/Updater/TrustedUpdateSignatureVerifier.php';
           require 'backend/app/Domain/Updater/SignedUpdateEnvelope.php';
           require 'backend/app/Domain/Updater/UpdatePackageValidator.php';
+          // Standalone validator intentionally supports non-Laravel unit runs.
+          // Only its optional config-bound check uses the framework app() helper.
+          function app(): object {
+              return new class {
+                  public function bound(string $name): bool { return false; }
+              };
+          }
           use App\Domain\Updater\UpdatePackageManifest;
           use App\Domain\Updater\TrustedUpdateSignatureVerifier;
           use App\Domain\Updater\SignedUpdateEnvelope;
