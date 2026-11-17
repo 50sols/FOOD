@@ -35,8 +35,16 @@ final class SidebarManagementController extends Controller
             ->orderBy('code')
             ->get();
 
-        $selectedId = (int) $request->query('role_id', (int) ($roles->first()->id ?? 0));
-        $selectedRole = $roles->firstWhere('id', $selectedId) ?? $roles->first();
+        // An explicit role selection must resolve to that exact role. Do not
+        // silently display a different role's permission matrix when the query
+        // contains an array, a malformed ID, or a deleted/historical ID.
+        $roleId = $request->query('role_id');
+        if ($request->has('role_id')) {
+            abort_unless(is_string($roleId) && ctype_digit($roleId) && (int) $roleId > 0, 404);
+            $selectedRole = $roles->firstWhere('id', (int) $roleId);
+        } else {
+            $selectedRole = $roles->first();
+        }
 
         abort_if($selectedRole === null, 404);
 
