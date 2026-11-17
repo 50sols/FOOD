@@ -68,10 +68,15 @@ final class V2RestaurantIntegrationWorkspaceTabsTest extends TestCase
     {
         $blade = (string) file_get_contents(resource_path('views/admin/smart-ordering-integrations.blade.php'));
 
-        $this->assertStringContainsString('.ri-workspace-tabs{display:flex;flex-wrap:nowrap;', $blade);
-        $this->assertStringContainsString('overflow-x:auto;', $blade);
-        $this->assertStringContainsString('min-width:0;padding-block:8px;', $blade);
-        $this->assertStringContainsString('.ri-workspace-tabs .foodex-tab:focus-visible{outline:', $blade);
+        $shared = (string) file_get_contents(resource_path('views/admin/_brand-components.blade.php'));
+
+        // The existing shared PAGE_TAB rail supplies all geometry and keyboard focus.
+        $this->assertStringContainsString('class="foodex-tabs foodex-tabs--horizontal ri-workspace-tabs"', $blade);
+        $this->assertStringContainsString('.ri-workspace-tabs{padding-block:8px}', $blade);
+        $this->assertStringNotContainsString('.ri-workspace-tabs{display:flex;', $blade);
+        $this->assertStringContainsString('.foodex-tabs.foodex-tabs--horizontal{min-width:0;max-width:100%;flex-wrap:nowrap;overflow-x:auto;', $shared);
+        $this->assertStringContainsString('.foodex-tabs.foodex-tabs--horizontal > a:focus-visible', $shared);
+        $this->assertStringContainsString('.foodex-tabs a,.foodex-tab{min-height:var(--foodex-touch-target);', $shared);
         $this->assertStringContainsString('aria-current="page"', $blade);
         $this->assertStringNotContainsString('role="tablist"', $blade);
         $this->assertStringNotContainsString('role="tab"', $blade);
