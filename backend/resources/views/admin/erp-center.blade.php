@@ -38,7 +38,13 @@ body{margin:0}
 .erp-filter-rail{display:flex;gap:8px;flex-wrap:wrap}
 .erp-filter{display:inline-flex;align-items:center;gap:6px;min-height:36px;padding:6px 10px;border:1px solid var(--foodex-border);border-radius:999px;color:var(--foodex-ink);text-decoration:none;background:var(--foodex-surface)}
 .erp-filter.is-active{background:var(--foodex-green-soft);border-color:var(--foodex-green);color:var(--foodex-green-dark);font-weight:800}
-.erp-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,260px),1fr));gap:var(--foodex-space-4)}
+.erp-module-tablist{display:flex;gap:8px;max-width:100%;overflow-x:auto;overscroll-behavior-inline:contain;padding:2px 1px 8px}
+.erp-module-tab{display:grid;gap:4px;flex:0 0 auto;min-width:150px;min-height:54px;padding:9px 13px;border:1px solid var(--foodex-border);border-radius:var(--foodex-radius-control);background:var(--foodex-surface);color:var(--foodex-ink);font:inherit;text-align:start;cursor:pointer}
+.erp-module-tab[aria-selected="true"]{border-color:var(--foodex-green);background:var(--foodex-green-soft);color:var(--foodex-green-dark);box-shadow:0 0 0 2px color-mix(in srgb,var(--foodex-green) 14%,transparent);font-weight:800}
+.erp-module-tab:focus-visible{outline:3px solid color-mix(in srgb,var(--foodex-green) 38%,transparent);outline-offset:2px}
+.erp-module-tab-status{font-size:var(--foodex-text-xs);color:var(--foodex-muted)}
+.erp-module-panels{display:grid;grid-template-columns:minmax(0,1fr)}
+.erp-module-panels [role="tabpanel"][hidden]{display:none}
 .erp-module{padding:var(--foodex-space-4);display:flex;flex-direction:column;gap:var(--foodex-space-3);min-width:0}
 .erp-module h3{margin:0;font-size:var(--foodex-text-lg)}
 .erp-module p{margin:0;color:var(--foodex-muted);line-height:var(--foodex-leading-normal)}
@@ -272,7 +278,30 @@ $workMax = max(1, (int) collect($workload)->max('total'));
 @if($visibleCards === [])
 <div class="foodex-empty-state" role="status">{{ __('admin.erp_center.empty_filtered') }}</div>
 @else
-<div class="erp-grid" data-erp-modules>
+@php
+$activeErpModuleKey = collect($visibleCards)->contains(fn ($moduleCard) => $moduleCard['key'] === $selectedModule)
+    ? $selectedModule
+    : $visibleCards[0]['key'];
+@endphp
+<div data-erp-module-tabs>
+<div class="erp-module-tablist" role="tablist" aria-label="{{ __('admin.erp_center.modules_title') }}" aria-orientation="horizontal">
+@foreach($visibleCards as $card)
+<button
+    class="erp-module-tab"
+    id="erp-module-tab-{{ $card['key'] }}"
+    type="button"
+    role="tab"
+    aria-controls="erp-module-panel-{{ $card['key'] }}"
+    aria-selected="{{ $activeErpModuleKey === $card['key'] ? 'true' : 'false' }}"
+    tabindex="{{ $activeErpModuleKey === $card['key'] ? '0' : '-1' }}"
+    data-erp-module-tab="{{ $card['key'] }}"
+>
+<span>{{ $card['title'] }}</span>
+<span class="erp-module-tab-status">{{ __('admin.erp_center.statuses.'.$card['status']) }}</span>
+</button>
+@endforeach
+</div>
+<div class="erp-module-panels" data-erp-modules>
 @foreach($visibleCards as $card)
 @php
 $readinessModuleCode = match ($card['key']) {
@@ -288,7 +317,7 @@ $readinessCertifiedVersion = $readinessModuleCode
     ? config('enterprise_module_readiness.certified_versions.'.$readinessModuleCode)
     : null;
 @endphp
-<article class="foodex-card erp-module {{ $selectedModule === $card['key'] ? 'is-selected' : '' }}" data-erp-key="{{ $card['key'] }}" data-erp-status="{{ $card['status'] }}"> {{-- localization-gate: allow — data attributes are deterministic non-user-facing state tokens; visible state labels are translated. --}}
+<article class="foodex-card erp-module {{ $activeErpModuleKey === $card['key'] ? 'is-selected' : '' }}" id="erp-module-panel-{{ $card['key'] }}" role="tabpanel" aria-labelledby="erp-module-tab-{{ $card['key'] }}" tabindex="0" @if($activeErpModuleKey !== $card['key']) hidden @endif data-erp-key="{{ $card['key'] }}" data-erp-status="{{ $card['status'] }}"> {{-- localization-gate: allow — data attributes are deterministic non-user-facing state tokens; visible state labels are translated. --}}
 <div>
 <h3>{{ $card['title'] }}</h3>
 <p>{{ $card['description'] }}</p>
@@ -368,10 +397,43 @@ $readinessComplete = $card['key'] === 'treasury' ? $treasuryReadinessComplete : 
 </article>
 @endforeach
 </div>
+</div>
 @endif
 </section>
 </div>
 </main>
 </div>
+<script>
+document.querySelectorAll('[data-erp-module-tabs]').forEach((root)=>{
+    const tabs=[...root.querySelectorAll('[role="tab"]')];
+    const activate=(tab,moveFocus=false)=>{
+        tabs.forEach((item)=>{
+            const selected=item===tab;
+            item.setAttribute('aria-selected',selected?'true':'false');
+            item.tabIndex=selected?0:-1;
+            const panel=root.querySelector(`#${CSS.escape(item.getAttribute('aria-controls'))}`);
+            if(panel) panel.hidden=!selected;
+        });
+        tab.focus({preventScroll:!moveFocus});
+        const url=new URL(window.location.href);
+        url.searchParams.set('module',tab.dataset.erpModuleTab);
+        window.history.replaceState(null,'',url);
+    };
+    tabs.forEach((tab,index)=>{
+        tab.addEventListener('click',()=>activate(tab));
+        tab.addEventListener('keydown',(event)=>{
+            const rtl=getComputedStyle(root).direction==='rtl';
+            const forward=rtl?'ArrowLeft':'ArrowRight';
+            const backward=rtl?'ArrowRight':'ArrowLeft';
+            let target=null;
+            if(event.key===forward) target=tabs[(index+1)%tabs.length];
+            else if(event.key===backward) target=tabs[(index-1+tabs.length)%tabs.length];
+            else if(event.key==='Home') target=tabs[0];
+            else if(event.key==='End') target=tabs[tabs.length-1];
+            if(target){event.preventDefault();activate(target,true);}
+        });
+    });
+});
+</script>
 </body>
 </html>
