@@ -1042,35 +1042,27 @@ class AdminNavigation
             ];
         }
 
-        // The Procurement HTTP chooser defaults to the first active B2B
-        // store, not the first store with an effective module entitlement.
-        // For a Wholesale store-only grant, bind the existing Sidebar link
-        // to an actual permitted, entitled and provisioned B2B store. This is
-        // a navigation projection only; the HTTP controller still authorizes.
-        if ($moduleCode === 'procurement'
-            && ! $user->isPlatformOwner()
-            && ! $this->enterpriseEntitlements->allows($moduleCode, EntitlementScope::platform())) {
-            foreach (app(OperationalTenantScope::class)->allowedStoreIds($user, $permission, 'b2b') as $storeId) {
-                if (! $user->hasPermission($permission, $storeId)
-                    || ! $this->enterpriseEntitlements->allows(
-                        $moduleCode,
-                        new EntitlementScope(EntitlementScope::STORE, $storeId),
-                    )) {
-                    continue;
-                }
-
-                try {
-                    if (app(OrganizationHierarchyService::class)->scopeForStore($storeId) === null) {
-                        continue;
-                    }
-                } catch (Throwable) {
-                    continue;
-                }
-
-                $params['store_id'] = (string) $storeId;
-
-                break;
+        // Procurement's HTTP controller opens the first authorized tab, not
+        // necessarily Suppliers. A Buyer with a supplier-specific DENY can
+        // still open Requests at the same entitled store. Project that exact
+        // existing read route instead of hiding the whole business domain.
+        // This is navigation only: direct HTTP, readiness, RBAC and SoD remain
+        // authoritative and there is no fallback to another store.
+        if ($moduleCode === 'procurement' && ! $user->isPlatformOwner()) {
+            $storeId = $this->procurementNavigationStoreId($user);
+            if ($storeId === null || ! Route::has($route)) {
+                return null;
             }
+
+            $params['store_id'] = (string) $storeId;
+
+            return [
+                'key' => $key,
+                'label' => $label,
+                'route' => $route,
+                'params' => $params,
+                'permission' => null,
+            ];
         }
 
         // The Treasury workbench resolves a concrete store on HTTP entry.
@@ -1120,6 +1112,44 @@ class AdminNavigation
         }
 
         return $item;
+    }
+
+    /**
+     * Mirror the existing Procurement Center's three read candidates and the
+     * Workbench's first-visible-tab decision at the actual entitled store.
+     * Explicit global/store DENYs and inactive/unassigned stores fail closed.
+     */
+    private function procurementNavigationStoreId(User $user): ?int
+    {
+        if (! $user->is_active) {
+            return null;
+        }
+
+        foreach ([
+            'procurement.suppliers.view',
+            'procurement.purchase_requests.view',
+            'procurement.purchase_orders.view',
+        ] as $permission) {
+            foreach (app(OperationalTenantScope::class)->allowedStoreIds($user, $permission) as $storeId) {
+                if (! $user->hasPermission($permission, $storeId)
+                    || ! $this->enterpriseEntitlements->allows(
+                        'procurement',
+                        new EntitlementScope(EntitlementScope::STORE, $storeId),
+                    )) {
+                    continue;
+                }
+
+                try {
+                    if (app(OrganizationHierarchyService::class)->scopeForStore($storeId) !== null) {
+                        return $storeId;
+                    }
+                } catch (Throwable) {
+                    // Never advertise an unprovisioned or broken legal scope.
+                }
+            }
+        }
+
+        return null;
     }
 
     /**
