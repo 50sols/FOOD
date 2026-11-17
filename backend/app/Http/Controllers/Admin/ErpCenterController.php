@@ -467,10 +467,14 @@ final class ErpCenterController extends Controller
 
         foreach ($permissions as $permission) {
             foreach (app(OperationalTenantScope::class)->allowedStoreIds($actor, $permission) as $storeId) {
+                // The Treasury card opens Overview, whose authoritative
+                // read requires treasury.receipts.read. A payment-only store
+                // entitlement must not create a dead operational link.
                 if (! $actor->hasPermission($permission, $storeId)
                     || ! $this->entitlements->allows(
                         $moduleCode,
                         new EntitlementScope(EntitlementScope::STORE, $storeId),
+                        $moduleCode === 'treasury' ? 'treasury.receipts.read' : null,
                     )) {
                     continue;
                 }
