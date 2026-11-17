@@ -316,7 +316,6 @@ void main() {
   }
 }
 
-
 class _DelayedQuoteWholesaleApi extends _ResponsiveWholesaleApi
     implements WholesaleQuoteApi {
   final pendingQuotes = <Completer<Object?>>[];
