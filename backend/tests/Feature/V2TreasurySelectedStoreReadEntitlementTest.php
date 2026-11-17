@@ -177,6 +177,51 @@ final class V2TreasurySelectedStoreReadEntitlementTest extends TestCase
         $this->assertDatabaseCount('enterprise_treasury_payments', 0);
     }
 
+    public function test_cheques_and_cash_closing_read_only_tabs_do_not_render_unentitled_post_actions(): void
+    {
+        [$actor, $storeA] = $this->operatorWithTwoStores();
+        $this->enableTreasury($actor);
+        app(ModuleEntitlementManager::class)->set(
+            'treasury',
+            new EntitlementScope(EntitlementScope::STORE, $storeA->id),
+            true,
+            ['treasury.cheques.read', 'treasury.cash_closing.read'],
+            $actor,
+        );
+
+        foreach (['ar' => 'rtl', 'en' => 'ltr'] as $locale => $direction) {
+            $actor->forceFill(['locale' => $locale])->save();
+
+            $cheques = $this->actingAs($actor->fresh())->get(route('admin.erp.treasury.index', [
+                'store_id' => $storeA->id,
+                'tab' => 'cheques',
+            ]))->assertOk()
+                ->assertSee('dir="'.$direction.'"', false)
+                ->assertViewHas('canManageCheque', false)
+                ->assertViewHas('canApproveCheque', false);
+            $cheques->assertDontSee(route('admin.erp.treasury.cheques.store'), false);
+
+            $closing = $this->actingAs($actor->fresh())->get(route('admin.erp.treasury.index', [
+                'store_id' => $storeA->id,
+                'tab' => 'cash_closing',
+            ]))->assertOk()
+                ->assertSee('dir="'.$direction.'"', false)
+                ->assertViewHas('canManageCashClosing', false)
+                ->assertViewHas('canApproveCashClosing', false);
+            $closing->assertDontSee(route('admin.erp.treasury.cash-closing.store'), false);
+
+            $this->actingAs($actor->fresh())->get(route('admin.erp.treasury.index', [
+                'store_id' => $storeA->id,
+                'tab' => 'payments',
+            ]))->assertForbidden();
+        }
+
+        $this->assertDatabaseCount('enterprise_treasury_cheques', 0);
+        $this->assertDatabaseCount('enterprise_treasury_cash_closings', 0);
+        $this->assertDatabaseCount('enterprise_treasury_receipts', 0);
+        $this->assertDatabaseCount('enterprise_treasury_payments', 0);
+    }
+
     public function test_explicit_store_finance_deny_still_overrides_a_valid_treasury_read_capability(): void
     {
         [$actor, , $storeB] = $this->operatorWithTwoStores();
