@@ -57,31 +57,39 @@ final class ProcurementCompletionManager
 
         $openRequests = $canRequests
             ? DB::table('enterprise_purchase_requests')
+                ->where('organization_id', $scope->organizationId)
+                ->where('company_id', $scope->companyId)
                 ->where('store_id', $storeId)
                 ->whereIn('status', ['draft', 'submitted', 'approved'])
                 ->count()
             : null;
         $pendingApprovals = $canRequests
             ? DB::table('enterprise_purchase_requests')
+                ->where('organization_id', $scope->organizationId)
+                ->where('company_id', $scope->companyId)
                 ->where('store_id', $storeId)
                 ->where('status', 'submitted')
                 ->count()
             : null;
         $openOrders = $canOrders
             ? DB::table('enterprise_purchase_orders')
+                ->where('organization_id', $scope->organizationId)
+                ->where('company_id', $scope->companyId)
                 ->where('store_id', $storeId)
                 ->whereIn('status', ['draft', 'issued'])
                 ->count()
             : null;
         $overdueOrders = $canOrders
             ? DB::table('enterprise_purchase_orders')
+                ->where('organization_id', $scope->organizationId)
+                ->where('company_id', $scope->companyId)
                 ->where('store_id', $storeId)
                 ->where('status', 'issued')
                 ->whereNotNull('needed_by')
                 ->whereDate('needed_by', '<', now()->toDateString())
                 ->count()
             : null;
-        $orderedNotReceived = $canOrders ? $this->orderedNotReceivedCount($storeId) : null;
+        $orderedNotReceived = $canOrders ? $this->orderedNotReceivedCount($storeId, $scope->organizationId, $scope->companyId) : null;
         $unmatchedInvoices = $canInvoices
             ? DB::table('enterprise_purchase_invoices as invoices')
                 ->leftJoin(
@@ -90,6 +98,8 @@ final class ProcurementCompletionManager
                     '=',
                     'invoices.id',
                 )
+                ->where('invoices.organization_id', $scope->organizationId)
+                ->where('invoices.company_id', $scope->companyId)
                 ->where('invoices.store_id', $storeId)
                 ->whereNotIn('invoices.status', ['cancelled'])
                 ->where(function ($query): void {
@@ -100,12 +110,16 @@ final class ProcurementCompletionManager
             : null;
         $supplierAging = $canStatements
             ? (float) DB::table('enterprise_purchase_invoices')
+                ->where('organization_id', $scope->organizationId)
+                ->where('company_id', $scope->companyId)
                 ->where('store_id', $storeId)
                 ->where('status', 'handed_off')
                 ->sum('total_amount')
             : null;
         $activeContracts = $canOrders
             ? DB::table('enterprise_procurement_contracts')
+                ->where('organization_id', $scope->organizationId)
+                ->where('company_id', $scope->companyId)
                 ->where('store_id', $storeId)
                 ->where('status', 'active')
                 ->whereDate('starts_on', '<=', now()->toDateString())
@@ -114,6 +128,8 @@ final class ProcurementCompletionManager
             : null;
         $expiringContracts = $canOrders
             ? DB::table('enterprise_procurement_contracts')
+                ->where('organization_id', $scope->organizationId)
+                ->where('company_id', $scope->companyId)
                 ->where('store_id', $storeId)
                 ->where('status', 'active')
                 ->whereBetween('ends_on', [now()->toDateString(), now()->addDays($contractWarningDays)->toDateString()])
@@ -121,6 +137,8 @@ final class ProcurementCompletionManager
             : null;
         $activeRfqs = $canRequests
             ? DB::table('enterprise_procurement_rfqs')
+                ->where('organization_id', $scope->organizationId)
+                ->where('company_id', $scope->companyId)
                 ->where('store_id', $storeId)
                 ->whereIn('status', ['draft', 'published'])
                 ->count()
@@ -140,14 +158,14 @@ final class ProcurementCompletionManager
             $this->metric('active_rfqs', $activeRfqs, 'rfqs', ['status' => 'draft,published'], $lastRefresh),
         ];
 
-        $spendTrend = $canInvoices ? $this->spendTrend($storeId, $from, $to) : [];
-        $spendBySupplier = $canInvoices ? $this->spendBySupplier($storeId, $from, $to) : [];
-        $spendByCategory = $canInvoices ? $this->spendByCategory($storeId, $from, $to) : [];
-        $poStatuses = $canOrders ? $this->purchaseOrderStatusChart($storeId) : [];
-        $poAging = $canOrders ? $this->purchaseOrderAgingChart($storeId) : [];
-        $supplierPerformance = $canOrders ? $this->supplierPerformance($storeId, $from, $to) : [];
-        $savings = $canRequests ? $this->savingsChart($storeId, $from, $to) : [];
-        $contractHorizon = $canOrders ? $this->contractExpiryHorizon($storeId) : [];
+        $spendTrend = $canInvoices ? $this->spendTrend($storeId, $from, $to, $scope->organizationId, $scope->companyId) : [];
+        $spendBySupplier = $canInvoices ? $this->spendBySupplier($storeId, $from, $to, $scope->organizationId, $scope->companyId) : [];
+        $spendByCategory = $canInvoices ? $this->spendByCategory($storeId, $from, $to, $scope->organizationId, $scope->companyId) : [];
+        $poStatuses = $canOrders ? $this->purchaseOrderStatusChart($storeId, $scope->organizationId, $scope->companyId) : [];
+        $poAging = $canOrders ? $this->purchaseOrderAgingChart($storeId, $scope->organizationId, $scope->companyId) : [];
+        $supplierPerformance = $canOrders ? $this->supplierPerformance($storeId, $from, $to, $scope->organizationId, $scope->companyId) : [];
+        $savings = $canRequests ? $this->savingsChart($storeId, $from, $to, $scope->organizationId, $scope->companyId) : [];
+        $contractHorizon = $canOrders ? $this->contractExpiryHorizon($storeId, $scope->organizationId, $scope->companyId) : [];
 
         return [
             'selected_from' => $from,
@@ -166,6 +184,7 @@ final class ProcurementCompletionManager
             ],
             'exceptions' => $this->exceptions(
                 $storeId,
+                $scope->organizationId,
                 $scope->companyId,
                 $canOrders,
                 $canInvoices,
@@ -1640,19 +1659,23 @@ final class ProcurementCompletionManager
     }
 
     /** @return list<array<string,mixed>> */
-    private function exceptions(int $storeId, int $companyId, bool $canOrders, bool $canInvoices, bool $canSuppliers): array
+    private function exceptions(int $storeId, int $organizationId, int $companyId, bool $canOrders, bool $canInvoices, bool $canSuppliers): array
     {
         $exceptions = [];
 
         if ($canOrders) {
             $overdue = DB::table('enterprise_purchase_orders')
+                ->where('organization_id', $organizationId)
+                ->where('company_id', $companyId)
                 ->where('store_id', $storeId)
                 ->where('status', 'issued')
                 ->whereNotNull('needed_by')
                 ->whereDate('needed_by', '<', now()->toDateString())
                 ->count();
-            $receiptVariance = $this->orderedNotReceivedCount($storeId);
+            $receiptVariance = $this->orderedNotReceivedCount($storeId, $organizationId, $companyId);
             $expiring = DB::table('enterprise_procurement_contracts')
+                ->where('organization_id', $organizationId)
+                ->where('company_id', $companyId)
                 ->where('store_id', $storeId)
                 ->where('status', 'active')
                 ->whereBetween('ends_on', [now()->toDateString(), now()->addDays(30)->toDateString()])
@@ -1666,6 +1689,8 @@ final class ProcurementCompletionManager
         if ($canInvoices) {
             $matchVariance = DB::table('enterprise_purchase_invoices as invoices')
                 ->join('enterprise_procurement_match_reviews as matches', 'matches.purchase_invoice_id', '=', 'invoices.id')
+                ->where('invoices.organization_id', $organizationId)
+                ->where('invoices.company_id', $companyId)
                 ->where('invoices.store_id', $storeId)
                 ->whereIn('matches.status', ['pending', 'rejected'])
                 ->count();
@@ -1676,6 +1701,8 @@ final class ProcurementCompletionManager
                     '=',
                     'invoices.outbox_event_id',
                 )
+                ->where('invoices.organization_id', $organizationId)
+                ->where('invoices.company_id', $companyId)
                 ->where('invoices.store_id', $storeId)
                 ->where('outbox.event_type', 'ProcurementPurchaseInvoiceHandedOff')
                 ->where('outbox.status', 'failed')
@@ -1687,12 +1714,15 @@ final class ProcurementCompletionManager
 
         if ($canSuppliers) {
             $blocked = DB::table('enterprise_suppliers')
+                ->where('organization_id', $organizationId)
                 ->where('company_id', $companyId)
                 ->where('status', 'on_hold')
                 ->where(function ($query) use ($storeId): void {
                     $query->where('scope_type', 'company')
                         ->orWhere(function ($store) use ($storeId): void {
-                            $store->where('scope_type', 'store')->where('store_id', $storeId);
+                            $store->where('scope_type', 'store')->where('organization_id', $organizationId)
+                ->where('company_id', $companyId)
+                ->where('store_id', $storeId);
                         });
                 })
                 ->count();
@@ -1702,7 +1732,7 @@ final class ProcurementCompletionManager
         return $exceptions;
     }
 
-    private function orderedNotReceivedCount(int $storeId): int
+    private function orderedNotReceivedCount(int $storeId, int $organizationId, int $companyId): int
     {
         $orders = DB::table('enterprise_purchase_orders as orders')
             ->join('enterprise_purchase_order_lines as order_lines', 'order_lines.purchase_order_id', '=', 'orders.id')
@@ -1711,6 +1741,8 @@ final class ProcurementCompletionManager
                 $join->on('receipts.id', '=', 'receipt_lines.goods_receipt_id')
                     ->where('receipts.status', '=', 'posted');
             })
+            ->where('orders.organization_id', $organizationId)
+            ->where('orders.company_id', $companyId)
             ->where('orders.store_id', $storeId)
             ->where('orders.status', 'issued')
             ->select('orders.id')
@@ -1721,9 +1753,11 @@ final class ProcurementCompletionManager
     }
 
     /** @return list<array<string,mixed>> */
-    private function spendTrend(int $storeId, string $from, string $to): array
+    private function spendTrend(int $storeId, string $from, string $to, int $organizationId, int $companyId): array
     {
         return DB::table('enterprise_purchase_invoices')
+            ->where('organization_id', $organizationId)
+            ->where('company_id', $companyId)
             ->where('store_id', $storeId)
             ->where('status', 'handed_off')
             ->whereBetween('invoice_date', [$from, $to])
@@ -1736,9 +1770,11 @@ final class ProcurementCompletionManager
     }
 
     /** @return list<array<string,mixed>> */
-    private function spendBySupplier(int $storeId, string $from, string $to): array
+    private function spendBySupplier(int $storeId, string $from, string $to, int $organizationId, int $companyId): array
     {
         return DB::table('enterprise_purchase_invoices')
+            ->where('organization_id', $organizationId)
+            ->where('company_id', $companyId)
             ->where('store_id', $storeId)
             ->where('status', 'handed_off')
             ->whereBetween('invoice_date', [$from, $to])
@@ -1752,12 +1788,22 @@ final class ProcurementCompletionManager
     }
 
     /** @return list<array<string,mixed>> */
-    private function spendByCategory(int $storeId, string $from, string $to): array
+    private function spendByCategory(int $storeId, string $from, string $to, int $organizationId, int $companyId): array
     {
         return DB::table('enterprise_purchase_invoices as invoices')
             ->join('enterprise_purchase_invoice_lines as invoice_lines', 'invoice_lines.purchase_invoice_id', '=', 'invoices.id')
-            ->leftJoin('products', 'products.sku', '=', 'invoice_lines.item_code')
+            ->leftJoin('products', function ($join) use ($storeId): void {
+                $join->on('products.sku', '=', 'invoice_lines.item_code')
+                    ->whereIn('products.catalog_id', function ($catalogs) use ($storeId): void {
+                        $catalogs->select('id')->from('catalogs')
+                            ->where('store_id', $storeId)
+                            ->where('is_active', true)
+                            ->where('is_migration_quarantine', false);
+                    });
+            })
             ->leftJoin('categories', 'categories.id', '=', 'products.category_id')
+            ->where('invoices.organization_id', $organizationId)
+            ->where('invoices.company_id', $companyId)
             ->where('invoices.store_id', $storeId)
             ->where('invoices.status', 'handed_off')
             ->whereBetween('invoices.invoice_date', [$from, $to])
@@ -1773,9 +1819,11 @@ final class ProcurementCompletionManager
     }
 
     /** @return list<array<string,mixed>> */
-    private function purchaseOrderStatusChart(int $storeId): array
+    private function purchaseOrderStatusChart(int $storeId, int $organizationId, int $companyId): array
     {
         return DB::table('enterprise_purchase_orders')
+            ->where('organization_id', $organizationId)
+            ->where('company_id', $companyId)
             ->where('store_id', $storeId)
             ->groupBy('status')
             ->selectRaw('status as label, COUNT(*) as value')
@@ -1786,12 +1834,14 @@ final class ProcurementCompletionManager
     }
 
     /** @return list<array<string,mixed>> */
-    private function purchaseOrderAgingChart(int $storeId): array
+    private function purchaseOrderAgingChart(int $storeId, int $organizationId, int $companyId): array
     {
         $today = CarbonImmutable::today();
         $buckets = ['current' => 0, '1_7' => 0, '8_30' => 0, '31_60' => 0, '61_plus' => 0];
 
         DB::table('enterprise_purchase_orders')
+            ->where('organization_id', $organizationId)
+            ->where('company_id', $companyId)
             ->where('store_id', $storeId)
             ->where('status', 'issued')
             ->orderBy('id')
@@ -1826,10 +1876,17 @@ final class ProcurementCompletionManager
     }
 
     /** @return list<array<string,mixed>> */
-    private function supplierPerformance(int $storeId, string $from, string $to): array
+    private function supplierPerformance(int $storeId, string $from, string $to, int $organizationId, int $companyId): array
     {
         return DB::table('enterprise_purchase_orders as orders')
-            ->join('enterprise_goods_receipts as receipts', 'receipts.purchase_order_id', '=', 'orders.id')
+            ->join('enterprise_goods_receipts as receipts', function ($join) use ($storeId, $organizationId, $companyId): void {
+                $join->on('receipts.purchase_order_id', '=', 'orders.id')
+                    ->where('receipts.organization_id', '=', $organizationId)
+                    ->where('receipts.company_id', '=', $companyId)
+                    ->where('receipts.store_id', '=', $storeId);
+            })
+            ->where('orders.organization_id', $organizationId)
+            ->where('orders.company_id', $companyId)
             ->where('orders.store_id', $storeId)
             ->where('orders.status', 'issued')
             ->where('receipts.status', 'posted')
@@ -1860,12 +1917,14 @@ final class ProcurementCompletionManager
     }
 
     /** @return list<array<string,mixed>> */
-    private function savingsChart(int $storeId, string $from, string $to): array
+    private function savingsChart(int $storeId, string $from, string $to, int $organizationId, int $companyId): array
     {
         return DB::table('enterprise_procurement_quotes as quotes')
             ->join('enterprise_procurement_rfqs as rfqs', 'rfqs.id', '=', 'quotes.rfq_id')
             ->join('enterprise_procurement_quote_lines as quote_lines', 'quote_lines.quote_id', '=', 'quotes.id')
             ->join('enterprise_procurement_rfq_lines as rfq_lines', 'rfq_lines.id', '=', 'quote_lines.rfq_line_id')
+            ->where('rfqs.organization_id', $organizationId)
+            ->where('rfqs.company_id', $companyId)
             ->where('rfqs.store_id', $storeId)
             ->where('quotes.status', 'awarded')
             ->whereBetween('quotes.awarded_at', [$from.' 00:00:00', $to.' 23:59:59'])
@@ -1882,25 +1941,29 @@ final class ProcurementCompletionManager
     }
 
     /** @return list<array<string,mixed>> */
-    private function contractExpiryHorizon(int $storeId): array
+    private function contractExpiryHorizon(int $storeId, int $organizationId, int $companyId): array
     {
         $today = CarbonImmutable::today();
 
         return [
-            ['label' => '0-30', 'value' => $this->contractCountBetween($storeId, $today, $today->addDays(30))],
-            ['label' => '31-60', 'value' => $this->contractCountBetween($storeId, $today->addDays(31), $today->addDays(60))],
-            ['label' => '61-90', 'value' => $this->contractCountBetween($storeId, $today->addDays(61), $today->addDays(90))],
+            ['label' => '0-30', 'value' => $this->contractCountBetween($storeId, $today, $today->addDays(30), $organizationId, $companyId)],
+            ['label' => '31-60', 'value' => $this->contractCountBetween($storeId, $today->addDays(31), $today->addDays(60), $organizationId, $companyId)],
+            ['label' => '61-90', 'value' => $this->contractCountBetween($storeId, $today->addDays(61), $today->addDays(90), $organizationId, $companyId)],
             ['label' => '90+', 'value' => DB::table('enterprise_procurement_contracts')
-                ->where('store_id', $storeId)
+                ->where('organization_id', $organizationId)
+            ->where('company_id', $companyId)
+            ->where('store_id', $storeId)
                 ->where('status', 'active')
                 ->whereDate('ends_on', '>', $today->addDays(90)->toDateString())
                 ->count()],
         ];
     }
 
-    private function contractCountBetween(int $storeId, CarbonImmutable $from, CarbonImmutable $to): int
+    private function contractCountBetween(int $storeId, CarbonImmutable $from, CarbonImmutable $to, int $organizationId, int $companyId): int
     {
         return DB::table('enterprise_procurement_contracts')
+            ->where('organization_id', $organizationId)
+            ->where('company_id', $companyId)
             ->where('store_id', $storeId)
             ->where('status', 'active')
             ->whereBetween('ends_on', [$from->toDateString(), $to->toDateString()])
