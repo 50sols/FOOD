@@ -279,7 +279,7 @@ void main() {
         final apply = find.byKey(const ValueKey('b2b-checkout-apply-coupon'));
         await tester.ensureVisible(field);
         await tester.enterText(field, 'OLD');
-        await tester.testTextInput.hide();
+        tester.testTextInput.hide();
         await tester.pump();
         await tester.ensureVisible(apply);
         await tester.pump();
