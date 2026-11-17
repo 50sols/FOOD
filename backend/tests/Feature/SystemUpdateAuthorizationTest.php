@@ -243,19 +243,26 @@ class SystemUpdateAuthorizationTest extends TestCase
     {
         // This is a read-only preflight; a missing PHP-accessible DB client is
         // an explicit cPanel operator action, not a reason to weaken signing.
+        $originalDriver = config('database.default');
         config([
             'database.default' => 'mysql',
             'foodex.mysql_dump_binary' => '/g005-no-such-tools/mysqldump',
             'foodex.mysql_client_binary' => '/g005-no-such-tools/mysql',
         ]);
-        $method = new ReflectionMethod(SystemUpdateController::class, 'hostingPermissionChecks');
-        $checks = $method->invoke(app(SystemUpdateController::class));
 
-        $this->assertFalse($checks['backup_cli_tools']);
-        $this->assertSame(
-            function_exists('proc_open') && function_exists('proc_close'),
-            $checks['process_execution'],
-        );
+        try {
+            $method = new ReflectionMethod(SystemUpdateController::class, 'hostingPermissionChecks');
+            $checks = $method->invoke(app(SystemUpdateController::class));
+
+            $this->assertFalse($checks['backup_cli_tools']);
+            $this->assertSame(
+                function_exists('proc_open') && function_exists('proc_close'),
+                $checks['process_execution'],
+            );
+        } finally {
+            // RefreshDatabase teardown must retain the connection it opened.
+            config(['database.default' => $originalDriver]);
+        }
     }
 
     public function test_update_center_preflight_does_not_create_creatable_host_directories(): void
