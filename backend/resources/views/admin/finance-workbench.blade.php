@@ -127,6 +127,10 @@ body{margin:0;background:var(--foodex-background);color:var(--foodex-ink)}
 @foreach($tabs as $tabItem)
 @if($tabItem['available'])
 <a class="finance-tab {{ $tab===$tabItem['key'] ? 'is-active' : '' }}" href="{{ route('admin.erp.finance.index',[...$routeBase,'tab'=>$tabItem['key']]) }}" @if($tab===$tabItem['key']) aria-current="page" @endif>{{ __($tabItem['label']) }}</a>
+@elseif($tab==='overview' && $tabItem['key']==='reports')
+{{-- A non-interactive, non-authorizing report availability indication for overview only.
+     No blocked GL/AP links or financial data are rendered for unentitled actors. --}}
+<span class="finance-tab is-disabled" aria-disabled="true">{{ __($tabItem['label']) }}</span>
 @endif
 @endforeach
 </nav>
@@ -561,6 +565,7 @@ $trendMax=max(1,max(array_map(fn($r)=>max(abs((float)$r['revenue']),abs((float)$
 <a class="finance-tab foodex-tab {{ $activeFinancePanel === $financePanelKey ? 'is-active active' : '' }}"
    data-finance-subtab="{{ $financePanelKey }}"
    href="{{ route('admin.erp.finance.index',[...$financePanelQuery,'finance_panel'=>$financePanelKey]) }}"
+   @if($financePanelKey === 'aging') aria-label="{{ __($financePanelLabels[$financePanelKey]) }} — {{ __('finance_workbench.dashboard.aging') }}" @endif
    @if($activeFinancePanel === $financePanelKey) aria-current="page" @endif>{{ __($financePanelLabels[$financePanelKey]) }}</a>
 @endforeach
 </nav>
