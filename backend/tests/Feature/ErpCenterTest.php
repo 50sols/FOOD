@@ -413,6 +413,69 @@ final class ErpCenterTest extends TestCase
         $this->assertDatabaseCount('enterprise_finance_journals', 0);
     }
 
+    public function test_uncertified_erp_card_keeps_translated_readiness_explanation_and_accessible_empty_state_without_a_denied_cta(): void
+    {
+        config()->set('security.mfa.enforce_privileged', false);
+        $this->app['env'] = 'production';
+        $admin = $this->userWithGlobalRole('SUPER_ADMIN', 'en', 'p135-erp-readiness-a11y@example.test');
+        $store = $this->wholesaleStore('P135-ERP-READINESS-A11Y');
+
+        app(EnterpriseModuleAdministration::class)->perform('procurement', 'enable', $admin);
+        app(ModuleEntitlementManager::class)->set('procurement', EntitlementScope::platform(), true, null, $admin);
+
+        // Reproduce deployment defaults, never a synthetic certified module.
+        config()->set('enterprise_module_readiness.certified_versions', []);
+        config()->set('enterprise_module_readiness.trusted_public_keys', []);
+        config()->set('enterprise_module_readiness.workflow_attestations', []);
+
+        foreach (['ar' => 'rtl', 'en' => 'ltr'] as $locale => $direction) {
+            app()->setLocale($locale);
+            $admin->forceFill(['locale' => $locale])->save();
+            $response = $this->actingAs($admin->fresh())->get(route('admin.erp.index', [
+                'status' => 'degraded',
+            ]));
+            $response->assertOk()
+                ->assertSee('dir="'.$direction.'"', false)
+                ->assertSee('name="viewport"', false)
+                ->assertSee('data-foodex-mobile-web-page="erp-center"', false)
+                ->assertSee('@media(max-width:1023px)', false)
+                ->assertSee('@media(max-width:767px)', false)
+                ->assertSee(':focus-visible', false)
+                ->assertSee(__('admin.erp_center.denial_reasons.uncertified', [], $locale));
+
+            $card = collect($response->viewData('cards'))->firstWhere('key', 'procurement');
+            $this->assertIsArray($card);
+            $this->assertSame('degraded', $card['status']);
+            $this->assertSame('uncertified', $card['denial_reason']);
+            $this->assertNull($card['url']);
+            $this->assertSame(1, preg_match(
+                '/<article class="foodex-card erp-module[^"]*" data-erp-key="procurement".*?<\/article>/s',
+                (string) $response->getContent(),
+                $matches,
+            ));
+            $this->assertStringContainsString(
+                e(__('admin.erp_center.denial_reasons.uncertified', [], $locale)),
+                $matches[0],
+            );
+            $this->assertStringNotContainsString('foodex-action-primary', $matches[0]);
+            $this->assertStringNotContainsString('href=', $matches[0]);
+
+            $this->actingAs($admin->fresh())->get(route('admin.erp.procurement.index', [
+                'store_id' => $store->id,
+            ]))->assertForbidden();
+
+            // Empty/status display is server-rendered and announced with
+            // role=status. No client-side loading spinner is invented.
+            $empty = $this->actingAs($admin->fresh())->get(route('admin.erp.index', [
+                'status' => 'not_entitled',
+            ]));
+            $empty->assertOk()
+                ->assertSee('role="status"', false)
+                ->assertSee(__('admin.erp_center.empty_filtered', [], $locale));
+            $this->assertSame([], $empty->viewData('visibleCards'));
+        }
+    }
+
     public function test_enabled_and_entitled_module_exposes_only_its_canonical_destination(): void
     {
         $actor = $this->userWithGlobalRole('SUPER_ADMIN', 'en', 'erp-enabled@example.test');
