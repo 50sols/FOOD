@@ -553,6 +553,7 @@ class User extends Authenticatable
             'is_platform_customer' => 'boolean',
             'has_permission_overrides' => 'boolean',
             'deactivated_at' => 'datetime',
+            'archived_at' => 'datetime',
             'last_seen_at' => 'datetime',
         ];
     }

@@ -73,14 +73,11 @@ aside.foodex-sidebar-collapsed .foodex-nav-domain-title{position:absolute;width:
 .foodex-nav-group-status[data-group-status="exceptions"]{background:var(--foodex-danger-soft);color:var(--foodex-danger-text)}
 .foodex-nav-count{grid-column:3;display:inline-flex;align-items:center;justify-content:center;min-width:22px;padding:1px 5px;border:1px solid var(--foodex-border);border-radius:999px;background:var(--foodex-surface);color:var(--foodex-muted);font-size:.7rem;line-height:1.35;font-variant-numeric:tabular-nums}
 .foodex-nav-disclosure{grid-column:4;display:inline-flex;align-items:center;justify-self:end;gap:6px;min-width:28px;padding:5px 7px;border:1px solid var(--foodex-border);border-radius:8px;background:var(--foodex-surface);color:var(--foodex-muted);font-size:.7rem;font-weight:700;line-height:1.2;white-space:nowrap}
-.foodex-nav-disclosure-collapse{display:none}
-.foodex-nav-group[open] .foodex-nav-disclosure-expand{display:none}
-.foodex-nav-group[open] .foodex-nav-disclosure-collapse{display:inline}
 .foodex-nav-group summary:focus-visible{outline:2px solid var(--foodex-green);outline-offset:2px}
 .foodex-nav-group summary:hover .foodex-nav-disclosure,.foodex-nav-group summary:focus-visible .foodex-nav-disclosure{border-color:var(--foodex-green);color:var(--foodex-green-dark)}
 .foodex-nav-children>.foodex-nav-link{border-inline-start:2px solid transparent}
 .foodex-nav-subchildren .foodex-nav-link{font-size:.94em}
-@media(max-width:440px){.foodex-nav-disclosure-expand,.foodex-nav-disclosure-collapse{display:none!important}.foodex-nav-disclosure{padding:5px 8px}}
+@media(max-width:440px){.foodex-nav-disclosure{padding:5px 8px}}
 .foodex-nav-group[open]{border-color:var(--foodex-border);background:#fbfcfd}.foodex-nav-group[open] summary{color:var(--foodex-green-dark)}.foodex-nav-group[open] .foodex-nav-chevron{transform:rotate(180deg)}
 /* Current page context is distinct from manually expanded groups; logical start supports RTL/LTR. */
 .foodex-nav-group.is-current-group{border-color:var(--foodex-border);border-inline-start:3px solid var(--foodex-green);background:var(--foodex-green-soft)}.foodex-nav-group.is-current-group>summary{color:var(--foodex-green-dark)}
@@ -226,8 +223,6 @@ html[dir=ltr] .dashboard-layout:has(>.dashboard-sidebar.foodex-sidebar-collapsed
                         <span class="foodex-nav-count" aria-label="{{ __('sidebar_admin.authorized_pages_count', ['count' => $authorizedLinkCount]) }}" data-authorized-page-count="{{ $authorizedLinkCount }}">{{ $authorizedLinkCount }}</span>
                     @endif
                     <span class="foodex-nav-disclosure" aria-hidden="true">
-                        <span class="foodex-nav-disclosure-expand">{{ __('sidebar_admin.expand_group') }}</span>
-                        <span class="foodex-nav-disclosure-collapse">{{ __('sidebar_admin.collapse_group') }}</span>
                         <span class="foodex-nav-chevron">⌄</span>
                     </span>
                 </summary>

@@ -97,6 +97,14 @@ final class CustomerInvoiceController extends Controller
     /** @return Builder<Invoice> */
     private function owned(User $user): Builder
     {
+        // An authenticated Sanctum principal can be a stale in-memory model
+        // after an administrator revokes its access. Always resolve the live
+        // account status before disclosing invoice lists, details or PDFs.
+        abort_unless(DB::table('users')
+            ->where('id', $user->getKey())
+            ->where('is_active', true)
+            ->exists(), 403);
+
         $platformCustomerId = DB::table('platform_customers')->where('user_id', $user->getKey())->value('id');
         $b2bCustomerId = DB::table('b2b_customers')->where('user_id', $user->getKey())->value('id');
         $b2cCustomerIds = DB::table('b2c_customers')->where('user_id', $user->getKey())->pluck('id')->all();
