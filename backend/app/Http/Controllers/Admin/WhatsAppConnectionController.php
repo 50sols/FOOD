@@ -164,11 +164,16 @@ final class WhatsAppConnectionController extends Controller
         } catch (Throwable $exception) {
             $health->providerError($profile, $exception->getMessage());
 
-            throw ValidationException::withMessages([
-                'recipient' => [app()->getLocale() === 'ar'
-                    ? 'فشل إرسال رسالة واتساب التجريبية: '.$exception->getMessage()
-                    : 'WhatsApp test message failed: '.$exception->getMessage()],
-            ]);
+            // The provider's error may contain credential or recipient data.
+            // Keep its sanitized diagnostics in connection health, not in the
+            // browser error message or unfiltered session old input.
+            return $this->validationBack(
+                $request,
+                ValidationException::withMessages([
+                    'recipient' => [__('whatsapp.connections.test_send_failed')],
+                ]),
+                'profiles',
+            );
         }
 
         $audit->record(
