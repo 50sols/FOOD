@@ -48,9 +48,9 @@ $base=['store_id'=>$selectedStoreId,'tab'=>$activeTab];
 @if(session('status'))<div class="foodex-state" role="status">{{ session('status') }}</div>@endif
 @if($errors->any())<div class="foodex-state" role="alert"><ul>@foreach($errors->all() as $error)<li>{{ $error }}</li>@endforeach</ul></div>@endif
 
-<nav class="foodex-tabs" aria-label="{{ __('enterprise_procurement.title') }}">
+<nav class="foodex-tabs erp-procurement-tabs" data-procurement-tabs aria-label="{{ __('enterprise_procurement.title') }}">
 @foreach($tabs as $tab)
-<a href="{{ route('admin.erp.procurement.index',['tab'=>$tab['key'],'store_id'=>$selectedStoreId]) }}" class="{{ $activeTab===$tab['key']?'active':'' }}" @if($activeTab===$tab['key']) aria-current="page" @endif>{{ $tab['label'] }}</a>
+<a data-procurement-tab="{{ $tab['key'] }}" href="{{ route('admin.erp.procurement.index',['tab'=>$tab['key'],'store_id'=>$selectedStoreId]) }}" class="{{ $activeTab===$tab['key']?'active':'' }}" @if($activeTab===$tab['key']) aria-current="page" @endif>{{ $tab['label'] }}</a>
 @endforeach
 </nav>
 
@@ -230,6 +230,9 @@ $base=['store_id'=>$selectedStoreId,'tab'=>$activeTab];
 @endif
 @endif
 
-@if($rows && method_exists($rows,'links'))<div>{{ $rows->links() }}</div>@endif
+{{-- RFQ, Contract and Match lists already render pagination inside the completion partial. --}}
+@if($rows && in_array($activeTab,['suppliers','requests','orders','receipts','invoices','returns'],true) && method_exists($rows,'links'))
+<div data-procurement-footer-pagination>{{ $rows->links() }}</div>
+@endif
 </main></div>
 </body></html>
