@@ -41,6 +41,38 @@ final class ErpCenterTest extends TestCase
         SyntheticErpWorkflowEvidence::install();
     }
 
+    public function test_all_erp_workbench_denial_reasons_are_plain_language_ar_en_not_raw_state_codes(): void
+    {
+        // These labels are rendered for disabled/unavailable/uncertified ERP
+        // workbenches. A missing translation would expose an internal key,
+        // making a secure HTTP 403 misleading to a mobile or desktop user.
+        $reasons = [
+            'module_setup' => ['ar' => 'أكمل إعداد', 'en' => 'Complete its lifecycle setup'],
+            'module_disabled' => ['ar' => 'الوحدة معطلة', 'en' => 'module is disabled'],
+            'module_unavailable' => ['ar' => 'موقوفة', 'en' => 'suspended'],
+            'entitlement_scope' => ['ar' => 'صلاحية إتاحة فعالة', 'en' => 'effective entitlement'],
+            'missing_scope' => ['ar' => 'متجر أو نطاق كيان قانوني', 'en' => 'authorized store and legal-entity scope'],
+            'uncertified' => ['ar' => 'لم تعتمد الجاهزية التشغيلية', 'en' => 'not passed operational certification'],
+            'unhealthy' => ['ar' => 'فشل فحص الصحة التشغيلية', 'en' => 'failed its operational health check'],
+            'route_unavailable' => ['ar' => 'مسار العمل المسجل غير متاح', 'en' => 'registered business destination is unavailable'],
+        ];
+
+        foreach ($reasons as $reason => $locales) {
+            foreach ($locales as $locale => $humanExplanation) {
+                $key = 'admin.erp_center.denial_reasons.'.$reason;
+                $label = __($key, [], $locale);
+                $this->assertNotSame($key, $label, "{$reason}/{$locale}: missing translation");
+                $this->assertStringContainsString($humanExplanation, $label);
+                $this->assertSame(1, preg_match(
+                    $locale === 'ar' ? '/[\x{0600}-\x{06FF}]/u' : '/[A-Za-z]/',
+                    $label,
+                ));
+                $this->assertStringNotContainsString('{', $label);
+                $this->assertStringNotContainsString('manifest_sha256', $label);
+            }
+        }
+    }
+
     public function test_erp_overview_replaces_whatsapp_internal_uuid_with_neutral_reference_in_both_locales(): void
     {
         config()->set('security.mfa.enforce_privileged', false);
