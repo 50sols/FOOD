@@ -85,7 +85,7 @@ final class SupplierDirectory
      * uniqueness check without persisting a supplier or writing an audit log.
      * This preflight never certifies an external registration/tax number.
      *
-     * @param array<string, mixed> $attributes
+     * @param  array<string, mixed>  $attributes
      */
     public function validateCandidate(
         User $actor,
