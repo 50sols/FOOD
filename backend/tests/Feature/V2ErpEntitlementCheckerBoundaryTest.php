@@ -1733,6 +1733,9 @@ final class V2ErpEntitlementCheckerBoundaryTest extends TestCase
             'overview', 'suppliers', 'requests', 'rfqs', 'orders', 'contracts',
             'receipts', 'invoices', 'matches', 'returns', 'statements', 'reports',
         ];
+        $namedRoutes = collect(app('router')->getRoutes()->getRoutes())
+            ->filter(static fn ($route): bool => $route->getName() === 'admin.erp.procurement.index');
+        $this->assertCount(1, $namedRoutes, 'Each tab must use the one canonical GET route');
         $auditBefore = DB::table('audit_logs')->count();
         foreach (['ar' => 'rtl', 'en' => 'ltr'] as $locale => $direction) {
             $manager->forceFill(['locale' => $locale])->save();
@@ -1748,6 +1751,8 @@ final class V2ErpEntitlementCheckerBoundaryTest extends TestCase
                 $this->assertSame($canonical, collect($response->viewData('tabs'))->pluck('key')->all());
 
                 $html = html_entity_decode($response->getContent(), ENT_QUOTES | ENT_HTML5, 'UTF-8');
+                $this->assertSame(1, substr_count($html, '<aside class="sidebar">'));
+                $this->assertSame(1, substr_count($html, 'data-erp-procurement-workbench="true"'));
                 $this->assertSame(1, preg_match(
                     '/<nav class="foodex-tabs erp-procurement-tabs" data-procurement-tabs[^>]*>(.*?)<\\/nav>/s',
                     $html,
