@@ -28,6 +28,7 @@ use Illuminate\Validation\ValidationException;
 use Symfony\Component\HttpKernel\Exception\HttpException;
 use Tests\Support\ProcurementSecondApprover;
 use Tests\TestCase;
+use Tests\Support\SyntheticErpWorkflowEvidence;
 
 final class EnterprisePurchaseOrderFoundationTest extends TestCase
 {
@@ -244,6 +245,7 @@ final class EnterprisePurchaseOrderFoundationTest extends TestCase
 
     public function test_posted_receipt_blocks_po_cancellation_without_reversing_stock(): void
     {
+        SyntheticErpWorkflowEvidence::install();
         $lifecycle = app(ModuleLifecycleManager::class);
         $lifecycle->transition('procurement', ModuleState::ENABLING);
         $lifecycle->transition('procurement', ModuleState::ENABLED);
