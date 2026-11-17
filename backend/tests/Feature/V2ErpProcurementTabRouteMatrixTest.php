@@ -181,6 +181,111 @@ final class V2ErpProcurementTabRouteMatrixTest extends TestCase
         }
     }
 
+    public function test_direct_procurement_http_revokes_inactive_and_archived_roles_even_with_signed_test_readiness(): void
+    {
+        $manager = $this->manager();
+        $store = $this->wholesaleStore();
+        $buyer = User::factory()->create(['locale' => 'en', 'is_active' => true]);
+        $buyerRole = Role::query()->where('code', 'PROCUREMENT_BUYER')->firstOrFail();
+        $buyer->roles()->attach($buyerRole);
+
+        $this->assertSame('ready', $this->readiness());
+        $this->actingAs($manager->fresh())
+            ->get($this->tabUrl('suppliers', $store))
+            ->assertOk();
+        $this->actingAs($buyer->fresh())
+            ->get($this->tabUrl('suppliers', $store))
+            ->assertOk();
+
+        // A disabled role keeps its stored assignment for audit history,
+        // but may no longer supply any operational permission or link.
+        Role::query()->where('code', 'PROCUREMENT_MANAGER')->firstOrFail()
+            ->forceFill(['is_active' => false])->save();
+        $buyerRole->forceFill([
+            'is_active' => false,
+            'archived_at' => now(),
+        ])->save();
+
+        $before = DB::table('audit_logs')->count();
+        foreach (['ar' => 'rtl', 'en' => 'ltr'] as $locale => $direction) {
+            app()->setLocale($locale);
+            foreach ([$manager, $buyer] as $actor) {
+                $actor->forceFill(['locale' => $locale])->save();
+                $this->assertFalse(
+                    $actor->fresh()->hasPermission('procurement.suppliers.view', $store->id),
+                    $locale.' must not inherit inactive/archived role rights',
+                );
+                $this->actingAs($actor->fresh())
+                    ->get($this->tabUrl('suppliers', $store))
+                    ->assertForbidden();
+            }
+        }
+
+        $this->assertSame($before, DB::table('audit_logs')->count());
+        $this->assertDatabaseCount('enterprise_purchase_orders', 0);
+        $this->assertDatabaseCount('enterprise_goods_receipts', 0);
+        $this->assertDatabaseHas('role_user', [
+            'user_id' => $buyer->id,
+            'role_id' => $buyerRole->id,
+        ]);
+    }
+
+    public function test_forged_procurement_store_ids_and_retail_to_wholesale_direct_urls_never_cross_channel(): void
+    {
+        $manager = $this->manager();
+        $wholesale = $this->wholesaleStore();
+        $retail = Store::query()->create([
+            'store_type_id' => (int) DB::table('store_types')->where('code', 'B2C')->value('id'),
+            'code' => 'P135-RETAIL-CHANNEL-DENY',
+            'name' => 'P135 Retail channel scope denial',
+            'is_active' => true,
+        ]);
+        app(OrganizationHierarchyService::class)->ensureDefaultScopeForStore($retail);
+
+        $retailActor = User::factory()->create(['locale' => 'en', 'is_active' => true]);
+        DB::table('user_store_roles')->insert([
+            'user_id' => $retailActor->id,
+            'role_id' => Role::query()->where('code', 'B2C_STORE_ADMIN')->firstOrFail()->id,
+            'store_id' => $retail->id,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        $roleless = User::factory()->create(['locale' => 'en', 'is_active' => true]);
+
+        $this->assertSame('ready', $this->readiness());
+        $this->actingAs($manager->fresh())->get($this->tabUrl('suppliers', $wholesale))->assertOk();
+        $before = DB::table('audit_logs')->count();
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            foreach (['suppliers', 'orders', 'receipts'] as $tab) {
+                // A Wholesale global Procurement role is not Retail scope.
+                $this->actingAs($manager->fresh())
+                    ->get($this->tabUrl($tab, $retail))
+                    ->assertForbidden();
+                $this->actingAs($manager->fresh())
+                    ->get(route('admin.erp.procurement.index', [
+                        'store_id' => 999999999,
+                        'tab' => $tab,
+                    ]))
+                    ->assertForbidden();
+
+                // A Retail assignment does not authorize forged B2B store_id,
+                // even with globally enabled and test-only signed Procurement.
+                $this->actingAs($retailActor->fresh())
+                    ->get($this->tabUrl($tab, $wholesale))
+                    ->assertForbidden();
+                $this->actingAs($roleless->fresh())
+                    ->get($this->tabUrl($tab, $wholesale))
+                    ->assertForbidden();
+            }
+        }
+
+        $this->assertSame($before, DB::table('audit_logs')->count());
+        $this->assertDatabaseCount('enterprise_purchase_orders', 0);
+        $this->assertDatabaseCount('enterprise_goods_receipts', 0);
+    }
+
     private function readiness(): string
     {
         $registry = app(ModuleRegistry::class);
