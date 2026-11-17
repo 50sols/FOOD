@@ -314,7 +314,7 @@ class SystemUpdateAuthorizationTest extends TestCase
 
         try {
             $zip = new \ZipArchive;
-            $this->assertTrue($zip->open($zipPath, \ZipArchive::OVERWRITE) === true);
+            $this->assertTrue($zip->open($zipPath, \ZipArchive::CREATE | \ZipArchive::OVERWRITE) === true);
             $this->assertTrue($zip->addFromString('../escape.txt', 'attempted traversal'));
             $this->assertTrue($zip->close());
             $bytes = (string) file_get_contents($zipPath);
