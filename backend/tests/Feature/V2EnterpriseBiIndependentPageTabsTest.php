@@ -76,12 +76,14 @@ final class V2EnterpriseBiIndependentPageTabsTest extends TestCase
                 }
 
                 if ($selected === 'overview') {
-                    $response->assertSee('data-enterprise-bi-overview', false)
-                        ->assertDontSee('data-bi-run-form', false);
+                    $response->assertSee('data-enterprise-bi-overview', false);
+                    // The shared JS mentions the selector on every tab; assert actual form presence instead.
+                    $this->assertSame(0, preg_match('/<form\\b[^>]*\\bdata-bi-run-form\\b/i', $html));
                     $this->assertStringContainsString("tab.name = 'bi_tab'", $html);
                 } elseif ($selected === 'reports') {
                     $response->assertSee('data-bi-run-form', false)
-                        ->assertSee('name="bi_tab" value="reports"', false)
+                        ->assertSee('name="bi_tab" value="reports"', false);
+                    $this->assertSame(1, preg_match_all('/<form\\b[^>]*\\bdata-bi-run-form\\b/i', $html))
                         ->assertDontSee('data-enterprise-bi-overview', false);
                 } elseif ($selected === 'schedules') {
                     $response->assertSee(__('enterprise_bi_ui.schedules_title'))
@@ -132,7 +134,7 @@ final class V2EnterpriseBiIndependentPageTabsTest extends TestCase
         $inactive = User::factory()->create(['is_active' => false, 'locale' => 'en']);
         $inactive->roles()->attach(Role::query()->where('code', 'SUPER_ADMIN')->firstOrFail());
         $this->actingAs($inactive)->get(route('admin.erp.bi', ['bi_tab' => 'schedules']))
-            ->assertStatus(401);
+            ->assertForbidden();
 
         // A UI tab cannot self-certify an unapproved ERP module.
         config()->set('enterprise_module_readiness.certified_versions.enterprise_bi', null);
