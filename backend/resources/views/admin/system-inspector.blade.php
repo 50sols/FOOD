@@ -121,7 +121,11 @@
                 </div>
                 <div class="inspector-actions">
                     <span class="foodex-status-badge" data-state="{{ $runtimeBadgeState }}">{{ $runtimeStateLabel }}</span>
-                    <a class="foodex-action-secondary button secondary" href="{{ route('admin.system-update.index') }}">{{ __('admin.system_update_surface.backup_center') }}</a>
+                    @if($user->is_active && $user->hasRole('SUPER_ADMIN'))
+                        @can('system.update')
+                            <a class="foodex-action-secondary button secondary" href="{{ route('admin.system-update.index') }}">{{ __('admin.system_update_surface.backup_center') }}</a>
+                        @endcan
+                    @endif
                 </div>
             </div>
             <div class="foodex-module-kpis inspector-grid">
