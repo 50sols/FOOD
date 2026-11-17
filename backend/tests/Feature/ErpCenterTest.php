@@ -1495,25 +1495,10 @@ final class ErpCenterTest extends TestCase
         );
 
         $this->assertTrue($manager->fresh()->hasPermission('finance.view', $store->id));
-        foreach (['ar' => 'rtl', 'en' => 'ltr'] as $locale => $direction) {
-            app()->setLocale($locale);
-            $manager->forceFill(['locale' => $locale])->save();
-            $actor = $manager->fresh();
-            $center = $this->actingAs($actor)->get(route('admin.erp.index'))
-                ->assertOk()->assertSee('dir="'.$direction.'"', false);
-            $card = collect($center->viewData('cards'))->firstWhere('key', 'treasury');
-            $this->assertIsArray($card);
-            $this->assertSame('available', $card['status']);
-            $this->assertSame(route('admin.erp.treasury.index', [
-                'store_id' => $store->id,
-            ]), $card['url']);
-            $this->actingAs($actor)->get(route('admin.erp.treasury.index', [
-                'store_id' => $store->id, 'tab' => 'receipts',
-            ]))->assertOk();
-        }
-
-        // A healthy probe is independent of module ENABLED, role permission
-        // and STORE receipt entitlement. Readiness must also reject an error.
+        // Install the failed probe before the first request in this test.
+        // ModuleHealthService memoizes a report for the current request object;
+        // a mid-test config change after a healthy GET would reuse stale health.
+        // Successful authorized GETs are independently exercised in the role tests.
         config()->set('enterprise_module_health.probes.treasury', [ErpCenterOpaqueFailureProbe::class]);
         foreach (['en' => 'ltr', 'ar' => 'rtl'] as $locale => $direction) {
             app()->setLocale($locale);
@@ -1546,19 +1531,10 @@ final class ErpCenterTest extends TestCase
             'enterprise_bi', EntitlementScope::platform(), true, null, $admin,
         );
 
-        foreach (['ar' => 'rtl', 'en' => 'ltr'] as $locale => $direction) {
-            app()->setLocale($locale);
-            $reporter->forceFill(['locale' => $locale])->save();
-            $actor = $reporter->fresh();
-            $center = $this->actingAs($actor)->get(route('admin.erp.index'))
-                ->assertOk()->assertSee('dir="'.$direction.'"', false);
-            $card = collect($center->viewData('cards'))->firstWhere('key', 'bi');
-            $this->assertIsArray($card);
-            $this->assertSame('available', $card['status']);
-            $this->assertSame(route('admin.erp.bi'), $card['url']);
-            $this->actingAs($actor)->get($card['url'])->assertOk();
-        }
-
+        // Install the failed probe before the first request in this test.
+        // ModuleHealthService memoizes a report for the current request object;
+        // a mid-test config change after a healthy GET would reuse stale health.
+        // Successful authorized GETs are independently exercised in the role tests.
         config()->set('enterprise_module_health.probes.enterprise_bi', [ErpCenterOpaqueFailureProbe::class]);
         foreach (['en' => 'ltr', 'ar' => 'rtl'] as $locale => $direction) {
             app()->setLocale($locale);
