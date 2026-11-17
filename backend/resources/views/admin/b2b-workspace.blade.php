@@ -735,7 +735,8 @@
         <input type="hidden" name="pack_label" value="">
         <input type="hidden" name="retail_reference_price" value="">
         <input type="hidden" name="is_active" value="1">
-        <button class="foodex-primary" type="submit">{{ app()->getLocale()==='ar'?'حفظ قاعدة السعر':'Save price rule' }}</button>
+        <button class="foodex-primary" type="submit" name="setup_action" value="test">{{ __('b2b_pricing_setup.rule_test') }}</button>
+        <button class="foodex-primary" type="submit" name="setup_action" value="save">{{ app()->getLocale()==='ar'?'حفظ قاعدة السعر':'Save price rule' }}</button>
       </form>
       <template data-v2-volume-break-template>
         <div data-v2-volume-break-row class="links workspace-inline-form" style="margin-block:8px">
