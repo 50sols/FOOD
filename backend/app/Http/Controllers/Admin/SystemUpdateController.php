@@ -124,8 +124,7 @@ final class SystemUpdateController extends Controller
                 ->withErrors(['update' => __('update_signed_manifest.upload_staging_unavailable')]);
         }
 
-        clearstatcache(true, $directory);
-        if (! $this->hostPathWritableWithoutMutation($directory)) {
+        if (! $this->hostPathWritableAfterFilesystemChange($directory)) {
             return redirect()
                 ->route('admin.system-update.index')
                 ->withErrors(['update' => __('update_signed_manifest.upload_staging_unavailable')]);
@@ -398,6 +397,17 @@ final class SystemUpdateController extends Controller
         }
 
         return is_writable($directory);
+    }
+
+    /**
+     * Recheck a path after creating its directory so cached pre-creation
+     * filesystem results cannot hide a newly introduced link or blocker.
+     */
+    private function hostPathWritableAfterFilesystemChange(string $path): bool
+    {
+        clearstatcache(true);
+
+        return $this->hostPathWritableWithoutMutation($path);
     }
 
     private function packageContainsMigrations(string $packagePath): bool
