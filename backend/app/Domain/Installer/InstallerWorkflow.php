@@ -87,7 +87,7 @@ final class InstallerWorkflow
         // storage/cache alone does not establish the required parent rights.
         $environmentPath = $this->environment->path();
         if ($this->hasInstallerSymlinkComponent($environmentPath)
-            || ! $this->writableOrCreatableInstallerDirectory(dirname($environmentPath))) {
+            || ! $this->writableOrCreatableInstallerTarget($environmentPath, readExisting: true)) {
             $failures[] = (string) __('installer.errors.env_directory_writable');
         }
 
@@ -98,7 +98,7 @@ final class InstallerWorkflow
             storage_path('framework/installer-env-locks/'.hash('sha256', $environmentPath).'.lock'),
         );
         if ($this->hasInstallerSymlinkComponent($lockPath)
-            || ! $this->writableOrCreatableInstallerDirectory(dirname($lockPath))) {
+            || ! $this->writableOrCreatableInstallerTarget($lockPath, writeExisting: true)) {
             $failures[] = (string) __('installer.errors.env_lock_directory_writable');
         }
 
@@ -117,12 +117,66 @@ final class InstallerWorkflow
             'installer_token_lock_directory_writable' => $tokenLockPath,
         ] as $error => $path) {
             if ($this->hasInstallerSymlinkComponent($path)
-                || ! $this->writableOrCreatableInstallerDirectory(dirname($path))) {
+                || ! $this->writableOrCreatableInstallerTarget(
+                    $path,
+                    readExisting: $error === 'install_progress_directory_writable',
+                    writeExisting: $error === 'installer_token_lock_directory_writable',
+                )) {
                 $failures[] = (string) __('installer.errors.'.$error);
             }
         }
 
         return $failures;
+    }
+
+    /**
+     * Read-only host preflight. A writable parent supports atomic rename but
+     * does not prove an existing leaf is a readable file or usable lock.
+     * Never create, chmod, unlink, read contents or print absolute host paths.
+     */
+    private function writableOrCreatableInstallerTarget(
+        string $path,
+        bool $readExisting = false,
+        bool $writeExisting = false,
+    ): bool {
+        if (! $this->writableOrCreatableInstallerDirectory(dirname($path))) {
+            return false;
+        }
+
+        if (! file_exists($path)) {
+            return ! is_link($path);
+        }
+
+        if (! is_file($path)) {
+            return false;
+        }
+
+        $metadata = @lstat($path);
+        if ($metadata === false
+            || ($metadata['mode'] & 0170000) !== 0100000
+            || ($metadata['nlink'] ?? 0) !== 1) {
+            return false;
+        }
+
+        if ($readExisting && ! is_readable($path)) {
+            return false;
+        }
+        if ($writeExisting && ! is_writable($path)) {
+            return false;
+        }
+
+        // A privileged test runner may access files that a shared-host PHP
+        // worker cannot. Zero POSIX read/write bits are never "Ready".
+        if (PHP_OS_FAMILY !== 'Windows') {
+            if ($readExisting && ($metadata['mode'] & 0444) === 0) {
+                return false;
+            }
+            if ($writeExisting && ($metadata['mode'] & 0222) === 0) {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     private function writableOrCreatableInstallerDirectory(string $directory): bool

@@ -122,6 +122,134 @@ class InstallerWorkflowTest extends TestCase
         $this->assertDirectoryDoesNotExist($lockDirectory);
     }
 
+    public function test_permission_preflight_rejects_directory_at_each_existing_target_without_mutation(): void
+    {
+        $initialEnv = file_get_contents($this->testDirectory.'/.env');
+        $targets = [
+            'foodex.installer_env_path' => $this->testDirectory.'/env-as-directory',
+            'foodex.installer_env_lock_path' => $this->testDirectory.'/env-lock-as-directory',
+            'foodex.install_lock' => $this->testDirectory.'/installed-lock-as-directory',
+            'foodex.install_progress' => $this->testDirectory.'/progress-as-directory',
+            'foodex.installer_token_lock_path' => $this->testDirectory.'/token-lock-as-directory',
+        ];
+        foreach ($targets as $target) {
+            mkdir($target, 0750);
+        }
+        config($targets);
+
+        $failures = app(InstallerWorkflow::class)->writablePathFailures();
+
+        foreach ([
+            'env_directory_writable',
+            'env_lock_directory_writable',
+            'install_state_directory_writable',
+            'install_progress_directory_writable',
+            'installer_token_lock_directory_writable',
+        ] as $key) {
+            $this->assertContains(__('installer.errors.'.$key), $failures);
+        }
+        $this->assertSame($initialEnv, file_get_contents($this->testDirectory.'/.env'));
+        foreach ($targets as $target) {
+            $this->assertDirectoryExists($target);
+        }
+    }
+
+    public function test_permission_preflight_rejects_unreadable_existing_env_and_progress_and_readonly_locks(): void
+    {
+        if (PHP_OS_FAMILY === 'Windows') {
+            $this->markTestSkipped('POSIX file modes required.');
+        }
+
+        $env = $this->testDirectory.'/.env';
+        $progress = $this->testDirectory.'/existing-progress.json';
+        $envLock = $this->testDirectory.'/existing-env.lock';
+        $tokenLock = $this->testDirectory.'/existing-token.lock';
+        foreach ([$progress, $envLock, $tokenLock] as $path) {
+            file_put_contents($path, 'sentinel');
+        }
+        $before = file_get_contents($env);
+        config([
+            'foodex.install_progress' => $progress,
+            'foodex.installer_env_lock_path' => $envLock,
+            'foodex.installer_token_lock_path' => $tokenLock,
+        ]);
+
+        try {
+            foreach ([$env, $progress] as $path) {
+                chmod($path, 0000);
+            }
+            foreach ([$envLock, $tokenLock] as $path) {
+                chmod($path, 0444);
+            }
+            $failures = app(InstallerWorkflow::class)->writablePathFailures();
+            foreach ([
+                'env_directory_writable',
+                'env_lock_directory_writable',
+                'install_progress_directory_writable',
+                'installer_token_lock_directory_writable',
+            ] as $key) {
+                $this->assertContains(__('installer.errors.'.$key), $failures);
+            }
+        } finally {
+            foreach ([$env, $progress, $envLock, $tokenLock] as $path) {
+                chmod($path, 0640);
+            }
+        }
+
+        $this->assertSame($before, file_get_contents($env));
+        foreach ([$progress, $envLock, $tokenLock] as $path) {
+            $this->assertSame('sentinel', file_get_contents($path));
+        }
+    }
+
+    public function test_permission_preflight_rejects_multiply_hardlinked_lock_without_data_mutation(): void
+    {
+        if (! function_exists('link')) {
+            $this->markTestSkipped('Hardlinks unavailable.');
+        }
+        $original = $this->testDirectory.'/original-private-lock';
+        $linked = $this->testDirectory.'/hardlinked-private-lock';
+        file_put_contents($original, 'untouched');
+        if (! @link($original, $linked)) {
+            $this->markTestSkipped('Filesystem does not support hardlinks.');
+        }
+        config(['foodex.installer_env_lock_path' => $linked]);
+
+        $this->assertContains(
+            __('installer.errors.env_lock_directory_writable'),
+            app(InstallerWorkflow::class)->writablePathFailures(),
+        );
+        $this->assertSame('untouched', file_get_contents($original));
+        $this->assertSame('untouched', file_get_contents($linked));
+    }
+
+    public function test_permission_preflight_accepts_regular_existing_private_files_without_modification(): void
+    {
+        $progress = $this->testDirectory.'/existing-progress.json';
+        $envLock = $this->testDirectory.'/existing-env.lock';
+        $tokenLock = $this->testDirectory.'/existing-token.lock';
+        foreach ([$progress, $envLock, $tokenLock] as $path) {
+            file_put_contents($path, 'untouched');
+        }
+        config([
+            'foodex.install_progress' => $progress,
+            'foodex.installer_env_lock_path' => $envLock,
+            'foodex.installer_token_lock_path' => $tokenLock,
+        ]);
+        $failures = app(InstallerWorkflow::class)->writablePathFailures();
+        foreach ([
+            'env_directory_writable',
+            'env_lock_directory_writable',
+            'install_progress_directory_writable',
+            'installer_token_lock_directory_writable',
+        ] as $key) {
+            $this->assertNotContains(__('installer.errors.'.$key), $failures);
+        }
+        foreach ([$progress, $envLock, $tokenLock] as $path) {
+            $this->assertSame('untouched', file_get_contents($path));
+        }
+    }
+
     public function test_permission_preflight_rejects_environment_and_lock_symlinks_without_mutation(): void
     {
         if (! function_exists('symlink')) {
