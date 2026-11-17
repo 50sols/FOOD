@@ -800,9 +800,12 @@ final class V2ErpEntitlementCheckerBoundaryTest extends TestCase
                     ->flatMap(static fn (array $group): array => $group['children'])
                     ->firstWhere('key', 'erp_procurement');
                 if ($role === 'SUPER_ADMIN') {
-                    $this->assertIsArray($item);
-                    $this->assertSame('admin.enterprise-modules.show', $item['route']);
-                    $this->assertSame(['module' => 'procurement'], $item['params']);
+                    // AdminNavigation reserves an uncertified module's
+                    // diagnostic Sidebar entry for the registered Platform
+                    // Owner, not every Super Admin. The existing platform
+                    // management HTTP action is independently authorized;
+                    // never invent a business or diagnostic menu grant.
+                    $this->assertNull($item, 'No unready Procurement Sidebar grant for Super Admin');
                     $this->actingAs($user)
                         ->get(route('admin.enterprise-modules.show', ['module' => 'procurement']))
                         ->assertOk();
