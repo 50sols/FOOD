@@ -34,11 +34,20 @@ jobs:
           restore-keys: |
             composer-${{ runner.os }}-
 
+      - name: Cache installed Composer dependencies
+        uses: actions/cache@v5
+        with:
+          path: backend/vendor
+          key: composer-vendor-v1-${{ runner.os }}-php-8.3-${{ hashFiles('backend/composer.json', 'backend/composer.lock') }}
+
       - name: Validate Composer manifest
         run: composer validate --strict --no-check-lock
 
       - name: Install Composer dependencies
-        run: composer install --no-interaction --prefer-dist --no-progress
+        run: |
+          if [[ ! -f vendor/autoload.php ]]; then
+            composer install --no-interaction --prefer-dist --no-progress
+          fi
 
       - name: Syntax-check application PHP
         shell: bash
@@ -92,8 +101,17 @@ jobs:
           restore-keys: |
             composer-${{ runner.os }}-
 
+      - name: Cache installed Composer dependencies
+        uses: actions/cache@v5
+        with:
+          path: backend/vendor
+          key: composer-vendor-v1-${{ runner.os }}-php-8.3-${{ hashFiles('backend/composer.json', 'backend/composer.lock') }}
+
       - name: Install Composer dependencies
-        run: composer install --no-interaction --prefer-dist --no-progress
+        run: |
+          if [[ ! -f vendor/autoload.php ]]; then
+            composer install --no-interaction --prefer-dist --no-progress
+          fi
 
       - name: Prepare test environment
         run: |
@@ -217,6 +235,12 @@ jobs:
           key: composer-${{ runner.os }}-${{ hashFiles('backend/composer.lock') }}
           restore-keys: |
             composer-${{ runner.os }}-
+
+      - name: Cache installed Composer dependencies
+        uses: actions/cache@v5
+        with:
+          path: backend/vendor
+          key: composer-vendor-v1-${{ runner.os }}-php-8.3-${{ hashFiles('backend/composer.json', 'backend/composer.lock') }}
       - name: Verify preinstalled MySQL client tools
         run: |
           test -x /usr/bin/mysql
@@ -235,7 +259,10 @@ jobs:
           done
           exit 1
       - name: Install backend dependencies
-        run: composer install --no-interaction --prefer-dist --no-progress
+        run: |
+          if [[ ! -f vendor/autoload.php ]]; then
+            composer install --no-interaction --prefer-dist --no-progress
+          fi
       - name: Prepare disposable configuration
         run: |
           cp .env.example .env

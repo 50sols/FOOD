@@ -49,7 +49,7 @@ final class SettingsCenterController extends Controller
             'foodex_reset' => $superAdmin,
             'production_dataset' => $superAdmin,
             'production_launch' => $superAdmin,
-            'system_update' => $superAdmin || $user->hasPermission('system.update'),
+            'system_update' => $user->is_active && $superAdmin && $user->hasPermission('system.update'),
             'lookups' => $superAdmin
                 || $user->hasPermission('lookups.view')
                 || $user->hasPermission('lookups.manage')

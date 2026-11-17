@@ -658,14 +658,16 @@ final class WhatsAppCampaignBuilderTest extends TestCase
         $admin = $this->superAdmin();
 
         $this->actingAs($admin)
-            ->get(route('admin.whatsapp-campaigns.index'))
+            ->get(route('admin.whatsapp-campaigns.index', ['workspace_tab' => 'templates']))
             ->assertOk()
+            ->assertDontSee('id="wa-campaign-list"', false)
+            ->assertSee('id="wa-template-registry"', false)
             ->assertSee('Create WhatsApp campaign')
             ->assertSee('Create WhatsApp template')
             ->assertSee('Sync Meta statuses')
             ->assertSee('id="wa-template-sync-form"', false)
             ->assertSee('id="wa-template-sync-submit"', false)
-            ->assertSee('templateSyncSubmit.disabled = true;', false)
+            ->assertSee('button.disabled = true;', false)
             ->assertSee('id="wa-template-provider-name"', false)
             ->assertSee('canonicalTemplateName', false)
             ->assertDontSee('pattern="[a-z0-9_]+"', false)
