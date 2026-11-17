@@ -131,6 +131,43 @@ final class V2InstallerLocaleLayoutParityTest extends TestCase
         $this->assertFalse(app(InstallState::class)->isInstalled());
     }
 
+    public function test_document_root_precheck_is_read_only_and_localized_for_safe_and_unsafe_host_states(): void
+    {
+        $state = app(InstallState::class);
+        $beforeEnvironment = file_get_contents($this->fixtureDirectory.'/.env');
+        $beforeProgress = $state->progress();
+
+        $cases = [
+            'match' => public_path(),
+            'mismatch' => storage_path(),
+            'unverified' => $this->fixtureDirectory.'/absent-document-root',
+        ];
+
+        foreach (['ar' => 'rtl', 'en' => 'ltr'] as $locale => $direction) {
+            foreach ($cases as $status => $documentRoot) {
+                $response = $this->withServerVariables(['DOCUMENT_ROOT' => $documentRoot])
+                    ->get('/install?lang='.$locale)
+                    ->assertOk()
+                    ->assertSee('<html lang="'.$locale.'" dir="'.$direction.'">', false)
+                    ->assertSee('data-installer-document-root-readiness="'.$status.'"', false)
+                    ->assertSee(__('installer.hosting.document_root_precheck_'.$status, [], $locale))
+                    ->assertDontSee($documentRoot);
+
+                foreach (array_keys($cases) as $other) {
+                    if ($other !== $status) {
+                        $response->assertDontSee(
+                            __('installer.hosting.document_root_precheck_'.$other, [], $locale),
+                        );
+                    }
+                }
+            }
+        }
+
+        $this->assertSame($beforeEnvironment, file_get_contents($this->fixtureDirectory.'/.env'));
+        $this->assertSame($beforeProgress, $state->progress());
+        $this->assertFalse($state->isInstalled());
+    }
+
     public function test_erp_sodium_status_is_localized_on_requirements_step_without_certifying_modules(): void
     {
         $environment = $this->fixtureDirectory.'/.env';

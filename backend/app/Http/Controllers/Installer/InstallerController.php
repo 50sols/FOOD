@@ -395,8 +395,48 @@ class InstallerController extends Controller
                 : null,
             'requirementFailures' => $currentStep === 2 ? $workflow->serverRequirementFailures() : [],
             'erpEvidenceVerifierAvailable' => $currentStep === 2 && $workflow->hasErpEvidenceVerifier(),
+            'documentRootPrecheck' => $currentStep === 1 ? $this->documentRootPrecheck() : null,
             'permissionFailures' => $currentStep === 3 ? $workflow->writablePathFailures() : [],
         ];
+    }
+
+    /**
+     * Inspect the PHP request's Document Root without reading private files
+     * or mutating the host. A matching realpath is only a preflight: it does
+     * NOT establish real HTTP exposure, rewrite or cPanel ownership safety.
+     *
+     * @return 'match'|'mismatch'|'unverified'
+     */
+    private function documentRootPrecheck(): string
+    {
+        $root = request()->server('DOCUMENT_ROOT');
+        if (! is_string($root) || $root === '' || str_contains($root, "\0")) {
+            return 'unverified';
+        }
+
+        $absolute = str_starts_with($root, '/')
+            || (strlen($root) >= 3
+                && ctype_alpha($root[0])
+                && $root[1] === ':'
+                && in_array($root[2], ['/', '\\'], true));
+        if (! $absolute) {
+            return 'unverified';
+        }
+
+        $actualPath = realpath($root);
+        $expectedPath = realpath(public_path());
+        if ($actualPath === false || $expectedPath === false) {
+            return 'unverified';
+        }
+
+        $actual = rtrim(str_replace('\\', '/', $actualPath), '/');
+        $expected = rtrim(str_replace('\\', '/', $expectedPath), '/');
+        if (PHP_OS_FAMILY === 'Windows') {
+            $actual = strtolower($actual);
+            $expected = strtolower($expected);
+        }
+
+        return $actual === $expected ? 'match' : 'mismatch';
     }
 
     private function setInstallerLocale(Request $request, InstallerEnvironment $environment): void

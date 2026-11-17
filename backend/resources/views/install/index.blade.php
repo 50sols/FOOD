@@ -133,6 +133,14 @@
                 @endif
             @endif
 
+            @if ($currentStep === 1)
+                <div class="{{ $documentRootPrecheck === 'match' ? 'notice' : 'error' }}"
+                     role="{{ $documentRootPrecheck === 'mismatch' ? 'alert' : 'note' }}"
+                     data-installer-document-root-readiness="{{ $documentRootPrecheck }}">
+                    {{ __('installer.hosting.document_root_precheck_'.$documentRootPrecheck) }}
+                </div>
+            @endif
+
             @php($hostingGuidance = [1 => 'document_root', 2 => 'php_extensions', 3 => 'file_permissions', 4 => 'mysql', 8 => 'public_storage', 9 => 'scheduler'][$currentStep] ?? null)
             @if ($hostingGuidance !== null)
                 <div class="notice" role="note">{{ __('installer.hosting.'.$hostingGuidance) }}</div>
