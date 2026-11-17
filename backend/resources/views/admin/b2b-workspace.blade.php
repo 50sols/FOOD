@@ -691,6 +691,20 @@
       </div>
       @endif
       @if($module==='pricing' && $user->hasPermission('b2b.pricing.manage'))
+      <section class="foodex-card" data-v2-stage2-price-rule-setup-help aria-labelledby="v2-stage2-price-rule-help-title" style="padding:12px;margin-block:12px">
+        <h3 id="v2-stage2-price-rule-help-title">{{ __('b2b_pricing_setup.rule_title') }}</h3>
+        <p class="muted">{{ __('b2b_pricing_setup.rule_purpose') }}</p>
+        <p role="status" aria-live="polite" data-readiness-state="partial-review">{{ __('b2b_pricing_setup.rule_readiness') }}</p>
+        <details>
+          <summary>{{ __('b2b_pricing_setup.help') }}</summary>
+          <p>{{ __('b2b_pricing_setup.rule_source') }}</p>
+          <p>{{ __('b2b_pricing_setup.rule_example') }}</p>
+          <p>{{ __('b2b_pricing_setup.rule_default') }}</p>
+          <p>{{ __('b2b_pricing_setup.rule_validation') }}</p>
+          <p>{{ __('b2b_pricing_setup.rule_permissions') }}</p>
+          <p>{{ __('b2b_pricing_setup.rule_test_help') }}</p>
+        </details>
+      </section>
       <form method="post" action="{{ route('admin.b2b.pricing.save') }}" class="links workspace-inline-form" data-v2-volume-pricing-form>
         @csrf
         <label>{{ app()->getLocale()==='ar'?'شريحة السعر':'Price tier' }}
