@@ -6251,8 +6251,11 @@ class _WholesaleCartDesignScreenState extends State<WholesaleCartDesignScreen>
             : await api.updateItem(id, target);
         if (!mounted) return;
 
-        if (value is Map) {
+        if (value is Map &&
+            (value.containsKey('store_id') || value.containsKey('channel'))) {
           final authoritative = Map<String, dynamic>.from(value);
+          // Legacy adapters returning only item acknowledgement fall through
+          // to authoritative GET; a claimed cart must match the active store.
           // Do not show an unrelated cart after a store/session switch or a
           // contradictory legacy adapter response. Never infer money locally.
           if (storeId != scopedStoreId ||
