@@ -20,7 +20,6 @@ use App\Services\EnterpriseModuleAdministration;
 use App\Services\EnterpriseMyWork;
 use App\Services\OperationalTenantScope;
 use App\Support\AdminNavigation;
-use App\Support\TenantContextResolver;
 use Illuminate\Contracts\View\View;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -29,6 +28,8 @@ use Illuminate\Support\Facades\Schema;
 
 final class ErpCenterController extends Controller
 {
+    private const WHOLESALE_CHANNEL = 'B2B';
+
     private const LOCAL_SUPER_ADMIN_MODULES = [
         'procurement',
         'inventory_wms',
@@ -59,7 +60,6 @@ final class ErpCenterController extends Controller
         private readonly EnterpriseModuleAdministration $moduleAdministration,
         private readonly ModuleEntitlementManager $entitlementManager,
         private readonly ModuleEntitlementResolver $entitlements,
-        private readonly TenantContextResolver $tenants,
         private readonly OperationalTenantScope $operationalTenants,
         private readonly ModuleHealthService $health,
         private readonly ModuleOperationalReadiness $readiness,
@@ -129,6 +129,7 @@ final class ErpCenterController extends Controller
                 'my_work',
                 [],
                 'admin.action-center.index',
+                ['store_channel' => 'b2b'],
             ),
         ]));
 
@@ -152,14 +153,16 @@ final class ErpCenterController extends Controller
             'all',
             0,
             1,
-            route('admin.action-center.index'),
+            route('admin.action-center.index', ['store_channel' => 'b2b']),
+            ['store_channel' => self::WHOLESALE_CHANNEL],
         );
         $approvals = $this->actionCenter->page(
             $actor,
             '',
             'all',
             1,
-            route('admin.action-center.index'),
+            route('admin.action-center.index', ['store_channel' => 'b2b']),
+            self::WHOLESALE_CHANNEL,
         );
         $failedReports = $this->failedReportJobs($actor, $cards);
         $healthSummary = $this->healthSummary($cards);
@@ -185,21 +188,21 @@ final class ErpCenterController extends Controller
                 'value' => $approvals['actions']->total(),
                 'available' => true,
                 'bounded' => $approvals['truncated'],
-                'url' => route('admin.action-center.index'),
+                'url' => route('admin.action-center.index', ['store_channel' => 'b2b']),
             ],
             [
                 'key' => 'overdue_work',
                 'value' => $work['summary']['overdue'],
                 'available' => true,
                 'bounded' => false,
-                'url' => route('admin.action-center.index', ['work_state' => 'overdue']),
+                'url' => route('admin.action-center.index', ['store_channel' => 'b2b', 'work_state' => 'overdue']),
             ],
             [
                 'key' => 'open_exceptions',
                 'value' => $work['summary']['attention'],
                 'available' => true,
                 'bounded' => false,
-                'url' => route('admin.action-center.index', ['work_state' => 'attention']),
+                'url' => route('admin.action-center.index', ['store_channel' => 'b2b', 'work_state' => 'attention']),
             ],
             [
                 'key' => 'failed_reports',
@@ -289,7 +292,7 @@ final class ErpCenterController extends Controller
                 'route' => 'admin.erp.bi',
                 'tables' => ['enterprise_report_exports', 'enterprise_scheduled_reports'],
                 'checks' => [
-                    ['key' => 'completed_exports', 'table' => 'enterprise_report_exports', 'scope' => 'actor', 'column' => 'status', 'value' => 'completed', 'tab' => null],
+                    ['key' => 'completed_exports', 'table' => 'enterprise_report_exports', 'scope' => 'report_store', 'column' => 'status', 'value' => 'completed', 'tab' => null],
                 ],
             ],
         ];
@@ -327,8 +330,8 @@ final class ErpCenterController extends Controller
                 'url' => $moduleDetailUrl,
             ];
 
-            $viewStoreIds = $this->operationalTenants->allowedStoreIds($actor, $spec['view']);
-            $manageStoreIds = $this->operationalTenants->allowedStoreIds($actor, $spec['manage']);
+            $viewStoreIds = $this->operationalTenants->allowedStoreIds($actor, $spec['view'], self::WHOLESALE_CHANNEL);
+            $manageStoreIds = $this->operationalTenants->allowedStoreIds($actor, $spec['manage'], self::WHOLESALE_CHANNEL);
             $scopeTablesReady = isset($availableTables['enterprise_store_scopes'])
                 && isset($availableTables['enterprise_business_units'])
                 && isset($availableTables['enterprise_legal_entities'])
@@ -406,6 +409,17 @@ final class ErpCenterController extends Controller
                         $query->whereIn('legal_entity_id', $legalEntityIds);
                     } elseif ($check['scope'] === 'actor') {
                         $query->where('requested_by', $actor->getKey());
+                    } elseif ($check['scope'] === 'report_store') {
+                        $query->where(function ($scope) use ($viewStoreIds, $legalEntityIds): void {
+                            $scope->where(function ($storeScope) use ($viewStoreIds): void {
+                                $storeScope->where('scope_type', 'store')->whereIn('scope_id', $viewStoreIds);
+                            });
+                            if ($legalEntityIds !== []) {
+                                $scope->orWhere(function ($entityScope) use ($legalEntityIds): void {
+                                    $entityScope->where('scope_type', 'legal_entity')->whereIn('scope_id', $legalEntityIds);
+                                });
+                            }
+                        })->where('requested_by', $actor->getKey());
                     }
                     if (isset($check['column'])) {
                         $query->where($check['column'], $check['value']);
@@ -456,8 +470,8 @@ final class ErpCenterController extends Controller
             return [];
         }
 
-        $storeIds = $this->operationalTenants->allowedStoreIds($actor, 'finance.view');
-        $manageStoreIds = $this->operationalTenants->allowedStoreIds($actor, 'finance.manage');
+        $storeIds = $this->operationalTenants->allowedStoreIds($actor, 'finance.view', self::WHOLESALE_CHANNEL);
+        $manageStoreIds = $this->operationalTenants->allowedStoreIds($actor, 'finance.manage', self::WHOLESALE_CHANNEL);
         $masterUrl = Route::has('admin.treasury.master.index') ? route('admin.treasury.master.index') : null;
         $treasuryUrl = Route::has('admin.erp.treasury.index') ? route('admin.erp.treasury.index') : null;
         $organizationUrl = Route::has('admin.enterprise-organizations.index')
@@ -687,12 +701,12 @@ final class ErpCenterController extends Controller
         string $route,
         array $params = [],
     ): ?array {
-        if (! $this->navigation->hasAnyPermissionInScope($actor, $permissions)) {
+        if (! $this->hasWholesalePermissionInScope($actor, $permissions)) {
             return null;
         }
 
         $state = $this->modules->state($moduleCode);
-        $entitled = $state === ModuleState::ENABLED && $this->isEntitled($actor, $moduleCode);
+        $entitled = $state === ModuleState::ENABLED && $this->isEntitled($actor, $moduleCode, $permissions);
         $healthStatus = null;
         $denialReason = null;
 
@@ -755,7 +769,7 @@ final class ErpCenterController extends Controller
         string $route,
         array $params = [],
     ): ?array {
-        if ($permissions !== [] && ! $this->navigation->hasAnyPermissionInScope($actor, $permissions)) {
+        if ($permissions !== [] && ! $this->hasWholesalePermissionInScope($actor, $permissions)) {
             return null;
         }
 
@@ -785,18 +799,20 @@ final class ErpCenterController extends Controller
         ];
     }
 
-    private function isEntitled(User $actor, string $moduleCode): bool
+    private function isEntitled(User $actor, string $moduleCode, array $permissions): bool
     {
         if ($this->entitlements->allows($moduleCode, EntitlementScope::platform())) {
             return true;
         }
 
-        foreach ($this->tenants->retailStoreIds($actor) as $storeId) {
-            if ($this->entitlements->allows(
-                $moduleCode,
-                new EntitlementScope(EntitlementScope::STORE, $storeId),
-            )) {
-                return true;
+        foreach ($permissions as $permission) {
+            foreach ($this->operationalTenants->allowedStoreIds($actor, $permission, self::WHOLESALE_CHANNEL) as $storeId) {
+                if ($this->entitlements->allows(
+                    $moduleCode,
+                    new EntitlementScope(EntitlementScope::STORE, $storeId),
+                )) {
+                    return true;
+                }
             }
         }
 
@@ -834,7 +850,7 @@ final class ErpCenterController extends Controller
             $card = $cardsByKey->get($definition['card']);
             if (! is_array($card)
                 || ! in_array($card['status'], ['available', 'degraded'], true)
-                || ! $this->navigation->hasAnyPermissionInScope($actor, [$definition['permission']])) {
+                || ! $this->hasWholesalePermissionInScope($actor, [$definition['permission']])) {
                 continue;
             }
 
@@ -846,7 +862,8 @@ final class ErpCenterController extends Controller
                 'all',
                 0,
                 1,
-                route('admin.action-center.index'),
+                route('admin.action-center.index', ['store_channel' => 'b2b']),
+                ['store_channel' => self::WHOLESALE_CHANNEL],
             );
 
             $rows[] = [
@@ -854,7 +871,7 @@ final class ErpCenterController extends Controller
                 'label' => __('enterprise_my_work.modules.'.$module),
                 'total' => $result['summary']['total'],
                 'exceptions' => $result['summary']['overdue'] + $result['summary']['attention'],
-                'url' => route('admin.action-center.index', ['module' => $module]),
+                'url' => route('admin.action-center.index', ['store_channel' => 'b2b', 'module' => $module]),
             ];
         }
 
@@ -867,13 +884,24 @@ final class ErpCenterController extends Controller
     private function failedReportJobs(User $actor, array $cards): array
     {
         $biCard = collect($cards)->firstWhere('key', 'bi');
+        $storeIds = $this->operationalTenants->allowedStoreIds($actor, 'reports.view', self::WHOLESALE_CHANNEL);
+        $legalEntityIds = $storeIds !== []
+            && Schema::hasTable('enterprise_store_scopes')
+            && Schema::hasTable('enterprise_business_units')
+            && Schema::hasTable('enterprise_legal_entities')
+                ? DB::table('enterprise_store_scopes')
+                    ->join('enterprise_business_units', 'enterprise_business_units.id', '=', 'enterprise_store_scopes.business_unit_id')
+                    ->join('enterprise_legal_entities', 'enterprise_legal_entities.id', '=', 'enterprise_business_units.legal_entity_id')
+                    ->whereIn('enterprise_store_scopes.store_id', $storeIds)
+                    ->distinct()->pluck('enterprise_legal_entities.id')->map(static fn ($id): int => (int) $id)->all()
+                : [];
         $biOperational = is_array($biCard)
             && in_array($biCard['status'], ['available', 'degraded'], true)
             && is_string($biCard['url'])
-            && $biCard['url'] !== '';
+            && $biCard['url'] !== ''
+            && $storeIds !== [];
 
-        if (! $biOperational
-            || ! ($actor->hasRole('SUPER_ADMIN') || $actor->hasPermission('reports.view'))) {
+        if (! $biOperational) {
             return ['available' => false, 'count' => null, 'url' => null];
         }
 
@@ -885,6 +913,12 @@ final class ErpCenterController extends Controller
 
         $failedExports = $hasExports
             ? (int) DB::table('enterprise_report_exports')
+                ->where(function ($scope) use ($storeIds, $legalEntityIds): void {
+                    $scope->where(fn ($storeScope) => $storeScope->where('scope_type', 'store')->whereIn('scope_id', $storeIds));
+                    if ($legalEntityIds !== []) {
+                        $scope->orWhere(fn ($entityScope) => $entityScope->where('scope_type', 'legal_entity')->whereIn('scope_id', $legalEntityIds));
+                    }
+                })
                 ->when(! $actor->hasRole('SUPER_ADMIN'), fn ($query) => $query->where('requested_by', $actor->id))
                 ->where('status', 'failed')
                 ->count()
@@ -892,6 +926,12 @@ final class ErpCenterController extends Controller
 
         $failedSchedules = $hasSchedules
             ? (int) DB::table('enterprise_scheduled_reports')
+                ->where(function ($scope) use ($storeIds, $legalEntityIds): void {
+                    $scope->where(fn ($storeScope) => $storeScope->where('scope_type', 'store')->whereIn('scope_id', $storeIds));
+                    if ($legalEntityIds !== []) {
+                        $scope->orWhere(fn ($entityScope) => $entityScope->where('scope_type', 'legal_entity')->whereIn('scope_id', $legalEntityIds));
+                    }
+                })
                 ->when(! $actor->hasRole('SUPER_ADMIN'), fn ($query) => $query->where('requested_by', $actor->id))
                 ->whereNotNull('last_error')
                 ->count()
@@ -902,5 +942,17 @@ final class ErpCenterController extends Controller
             'count' => $failedExports + $failedSchedules,
             'url' => $biCard['url'],
         ];
+    }
+
+    /** @param list<string> $permissions */
+    private function hasWholesalePermissionInScope(User $actor, array $permissions): bool
+    {
+        foreach ($permissions as $permission) {
+            if ($this->operationalTenants->allowedStoreIds($actor, $permission, self::WHOLESALE_CHANNEL) !== []) {
+                return true;
+            }
+        }
+
+        return false;
     }
 }

@@ -185,6 +185,13 @@ return [
                 'capabilities' => ['title' => 'Module capability entitlements', 'detail' => 'Capabilities effectively granted across stores: :ready of :total.'],
                 'schema' => ['title' => 'Database schema and migrations', 'detail' => 'Required tables present: :ready of :total. Run pending migrations.'],
                 'health' => ['title' => 'Module health check', 'detail' => 'Current health result: :state.'],
+                'lifecycle_detail' => 'Current module operating state: :state.',
+                'certification_detail' => 'Version in use: :current. Certified version: :certified. Certify the version in use after reviewing its operating evidence.',
+                'scope_detail' => 'Stores linked to a company and legal entity: :ready of :total. Complete any missing store links.',
+                'permissions_detail' => 'Stores where you have both view and manage permissions: :ready of :total. Grant access for the remaining stores.',
+                'capabilities_detail' => 'Module operation permissions granted across stores: :ready of :total. Grant the missing permissions.',
+                'schema_detail' => 'Required database tables present: :ready of :total. Apply the missing database updates.',
+                'health_detail' => 'Current module health check result: :state.',
                 'none' => 'none',
             ],
             'procurement' => [
