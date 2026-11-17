@@ -203,4 +203,36 @@ final class V2WhatsAppSettingsReadinessTabsTest extends TestCase
         $this->assertSame($before, $profile->fresh()->configuration_revision);
     }
 
+
+    public function test_provider_test_errors_are_generic_and_localized_with_no_raw_diagnostic_flash(): void
+    {
+        foreach (['en', 'ar'] as $locale) {
+            $actor = $this->superAdmin($locale);
+            $this->actingAs($actor)->post(route('admin.whatsapp.connections.store'), [
+                'name' => 'Unconfigured provider '.$locale,
+                'display_phone_number' => '+96550000090',
+                'provider_type' => 'meta_cloud',
+                'provider_phone_number_id' => 'not-a-real-provider-id',
+            ])->assertRedirect(route('admin.whatsapp.connections.index'));
+
+            $profile = WhatsAppConnectionProfile::query()
+                ->where('name', 'Unconfigured provider '.$locale)->firstOrFail();
+
+            $this->actingAs($actor)
+                ->from(route('admin.administration.index'))
+                ->post(route('admin.whatsapp.connections.test-send', $profile), [
+                    'recipient' => '+96550000091',
+                    'message' => 'Do not send this test message',
+                ])
+                ->assertRedirect(route('admin.whatsapp.connections.index', ['tab' => 'profiles']))
+                ->assertSessionHasErrors('recipient');
+
+            $errors = session('errors')->get('recipient');
+            $this->assertSame([__('whatsapp.connections.test_send_failed')], $errors);
+            $this->assertStringNotContainsString('Meta connection is not configured.', implode(' ', $errors));
+            $this->assertSame([], session('_old_input', []));
+            $this->assertNull($profile->fresh()->last_outbound_at);
+        }
+    }
+
 }
