@@ -75,6 +75,12 @@ final class V2EnterpriseBiIndependentPageTabsTest extends TestCase
                     $response->assertSee(e(route('admin.erp.bi', $linkParams)), false);
                 }
 
+                if ($selected !== 'overview') {
+                    // The shared script contains this selector on every tab.
+                    // Only the active Overview workspace may render the node.
+                    $this->assertSame(0, preg_match('/<[^>]+\\bdata-enterprise-bi-overview(?:\\s|=|>)/i', $html));
+                }
+
                 if ($selected === 'overview') {
                     $response->assertSee('data-enterprise-bi-overview', false);
                     // The shared JS mentions the selector on every tab; assert actual form presence instead.
@@ -84,9 +90,7 @@ final class V2EnterpriseBiIndependentPageTabsTest extends TestCase
                     $response->assertSee('data-bi-run-form', false)
                         ->assertSee('name="bi_tab" value="reports"', false);
                     $this->assertSame(1, preg_match_all('/<form\\b[^>]*\\bdata-bi-run-form\\b/i', $html));
-                    // The static shared JS references this selector on every tab;
-                    // verify no overview DOM element is rendered on Reports.
-                    $this->assertSame(0, preg_match('/<[^>]+\\bdata-enterprise-bi-overview(?:\\s|=|>)/i', $html));
+
                 } elseif ($selected === 'schedules') {
                     $response->assertSee(__('enterprise_bi_ui.schedules_title'));
                     $this->assertSame(0, preg_match('/<form\\b[^>]*\\bdata-bi-run-form\\b/i', $html));
