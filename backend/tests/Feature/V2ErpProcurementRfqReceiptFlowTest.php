@@ -177,6 +177,136 @@ final class V2ErpProcurementRfqReceiptFlowTest extends TestCase
         }
     }
 
+    public function test_posted_receipt_fails_closed_for_tampered_foreign_warehouse_then_recovers_without_stock_or_audit_duplication(): void
+    {
+        $store = $this->store();
+        $maker = $this->actor('PROCUREMENT_BUYER', 'ar');
+        $checker = $this->actor('PROCUREMENT_MANAGER', 'en');
+        $this->assertNotSame($maker->id, $checker->id);
+
+        [$supplierId, $requestId, $rfqId, $quoteId] = $this->quotedRequest($maker, $store);
+        $this->actingAs($checker)->post(route('admin.erp.procurement.requests.decision', $requestId), [
+            'store_id' => $store->id, 'decision' => 'approve',
+        ])->assertRedirect();
+        $this->assertDatabaseHas('enterprise_purchase_requests', [
+            'id' => $requestId, 'status' => 'approved', 'decided_by' => $checker->id,
+        ]);
+        $this->actingAs($checker)->post(route('admin.erp.procurement.rfqs.award', [
+            'rfq' => $rfqId, 'quote' => $quoteId,
+        ]), ['store_id' => $store->id])->assertRedirect();
+
+        $order = DB::table('enterprise_purchase_orders')
+            ->where('procurement_rfq_id', $rfqId)->first();
+        $this->assertNotNull($order);
+        $this->assertSame($supplierId, (int) $order->supplier_id);
+        $this->assertSame($store->id, (int) $order->store_id);
+        $this->assertSame('KWD', (string) $order->currency_code);
+        $line = DB::table('enterprise_purchase_order_lines')
+            ->where('purchase_order_id', $order->id)->first();
+        $this->assertNotNull($line);
+        $this->assertSame('4.250', number_format((float) $line->unit_price, 3, '.', ''));
+
+        $this->actingAs($checker)->post(route('admin.erp.procurement.orders.issue', $order->id), [
+            'store_id' => $store->id,
+        ])->assertRedirect();
+        $this->assertDatabaseHas('enterprise_purchase_orders', [
+            'id' => $order->id, 'status' => 'issued',
+        ]);
+
+        [$product, $warehouse] = $this->stockTarget($store);
+        $this->actingAs($checker)->post(route('admin.erp.procurement.receipts.store', $order->id), [
+            'store_id' => $store->id,
+            'warehouse_id' => $warehouse->id,
+            'lines' => [['purchase_order_line_id' => $line->id, 'quantity' => 2]],
+        ])->assertRedirect();
+        $receipt = DB::table('enterprise_goods_receipts')
+            ->where('purchase_order_id', $order->id)->first();
+        $this->assertNotNull($receipt);
+        $this->assertSame($supplierId, (int) $receipt->supplier_id);
+        $this->assertSame($store->id, (int) $receipt->store_id);
+        $this->assertSame($order->company_id, $receipt->company_id);
+        $receiptLine = DB::table('enterprise_goods_receipt_lines')
+            ->where('goods_receipt_id', $receipt->id)->first();
+        $this->assertNotNull($receiptLine);
+
+        $foreign = Store::query()->create([
+            'store_type_id' => (int) DB::table('store_types')->where('code', 'B2B')->value('id'),
+            'code' => 'P135-GRN-FOREIGN-TENANT',
+            'name' => 'P135 foreign receipt scope',
+            'is_active' => true,
+        ]);
+        app(OrganizationHierarchyService::class)->ensureDefaultScopeForStore($foreign);
+        $foreignWarehouse = Warehouse::query()->create([
+            'store_id' => $foreign->id,
+            'code' => 'P135-GRN-FOREIGN-WH',
+            'name' => 'P135 foreign warehouse',
+            'is_active' => true,
+        ]);
+        // Simulate a corrupted imported draft after the HTTP create-time
+        // store check: posting must recheck persisted warehouse authority.
+        DB::table('enterprise_goods_receipt_lines')->where('id', $receiptLine->id)
+            ->update(['warehouse_id' => $foreignWarehouse->id]);
+        $beforePostedAudits = DB::table('audit_logs')
+            ->where('event', 'enterprise.goods_receipt.posted')->count();
+        $beforeMovements = DB::table('stock_movements')->count();
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            $checker->forceFill(['locale' => $locale])->save();
+            $this->actingAs($checker->fresh())
+                ->post(route('admin.erp.procurement.receipts.post', $receipt->id), [
+                    'store_id' => $store->id,
+                ])
+                ->assertRedirect()->assertSessionHasErrors('warehouse_id');
+            $this->assertDatabaseHas('enterprise_goods_receipts', [
+                'id' => $receipt->id, 'supplier_id' => $supplierId,
+                'store_id' => $store->id, 'status' => 'draft', 'posted_by' => null,
+            ]);
+            $this->assertDatabaseHas('enterprise_goods_receipt_lines', [
+                'id' => $receiptLine->id, 'warehouse_id' => $foreignWarehouse->id,
+                'stock_movement_id' => null, 'inventory_id' => null,
+            ]);
+            $this->assertDatabaseHas('enterprise_purchase_orders', [
+                'id' => $order->id, 'supplier_id' => $supplierId,
+                'store_id' => $store->id, 'status' => 'issued',
+            ]);
+            $this->assertSame($beforeMovements, DB::table('stock_movements')->count());
+            $this->assertSame($beforePostedAudits, DB::table('audit_logs')
+                ->where('event', 'enterprise.goods_receipt.posted')->count());
+            $this->assertNull(DB::table('inventories')
+                ->where('warehouse_id', $foreignWarehouse->id)
+                ->where('product_id', $product->id)->value('quantity'));
+        }
+
+        // Repair the existing draft's provenance, then use the same real
+        // endpoint twice to prove one and only one authorized stock movement.
+        DB::table('enterprise_goods_receipt_lines')->where('id', $receiptLine->id)
+            ->update(['warehouse_id' => $warehouse->id]);
+        $this->actingAs($checker->fresh())
+            ->post(route('admin.erp.procurement.receipts.post', $receipt->id), [
+                'store_id' => $store->id,
+            ])->assertRedirect();
+        $this->actingAs($checker->fresh())
+            ->post(route('admin.erp.procurement.receipts.post', $receipt->id), [
+                'store_id' => $store->id,
+            ])->assertRedirect();
+        $this->assertDatabaseHas('enterprise_goods_receipts', [
+            'id' => $receipt->id, 'supplier_id' => $supplierId,
+            'store_id' => $store->id, 'status' => 'posted', 'posted_by' => $checker->id,
+        ]);
+        $this->assertSame(1, DB::table('stock_movements')
+            ->where('reference_type', 'enterprise_goods_receipt_line')
+            ->where('reference_id', $receiptLine->id)->count());
+        $this->assertSame(2.0, (float) DB::table('inventories')
+            ->where('warehouse_id', $warehouse->id)
+            ->where('product_id', $product->id)->value('quantity'));
+        $this->assertNull(DB::table('inventories')
+            ->where('warehouse_id', $foreignWarehouse->id)
+            ->where('product_id', $product->id)->value('quantity'));
+        $this->assertSame($beforePostedAudits + 1, DB::table('audit_logs')
+            ->where('event', 'enterprise.goods_receipt.posted')->count());
+    }
+
     public function test_rfq_cannot_award_before_independent_checker_approves_without_mutating_supplier_or_price(): void
     {
         $store = $this->store();
