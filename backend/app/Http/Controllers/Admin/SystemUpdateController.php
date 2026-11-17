@@ -5,7 +5,6 @@ namespace App\Http\Controllers\Admin;
 use App\Domain\Updater\SignedUpdateEnvelope;
 use App\Domain\Updater\TrustedUpdateSignatureVerifier;
 use App\Domain\Updater\UpdateManager;
-use App\Domain\Updater\UpdatePackageManifest;
 use App\Domain\Updater\UpdateVersion;
 use App\Http\Controllers\Controller;
 use App\Models\SystemVersion;
