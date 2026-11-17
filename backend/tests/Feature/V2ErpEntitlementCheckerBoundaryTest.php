@@ -1373,7 +1373,6 @@ final class V2ErpEntitlementCheckerBoundaryTest extends TestCase
         $this->assertSame($auditBefore, DB::table('audit_logs')->count());
     }
 
-
     public function test_canonical_procurement_global_roles_require_live_account_pivot_and_actual_job_role_permissions(): void
     {
         $store = $this->wholesaleStore();
