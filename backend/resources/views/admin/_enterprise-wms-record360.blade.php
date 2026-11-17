@@ -39,6 +39,24 @@
             <section class="foodex-record-section foodex-viz-card" data-v2-owner-title-report data-v2-owner-state="{{ $ownerTitle['state'] }}" data-v2-owner-certification="{{ $ownerTitle['certified'] ? 'certified' : 'unverified' }}">
                 <h3>{{ __('enterprise_wms.record360.ownership.title') }}</h3>
                 <p class="wms-sub" role="status">{{ __('enterprise_wms.record360.ownership.notice') }}</p>
+                <div role="status" data-v2-owner-setup-readiness="{{ $ownerTitle['certified'] && $ownerTitle['state'] === 'CERTIFIED' ? 'verified' : 'hold' }}" class="wms-sub">
+                    <strong>{{ __('enterprise_wms.record360.ownership.setup_readiness_label') }}:</strong>
+                    {{ $ownerTitle['certified'] && $ownerTitle['state'] === 'CERTIFIED'
+                        ? __('enterprise_wms.record360.ownership.setup_verified')
+                        : __('enterprise_wms.record360.ownership.setup_hold') }}
+                </div>
+                <details data-v2-owner-setup-help>
+                    <summary>{{ __('enterprise_wms.record360.ownership.setup_help_title') }}</summary>
+                    <p class="wms-sub">{{ __('enterprise_wms.record360.ownership.setup_purpose') }}</p>
+                    <p class="wms-sub">{{ __('enterprise_wms.record360.ownership.setup_source') }}</p>
+                    <p class="wms-sub">{{ __('enterprise_wms.record360.ownership.setup_example') }}</p>
+                    <p class="wms-sub">{{ __('enterprise_wms.record360.ownership.setup_default') }}</p>
+                    <p class="wms-sub">{{ __('enterprise_wms.record360.ownership.setup_validation') }}</p>
+                    <p class="wms-sub">{{ __('enterprise_wms.record360.ownership.setup_permissions') }}</p>
+                    <p class="wms-sub">{{ __('enterprise_wms.record360.ownership.setup_save_boundary') }}</p>
+                    <p class="wms-sub">{{ __('enterprise_wms.record360.ownership.setup_recheck_help') }}</p>
+                    <a data-v2-owner-evidence-recheck href="{{ route('admin.erp.wms.index', array_filter(['tab' => $tab, 'store_id' => $storeId, 'warehouse_id' => $warehouseId, 'inventory_id' => (int) $record->id])) }}">{{ __('enterprise_wms.record360.ownership.setup_recheck') }}</a>
+                </details>
                 <div class="wms-360-facts">
                     <span>{{ __('enterprise_wms.record360.ownership.state_label') }}<strong>{{ __('enterprise_wms.record360.ownership.states.'.$ownerTitle['state']) }}</strong></span>
                     <span data-v2-stock-custodian="warehouse">{{ __('enterprise_wms.record360.ownership.custodian') }}<strong>{{ __('enterprise_wms.record360.ownership.warehouse_custodian') }} · {{ $record->warehouse_name }}</strong></span>
