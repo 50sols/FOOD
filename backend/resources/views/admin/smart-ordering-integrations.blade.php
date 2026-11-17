@@ -123,12 +123,44 @@ $oldText=static fn(string $name): string => is_scalar(old($name))?(string)old($n
 
 <h3>{{ __('restaurant_integrations.event_log') }}</h3>
 <div class="ri-table-wrap"><table data-pagination-exempt="bounded-integration-observability" class="ri-table"><thead><tr><th>{{ __('restaurant_integrations.provider') }}</th><th>{{ __('restaurant_integrations.event_type_filter') }}</th><th>{{ __('restaurant_integrations.external_key') }}</th><th>{{ __('restaurant_integrations.status') }}</th><th>{{ __('restaurant_integrations.attempts') }}</th><th>{{ __('restaurant_integrations.error') }}</th><th>{{ __('restaurant_integrations.occurred_at') }}</th><th>{{ __('restaurant_integrations.action') }}</th></tr></thead><tbody>
-@forelse($events as $event)<tr><td>{{ $event['provider_key'] }}</td><td>{{ $event['event_type'] }}</td><td>{{ $event['external_event_key'] }}</td><td>{{ __('restaurant_integrations.observability_statuses.'.$event['status']) }}</td><td>{{ $event['attempts'] }} · {{ __('restaurant_integrations.replays') }} {{ $event['replay_count'] }}</td><td>{{ $event['last_error_code'] ?: '—' }}</td><td>{{ $event['occurred_at'] ?: $event['created_at'] }}</td><td>@if($canManageIntegrations && in_array($event['status'],['retry','dead_letter'],true))<form method="post" action="{{ route('admin.smart-ordering.integrations.events.retry',[$site,$event['id']]) }}">@csrf @if($supportContext)<input type="hidden" name="support_access" value="1">@endif<input type="hidden" name="_integration_form" value="logs"><button class="foodex-action-secondary button secondary" type="submit">{{ __('restaurant_integrations.retry') }}</button></form>@else — @endif</td></tr>@empty<tr><td colspan="8">{{ __('restaurant_integrations.no_events') }}</td></tr>@endforelse
+
+@forelse
+($events as $event)<tr><td>{{ $event['provider_key'] }}</td><td>{{ $event['event_type'] }}</td><td>{{ $event['external_event_key'] }}</td><td>{{ __('restaurant_integrations.observability_statuses.'.$event['status']) }}</td><td>{{ $event['attempts'] }} · {{ __('restaurant_integrations.replays') }} {{ $event['replay_count'] }}</td><td>{{ $event['last_error_code'] ?: '—' }}</td><td>{{ $event['occurred_at'] ?: $event['created_at'] }}</td><td>
+@if
+($canManageIntegrations && in_array($event['status'],['retry','dead_letter'],true))<form method="post" action="{{ route('admin.smart-ordering.integrations.events.retry',[$site,$event['id']]) }}">@csrf 
+@if
+($supportContext)<input type="hidden" name="support_access" value="1">
+@endif
+<input type="hidden" name="_integration_form" value="logs"><button class="foodex-action-secondary button secondary" type="submit">{{ __('restaurant_integrations.retry') }}</button></form>
+@else
+ — 
+@endif
+</td></tr>
+@empty
+<tr><td colspan="8">{{ __('restaurant_integrations.no_events') }}</td></tr>
+@endforelse
+
 </tbody></table></div>
 
 <h3>{{ __('restaurant_integrations.webhook_delivery_log') }}</h3>
 <div class="ri-table-wrap"><table data-pagination-exempt="bounded-integration-observability" class="ri-table"><thead><tr><th>{{ __('restaurant_integrations.target_url') }}</th><th>{{ __('restaurant_integrations.event_type_filter') }}</th><th>{{ __('restaurant_integrations.external_key') }}</th><th>{{ __('restaurant_integrations.status') }}</th><th>{{ __('restaurant_integrations.attempts') }}</th><th>{{ __('restaurant_integrations.latency') }}</th><th>{{ __('restaurant_integrations.error') }}</th><th>{{ __('restaurant_integrations.action') }}</th></tr></thead><tbody>
-@forelse($deliveries as $delivery)<tr><td>{{ $delivery['target_url'] }}</td><td>{{ $delivery['event_type'] }}</td><td>{{ $delivery['event_key'] }}</td><td>{{ __('restaurant_integrations.observability_statuses.'.$delivery['status']) }}</td><td>{{ $delivery['attempts'] }} · {{ __('restaurant_integrations.replays') }} {{ $delivery['replay_count'] }}</td><td>{{ $delivery['latency_ms']===null?'—':$delivery['latency_ms'].' ms' }}</td><td>{{ $delivery['last_error_code'] ?: '—' }}</td><td>@if($canManageIntegrations && in_array($delivery['status'],['retry','dead_letter'],true))<form method="post" action="{{ route('admin.smart-ordering.integrations.deliveries.replay',[$site,$delivery['id']]) }}">@csrf @if($supportContext)<input type="hidden" name="support_access" value="1">@endif<input type="hidden" name="_integration_form" value="logs"><button class="foodex-action-secondary button secondary" type="submit">{{ __('restaurant_integrations.replay') }}</button></form>@else — @endif</td></tr>@empty<tr><td colspan="8">{{ __('restaurant_integrations.no_deliveries') }}</td></tr>@endforelse
+
+@forelse
+($deliveries as $delivery)<tr><td>{{ $delivery['target_url'] }}</td><td>{{ $delivery['event_type'] }}</td><td>{{ $delivery['event_key'] }}</td><td>{{ __('restaurant_integrations.observability_statuses.'.$delivery['status']) }}</td><td>{{ $delivery['attempts'] }} · {{ __('restaurant_integrations.replays') }} {{ $delivery['replay_count'] }}</td><td>{{ $delivery['latency_ms']===null?'—':$delivery['latency_ms'].' ms' }}</td><td>{{ $delivery['last_error_code'] ?: '—' }}</td><td>
+@if
+($canManageIntegrations && in_array($delivery['status'],['retry','dead_letter'],true))<form method="post" action="{{ route('admin.smart-ordering.integrations.deliveries.replay',[$site,$delivery['id']]) }}">@csrf 
+@if
+($supportContext)<input type="hidden" name="support_access" value="1">
+@endif
+<input type="hidden" name="_integration_form" value="logs"><button class="foodex-action-secondary button secondary" type="submit">{{ __('restaurant_integrations.replay') }}</button></form>
+@else
+ — 
+@endif
+</td></tr>
+@empty
+<tr><td colspan="8">{{ __('restaurant_integrations.no_deliveries') }}</td></tr>
+@endforelse
+
 </tbody></table></div>
 </section>
 
@@ -150,7 +182,13 @@ $oldText=static fn(string $name): string => is_scalar(old($name))?(string)old($n
 <section id="ri-panel-connectors" class="ri-tab-panel" role="region" aria-labelledby="ri-tab-connectors" data-ri-active-panel>
 <div class="ri-grid">
 <section class="panel"><h2>{{ __('restaurant_integrations.install') }}</h2>
-@if($canManageIntegrations)<form class="ri-form" method="post" action="{{ route('admin.smart-ordering.integrations.install',$site) }}">@csrf @if($supportContext)<input type="hidden" name="support_access" value="1">@endif<input type="hidden" name="_integration_form" value="connectors">
+
+@if
+($canManageIntegrations)<form class="ri-form" method="post" action="{{ route('admin.smart-ordering.integrations.install',$site) }}">@csrf 
+@if
+($supportContext)<input type="hidden" name="support_access" value="1">
+@endif
+<input type="hidden" name="_integration_form" value="connectors">
 <label>{{ __('restaurant_integrations.branch') }}<select class="foodex-control" name="branch_id"><option value="">{{ __('restaurant_integrations.all_branches') }}</option>@foreach($branches as $branch)<option value="{{ $branch->id }}" @selected($oldText("branch_id")===(string)$branch->id)>{{ $localized($branch->name_ar,$branch->name_en) }}</option>@endforeach</select></label>
 <label>{{ __('restaurant_integrations.type') }}<select class="foodex-control" name="connector_type" required>@foreach($connectorTypes as $type)<option value="{{ $type }}" @selected($oldText("connector_type")===$type)>{{ __('restaurant_integrations.connector_types.'.$type) }}</option>@endforeach</select></label>
 <label>{{ __('restaurant_integrations.provider_key') }}<input class="foodex-control" name="provider_key" value="{{ $oldText("provider_key") }}" pattern="[A-Za-z0-9_-]+" @if($errors->has("provider_key")) aria-invalid="true" @endif required></label>
@@ -163,15 +201,33 @@ $oldText=static fn(string $name): string => is_scalar(old($name))?(string)old($n
 
 </div>
 <section class="panel"><h2>{{ __('restaurant_integrations.connector_details') }}</h2><div class="ri-list">
-@forelse($integrations as $row)
+
+@forelse
+($integrations as $row)
 <div class="ri-item"><div class="ri-head"><div><strong>{{ $row['display_name'] }}</strong><div>{{ $row['provider_key'] }} · {{ __('restaurant_integrations.connector_types.'.$row['connector_type']) }}</div></div><span class="ri-badge">{{ __('restaurant_integrations.status_options.'.$row['status']) }}</span></div>
 <div>{{ implode(', ',$row['capabilities']) }}</div>
 <div class="ri-muted">{{ __('restaurant_integrations.branch') }}: {{ ($row['branch_name_en'] || $row['branch_name_ar'])?$localized($row['branch_name_ar'],$row['branch_name_en']):__('restaurant_integrations.site_scope') }}</div>
 <div class="ri-muted">{{ __('restaurant_integrations.last_success') }}: {{ $row['last_success_at'] ?: __('restaurant_integrations.never') }} · {{ __('restaurant_integrations.last_failure') }}: {{ $row['last_failure_at'] ?: __('restaurant_integrations.never') }} · {{ __('restaurant_integrations.last_error') }}: {{ $row['last_error_code'] ?: '—' }}</div>
 <div class="ri-muted">{{ $row['credential_reference']?__('restaurant_integrations.credentials_configured'):__('restaurant_integrations.credentials_not_configured') }}</div>
-@if($canManageIntegrations)<form method="post" action="{{ route('admin.smart-ordering.integrations.status',[$site,$row['public_id']]) }}">@csrf @if($supportContext)<input type="hidden" name="support_access" value="1">@endif @method('PATCH')<input type="hidden" name="_integration_form" value="connectors"><div class="ri-head"><select class="foodex-control" name="status">@foreach(['disabled','enabled','degraded','suspended'] as $status)<option value="{{ $status }}" @selected($status===$row['status'])>{{ __('restaurant_integrations.status_options.'.$status) }}</option>@endforeach</select><button class="foodex-action-primary" type="submit">{{ __('restaurant_integrations.status') }}</button></div></form>@endif
+
+@if
+($canManageIntegrations)<form method="post" action="{{ route('admin.smart-ordering.integrations.status',[$site,$row['public_id']]) }}">@csrf 
+@if
+($supportContext)<input type="hidden" name="support_access" value="1">
+@endif
+ @method('PATCH')<input type="hidden" name="_integration_form" value="connectors"><div class="ri-head"><select class="foodex-control" name="status">
+@foreach
+(['disabled','enabled','degraded','suspended'] as $status)<option value="{{ $status }}" @selected($status===$row['status'])>{{ __('restaurant_integrations.status_options.'.$status) }}</option>
+@endforeach
+</select><button class="foodex-action-primary" type="submit">{{ __('restaurant_integrations.status') }}</button></div></form>
+@endif
+
 </div>
-@empty<p>{{ __('restaurant_integrations.no_connectors') }}</p>@endforelse
+
+@empty
+<p>{{ __('restaurant_integrations.no_connectors') }}</p>
+@endforelse
+
 </div></section>
 
 
@@ -181,7 +237,13 @@ $oldText=static fn(string $name): string => is_scalar(old($name))?(string)old($n
 <section id="ri-panel-api-clients" class="ri-tab-panel" role="region" aria-labelledby="ri-tab-api-clients" data-ri-active-panel>
 <div class="ri-grid">
 <section class="panel"><h2>{{ __('restaurant_integrations.api_clients') }}</h2>
-@if($canManageIntegrations)<form class="ri-form" method="post" action="{{ route('admin.smart-ordering.integrations.api-clients.store',$site) }}">@csrf @if($supportContext)<input type="hidden" name="support_access" value="1">@endif<input type="hidden" name="_integration_form" value="api-clients">
+
+@if
+($canManageIntegrations)<form class="ri-form" method="post" action="{{ route('admin.smart-ordering.integrations.api-clients.store',$site) }}">@csrf 
+@if
+($supportContext)<input type="hidden" name="support_access" value="1">
+@endif
+<input type="hidden" name="_integration_form" value="api-clients">
 <label>{{ __('restaurant_integrations.client_name') }}<input class="foodex-control" name="name" value="{{ $oldText("name") }}" @if($errors->has("name")) aria-invalid="true" @endif required></label>
 <label>{{ __('restaurant_integrations.expires_at') }}<input class="foodex-control" type="datetime-local" name="expires_at" value="{{ $oldText("expires_at") }}"></label>
 <fieldset @if($errors->has("scopes")) aria-invalid="true" tabindex="-1" @endif><legend>{{ __('restaurant_integrations.scopes') }}</legend><div class="ri-checks">@foreach(['restaurant.read','menu.read','orders.read','integrations.write'] as $scope)<label><input type="checkbox" name="scopes[]" value="{{ $scope }}" @checked(in_array($scope,(array)old("scopes",[]),true))> {{ $scope }}</label>@endforeach</div></fieldset>
@@ -191,8 +253,26 @@ $oldText=static fn(string $name): string => is_scalar(old($name))?(string)old($n
 
 </div>
 <section class="panel"><h2>{{ __('restaurant_integrations.api_clients_list') }}</h2><div class="ri-list">
-@forelse($apiClients as $client)<div class="ri-item"><div class="ri-head"><div><strong>{{ $client['name'] }}</strong><div>{{ implode(', ',$client['scopes']) }}</div></div><span class="ri-badge">{{ __('restaurant_integrations.'.$client['state']) }}</span></div><div class="ri-muted">{{ __('restaurant_integrations.requests') }}: {{ $client['request_count'] }} · {{ __('restaurant_integrations.rate_limit_violations') }}: {{ $client['rate_limit_violations'] }} · {{ __('restaurant_integrations.last_used') }}: {{ $client['last_used_at'] ?: __('restaurant_integrations.never') }} · {{ __('restaurant_integrations.expires_at') }}: {{ $client['expires_at'] ?: '—' }}</div>@if($client['state']==='active')@if($canManageIntegrations)<form method="post" action="{{ route('admin.smart-ordering.integrations.api-clients.revoke',[$site,$client['public_id']]) }}">@csrf @if($supportContext)<input type="hidden" name="support_access" value="1">@endif @method('PATCH')<input type="hidden" name="_integration_form" value="api-clients"><button class="foodex-action-secondary button secondary" type="submit">{{ __('restaurant_integrations.revoke') }}</button></form>@endif@endif</div>
-@empty<p>{{ __('restaurant_integrations.no_data') }}</p>@endforelse
+
+@forelse
+($apiClients as $client)<div class="ri-item"><div class="ri-head"><div><strong>{{ $client['name'] }}</strong><div>{{ implode(', ',$client['scopes']) }}</div></div><span class="ri-badge">{{ __('restaurant_integrations.'.$client['state']) }}</span></div><div class="ri-muted">{{ __('restaurant_integrations.requests') }}: {{ $client['request_count'] }} · {{ __('restaurant_integrations.rate_limit_violations') }}: {{ $client['rate_limit_violations'] }} · {{ __('restaurant_integrations.last_used') }}: {{ $client['last_used_at'] ?: __('restaurant_integrations.never') }} · {{ __('restaurant_integrations.expires_at') }}: {{ $client['expires_at'] ?: '—' }}</div>
+@if
+($client['state']==='active')
+@if
+($canManageIntegrations)<form method="post" action="{{ route('admin.smart-ordering.integrations.api-clients.revoke',[$site,$client['public_id']]) }}">@csrf 
+@if
+($supportContext)<input type="hidden" name="support_access" value="1">
+@endif
+ @method('PATCH')<input type="hidden" name="_integration_form" value="api-clients"><button class="foodex-action-secondary button secondary" type="submit">{{ __('restaurant_integrations.revoke') }}</button></form>
+@endif
+
+@endif
+</div>
+
+@empty
+<p>{{ __('restaurant_integrations.no_data') }}</p>
+@endforelse
+
 </div></section>
 
 
@@ -202,7 +282,13 @@ $oldText=static fn(string $name): string => is_scalar(old($name))?(string)old($n
 <section id="ri-panel-webhooks" class="ri-tab-panel" role="region" aria-labelledby="ri-tab-webhooks" data-ri-active-panel>
 <div class="ri-grid">
 <section class="panel"><h2>{{ __('restaurant_integrations.webhooks') }}</h2>
-@if($canManageIntegrations)<form class="ri-form" method="post" action="{{ route('admin.smart-ordering.integrations.webhooks.store',$site) }}">@csrf @if($supportContext)<input type="hidden" name="support_access" value="1">@endif<input type="hidden" name="_integration_form" value="webhooks">
+
+@if
+($canManageIntegrations)<form class="ri-form" method="post" action="{{ route('admin.smart-ordering.integrations.webhooks.store',$site) }}">@csrf 
+@if
+($supportContext)<input type="hidden" name="support_access" value="1">
+@endif
+<input type="hidden" name="_integration_form" value="webhooks">
 <label>{{ __('restaurant_integrations.target_url') }}<input class="foodex-control" type="url" name="target_url" value="{{ $oldText("target_url") }}" @if($errors->has("target_url")) aria-invalid="true" @endif placeholder="{{ __('restaurant_integrations.target_url_placeholder') }}" required></label>
 <fieldset @if($errors->has("event_types")) aria-invalid="true" tabindex="-1" @endif><legend>{{ __('restaurant_integrations.event_types') }}</legend><small>{{ __('restaurant_integrations.event_types_help') }}</small><div class="ri-checks">@foreach(['order.created','order.status_changed','payment.updated','menu.published','*'] as $event)<label><input type="checkbox" name="event_types[]" value="{{ $event }}" @checked(in_array($event,(array)old("event_types",[]),true))> {{ $event }}</label>@endforeach</div></fieldset>
 <button class="foodex-action-primary" type="submit">{{ __('restaurant_integrations.create_webhook') }}</button>
@@ -210,8 +296,22 @@ $oldText=static fn(string $name): string => is_scalar(old($name))?(string)old($n
 
 </div>
 <section class="panel"><h2>{{ __('restaurant_integrations.webhook_subscriptions') }}</h2><div class="ri-list">
-@forelse($webhooks as $hook)<div class="ri-item"><div class="ri-head"><div><strong>{{ $hook['target_url'] }}</strong><div>{{ implode(', ',$hook['event_types']) }}</div></div><span class="ri-badge">{{ $hook['is_active']?__('restaurant_integrations.active'):__('restaurant_integrations.inactive') }}</span></div>@if($canManageIntegrations)<form method="post" action="{{ route('admin.smart-ordering.integrations.webhooks.status',[$site,$hook['public_id']]) }}">@csrf @if($supportContext)<input type="hidden" name="support_access" value="1">@endif @method('PATCH')<input type="hidden" name="_integration_form" value="webhooks"><input type="hidden" name="active" value="{{ $hook['is_active']?0:1 }}"><button class="foodex-action-secondary button secondary" type="submit">{{ $hook['is_active']?__('restaurant_integrations.disable'):__('restaurant_integrations.enable') }}</button></form>@endif</div>
-@empty<p>{{ __('restaurant_integrations.no_webhooks') }}</p>@endforelse
+
+@forelse
+($webhooks as $hook)<div class="ri-item"><div class="ri-head"><div><strong>{{ $hook['target_url'] }}</strong><div>{{ implode(', ',$hook['event_types']) }}</div></div><span class="ri-badge">{{ $hook['is_active']?__('restaurant_integrations.active'):__('restaurant_integrations.inactive') }}</span></div>
+@if
+($canManageIntegrations)<form method="post" action="{{ route('admin.smart-ordering.integrations.webhooks.status',[$site,$hook['public_id']]) }}">@csrf 
+@if
+($supportContext)<input type="hidden" name="support_access" value="1">
+@endif
+ @method('PATCH')<input type="hidden" name="_integration_form" value="webhooks"><input type="hidden" name="active" value="{{ $hook['is_active']?0:1 }}"><button class="foodex-action-secondary button secondary" type="submit">{{ $hook['is_active']?__('restaurant_integrations.disable'):__('restaurant_integrations.enable') }}</button></form>
+@endif
+</div>
+
+@empty
+<p>{{ __('restaurant_integrations.no_webhooks') }}</p>
+@endforelse
+
 </div></section>
 
 </section>
