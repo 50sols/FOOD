@@ -88,6 +88,21 @@ class DeterministicSetupZipTest(unittest.TestCase):
             with self.assertRaisesRegex(SetupBuildError, "Hard-linked"):
                 build_setup_zip(root, Path(temporary) / "output.zip", SOURCE_DATE_EPOCH)
 
+    def test_canonical_release_factory_reuses_the_verified_zip_writer(self) -> None:
+        # Regression for G004: a green CI-only staging ZIP is not evidence
+        # for a differently serialized canonical release-factory ZIP.
+        repo = Path(__file__).resolve().parents[2]
+        release = (repo / ".github/workflows/release-factory.yml").read_text(encoding="utf-8")
+        staging = (repo / ".github/workflows/v2-setup-staging-acceptance.yml").read_text(encoding="utf-8")
+        setup_job = release.split("\n  setup:\n", 1)[1].split("\n  fresh-install:\n", 1)[0]
+        for workflow in (setup_job, staging):
+            self.assertIn("python3 scripts/v2_build_setup_zip.py", workflow)
+            self.assertIn("--source-root", workflow)
+            self.assertIn("--source-date-epoch", workflow)
+            self.assertIn("cmp ", workflow)
+            self.assertIn("scripts/v2_setup_staging_verify.py", workflow)
+        self.assertNotIn("zip -qr", setup_job)
+
     def test_empty_stage_and_nonportable_timestamps_fail_closed(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary) / "source"
