@@ -45,8 +45,12 @@ body{margin:0;background:var(--foodex-background);color:var(--foodex-ink)}
     </div>
     <div class="system-admin-actions foodex-header-actions">
         <a class="foodex-action-primary" href="{{ route('admin.inspector.index') }}">{{ __('system_admin.actions.inspector') }}</a>
-        <a class="foodex-action-secondary" href="{{ route('admin.system-update.index') }}">{{ __('system_admin.actions.update') }}</a>
-        <a class="foodex-action-secondary" href="{{ route('admin.production-dataset-switch.index') }}">{{ __('system_admin.actions.restore') }}</a>
+        @if($canOpenUpdateCenter)
+            <a class="foodex-action-secondary" href="{{ route('admin.system-update.index') }}">{{ __('system_admin.actions.update') }}</a>
+        @endif
+        @if($canOpenDatasetRecovery)
+            <a class="foodex-action-secondary" href="{{ route('admin.production-dataset-switch.index') }}">{{ __('system_admin.actions.restore') }}</a>
+        @endif
         <a class="foodex-action-secondary" href="{{ route('admin.administration.index') }}">{{ __('system_admin.actions.admin') }}</a>
     </div>
 </div>
@@ -112,7 +116,7 @@ $moduleDashboardFilters = [
             'value'=>count($backupRows),
             'status'=>['state'=>'success','label'=>__('system_admin.states.available')],
             'last_refresh'=>now()->toIso8601String(),
-            'drilldown_url'=>route('admin.system-update.index'),
+            'drilldown_url'=>$canOpenUpdateCenter ? route('admin.system-update.index') : '#backup-history',
         ]])
     </div>
 @endif
@@ -129,7 +133,7 @@ $moduleDashboardFilters = [
             'value'=>$updateRows->count(),
             'status'=>['state'=>'current','label'=>__('system_admin.states.current')],
             'last_refresh'=>now()->toIso8601String(),
-            'drilldown_url'=>route('admin.system-update.index'),
+            'drilldown_url'=>$canOpenUpdateCenter ? route('admin.system-update.index') : '#update-history',
         ]])
     </div>
 @endif
