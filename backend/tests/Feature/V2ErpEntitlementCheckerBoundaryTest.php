@@ -1373,6 +1373,353 @@ final class V2ErpEntitlementCheckerBoundaryTest extends TestCase
         $this->assertSame($auditBefore, DB::table('audit_logs')->count());
     }
 
+
+    public function test_canonical_procurement_global_roles_require_live_account_pivot_and_actual_job_role_permissions(): void
+    {
+        $store = $this->wholesaleStore();
+        $owner = $this->actor('SUPER_ADMIN');
+        app(EnterpriseModuleAdministration::class)->perform('procurement', 'enable', $owner);
+        app(ModuleEntitlementManager::class)->set(
+            'procurement', EntitlementScope::platform(), true, null, $owner,
+        );
+
+        $matrix = [
+            'PROCUREMENT_BUYER' => [true, false, false],
+            'PROCUREMENT_APPROVER' => [false, true, true],
+            'PROCUREMENT_MANAGER' => [true, true, true],
+        ];
+        $permissions = [
+            'procurement.purchase_requests.manage',
+            'procurement.purchase_requests.approve',
+            'procurement.purchase_orders.issue',
+        ];
+        $this->assertContains('PROCUREMENT_BUYER', config('admin.channels.b2b.global_roles'));
+        $this->assertNotContains('PROCUREMENT_BUYER', config('admin.channels.b2c.global_roles'));
+
+        foreach ($matrix as $code => $expected) {
+            $definition = config('job_roles.roles.'.$code);
+            $this->assertIsArray($definition, $code);
+            $this->assertSame('global', $definition['scope'], $code);
+            $this->assertSame('procurement', $definition['domain'], $code);
+            $this->assertContains('procurement', $definition['required_modules'], $code);
+            $role = Role::query()->where('code', $code)->firstOrFail();
+            $this->assertSame('global', $role->scope, $code);
+            $this->assertTrue($role->is_active, $code);
+            $this->assertNull($role->archived_at, $code);
+            $this->assertEqualsCanonicalizing(
+                $definition['permissions'],
+                $role->permissions->pluck('code')->all(),
+                $code.' must use the seeded canonical job_roles grants',
+            );
+
+            $actor = $this->actor($code);
+            $this->assertDatabaseHas('role_user', [
+                'user_id' => $actor->id,
+                'role_id' => $role->id,
+            ]);
+            $this->assertTrue($actor->hasRole($code, $store->id), $code);
+            foreach ($permissions as $index => $permission) {
+                $this->assertSame($expected[$index], $actor->hasPermission($permission, $store->id), $code.':'.$permission);
+            }
+            foreach (['ar' => 'rtl', 'en' => 'ltr'] as $locale => $direction) {
+                $actor->forceFill(['locale' => $locale])->save();
+                $this->actingAs($actor->fresh())->get(route('admin.erp.procurement.index', [
+                    'store_id' => $store->id,
+                    'tab' => 'requests',
+                ]))->assertOk()->assertSee('dir="'.$direction.'"', false);
+            }
+        }
+
+        // A seeded role/catalog entry with no actual role_user assignment does
+        // not grant an otherwise active and authenticated account any access.
+        $unassigned = User::factory()->create(['is_active' => true, 'locale' => 'en']);
+        $this->assertFalse($unassigned->hasRole('PROCUREMENT_BUYER', $store->id));
+        $this->assertFalse($unassigned->hasPermission('procurement.purchase_requests.view', $store->id));
+        $before = DB::table('enterprise_purchase_requests')->count();
+        $auditBefore = DB::table('audit_logs')->count();
+        $this->actingAs($unassigned)->get(route('admin.erp.procurement.index', [
+            'store_id' => $store->id,
+            'tab' => 'requests',
+        ]))->assertForbidden();
+        $this->actingAs($unassigned)->post(route('admin.erp.procurement.requests.store'), [
+            'store_id' => $store->id,
+            'currency_code' => 'KWD',
+            'reason' => 'P111 no linked global role',
+            'description' => 'Forbidden without actual assignment',
+            'quantity' => '1.000',
+            'unit' => 'case',
+        ])->assertForbidden();
+        $this->assertSame($before, DB::table('enterprise_purchase_requests')->count());
+        $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+    }
+
+    public function test_wholesale_global_role_and_retail_store_role_cannot_cross_channel_or_forge_assignment(): void
+    {
+        $this->app['env'] = 'production';
+        $csrfToken = 'p111-role-channel-boundary-csrf';
+        $this->withSession(['_token' => $csrfToken])->withHeader('X-CSRF-TOKEN', $csrfToken);
+        $wholesaleA = $this->wholesaleStore();
+        $wholesaleB = Store::query()->create([
+            'store_type_id' => $wholesaleA->store_type_id,
+            'code' => 'P111-GLOBAL-B2B-B',
+            'name' => 'P111 B2B other store',
+            'is_active' => true,
+        ]);
+        app(OrganizationHierarchyService::class)->ensureDefaultScopeForStore($wholesaleB);
+        $retailType = (int) DB::table('store_types')->where('code', 'B2C')->value('id');
+        $retailA = Store::query()->create([
+            'store_type_id' => $retailType,
+            'code' => 'P111-ROLE-B2C-A',
+            'name' => 'P111 assigned Retail A',
+            'is_active' => true,
+        ]);
+        $retailB = Store::query()->create([
+            'store_type_id' => $retailType,
+            'code' => 'P111-ROLE-B2C-B',
+            'name' => 'P111 unassigned Retail B',
+            'is_active' => true,
+        ]);
+        $owner = $this->actor('SUPER_ADMIN');
+        $buyer = $this->actor('PROCUREMENT_BUYER');
+        $retailOnly = User::factory()->create(['is_active' => true, 'locale' => 'en']);
+        $wrongScope = User::factory()->create(['is_active' => true, 'locale' => 'en']);
+        $buyer->storeRoleAssignments()->create([
+            'store_id' => $retailA->id,
+            'role_id' => Role::query()->where('code', 'RETAIL_FINANCE')->firstOrFail()->id,
+        ]);
+        $retailOnly->storeRoleAssignments()->create([
+            'store_id' => $retailA->id,
+            'role_id' => Role::query()->where('code', 'B2C_STORE_ADMIN')->firstOrFail()->id,
+        ]);
+        // Even a forged store-role pivot pointing to a GLOBAL Procurement
+        // role must not be interpreted as a valid STORE-scoped assignment.
+        $wrongScope->storeRoleAssignments()->create([
+            'store_id' => $retailB->id,
+            'role_id' => Role::query()->where('code', 'PROCUREMENT_BUYER')->firstOrFail()->id,
+        ]);
+        app(EnterpriseModuleAdministration::class)->perform('procurement', 'enable', $owner);
+        $entitlements = app(ModuleEntitlementManager::class);
+        $entitlements->set('procurement', EntitlementScope::platform(), true, null, $owner);
+        $entitlements->set(
+            'procurement', new EntitlementScope(EntitlementScope::STORE, $wholesaleB->id),
+            false, null, $owner,
+        );
+        $this->assertTrue($buyer->hasRole('PROCUREMENT_BUYER', $wholesaleA->id));
+        $this->assertFalse($buyer->hasRole('PROCUREMENT_BUYER', $retailA->id));
+        $this->assertFalse($wrongScope->hasRole('PROCUREMENT_BUYER', $retailB->id));
+        $this->assertFalse($wrongScope->hasPermission('procurement.purchase_requests.view', $retailB->id));
+        $this->assertFalse($retailOnly->hasPermission('procurement.purchase_requests.view', $retailA->id));
+
+        $requestsBefore = DB::table('enterprise_purchase_requests')->count();
+        $auditBefore = DB::table('audit_logs')->count();
+        foreach (['ar' => 'rtl', 'en' => 'ltr'] as $locale => $direction) {
+            foreach ([$buyer, $retailOnly, $wrongScope] as $actor) {
+                $actor->forceFill(['locale' => $locale])->save();
+            }
+            $this->actingAs($buyer->fresh())->get(route('admin.erp.procurement.index', [
+                'store_id' => $wholesaleA->id, 'tab' => 'requests',
+            ]))->assertOk()->assertSee('dir="'.$direction.'"', false);
+
+            foreach ([$wholesaleB->id, $retailA->id, $retailB->id] as $forbiddenStoreId) {
+                $this->actingAs($buyer->fresh())->get(route('admin.erp.procurement.index', [
+                    'store_id' => $forbiddenStoreId, 'tab' => 'requests',
+                ]))->assertForbidden();
+                $this->actingAs($buyer->fresh())->post(route('admin.erp.procurement.requests.store'), [
+                    'store_id' => $forbiddenStoreId,
+                    'currency_code' => 'KWD',
+                    'reason' => 'P111 denied wholesale/retail crossover',
+                    'description' => 'Never create outside authorized store',
+                    'quantity' => '1.000',
+                    'unit' => 'case',
+                ])->assertForbidden();
+            }
+            foreach ([
+                [$retailOnly, $retailA->id],
+                [$retailOnly, $retailB->id],
+                [$retailOnly, $wholesaleA->id],
+                [$wrongScope, $retailB->id],
+            ] as [$actor, $forbiddenStoreId]) {
+                $this->actingAs($actor->fresh())->get(route('admin.erp.procurement.index', [
+                    'store_id' => $forbiddenStoreId, 'tab' => 'requests',
+                ]))->assertForbidden();
+            }
+        }
+        $this->assertSame($requestsBefore, DB::table('enterprise_purchase_requests')->count());
+        $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+    }
+
+    public function test_inactive_archived_procurement_identity_and_archived_global_role_are_denied_with_audit_unchanged(): void
+    {
+        $store = $this->wholesaleStore();
+        $owner = $this->actor('SUPER_ADMIN');
+        app(EnterpriseModuleAdministration::class)->perform('procurement', 'enable', $owner);
+        app(ModuleEntitlementManager::class)->set(
+            'procurement', EntitlementScope::platform(), true, null, $owner,
+        );
+        $archivedIdentity = $this->actor('PROCUREMENT_MANAGER');
+        $archivedIdentity->forceFill([
+            'archived_at' => now(),
+            'is_active' => true,
+        ])->save();
+        $this->assertTrue($archivedIdentity->hasRole('PROCUREMENT_MANAGER', $store->id));
+        // Historical role remains linked, but archive must deny actual HTTP.
+        $role = Role::query()->where('code', 'PROCUREMENT_BUYER')->firstOrFail();
+        $archivedRoleUser = $this->actor('PROCUREMENT_BUYER');
+        $role->forceFill(['is_active' => false, 'archived_at' => now()])->save();
+        $this->assertDatabaseHas('role_user', [
+            'user_id' => $archivedRoleUser->id, 'role_id' => $role->id,
+        ]);
+        $this->assertFalse($archivedRoleUser->fresh()->hasRole('PROCUREMENT_BUYER', $store->id));
+        $this->assertFalse($archivedRoleUser->fresh()->hasPermission('procurement.purchase_requests.view', $store->id));
+        $inactive = $this->actor('PROCUREMENT_APPROVER');
+        $inactive->forceFill(['is_active' => false, 'deactivated_at' => now()])->save();
+        $this->assertFalse($inactive->fresh()->hasPermission('procurement.purchase_requests.approve', $store->id));
+        $requestsBefore = DB::table('enterprise_purchase_requests')->count();
+        $auditBefore = DB::table('audit_logs')->count();
+        foreach (['ar', 'en'] as $locale) {
+            foreach ([$archivedIdentity, $archivedRoleUser, $inactive] as $user) {
+                $user->forceFill(['locale' => $locale])->save();
+                $this->actingAs($user->fresh())->get(route('admin.erp.procurement.index', [
+                    'store_id' => $store->id, 'tab' => 'requests',
+                ]))->assertForbidden();
+                $this->actingAs($user->fresh())->post(route('admin.erp.procurement.requests.store'), [
+                    'store_id' => $store->id,
+                    'currency_code' => 'KWD',
+                    'reason' => 'P111 inactive or archived role denies writes',
+                    'description' => 'Historical assignments cannot authorize writes',
+                    'quantity' => '1.000',
+                    'unit' => 'case',
+                ])->assertForbidden();
+            }
+        }
+        $this->assertSame($requestsBefore, DB::table('enterprise_purchase_requests')->count());
+        $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+    }
+
+    public function test_multi_role_maker_checker_cannot_self_approve_or_issue_po_with_explicit_global_deny(): void
+    {
+        $this->app['env'] = 'production';
+        $csrfToken = 'p111-multi-role-maker-checker-csrf';
+        $this->withSession(['_token' => $csrfToken])->withHeader('X-CSRF-TOKEN', $csrfToken);
+        $store = $this->wholesaleStore();
+        $owner = $this->actor('SUPER_ADMIN');
+        $maker = $this->actor('PROCUREMENT_MANAGER');
+        $checker = $this->actor('PROCUREMENT_APPROVER');
+        $buyerOnly = $this->actor('PROCUREMENT_BUYER');
+        foreach (['PROCUREMENT_BUYER', 'PROCUREMENT_APPROVER'] as $code) {
+            $maker->roles()->syncWithoutDetaching([
+                Role::query()->where('code', $code)->firstOrFail()->id,
+            ]);
+        }
+        app(EnterpriseModuleAdministration::class)->perform('procurement', 'enable', $owner);
+        app(ModuleEntitlementManager::class)->set(
+            'procurement', EntitlementScope::platform(), true, null, $owner,
+        );
+        $maker = $maker->fresh();
+        $this->assertTrue($maker->hasPermission('procurement.purchase_requests.approve', $store->id));
+        $this->assertTrue($maker->hasPermission('procurement.purchase_orders.issue', $store->id));
+        $this->assertFalse($buyerOnly->hasPermission('procurement.purchase_orders.issue', $store->id));
+
+        $context = app(TenantContextResolver::class)->wholesale($maker, $store->id);
+        $supplier = app(SupplierDirectory::class)->create($maker, $context, [
+            'scope_type' => 'store',
+            'code' => 'P111-SOD-GLOBAL-MULTIROLE',
+            'name_en' => 'P111 separated duties supplier',
+        ]);
+        $requests = app(PurchaseRequestManager::class);
+        $purchaseRequest = $requests->create($maker, $context, [
+            'supplier_id' => $supplier->id,
+            'currency_code' => 'KWD',
+            'reason' => 'P111 manager dual role independent maker checker',
+            'lines' => [[
+                'item_code' => 'P111-SOD-SKU',
+                'description' => 'P111 maker checker witness',
+                'quantity' => 1,
+                'unit' => 'case',
+                'estimated_unit_cost' => 1.250,
+            ]],
+        ]);
+        $requests->submit($maker, $context, $purchaseRequest->id);
+        $this->assertDatabaseHas('enterprise_purchase_requests', [
+            'id' => $purchaseRequest->id,
+            'status' => 'submitted',
+            'created_by' => $maker->id,
+            'submitted_by' => $maker->id,
+        ]);
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            $maker->forceFill(['locale' => $locale])->save();
+            $this->actingAs($maker->fresh())->post(route('admin.erp.procurement.requests.decision', $purchaseRequest->id), [
+                'store_id' => $store->id,
+                'decision' => 'approve',
+            ])->assertSessionHasErrors('decision');
+        }
+        $this->assertDatabaseHas('enterprise_purchase_requests', [
+            'id' => $purchaseRequest->id, 'status' => 'submitted', 'decided_by' => null,
+        ]);
+        $this->assertSame(0, DB::table('audit_logs')
+            ->where('event', 'enterprise.purchase_request.approved')
+            ->where('auditable_id', $purchaseRequest->id)
+            ->count());
+
+        $this->actingAs($checker->fresh())->post(route('admin.erp.procurement.requests.decision', $purchaseRequest->id), [
+            'store_id' => $store->id, 'decision' => 'approve',
+        ])->assertRedirect();
+        $this->assertDatabaseHas('enterprise_purchase_requests', [
+            'id' => $purchaseRequest->id, 'status' => 'approved', 'decided_by' => $checker->id,
+        ]);
+        $this->assertSame(1, DB::table('audit_logs')
+            ->where('event', 'enterprise.purchase_request.approved')
+            ->where('auditable_id', $purchaseRequest->id)
+            ->count());
+
+        $this->actingAs($maker->fresh())->post(route('admin.erp.procurement.orders.create', $purchaseRequest->id), [
+            'store_id' => $store->id,
+        ])->assertRedirect();
+        $order = DB::table('enterprise_purchase_orders')->where('purchase_request_id', $purchaseRequest->id)->first();
+        $this->assertNotNull($order);
+        $this->assertSame('draft', $order->status);
+        $permission = Permission::query()->where('code', 'procurement.purchase_orders.issue')->firstOrFail();
+        DB::table('user_permission_overrides')->insert([
+            'user_id' => $maker->id,
+            'permission_id' => $permission->id,
+            'scope_key' => 'global',
+            'store_id' => null,
+            'effect' => 'deny',
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        $maker->forceFill(['has_permission_overrides' => true])->save();
+        $this->assertFalse($maker->fresh()->hasPermission('procurement.purchase_orders.issue', $store->id));
+
+        $auditBeforeForbiddenIssue = DB::table('audit_logs')->count();
+        foreach ([$buyerOnly, $maker] as $actor) {
+            $this->actingAs($actor->fresh())->post(route('admin.erp.procurement.orders.issue', $order->id), [
+                'store_id' => $store->id,
+            ])->assertForbidden();
+        }
+        $this->assertDatabaseHas('enterprise_purchase_orders', [
+            'id' => $order->id, 'status' => 'draft', 'issued_by' => null,
+        ]);
+        $this->assertSame($auditBeforeForbiddenIssue, DB::table('audit_logs')->count());
+        $this->assertSame(0, DB::table('audit_logs')
+            ->where('event', 'enterprise.purchase_order.issued')
+            ->where('auditable_id', $order->id)
+            ->count());
+
+        $this->actingAs($checker->fresh())->post(route('admin.erp.procurement.orders.issue', $order->id), [
+            'store_id' => $store->id,
+        ])->assertRedirect();
+        $this->assertDatabaseHas('enterprise_purchase_orders', [
+            'id' => $order->id, 'status' => 'issued', 'issued_by' => $checker->id,
+        ]);
+        $this->assertSame(1, DB::table('audit_logs')
+            ->where('event', 'enterprise.purchase_order.issued')
+            ->where('auditable_id', $order->id)
+            ->count());
+    }
+
     private function wholesaleStore(): Store
     {
         $store = Store::query()->findOrFail(app(WholesalePrincipal::class)->storeId());
