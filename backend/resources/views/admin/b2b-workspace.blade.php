@@ -605,18 +605,37 @@
       @endif
 
       @if($module==='settings' && $user->hasPermission('settings.manage'))
-      <form method="post" action="{{ route('admin.b2b.settings.pricing-tiers') }}" class="links workspace-inline-form" style="align-items:center">
-        @csrf @method('put')
-        <input type="hidden" name="enabled" value="0">
-        <label style="display:flex;align-items:center;gap:8px">
-          <input type="checkbox" name="enabled" value="1" @checked((bool)($moduleData['pricing_tiers_enabled'] ?? false))>
-          <span>{{ app()->getLocale()==='ar'?'تفعيل شرائح التسعير':'Enable pricing tiers' }}</span>
-        </label>
-        <span class="muted">{{ app()->getLocale()==='ar'
-            ? 'عند الإيقاف يستخدم جميع عملاء الجملة سعر المنتج الأساسي.'
-            : 'When disabled, every Wholesale customer uses the product base price.' }}</span>
-        <button class="foodex-primary" type="submit">{{ app()->getLocale()==='ar'?'حفظ وضع التسعير':'Save pricing mode' }}</button>
-      </form>
+      @php
+        $tiersEnabled = (bool) ($moduleData['pricing_tiers_enabled'] ?? false);
+        $activeTierRules = (int) ($moduleData['pricing_active_rule_count'] ?? 0);
+      @endphp
+      <section class="foodex-card" data-v2-stage2-pricing-setup aria-labelledby="b2b-pricing-setup-heading" style="padding:16px;margin-block:12px">
+        <h2 id="b2b-pricing-setup-heading">{{ __('b2b_pricing_setup.title') }}</h2>
+        <p class="muted">{{ __('b2b_pricing_setup.purpose') }}</p>
+        <p role="status" aria-live="polite" data-v2-pricing-setup-readiness data-readiness-state="{{ ! $tiersEnabled ? 'base-price' : ($activeTierRules === 0 ? 'action-required' : 'partial-review') }}">
+          <strong>{{ __('b2b_pricing_setup.readiness') }}:</strong>
+          {{ ! $tiersEnabled ? __('b2b_pricing_setup.mode_base') : ($activeTierRules === 0 ? __('b2b_pricing_setup.mode_missing') : __('b2b_pricing_setup.mode_partial')) }}
+        </p>
+        <details>
+          <summary>{{ __('b2b_pricing_setup.help') }}</summary>
+          <p>{{ __('b2b_pricing_setup.source') }}</p>
+          <p>{{ __('b2b_pricing_setup.example') }}</p>
+          <p>{{ __('b2b_pricing_setup.default') }}</p>
+          <p>{{ __('b2b_pricing_setup.validation') }}</p>
+          <p>{{ __('b2b_pricing_setup.permissions') }}</p>
+          <p>{{ __('b2b_pricing_setup.test_help') }}</p>
+        </details>
+        <form method="post" action="{{ route('admin.b2b.settings.pricing-tiers') }}" class="links workspace-inline-form" style="align-items:center">
+          @csrf @method('put')
+          <input type="hidden" name="enabled" value="0">
+          <label style="display:flex;align-items:center;gap:8px">
+            <input type="checkbox" name="enabled" value="1" @checked($tiersEnabled)>
+            <span>{{ __('b2b_pricing_setup.toggle') }}</span>
+          </label>
+          <button class="foodex-primary" type="submit" name="setup_action" value="test">{{ __('b2b_pricing_setup.test') }}</button>
+          <button class="foodex-primary" type="submit" name="setup_action" value="save">{{ __('b2b_pricing_setup.save') }}</button>
+        </form>
+      </section>
       <form method="post" action="{{ route('admin.b2b.settings.save') }}" class="links workspace-inline-form">
         @csrf @method('put')
         <input name="key" required maxlength="255" placeholder="wholesale.setting.key">

@@ -820,10 +820,25 @@ class B2bWorkspaceController extends Controller
         $actor = $this->actor($request);
         $data = $request->validate([
             'enabled' => ['required', 'boolean'],
+            'setup_action' => ['sometimes', 'in:save,test'],
         ]);
         $storeId = $this->principal->storeId();
         $this->operationalScope->assertStore($actor, $storeId, 'settings.manage', 'b2b');
         $enabled = (bool) $data['enabled'];
+
+        // Server-side Test uses the same authorized Wholesale store scope,
+        // without saving settings or claiming pricing/credit/margin certification.
+        if (($data['setup_action'] ?? 'save') === 'test') {
+            $hasActiveRules = DB::table('b2b_price_rules')
+                ->where('store_id', $storeId)
+                ->where('is_active', true)
+                ->exists();
+
+            return back()->with('status', __(
+                ! $enabled ? 'b2b_pricing_setup.test_base'
+                    : ($hasActiveRules ? 'b2b_pricing_setup.test_partial' : 'b2b_pricing_setup.test_missing')
+            ));
+        }
 
         DB::table('settings')->updateOrInsert(
             ['store_id' => $storeId, 'key' => B2bPricingMode::SETTING_KEY],
@@ -1209,6 +1224,10 @@ class B2bWorkspaceController extends Controller
                 ])->all(),
             'actions' => $actions,
             'pricing_tiers_enabled' => $this->pricingMode->tiersEnabled($this->principal->storeId()),
+            'pricing_active_rule_count' => DB::table('b2b_price_rules')
+                ->where('store_id', $this->principal->storeId())
+                ->where('is_active', true)
+                ->count(),
         ];
     }
 
