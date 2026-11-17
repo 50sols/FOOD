@@ -203,7 +203,6 @@ final class V2WhatsAppSettingsReadinessTabsTest extends TestCase
         $this->assertSame($before, $profile->fresh()->configuration_revision);
     }
 
-
     public function test_provider_test_errors_are_generic_and_localized_with_no_raw_diagnostic_flash(): void
     {
         foreach (['en', 'ar'] as $locale) {
@@ -234,5 +233,4 @@ final class V2WhatsAppSettingsReadinessTabsTest extends TestCase
             $this->assertNull($profile->fresh()->last_outbound_at);
         }
     }
-
 }
