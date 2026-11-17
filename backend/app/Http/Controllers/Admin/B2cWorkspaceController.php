@@ -107,6 +107,12 @@ class B2cWorkspaceController extends Controller
         $businessProfile = $this->businessProfiles->resolve($storeId) ?? StoreBusinessProfile::RETAIL_STORE;
         abort_unless($this->moduleAllowedForProfile($module, $businessProfile), 404);
         $this->authorizeModule($user, $module, $storeId);
+        // Dashboard tabs are GET-only presentation context, never a route/store selector.
+        // Reject array/object query shapes before Blade can cast them into a warning/500.
+        if ($module === 'dashboard') {
+            abort_unless(is_string($request->query('dashboard_tab', 'overview')), 404);
+        }
+
         $storeIds = [$storeId];
         $availableStores = $workspace['stores'];
         $supportAccess = $workspace['support_access'];
