@@ -16,6 +16,24 @@ use SodiumException;
 final class ModuleWorkflowAttestation
 {
     /**
+     * Bind a workflow signature to the complete canonical module contract,
+     * including required core, hard/optional dependencies, capabilities,
+     * permissions and health-check definitions. A version number alone
+     * cannot detect a silently changed manifest.
+     */
+    public static function manifestSha256(ModuleManifest $manifest): ?string
+    {
+        try {
+            return hash('sha256', json_encode(
+                $manifest->toArray(),
+                JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE,
+            ));
+        } catch (JsonException) {
+            return null;
+        }
+    }
+
+    /**
      * @param  array<array-key, mixed>  $stages
      * @param  array<string, mixed>  $attestation
      */
@@ -23,6 +41,7 @@ final class ModuleWorkflowAttestation
     {
         $keyId = $attestation['key_id'] ?? null;
         $sha = $attestation['head_sha'] ?? null;
+        $manifestSha256 = $attestation['manifest_sha256'] ?? null;
         $reviewIssue = $attestation['review_issue'] ?? null;
         $ciRun = $attestation['ci_run'] ?? null;
         $checks = $attestation['checks'] ?? null;
@@ -30,6 +49,7 @@ final class ModuleWorkflowAttestation
         if ($moduleCode === '' || $version < 1 || ($attestation['version'] ?? null) !== $version
             || ! is_string($keyId) || preg_match('/^[a-zA-Z0-9_.-]{1,64}$/D', $keyId) !== 1
             || ! is_string($sha) || preg_match('/^[a-f0-9]{40}$/iD', $sha) !== 1
+            || ! is_string($manifestSha256) || preg_match('/^[a-f0-9]{64}$/D', $manifestSha256) !== 1
             || ! is_int($reviewIssue) || $reviewIssue < 1
             || ! is_string($ciRun)
             || preg_match('~^https://github\.com/walidatiyaai2025-gif/FOOD/actions/runs/[1-9][0-9]*$~D', $ciRun) !== 1
@@ -61,6 +81,7 @@ final class ModuleWorkflowAttestation
                 'key_id' => $keyId,
                 'version' => $version,
                 'head_sha' => $sha,
+                'manifest_sha256' => $manifestSha256,
                 'review_issue' => $reviewIssue,
                 'ci_run' => $ciRun,
                 'checks' => $orderedChecks,
