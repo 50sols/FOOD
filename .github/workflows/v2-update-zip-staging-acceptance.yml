@@ -247,6 +247,29 @@ jobs:
           $mustReject(static fn () => $verifier->verify($changedManifest, $keyId, $signature, [$keyId => $public]), 'changed signed target version');
           echo "PASS: actual source ZIP digest and test-only ephemeral Ed25519 allow/deny; no release signing\n";
           PHP
+      - name: Run exact Update ZIP through Admin signature and MySQL recovery
+        shell: bash
+        run: |
+          set -euo pipefail
+          MYSQL_PWD=foodex_ci_only mysql -h 127.0.0.1 -uroot \
+            -e 'CREATE DATABASE IF NOT EXISTS foodex_acceptance CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci'
+          composer install --working-dir backend --no-interaction --prefer-dist --no-progress
+          cp backend/.env.example backend/.env
+          cd backend
+          export DB_CONNECTION=mysql
+          export DB_HOST=127.0.0.1
+          export DB_PORT=3306
+          export DB_DATABASE=foodex_acceptance
+          export DB_USERNAME=root
+          export DB_PASSWORD=foodex_ci_only
+          export CACHE_STORE=array
+          export SESSION_DRIVER=array
+          export QUEUE_CONNECTION=sync
+          export FOODEX_DISPOSABLE_SERVICES=true
+          export FOODEX_ACTUAL_UPDATE_ZIP="$GITHUB_WORKSPACE/dist/update/FOODEX-Update.zip"
+          export FOODEX_ACTUAL_UPDATE_SHA256="$(sha256sum "$FOODEX_ACTUAL_UPDATE_ZIP" | cut -d' ' -f1)"
+          php artisan key:generate --force
+          php artisan test --filter=test_actual_source_update_zip_rejects_wrong_key_and_restores_after_health_failure
       - name: Upgrade real disposable v125 MySQL dataset with EXACT generated ZIP
         shell: bash
         run: |
