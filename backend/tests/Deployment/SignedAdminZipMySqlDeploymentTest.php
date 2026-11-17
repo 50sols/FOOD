@@ -4,11 +4,14 @@ namespace Tests\Deployment;
 
 use App\Domain\Updater\LaravelUpdateRuntime;
 use App\Domain\Updater\TrustedUpdateSignatureVerifier;
+use App\Domain\Updater\UpdateManager;
 use App\Domain\Updater\UpdatePackageManifest;
+use App\Domain\Updater\UpdatePackageValidator;
 use App\Domain\Updater\UpdateRuntime;
 use App\Models\Role;
 use App\Models\UpdateHistory;
 use App\Models\User;
+use App\Services\AuditLogger;
 use Database\Seeders\CoreReferenceSeeder;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\Artisan;
@@ -243,6 +246,11 @@ PHP;
 
             $faultRuntime = $this->failAfterApplyRuntime($email);
             app()->instance(UpdateRuntime::class, $faultRuntime);
+            app()->instance(UpdateManager::class, new UpdateManager(
+                app(UpdatePackageValidator::class),
+                $faultRuntime,
+                app(AuditLogger::class),
+            ));
 
             $this->signedPost($user, $pair, $keyId, $archivePath, '1.0.127', '1.0.125', true)
                 ->assertRedirect(route('admin.system-update.index'))
@@ -266,7 +274,11 @@ PHP;
             $this->assertSame(
                 'passed',
                 $history->execution_evidence['rollback_files'] ?? null,
-                'File rollback diagnostic: '.($faultRuntime->rollbackFilesFailure ?? 'no exception was captured.'),
+                sprintf(
+                    'File rollback diagnostic: called=%s; %s',
+                    $faultRuntime->rollbackFilesCalled ? 'yes' : 'no',
+                    $faultRuntime->rollbackFilesFailure ?? 'no exception was captured.',
+                ),
             );
             $this->assertSame('passed', $history->execution_evidence['rollback_database'] ?? null);
             $this->assertSame('passed', $history->execution_evidence['rollback_health_check'] ?? null);
@@ -295,6 +307,8 @@ PHP;
         return new class($runtime, $email) implements UpdateRuntime
         {
             private bool $healthFailureInjected = false;
+
+            public bool $rollbackFilesCalled = false;
 
             public ?string $rollbackFilesFailure = null;
 
@@ -357,6 +371,8 @@ PHP;
 
             public function rollbackFiles(string $backupReference): void
             {
+                $this->rollbackFilesCalled = true;
+
                 try {
                     $this->runtime->rollbackFiles($backupReference);
                 } catch (Throwable $exception) {
