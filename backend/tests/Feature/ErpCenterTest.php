@@ -1084,7 +1084,7 @@ final class ErpCenterTest extends TestCase
                 'code' => 'P135-MIXED-ROLE-UNAUTHORIZED',
                 'name_en' => 'Denied mixed-role supplier',
                 'name_ar' => 'مورد غير مصرح',
-            ]))->assertForbidden();
+            ])->assertForbidden();
         }
 
         $this->assertDatabaseMissing('enterprise_suppliers', [
