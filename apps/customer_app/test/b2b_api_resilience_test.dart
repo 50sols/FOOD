@@ -800,6 +800,8 @@ void main() {
       () async {
     for (final locale in ['ar', 'en']) {
       for (final payload in [
+        '{"data":[]}', // absent server scope must not impersonate no invoices
+        '{"data":[{"id":31,"store_id":7}]}', // matching rows do not replace filter proof
         '{"data":[],"filters":{"store_id":99}}',
         '{"data":[],"filters":{"store_id":"7"}}',
         '{"data":[],"filters":{"store_id":null}}',
