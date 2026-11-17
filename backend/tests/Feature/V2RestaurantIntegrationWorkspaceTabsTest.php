@@ -36,7 +36,10 @@ final class V2RestaurantIntegrationWorkspaceTabsTest extends TestCase
                     ->assertSee('dir="'.($locale === 'ar' ? 'rtl' : 'ltr').'"', false)
                     ->assertSee('data-integration-workspace-tabs', false)
                     ->assertSee('id="ri-panel-'.$tab.'"', false)
-                    ->assertSee('data-ri-active-panel', false);
+                    ->assertSee('data-ri-active-panel', false)
+                    ->assertSee('id="ri-tab-'.$tab.'" class="foodex-tab active"', false)
+                    ->assertSee('role="region" aria-labelledby="ri-tab-'.$tab.'"', false)
+                    ->assertDontSee('class="ri-tab-panel" role="tabpanel"', false);
 
                 foreach (array_diff($tabs, [$tab]) as $other) {
                     $response->assertDontSee('id="ri-panel-'.$other.'"', false);
@@ -54,6 +57,21 @@ final class V2RestaurantIntegrationWorkspaceTabsTest extends TestCase
                 }
             }
         }
+    }
+
+    public function test_native_link_navigation_has_scrollable_single_row_focus_style_and_no_false_tab_widget_roles(): void
+    {
+        $blade = (string) file_get_contents(resource_path('views/admin/smart-ordering-integrations.blade.php'));
+
+        $this->assertStringContainsString('.ri-workspace-tabs{display:flex;flex-wrap:nowrap;', $blade);
+        $this->assertStringContainsString('overflow-x:auto;', $blade);
+        $this->assertStringContainsString('min-width:0;padding-block:8px;', $blade);
+        $this->assertStringContainsString('.ri-workspace-tabs .foodex-tab:focus-visible{outline:', $blade);
+        $this->assertStringContainsString("aria-current=\"page\"", $blade);
+        $this->assertStringNotContainsString('role="tablist"', $blade);
+        $this->assertStringNotContainsString('role="tab"', $blade);
+        $this->assertStringNotContainsString('aria-selected=', $blade);
+        $this->assertStringContainsString('class="ri-tab-panel" role="region"', $blade);
     }
 
     public function test_malformed_tab_falls_back_without_privilege_change_and_log_filters_keep_context(): void
