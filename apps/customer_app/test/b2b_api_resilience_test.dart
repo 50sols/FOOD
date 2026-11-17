@@ -4,6 +4,49 @@ import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 
 void main() {
+  test('B2B scoped empty statement rejects foreign envelope in AR/EN', () async {
+    for (final language in ['ar', 'en']) {
+      for (final statementStore in [99, 7, null]) {
+        var requests = 0;
+        final api = HttpB2bApi(
+          baseUrl: 'https://foodex.example',
+          token: 'scoped-token',
+          locale: language,
+          retailStoreContextId: 17,
+          maxGetAttempts: 3,
+          client: MockClient((request) async {
+            requests++;
+            expect(request.method, 'GET');
+            expect(request.url.path, '/api/v1/b2b/account-statement');
+            expect(request.url.queryParameters['store_id'], '7');
+            expect(request.headers['Authorization'], 'Bearer scoped-token');
+            expect(request.headers['X-FOODEX-Customer-Domain'], 'b2b');
+            expect(request.headers['X-FOODEX-Retail-Store-ID'], '17');
+            expect(request.headers['Accept-Language'], language);
+            return http.Response(
+              '{"data":{"store_id":${statementStore == null ? 'null' : statementStore},"transactions":[],"closing_balance":-39.875,"currency":"KWD"}}',
+              200,
+              headers: {'content-type': 'application/json'},
+            );
+          }),
+        );
+
+        final response = api.get('/api/v1/b2b/account-statement?store_id=7');
+        if (statementStore == 99) {
+          await expectLater(
+            response,
+            throwsA(isA<B2bApiException>()
+                .having((error) => error.code, 'code', 'invalid_response')),
+          );
+        } else {
+          expect((await response as Map)['data'], isA<Map>());
+        }
+        // A successful but scope-contradictory HTTP 200 is not transient.
+        expect(requests, 1);
+      }
+    }
+  });
+
   test(
       'Invoice detail GET retries only transient HTTP failures with stable scope',
       () async {
