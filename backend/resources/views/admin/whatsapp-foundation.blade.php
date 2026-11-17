@@ -37,15 +37,17 @@
             <a class="foodex-tab {{ $activeTab === 'controls' ? 'active' : '' }}" href="{{ route('admin.whatsapp.index', ['tab' => 'controls']) }}" @if($activeTab === 'controls') aria-current="page" @endif>{{ __('whatsapp.capabilities') }}</a>
             @endif
         </nav>
-        <div data-whatsapp-panel="readiness" @if($activeTab !== 'readiness') hidden @endif>
+        @if($activeTab === 'readiness')
+        <div data-whatsapp-panel="readiness">
         <section class="panel" aria-labelledby="module-status">
             <h2 id="module-status">{{ __('whatsapp.status') }}</h2>
             <p data-whatsapp-lifecycle="{{ $state->lifecycle->value }}">{{ __('whatsapp.states.'.$state->lifecycle->value) }}</p>
             <h3>{{ __('whatsapp.readiness') }}</h3><p>{{ __('whatsapp.'.($certified ? 'certified' : 'uncertified')) }}</p>
         </section>
         </div>
-        @if($state->available)
-        <div data-whatsapp-panel="controls" @if($activeTab !== 'controls') hidden @endif>
+        @endif
+        @if($state->available && $activeTab === 'controls')
+        <div data-whatsapp-panel="controls">
         @if(auth()->user()->hasRole('SUPER_ADMIN'))
         <section class="panel">
             <h2>{{ __('whatsapp.emergency') }}</h2><p>{{ __('whatsapp.emergency_hint') }}</p>
