@@ -482,16 +482,46 @@
       @endif
 
       @if($module==='clients' && $user->hasPermission('b2b.accounts.manage'))
-      <form method="post" action="{{ route('admin.b2b.clients.store') }}" class="links workspace-inline-form">
-        @csrf
-        <input name="company_name" required maxlength="255" placeholder="{{ app()->getLocale()==='ar'?'اسم الشركة':'Company name' }}">
-        <input name="name" required maxlength="255" placeholder="{{ app()->getLocale()==='ar'?'اسم مسؤول الحساب':'Account contact' }}">
-        <input name="email" type="email" required maxlength="255" placeholder="{{ app()->getLocale()==='ar'?'البريد الإلكتروني':'Email' }}">
-        <input name="phone" maxlength="50" placeholder="{{ app()->getLocale()==='ar'?'الهاتف':'Phone' }}">
-        <input name="tax_number" maxlength="100" placeholder="{{ app()->getLocale()==='ar'?'الرقم الضريبي':'Tax number' }}">
-        <input name="password" type="password" required minlength="8" placeholder="{{ app()->getLocale()==='ar'?'كلمة المرور المؤقتة':'Temporary password' }}">
-        <button class="foodex-primary" type="submit">{{ app()->getLocale()==='ar'?'إنشاء عميل جملة':'Create wholesale client' }}</button>
-      </form>
+      <section class="foodex-card" data-v2-stage2-customer-setup aria-labelledby="b2b-customer-setup-title" style="padding:16px;margin-block:12px">
+        <h2 id="b2b-customer-setup-title">{{ __('b2b_customer_setup.title') }}</h2>
+        <p class="muted">{{ __('b2b_customer_setup.purpose') }}</p>
+        <p role="status" data-v2-customer-setup-readiness data-readiness-state="needs-approval">
+          <strong>{{ __('b2b_customer_setup.readiness') }}:</strong>
+          {{ __('b2b_customer_setup.status') }}
+        </p>
+        <details>
+          <summary>{{ __('b2b_customer_setup.help') }}</summary>
+          <p>{{ __('b2b_customer_setup.source') }}</p>
+          <p>{{ __('b2b_customer_setup.example') }}</p>
+          <p>{{ __('b2b_customer_setup.default') }}</p>
+          <p>{{ __('b2b_customer_setup.validation') }}</p>
+          <p>{{ __('b2b_customer_setup.permissions') }}</p>
+          <p>{{ __('b2b_customer_setup.test_help') }}</p>
+        </details>
+        <form method="post" action="{{ route('admin.b2b.clients.store') }}" class="links workspace-inline-form" style="align-items:end">
+          @csrf
+          <label>{{ __('b2b_customer_setup.company') }}
+            <input name="company_name" required maxlength="255" autocomplete="organization" value="{{ old('company_name') }}">
+          </label>
+          <label>{{ __('b2b_customer_setup.contact') }}
+            <input name="name" required maxlength="255" autocomplete="name" value="{{ old('name') }}">
+          </label>
+          <label>{{ __('b2b_customer_setup.email') }}
+            <input name="email" type="email" required maxlength="255" autocomplete="email" value="{{ old('email') }}">
+          </label>
+          <label>{{ __('b2b_customer_setup.phone') }}
+            <input name="phone" type="tel" maxlength="50" autocomplete="tel" value="{{ old('phone') }}">
+          </label>
+          <label>{{ __('b2b_customer_setup.tax') }}
+            <input name="tax_number" maxlength="100" value="{{ old('tax_number') }}">
+          </label>
+          <label>{{ __('b2b_customer_setup.password') }}
+            <input name="password" type="password" required minlength="8" autocomplete="new-password">
+          </label>
+          <button class="foodex-primary" type="submit" name="setup_action" value="test">{{ __('b2b_customer_setup.test') }}</button>
+          <button class="foodex-primary" type="submit" name="setup_action" value="save">{{ __('b2b_customer_setup.save') }}</button>
+        </form>
+      </section>
       @endif
 
       @if($module==='products' && $user->hasPermission('catalog.manage'))

@@ -476,6 +476,26 @@ class B2bWorkspaceController extends Controller
         $actor = $this->actor($request);
         abort_unless($actor->hasPermission('b2b.accounts.manage'), 403);
 
+        $setup = $request->validate([
+            'setup_action' => ['sometimes', 'in:save,test'],
+        ]);
+
+        // Preflight mirrors B2bAccountController::store validation. The actual
+        // Save always revalidates there under its existing Gate and transaction.
+        // Test never persists users, customers, accounts, credentials or audit.
+        if (($setup['setup_action'] ?? 'save') === 'test') {
+            $request->validate([
+                'name' => ['required', 'string', 'max:255'],
+                'email' => ['required', 'email', 'max:255', 'unique:users,email'],
+                'password' => ['required', 'string', 'min:8'],
+                'phone' => ['nullable', 'string', 'max:50'],
+                'company_name' => ['required', 'string', 'max:255'],
+                'tax_number' => ['nullable', 'string', 'max:100'],
+            ]);
+
+            return back()->with('status', __('b2b_customer_setup.test_valid'));
+        }
+
         $accounts->store($request, $customers);
 
         return back()->with('status', $this->msg('تم إنشاء حساب عميل الجملة.', 'Wholesale customer account created.'));

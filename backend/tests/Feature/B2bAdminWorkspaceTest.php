@@ -143,6 +143,96 @@ class B2bAdminWorkspaceTest extends TestCase
         $this->assertDatabaseMissing('audit_logs', ['event' => 'b2b.pricing_mode.updated']);
     }
 
+    public function test_b2b_customer_master_data_guide_is_localized_and_requires_approval(): void
+    {
+        foreach (['ar', 'en'] as $locale) {
+            $admin = $this->user('B2B_ADMIN', $locale);
+
+            $this->actingAs($admin)->get('/admin/b2b/clients')
+                ->assertOk()
+                ->assertSee('data-v2-stage2-customer-setup', false)
+                ->assertSee('data-readiness-state="needs-approval"', false)
+                ->assertSee(__('b2b_customer_setup.title'))
+                ->assertSee(__('b2b_customer_setup.source'))
+                ->assertSee(__('b2b_customer_setup.example'))
+                ->assertSee(__('b2b_customer_setup.default'))
+                ->assertSee(__('b2b_customer_setup.validation'))
+                ->assertSee(__('b2b_customer_setup.permissions'))
+                ->assertSee(__('b2b_customer_setup.test_help'))
+                ->assertSee($locale === 'ar' ? 'dir="rtl"' : 'dir="ltr"', false);
+        }
+    }
+
+    public function test_b2b_customer_master_data_test_is_read_only_and_save_is_pending(): void
+    {
+        $admin = $this->user('B2B_ADMIN', 'en');
+        $details = [
+            'company_name' => 'Illustrative Buyer Ltd',
+            'name' => 'Example Buyer',
+            'email' => 'customer-setup@example.invalid',
+            'phone' => '',
+            'tax_number' => '',
+            'password' => 'Example-Test-Passphrase-123!',
+        ];
+        $before = [
+            'users' => DB::table('users')->count(),
+            'accounts' => DB::table('b2b_accounts')->count(),
+            'audit' => DB::table('audit_logs')->count(),
+        ];
+
+        $this->actingAs($admin)->post('/admin/b2b/clients', $details + ['setup_action' => 'test'])
+            ->assertRedirect()
+            ->assertSessionHasNoErrors()
+            ->assertSessionHas('status', __('b2b_customer_setup.test_valid'));
+
+        $this->assertSame($before['users'], DB::table('users')->count());
+        $this->assertSame($before['accounts'], DB::table('b2b_accounts')->count());
+        $this->assertSame($before['audit'], DB::table('audit_logs')->count());
+
+        $this->actingAs($admin)->post('/admin/b2b/clients', $details + ['setup_action' => 'save'])
+            ->assertRedirect()
+            ->assertSessionHasNoErrors();
+        $this->assertDatabaseHas('b2b_accounts', [
+            'company_name' => 'Illustrative Buyer Ltd',
+            'status' => 'pending',
+        ]);
+        $this->assertDatabaseHas('users', [
+            'email' => 'customer-setup@example.invalid',
+            'is_active' => false,
+        ]);
+        $this->assertDatabaseHas('audit_logs', ['event' => 'b2b.account.created']);
+    }
+
+    public function test_b2b_customer_master_data_test_validates_and_denies_retail_roles(): void
+    {
+        $admin = $this->user('B2B_ADMIN', 'en');
+        $details = [
+            'company_name' => 'Illustrative Buyer Ltd',
+            'name' => 'Example Buyer',
+            'email' => 'invalid-email',
+            'password' => 'short',
+        ];
+
+        $this->actingAs($admin)->post('/admin/b2b/clients', $details + ['setup_action' => 'test'])
+            ->assertSessionHasErrors(['email', 'password']);
+
+        $this->actingAs($admin)->post('/admin/b2b/clients', $details + ['setup_action' => 'delete'])
+            ->assertSessionHasErrors('setup_action');
+
+        $retail = $this->user('B2C_STORE_ADMIN', 'ar');
+        $this->actingAs($retail)->post('/admin/b2b/clients', [
+            'company_name' => 'Illustrative Retail Attack',
+            'name' => 'Unauthorized',
+            'email' => 'retail-setup@example.invalid',
+            'password' => 'Example-Test-Passphrase-123!',
+            'setup_action' => 'test',
+        ])->assertForbidden();
+
+        $this->assertDatabaseMissing('users', ['email' => 'retail-setup@example.invalid']);
+        $this->assertDatabaseMissing('b2b_accounts', ['company_name' => 'Illustrative Retail Attack']);
+        $this->assertDatabaseMissing('audit_logs', ['event' => 'b2b.account.created']);
+    }
+
     public function test_product_create_and_edit_own_price_stock_and_low_stock_threshold(): void
     {
         $admin = $this->user('B2B_ADMIN', 'en');
