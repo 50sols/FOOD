@@ -343,11 +343,11 @@ class InstallerWorkflowTest extends TestCase
             $this->assertSame((string) __('installer.environment_already_configured'), $exception->getMessage());
         }
 
-        $this->assertSame($rolesBefore, DB::table('roles')->orderBy('id')->get()->all());
-        $this->assertSame($permissionsBefore, DB::table('permissions')->orderBy('id')->get()->all());
-        $this->assertSame($grantsBefore, DB::table('permission_role')
+        $this->assertEquals($rolesBefore, DB::table('roles')->orderBy('id')->get()->all());
+        $this->assertEquals($permissionsBefore, DB::table('permissions')->orderBy('id')->get()->all());
+        $this->assertEquals($grantsBefore, DB::table('permission_role')
             ->orderBy('role_id')->orderBy('permission_id')->get()->all());
-        $this->assertSame($usersBefore, DB::table('users')->orderBy('id')->get()->all());
+        $this->assertEquals($usersBefore, DB::table('users')->orderBy('id')->get()->all());
     }
 
     public function test_direct_seed_refuses_completed_installer_lock_without_db_writes(): void
