@@ -194,6 +194,112 @@ final class EnterpriseGoodsReceiptFoundationTest extends TestCase
         );
     }
 
+    /**
+     * P110: the supplier on a commercial PO/GRN is not legal stock title.
+     * Partial milliquantity postings must only advance canonical stock and
+     * the unverified UNKNOWN projection once, even with forged owner/price
+     * fields in an otherwise valid procurement receipt payload.
+     */
+    public function test_partial_milli_receipts_replay_and_forged_title_never_double_post_or_grant_ownership(): void
+    {
+        $this->enableProcurement();
+        [$actor, $store, $context] = $this->scopedUser($this->allPermissions(), 'GRN-P110-MILLI');
+        [$product, $warehouse] = $this->stockTarget($store, 'GRN-P110-MILLI-SKU');
+        $order = $this->issuedOrder($actor, $context, 'GRN-P110-MILLI-SUP', 'GRN-P110-MILLI-SKU', 1.500);
+        $orderLineId = $order->lines()->firstOrFail()->id;
+        $manager = app(GoodsReceiptManager::class);
+        $receiptIds = [];
+        $receiptLineIds = [];
+
+        foreach ([0.625, 0.875] as $receivedQuantity) {
+            $receipt = $manager->createFromIssuedOrder($actor, $context, $order->id, [
+                // Never accept asserted legal title, a substitute supplier,
+                // price or discount from an untrusted GRN request.
+                'supplier_id' => 999999,
+                'owner_key' => 'FOODEX',
+                'discount_percent' => 100,
+                'lines' => [[
+                    'purchase_order_line_id' => $orderLineId,
+                    'warehouse_id' => $warehouse->id,
+                    'quantity' => $receivedQuantity,
+                    'owner_key' => 'SUPPLIER:'.$order->supplier_id,
+                    'unit' => 'case',
+                    'unit_price' => 0,
+                ]],
+            ]);
+            $posted = $manager->post($actor, $context, $receipt->id);
+            $retry = $manager->post($actor, $context, $receipt->id);
+
+            $this->assertSame('posted', $posted->status);
+            $this->assertSame($posted->posted_at?->toISOString(), $retry->posted_at?->toISOString());
+            $this->assertSame((int) $order->supplier_id, (int) $posted->supplier_id);
+            $this->assertSame($order->order_number, $posted->source_order_number);
+            $this->assertSame('each', $posted->lines[0]->unit);
+            $this->assertSame('1.250', $posted->lines[0]->unit_price);
+
+            $receiptIds[] = $receipt->id;
+            $receiptLineIds[] = $posted->lines[0]->id;
+        }
+
+        $inventory = DB::table('inventories')
+            ->where('warehouse_id', $warehouse->id)
+            ->where('product_id', $product->id)
+            ->firstOrFail();
+
+        $this->assertSame('1.500', number_format((float) $inventory->quantity, 3, '.', ''));
+        $this->assertDatabaseHas('enterprise_inventory_owner_positions', [
+            'inventory_id' => $inventory->id,
+            'owner_key' => 'UNKNOWN',
+            'owner_kind' => 'UNKNOWN',
+            'supplier_id' => null,
+            'certified_by' => null,
+        ]);
+        $this->assertSame(1, DB::table('enterprise_inventory_owner_positions')
+            ->where('inventory_id', $inventory->id)->count());
+        $this->assertSame('1.500', number_format((float) DB::table('enterprise_inventory_owner_positions')
+            ->where('inventory_id', $inventory->id)
+            ->value('quantity'), 3, '.', ''));
+        $this->assertDatabaseMissing('enterprise_inventory_owner_positions', [
+            'inventory_id' => $inventory->id,
+            'owner_key' => 'FOODEX',
+        ]);
+        $this->assertDatabaseMissing('enterprise_inventory_owner_positions', [
+            'inventory_id' => $inventory->id,
+            'owner_key' => 'SUPPLIER:'.$order->supplier_id,
+        ]);
+
+        $movements = DB::table('stock_movements')
+            ->where('inventory_id', $inventory->id)
+            ->where('type', 'purchase_receipt')
+            ->where('reference_type', 'enterprise_goods_receipt_line')
+            ->whereIn('reference_id', $receiptLineIds);
+        $this->assertSame(2, $movements->count());
+        $this->assertSame('1.500', number_format((float) $movements->sum('quantity'), 3, '.', ''));
+        $this->assertSame(2, DB::table('audit_logs')
+            ->where('event', 'enterprise.goods_receipt.posted')
+            ->whereIn('auditable_id', $receiptIds)
+            ->count());
+
+        try {
+            $manager->createFromIssuedOrder($actor, $context, $order->id, [
+                'lines' => [[
+                    'purchase_order_line_id' => $orderLineId,
+                    'warehouse_id' => $warehouse->id,
+                    'quantity' => 0.001,
+                ]],
+            ]);
+            $this->fail('Even one milliquantity beyond the already-posted PO remainder must fail.');
+        } catch (ValidationException $exception) {
+            $this->assertArrayHasKey('lines', $exception->errors());
+        }
+
+        $this->assertSame(2, DB::table('enterprise_goods_receipts')
+            ->where('purchase_order_id', $order->id)->count());
+        $this->assertSame(2, $movements->count());
+        $this->assertSame('1.500', number_format((float) DB::table('inventories')
+            ->where('id', $inventory->id)->value('quantity'), 3, '.', ''));
+    }
+
     public function test_grn_requires_issued_po_and_store_owned_receiving_warehouse(): void
     {
         $this->enableProcurement();
