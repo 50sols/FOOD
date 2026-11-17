@@ -152,6 +152,87 @@ final class EnterprisePurchaseOrderFoundationTest extends TestCase
         );
     }
 
+    public function test_issue_revalidates_active_qualified_supplier_after_draft(): void
+    {
+        [$actor, , $context] = $this->scopedUser($this->allPermissions(), 'PO-ELIG');
+        $order = $this->approvedOrder($actor, $context, 'PO-ELIG-SUP');
+        $orders = app(PurchaseOrderManager::class);
+
+        foreach ([
+            ['status' => 'inactive'],
+            ['status' => 'active', 'qualification_status' => 'unqualified'],
+        ] as $supplierState) {
+            DB::table('enterprise_suppliers')
+                ->where('id', $order->supplier_id)
+                ->update($supplierState);
+
+            try {
+                $orders->issue($actor, $context, $order->id);
+                $this->fail('An ineligible supplier must not be used to issue a draft PO.');
+            } catch (ModelNotFoundException $exception) {
+                $this->assertNotNull($exception);
+            }
+
+            $this->assertDatabaseHas('enterprise_purchase_orders', [
+                'id' => $order->id,
+                'status' => 'draft',
+                'issued_by' => null,
+            ]);
+            $this->assertSame(0, DB::table('audit_logs')
+                ->where('event', 'enterprise.purchase_order.issued')
+                ->where('auditable_id', $order->id)
+                ->count());
+        }
+    }
+
+    public function test_issue_rejects_invalid_persisted_order_lines_before_any_issue_audit(): void
+    {
+        [$actor, , $context] = $this->scopedUser($this->allPermissions(), 'PO-NEG');
+        $order = $this->approvedOrder($actor, $context, 'PO-NEG-SUP');
+        $orders = app(PurchaseOrderManager::class);
+        $lineId = $order->lines()->firstOrFail()->id;
+
+        foreach ([
+            ['quantity' => '-1.000'],
+            ['quantity' => '0.000'],
+            ['unit_price' => '-0.250'],
+        ] as $invalidLine) {
+            DB::table('enterprise_purchase_order_lines')->where('id', $lineId)->update([
+                'quantity' => '1.000',
+                'unit_price' => '1.250',
+                ...$invalidLine,
+            ]);
+
+            try {
+                $orders->issue($actor, $context, $order->id);
+                $this->fail('A forged negative/zero PO line must not be issued.');
+            } catch (ValidationException $exception) {
+                $this->assertArrayHasKey('lines', $exception->errors());
+            }
+
+            $this->assertDatabaseHas('enterprise_purchase_orders', [
+                'id' => $order->id,
+                'status' => 'draft',
+                'issued_by' => null,
+            ]);
+            $this->assertSame(0, DB::table('audit_logs')
+                ->where('event', 'enterprise.purchase_order.issued')
+                ->where('auditable_id', $order->id)
+                ->count());
+        }
+
+        DB::table('enterprise_purchase_order_lines')->where('id', $lineId)->update([
+            'quantity' => '1.000',
+            'unit_price' => '1.250',
+        ]);
+        $this->assertSame('issued', $orders->issue($actor, $context, $order->id)->status);
+        $this->assertSame('issued', $orders->issue($actor, $context, $order->id)->status);
+        $this->assertSame(1, DB::table('audit_logs')
+            ->where('event', 'enterprise.purchase_order.issued')
+            ->where('auditable_id', $order->id)
+            ->count());
+    }
+
     public function test_purchase_order_number_search_preserves_literal_symbols_and_store_scope(): void
     {
         [$actorA, $storeA, $contextA] = $this->scopedUser($this->allPermissions(), 'PO-LITERAL-A');
