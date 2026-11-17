@@ -350,6 +350,18 @@ class HttpWholesaleCommerceApi
       );
     }
 
+    // GuestCartController::removeItem confirms deletion with HTTP 204 only.
+    // A 200 login page / gateway success is not proof that the cart changed;
+    // never tell the customer an item was removed in that case. Do not retry
+    // DELETE automatically because an earlier attempt might have committed.
+    if (method == 'DELETE' && response.statusCode != 204) {
+      throw WholesaleCommerceException(
+        locale == 'en'
+            ? 'The server did not confirm the cart change. Refresh and try again.'
+            : 'لم يؤكد الخادم تعديل السلة. حدّث الصفحة وحاول مرة أخرى.',
+      );
+    }
+
     // A successful cart, quote or checkout must carry an authoritative
     // JSON object. Do not reinterpret HTTP 200 HTML, malformed JSON, an
     // empty body or a JSON scalar as an empty cart/zero-price checkout.
