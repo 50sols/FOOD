@@ -61,6 +61,9 @@ $treasuryQuery = array_intersect_key($filters, array_flip(['store_id','q','statu
 <section class="treasury-section" aria-labelledby="cashbox-form-title">
 <form class="foodex-form" method="post" action="{{ $editingCashbox ? route('admin.treasury.cashboxes.update',['cashbox'=>$editingCashbox->id]) : route('admin.treasury.cashboxes.store') }}">
 @csrf
+@if(!empty($filters['store_id']))
+<input type="hidden" name="preserve_store_context" value="1">
+@endif
 @if($editingCashbox) @method('patch') @endif
 <h2 id="cashbox-form-title">{{ $editingCashbox ? __('treasury.edit_cashbox') : __('treasury.new_cashbox') }}</h2>
 <div class="treasury-form-grid">
@@ -97,6 +100,9 @@ $treasuryQuery = array_intersect_key($filters, array_flip(['store_id','q','statu
 <section class="treasury-section" aria-labelledby="bank-form-title">
 <form class="foodex-form" method="post" action="{{ $editingBankAccount ? route('admin.treasury.bank-accounts.update',['bankAccount'=>$editingBankAccount->id]) : route('admin.treasury.bank-accounts.store') }}">
 @csrf
+@if(!empty($filters['store_id']))
+<input type="hidden" name="preserve_store_context" value="1">
+@endif
 @if($editingBankAccount) @method('patch') @endif
 <h2 id="bank-form-title">{{ $editingBankAccount ? __('treasury.edit_bank_account') : __('treasury.new_bank_account') }}</h2>
 <div class="treasury-form-grid">

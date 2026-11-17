@@ -31,3 +31,10 @@
 - No Customer/Driver/Van code, contracts or endpoints changed: **NO_DIRECT_MOBILE_IMPACT** (source fence); no claim of app tests passing.
 - Risk: **HIGH** (Treasury Master finance-adjacent; no payment/GL mutation). Technical review **PENDING exact-head tests**.
 - Final V2 UAT remains with #2750/#2503; do not close parent gates based on this leaf.
+
+## Exact-head CI rescue — 2026-11-17
+
+- Earlier head `10a253a6ab964d46317bd4e03184c5180924e4b7` failed Required CI #43966399805: two existing tests expected the historical tab-only Treasury Master redirect for direct POST, and the new test called an unavailable PHPUnit `assertSameCanonicalizing`. This was **3 failed, 4213 passed, 1 skipped**; do not count as PASS.
+- Preserve old direct POST redirect when no page-specific selected store context is supplied. A Treasury Master form rendered from an explicitly store-filtered GET sends a *validated boolean* `preserve_store_context` marker; after permitted store creation/edit, the existing post action redirects to the validated business record's authorized store and existing tab. The marker is checked **before** any transaction/writes, so malformed array values fail validation. It adds neither permissions nor a user-facing raw ID/JSON field.
+- Dedicated tests exercise selected-context preservation on Bank/Cashbox create/update, invalid marker denial with zero writes, and legacy tab-only redirect. Sort keys and assert exact equality instead of a missing PHPUnit method. The protected historical tests are **not edited**.
+- Original branch/PR, 4-file issue fence, and all effective finance view/manage and store guards preserved. New synchronized branch SHA, full Laravel/MySQL/Redis acceptance and technical audit remain required before merge; do not claim exact-head green before actual GitHub CI.

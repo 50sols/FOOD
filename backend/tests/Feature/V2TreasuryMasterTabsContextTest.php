@@ -64,7 +64,9 @@ final class V2TreasuryMasterTabsContextTest extends TestCase
                 }
             }
 
-            $this->assertSameCanonicalizing(['cashboxes', 'bank_accounts'], array_keys($matchingTabs));
+            $tabKeys = array_keys($matchingTabs);
+            sort($tabKeys);
+            $this->assertSame(['bank_accounts', 'cashboxes'], $tabKeys);
             foreach ($matchingTabs as $query) {
                 $this->assertSame((string) $store->id, (string) $query['store_id']);
                 $this->assertSame('active', $query['status']);
@@ -137,6 +139,7 @@ final class V2TreasuryMasterTabsContextTest extends TestCase
         ]);
         $valid = [
             'store_id' => $store->id,
+            'preserve_store_context' => '1',
             'code' => 'B-NEW',
             'name' => 'Treasury test account',
             'bank_name' => 'Test bank',
@@ -153,7 +156,15 @@ final class V2TreasuryMasterTabsContextTest extends TestCase
 
         $this->actingAs($actor)->get($createUrl)->assertOk()
             ->assertSee('id="bank-form-title"', false)
+            ->assertSee('name="preserve_store_context" value="1"', false)
             ->assertDontSee('id="cashbox-form-title"', false);
+
+        // A forged non-boolean return context fails validation before a bank write.
+        $this->actingAs($actor)->from($createUrl)
+            ->post(route('admin.treasury.bank-accounts.store'), [...$valid, 'preserve_store_context' => ['forged']])
+            ->assertRedirect($createUrl)
+            ->assertSessionHasErrors('preserve_store_context');
+        $this->assertDatabaseMissing('enterprise_bank_accounts', ['code' => 'B-NEW']);
 
         $this->actingAs($actor)->post(route('admin.treasury.bank-accounts.store'), $valid)
             ->assertRedirect(route('admin.treasury.master.index', [
@@ -167,6 +178,7 @@ final class V2TreasuryMasterTabsContextTest extends TestCase
 
         $cashbox = [
             'store_id' => $store->id,
+            'preserve_store_context' => '1',
             'code' => 'C-NEW',
             'name' => 'Treasury till',
             'operator_visibility' => 'store',
@@ -200,6 +212,16 @@ final class V2TreasuryMasterTabsContextTest extends TestCase
         ]);
         $this->assertDatabaseHas('enterprise_cashboxes', [
             'id' => $cashRecord->id, 'store_id' => $store->id, 'name' => 'Updated cashbox',
+        ]);
+
+        // API/legacy direct POSTs still return to the historic tab-only URL.
+        $legacyCashbox = $cashbox;
+        unset($legacyCashbox['preserve_store_context']);
+        $legacyCashbox['code'] = 'C-LEGACY';
+        $this->actingAs($actor)->post(route('admin.treasury.cashboxes.store'), $legacyCashbox)
+            ->assertRedirect(route('admin.treasury.master.index', ['tab' => 'cashboxes']));
+        $this->assertDatabaseHas('enterprise_cashboxes', [
+            'code' => 'C-LEGACY', 'store_id' => $store->id,
         ]);
     }
 
