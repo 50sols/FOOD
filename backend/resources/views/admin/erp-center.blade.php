@@ -17,7 +17,6 @@ body{margin:0}
 .erp-workspace-tabs{display:flex;flex-wrap:nowrap;max-width:100%;overflow-x:auto;gap:var(--foodex-space-2);margin-block:var(--foodex-space-4);padding-block:var(--foodex-space-2);scrollbar-width:thin}
 .erp-workspace-tabs .foodex-tab{flex:0 0 auto;white-space:nowrap;min-height:44px}
 .erp-workspace-tabs .foodex-tab:focus-visible{outline:2px solid var(--foodex-green);outline-offset:2px}
-.erp-center [data-erp-panel][hidden]{display:none!important}
 .erp-center [data-erp-panel]{min-width:0}
 .erp-kpis{grid-template-columns:repeat(5,minmax(0,1fr))}
 .erp-kpi-link{color:inherit;text-decoration:none}
@@ -109,7 +108,8 @@ $erpTabLabels = [
 </nav>
 
 <div class="foodex-module-overview">
-<section class="erp-section" aria-labelledby="erp-tab-snapshot" data-erp-panel="snapshot" @if($activeErpTab !== 'snapshot') hidden @endif>
+@if($activeErpTab === 'snapshot')
+<section class="erp-section" aria-labelledby="erp-tab-snapshot" data-erp-panel="snapshot">
 <div class="erp-section-head">
 <div>
 <h2 id="erp-snapshot-title">{{ __('admin.erp_center.snapshot.title') }}</h2>
@@ -154,8 +154,10 @@ $erpTabLabels = [
 @endforeach
 </div>
 </section>
+@endif
 
-<section class="erp-analytics" aria-labelledby="erp-tab-analytics" data-erp-panel="analytics" @if($activeErpTab !== 'analytics') hidden @endif>
+@if($activeErpTab === 'analytics')
+<section class="erp-analytics" aria-labelledby="erp-tab-analytics" data-erp-panel="analytics">
 <article class="foodex-viz-card" data-erp-chart="workload">
 <div class="foodex-viz-header">
 <div>
@@ -216,8 +218,10 @@ $erpTabLabels = [
 </div>
 </article>
 </section>
+@endif
 
-<section class="erp-preview-grid" aria-labelledby="erp-tab-follow_up" data-erp-panel="follow_up" @if($activeErpTab !== 'follow_up') hidden @endif>
+@if($activeErpTab === 'follow_up')
+<section class="erp-preview-grid" aria-labelledby="erp-tab-follow_up" data-erp-panel="follow_up">
 <article class="foodex-card erp-section" data-erp-my-work>
 <div class="erp-section-head">
 <div>
@@ -275,8 +279,10 @@ $erpTabLabels = [
 @endif
 </article>
 </section>
+@endif
 
-<section class="erp-section" aria-labelledby="erp-tab-modules" id="erp-modules" data-erp-panel="modules" @if($activeErpTab !== 'modules') hidden @endif>
+@if($activeErpTab === 'modules')
+<section class="erp-section" aria-labelledby="erp-tab-modules" id="erp-modules" data-erp-panel="modules">
 <div class="erp-section-head">
 <div>
 <h2 id="erp-modules-title">{{ __('admin.erp_center.modules_title') }}</h2>
@@ -320,6 +326,7 @@ $erpTabLabels = [
 </div>
 @endif
 </section>
+@endif
 </div>
 </main>
 </div>
