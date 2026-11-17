@@ -269,7 +269,31 @@ final class V2ErpProcurementTabRouteMatrixTest extends TestCase
                 $markup,
             );
             $this->assertSame(1, substr_count($rail, 'aria-current="page"'));
-            $this->assertSame(count($expectedTabs), preg_match_all('/<a\b[^>]*href="[^"]+"[^>]*>.*?<\/a>/s', $rail));
+            // The browser does not assign authority by query parameter ordering.
+            // Parse every actual anchor: an exact authorized path/store/tab set
+            // forbids hidden or cross-store links while allowing either URL order.
+            $this->assertSame(
+                count($expectedTabs),
+                preg_match_all('/<a\b[^>]*href="([^"]+)"[^>]*>.*?<\/a>/s', $rail, $anchors),
+            );
+            $actualDestinations = [];
+            foreach ($anchors[1] as $escapedHref) {
+                $actualHref = html_entity_decode($escapedHref, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+                parse_str((string) parse_url($actualHref, PHP_URL_QUERY), $query);
+                $actualDestinations[] = [
+                    'path' => parse_url($actualHref, PHP_URL_PATH),
+                    'store_id' => $query['store_id'] ?? null,
+                    'tab' => $query['tab'] ?? null,
+                ];
+            }
+            $this->assertSame(
+                array_map(static fn (string $tab): array => [
+                    'path' => parse_url(route('admin.erp.procurement.index'), PHP_URL_PATH),
+                    'store_id' => (string) $store->id,
+                    'tab' => $tab,
+                ], $expectedTabs),
+                $actualDestinations,
+            );
             $this->assertStringNotContainsString('tabindex="-1"', $rail);
 
             foreach ($expectedTabs as $tab) {
@@ -277,7 +301,7 @@ final class V2ErpProcurementTabRouteMatrixTest extends TestCase
                     'store_id' => $store->id,
                     'tab' => $tab,
                 ]);
-                $this->assertStringContainsString('href="'.e($href).'"', $rail);
+                // Canonical path, store and tab verified from actual anchor href above.
                 $translatedLabel = __('enterprise_procurement.tabs.'.$tab, [], $locale);
                 $this->assertNotSame('enterprise_procurement.tabs.'.$tab, $translatedLabel);
                 $this->assertSame(1, preg_match(
@@ -290,7 +314,7 @@ final class V2ErpProcurementTabRouteMatrixTest extends TestCase
 
             foreach ($forbiddenTabs as $tab) {
                 $href = $this->tabUrl($tab, $store);
-                $this->assertStringNotContainsString('href="'.e($href).'"', $rail);
+                $this->assertNotContains($tab, array_column($actualDestinations, 'tab'));
                 $this->actingAs($user)->get($href)->assertForbidden();
             }
 
