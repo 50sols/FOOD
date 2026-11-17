@@ -286,6 +286,17 @@
 </main>
 </div>
 <script>
+// The executive snapshot has its own GET form in the existing overview partial.
+// Keep its selected page workspace across date/store/currency refreshes without
+// changing the source filters or the shared partial owned by the parent gate.
+const biOverviewForm = document.querySelector('[data-enterprise-bi-overview] [data-foodex-module-filters]');
+if (biOverviewForm && !biOverviewForm.querySelector('[name="bi_tab"]')) {
+ const tab = document.createElement('input');
+ tab.type = 'hidden';
+ tab.name = 'bi_tab';
+ tab.value = 'overview';
+ biOverviewForm.append(tab);
+}
 document.querySelector('[data-bi-run-form]')?.addEventListener('submit',function(){
  const button=this.querySelector('[data-bi-run-button]');
  if(!button)return;
