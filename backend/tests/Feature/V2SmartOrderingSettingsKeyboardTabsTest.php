@@ -57,20 +57,20 @@ final class V2SmartOrderingSettingsKeyboardTabsTest extends TestCase
         $source = file_get_contents(resource_path('views/admin/smart-ordering.blade.php'));
         $this->assertIsString($source);
         $this->assertStringContainsString("tabs.addEventListener('keydown', (event) => {", $source);
-        $this->assertStringContainsString("if (!buttons.includes(event.target)) return;", $source);
+        $this->assertStringContainsString('if (!buttons.includes(event.target)) return;', $source);
         foreach (['ArrowRight', 'ArrowLeft', 'Home', 'End'] as $key) {
             $this->assertStringContainsString("event.key === '".$key."'", $source);
         }
         $this->assertStringContainsString("window.getComputedStyle(tabs).direction === 'rtl'", $source);
-        $this->assertStringContainsString("current + (rtl ? -1 : 1)", $source);
-        $this->assertStringContainsString("current + (rtl ? 1 : -1)", $source);
+        $this->assertStringContainsString('current + (rtl ? -1 : 1)', $source);
+        $this->assertStringContainsString('current + (rtl ? 1 : -1)', $source);
         $this->assertStringContainsString('event.preventDefault();', $source);
         $this->assertStringContainsString('activate(destination.dataset.soSettingsTab);', $source);
         $this->assertStringContainsString('destination.focus();', $source);
-        $this->assertStringContainsString("else return; // Native Enter/Space click", $source);
+        $this->assertStringContainsString('else return; // Native Enter/Space click', $source);
         $this->assertStringContainsString('sessionStorage.setItem(storageKey, name)', $source);
         $this->assertStringContainsString("history.replaceState(null, '', '#settings-' + name)", $source);
-        $this->assertStringContainsString("foodex:restaurant-settings-tab:", $source);
+        $this->assertStringContainsString('foodex:restaurant-settings-tab:', $source);
         $this->assertStringContainsString("route('admin.smart-ordering.revisions.publish'", $source);
     }
 
