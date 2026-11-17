@@ -1734,22 +1734,35 @@ final class ProcurementCompletionManager
 
     private function orderedNotReceivedCount(int $storeId, int $organizationId, int $companyId): int
     {
-        $orders = DB::table('enterprise_purchase_orders as orders')
-            ->join('enterprise_purchase_order_lines as order_lines', 'order_lines.purchase_order_id', '=', 'orders.id')
+        // Count each original PO line exactly once. Joining raw receipt rows
+        // before SUM(order_lines.quantity) multiplies the ordered denominator
+        // for partial deliveries and reports completed orders as outstanding.
+        $lineBalances = DB::table('enterprise_purchase_order_lines as order_lines')
             ->leftJoin('enterprise_goods_receipt_lines as receipt_lines', 'receipt_lines.purchase_order_line_id', '=', 'order_lines.id')
-            ->leftJoin('enterprise_goods_receipts as receipts', function ($join): void {
+            ->leftJoin('enterprise_goods_receipts as receipts', function ($join) use ($storeId, $organizationId, $companyId): void {
                 $join->on('receipts.id', '=', 'receipt_lines.goods_receipt_id')
-                    ->where('receipts.status', '=', 'posted');
+                    ->where('receipts.status', '=', 'posted')
+                    ->where('receipts.organization_id', '=', $organizationId)
+                    ->where('receipts.company_id', '=', $companyId)
+                    ->where('receipts.store_id', '=', $storeId);
             })
+            ->select(['order_lines.id', 'order_lines.purchase_order_id'])
+            ->selectRaw('MAX(order_lines.quantity) as ordered_quantity')
+            ->selectRaw('COALESCE(SUM(CASE WHEN receipts.id IS NOT NULL THEN receipt_lines.received_quantity ELSE 0 END), 0) as received_quantity')
+            ->groupBy('order_lines.id', 'order_lines.purchase_order_id');
+
+        $outstanding = DB::query()
+            ->fromSub($lineBalances, 'line_balances')
+            ->join('enterprise_purchase_orders as orders', 'orders.id', '=', 'line_balances.purchase_order_id')
             ->where('orders.organization_id', $organizationId)
             ->where('orders.company_id', $companyId)
             ->where('orders.store_id', $storeId)
             ->where('orders.status', 'issued')
             ->select('orders.id')
             ->groupBy('orders.id')
-            ->havingRaw('SUM(order_lines.quantity) > COALESCE(SUM(CASE WHEN receipts.id IS NOT NULL THEN receipt_lines.received_quantity ELSE 0 END), 0)');
+            ->havingRaw('SUM(line_balances.ordered_quantity) > SUM(line_balances.received_quantity)');
 
-        return DB::query()->fromSub($orders, 'ordered_not_received')->count();
+        return DB::query()->fromSub($outstanding, 'ordered_not_received')->count();
     }
 
     /** @return list<array<string,mixed>> */
