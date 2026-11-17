@@ -1548,8 +1548,7 @@ void main() {
     }
   }
 
-  testWidgets('B2B profile is the complete visible account and finance hub',
-      (
+  testWidgets('B2B profile is the complete visible account and finance hub', (
     tester,
   ) async {
     final api = _PathB2bApi({
