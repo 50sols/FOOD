@@ -78,7 +78,7 @@ final class ConnectionProfileManager
             }
 
             $before = $locked->safeSnapshot();
-            $locked->forceFill($this->configuration($attributes));
+            $locked->forceFill($this->configuration($attributes, $locked));
             if (! $locked->isDirty()) {
                 return $locked;
             }
@@ -368,7 +368,7 @@ final class ConnectionProfileManager
     /** @param array<string, mixed> $attributes
      * @return array<string, mixed>
      */
-    private function configuration(array $attributes): array
+    private function configuration(array $attributes, ?WhatsAppConnectionProfile $existing = null): array
     {
         return [
             'name' => trim((string) ($attributes['name'] ?? '')),
@@ -378,8 +378,8 @@ final class ConnectionProfileManager
             'provider_phone_number_id' => $this->nullIfBlank($attributes['provider_phone_number_id'] ?? null),
             'provider_account_id' => $this->nullIfBlank($attributes['provider_account_id'] ?? null),
             'provider_app_id' => $this->nullIfBlank($attributes['provider_app_id'] ?? null),
-            'provider_metadata' => $this->safeMetadata($attributes['provider_metadata'] ?? null),
-            'webhook_metadata' => $this->safeMetadata($attributes['webhook_metadata'] ?? null),
+            'provider_metadata' => $this->safeMetadata($attributes['provider_metadata'] ?? $existing?->provider_metadata),
+            'webhook_metadata' => $this->safeMetadata($attributes['webhook_metadata'] ?? $existing?->webhook_metadata),
         ];
     }
 
