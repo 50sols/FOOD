@@ -42,11 +42,16 @@ final class V2WhatsAppCampaignWorkspaceTabsTest extends TestCase
                 $this->assertSame(3, preg_match_all('/id="wa-workspace-panel-(campaigns|templates|overview)"/', $html));
                 $this->assertSame(3, preg_match_all('/data-wa-workspace-tab="(campaigns|templates|overview)"/', $html));
                 $this->assertStringContainsString('id="wa-campaign-form"', $html);
-                $this->assertStringContainsString('id="wa-template-sync-form"', $html);
+                $this->assertSame($selected === 'templates' ? 1 : 0, substr_count($html, 'id="wa-template-sync-form"'));
 
                 foreach ($tabs as $tab) {
                     $this->assertSame(1, preg_match('/<div class="wa-workspace-panel" id="wa-workspace-panel-'.preg_quote($tab, '/').'"[^>]*>/', $html, $panelMatch));
                     $this->assertSame($tab !== $selected, str_contains($panelMatch[0], ' hidden'), $tab.' should have correct visibility');
+                    // Other tabs exist only as empty ARIA placeholders, not data/forms.
+                    $this->assertSame($tab === $selected ? 1 : 0, substr_count(
+                        $html,
+                        'id="'.(['campaigns' => 'wa-campaign-list', 'templates' => 'wa-template-registry', 'overview' => 'wa-operations-title'][$tab]).'"'
+                    ));
 
                     $this->assertSame(1, preg_match('/<a id="wa-workspace-tab-'.preg_quote($tab, '/').'"[^>]*>/', $html, $tabMatch));
                     $this->assertStringContainsString('role="tab"', $tabMatch[0]);
@@ -98,11 +103,16 @@ final class V2WhatsAppCampaignWorkspaceTabsTest extends TestCase
         $this->assertStringContainsString('value="draft"', $html);
         $this->assertStringContainsString('id="wa-audience-source"', $html);
         $this->assertStringContainsString('id="wa-selected-customer-inputs"', $html);
-        $this->assertStringContainsString("url.searchParams.set('workspace_tab', active)", $html);
+        $this->assertStringContainsString("url.searchParams.set('workspace_tab', key)", $html);
+        $this->assertStringContainsString("window.history.pushState({waWorkspaceTab: key}", $html);
+        $this->assertStringContainsString("window.addEventListener('popstate'", $html);
+        $this->assertStringContainsString("event.key === ' '", $html);
+        $this->assertStringContainsString("panel.replaceChildren()", $html);
         $this->assertStringContainsString('event.preventDefault();', $html);
         $this->assertStringContainsString('window.addEventListener(\'hashchange\', fromFragment)', $html);
         $this->assertStringContainsString('id="wa-template-registry"', $html);
-        $this->assertStringContainsString('id="wa-campaign-list"', $html);
+        $this->assertStringNotContainsString('id="wa-campaign-list"', $html);
+        $this->assertStringNotContainsString('id="wa-operations-title"', $html);
     }
 
     public function test_page_tabs_do_not_bypass_roleless_inactive_actor_or_disabled_whatsapp_capability(): void

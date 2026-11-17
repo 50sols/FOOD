@@ -71,7 +71,9 @@
 
             <div class="wa-workspace-panel" id="wa-workspace-panel-overview" role="tabpanel"
                  aria-labelledby="wa-workspace-tab-overview" data-wa-workspace-panel="overview" @if($workspaceTab !== 'overview') hidden @endif>
-                @include('admin.whatsapp-campaigns._operations-overview', ['overview' => $operationsOverview])
+                @if($workspaceTab === 'overview')
+                    @include('admin.whatsapp-campaigns._operations-overview', ['overview' => $operationsOverview])
+                @endif
             </div>
 
             @if($canManage)
@@ -235,6 +237,7 @@
 
             <div class="wa-workspace-panel" id="wa-workspace-panel-campaigns" role="tabpanel"
                  aria-labelledby="wa-workspace-tab-campaigns" data-wa-workspace-panel="campaigns" @if($workspaceTab !== 'campaigns') hidden @endif>
+            @if($workspaceTab === 'campaigns')
             <section class="foodex-card wa-campaign-card" id="wa-campaign-list">
                 <header><strong>{{ __('whatsapp.campaigns.campaigns') }}</strong></header>
                 <div class="wa-campaign-table-wrap">
@@ -270,10 +273,12 @@
                     </table>
                 </div>
             </section>
+            @endif
 
             </div>
             <div class="wa-workspace-panel" id="wa-workspace-panel-templates" role="tabpanel"
                  aria-labelledby="wa-workspace-tab-templates" data-wa-workspace-panel="templates" @if($workspaceTab !== 'templates') hidden @endif>
+            @if($workspaceTab === 'templates')
             <section class="foodex-card wa-campaign-card" id="wa-template-registry">
                 <header>
                     <strong>{{ __('whatsapp.campaigns.template_registry') }}</strong>
@@ -294,6 +299,7 @@
                     </table>
                 </div>
             </section>
+            @endif
             </div>
         </div>
     </main>
@@ -301,42 +307,98 @@
 
 <script>
 (() => {
-    // Page-only view selection: no GET fetch, form reset, send, consent or draft mutation.
+    // The server emits ONLY the chosen workspace's content. Async GET replaces
+    // that panel in place, never the independent campaign builder/draft form.
     const tabs = Array.from(document.querySelectorAll('[data-wa-workspace-tab]'));
     const panels = Array.from(document.querySelectorAll('[data-wa-workspace-panel]'));
-    const selected = key => tabs.some(tab => tab.dataset.waWorkspaceTab === key) ? key : 'campaigns';
+    const tablist = document.querySelector('.wa-page-tabs');
+    const valid = key => tabs.some(tab => tab.dataset.waWorkspaceTab === key);
+    let rendered = tabs.find(tab => tab.getAttribute('aria-selected') === 'true')?.dataset.waWorkspaceTab || 'campaigns';
+    let ticket = 0;
 
-    const activate = (key, updateAddress = false) => {
-        const active = selected(key);
+    const destination = (key, preserveHash = false) => {
+        const url = new URL(window.location.href);
+        for (const name of Array.from(url.searchParams.keys())) {
+            if (name === 'workspace_tab' || name.startsWith('workspace_tab[')) url.searchParams.delete(name);
+        }
+        url.searchParams.set('workspace_tab', key);
+        if (!preserveHash) url.hash = '';
+        return url;
+    };
+
+    const display = key => {
+        rendered = key;
         tabs.forEach(tab => {
-            const current = tab.dataset.waWorkspaceTab === active;
+            const current = tab.dataset.waWorkspaceTab === key;
             tab.classList.toggle('active', current);
             tab.setAttribute('aria-selected', current ? 'true' : 'false');
             tab.tabIndex = current ? 0 : -1;
         });
         panels.forEach(panel => {
-            panel.hidden = panel.dataset.waWorkspacePanel !== active;
+            panel.hidden = panel.dataset.waWorkspacePanel !== key;
         });
-        if (updateAddress) {
-            const url = new URL(window.location.href);
-            url.searchParams.set('workspace_tab', active);
-            url.hash = '';
-            window.history.replaceState(window.history.state, '', url);
+    };
+
+    const navigate = async (key, mode = 'push', preserveHash = false) => {
+        if (!valid(key)) key = 'campaigns';
+        if (key === rendered) return;
+        const requestId = ++ticket;
+        const url = destination(key, preserveHash);
+        tablist?.setAttribute('aria-busy', 'true');
+        try {
+            const response = await fetch(url.toString(), {
+                method: 'GET',
+                credentials: 'same-origin',
+                headers: {'Accept': 'text/html'}
+            });
+            if (!response.ok) throw new Error('Workspace could not be loaded');
+            const page = new DOMParser().parseFromString(await response.text(), 'text/html');
+            const source = page.getElementById('wa-workspace-panel-' + key);
+            // An authentication redirect or non-authorized response must not
+            // be mistaken for a successful empty tab.
+            if (!source?.querySelector('.foodex-card')) throw new Error('Workspace response was incomplete');
+            if (requestId !== ticket) return;
+            panels.forEach(panel => {
+                if (panel.dataset.waWorkspacePanel === key) {
+                    panel.replaceChildren(...Array.from(source.childNodes).map(node => document.importNode(node, true)));
+                } else {
+                    panel.replaceChildren();
+                }
+            });
+            display(key);
+            if (mode === 'push') window.history.pushState({waWorkspaceTab: key}, '', url);
+            if (mode === 'replace') window.history.replaceState(window.history.state, '', url);
+            if (preserveHash && url.hash) {
+                document.getElementById(decodeURIComponent(url.hash.slice(1)))?.scrollIntoView({block: 'start'});
+            }
+        } catch (error) {
+            if (requestId === ticket) window.location.assign(url.toString());
+        } finally {
+            if (requestId === ticket) tablist?.removeAttribute('aria-busy');
         }
     };
 
     const fromFragment = () => {
-        if (window.location.hash === '#wa-campaign-list') activate('campaigns');
-        if (window.location.hash === '#wa-template-registry') activate('templates');
-        if (window.location.hash === '#wa-operations-title') activate('overview');
+        const key = {
+            '#wa-campaign-list': 'campaigns',
+            '#wa-template-registry': 'templates',
+            '#wa-operations-title': 'overview'
+        }[window.location.hash];
+        if (key && key !== rendered) void navigate(key, 'replace', true);
     };
+
     tabs.forEach((tab, index) => {
         tab.addEventListener('click', event => {
             if (event.button !== 0 || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
             event.preventDefault();
-            activate(tab.dataset.waWorkspaceTab, true);
+            void navigate(tab.dataset.waWorkspaceTab, 'push');
         });
         tab.addEventListener('keydown', event => {
+            if (event.key === ' ' || event.key === 'Spacebar') {
+                event.preventDefault();
+                void navigate(tab.dataset.waWorkspaceTab, 'push');
+                return;
+            }
             const rtl = document.documentElement.dir === 'rtl';
             const step = event.key === 'ArrowRight' ? (rtl ? -1 : 1)
                 : event.key === 'ArrowLeft' ? (rtl ? 1 : -1) : 0;
@@ -346,13 +408,14 @@
             if (target < 0) return;
             event.preventDefault();
             tabs[target].focus();
-            activate(tabs[target].dataset.waWorkspaceTab, true);
+            void navigate(tabs[target].dataset.waWorkspaceTab, 'push');
         });
     });
+
     window.addEventListener('hashchange', fromFragment);
     window.addEventListener('popstate', () => {
-        activate(new URLSearchParams(window.location.search).get('workspace_tab') || 'campaigns');
-        fromFragment();
+        const url = new URL(window.location.href);
+        void navigate(valid(url.searchParams.get('workspace_tab')) ? url.searchParams.get('workspace_tab') : 'campaigns', 'none', true);
     });
     fromFragment();
 })();
@@ -403,8 +466,6 @@
     const templateDialog = document.getElementById('wa-template-dialog');
     const templateForm = document.getElementById('wa-template-form');
     const templateProviderName = document.getElementById('wa-template-provider-name');
-    const templateSyncForm = document.getElementById('wa-template-sync-form');
-    const templateSyncSubmit = document.getElementById('wa-template-sync-submit');
     const selectedIds = new Set();
     const selectedStores = new Set();
     let importBatch = null;
@@ -499,7 +560,9 @@
     templateProviderName?.addEventListener('input', normalizeTemplateNameField);
     templateProviderName?.addEventListener('blur', normalizeTemplateNameField);
 
-    document.getElementById('wa-create-template')?.addEventListener('click',()=>templateDialog?.showModal());
+    document.addEventListener('click', event => {
+        if (event.target.closest('#wa-create-template')) templateDialog?.showModal();
+    });
     document.getElementById('wa-template-close')?.addEventListener('click',()=>templateDialog?.close());
     document.getElementById('wa-template-cancel')?.addEventListener('click',()=>templateDialog?.close());
     templateForm?.addEventListener('submit', event=>{
@@ -513,10 +576,13 @@
         if(button){button.disabled=true;button.setAttribute('aria-busy','true');}
     });
 
-    templateSyncForm?.addEventListener('submit', () => {
-        if (!templateSyncSubmit) return;
-        templateSyncSubmit.disabled = true;
-        templateSyncSubmit.setAttribute('aria-busy', 'true');
+    // Template Sync form may arrive later from the server-selected tab.
+    document.addEventListener('submit', event => {
+        if (event.target.id !== 'wa-template-sync-form') return;
+        const button = event.target.querySelector('#wa-template-sync-submit');
+        if (!button) return;
+        button.disabled = true;
+        button.setAttribute('aria-busy', 'true');
     });
 
     document.querySelectorAll('.wa-source-tab').forEach(button=>button.addEventListener('click',()=>{
