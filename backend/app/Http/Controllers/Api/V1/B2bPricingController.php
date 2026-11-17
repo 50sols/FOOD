@@ -113,7 +113,27 @@ class B2bPricingController extends Controller
      */
     public function validateCandidate(Request $request): void
     {
-        $this->validatedRuleInput($request);
+        [$data, $replaceBreaks] = $this->validatedRuleInput($request);
+
+        // Save also checks persisted breaks when the operator leaves them
+        // unchanged. Mirror that check without locking or writing a record;
+        // Save still performs the authoritative locked recheck to avoid races.
+        if (! $replaceBreaks) {
+            $existing = B2bPriceRule::query()
+                ->where('price_tier_id', $data['price_tier_id'])
+                ->where('store_id', $data['store_id'])
+                ->where('product_id', $data['product_id'])
+                ->first();
+
+            if ($existing instanceof B2bPriceRule) {
+                QuantityPriceBreaks::normalize(
+                    QuantityPriceBreaks::readBreaks($existing->quantity_price_breaks),
+                    (float) $data['minimum_quantity'],
+                    (float) ($data['ordering_increment'] ?? 1),
+                    (float) $data['unit_price'],
+                );
+            }
+        }
     }
 
     /**
