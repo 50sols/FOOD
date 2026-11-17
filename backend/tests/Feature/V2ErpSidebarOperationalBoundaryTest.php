@@ -151,8 +151,8 @@ final class V2ErpSidebarOperationalBoundaryTest extends TestCase
         // or any workflow-side mutation can occur.
         foreach ([
             'admin.erp.wms.transfers.store',
-            'admin.erp.finance.journals.post',
-            'admin.erp.treasury.payments.post',
+            'admin.erp.finance.journals.store',
+            'admin.erp.treasury.payments.store',
             'admin.erp.bi.schedules.store',
         ] as $routeName) {
             $this->post(route($routeName), [])->assertForbidden();
