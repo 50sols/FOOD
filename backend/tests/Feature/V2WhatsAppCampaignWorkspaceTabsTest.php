@@ -114,9 +114,10 @@ final class V2WhatsAppCampaignWorkspaceTabsTest extends TestCase
 
         $inactive = $this->actor('SUPER_ADMIN');
         $inactive->forceFill(['is_active' => false])->save();
+        // Existing campaign authorization rejects inactive accounts with HTTP 403.
         $this->actingAs($inactive->fresh())
             ->get(route('admin.whatsapp-campaigns.index', ['workspace_tab' => 'overview']))
-            ->assertUnauthorized();
+            ->assertForbidden();
 
         $allowed = $this->actor('SUPER_ADMIN');
         WhatsAppModuleState::query()->findOrFail(1)->forceFill(['emergency_stop' => true])->save();
