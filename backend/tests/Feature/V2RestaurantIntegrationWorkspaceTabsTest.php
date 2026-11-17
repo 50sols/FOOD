@@ -67,7 +67,7 @@ final class V2RestaurantIntegrationWorkspaceTabsTest extends TestCase
         $this->assertStringContainsString('overflow-x:auto;', $blade);
         $this->assertStringContainsString('min-width:0;padding-block:8px;', $blade);
         $this->assertStringContainsString('.ri-workspace-tabs .foodex-tab:focus-visible{outline:', $blade);
-        $this->assertStringContainsString("aria-current=\"page\"", $blade);
+        $this->assertStringContainsString('aria-current="page"', $blade);
         $this->assertStringNotContainsString('role="tablist"', $blade);
         $this->assertStringNotContainsString('role="tab"', $blade);
         $this->assertStringNotContainsString('aria-selected=', $blade);
