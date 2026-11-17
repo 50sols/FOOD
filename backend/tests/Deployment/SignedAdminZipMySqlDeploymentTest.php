@@ -4,14 +4,11 @@ namespace Tests\Deployment;
 
 use App\Domain\Updater\LaravelUpdateRuntime;
 use App\Domain\Updater\TrustedUpdateSignatureVerifier;
-use App\Domain\Updater\UpdateManager;
 use App\Domain\Updater\UpdatePackageManifest;
-use App\Domain\Updater\UpdatePackageValidator;
 use App\Domain\Updater\UpdateRuntime;
 use App\Models\Role;
 use App\Models\UpdateHistory;
 use App\Models\User;
-use App\Services\AuditLogger;
 use Database\Seeders\CoreReferenceSeeder;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\Artisan;
@@ -20,6 +17,7 @@ use Illuminate\Support\Facades\File;
 use Illuminate\Testing\TestResponse;
 use RuntimeException;
 use Tests\TestCase;
+use Throwable;
 use ZipArchive;
 
 /**
@@ -246,11 +244,6 @@ PHP;
 
             $faultRuntime = $this->failAfterApplyRuntime($email);
             app()->instance(UpdateRuntime::class, $faultRuntime);
-            app()->instance(UpdateManager::class, new UpdateManager(
-                app(UpdatePackageValidator::class),
-                $faultRuntime,
-                app(AuditLogger::class),
-            ));
 
             $this->signedPost($user, $pair, $keyId, $archivePath, '1.0.127', '1.0.125', true)
                 ->assertRedirect(route('admin.system-update.index'))
