@@ -135,9 +135,10 @@ class HttpB2bApi implements B2bApi, B2bDocumentApi, B2bDownloadApi {
           }
         }
         if (requestedStore != null && invoiceEndpoint) {
-          // The list producer echoes its applied store filter. Even an empty
-          // HTTP-200 page must not be treated as scoped data for another store.
-          if (segments.length == 4 && decoded.containsKey('filters')) {
+          // The list producer MUST echo its applied store filter. A missing
+          // filter on an empty HTTP-200 page is not proof of authorization
+          // for the selected store; never present it as "no invoices".
+          if (segments.length == 4) {
             final filters = decoded['filters'];
             if (filters is! Map<String, dynamic> ||
                 filters['store_id'] != requestedStore) {
