@@ -11,6 +11,7 @@ use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\File;
+use Illuminate\Testing\TestResponse;
 use Tests\TestCase;
 use ZipArchive;
 
@@ -163,7 +164,7 @@ PHP;
         string $target,
         string $minimum,
         bool $containsMigrations,
-    ): \Illuminate\Testing\TestResponse {
+    ): TestResponse {
         $bytes = (string) file_get_contents($path);
         $manifest = new UpdatePackageManifest(
             $target,
