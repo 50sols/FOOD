@@ -41,6 +41,93 @@ void main() {
   const b2b = CustomerSession.authenticated(CustomerChannel.b2b);
 
   for (final locale in const <Locale>[Locale('ar'), Locale('en')]) {
+    for (final detail in const <bool>[false, true]) {
+      testWidgets(
+        'MOB-C03 ${detail ? 'detail' : 'list'} PDF cannot cross Customer '
+        'store/session scope ${locale.languageCode}',
+        (tester) async {
+          tester.view.physicalSize = const Size(390, 844);
+          tester.view.devicePixelRatio = 1;
+          addTearDown(() {
+            tester.view.resetPhysicalSize();
+            tester.view.resetDevicePixelRatio();
+          });
+
+          final api = _DeferredInvoicePdfApi();
+          final actionApi = _FakeCustomerActionApi();
+          Widget scoped(int storeId, int invoiceId) => MaterialApp(
+                locale: locale,
+                home: AppTranslations(
+                  locale: locale,
+                  overrides: const <String, String>{},
+                  child: B2bJourneyScreen(
+                    definition: CustomerRouteDefinition(
+                      pattern: detail
+                          ? CustomerRoutePaths.b2bInvoiceDetails
+                          : CustomerRoutePaths.b2bInvoices,
+                      label: 'B2B invoices',
+                      channel: CustomerChannel.b2b,
+                      requiresAuth: true,
+                    ),
+                    location: detail
+                        ? '/b2b/invoices/$invoiceId?store_id=$storeId'
+                        : '/b2b/invoices?store_id=$storeId',
+                    actionApi: actionApi,
+                    api: api,
+                  ),
+                ),
+              );
+
+          await tester.pumpWidget(scoped(7, 31));
+          await _pumpCustomerFrames(tester);
+          final oldButton = detail
+              ? find.byKey(const ValueKey('b2b-invoice-detail-pdf'))
+              : find.byKey(const ValueKey('b2b-invoice-pdf-31'));
+          await tester.ensureVisible(oldButton);
+          expect(Directionality.of(tester.element(oldButton)),
+              locale.languageCode == 'ar' ? TextDirection.rtl : TextDirection.ltr);
+          await tester.tap(oldButton);
+          await tester.pump();
+          expect(api.downloadPaths, hasLength(1));
+          expect(api.downloadPaths[0], contains('store_id=7'));
+          expect(api.downloadPaths[0], contains('/invoices/31/download'));
+
+          // Same mounted route element and API, but a newly authorized
+          // invoice/store: an old download may never be shared or keep
+          // the next session's download action locked.
+          await tester.pumpWidget(scoped(9, 91));
+          await _pumpCustomerFrames(tester);
+          final nextButton = detail
+              ? find.byKey(const ValueKey('b2b-invoice-detail-pdf'))
+              : find.byKey(const ValueKey('b2b-invoice-pdf-91'));
+          await tester.ensureVisible(nextButton);
+          final nextAction = tester.widget<ButtonStyleButton>(nextButton);
+          expect(nextAction.onPressed, isNotNull);
+          await tester.tap(nextButton);
+          await tester.pump();
+          expect(api.downloadPaths, hasLength(2));
+          expect(api.downloadPaths[1], contains('store_id=9'));
+          expect(api.downloadPaths[1], contains('/invoices/91/download'));
+          expect(tester.widget<ButtonStyleButton>(nextButton).onPressed, isNull);
+
+          // The old completed bytes must not trigger the OS share sheet;
+          // an old finally must not re-enable the still-pending new export.
+          api.pending[0].complete(Uint8List.fromList(const [37, 80, 68, 70, 45]));
+          await tester.pump();
+          expect(tester.widget<ButtonStyleButton>(nextButton).onPressed, isNull);
+          expect(find.byType(SnackBar), findsNothing);
+
+          await tester.pumpWidget(const SizedBox());
+          api.pending[1].complete(Uint8List.fromList(const [37, 80, 68, 70, 45]));
+          await tester.pump();
+          expect(tester.takeException(), isNull);
+        },
+      );
+    }
+  }
+
+
+  for (final locale in const <Locale>[Locale('ar'), Locale('en')]) {
     testWidgets(
       'MOB-C03 statement hides previous store and discards late responses '
       '${locale.languageCode}',
@@ -7273,6 +7360,62 @@ class _DeferredPurchaseReportB2bApi implements B2bApi {
     final reply = Completer<Object?>();
     replies.add(reply);
     return reply.future;
+  }
+}
+
+class _DeferredInvoicePdfApi implements B2bApi, B2bDocumentApi {
+  final List<String> downloadPaths = <String>[];
+  final List<Completer<List<int>>> pending = <Completer<List<int>>>[];
+
+  @override
+  Future<Object?> get(String path) async {
+    final uri = Uri.parse(path);
+    final storeId = int.parse(uri.queryParameters['store_id'] ?? '7');
+    final invoiceId = uri.pathSegments.contains('91') ? 91 : 31;
+    final invoice = <String, Object?>{
+      'id': invoiceId,
+      'store_id': storeId,
+      'invoice_number': 'INV-$invoiceId',
+      'display_invoice_number': 'INV-$invoiceId',
+      'status': 'issued',
+      'display_status': 'partially_paid',
+      'currency': 'KWD',
+      'total': 60.125,
+      'paid_amount': 20.000,
+      'outstanding_amount': 40.125,
+      'credit_amount': 0.000,
+      'pdf_path': '/api/v1/b2b/invoices/$invoiceId/download?store_id=$storeId',
+      'items': <Object?>[],
+      'payments': <Object?>[],
+      'ledger_entries': <Object?>[],
+    };
+    if (uri.pathSegments.length == 5) {
+      return {'data': invoice};
+    }
+    return {
+      'data': [invoice],
+      'summary': {
+        'totals': [
+          {
+            'currency': 'KWD',
+            'total': 60.125,
+            'paid': 20.000,
+            'outstanding': 40.125,
+            'overdue': 0.000,
+            'credit': 0.000,
+          },
+        ],
+      },
+      'meta': {'page': 1, 'per_page': 20, 'total': 1, 'has_more': false},
+    };
+  }
+
+  @override
+  Future<List<int>> getBytes(String path) {
+    downloadPaths.add(path);
+    final result = Completer<List<int>>();
+    pending.add(result);
+    return result.future;
   }
 }
 
