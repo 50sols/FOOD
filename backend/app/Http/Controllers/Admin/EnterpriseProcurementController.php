@@ -214,21 +214,17 @@ final class EnterpriseProcurementController extends Controller
                 break;
 
             case 'matches':
+                // This is a read-only GET. Materializing a three-way review can
+                // insert or auto-approve an accounting decision, so it must
+                // happen only inside the existing authorized invoice write /
+                // explicit review workflow, never while listing records.
+                // paginateMatches uses a LEFT JOIN: invoices without a review
+                // remain visible as pending in the existing view, with no
+                // fabricated variance, reviewer, or approval persisted here.
                 $data['rows'] = $this->completion->paginateMatches($actor, $context, [
                     'q' => $request->query('q'),
                     'status' => $request->query('status'),
                 ], 25);
-                foreach ($data['rows']->getCollection() as $matchRow) {
-                    if ($matchRow->match_review_id === null) {
-                        $this->completion->syncMatchForInvoice((int) $matchRow->purchase_invoice_id);
-                    }
-                }
-                if ($data['rows']->getCollection()->contains(fn ($matchRow): bool => $matchRow->match_review_id === null)) {
-                    $data['rows'] = $this->completion->paginateMatches($actor, $context, [
-                        'q' => $request->query('q'),
-                        'status' => $request->query('status'),
-                    ], 25);
-                }
                 break;
 
             case 'returns':
