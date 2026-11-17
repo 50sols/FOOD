@@ -3,6 +3,7 @@
 namespace App\Enterprise\Procurement;
 
 use App\Enterprise\Modules\ModuleRegistry;
+use App\Enterprise\Organization\OrganizationHierarchyService;
 use App\Models\EnterpriseSupplier;
 use App\Models\User;
 use App\Services\AuditLogger;
@@ -1590,7 +1591,7 @@ final class ProcurementCompletionManager
             $scope->companyId,
         );
 
-        return $this->reportForStore($report, $scope->storeId, $filters, $limit);
+        return $this->reportForStore($report, $scope->storeId, $filters, $limit, 0, $scope);
     }
 
     /**
@@ -1606,18 +1607,34 @@ final class ProcurementCompletionManager
         array $filters = [],
         int $limit = 500,
         int $offset = 0,
+        ?EnterpriseDataScope $scope = null,
     ): array {
+        // BI can call this bridge after its own permission gate, but store ID
+        // alone is not the legal-entity boundary of any exported document.
+        // Resolve the authoritative hierarchy before generating SQL.
+        $hierarchy = app(OrganizationHierarchyService::class)->scopeForStore($storeId);
+        abort_if($hierarchy === null, 404);
+        if ($scope !== null) {
+            abort_unless(
+                $scope->storeId === $storeId
+                && $scope->organizationId === $hierarchy['organization_id']
+                && $scope->companyId === $hierarchy['company_id'],
+                403,
+            );
+        }
+        $organizationId = $hierarchy['organization_id'];
+        $companyId = $hierarchy['company_id'];
         [$from, $to] = $this->dateWindow($filters['from'] ?? null, $filters['to'] ?? null);
         $limit = max(1, min(5000, $limit));
         $offset = max(0, $offset);
 
         return match ($report) {
-            'open_orders' => $this->openOrdersReport($storeId, $limit, $offset),
-            'spend' => $this->spendReport($storeId, $from, $to, $limit, $offset),
-            'supplier_performance' => $this->supplierPerformanceReport($storeId, $from, $to, $limit, $offset),
-            'savings' => $this->savingsReport($storeId, $from, $to, $limit, $offset),
-            'contract_expiry' => $this->contractExpiryReport($storeId, $limit, $offset),
-            'match_exceptions' => $this->matchExceptionReport($storeId, $limit, $offset),
+            'open_orders' => $this->openOrdersReport($storeId, $limit, $offset, $organizationId, $companyId),
+            'spend' => $this->spendReport($storeId, $from, $to, $limit, $offset, $organizationId, $companyId),
+            'supplier_performance' => $this->supplierPerformanceReport($storeId, $from, $to, $limit, $offset, $organizationId, $companyId),
+            'savings' => $this->savingsReport($storeId, $from, $to, $limit, $offset, $organizationId, $companyId),
+            'contract_expiry' => $this->contractExpiryReport($storeId, $limit, $offset, $organizationId, $companyId),
+            'match_exceptions' => $this->matchExceptionReport($storeId, $limit, $offset, $organizationId, $companyId),
             default => throw ValidationException::withMessages(['report' => ['Unknown procurement report.']]),
         };
     }
@@ -1891,10 +1908,12 @@ final class ProcurementCompletionManager
     }
 
     /** @return array{columns:list<string>,rows:list<array<string,mixed>>} */
-    private function openOrdersReport(int $storeId, int $limit, int $offset = 0): array
+    private function openOrdersReport(int $storeId, int $limit, int $offset, int $organizationId, int $companyId): array
     {
         $rows = DB::table('enterprise_purchase_orders as orders')
             ->leftJoin('enterprise_purchase_order_lines as lines', 'lines.purchase_order_id', '=', 'orders.id')
+            ->where('orders.organization_id', $organizationId)
+            ->where('orders.company_id', $companyId)
             ->where('orders.store_id', $storeId)
             ->whereIn('orders.status', ['draft', 'issued'])
             ->groupBy(
@@ -1942,9 +1961,11 @@ final class ProcurementCompletionManager
     }
 
     /** @return array{columns:list<string>,rows:list<array<string,mixed>>} */
-    private function spendReport(int $storeId, string $from, string $to, int $limit, int $offset = 0): array
+    private function spendReport(int $storeId, string $from, string $to, int $limit, int $offset, int $organizationId, int $companyId): array
     {
         $rows = DB::table('enterprise_purchase_invoices')
+            ->where('organization_id', $organizationId)
+            ->where('company_id', $companyId)
             ->where('store_id', $storeId)
             ->where('status', 'handed_off')
             ->whereBetween('invoice_date', [$from, $to])
@@ -1961,13 +1982,18 @@ final class ProcurementCompletionManager
     }
 
     /** @return array{columns:list<string>,rows:list<array<string,mixed>>} */
-    private function supplierPerformanceReport(int $storeId, string $from, string $to, int $limit, int $offset = 0): array
+    private function supplierPerformanceReport(int $storeId, string $from, string $to, int $limit, int $offset, int $organizationId, int $companyId): array
     {
         $source = DB::table('enterprise_purchase_orders as orders')
-            ->leftJoin('enterprise_goods_receipts as receipts', function ($join): void {
+            ->leftJoin('enterprise_goods_receipts as receipts', function ($join) use ($organizationId, $companyId, $storeId): void {
                 $join->on('receipts.purchase_order_id', '=', 'orders.id')
-                    ->where('receipts.status', '=', 'posted');
+                    ->where('receipts.status', '=', 'posted')
+                    ->where('receipts.organization_id', '=', $organizationId)
+                    ->where('receipts.company_id', '=', $companyId)
+                    ->where('receipts.store_id', '=', $storeId);
             })
+            ->where('orders.organization_id', $organizationId)
+            ->where('orders.company_id', $companyId)
             ->where('orders.store_id', $storeId)
             ->whereBetween('orders.created_at', [$from.' 00:00:00', $to.' 23:59:59'])
             ->get([
@@ -2004,13 +2030,17 @@ final class ProcurementCompletionManager
     }
 
     /** @return array{columns:list<string>,rows:list<array<string,mixed>>} */
-    private function savingsReport(int $storeId, string $from, string $to, int $limit, int $offset = 0): array
+    private function savingsReport(int $storeId, string $from, string $to, int $limit, int $offset, int $organizationId, int $companyId): array
     {
         $rows = DB::table('enterprise_procurement_quotes as quotes')
             ->join('enterprise_procurement_rfqs as rfqs', 'rfqs.id', '=', 'quotes.rfq_id')
             ->join('enterprise_suppliers as suppliers', 'suppliers.id', '=', 'quotes.supplier_id')
             ->join('enterprise_procurement_quote_lines as quote_lines', 'quote_lines.quote_id', '=', 'quotes.id')
             ->join('enterprise_procurement_rfq_lines as rfq_lines', 'rfq_lines.id', '=', 'quote_lines.rfq_line_id')
+            ->where('rfqs.organization_id', $organizationId)
+            ->where('rfqs.company_id', $companyId)
+            ->where('suppliers.organization_id', $organizationId)
+            ->where('suppliers.company_id', $companyId)
             ->where('rfqs.store_id', $storeId)
             ->where('quotes.status', 'awarded')
             ->whereBetween('quotes.awarded_at', [$from.' 00:00:00', $to.' 23:59:59'])
@@ -2032,10 +2062,14 @@ final class ProcurementCompletionManager
     }
 
     /** @return array{columns:list<string>,rows:list<array<string,mixed>>} */
-    private function contractExpiryReport(int $storeId, int $limit, int $offset = 0): array
+    private function contractExpiryReport(int $storeId, int $limit, int $offset, int $organizationId, int $companyId): array
     {
         $rows = DB::table('enterprise_procurement_contracts as contracts')
             ->join('enterprise_suppliers as suppliers', 'suppliers.id', '=', 'contracts.supplier_id')
+            ->where('contracts.organization_id', $organizationId)
+            ->where('contracts.company_id', $companyId)
+            ->where('suppliers.organization_id', $organizationId)
+            ->where('suppliers.company_id', $companyId)
             ->where('contracts.store_id', $storeId)
             ->whereIn('contracts.status', ['active', 'draft'])
             ->orderBy('contracts.ends_on')
@@ -2084,10 +2118,12 @@ final class ProcurementCompletionManager
     }
 
     /** @return array{columns:list<string>,rows:list<array<string,mixed>>} */
-    private function matchExceptionReport(int $storeId, int $limit, int $offset = 0): array
+    private function matchExceptionReport(int $storeId, int $limit, int $offset, int $organizationId, int $companyId): array
     {
         $rows = DB::table('enterprise_purchase_invoices as invoices')
             ->join('enterprise_procurement_match_reviews as matches', 'matches.purchase_invoice_id', '=', 'invoices.id')
+            ->where('invoices.organization_id', $organizationId)
+            ->where('invoices.company_id', $companyId)
             ->where('invoices.store_id', $storeId)
             ->whereIn('matches.status', ['pending', 'rejected'])
             ->orderByDesc('invoices.id')
