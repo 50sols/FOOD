@@ -96,9 +96,7 @@ void main() {
         expect(find.textContaining('49.875 KWD'), findsNothing);
         expect(
           Directionality.of(tester.element(denial)),
-          locale.languageCode == 'ar'
-              ? TextDirection.rtl
-              : TextDirection.ltr,
+          locale.languageCode == 'ar' ? TextDirection.rtl : TextDirection.ltr,
         );
 
         api.pending.complete(_DeferredStatementExportApi.document());
@@ -113,7 +111,6 @@ void main() {
       },
     );
   }
-
 
   for (final locale in const <Locale>[Locale('ar'), Locale('en')]) {
     for (final detail in const <bool>[false, true]) {
