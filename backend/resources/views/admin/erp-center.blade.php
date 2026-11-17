@@ -330,11 +330,11 @@ $readinessCertifiedVersion = $readinessModuleCode
 @if($card['url'])
 <a class="foodex-action-primary" href="{{ $card['url'] }}">{{ __('admin.erp_center.open') }}</a>
 @else
-@if($card['status'] !== 'degraded')
-<span class="erp-note">{{ $card['denial_reason']
+{{-- A degraded module is not operational: keep the authoritative localized
+     denial reason visible alongside readiness steps, never an open action. --}}
+<span class="erp-note" role="status">{{ $card['denial_reason']
     ? __('admin.erp_center.denial_reasons.'.$card['denial_reason'])
     : __('admin.erp_center.status_help.'.$card['status']) }}</span>
-@endif
 @endif
 </div>
 @if($card['status'] === 'degraded' || in_array($card['key'], ['treasury','procurement','wms','finance','bi'], true))
