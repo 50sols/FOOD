@@ -2854,6 +2854,283 @@ final class V2ErpEntitlementCheckerBoundaryTest extends TestCase
         $this->assertSame($auditAfterCancel, DB::table('audit_logs')->count());
     }
 
+    public function test_issued_po_http_partial_grn_scoped_post_replay_and_over_receipt_never_duplicate_stock_ledger(): void
+    {
+        $storeA = $this->wholesaleStore();
+        $storeB = Store::query()->create([
+            'store_type_id' => $storeA->store_type_id,
+            'code' => 'P111-GRN-FOREIGN-STORE',
+            'name' => 'P111 distinct receiving store',
+            'is_active' => true,
+        ]);
+        app(OrganizationHierarchyService::class)->ensureDefaultScopeForStore($storeB);
+
+        $owner = $this->actor('SUPER_ADMIN');
+        $buyer = $this->actor('PROCUREMENT_BUYER');
+        $checker = $this->actor('PROCUREMENT_MANAGER');
+        app(EnterpriseModuleAdministration::class)->perform('procurement', 'enable', $owner);
+        app(ModuleEntitlementManager::class)->set(
+            'procurement', EntitlementScope::platform(), true, null, $owner,
+        );
+
+        $catalog = Catalog::query()->create([
+            'store_id' => $storeA->id,
+            'channel' => 'b2c',
+            'code' => 'P111-GRN-CATALOG',
+            'name' => 'P111 receiving catalog',
+            'is_active' => true,
+            'is_migration_quarantine' => false,
+        ]);
+        $unitId = (int) DB::table('units')->insertGetId([
+            'store_id' => null,
+            'scope' => 'global',
+            'scope_key' => 'global',
+            'code' => 'P111-GRN-EACH',
+            'name' => 'Each',
+            'is_active' => true,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        $product = Product::query()->create([
+            'catalog_id' => $catalog->id,
+            'unit_id' => $unitId,
+            'sku' => 'P111-GRN-SKU',
+            'name' => 'P111 stocked product',
+            'is_active' => true,
+        ]);
+        $warehouseA = Warehouse::query()->create([
+            'store_id' => $storeA->id,
+            'code' => 'P111-GRN-WH-A',
+            'name' => 'P111 authorized warehouse',
+            'is_active' => true,
+        ]);
+        $warehouseB = Warehouse::query()->create([
+            'store_id' => $storeB->id,
+            'code' => 'P111-GRN-WH-B',
+            'name' => 'P111 foreign warehouse',
+            'is_active' => true,
+        ]);
+
+        $supplier = app(SupplierDirectory::class)->create(
+            $buyer,
+            app(TenantContextResolver::class)->wholesale($buyer, $storeA->id),
+            [
+                'scope_type' => 'store',
+                'code' => 'P111-GRN-SUP',
+                'name_en' => 'P111 supplier is not stock legal title',
+            ],
+        );
+        $this->actingAs($buyer)->post(route('admin.erp.procurement.requests.store'), [
+            'store_id' => $storeA->id,
+            'supplier_id' => $supplier->id,
+            'currency_code' => 'KWD',
+            'reason' => 'P111 real fractional receipt HTTP source',
+            'item_code' => $product->sku,
+            'description' => 'P111 fractional stock received',
+            'quantity' => '1.500',
+            'unit' => 'each',
+            'estimated_unit_cost' => '1.250',
+        ])->assertRedirect();
+        $request = DB::table('enterprise_purchase_requests')
+            ->where('reason', 'P111 real fractional receipt HTTP source')->first();
+        $this->assertNotNull($request);
+        $this->actingAs($buyer)->post(route('admin.erp.procurement.requests.submit', $request->id), [
+            'store_id' => $storeA->id,
+        ])->assertRedirect();
+        $this->actingAs($checker)->post(route('admin.erp.procurement.requests.decision', $request->id), [
+            'store_id' => $storeA->id,
+            'decision' => 'approve',
+        ])->assertRedirect();
+        $this->actingAs($checker)->post(route('admin.erp.procurement.orders.create', $request->id), [
+            'store_id' => $storeA->id,
+        ])->assertRedirect();
+        $po = DB::table('enterprise_purchase_orders')
+            ->where('purchase_request_id', $request->id)->first();
+        $this->assertNotNull($po);
+        $this->assertSame('draft', $po->status);
+        $poLine = DB::table('enterprise_purchase_order_lines')
+            ->where('purchase_order_id', $po->id)->first();
+        $this->assertNotNull($poLine);
+        $this->assertSame('1.500', (string) $poLine->quantity);
+        $this->assertSame('1.250', (string) $poLine->unit_price);
+        $receiveUrl = route('admin.erp.procurement.receipts.store', $po->id);
+        $firstPayload = [
+            'store_id' => $storeA->id,
+            'warehouse_id' => $warehouseA->id,
+            'lines' => [[
+                'purchase_order_line_id' => $poLine->id,
+                'quantity' => '0.625',
+                'unit' => 'case',
+                'unit_price' => '-900.000',
+                'discount_percent' => 100,
+                'owner_key' => 'FOODEX',
+            ]],
+            'supplier_id' => 999999,
+            'owner_key' => 'SUPPLIER:'.$supplier->id,
+            'status' => 'posted',
+            'posted_by' => $owner->id,
+        ];
+        $auditBeforeDraft = DB::table('audit_logs')->count();
+        $this->actingAs($checker)->post($receiveUrl, $firstPayload)
+            ->assertSessionHasErrors('purchase_order_id');
+        $this->assertDatabaseCount('enterprise_goods_receipts', 0);
+        $this->assertSame($auditBeforeDraft, DB::table('audit_logs')->count());
+
+        $this->actingAs($checker)->post(route('admin.erp.procurement.orders.issue', $po->id), [
+            'store_id' => $storeA->id,
+        ])->assertRedirect();
+        $this->assertDatabaseHas('enterprise_purchase_orders', [
+            'id' => $po->id,
+            'status' => 'issued',
+            'issued_by' => $checker->id,
+        ]);
+        $auditBeforeInvalid = DB::table('audit_logs')->count();
+        foreach (['ar', 'en'] as $locale) {
+            $buyer->forceFill(['locale' => $locale])->save();
+            $checker->forceFill(['locale' => $locale])->save();
+
+            // Read permission or an HTML form does not grant GRN management.
+            $this->actingAs($buyer->fresh())->post($receiveUrl, $firstPayload)
+                ->assertForbidden();
+            $this->actingAs($checker->fresh())->post($receiveUrl, [
+                ...$firstPayload,
+                'store_id' => $storeB->id,
+            ])->assertNotFound();
+            $this->actingAs($checker->fresh())->post($receiveUrl, [
+                ...$firstPayload,
+                'warehouse_id' => $warehouseB->id,
+            ])->assertSessionHasErrors('lines');
+            $this->actingAs($checker->fresh())->post($receiveUrl, [
+                ...$firstPayload,
+                'lines' => [[
+                    'purchase_order_line_id' => $poLine->id,
+                    'quantity' => '1.501',
+                ]],
+            ])->assertSessionHasErrors('lines');
+        }
+        $this->assertSame($auditBeforeInvalid, DB::table('audit_logs')->count());
+        $this->assertDatabaseCount('enterprise_goods_receipts', 0);
+        $this->assertDatabaseCount('stock_movements', 0);
+
+        $receipts = [];
+        foreach (['0.625', '0.875'] as $quantity) {
+            $this->actingAs($checker->fresh())->post($receiveUrl, [
+                ...$firstPayload,
+                'lines' => [[
+                    ...$firstPayload['lines'][0],
+                    'quantity' => $quantity,
+                ]],
+            ])->assertRedirect();
+            $receipt = DB::table('enterprise_goods_receipts')
+                ->where('purchase_order_id', $po->id)
+                ->orderByDesc('id')->first();
+            $this->assertNotNull($receipt);
+            $this->assertSame('draft', $receipt->status);
+            $this->assertSame((int) $supplier->id, (int) $receipt->supplier_id);
+            $this->assertSame((int) $checker->id, (int) $receipt->created_by);
+            $this->assertNull($receipt->posted_by);
+            $this->assertSame($po->order_number, $receipt->source_order_number);
+            $this->assertSame('KWD', $receipt->currency_code);
+            $line = DB::table('enterprise_goods_receipt_lines')
+                ->where('goods_receipt_id', $receipt->id)->first();
+            $this->assertNotNull($line);
+            $this->assertSame('each', $line->unit);
+            $this->assertSame('1.250', (string) $line->unit_price);
+            $this->assertSame($quantity, (string) $line->received_quantity);
+            $this->assertSame((int) $warehouseA->id, (int) $line->warehouse_id);
+            $this->assertSame((int) $poLine->id, (int) $line->purchase_order_line_id);
+            $this->assertNull($line->stock_movement_id);
+
+            $postUrl = route('admin.erp.procurement.receipts.post', $receipt->id);
+            $auditBeforeDeniedPost = DB::table('audit_logs')->count();
+            $this->actingAs($buyer->fresh())->post($postUrl, [
+                'store_id' => $storeA->id,
+                'posted_by' => $owner->id,
+            ])->assertForbidden();
+            $this->actingAs($checker->fresh())->post($postUrl, [
+                'store_id' => $storeB->id,
+            ])->assertNotFound();
+            $this->assertSame($auditBeforeDeniedPost, DB::table('audit_logs')->count());
+
+            $this->actingAs($checker->fresh())->post($postUrl, [
+                'store_id' => $storeA->id,
+                'posted_by' => $owner->id,
+                'status' => 'cancelled',
+                'owner_key' => 'FOODEX',
+            ])->assertRedirect();
+            $posted = DB::table('enterprise_goods_receipts')->where('id', $receipt->id)->first();
+            $this->assertSame('posted', $posted->status);
+            $this->assertSame((int) $checker->id, (int) $posted->posted_by);
+            $this->assertNotNull($posted->posted_at);
+            $postedLine = DB::table('enterprise_goods_receipt_lines')
+                ->where('goods_receipt_id', $receipt->id)->first();
+            $this->assertNotNull($postedLine->stock_movement_id);
+            $this->assertNotNull($postedLine->inventory_id);
+            $this->assertSame(1, DB::table('stock_movements')
+                ->where('type', 'purchase_receipt')
+                ->where('reference_type', 'enterprise_goods_receipt_line')
+                ->where('reference_id', $postedLine->id)->count());
+            $this->assertSame(1, DB::table('audit_logs')
+                ->where('event', 'enterprise.goods_receipt.posted')
+                ->where('auditable_id', $receipt->id)->count());
+
+            $auditBeforeRetry = DB::table('audit_logs')->count();
+            $this->actingAs($checker->fresh())->post($postUrl, [
+                'store_id' => $storeA->id,
+                'posted_by' => $buyer->id,
+            ])->assertRedirect();
+            $retried = DB::table('enterprise_goods_receipts')->where('id', $receipt->id)->first();
+            $this->assertSame((int) $checker->id, (int) $retried->posted_by);
+            $this->assertSame((string) $posted->posted_at, (string) $retried->posted_at);
+            $this->assertSame($auditBeforeRetry, DB::table('audit_logs')->count());
+            $this->assertSame(1, DB::table('stock_movements')
+                ->where('type', 'purchase_receipt')
+                ->where('reference_type', 'enterprise_goods_receipt_line')
+                ->where('reference_id', $postedLine->id)->count());
+            $this->actingAs($checker->fresh())->post(route('admin.erp.procurement.receipts.cancel', $receipt->id), [
+                'store_id' => $storeA->id,
+            ])->assertSessionHasErrors('status');
+
+            $receipts[] = $receipt->id;
+        }
+        $inventory = DB::table('inventories')
+            ->where('warehouse_id', $warehouseA->id)
+            ->where('product_id', $product->id)->first();
+        $this->assertNotNull($inventory);
+        $this->assertSame('1.500', number_format((float) $inventory->quantity, 3, '.', ''));
+        $this->assertSame('0.000', number_format((float) $inventory->reserved_quantity, 3, '.', ''));
+        $this->assertSame(2, DB::table('stock_movements')
+            ->where('inventory_id', $inventory->id)
+            ->where('type', 'purchase_receipt')
+            ->where('reference_type', 'enterprise_goods_receipt_line')
+            ->count());
+        $this->assertSame('1.500', number_format((float) DB::table('stock_movements')
+            ->where('inventory_id', $inventory->id)
+            ->where('type', 'purchase_receipt')
+            ->where('reference_type', 'enterprise_goods_receipt_line')
+            ->sum('quantity'), 3, '.', ''));
+        $this->assertSame(2, DB::table('audit_logs')
+            ->where('event', 'enterprise.goods_receipt.posted')
+            ->whereIn('auditable_id', $receipts)->count());
+
+        $auditBeforeOver = DB::table('audit_logs')->count();
+        $this->actingAs($checker->fresh())->post($receiveUrl, [
+            ...$firstPayload,
+            'lines' => [[
+                'purchase_order_line_id' => $poLine->id,
+                'quantity' => '0.001',
+            ]],
+        ])->assertSessionHasErrors('lines');
+        $this->assertSame(2, DB::table('enterprise_goods_receipts')
+            ->where('purchase_order_id', $po->id)->count());
+        $this->assertSame('1.500', number_format((float) DB::table('inventories')
+            ->where('id', $inventory->id)->value('quantity'), 3, '.', ''));
+        $this->assertSame(2, DB::table('stock_movements')
+            ->where('inventory_id', $inventory->id)
+            ->where('type', 'purchase_receipt')->count());
+        $this->assertSame($auditBeforeOver, DB::table('audit_logs')->count());
+    }
+
     private function wholesaleStore(): Store
     {
         $store = Store::query()->findOrFail(app(WholesalePrincipal::class)->storeId());
