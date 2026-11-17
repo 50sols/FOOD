@@ -67,8 +67,8 @@ final class EnterpriseActionCenter
                                         ->whereColumn('enterprise_legal_entities.id', 'enterprise_workflow_requests.scope_id')
                                         ->where('stores.is_active', true)
                                         ->where('store_types.code', $channel);
-                            });
-                            });
+                                });
+                        });
                     }
                 });
             });
