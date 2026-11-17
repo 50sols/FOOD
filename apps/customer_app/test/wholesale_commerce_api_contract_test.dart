@@ -6,6 +6,91 @@ import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 
 void main() {
+  for (final language in ['ar', 'en']) {
+    for (final sellingUnit in [false, true]) {
+      test(
+        'Wholesale cart add verifies server store/channel ${sellingUnit ? 'selling unit' : 'base item'} $language',
+        () async {
+          Future<Object?> add(HttpWholesaleCommerceApi api) => sellingUnit
+              ? api.addSellingUnitItem(12, 44, 1.125, 'CASE')
+              : api.addItem(12, 44, 1.125);
+
+          for (final mismatchedStore in [true, false]) {
+            var attempts = 0;
+            final api = HttpWholesaleCommerceApi(
+              baseUrl: 'https://foodex.example',
+              token: 'scoped-customer',
+              locale: language,
+              retailStoreContextId: 17,
+              client: MockClient((request) async {
+                attempts++;
+                expect(request.method, 'POST');
+                expect(request.url.path, '/api/v1/cart/items');
+                expect(request.headers['Authorization'], 'Bearer scoped-customer');
+                expect(request.headers['X-FOODEX-Customer-Domain'], 'b2b');
+                expect(request.headers['X-FOODEX-Retail-Store-ID'], '17');
+                expect(request.headers['Accept-Language'], language);
+                final payload = jsonDecode(request.body) as Map;
+                expect(payload['store_id'], 12);
+                expect(payload['product_id'], 44);
+                expect(payload['quantity'], 1.125);
+                if (sellingUnit) {
+                  expect(payload['selling_unit_code'], 'CASE');
+                } else {
+                  expect(payload, isNot(contains('selling_unit_code')));
+                }
+                expect(payload, isNot(contains('unit_price')));
+                expect(payload, isNot(contains('credit_limit')));
+                return http.Response(
+                  jsonEncode({
+                    'store_id': mismatchedStore ? 99 : 12,
+                    'channel': mismatchedStore ? 'b2b' : 'b2c',
+                    'items': <Object?>[],
+                    'quote': {'grand_total': 20.125},
+                  }),
+                  201,
+                  headers: {'content-type': 'application/json'},
+                );
+              }),
+            );
+            await expectLater(
+              add(api),
+              throwsA(
+                isA<WholesaleCommerceException>().having(
+                  (error) => error.message,
+                  'localized wrong-store or cross-channel cart response',
+                  language == 'en'
+                      ? 'The server returned a different store or invalid order. Refresh and try again.'
+                      : 'أعاد الخادم بيانات متجر مختلف أو طلبًا غير صالح. حدّث الصفحة وحاول مرة أخرى.',
+                ),
+              ),
+            );
+            expect(attempts, 1);
+          }
+
+          var calls = 0;
+          final api = HttpWholesaleCommerceApi(
+            baseUrl: 'https://foodex.example',
+            token: 'scoped-customer',
+            locale: language,
+            client: MockClient((request) async {
+              calls++;
+              return http.Response(
+                '{"store_id":12,"channel":"b2b","items":[],"quote":{"grand_total":20.125}}',
+                201,
+                headers: {'content-type': 'application/json'},
+              );
+            }),
+          );
+          final result = await add(api) as Map;
+          expect(result['store_id'], 12);
+          expect((result['quote'] as Map)['grand_total'], 20.125);
+          expect(calls, 1);
+        },
+      );
+    }
+  }
+
   test('Wholesale GET retries transient failure with B2B and locale scope',
       () async {
     var attempts = 0;
