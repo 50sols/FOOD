@@ -201,6 +201,8 @@ return [
         'install_progress_directory_writable' => 'Installer progress directory is not writable or contains an unsafe symbolic link. Grant the PHP account write access to the private progress parent via cPanel or hosting support.',
         'installer_token_lock_directory_writable' => 'Installer session token-lock directory is not writable or contains an unsafe symbolic link. Check the private installer-token-locks path ownership/ACL; never use chmod 777.',
         'db_connection' => 'Database connection failed. Verify the supplied host, port, database and credentials.',
+        'database_safety_unverifiable' => 'The selected database cannot be verified as safe and empty. Stop setup and check MySQL/MariaDB inspection permissions with cPanel or your host; never reseed a live database.',
+        'existing_business_data' => 'The selected database already contains FOODEX data. Choose a new empty cPanel database for first installation and use System Updates for an existing site. User and role data will not be reseeded.',
         'storage_dir' => 'Storage directories could not be prepared.',
         'public_storage_link' => 'This host cannot create the required public storage symlink. Ask your hosting provider to enable PHP symlink support or configure a safe web-server alias from backend/storage/app/public to backend/public/storage, then retry. Do not create an empty backend/public/storage directory as a substitute.',
         'migrations' => 'Database migrations failed.',
