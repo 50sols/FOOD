@@ -257,7 +257,7 @@ final class SystemUpdateController extends Controller
         }
 
         $id = array_key_first($keys);
-        if (! is_string($id) || preg_match('/\\A[a-zA-Z0-9][a-zA-Z0-9_.-]{0,79}\\z/D', $id) !== 1) {
+        if (preg_match('/\\A[a-zA-Z0-9][a-zA-Z0-9_.-]{0,79}\\z/D', $id) !== 1) {
             return false;
         }
 
