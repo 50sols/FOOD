@@ -1591,33 +1591,45 @@ final class ProcurementCompletionManager
             'note' => ['nullable', 'string', 'max:2000'],
         ])->validate();
 
-        $invoice = DB::table('enterprise_purchase_invoices')
-            ->where('id', $invoiceId)
-            ->where('organization_id', $scope->organizationId)
-            ->where('company_id', $scope->companyId)
-            ->where('store_id', $scope->storeId)
-            ->first();
-        abort_if($invoice === null, 404);
+        return DB::transaction(function () use ($actor, $scope, $invoiceId, $data): object {
+            // Match review and handoff lock the same invoice before the review
+            // row. Never allow post-handoff edits to approval metadata or
+            // race a concurrent immutable Finance outbox publication.
+            $invoice = DB::table('enterprise_purchase_invoices')
+                ->where('id', $invoiceId)
+                ->where('organization_id', $scope->organizationId)
+                ->where('company_id', $scope->companyId)
+                ->where('store_id', $scope->storeId)
+                ->lockForUpdate()
+                ->first();
+            abort_if($invoice === null, 404);
 
-        $match = $this->syncMatchForInvoice($invoiceId);
-        DB::table('enterprise_procurement_match_reviews')->where('id', $match->id)->update([
-            'status' => $data['decision'] === 'approve' ? 'approved' : 'rejected',
-            'review_note' => $data['note'] ?? null,
-            'reviewed_by' => $actor->id,
-            'reviewed_at' => now(),
-            'updated_at' => now(),
-        ]);
+            if ($invoice->status !== 'draft') {
+                throw ValidationException::withMessages([
+                    'status' => [__('enterprise_procurement.errors.invoice_handed_off_immutable')],
+                ]);
+            }
 
-        $updated = DB::table('enterprise_procurement_match_reviews')->where('id', $match->id)->firstOrFail();
-        $this->audit->record('enterprise.procurement.three_way_match.reviewed', $actor, null, null, [
-            'store_id' => $scope->storeId,
-            'purchase_invoice_id' => $invoiceId,
-            'status' => $updated->status,
-            'quantity_variance' => $updated->quantity_variance,
-            'value_variance' => $updated->value_variance,
-        ]);
+            $match = $this->syncMatchForInvoice($invoiceId);
+            DB::table('enterprise_procurement_match_reviews')->where('id', $match->id)->update([
+                'status' => $data['decision'] === 'approve' ? 'approved' : 'rejected',
+                'review_note' => $data['note'] ?? null,
+                'reviewed_by' => $actor->id,
+                'reviewed_at' => now(),
+                'updated_at' => now(),
+            ]);
 
-        return $updated;
+            $updated = DB::table('enterprise_procurement_match_reviews')->where('id', $match->id)->firstOrFail();
+            $this->audit->record('enterprise.procurement.three_way_match.reviewed', $actor, null, null, [
+                'store_id' => $scope->storeId,
+                'purchase_invoice_id' => $invoiceId,
+                'status' => $updated->status,
+                'quantity_variance' => $updated->quantity_variance,
+                'value_variance' => $updated->value_variance,
+            ]);
+
+            return $updated;
+        }, 3);
     }
 
     /**
