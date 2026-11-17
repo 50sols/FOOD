@@ -43,7 +43,8 @@
             <a class="foodex-tab {{ $activeTab === 'create' ? 'active' : '' }}" href="{{ route('admin.whatsapp.connections.index', ['tab' => 'create']) }}" @if($activeTab === 'create') aria-current="page" @endif>{{ __('whatsapp.connections.create') }}</a>
             @endif
         </nav>
-        <div data-whatsapp-panel="health" @if($activeTab !== 'health') hidden @endif>
+        @if($activeTab === 'health')
+        <div data-whatsapp-panel="health">
         <section class="panel" aria-labelledby="whatsapp-global-state">
             <h2 id="whatsapp-global-state">{{ __('whatsapp.connections.global_state') }}</h2>
             <p><strong>{{ __('whatsapp.states.'.$moduleState->lifecycle->value) }}</strong></p>
@@ -66,9 +67,10 @@
         </section>
         @endif
         </div>
+        @endif
 
-        @if($canManage)
-        <div data-whatsapp-panel="create" @if($activeTab !== 'create') hidden @endif>
+        @if($canManage && $activeTab === 'create')
+        <div data-whatsapp-panel="create">
         <section class="panel" aria-labelledby="new-connection-profile">
             <h2 id="new-connection-profile">{{ __('whatsapp.connections.create') }}</h2>
             <p class="muted">{{ __('whatsapp.connections.create_hint') }}</p>
@@ -96,7 +98,8 @@
         </div>
         @endif
 
-        <div data-whatsapp-panel="profiles" @if($activeTab !== 'profiles') hidden @endif>
+        @if($activeTab === 'profiles')
+        <div data-whatsapp-panel="profiles">
         <section class="panel" aria-labelledby="saved-connections">
             <h2 id="saved-connections">{{ __('whatsapp.connections.saved_profiles') }}</h2>
             <p class="muted">{{ __('whatsapp.connections.readiness_truth_help') }}</p>
@@ -227,6 +230,7 @@
             @endforelse
         </section>
         </div>
+        @endif
     </main>
 </div>
 </body>
