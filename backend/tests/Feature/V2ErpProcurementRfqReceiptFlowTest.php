@@ -278,10 +278,79 @@ final class V2ErpProcurementRfqReceiptFlowTest extends TestCase
                 ->where('product_id', $product->id)->value('quantity'));
         }
 
-        // Repair the existing draft's provenance, then use the same real
-        // endpoint twice to prove one and only one authorized stock movement.
+        // Repair the receiving warehouse first. A valid warehouse must NOT
+        // forgive a forged supplier, currency or PO source on the persisted
+        // GRN header. Use a REAL supplier from the foreign store, not an
+        // invented numeric identifier.
         DB::table('enterprise_goods_receipt_lines')->where('id', $receiptLine->id)
             ->update(['warehouse_id' => $warehouse->id]);
+        $this->actingAs($maker)->post(route('admin.erp.procurement.suppliers.store'), [
+            'store_id' => $foreign->id,
+            'scope_type' => 'store',
+            'code' => 'P135-GRN-FOREIGN-SUP-'.$maker->id,
+            'name_en' => 'P135 foreign source supplier',
+            'name_ar' => 'مورد مصدر مختلف',
+        ])->assertRedirect();
+        $foreignSupplierId = (int) DB::table('enterprise_suppliers')
+            ->where('code', 'P135-GRN-FOREIGN-SUP-'.$maker->id)->value('id');
+        $this->assertGreaterThan(0, $foreignSupplierId);
+        $this->assertNotSame($supplierId, $foreignSupplierId);
+        $this->assertDatabaseHas('enterprise_suppliers', [
+            'id' => $foreignSupplierId, 'scope_type' => 'store',
+            'store_id' => $foreign->id,
+        ]);
+
+        $trustedReceiptHeader = [
+            'supplier_id' => $supplierId,
+            'supplier_code' => $order->supplier_code,
+            'currency_code' => $order->currency_code,
+            'source_order_number' => $order->order_number,
+        ];
+        foreach ([
+            ['supplier_id' => $foreignSupplierId],
+            ['supplier_code' => 'P135-FORGED-SUPPLIER-CODE'],
+            ['currency_code' => 'USD'],
+            ['source_order_number' => 'P135-FORGED-PO-NUMBER'],
+        ] as $tamper) {
+            DB::table('enterprise_goods_receipts')->where('id', $receipt->id)
+                ->update($tamper);
+
+            foreach (['ar', 'en'] as $locale) {
+                app()->setLocale($locale);
+                $checker->forceFill(['locale' => $locale])->save();
+                $this->actingAs($checker->fresh())
+                    ->post(route('admin.erp.procurement.receipts.post', $receipt->id), [
+                        'store_id' => $store->id,
+                    ])->assertRedirect()->assertSessionHasErrors('purchase_order_id');
+                $this->assertSame(
+                    __('enterprise_procurement.errors.receipt_source_invalid', [], $locale),
+                    session('errors')->first('purchase_order_id'),
+                );
+                $this->assertDatabaseHas('enterprise_goods_receipts', [
+                    'id' => $receipt->id, 'store_id' => $store->id,
+                    'status' => 'draft', 'posted_by' => null,
+                ]);
+                $this->assertSame($beforeMovements, DB::table('stock_movements')->count());
+                $this->assertSame($beforePostedAudits, DB::table('audit_logs')
+                    ->where('event', 'enterprise.goods_receipt.posted')->count());
+                $this->assertNull(DB::table('inventories')
+                    ->where('warehouse_id', $warehouse->id)
+                    ->where('product_id', $product->id)->value('quantity'));
+                $this->assertNull(DB::table('inventories')
+                    ->where('warehouse_id', $foreignWarehouse->id)
+                    ->where('product_id', $product->id)->value('quantity'));
+                $this->assertDatabaseHas('enterprise_purchase_orders', [
+                    'id' => $order->id, 'supplier_id' => $supplierId,
+                    'store_id' => $store->id, 'currency_code' => 'KWD',
+                    'status' => 'issued',
+                ]);
+            }
+            DB::table('enterprise_goods_receipts')->where('id', $receipt->id)
+                ->update($trustedReceiptHeader);
+        }
+
+        // An entirely restored authentic GRN posts ONCE; a retry is idempotent
+        // and never duplicates inventory, award, stock movement or audit.
         $this->actingAs($checker->fresh())
             ->post(route('admin.erp.procurement.receipts.post', $receipt->id), [
                 'store_id' => $store->id,
