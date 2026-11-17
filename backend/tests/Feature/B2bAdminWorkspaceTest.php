@@ -183,6 +183,41 @@ class B2bAdminWorkspaceTest extends TestCase
         ]);
         $this->assertDatabaseHas('audit_logs', ['event' => 'b2b.price_rule.saved']);
 
+        // An omitted break schedule must still be checked against the saved
+        // schedule, exactly as Save does under its final transaction lock.
+        DB::table('b2b_price_rules')
+            ->where('store_id', $store)
+            ->where('price_tier_id', $tier)
+            ->where('product_id', $product)
+            ->update(['quantity_price_breaks' => json_encode([
+                ['minimum_quantity' => 5.0, 'unit_price' => 9.0],
+            ], JSON_THROW_ON_ERROR)]);
+        $savedRule = DB::table('b2b_price_rules')
+            ->where('store_id', $store)
+            ->where('price_tier_id', $tier)
+            ->where('product_id', $product)
+            ->first();
+        $auditAfterSave = DB::table('audit_logs')->count();
+
+        $this->actingAs($admin)->post('/admin/b2b/pricing', array_replace($candidate, [
+            'unit_price' => '8.000',
+            'replace_quantity_price_breaks' => '0',
+            'setup_action' => 'test',
+        ]))->assertSessionHasErrors('quantity_price_breaks');
+        $this->assertDatabaseCount('b2b_price_rules', 1);
+        $this->assertSame($savedRule->quantity_price_breaks, DB::table('b2b_price_rules')
+            ->where('store_id', $store)
+            ->where('price_tier_id', $tier)
+            ->where('product_id', $product)
+            ->value('quantity_price_breaks'));
+        $this->assertSame($auditAfterSave, DB::table('audit_logs')->count());
+
+        $this->actingAs($admin)->post('/admin/b2b/pricing', array_replace($candidate, [
+            'replace_quantity_price_breaks' => '0',
+            'setup_action' => 'test',
+        ]))->assertRedirect()->assertSessionHasNoErrors();
+        $this->assertSame($auditAfterSave, DB::table('audit_logs')->count());
+
         $retail = $this->user('B2C_STORE_ADMIN', 'ar');
         $this->actingAs($retail)->post('/admin/b2b/pricing', $candidate + [
             'setup_action' => 'test',
