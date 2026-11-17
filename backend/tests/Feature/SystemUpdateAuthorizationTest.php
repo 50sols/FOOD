@@ -2,12 +2,15 @@
 
 namespace Tests\Feature;
 
+use App\Domain\Updater\TrustedUpdateSignatureVerifier;
+use App\Domain\Updater\UpdatePackageManifest;
 use App\Models\Role;
 use App\Models\SystemVersion;
 use App\Models\UpdateHistory;
 use App\Models\User;
 use Database\Seeders\CoreReferenceSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Http\UploadedFile;
 use Illuminate\Routing\Middleware\ThrottleRequests;
 use Tests\TestCase;
 
@@ -157,7 +160,7 @@ class SystemUpdateAuthorizationTest extends TestCase
 
         $this->actingAs($superAdmin)
             ->post(route('admin.system-update.store'), [])
-            ->assertSessionHasErrors(['package', 'target_version', 'minimum_current_version', 'sha256']);
+            ->assertSessionHasErrors(['package', 'signed_manifest']);
 
         $this->actingAs($superAdmin)
             ->post(route('admin.system-update.backups.store'), [])
@@ -193,7 +196,9 @@ class SystemUpdateAuthorizationTest extends TestCase
                     ->assertSee('dir="'.$direction.'"', false)
                     ->assertSee(__('admin.system_update_host.title', [], $locale))
                     ->assertSee(__('admin.system_update_host.action_required', [], $locale))
-                    ->assertSee(__('admin.system_update_host.signature_not_certified', [], $locale))
+                    ->assertSee(__('update_signed_manifest.signature_caveat', [], $locale))
+                    ->assertSee(__('update_signed_manifest.host_key_missing', [], $locale))
+                    ->assertSee(__('update_signed_manifest.manifest_label', [], $locale))
                     ->assertSee(__('admin.system_update_host.manual_verification', [], $locale))
                     ->assertSee(__('update_host_readiness.checks.sodium_signature.label', [], $locale))
                     ->assertSee(__('update_host_readiness.checks.sodium_signature.help', [], $locale))
@@ -243,6 +248,119 @@ class SystemUpdateAuthorizationTest extends TestCase
             ->assertSee(__('admin.system_update_host.precheck_ok'));
 
         $this->assertDirectoryDoesNotExist($directory);
+    }
+
+    public function test_unsigned_update_is_denied_before_update_history_or_file_mutation(): void
+    {
+        $actor = $this->userWithRole('SUPER_ADMIN');
+        $this->actingAs($actor)
+            ->post(route('admin.system-update.store'), [
+                'package' => UploadedFile::fake()->createWithContent('unsigned.zip', 'untrusted ZIP bytes'),
+            ])
+            ->assertSessionHasErrors(['signed_manifest']);
+
+        $this->assertDatabaseCount('update_history', 0);
+    }
+
+    public function test_unpinned_and_tampered_signed_zip_is_denied_before_manager(): void
+    {
+        if (! function_exists('sodium_crypto_sign_keypair')) {
+            $this->markTestSkipped('Sodium unavailable on this CI worker.');
+        }
+
+        $actor = $this->userWithRole('SUPER_ADMIN');
+        $bytes = 'not-a-zip-but-signed-by-ci-fixture';
+        [$payload, $public] = $this->signedManifestForBytes($bytes);
+        config([
+            'update_signatures.publisher_key_id' => '',
+            'update_signatures.publisher_public_key_b64' => '',
+        ]);
+
+        $this->actingAs($actor)->post(route('admin.system-update.store'), [
+            'package' => UploadedFile::fake()->createWithContent('patch.zip', $bytes),
+            'signed_manifest' => UploadedFile::fake()->createWithContent('signed.json', $payload),
+        ])->assertSessionHasErrors(['update']);
+        $this->assertDatabaseCount('update_history', 0);
+
+        config([
+            'update_signatures.publisher_key_id' => 'ci-only-ephemeral',
+            'update_signatures.publisher_public_key_b64' => $public,
+        ]);
+        $data = json_decode($payload, true, flags: JSON_THROW_ON_ERROR);
+        $data['target_version'] = '99.0.1';
+        $this->actingAs($actor)->post(route('admin.system-update.store'), [
+            'package' => UploadedFile::fake()->createWithContent('patch.zip', $bytes),
+            'signed_manifest' => UploadedFile::fake()->createWithContent(
+                'tampered.json', json_encode($data, JSON_THROW_ON_ERROR),
+            ),
+        ])->assertSessionHasErrors(['update']);
+
+        $this->assertDatabaseCount('update_history', 0);
+    }
+
+    public function test_valid_test_signature_reaches_zip_validation_and_rejects_zip_slip_with_data_untouched(): void
+    {
+        if (! function_exists('sodium_crypto_sign_keypair') || ! class_exists(\ZipArchive::class)) {
+            $this->markTestSkipped('Sodium and ZIP extensions are required.');
+        }
+
+        $actor = $this->userWithRole('SUPER_ADMIN');
+        $marker = storage_path('app/v2-update-signed-preservation-test.txt');
+        file_put_contents($marker, 'KEEP_UPLOAD_BYTES');
+        $zipPath = tempnam(sys_get_temp_dir(), 'foodex-signed-zip-');
+        if (! is_string($zipPath)) {
+            $this->fail('Unable to stage disposable ZIP fixture.');
+        }
+
+        try {
+            $zip = new \ZipArchive;
+            $this->assertTrue($zip->open($zipPath, \ZipArchive::OVERWRITE) === true);
+            $this->assertTrue($zip->addFromString('../escape.txt', 'attempted traversal'));
+            $this->assertTrue($zip->close());
+            $bytes = (string) file_get_contents($zipPath);
+            [$payload, $public] = $this->signedManifestForBytes($bytes);
+            config([
+                'update_signatures.publisher_key_id' => 'ci-only-ephemeral',
+                'update_signatures.publisher_public_key_b64' => $public,
+            ]);
+
+            $this->actingAs($actor)->post(route('admin.system-update.store'), [
+                'package' => UploadedFile::fake()->createWithContent('patch.zip', $bytes),
+                'signed_manifest' => UploadedFile::fake()->createWithContent('signed.json', $payload),
+            ])->assertSessionHasErrors(['update']);
+
+            $this->assertSame('KEEP_UPLOAD_BYTES', file_get_contents($marker));
+            $this->assertDatabaseMissing('system_versions', ['version' => '99.0.0']);
+            $this->assertDatabaseHas('update_history', ['to_version' => '99.0.0', 'status' => 'failed']);
+            $this->assertFileDoesNotExist(storage_path('app/private/updates/escape.txt'));
+        } finally {
+            @unlink($zipPath);
+            @unlink($marker);
+        }
+    }
+
+    /** @return array{string, string} */
+    private function signedManifestForBytes(string $archive): array
+    {
+        $keypair = sodium_crypto_sign_keypair();
+        $manifest = new UpdatePackageManifest('99.0.0', '0.0.0', hash('sha256', $archive), 'Disposable CI-only acceptance', false);
+        $id = 'ci-only-ephemeral';
+        $canonical = app(TrustedUpdateSignatureVerifier::class)->canonicalPayload($manifest, $id);
+        $signature = base64_encode(sodium_crypto_sign_detached($canonical, sodium_crypto_sign_secretkey($keypair)));
+
+        return [
+            json_encode([
+                'format' => 'foodex-signed-update-v1',
+                'signer_key_id' => $id,
+                'target_version' => $manifest->targetVersion,
+                'minimum_current_version' => $manifest->minimumCurrentVersion,
+                'archive_sha256' => $manifest->sha256,
+                'contains_migrations' => $manifest->containsMigrations,
+                'release_notes' => $manifest->releaseNotes,
+                'signature' => $signature,
+            ], JSON_THROW_ON_ERROR),
+            base64_encode(sodium_crypto_sign_publickey($keypair)),
+        ];
     }
 
     private function userWithRole(string $roleCode): User
