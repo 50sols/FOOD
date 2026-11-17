@@ -7,6 +7,7 @@ use App\Domain\Updater\TrustedUpdateSignatureVerifier;
 use App\Domain\Updater\UpdatePackageManifest;
 use App\Domain\Updater\UpdateRuntime;
 use App\Models\Role;
+use App\Models\UpdateHistory;
 use App\Models\User;
 use Database\Seeders\CoreReferenceSeeder;
 use Illuminate\Http\UploadedFile;
@@ -256,7 +257,7 @@ PHP;
                 ->assertRedirect(route('admin.system-update.index'))
                 ->assertSessionHasErrors(['update']);
 
-            $history = \App\Models\UpdateHistory::query()->where('to_version', '1.0.127')->first();
+            $history = UpdateHistory::query()->where('to_version', '1.0.127')->first();
             $this->assertNotNull($history);
             $this->assertSame('failed', $history->status);
             $this->assertSame($actualDigest, $history->package_hash);
