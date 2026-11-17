@@ -7,6 +7,7 @@ use App\Domain\SmartOrdering\Models\SmartOrderingSite;
 use App\Domain\SmartOrdering\SupplyIntelligenceService;
 use App\Models\Cart;
 use App\Models\Order;
+use App\Models\Role;
 use App\Models\Store;
 use App\Models\User;
 use App\Services\RetailWholesaleAccountService;
@@ -438,6 +439,146 @@ class SmartOrderingSupplyIntelligenceTest extends TestCase
         $this->assertSame($counts['store_products'], DB::table('store_products')->count());
         $this->assertSame($counts['orders'], DB::table('orders')->count());
         $this->assertSame($counts['audit'], DB::table('audit_logs')->count());
+    }
+
+    public function test_supply_workspace_tabs_preserve_scope_locale_and_exclusive_rendering(): void
+    {
+        $f = $this->fixture();
+        $actor = $f['actor'];
+        $role = Role::query()->where('code', 'B2C_STORE_ADMIN')->firstOrFail();
+        DB::table('user_store_roles')->insert([
+            'user_id' => $actor->id,
+            'store_id' => $f['restaurant_store_id'],
+            'role_id' => $role->id,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $expected = [
+            'overview' => 'coverage_title',
+            'mapping' => 'mappings_title',
+            'stock' => 'stock_history_title',
+            'waste' => 'waste_history',
+            'cost' => 'recipe_cost_title',
+            'analysis' => 'consumption_title',
+            'reorder' => 'reorder_title',
+        ];
+        $scope = [
+            'site' => $f['site_id'],
+            'from' => now('Asia/Kuwait')->subDays(7)->toDateString(),
+            'to' => now('Asia/Kuwait')->toDateString(),
+            'branch_id' => $f['branch_id'],
+            'q' => 'FDX-',
+        ];
+
+        foreach (['en' => 'ltr', 'ar' => 'rtl'] as $locale => $direction) {
+            $actor->forceFill(['locale' => $locale])->save();
+            app()->setLocale($locale);
+
+            foreach ($expected as $tab => $section) {
+                $response = $this->actingAs($actor)->get(route('admin.smart-ordering.supply.index', [
+                    ...$scope, 'tab' => $tab,
+                ]));
+
+                $response->assertOk()
+                    ->assertSee('dir="'.$direction.'"', false)
+                    ->assertSee('class="foodex-tabs si-tabs"', false)
+                    ->assertSee('<h2>'.e(__('smart_ordering_supply.'.$section)).'</h2>', false)
+                    ->assertSee('name="tab" value="'.$tab.'"', false)
+                    ->assertSee('name="branch_id"', false)
+                    ->assertSee('name="q" value="FDX-"', false)
+                    ->assertSee('aria-current="page"', false);
+
+                if ($tab !== 'stock') {
+                    $response->assertDontSee('<h2>'.e(__('smart_ordering_supply.stock_history_title')).'</h2>', false);
+                }
+                if ($tab !== 'mapping') {
+                    $response->assertDontSee('<h2>'.e(__('smart_ordering_supply.mappings_title')).'</h2>', false);
+                }
+                if ($tab !== 'reorder') {
+                    $response->assertDontSee('action="'.route('admin.smart-ordering.supply.draft', $f['site']).'"', false);
+                }
+            }
+        }
+
+        foreach (['bogus', ['stock'], ''] as $invalidTab) {
+            $response = $this->actingAs($actor)->get(route('admin.smart-ordering.supply.index', [
+                ...$scope, 'tab' => $invalidTab,
+            ]));
+            $response->assertOk()
+                ->assertSee('name="tab" value="overview"', false)
+                ->assertDontSee('<h2>'.e(__('smart_ordering_supply.stock_history_title')).'</h2>', false);
+        }
+    }
+
+    public function test_supply_tabs_hide_mutations_for_explicit_manage_deny_and_reject_foreign_or_disabled_site(): void
+    {
+        $f = $this->fixture();
+        $actor = $f['actor'];
+        $role = Role::query()->where('code', 'B2C_STORE_ADMIN')->firstOrFail();
+        DB::table('user_store_roles')->insert([
+            'user_id' => $actor->id,
+            'store_id' => $f['restaurant_store_id'],
+            'role_id' => $role->id,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $url = route('admin.smart-ordering.supply.index', ['site' => $f['site_id'], 'tab' => 'mapping']);
+        $this->actingAs($actor)->get($url)
+            ->assertOk()
+            ->assertSee('action="'.route('admin.smart-ordering.supply.mappings.store', $f['site']).'"', false);
+
+        DB::table('user_permission_overrides')->insert([
+            'user_id' => $actor->id,
+            'permission_id' => DB::table('permissions')->where('code', 'smart_ordering.manage')->value('id'),
+            'scope_key' => 'store:'.$f['restaurant_store_id'],
+            'store_id' => $f['restaurant_store_id'],
+            'effect' => 'deny',
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        $actor->forceFill(['has_permission_overrides' => true])->save();
+
+        $this->actingAs($actor)->get($url)
+            ->assertOk()
+            ->assertSee('<h2>'.e(__('smart_ordering_supply.mappings_title')).'</h2>', false)
+            ->assertDontSee('action="'.route('admin.smart-ordering.supply.mappings.store', $f['site']).'"', false)
+            ->assertDontSee('action="'.route('admin.smart-ordering.supply.mappings.deactivate', [
+                $f['site'], 'unreal-mapping',
+            ]).'"', false);
+
+        $this->actingAs($actor)->get(route('admin.smart-ordering.supply.index', [
+            'site' => $f['site_id'], 'tab' => 'reorder',
+        ]))->assertOk()
+            ->assertDontSee('action="'.route('admin.smart-ordering.supply.draft', $f['site']).'"', false)
+            ->assertDontSee('name="quantities[', false);
+        $this->actingAs($actor)->post(route('admin.smart-ordering.supply.mappings.store', $f['site']), [])
+            ->assertForbidden();
+
+        $otherStore = $this->store('B2C', 'SO-OTHER-'.Str::upper(Str::random(6)));
+        $otherActor = User::query()->create([
+            'name' => 'Other Restaurant Store Admin',
+            'email' => 'other-supply-'.Str::lower(Str::random(8)).'@example.test',
+            'password' => 'password123',
+            'locale' => 'en',
+            'is_active' => true,
+        ]);
+        DB::table('user_store_roles')->insert([
+            'user_id' => $otherActor->id,
+            'store_id' => $otherStore,
+            'role_id' => $role->id,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        $this->actingAs($otherActor)->get($url)->assertForbidden();
+
+        $this->actingAs($actor);
+        DB::table('smart_ordering_entitlements')
+            ->where('site_id', $f['site_id'])
+            ->where('module', 'foodex_supply_intelligence')
+            ->update(['enabled' => false, 'updated_at' => now()]);
+        $this->get($url)->assertForbidden();
     }
 
     /** @return array<string,mixed> */
