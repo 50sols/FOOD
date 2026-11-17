@@ -23,6 +23,7 @@ use App\Support\AdminNavigation;
 use Illuminate\Contracts\View\View;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Gate;
 use Illuminate\Support\Facades\Route;
 use Illuminate\Support\Facades\Schema;
 
@@ -304,10 +305,13 @@ final class ErpCenterController extends Controller
                 continue;
             }
 
-            $moduleDetailUrl = Route::has('admin.enterprise-modules.show')
+            // A diagnostic does not grant access to privileged admin pages or
+            // to a business route when module readiness/entitlement denies it.
+            $canManagePlatform = Gate::forUser($actor)->allows('platform.manage');
+            $moduleDetailUrl = $canManagePlatform && Route::has('admin.enterprise-modules.show')
                 ? route('admin.enterprise-modules.show', ['module' => $spec['module']])
                 : null;
-            $moduleUrl = Route::has($spec['route']) ? route($spec['route']) : $moduleDetailUrl;
+            $moduleUrl = is_string($card['url']) ? $card['url'] : null;
             $steps = [];
             $steps[] = [
                 'key' => 'lifecycle',
@@ -350,14 +354,16 @@ final class ErpCenterController extends Controller
                 'title' => $moduleTitle('scope'),
                 'complete' => $viewStoreIds !== [] && $scopeCount === count($viewStoreIds),
                 'detail' => __('admin.erp_center.module_readiness.common.scope_detail', ['ready' => $scopeCount, 'total' => count($viewStoreIds)]),
-                'url' => Route::has('admin.enterprise-organizations.index') ? route('admin.enterprise-organizations.index') : null,
+                'url' => $canManagePlatform && Route::has('admin.enterprise-organizations.index')
+                    ? route('admin.enterprise-organizations.index') : null,
             ];
             $steps[] = [
                 'key' => 'permissions',
                 'title' => $moduleTitle('permissions'),
                 'complete' => $viewStoreIds !== [] && array_diff($viewStoreIds, $manageStoreIds) === [],
                 'detail' => __('admin.erp_center.module_readiness.common.permissions_detail', ['ready' => count(array_intersect($viewStoreIds, $manageStoreIds)), 'total' => count($viewStoreIds)]),
-                'url' => Route::has('admin.security.index') ? route('admin.security.index') : null,
+                'url' => Gate::forUser($actor)->allows('security.view') && Route::has('admin.security.index')
+                    ? route('admin.security.index') : null,
             ];
 
             $capabilities = config('enterprise_modules.modules.'.$spec['module'].'.capabilities', []);
@@ -433,7 +439,10 @@ final class ErpCenterController extends Controller
                     $count = (int) $query->count();
                 }
 
-                $url = $check['tab'] !== null && Route::has($spec['route'])
+                // A step may deep-link only through a business route already
+                // admitted by the exact module card; unready modules keep
+                // actionable diagnostics instead of dead operational CTAs.
+                $url = $moduleUrl !== null && $check['tab'] !== null && Route::has($spec['route'])
                     ? route($spec['route'], ['tab' => $check['tab']])
                     : $moduleUrl;
                 $checks[] = [
@@ -470,15 +479,20 @@ final class ErpCenterController extends Controller
 
         $storeIds = $this->operationalTenants->allowedStoreIds($actor, 'finance.view', self::WHOLESALE_CHANNEL);
         $manageStoreIds = $this->operationalTenants->allowedStoreIds($actor, 'finance.manage', self::WHOLESALE_CHANNEL);
-        $masterUrl = Route::has('admin.treasury.master.index') ? route('admin.treasury.master.index') : null;
-        $treasuryUrl = Route::has('admin.erp.treasury.index') ? route('admin.erp.treasury.index') : null;
-        $organizationUrl = Route::has('admin.enterprise-organizations.index')
-            ? route('admin.enterprise-organizations.index')
-            : null;
-        $securityUrl = Route::has('admin.security.index') ? route('admin.security.index') : null;
-        $moduleDetailUrl = Route::has('admin.enterprise-modules.show')
+        // Treasury Master has its own retail/store finance.view HTTP scope.
+        // Keep its setup link only for actors that can actually enter it.
+        $masterUrl = $this->operationalTenants->allowedStoreIds($actor, 'finance.view') !== []
+            && Route::has('admin.treasury.master.index')
+                ? route('admin.treasury.master.index') : null;
+        $treasuryUrl = is_string($card['url']) ? $card['url'] : null;
+        $canManagePlatform = Gate::forUser($actor)->allows('platform.manage');
+        $organizationUrl = $canManagePlatform && Route::has('admin.enterprise-organizations.index')
+            ? route('admin.enterprise-organizations.index') : null;
+        $securityUrl = Gate::forUser($actor)->allows('security.view') && Route::has('admin.security.index')
+            ? route('admin.security.index') : null;
+        $moduleDetailUrl = $canManagePlatform && Route::has('admin.enterprise-modules.show')
             ? route('admin.enterprise-modules.show', ['module' => 'treasury'])
-            : (Route::has('admin.enterprise-modules.index') ? route('admin.enterprise-modules.index') : null);
+            : ($canManagePlatform && Route::has('admin.enterprise-modules.index') ? route('admin.enterprise-modules.index') : null);
         $healthUrl = Route::has('admin.enterprise-system-health.index')
             && ($actor->hasRole('SUPER_ADMIN') || $actor->hasPermission('platform.manage'))
                 ? route('admin.enterprise-system-health.index')
