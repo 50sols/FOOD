@@ -326,7 +326,13 @@ class InstallerWorkflowTest extends TestCase
         app(InstallerEnvironment::class)->write([
             'APP_KEY' => 'base64:'.base64_encode(str_repeat('K', 32)),
         ]);
-        $this->assertDatabaseCount('roles', 0);
+        // Database test bootstrapping may pre-seed canonical roles. The
+        // invariant is preservation of the exact existing data, not zero rows.
+        $rolesBefore = DB::table('roles')->orderBy('id')->get()->all();
+        $permissionsBefore = DB::table('permissions')->orderBy('id')->get()->all();
+        $grantsBefore = DB::table('permission_role')
+            ->orderBy('role_id')->orderBy('permission_id')->get()->all();
+        $usersBefore = DB::table('users')->orderBy('id')->get()->all();
 
         Artisan::shouldReceive('call')->never();
 
@@ -337,8 +343,11 @@ class InstallerWorkflowTest extends TestCase
             $this->assertSame((string) __('installer.environment_already_configured'), $exception->getMessage());
         }
 
-        $this->assertDatabaseCount('roles', 0);
-        $this->assertDatabaseCount('users', 0);
+        $this->assertSame($rolesBefore, DB::table('roles')->orderBy('id')->get()->all());
+        $this->assertSame($permissionsBefore, DB::table('permissions')->orderBy('id')->get()->all());
+        $this->assertSame($grantsBefore, DB::table('permission_role')
+            ->orderBy('role_id')->orderBy('permission_id')->get()->all());
+        $this->assertSame($usersBefore, DB::table('users')->orderBy('id')->get()->all());
     }
 
     public function test_direct_seed_refuses_completed_installer_lock_without_db_writes(): void
