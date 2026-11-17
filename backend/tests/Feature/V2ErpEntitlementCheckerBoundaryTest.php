@@ -1172,6 +1172,10 @@ final class V2ErpEntitlementCheckerBoundaryTest extends TestCase
             null,
             $owner,
         );
+        // Entitlement configuration is itself an authorized, audited write.
+        // Only forbidden HTTP and subsequent GET must be free of extra audit
+        // side effects; do not compare across the owner's legitimate grant.
+        $auditAfterGrant = DB::table('audit_logs')->count();
         config()->set('enterprise_module_readiness.certified_versions.procurement', null);
         foreach (['ar', 'en'] as $locale) {
             app()->setLocale($locale);
@@ -1193,7 +1197,127 @@ final class V2ErpEntitlementCheckerBoundaryTest extends TestCase
             'tab' => 'requests',
         ]))->assertOk();
         $this->assertSame($countBefore, DB::table('enterprise_purchase_requests')->count());
+        $this->assertSame($auditAfterGrant, DB::table('audit_logs')->count());
+    }
+
+
+    public function test_forged_nonpositive_or_malformed_store_id_never_falls_back_to_an_authorized_store(): void
+    {
+        $this->app['env'] = 'production';
+        $csrfToken = 'p111-forged-store-selector-csrf';
+        $this->withSession(['_token' => $csrfToken])->withHeader('X-CSRF-TOKEN', $csrfToken);
+        $store = $this->wholesaleStore();
+        $owner = $this->actor('SUPER_ADMIN');
+        $buyer = $this->actor('PROCUREMENT_BUYER');
+
+        app(EnterpriseModuleAdministration::class)->perform('procurement', 'enable', $owner);
+        app(ModuleEntitlementManager::class)->set(
+            'procurement', EntitlementScope::platform(), true, null, $owner,
+        );
+
+        $this->actingAs($buyer)->get(route('admin.erp.procurement.index', [
+            'store_id' => $store->id,
+            'tab' => 'requests',
+        ]))->assertOk();
+        $auditBefore = DB::table('audit_logs')->count();
+        $requestsBefore = DB::table('enterprise_purchase_requests')->count();
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            $buyer->forceFill(['locale' => $locale])->save();
+
+            foreach ([0, -1, 'not-a-store'] as $invalidStoreId) {
+                $this->actingAs($buyer->fresh())->get(route('admin.erp.procurement.index', [
+                    'store_id' => $invalidStoreId,
+                    'tab' => 'requests',
+                ]))->assertForbidden();
+                $this->actingAs($buyer->fresh())->post(route('admin.erp.procurement.requests.store'), [
+                    'store_id' => $invalidStoreId,
+                    'currency_code' => 'KWD',
+                    'reason' => 'P111 forged store selector must never persist',
+                    'item_code' => 'P111-FORGED-STORE',
+                    'description' => 'Unauthorized selected-store fallback',
+                    'quantity' => '1.000',
+                    'unit' => 'case',
+                    'estimated_unit_cost' => '1.000',
+                ])->assertForbidden();
+            }
+        }
+
+        $this->assertSame($requestsBefore, DB::table('enterprise_purchase_requests')->count());
         $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+    }
+
+    public function test_default_procurement_store_picker_excludes_store_deny_and_uses_entitled_sibling(): void
+    {
+        $primary = $this->wholesaleStore();
+        $sibling = Store::query()->create([
+            'store_type_id' => $primary->store_type_id,
+            'code' => 'P111-DEFAULT-ENTITLED-B2B',
+            'name' => 'P111 entitled B2B sibling',
+            'is_active' => true,
+        ]);
+        app(OrganizationHierarchyService::class)->ensureDefaultScopeForStore($sibling);
+
+        $owner = $this->actor('SUPER_ADMIN');
+        $buyer = $this->actor('PROCUREMENT_BUYER');
+        app(EnterpriseModuleAdministration::class)->perform('procurement', 'enable', $owner);
+        $entitlements = app(ModuleEntitlementManager::class);
+        $entitlements->set('procurement', EntitlementScope::platform(), true, null, $owner);
+        $entitlements->set(
+            'procurement', new EntitlementScope(EntitlementScope::STORE, $primary->id),
+            false, null, $owner,
+        );
+        $auditBefore = DB::table('audit_logs')->count();
+
+        foreach (['ar' => 'rtl', 'en' => 'ltr'] as $locale => $direction) {
+            app()->setLocale($locale);
+            $buyer->forceFill(['locale' => $locale])->save();
+            $page = $this->actingAs($buyer->fresh())->get(route('admin.erp.procurement.index', [
+                'tab' => 'requests',
+            ]));
+            $page->assertOk()->assertSee('dir="'.$direction.'"', false);
+            $this->assertSame((int) $sibling->id, (int) $page->viewData('selectedStoreId'));
+            $visibleStoreIds = collect($page->viewData('storeOptions'))->pluck('id')->all();
+            $this->assertContains((int) $sibling->id, $visibleStoreIds);
+            $this->assertNotContains((int) $primary->id, $visibleStoreIds);
+
+            $this->actingAs($buyer->fresh())->get(route('admin.erp.procurement.index', [
+                'store_id' => $primary->id,
+                'tab' => 'requests',
+            ]))->assertForbidden();
+        }
+
+        $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+    }
+
+    public function test_deactivated_super_admin_cannot_read_or_mutate_procurement_even_with_historical_role(): void
+    {
+        $store = $this->wholesaleStore();
+        $owner = $this->actor('SUPER_ADMIN');
+        app(EnterpriseModuleAdministration::class)->perform('procurement', 'enable', $owner);
+        app(ModuleEntitlementManager::class)->set(
+            'procurement', EntitlementScope::platform(), true, null, $owner,
+        );
+        $owner->forceFill(['is_active' => false])->save();
+
+        $this->actingAs($owner->fresh())->get(route('admin.erp.procurement.index', [
+            'store_id' => $store->id,
+            'tab' => 'requests',
+        ]))->assertForbidden();
+        $this->actingAs($owner->fresh())->post(route('admin.erp.procurement.requests.store'), [
+            'store_id' => $store->id,
+            'currency_code' => 'KWD',
+            'reason' => 'P111 inactive administrator cannot mutate',
+            'item_code' => 'P111-INACTIVE',
+            'description' => 'No inactive business mutation',
+            'quantity' => '1.000',
+            'unit' => 'case',
+            'estimated_unit_cost' => '1.000',
+        ])->assertForbidden();
+        $this->assertDatabaseMissing('enterprise_purchase_requests', [
+            'reason' => 'P111 inactive administrator cannot mutate',
+        ]);
     }
 
     private function wholesaleStore(): Store
