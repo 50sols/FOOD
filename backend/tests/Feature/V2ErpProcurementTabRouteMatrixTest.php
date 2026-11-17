@@ -201,6 +201,108 @@ final class V2ErpProcurementTabRouteMatrixTest extends TestCase
             ->assertForbidden();
     }
 
+    public function test_mixed_permissions_project_only_real_http_tabs_inside_one_localized_accessible_workbench(): void
+    {
+        $actor = $this->manager();
+        $store = $this->wholesaleStore();
+        $this->assertSame('ready', $this->readiness());
+
+        // The existing manager role contains all eleven read grants. Deny
+        // every family except Requests (also the RFQ tab), without changing
+        // lifecycle, store assignment, signed test readiness or entitlements.
+        $deniedPermissions = array_values(array_filter(
+            array_unique(array_values(self::TAB_READ_PERMISSIONS)),
+            static fn (string $permission): bool => $permission !== 'procurement.purchase_requests.view',
+        ));
+        $this->denyPermissions($actor, $deniedPermissions, null);
+        $expectedTabs = ['requests', 'rfqs'];
+        $forbiddenTabs = array_values(array_diff(array_keys(self::TAB_READ_PERMISSIONS), $expectedTabs));
+        $beforeAudit = DB::table('audit_logs')->count();
+
+        foreach (['ar' => 'rtl', 'en' => 'ltr'] as $locale => $direction) {
+            app()->setLocale($locale);
+            $actor->forceFill(['locale' => $locale])->save();
+            $user = $actor->fresh();
+            app()->forgetInstance(AdminNavigation::class);
+
+            $this->assertFalse($user->hasPermission('procurement.suppliers.view', $store->id));
+            $this->assertTrue($user->hasPermission('procurement.purchase_requests.view', $store->id));
+
+            $groups = collect(app(AdminNavigation::class)->groupsFor($user));
+            $procurement = $groups->firstWhere('key', 'procurement');
+            $this->assertIsArray($procurement);
+            $items = collect($procurement['children']);
+            $this->assertCount(1, $items);
+            $item = $items->firstWhere('key', 'erp_procurement');
+            $this->assertIsArray($item);
+            $this->assertSame('admin.erp.procurement.index', $item['route']);
+            $this->assertSame(['store_id' => (string) $store->id], $item['params']);
+
+            // A Sidebar link must resolve to authorized HTTP, not a page
+            // that is visually present but forbidden to the same principal.
+            $this->actingAs($user)
+                ->get(route($item['route'], $item['params']))
+                ->assertOk();
+
+            $response = $this->actingAs($user)
+                ->get($this->tabUrl('requests', $store));
+            $response->assertOk()
+                ->assertSee('lang="'.$locale.'"', false)
+                ->assertSee('dir="'.$direction.'"', false)
+                ->assertSee('name="viewport"', false)
+                ->assertSee('data-erp-procurement-workbench="true"', false)
+                ->assertSee('@media(max-width:767px)', false)
+                ->assertSee('.erp-table-wrap{overflow:auto}', false)
+                ->assertSee(':focus-visible', false)
+                ->assertSee('<noscript>', false);
+            $this->assertSame($expectedTabs, collect($response->viewData('tabs'))->pluck('key')->all());
+
+            $markup = (string) $response->getContent();
+            $this->assertSame(1, preg_match(
+                '/<nav class="foodex-tabs(?: [^"]+)?"[^>]*>(.*?)<\/nav>/s',
+                $markup,
+                $matches,
+            ));
+            $rail = $matches[1];
+            $this->assertStringContainsString(
+                'aria-label="'.e(__('enterprise_procurement.title', [], $locale)).'"',
+                $markup,
+            );
+            $this->assertSame(1, substr_count($rail, 'aria-current="page"'));
+            $this->assertSame(count($expectedTabs), preg_match_all('/<a\b[^>]*href="[^"]+"[^>]*>.*?<\/a>/s', $rail));
+            $this->assertStringNotContainsString('tabindex="-1"', $rail);
+
+            foreach ($expectedTabs as $tab) {
+                $href = route('admin.erp.procurement.index', [
+                    'store_id' => $store->id,
+                    'tab' => $tab,
+                ]);
+                $this->assertStringContainsString('href="'.e($href).'"', $rail);
+                $this->assertStringContainsString(
+                    e(__('enterprise_procurement.tabs.'.$tab, [], $locale)),
+                    $rail,
+                );
+                $this->actingAs($user)->get($href)->assertOk();
+            }
+
+            foreach ($forbiddenTabs as $tab) {
+                $href = $this->tabUrl($tab, $store);
+                $this->assertStringNotContainsString('href="'.e($href).'"', $rail);
+                $this->actingAs($user)->get($href)->assertForbidden();
+            }
+
+            $this->actingAs($user)
+                ->get(route('admin.erp.procurement.index', [
+                    'store_id' => $store->id,
+                    'tab' => 'not-a-workbench-tab',
+                ]))
+                ->assertNotFound();
+        }
+
+        $this->assertSame($beforeAudit, DB::table('audit_logs')->count());
+        $this->assertDatabaseCount('enterprise_purchase_orders', 0);
+    }
+
     public function test_all_eleven_direct_tabs_return_403_if_version_is_not_certified(): void
     {
         $actor = $this->manager();
