@@ -17,7 +17,6 @@
 <div class="foodex-page-toolbar"><div><h1>{{ __('restaurant_growth.title') }}</h1><p>{{ __('restaurant_growth.subtitle') }}</p></div><a class="foodex-action-primary" href="{{ route('admin.smart-ordering.index',['store_id'=>$site->store_id] + (request()->boolean('support_access') ? ['support_access'=>1] : [])) }}">{{ __('restaurant_growth.back') }}</a></div>
 @include('admin._smart-ordering-workspace-nav')
 @if(session('status'))<div class="foodex-alert success">{{ session('status') }}</div>@endif
-@if(session('restaurant_gift_card_code'))<section class="panel"><strong>{{ __('restaurant_growth.one_time_code') }}</strong><div class="rg-code">{{ session('restaurant_gift_card_code') }}</div></section>@endif
 @if($errors->any())<div class="foodex-alert error">{{ $errors->first() }}</div>@endif
 
 @php
@@ -32,7 +31,9 @@ $activeGrowthTab = is_string($requestedGrowthTab) && in_array($requestedGrowthTa
 </nav>
 
 <div class="rg-grid">
-<section class="panel" data-growth-panel="gift_cards" aria-labelledby="growth-tab-gift_cards" @if($activeGrowthTab !== 'gift_cards') hidden @endif><h2>{{ __('restaurant_growth.gift_cards') }}</h2>
+@if($activeGrowthTab === 'gift_cards')
+<section class="panel" data-growth-panel="gift_cards" aria-labelledby="growth-tab-gift_cards"><h2>{{ __('restaurant_growth.gift_cards') }}</h2>
+@if(session('restaurant_gift_card_code'))<section class="panel"><strong>{{ __('restaurant_growth.one_time_code') }}</strong><div class="rg-code">{{ session('restaurant_gift_card_code') }}</div></section>@endif
 <form class="rg-form" method="post" action="{{ route('admin.smart-ordering.growth.gift-cards.issue',$site) }}">@csrf
 <input type="hidden" name="idempotency_key" value="{{ (string) \Illuminate\Support\Str::uuid() }}">
 <label>{{ __('restaurant_growth.amount') }}<input class="foodex-control" type="number" step="0.001" min="0.001" name="amount" required></label>
@@ -49,8 +50,10 @@ $activeGrowthTab = is_string($requestedGrowthTab) && in_array($requestedGrowthTa
 <button class="primary" type="submit">{{ __('restaurant_growth.redeem') }}</button></form>
 <div class="rg-wrap"><table class="rg-table" data-pagination-exempt="bounded-100-gift-cards"><thead><tr><th>{{ __('restaurant_growth.code') }}</th><th>{{ __('restaurant_growth.currency') }}</th><th>{{ __('restaurant_growth.status') }}</th></tr></thead><tbody>@foreach($giftCards as $card)<tr><td>{{ $card->display_code }}</td><td>{{ $card->currency }}</td><td><form method="post" action="{{ route('admin.smart-ordering.growth.gift-cards.status',[$site,$card->public_id]) }}">@csrf @method('patch')<select class="foodex-control" name="status">@foreach(['active','suspended','closed'] as $status)<option value="{{ $status }}" @selected($card->status===$status)>{{ __('restaurant_growth.status_options.'.$status) }}</option>@endforeach</select><button class="primary" type="submit">{{ __('restaurant_growth.update_status') }}</button></form></td></tr>@endforeach</tbody></table></div>
 </section>
+@endif
 
-<section class="panel" data-growth-panel="lifecycle" aria-labelledby="growth-tab-lifecycle" @if($activeGrowthTab !== 'lifecycle') hidden @endif><h2>{{ __('restaurant_growth.lifecycle') }}</h2>
+@if($activeGrowthTab === 'lifecycle')
+<section class="panel" data-growth-panel="lifecycle" aria-labelledby="growth-tab-lifecycle"><h2>{{ __('restaurant_growth.lifecycle') }}</h2>
 <form class="rg-form" method="post" action="{{ route('admin.smart-ordering.growth.journeys.store',$site) }}">@csrf
 <label>{{ __('restaurant_growth.journey_name') }}<input class="foodex-control" name="name" required></label>
 <label>{{ __('restaurant_growth.trigger_event') }}<input class="foodex-control" name="trigger_event" placeholder="guest.lapsed" required></label>
@@ -61,8 +64,10 @@ $activeGrowthTab = is_string($requestedGrowthTab) && in_array($requestedGrowthTa
 <button class="primary" type="submit">{{ __('restaurant_growth.save_journey') }}</button></form>
 <div class="rg-wrap"><table class="rg-table" data-pagination-exempt="bounded-100-journeys"><tbody>@foreach($journeys as $journey)<tr><td>{{ $journey->name }}</td><td>{{ $journey->trigger_event }}</td><td>{{ __('restaurant_growth.channels.'.$journey->channel) }}</td></tr>@endforeach</tbody></table></div>
 </section>
+@endif
 
-<section class="panel" data-growth-panel="franchise" aria-labelledby="growth-tab-franchise" @if($activeGrowthTab !== 'franchise') hidden @endif><h2>{{ __('restaurant_growth.franchise') }}</h2>
+@if($activeGrowthTab === 'franchise')
+<section class="panel" data-growth-panel="franchise" aria-labelledby="growth-tab-franchise"><h2>{{ __('restaurant_growth.franchise') }}</h2>
 <form class="rg-form" method="post" action="{{ route('admin.smart-ordering.growth.policies.store',$site) }}">@csrf
 <label>{{ __('restaurant_growth.level') }}<select class="foodex-control" name="level">@foreach(['organization','brand','location'] as $scope)<option value="{{ $scope }}">{{ __('restaurant_growth.scope_options.'.$scope) }}</option>@endforeach</select></label>
 <label>{{ __('restaurant_growth.policy_key') }}<input class="foodex-control" name="policy_key" placeholder="menu.price_override" required></label>
@@ -71,21 +76,28 @@ $activeGrowthTab = is_string($requestedGrowthTab) && in_array($requestedGrowthTa
 <button class="primary" type="submit">{{ __('restaurant_growth.save_policy') }}</button></form>
 <div class="rg-wrap"><table class="rg-table" data-pagination-exempt="bounded-200-policies"><tbody>@foreach($policies as $policy)<tr><td>{{ $policy->scope_key }}</td><td>{{ $policy->policy_key }}</td><td>{{ $policy->is_locked?'🔒':'—' }}</td></tr>@endforeach</tbody></table></div>
 </section>
+@endif
 </div>
 
-<section class="panel" data-growth-panel="analytics" aria-labelledby="growth-tab-analytics" @if($activeGrowthTab !== 'analytics') hidden @endif><h2>{{ __('restaurant_growth.analytics') }}</h2>
+@if($activeGrowthTab === 'analytics')
+<section class="panel" data-growth-panel="analytics" aria-labelledby="growth-tab-analytics"><h2>{{ __('restaurant_growth.analytics') }}</h2>
 <div class="rg-wrap"><table class="rg-table" data-pagination-exempt="bounded-organization-locations"><thead><tr><th>{{ __('restaurant_growth.location') }}</th><th>{{ __('restaurant_growth.orders') }}</th><th>{{ __('restaurant_growth.completed_sales') }}</th><th>{{ __('restaurant_growth.average_ticket') }}</th><th>{{ __('restaurant_growth.reservations') }}</th><th>{{ __('restaurant_growth.no_show_rate') }}</th></tr></thead><tbody>
 @foreach($analytics['locations'] as $row)<tr><td>{{ $row['name'] }}</td><td>{{ $row['orders'] }}</td><td>{{ number_format($row['completed_sales'],3) }}</td><td>{{ number_format($row['average_ticket'],3) }}</td><td>{{ $row['reservations'] }}</td><td>{{ number_format($row['reservation_no_show_rate']*100,2) }}%</td></tr>@endforeach
 </tbody></table></div></section>
+@endif
 
-<section class="panel" data-growth-panel="accounting" aria-labelledby="growth-tab-accounting" @if($activeGrowthTab !== 'accounting') hidden @endif><h2>{{ __('restaurant_growth.accounting') }}</h2>
+@if($activeGrowthTab === 'accounting')
+<section class="panel" data-growth-panel="accounting" aria-labelledby="growth-tab-accounting"><h2>{{ __('restaurant_growth.accounting') }}</h2>
 <p><a class="primary" href="{{ route('admin.smart-ordering.growth.accounting.download',$site) }}">{{ __('restaurant_growth.download_accounting') }}</a></p>
 <div class="rg-wrap"><table class="rg-table" data-pagination-exempt="bounded-accounting-summary"><thead><tr><th>{{ __('restaurant_growth.sales_date') }}</th><th>{{ __('restaurant_growth.store') }}</th><th>{{ __('restaurant_growth.currency') }}</th><th>{{ __('restaurant_growth.completed_sales') }}</th><th>{{ __('restaurant_growth.discounts') }}</th><th>{{ __('restaurant_growth.delivery') }}</th><th>{{ __('restaurant_growth.refunds') }}</th></tr></thead><tbody>
 @foreach($accounting['rows'] as $row)<tr><td>{{ $row['sales_date'] }}</td><td>{{ $row['store_id'] }}</td><td>{{ $row['currency'] }}</td><td>{{ number_format($row['net_sales'],3) }}</td><td>{{ number_format($row['discounts'],3) }}</td><td>{{ number_format($row['delivery'],3) }}</td><td>{{ number_format($row['refunded_value'],3) }}</td></tr>@endforeach
 </tbody></table></div></section>
+@endif
 
-<section class="panel" data-growth-panel="portability" aria-labelledby="growth-tab-portability" @if($activeGrowthTab !== 'portability') hidden @endif><h2>{{ __('restaurant_growth.portability') }}</h2><p>{{ __('restaurant_growth.export_help') }}</p>
+@if($activeGrowthTab === 'portability')
+<section class="panel" data-growth-panel="portability" aria-labelledby="growth-tab-portability"><h2>{{ __('restaurant_growth.portability') }}</h2><p>{{ __('restaurant_growth.export_help') }}</p>
 <form method="post" action="{{ route('admin.smart-ordering.growth.exports.store',$site) }}">@csrf<button class="primary" type="submit">{{ __('restaurant_growth.generate_export') }}</button></form>
 <div class="rg-wrap"><table class="rg-table" data-pagination-exempt="bounded-50-exports"><thead><tr><th>{{ __('restaurant_growth.status') }}</th><th>{{ __('restaurant_growth.checksum') }}</th><th>{{ __('restaurant_growth.completed_at') }}</th><th></th></tr></thead><tbody>@foreach($exports as $export)<tr><td>{{ $export->status }}</td><td class="rg-code">{{ $export->checksum_sha256 }}</td><td>{{ $export->completed_at }}</td><td><a href="{{ route('admin.smart-ordering.growth.exports.download',[$site,$export->public_id]) }}">{{ __('restaurant_growth.download') }}</a></td></tr>@endforeach</tbody></table></div>
 </section>
+@endif
 </main></div></body></html>
