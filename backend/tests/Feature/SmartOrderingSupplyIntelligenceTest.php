@@ -553,8 +553,10 @@ class SmartOrderingSupplyIntelligenceTest extends TestCase
         ]))->assertOk()
             ->assertDontSee('action="'.route('admin.smart-ordering.supply.draft', $f['site']).'"', false)
             ->assertDontSee('name="quantities[', false);
+        // The canonical tenant-scoped permission check intentionally masks
+        // denied store mutations as 404 before request validation or writes.
         $this->actingAs($actor)->post(route('admin.smart-ordering.supply.mappings.store', $f['site']), [])
-            ->assertForbidden();
+            ->assertNotFound();
 
         $otherStore = $this->store('B2C', 'SO-OTHER-'.Str::upper(Str::random(6)));
         $otherActor = User::query()->create([
