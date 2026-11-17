@@ -290,14 +290,22 @@ void main() {
   test('B2B cart PATCH validates server channel and JSON in AR/EN', () async {
     for (final locale in ['ar', 'en']) {
       for (final invalid in [
-        (mime: 'application/json', body: '{"store_id":12,"channel":"b2c"}',
-            wrongScope: true),
-        (mime: 'application/json', body: '{"store_id":"12","channel":"b2b"}',
-            wrongScope: true),
-        (mime: 'application/json', body: '{"store_id":0,"channel":"b2b"}',
-            wrongScope: true),
-        (mime: 'text/html', body: '<html>Login</html>',
-            wrongScope: false),
+        (
+          mime: 'application/json',
+          body: '{"store_id":12,"channel":"b2c"}',
+          wrongScope: true
+        ),
+        (
+          mime: 'application/json',
+          body: '{"store_id":"12","channel":"b2b"}',
+          wrongScope: true
+        ),
+        (
+          mime: 'application/json',
+          body: '{"store_id":0,"channel":"b2b"}',
+          wrongScope: true
+        ),
+        (mime: 'text/html', body: '<html>Login</html>', wrongScope: false),
         (mime: 'application/json', body: '[]', wrongScope: false),
         (mime: 'application/json', body: '', wrongScope: false),
       ]) {
