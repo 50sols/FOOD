@@ -75,7 +75,7 @@ final readonly class SignedUpdateEnvelope
     }
 
     /**
-     * @param array<string, string> $trustedPublicKeys
+     * @param  array<string, string>  $trustedPublicKeys
      */
     public function verify(TrustedUpdateSignatureVerifier $verifier, array $trustedPublicKeys): void
     {
