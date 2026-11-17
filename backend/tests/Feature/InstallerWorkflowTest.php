@@ -449,6 +449,87 @@ class InstallerWorkflowTest extends TestCase
         $this->assertSame($adminSettings, $flags->snapshot());
     }
 
+    public function test_fresh_install_seed_refuses_existing_supplier_without_touching_admin_configuration(): void
+    {
+        // Disposable SQLite fixture: no real tenant or production seeding.
+        $organizationId = DB::table('enterprise_organizations')->value('id');
+        $companyId = DB::table('enterprise_companies')->value('id');
+        $this->assertNotNull($organizationId);
+        $this->assertNotNull($companyId);
+
+        DB::table('enterprise_suppliers')->insert([
+            'organization_id' => $organizationId,
+            'company_id' => $companyId,
+            'scope_type' => 'company',
+            'code' => 'TEST_VENDOR',
+            'name_en' => 'Sandbox supplier',
+            'status' => 'active',
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        DB::table('settings')->insert([
+            'store_id' => null,
+            'key' => 'commercial_rules_enabled',
+            'value' => 'false',
+            'is_secret' => false,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $supplierBefore = DB::table('enterprise_suppliers')->first();
+        $settingBefore = DB::table('settings')->where('key', 'commercial_rules_enabled')->first();
+        $rolesBefore = DB::table('roles')->orderBy('id')->get()->all();
+        Artisan::shouldReceive('call')->never();
+
+        try {
+            app(InstallerWorkflow::class)->seedRequiredCoreData();
+            $this->fail('An existing supplier must block a new install even if users and orders are empty.');
+        } catch (\\RuntimeException $exception) {
+            $this->assertSame((string) __('installer.errors.existing_business_data'), $exception->getMessage());
+        }
+
+        $this->assertEquals($supplierBefore, DB::table('enterprise_suppliers')->first());
+        $this->assertEquals($settingBefore, DB::table('settings')->where('key', 'commercial_rules_enabled')->first());
+        $this->assertEquals($rolesBefore, DB::table('roles')->orderBy('id')->get()->all());
+    }
+
+    public function test_fresh_install_seed_refuses_existing_finance_credit_terms_without_overwriting(): void
+    {
+        $organizationId = DB::table('enterprise_organizations')->value('id');
+        $companyId = DB::table('enterprise_companies')->value('id');
+        $legalEntityId = DB::table('enterprise_legal_entities')->value('id');
+        $this->assertNotNull($organizationId);
+        $this->assertNotNull($companyId);
+        $this->assertNotNull($legalEntityId);
+
+        DB::table('enterprise_finance_credit_terms')->insert([
+            'organization_id' => $organizationId,
+            'company_id' => $companyId,
+            'legal_entity_id' => $legalEntityId,
+            'subject_type' => 'customer',
+            'subject_reference' => 'sandbox-customer',
+            'credit_limit' => '100.000',
+            'currency_code' => 'EGP',
+            'payment_terms_days' => 15,
+            'valid_from' => '2026-01-01',
+            'status' => 'inactive',
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $before = DB::table('enterprise_finance_credit_terms')->first();
+        Artisan::shouldReceive('call')->never();
+
+        try {
+            app(InstallerWorkflow::class)->seedRequiredCoreData();
+            $this->fail('Existing enterprise credit terms must block a fresh install before any seed.');
+        } catch (\\RuntimeException $exception) {
+            $this->assertSame((string) __('installer.errors.existing_business_data'), $exception->getMessage());
+        }
+
+        $this->assertEquals($before, DB::table('enterprise_finance_credit_terms')->first());
+    }
+
     public function test_direct_seed_refuses_configured_application_key_without_mutating_reference_data(): void
     {
         app(InstallerEnvironment::class)->write([
