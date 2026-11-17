@@ -27,7 +27,7 @@ final class V2RestaurantGrowthHorizontalTabsTest extends TestCase
         $this->seed(CoreReferenceSeeder::class);
     }
 
-    public function test_growth_page_reuses_six_authorized_sibling_tabs_with_one_visible_panel(): void
+    public function test_growth_page_renders_only_the_selected_authorized_sibling_panel(): void
     {
         [$actor, $site] = $this->restaurantOperator();
 
@@ -41,29 +41,56 @@ final class V2RestaurantGrowthHorizontalTabsTest extends TestCase
 
                 $this->assertStringContainsString('class="foodex-tabs rg-tabs"', $html);
                 $this->assertSame(6, preg_match_all('/data-growth-tab="[^"]+"/', $html));
-                $this->assertSame(6, preg_match_all('/data-growth-panel="[^"]+"/', $html));
+                $this->assertSame(1, preg_match_all('/data-growth-panel="[^"]+"/', $html));
                 $this->assertSame(1, preg_match_all('/data-growth-tab="[^"]+"[^>]*aria-current="page"/', $html));
-                $this->assertSame(5, preg_match_all('/data-growth-panel="[^"]+"[^>]*hidden/', $html));
+                $this->assertSame(0, preg_match_all('/data-growth-panel="[^"]+"[^>]*hidden/', $html));
 
                 foreach (self::TABS as $tab) {
-                    $this->assertMatchesRegularExpression(
-                        '/<section\b[^>]*data-growth-panel="'.preg_quote($tab, '/').'"[^>]*>/',
-                        $html,
-                    );
-
-                    $this->assertSame($tab !== $selected, (bool) preg_match(
-                        '/<section\b[^>]*data-growth-panel="'.preg_quote($tab, '/').'"[^>]*hidden[^>]*>/',
-                        $html,
-                    ));
+                    if ($tab === $selected) {
+                        $this->assertMatchesRegularExpression(
+                            '/<section\\b[^>]*data-growth-panel="'.preg_quote($tab, '/').'"[^>]*>/',
+                            $html,
+                        );
+                    } else {
+                        $this->assertStringNotContainsString('data-growth-panel="'.$tab.'"', $html);
+                    }
                 }
 
                 $this->assertStringContainsString('lang="'.$locale.'"', $html);
-                $this->assertStringContainsString(__('restaurant_growth.'.$selected, [], $locale), $html);
+                $this->assertStringContainsString(e(__('restaurant_growth.'.$selected, [], $locale)), $html);
             }
         }
 
         $this->assertDatabaseCount('restaurant_saas_gift_cards', 0);
         $this->assertDatabaseCount('restaurant_saas_lifecycle_journeys', 0);
+    }
+
+    public function test_sensitive_sibling_forms_and_one_time_code_are_not_in_inactive_page_html(): void
+    {
+        [$actor, $site] = $this->restaurantOperator();
+        $url = route('admin.smart-ordering.growth.index', ['site' => $site, 'tab' => 'analytics']);
+        $html = $this->actingAs($actor)
+            ->withSession(['restaurant_gift_card_code' => 'SECRET-ONE-TIME-DO-NOT-LEAK'])
+            ->get($url)
+            ->assertOk()
+            ->getContent();
+
+        $this->assertStringContainsString('data-growth-panel="analytics"', $html);
+        $this->assertStringNotContainsString('SECRET-ONE-TIME-DO-NOT-LEAK', $html);
+        $this->assertStringNotContainsString('data-growth-panel="accounting"', $html);
+        $this->assertStringNotContainsString('name="policy_key"', $html);
+        $this->assertStringNotContainsString('name="idempotency_key"', $html);
+        $this->assertStringNotContainsString('name="trigger_event"', $html);
+        $this->assertStringNotContainsString('data-growth-panel="portability"', $html);
+
+        $giftCardHtml = $this->actingAs($actor)
+            ->withSession(['restaurant_gift_card_code' => 'SECRET-ONE-TIME-DO-NOT-LEAK'])
+            ->get(route('admin.smart-ordering.growth.index', ['site' => $site, 'tab' => 'gift_cards']))
+            ->assertOk()
+            ->getContent();
+
+        $this->assertStringContainsString('SECRET-ONE-TIME-DO-NOT-LEAK', $giftCardHtml);
+        $this->assertStringNotContainsString('data-growth-panel="accounting"', $giftCardHtml);
     }
 
     public function test_unknown_or_array_tab_is_safe_and_defaults_to_gift_cards(): void
@@ -75,7 +102,9 @@ final class V2RestaurantGrowthHorizontalTabsTest extends TestCase
             $html = $this->actingAs($actor)->get($url)->assertOk()->getContent();
 
             $this->assertSame(1, preg_match_all('/data-growth-tab="gift_cards"[^>]*aria-current="page"/', $html));
-            $this->assertMatchesRegularExpression('/data-growth-panel="analytics"[^>]*hidden/', $html);
+            $this->assertStringContainsString('data-growth-panel="gift_cards"', $html);
+            $this->assertStringNotContainsString('data-growth-panel="analytics"', $html);
+            $this->assertSame(1, substr_count($html, 'data-growth-panel="'));
         }
     }
 
