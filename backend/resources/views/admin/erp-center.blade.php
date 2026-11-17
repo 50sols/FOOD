@@ -83,14 +83,17 @@ body{margin:0}
 // remains the single authority for module visibility, entitlement and data.
 $erpTabKeys = ['snapshot', 'analytics', 'follow_up', 'modules'];
 $erpTabInput = request()->query('tab');
-$erpTabFallback = $selectedStatus !== '' ? 'modules' : 'snapshot';
-$activeErpTab = is_string($erpTabInput) && in_array($erpTabInput, $erpTabKeys, true)
-    ? $erpTabInput
-    : $erpTabFallback;
 $erpTabContext = $selectedStatus !== '' ? ['status' => $selectedStatus] : [];
 if (is_string(request()->query('module')) && in_array($selectedModule, array_column($cards, 'key'), true)) {
     $erpTabContext['module'] = $selectedModule;
 }
+// Existing status and authorized module deep links must open the visible Modules panel.
+$erpTabFallback = ($selectedStatus !== '' || array_key_exists('module', $erpTabContext))
+    ? 'modules'
+    : 'snapshot';
+$activeErpTab = is_string($erpTabInput) && in_array($erpTabInput, $erpTabKeys, true)
+    ? $erpTabInput
+    : $erpTabFallback;
 $erpTabLabels = [
     'snapshot' => 'admin.erp_center.snapshot.title',
     'analytics' => 'admin.erp_center.analytics.label',
