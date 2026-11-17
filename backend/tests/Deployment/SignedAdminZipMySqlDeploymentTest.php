@@ -108,6 +108,16 @@ final class SignedAdminZipMySqlDeploymentTest extends TestCase
             $this->assertSame('99.0.0', trim((string) file_get_contents(base_path('../VERSION'))));
             $this->assertFileExists($this->probe);
 
+            // A second admin HTTP request must load the currently persisted
+            // identity after the updater rebuilt config and role caches.
+            // Never bypass the original Gate/Super Admin boundary in tests.
+            $user = $user->fresh();
+            $this->assertNotNull($user);
+            $this->assertTrue($user->is_active, 'Updater deactivated the original administrator.');
+            $this->assertTrue($user->hasRole('SUPER_ADMIN'), 'Updater removed effective Super Admin role.');
+            $this->assertTrue($user->hasPermission('system.update'), 'Updater removed system.update authority.');
+            $this->actingAs($user)->get(route('admin.system-update.index'))->assertOk();
+
             $migration = <<<'PHP'
 <?php
 return new class extends \Illuminate\Database\Migrations\Migration {
