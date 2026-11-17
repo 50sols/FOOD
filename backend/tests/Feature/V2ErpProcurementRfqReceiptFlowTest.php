@@ -8,6 +8,7 @@ use App\Enterprise\Modules\ModuleLifecycleManager;
 use App\Enterprise\Modules\ModuleRegistry;
 use App\Enterprise\Modules\ModuleState;
 use App\Enterprise\Organization\OrganizationHierarchyService;
+use App\Enterprise\Procurement\ProcurementCompletionManager;
 use App\Models\Catalog;
 use App\Models\Product;
 use App\Models\Role;
@@ -281,7 +282,7 @@ final class V2ErpProcurementRfqReceiptFlowTest extends TestCase
             ->update(['unit_price' => '6.000', 'line_total' => '12.000']);
         DB::table('enterprise_purchase_invoices')->where('id', $invoice->id)
             ->update(['total_amount' => '12.000']);
-        $match = app(\App\Enterprise\Procurement\ProcurementCompletionManager::class)
+        $match = app(ProcurementCompletionManager::class)
             ->syncMatchForInvoice((int) $invoice->id);
         $this->assertSame('pending', $match->status);
         $this->assertNull($match->reviewed_by);
