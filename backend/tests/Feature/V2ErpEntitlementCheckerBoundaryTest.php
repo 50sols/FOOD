@@ -1719,6 +1719,233 @@ final class V2ErpEntitlementCheckerBoundaryTest extends TestCase
             ->count());
     }
 
+    public function test_all_twelve_canonical_procurement_tabs_have_one_localized_horizontal_http_rail(): void
+    {
+        $store = $this->wholesaleStore();
+        $owner = $this->actor('SUPER_ADMIN');
+        $manager = $this->actor('PROCUREMENT_MANAGER');
+        app(EnterpriseModuleAdministration::class)->perform('procurement', 'enable', $owner);
+        app(ModuleEntitlementManager::class)->set(
+            'procurement', EntitlementScope::platform(), true, null, $owner,
+        );
+
+        $canonical = [
+            'overview', 'suppliers', 'requests', 'rfqs', 'orders', 'contracts',
+            'receipts', 'invoices', 'matches', 'returns', 'statements', 'reports',
+        ];
+        $auditBefore = DB::table('audit_logs')->count();
+        foreach (['ar' => 'rtl', 'en' => 'ltr'] as $locale => $direction) {
+            $manager->forceFill(['locale' => $locale])->save();
+            foreach ($canonical as $tab) {
+                $response = $this->actingAs($manager->fresh())->get(route('admin.erp.procurement.index', [
+                    'store_id' => $store->id,
+                    'tab' => $tab,
+                ]));
+                $response->assertOk()
+                    ->assertViewHas('activeTab', $tab)
+                    ->assertSee('dir="'.$direction.'"', false);
+                $this->assertSame($store->id, $response->viewData('selectedStoreId'));
+                $this->assertSame($canonical, collect($response->viewData('tabs'))->pluck('key')->all());
+
+                $html = html_entity_decode($response->getContent(), ENT_QUOTES | ENT_HTML5, 'UTF-8');
+                $this->assertSame(1, preg_match(
+                    '/<nav class="foodex-tabs erp-procurement-tabs" data-procurement-tabs[^>]*>(.*?)<\\/nav>/s',
+                    $html,
+                    $nav,
+                ), $locale.'/'.$tab.' must reuse one horizontal nav');
+                $this->assertSame(12, substr_count($nav[1], 'data-procurement-tab="'));
+                $this->assertSame(1, substr_count($nav[1], 'aria-current="page"'));
+                $this->assertStringContainsString(
+                    'data-procurement-tab="'.$tab.'"',
+                    $nav[1],
+                );
+                $this->assertStringContainsString(
+                    __('enterprise_procurement.tabs.'.$tab, [], $locale),
+                    $nav[1],
+                );
+                $this->assertSame(1, preg_match(
+                    '/<a data-procurement-tab="'.preg_quote($tab, '/').'" href="([^"]+)"/',
+                    $nav[1],
+                    $link,
+                ));
+                parse_str((string) parse_url($link[1], PHP_URL_QUERY), $query);
+                $this->assertSame($tab, $query['tab'] ?? null);
+                $this->assertSame((string) $store->id, (string) ($query['store_id'] ?? ''));
+            }
+        }
+        // GET for a list, dashboard or report may never issue a business
+        // transition or append a successful write audit.
+        $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+    }
+
+    public function test_procurement_search_filters_and_single_pagination_preserve_tab_store_and_deep_link_query(): void
+    {
+        $store = $this->wholesaleStore();
+        $owner = $this->actor('SUPER_ADMIN');
+        $manager = $this->actor('PROCUREMENT_MANAGER');
+        app(EnterpriseModuleAdministration::class)->perform('procurement', 'enable', $owner);
+        app(ModuleEntitlementManager::class)->set(
+            'procurement', EntitlementScope::platform(), true, null, $owner,
+        );
+
+        $statusByTab = [
+            'suppliers' => 'active',
+            'requests' => 'draft',
+            'rfqs' => 'draft',
+            'orders' => 'draft',
+            'contracts' => 'draft',
+            'receipts' => 'draft',
+            'invoices' => 'draft',
+            'matches' => 'pending',
+            'returns' => 'draft',
+        ];
+        $embedded = ['rfqs', 'contracts', 'matches'];
+        $auditBefore = DB::table('audit_logs')->count();
+
+        foreach (['ar' => 'rtl', 'en' => 'ltr'] as $locale => $direction) {
+            $manager->forceFill(['locale' => $locale])->save();
+            foreach ($statusByTab as $tab => $status) {
+                $response = $this->actingAs($manager->fresh())->get(route('admin.erp.procurement.index', [
+                    'store_id' => $store->id,
+                    'tab' => $tab,
+                    'q' => 'SAFE-PREFIX',
+                    'status' => $status,
+                    'page' => 1,
+                ]));
+                $response->assertOk()->assertSee('dir="'.$direction.'"', false);
+                $response->assertSee('name="q" value="SAFE-PREFIX"', false);
+                $response->assertSee('name="tab" value="'.$tab.'"', false);
+                $response->assertSee('name="store_id" value="'.$store->id.'"', false);
+                $rows = $response->viewData('rows');
+                $this->assertInstanceOf(\Illuminate\Pagination\LengthAwarePaginator::class, $rows);
+                parse_str((string) parse_url($rows->url(2), PHP_URL_QUERY), $query);
+                $this->assertSame($tab, $query['tab'] ?? null);
+                $this->assertSame((string) $store->id, (string) ($query['store_id'] ?? ''));
+                $this->assertSame('SAFE-PREFIX', $query['q'] ?? null);
+                $this->assertSame($status, $query['status'] ?? null);
+                $this->assertSame('2', (string) ($query['page'] ?? ''));
+
+                $html = $response->getContent();
+                if (in_array($tab, $embedded, true)) {
+                    $this->assertSame(1, substr_count($html, 'class="erp-pagination"'));
+                    $this->assertStringNotContainsString('data-procurement-footer-pagination', $html);
+                } else {
+                    $this->assertSame(1, substr_count($html, 'data-procurement-footer-pagination'));
+                    $this->assertStringNotContainsString('class="erp-pagination"', $html);
+                }
+            }
+        }
+        $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+    }
+
+    public function test_procurement_denied_tabs_are_hidden_and_direct_get_denied_while_unknown_tab_is_404(): void
+    {
+        $store = $this->wholesaleStore();
+        $owner = $this->actor('SUPER_ADMIN');
+        $buyer = $this->actor('PROCUREMENT_BUYER');
+        app(EnterpriseModuleAdministration::class)->perform('procurement', 'enable', $owner);
+        app(ModuleEntitlementManager::class)->set(
+            'procurement', EntitlementScope::platform(), true, null, $owner,
+        );
+
+        $deniedPermissions = [
+            'procurement.suppliers.view' => ['overview', 'suppliers'],
+            'procurement.purchase_orders.view' => ['orders', 'contracts'],
+            'procurement.purchase_invoices.view' => ['invoices', 'matches'],
+        ];
+        foreach (array_keys($deniedPermissions) as $code) {
+            DB::table('user_permission_overrides')->insert([
+                'user_id' => $buyer->id,
+                'permission_id' => Permission::query()->where('code', $code)->firstOrFail()->id,
+                'scope_key' => 'global',
+                'store_id' => null,
+                'effect' => 'deny',
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+        }
+        $buyer->forceFill(['has_permission_overrides' => true])->save();
+        $auditBefore = DB::table('audit_logs')->count();
+
+        foreach (['ar' => 'rtl', 'en' => 'ltr'] as $locale => $direction) {
+            $buyer->forceFill(['locale' => $locale])->save();
+            $response = $this->actingAs($buyer->fresh())->get(route('admin.erp.procurement.index', [
+                'tab' => 'requests',
+                'store_id' => $store->id,
+            ]))->assertOk()->assertSee('dir="'.$direction.'"', false);
+            $visible = collect($response->viewData('tabs'))->pluck('key')->all();
+            foreach ($deniedPermissions as $permission => $tabs) {
+                $this->assertFalse($buyer->fresh()->hasPermission($permission, $store->id));
+                foreach ($tabs as $tab) {
+                    $this->assertNotContains($tab, $visible);
+                    $response->assertDontSee('data-procurement-tab="'.$tab.'"', false);
+                    $this->actingAs($buyer->fresh())->get(route('admin.erp.procurement.index', [
+                        'tab' => $tab,
+                        'store_id' => $store->id,
+                    ]))->assertForbidden();
+                }
+            }
+            foreach (['requests', 'rfqs', 'receipts', 'returns', 'statements', 'reports'] as $tab) {
+                $this->assertContains($tab, $visible);
+                $this->actingAs($buyer->fresh())->get(route('admin.erp.procurement.index', [
+                    'tab' => $tab,
+                    'store_id' => $store->id,
+                ]))->assertOk();
+            }
+            $this->actingAs($buyer->fresh())->get(route('admin.erp.procurement.index', [
+                'tab' => 'forged_unregistered_tab',
+                'store_id' => $store->id,
+            ]))->assertNotFound();
+        }
+        $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+    }
+
+    public function test_authorized_purchase_request_deep_link_cannot_open_a_foreign_store_record(): void
+    {
+        $primary = $this->wholesaleStore();
+        $sibling = Store::query()->create([
+            'store_type_id' => $primary->store_type_id,
+            'code' => 'P111-TAB-FOREIGN-DEEP-LINK',
+            'name' => 'P111 separate B2B deep-link store',
+            'is_active' => true,
+        ]);
+        app(OrganizationHierarchyService::class)->ensureDefaultScopeForStore($sibling);
+        $owner = $this->actor('SUPER_ADMIN');
+        $maker = $this->actor('PROCUREMENT_BUYER');
+        app(EnterpriseModuleAdministration::class)->perform('procurement', 'enable', $owner);
+        app(ModuleEntitlementManager::class)->set(
+            'procurement', EntitlementScope::platform(), true, null, $owner,
+        );
+        $context = app(TenantContextResolver::class)->wholesale($maker, $primary->id);
+        $record = app(PurchaseRequestManager::class)->create($maker, $context, [
+            'currency_code' => 'KWD',
+            'reason' => 'P111 authorized deep link never crosses Store A to B',
+            'lines' => [[
+                'description' => 'P111 scoped deep link',
+                'quantity' => '1.000',
+                'unit' => 'case',
+                'estimated_unit_cost' => '1.000',
+            ]],
+        ]);
+        $auditBefore = DB::table('audit_logs')->count();
+        foreach (['ar' => 'rtl', 'en' => 'ltr'] as $locale => $direction) {
+            $maker->forceFill(['locale' => $locale])->save();
+            $this->actingAs($maker->fresh())->get(route('admin.erp.procurement.index', [
+                'store_id' => $primary->id,
+                'tab' => 'requests',
+                'request' => $record->id,
+            ]))->assertOk()->assertSee('dir="'.$direction.'"', false)
+                ->assertSee($record->request_number);
+
+            $this->actingAs($maker->fresh())->get(route('admin.erp.procurement.index', [
+                'store_id' => $sibling->id,
+                'tab' => 'requests',
+                'request' => $record->id,
+            ]))->assertNotFound();
+        }
+        $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+    }
+
     private function wholesaleStore(): Store
     {
         $store = Store::query()->findOrFail(app(WholesalePrincipal::class)->storeId());
