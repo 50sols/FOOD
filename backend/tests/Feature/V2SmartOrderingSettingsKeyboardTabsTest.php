@@ -80,6 +80,7 @@ final class V2SmartOrderingSettingsKeyboardTabsTest extends TestCase
             $store = $this->store('B2C', 'SO-TAB-'.strtoupper($locale));
             $otherStore = $this->store('B2C', 'SO-OTHER-'.strtoupper($locale));
             $manager = $this->storeAdmin($store->id, $locale);
+            $otherManager = $this->storeAdmin($otherStore->id, $locale, 'other');
             app()->setLocale($locale);
             // An authenticated store manager must not bypass the server's
             // real entitlement check even though the tab markup is client-side.
@@ -89,6 +90,8 @@ final class V2SmartOrderingSettingsKeyboardTabsTest extends TestCase
 
             $this->enableRestaurantSaasForTestStore($store->id);
             app(SmartOrderingSiteService::class)->ensureForStore($store->id, $manager);
+            $this->enableRestaurantSaasForTestStore($otherStore->id);
+            app(SmartOrderingSiteService::class)->ensureForStore($otherStore->id, $otherManager);
 
             $this->actingAs($manager)
                 ->get(route('admin.smart-ordering.index', ['store_id' => $store->id]))
@@ -102,7 +105,6 @@ final class V2SmartOrderingSettingsKeyboardTabsTest extends TestCase
             $this->actingAs($manager)
                 ->get(route('admin.smart-ordering.index', ['store_id' => $otherStore->id]))
                 ->assertNotFound();
-
         }
     }
 
@@ -118,11 +120,11 @@ final class V2SmartOrderingSettingsKeyboardTabsTest extends TestCase
         ]);
     }
 
-    private function storeAdmin(int $storeId, string $locale): User
+    private function storeAdmin(int $storeId, string $locale, string $suffix = 'current'): User
     {
         $user = User::query()->create([
             'name' => 'Smart Ordering tab audit',
-            'email' => 'so-tabs-'.$locale.'@example.test',
+            'email' => 'so-tabs-'.$locale.'-'.$suffix.'@example.test',
             'password' => 'disposable-ci-only',
             'locale' => $locale,
             'is_active' => true,
