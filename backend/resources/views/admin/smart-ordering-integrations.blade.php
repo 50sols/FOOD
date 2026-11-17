@@ -8,7 +8,7 @@
 <style>
 .ri-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,320px),1fr));gap:16px}.ri-kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px}.ri-form{display:grid;gap:12px}.ri-form label{display:grid;gap:6px}.ri-checks{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}.ri-list{display:grid;gap:10px}.ri-item{border:1px solid var(--foodex-border);border-radius:14px;padding:14px;display:grid;gap:10px}.ri-head{display:flex;justify-content:space-between;gap:12px;align-items:flex-start}.ri-badge{display:inline-flex;border-radius:999px;padding:4px 9px;background:rgba(127,127,127,.12);font-size:.82rem}.ri-secret{word-break:break-all;font-family:ui-monospace,monospace}.ri-filter{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;align-items:end}.ri-filter label{display:grid;gap:5px}.ri-table-wrap{overflow:auto;max-width:100%}.ri-table{width:100%;border-collapse:collapse;min-width:760px}.ri-table th,.ri-table td{padding:9px;border-bottom:1px solid var(--foodex-border);text-align:start;vertical-align:top}.ri-charts{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,280px),1fr));gap:14px}.ri-chart{border:1px solid var(--foodex-border);border-radius:14px;padding:14px}.ri-bars{display:grid;gap:8px}.ri-bar-row{display:grid;grid-template-columns:minmax(90px,1fr) 3fr auto;gap:8px;align-items:center}.ri-bar-track{height:10px;border-radius:999px;background:rgba(127,127,127,.13);overflow:hidden}.ri-bar-fill{height:100%;background:var(--foodex-green);border-radius:999px}.ri-actions{display:flex;gap:8px;flex-wrap:wrap}.ri-muted{color:var(--foodex-muted);font-size:.9rem}.ri-report-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:10px}.ri-report{border:1px solid var(--foodex-border);border-radius:12px;padding:12px;display:flex;justify-content:space-between;gap:8px;align-items:center}
 @media(max-width:767px){.ri-checks{grid-template-columns:1fr}.ri-head{display:grid}.ri-bar-row{grid-template-columns:90px 1fr auto}.ri-actions>*{flex:1 1 auto}}
-.ri-workspace-tabs{display:flex;flex-wrap:nowrap;gap:8px;overflow-x:auto;overscroll-behavior-inline:contain;max-width:100%;padding-block:8px}.ri-workspace-tabs .foodex-tab{flex:0 0 auto;white-space:nowrap;min-height:44px;display:inline-flex;align-items:center}.ri-tab-panel{min-width:0}.ri-tab-panel .ri-grid{margin-block-end:16px}.ri-form [aria-invalid="true"]{outline:2px solid var(--foodex-danger-text);outline-offset:2px}
+.ri-workspace-tabs{display:flex;flex-wrap:nowrap;gap:8px;overflow-x:auto;overscroll-behavior-inline:contain;max-width:100%;min-width:0;padding-block:8px;scrollbar-width:thin}.ri-workspace-tabs .foodex-tab{flex:0 0 auto;white-space:nowrap;min-height:44px;display:inline-flex;align-items:center}.ri-workspace-tabs .foodex-tab:focus-visible{outline:2px solid var(--foodex-action-green);outline-offset:-3px}.ri-tab-panel{min-width:0}.ri-tab-panel .ri-grid{margin-block-end:16px}.ri-form [aria-invalid="true"]{outline:2px solid var(--foodex-danger-text);outline-offset:2px}
 </style>
 </head>
 <body>
@@ -74,11 +74,11 @@ $canManageIntegrations=$user->is_active&&$user->hasPermission('smart_ordering.ma
 
 <nav class="foodex-tabs ri-workspace-tabs" aria-label="{{ __('restaurant_integrations.title') }}" data-integration-workspace-tabs>
 @foreach($workspaceTabs as $tabKey=>$tabLabel)
-<a id="ri-tab-{{ $tabKey }}" class="foodex-tab" href="{{ route('admin.smart-ordering.integrations.index',[$site,'tab'=>$tabKey]+$workspaceQuery) }}" @if($tabKey===$activeTab) aria-current="page" @endif>{{ $tabLabel }}</a>
+<a id="ri-tab-{{ $tabKey }}" class="foodex-tab {{ $tabKey===$activeTab ? 'active' : '' }}" href="{{ route('admin.smart-ordering.integrations.index',[$site,'tab'=>$tabKey]+$workspaceQuery) }}" @if($tabKey===$activeTab) aria-current="page" @endif>{{ $tabLabel }}</a>
 @endforeach
 </nav>
 @if($activeTab==='overview')
-<section id="ri-panel-overview" class="ri-tab-panel" role="tabpanel" aria-labelledby="ri-tab-overview" data-ri-active-panel>
+<section id="ri-panel-overview" class="ri-tab-panel" role="region" aria-labelledby="ri-tab-overview" data-ri-active-panel>
 <section class="panel">
 <div class="ri-head"><div><h2>{{ __('restaurant_integrations.dashboard_title') }}</h2><p class="ri-muted">{{ __('restaurant_integrations.dashboard_subtitle') }}</p></div></div>
 <div class="foodex-module-kpis ri-kpis">@foreach($kpis as $metric) @include('admin._module-dashboard-kpi',['metric'=>$metric]) @endforeach</div>
@@ -106,7 +106,7 @@ $canManageIntegrations=$user->is_active&&$user->hasPermission('smart_ordering.ma
 </section>
 @endif
 @if($activeTab==='logs')
-<section id="ri-panel-logs" class="ri-tab-panel" role="tabpanel" aria-labelledby="ri-tab-logs" data-ri-active-panel>
+<section id="ri-panel-logs" class="ri-tab-panel" role="region" aria-labelledby="ri-tab-logs" data-ri-active-panel>
 <section class="panel" id="logs"><h2>{{ __('restaurant_integrations.log_explorer') }}</h2><p class="ri-muted">{{ __('restaurant_integrations.log_explorer_help') }}</p>
 <form class="ri-filter" method="get" action="{{ route('admin.smart-ordering.integrations.index',$site) }}"><input type="hidden" name="tab" value="logs">@if($supportContext)<input type="hidden" name="support_access" value="1">@endif
 <label>{{ __('restaurant_integrations.provider_filter') }}<select class="foodex-control" name="provider"><option value=""></option>@foreach($providers as $provider)<option value="{{ $provider }}" @selected(($filters['provider']??'')===$provider)>{{ $provider }}</option>@endforeach</select></label>
@@ -137,7 +137,7 @@ $canManageIntegrations=$user->is_active&&$user->hasPermission('smart_ordering.ma
 </section>
 @endif
 @if($activeTab==='reports')
-<section id="ri-panel-reports" class="ri-tab-panel" role="tabpanel" aria-labelledby="ri-tab-reports" data-ri-active-panel>
+<section id="ri-panel-reports" class="ri-tab-panel" role="region" aria-labelledby="ri-tab-reports" data-ri-active-panel>
 <section class="panel"><h2>{{ __('restaurant_integrations.reports') }}</h2><div class="ri-report-grid">
 @foreach(['connector-health'=>'report_connector_health','sync-failures'=>'report_sync_failures','api-usage'=>'report_api_usage','webhook-performance'=>'report_webhook_performance','exceptions'=>'report_exceptions'] as $report=>$label)
 <div class="ri-report"><span>{{ __('restaurant_integrations.'.$label) }}</span><a class="foodex-action-secondary button secondary" href="{{ route('admin.smart-ordering.integrations.export',[$site,'report'=>$report]) }}">{{ __('restaurant_integrations.download_csv') }}</a></div>
@@ -148,7 +148,7 @@ $canManageIntegrations=$user->is_active&&$user->hasPermission('smart_ordering.ma
 </section>
 @endif
 @if($activeTab==='connectors')
-<section id="ri-panel-connectors" class="ri-tab-panel" role="tabpanel" aria-labelledby="ri-tab-connectors" data-ri-active-panel>
+<section id="ri-panel-connectors" class="ri-tab-panel" role="region" aria-labelledby="ri-tab-connectors" data-ri-active-panel>
 <div class="ri-grid">
 <section class="panel"><h2>{{ __('restaurant_integrations.install') }}</h2>
 @if($canManageIntegrations)<form class="ri-form" method="post" action="{{ route('admin.smart-ordering.integrations.install',$site) }}">@csrf @if($supportContext)<input type="hidden" name="support_access" value="1">@endif<input type="hidden" name="_integration_form" value="connectors">
@@ -179,7 +179,7 @@ $canManageIntegrations=$user->is_active&&$user->hasPermission('smart_ordering.ma
 </section>
 @endif
 @if($activeTab==='api-clients')
-<section id="ri-panel-api-clients" class="ri-tab-panel" role="tabpanel" aria-labelledby="ri-tab-api-clients" data-ri-active-panel>
+<section id="ri-panel-api-clients" class="ri-tab-panel" role="region" aria-labelledby="ri-tab-api-clients" data-ri-active-panel>
 <div class="ri-grid">
 <section class="panel"><h2>{{ __('restaurant_integrations.api_clients') }}</h2>
 @if($canManageIntegrations)<form class="ri-form" method="post" action="{{ route('admin.smart-ordering.integrations.api-clients.store',$site) }}">@csrf @if($supportContext)<input type="hidden" name="support_access" value="1">@endif<input type="hidden" name="_integration_form" value="api-clients">
@@ -200,7 +200,7 @@ $canManageIntegrations=$user->is_active&&$user->hasPermission('smart_ordering.ma
 </section>
 @endif
 @if($activeTab==='webhooks')
-<section id="ri-panel-webhooks" class="ri-tab-panel" role="tabpanel" aria-labelledby="ri-tab-webhooks" data-ri-active-panel>
+<section id="ri-panel-webhooks" class="ri-tab-panel" role="region" aria-labelledby="ri-tab-webhooks" data-ri-active-panel>
 <div class="ri-grid">
 <section class="panel"><h2>{{ __('restaurant_integrations.webhooks') }}</h2>
 @if($canManageIntegrations)<form class="ri-form" method="post" action="{{ route('admin.smart-ordering.integrations.webhooks.store',$site) }}">@csrf @if($supportContext)<input type="hidden" name="support_access" value="1">@endif<input type="hidden" name="_integration_form" value="webhooks">
