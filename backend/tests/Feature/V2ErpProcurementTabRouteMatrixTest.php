@@ -325,6 +325,44 @@ final class V2ErpProcurementTabRouteMatrixTest extends TestCase
         ]);
     }
 
+    public function test_historically_archived_but_still_active_global_role_cannot_reopen_direct_procurement_http(): void
+    {
+        $actor = $this->manager();
+        $store = $this->wholesaleStore();
+        $role = Role::query()->where('code', 'PROCUREMENT_MANAGER')->firstOrFail();
+        $this->assertSame('ready', $this->readiness());
+
+        $this->actingAs($actor->fresh())->get($this->tabUrl('suppliers', $store))->assertOk();
+
+        // Legacy imports can preserve contradictory role rows. The security
+        // boundary must reject archived_at even when is_active was left true;
+        // hiding the Sidebar is insufficient to protect the direct HTTP route.
+        DB::table('roles')->where('id', $role->id)->update([
+            'is_active' => true,
+            'archived_at' => now(),
+            'updated_at' => now(),
+        ]);
+        $this->assertTrue((bool) DB::table('roles')->where('id', $role->id)->value('is_active'));
+        $this->assertNotNull(DB::table('roles')->where('id', $role->id)->value('archived_at'));
+
+        $beforeAudit = DB::table('audit_logs')->count();
+        foreach (['ar' => 'rtl', 'en' => 'ltr'] as $locale => $direction) {
+            app()->setLocale($locale);
+            $actor->forceFill(['locale' => $locale])->save();
+
+            $this->actingAs($actor->fresh())
+                ->get($this->tabUrl('suppliers', $store))
+                ->assertForbidden();
+
+            $this->actingAs($actor->fresh())
+                ->get(route('admin.erp.index'))
+                ->assertForbidden();
+        }
+
+        $this->assertSame($beforeAudit, DB::table('audit_logs')->count());
+        $this->assertDatabaseCount('enterprise_purchase_orders', 0);
+    }
+
     public function test_forged_procurement_store_ids_and_retail_to_wholesale_direct_urls_never_cross_channel(): void
     {
         $manager = $this->manager();
