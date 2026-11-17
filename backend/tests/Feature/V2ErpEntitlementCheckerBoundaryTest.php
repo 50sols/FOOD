@@ -2622,6 +2622,238 @@ final class V2ErpEntitlementCheckerBoundaryTest extends TestCase
         $this->assertSame($auditAfterCancel, DB::table('audit_logs')->count());
     }
 
+    public function test_approved_purchase_request_http_po_create_issue_cancel_detail_and_replay_preserve_server_scope(): void
+    {
+        $storeA = $this->wholesaleStore();
+        $storeB = Store::query()->create([
+            'store_type_id' => $storeA->store_type_id,
+            'code' => 'P111-PO-SECOND-B2B',
+            'name' => 'P111 distinct PO scope B',
+            'is_active' => true,
+        ]);
+        app(OrganizationHierarchyService::class)->ensureDefaultScopeForStore($storeB);
+
+        $owner = $this->actor('SUPER_ADMIN');
+        $maker = $this->actor('PROCUREMENT_BUYER');
+        $checker = $this->actor('PROCUREMENT_APPROVER');
+        $secondChecker = $this->actor('PROCUREMENT_APPROVER');
+        app(EnterpriseModuleAdministration::class)->perform('procurement', 'enable', $owner);
+        app(ModuleEntitlementManager::class)->set(
+            'procurement', EntitlementScope::platform(), true, null, $owner,
+        );
+        $supplier = app(SupplierDirectory::class)->create(
+            $maker,
+            app(TenantContextResolver::class)->wholesale($maker, $storeA->id),
+            [
+                'scope_type' => 'store',
+                'code' => 'P111-PO-REAL-SUP-A',
+                'name_en' => 'P111 source-approved supplier',
+            ],
+        );
+        $reason = 'P111 approved PO HTTP full server authority';
+        $this->actingAs($maker)->post(route('admin.erp.procurement.requests.store'), [
+            'store_id' => $storeA->id,
+            'supplier_id' => $supplier->id,
+            'currency_code' => 'KWD',
+            'reason' => $reason,
+            'needed_by' => now()->addDays(8)->toDateString(),
+            'item_code' => 'P111-PO-SKU',
+            'description' => 'P111 linked purchase-order line',
+            'quantity' => '2.125',
+            'unit' => 'case',
+            'estimated_unit_cost' => '12.375',
+        ])->assertRedirect();
+        $request = DB::table('enterprise_purchase_requests')->where('reason', $reason)->first();
+        $this->assertNotNull($request);
+        $this->assertSame('draft', $request->status);
+        $auditBeforeEarlyIssue = DB::table('audit_logs')->count();
+
+        $this->actingAs($maker)->post(route('admin.erp.procurement.orders.create', $request->id), [
+            'store_id' => $storeA->id,
+            'status' => 'issued',
+            'issued_by' => $checker->id,
+        ])->assertSessionHasErrors('purchase_request_id');
+        $this->actingAs($maker)->post(route('admin.erp.procurement.requests.submit', $request->id), [
+            'store_id' => $storeA->id,
+        ])->assertRedirect();
+        $this->actingAs($maker)->post(route('admin.erp.procurement.orders.create', $request->id), [
+            'store_id' => $storeA->id,
+            'status' => 'issued',
+        ])->assertSessionHasErrors('purchase_request_id');
+        $this->assertDatabaseCount('enterprise_purchase_orders', 0);
+        $this->assertSame($auditBeforeEarlyIssue + 1, DB::table('audit_logs')->count());
+
+        $this->actingAs($checker)->post(route('admin.erp.procurement.requests.decision', $request->id), [
+            'store_id' => $storeA->id,
+            'decision' => 'approve',
+            'note' => 'P111 independent checker approved the source request',
+        ])->assertRedirect();
+        $approved = DB::table('enterprise_purchase_requests')->where('id', $request->id)->first();
+        $this->assertSame('approved', $approved->status);
+        $this->assertSame((int) $checker->id, (int) $approved->decided_by);
+        $this->assertNotNull($approved->decided_at);
+
+        $poRoute = route('admin.erp.procurement.orders.create', $request->id);
+        $auditBeforeDenied = DB::table('audit_logs')->count();
+        foreach (['ar' => 'rtl', 'en' => 'ltr'] as $locale => $direction) {
+            $maker->forceFill(['locale' => $locale])->save();
+            $this->actingAs($maker->fresh())->post($poRoute, [
+                'store_id' => $storeB->id,
+                'issued_by' => $owner->id,
+                'status' => 'issued',
+            ])->assertNotFound();
+            $this->actingAs($maker->fresh())->get(route('admin.erp.procurement.index', [
+                'store_id' => $storeA->id,
+                'tab' => 'orders',
+            ]))->assertOk()->assertSee('dir="'.$direction.'"', false);
+        }
+        $this->assertDatabaseCount('enterprise_purchase_orders', 0);
+        $this->assertSame($auditBeforeDenied, DB::table('audit_logs')->count());
+
+        $this->actingAs($maker->fresh())->post($poRoute, [
+            'store_id' => $storeA->id,
+            'status' => 'issued',
+            'created_by' => $owner->id,
+            'issued_by' => $owner->id,
+            'supplier_id' => 999999,
+            'company_id' => 999999,
+            'order_number' => 'P111-FORGED-DUPLICATE-NUMBER',
+            'total_amount' => '-99999.999',
+            'unit_price' => '-15.125',
+            'discount_percent' => 99,
+            'procurement_contract_id' => 999999,
+        ])->assertRedirect()->assertSessionHas('status');
+
+        $po = DB::table('enterprise_purchase_orders')->where('purchase_request_id', $request->id)->first();
+        $this->assertNotNull($po);
+        $this->assertSame('draft', $po->status);
+        $this->assertSame((int) $maker->id, (int) $po->created_by);
+        $this->assertNull($po->issued_by);
+        $this->assertSame((int) $supplier->id, (int) $po->supplier_id);
+        $this->assertSame((int) $storeA->id, (int) $po->store_id);
+        $this->assertSame((int) $approved->company_id, (int) $po->company_id);
+        $this->assertSame((int) $approved->organization_id, (int) $po->organization_id);
+        $this->assertSame($request->request_number, $po->source_request_number);
+        $this->assertSame('KWD', $po->currency_code);
+        $this->assertNull($po->procurement_contract_id);
+        $this->assertNotSame('P111-FORGED-DUPLICATE-NUMBER', $po->order_number);
+        $this->assertSame((string) $approved->needed_by, (string) $po->needed_by);
+
+        $prLine = DB::table('enterprise_purchase_request_lines')
+            ->where('purchase_request_id', $request->id)->first();
+        $poLine = DB::table('enterprise_purchase_order_lines')
+            ->where('purchase_order_id', $po->id)->first();
+        $this->assertNotNull($prLine);
+        $this->assertNotNull($poLine);
+        $this->assertSame((int) $prLine->id, (int) $poLine->source_purchase_request_line_id);
+        $this->assertSame('P111-PO-SKU', $poLine->item_code);
+        $this->assertSame('case', $poLine->unit);
+        $this->assertSame('2.125', (string) $poLine->quantity);
+        $this->assertSame('12.375', (string) $poLine->unit_price);
+        $this->assertSame(1, DB::table('audit_logs')
+            ->where('event', 'enterprise.purchase_order.created')
+            ->where('auditable_id', $po->id)->count());
+
+        $auditAfterCreate = DB::table('audit_logs')->count();
+        $this->actingAs($maker->fresh())->post($poRoute, [
+            'store_id' => $storeA->id,
+            'order_number' => 'P111-FORGED-DUPLICATE-NUMBER',
+            'status' => 'issued',
+        ])->assertRedirect();
+        $this->assertSame(1, DB::table('enterprise_purchase_orders')
+            ->where('purchase_request_id', $request->id)->count());
+        $this->assertDatabaseHas('enterprise_purchase_orders', [
+            'id' => $po->id, 'order_number' => $po->order_number, 'status' => 'draft',
+        ]);
+        $this->assertSame($auditAfterCreate, DB::table('audit_logs')->count());
+
+        foreach (['ar' => 'rtl', 'en' => 'ltr'] as $locale => $direction) {
+            $maker->forceFill(['locale' => $locale])->save();
+            $this->actingAs($maker->fresh())->get(route('admin.erp.procurement.index', [
+                'store_id' => $storeA->id,
+                'tab' => 'orders',
+                'order' => $po->id,
+            ]))->assertOk()->assertSee('dir="'.$direction.'"', false)
+                ->assertSee($po->order_number)->assertSee($supplier->code);
+            $this->actingAs($maker->fresh())->get(route('admin.erp.procurement.index', [
+                'store_id' => $storeB->id,
+                'tab' => 'orders',
+                'order' => $po->id,
+            ]))->assertNotFound();
+        }
+
+        $auditBeforeDeniedIssue = DB::table('audit_logs')->count();
+        $this->actingAs($maker->fresh())->post(route('admin.erp.procurement.orders.issue', $po->id), [
+            'store_id' => $storeA->id,
+            'issued_by' => $checker->id,
+        ])->assertForbidden();
+        $this->actingAs($checker)->post(route('admin.erp.procurement.orders.issue', $po->id), [
+            'store_id' => $storeB->id,
+        ])->assertNotFound();
+        $this->actingAs($maker->fresh())->post(route('admin.erp.procurement.orders.cancel', $po->id), [
+            'store_id' => $storeB->id,
+        ])->assertNotFound();
+        $this->assertSame($auditBeforeDeniedIssue, DB::table('audit_logs')->count());
+        $this->assertDatabaseHas('enterprise_purchase_orders', [
+            'id' => $po->id, 'status' => 'draft', 'issued_by' => null,
+        ]);
+
+        $this->actingAs($checker)->post(route('admin.erp.procurement.orders.issue', $po->id), [
+            'store_id' => $storeA->id,
+            'issued_by' => $owner->id,
+            'status' => 'cancelled',
+            'order_number' => 'P111-FORGED-DUPLICATE-NUMBER',
+        ])->assertRedirect();
+        $issued = DB::table('enterprise_purchase_orders')->where('id', $po->id)->first();
+        $this->assertSame('issued', $issued->status);
+        $this->assertSame((int) $checker->id, (int) $issued->issued_by);
+        $this->assertNotNull($issued->issued_at);
+        $this->assertSame((int) $maker->id, (int) $issued->created_by);
+        $this->assertSame(1, DB::table('audit_logs')
+            ->where('event', 'enterprise.purchase_order.issued')
+            ->where('auditable_id', $po->id)->count());
+
+        $auditAfterIssue = DB::table('audit_logs')->count();
+        $this->actingAs($secondChecker)->post(route('admin.erp.procurement.orders.issue', $po->id), [
+            'store_id' => $storeA->id,
+        ])->assertRedirect();
+        $this->assertSame($auditAfterIssue, DB::table('audit_logs')->count());
+        $replayedIssue = DB::table('enterprise_purchase_orders')->where('id', $po->id)->first();
+        $this->assertSame((int) $checker->id, (int) $replayedIssue->issued_by);
+        $this->assertSame((string) $issued->issued_at, (string) $replayedIssue->issued_at);
+
+        $this->actingAs($maker->fresh())->post(route('admin.erp.procurement.orders.cancel', $po->id), [
+            'store_id' => $storeA->id,
+            'cancelled_by' => $owner->id,
+            'status' => 'issued',
+        ])->assertRedirect();
+        $cancelled = DB::table('enterprise_purchase_orders')->where('id', $po->id)->first();
+        $this->assertSame('cancelled', $cancelled->status);
+        $this->assertSame((int) $maker->id, (int) $cancelled->cancelled_by);
+        $this->assertNotNull($cancelled->cancelled_at);
+        $this->assertSame((int) $checker->id, (int) $cancelled->issued_by);
+        $this->assertSame(1, DB::table('audit_logs')
+            ->where('event', 'enterprise.purchase_order.cancelled')
+            ->where('auditable_id', $po->id)->count());
+
+        $auditAfterCancel = DB::table('audit_logs')->count();
+        $this->actingAs($maker->fresh())->post(route('admin.erp.procurement.orders.cancel', $po->id), [
+            'store_id' => $storeA->id,
+        ])->assertRedirect();
+        $afterRetry = DB::table('enterprise_purchase_orders')->where('id', $po->id)->first();
+        $this->assertSame((string) $cancelled->cancelled_at, (string) $afterRetry->cancelled_at);
+        $this->assertSame((int) $maker->id, (int) $afterRetry->cancelled_by);
+        $this->assertSame($auditAfterCancel, DB::table('audit_logs')->count());
+
+        $this->actingAs($checker)->post(route('admin.erp.procurement.orders.issue', $po->id), [
+            'store_id' => $storeA->id,
+        ])->assertSessionHasErrors('status');
+        $this->assertDatabaseHas('enterprise_purchase_orders', [
+            'id' => $po->id, 'status' => 'cancelled',
+        ]);
+        $this->assertSame($auditAfterCancel, DB::table('audit_logs')->count());
+    }
+
     private function wholesaleStore(): Store
     {
         $store = Store::query()->findOrFail(app(WholesalePrincipal::class)->storeId());
