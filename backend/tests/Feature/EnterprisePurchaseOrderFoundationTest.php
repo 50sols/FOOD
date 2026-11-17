@@ -2,17 +2,24 @@
 
 namespace Tests\Feature;
 
+use App\Enterprise\Modules\ModuleLifecycleManager;
+use App\Enterprise\Modules\ModuleState;
 use App\Enterprise\Organization\OrganizationHierarchyService;
+use App\Enterprise\Procurement\GoodsReceiptManager;
 use App\Enterprise\Procurement\PurchaseOrderManager;
 use App\Enterprise\Procurement\PurchaseRequestManager;
 use App\Enterprise\Procurement\SupplierDirectory;
+use App\Models\Catalog;
 use App\Models\Permission;
+use App\Models\Product;
 use App\Models\Role;
 use App\Models\Store;
 use App\Models\User;
+use App\Models\Warehouse;
 use App\Support\ResolvedTenantContext;
 use App\Support\TenantContextResolver;
 use Illuminate\Database\Eloquent\ModelNotFoundException;
+use Illuminate\Database\QueryException;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
@@ -233,6 +240,106 @@ final class EnterprisePurchaseOrderFoundationTest extends TestCase
             ->count());
     }
 
+    public function test_posted_receipt_blocks_po_cancellation_without_reversing_stock(): void
+    {
+        $lifecycle = app(ModuleLifecycleManager::class);
+        $lifecycle->transition('procurement', ModuleState::ENABLING);
+        $lifecycle->transition('procurement', ModuleState::ENABLED);
+
+        [$actor, $store, $context] = $this->scopedUser($this->allPermissions(), 'PO-POSTED');
+        $sku = 'PO-POSTED-SKU';
+        $catalog = Catalog::query()->create([
+            'store_id' => $store->id,
+            'channel' => 'b2c',
+            'code' => 'po-posted-catalog',
+            'name' => 'PO Receiving Catalog',
+            'is_active' => true,
+            'is_migration_quarantine' => false,
+        ]);
+        $unitId = (int) DB::table('units')->insertGetId([
+            'store_id' => null,
+            'scope' => 'global',
+            'scope_key' => 'global',
+            'code' => 'PO-POSTED-EA',
+            'name' => 'Each',
+            'name_ar' => 'قطعة',
+            'name_en' => 'Each',
+            'decimal_places' => 3,
+            'is_active' => true,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        $product = Product::query()->create([
+            'catalog_id' => $catalog->id,
+            'unit_id' => $unitId,
+            'sku' => $sku,
+            'name' => $sku,
+            'is_active' => true,
+        ]);
+        $warehouse = Warehouse::query()->create([
+            'store_id' => $store->id,
+            'code' => 'PO-POSTED-WH',
+            'name' => 'PO Receiving Warehouse',
+            'is_active' => true,
+        ]);
+
+        $order = $this->approvedOrder($actor, $context, 'PO-POSTED-SUP', $sku);
+        $orders = app(PurchaseOrderManager::class);
+        $orders->issue($actor, $context, $order->id);
+        $receipts = app(GoodsReceiptManager::class);
+        $receipt = $receipts->createFromIssuedOrder($actor, $context, $order->id, [
+            'lines' => [[
+                'purchase_order_line_id' => $order->lines()->firstOrFail()->id,
+                'warehouse_id' => $warehouse->id,
+                'quantity' => 1,
+            ]],
+        ]);
+        $this->assertSame('posted', $receipts->post($actor, $context, $receipt->id)->status);
+
+        try {
+            $orders->cancel($actor, $context, $order->id);
+            $this->fail('A PO with posted inventory receipt must not be cancelled silently.');
+        } catch (ValidationException $exception) {
+            $this->assertArrayHasKey('status', $exception->errors());
+        }
+
+        $this->assertDatabaseHas('enterprise_purchase_orders', ['id' => $order->id, 'status' => 'issued']);
+        $this->assertDatabaseHas('enterprise_goods_receipts', ['id' => $receipt->id, 'status' => 'posted']);
+        $this->assertSame(1.0, (float) DB::table('inventories')
+            ->where('warehouse_id', $warehouse->id)
+            ->where('product_id', $product->id)
+            ->value('quantity'));
+        $this->assertSame(1, DB::table('stock_movements')
+            ->where('type', 'purchase_receipt')
+            ->where('store_id', $store->id)
+            ->count());
+        $this->assertSame(0, DB::table('audit_logs')
+            ->where('event', 'enterprise.purchase_order.cancelled')
+            ->where('auditable_id', $order->id)
+            ->count());
+    }
+
+    public function test_po_number_is_unique_per_company_even_for_imported_duplicate(): void
+    {
+        [$actor, , $context] = $this->scopedUser($this->allPermissions(), 'PO-DUP');
+        $first = $this->approvedOrder($actor, $context, 'PO-DUP-SUP-1');
+        $second = $this->approvedOrder($actor, $context, 'PO-DUP-SUP-2');
+
+        try {
+            DB::table('enterprise_purchase_orders')->where('id', $second->id)
+                ->update(['order_number' => $first->order_number]);
+            $this->fail('An imported PO number must not duplicate another PO in the company.');
+        } catch (QueryException $exception) {
+            $this->assertNotNull($exception);
+        }
+
+        $this->assertDatabaseHas('enterprise_purchase_orders', [
+            'id' => $second->id,
+            'order_number' => $second->order_number,
+            'status' => 'draft',
+        ]);
+    }
+
     public function test_purchase_order_number_search_preserves_literal_symbols_and_store_scope(): void
     {
         [$actorA, $storeA, $contextA] = $this->scopedUser($this->allPermissions(), 'PO-LITERAL-A');
@@ -323,6 +430,7 @@ final class EnterprisePurchaseOrderFoundationTest extends TestCase
         User $actor,
         ResolvedTenantContext $context,
         string $supplierCode,
+        ?string $itemCode = null,
     ) {
         $supplier = app(SupplierDirectory::class)->create($actor, $context, [
             'scope_type' => 'store',
@@ -335,6 +443,7 @@ final class EnterprisePurchaseOrderFoundationTest extends TestCase
             'currency_code' => 'KWD',
             'reason' => 'PO lifecycle',
             'lines' => [[
+                'item_code' => $itemCode,
                 'description' => 'Operational item',
                 'quantity' => 1,
                 'unit' => 'each',
