@@ -63,10 +63,28 @@ final class V2TreasurySelectedStoreReadEntitlementTest extends TestCase
                 'tab' => 'receipts',
             ]))->assertOk()->assertSee('dir="'.$direction.'"', false);
 
-            $this->actingAs($actor->fresh())->get(route('admin.erp.treasury.index', [
+            $paymentPage = $this->actingAs($actor->fresh())->get(route('admin.erp.treasury.index', [
                 'store_id' => $storeB->id,
                 'tab' => 'payments',
             ]))->assertOk()->assertSee('dir="'.$direction.'"', false);
+
+            // The UI must project the same selected-store capability matrix as
+            // direct HTTP. A Payments-only store must not advertise Treasury
+            // Overview, Receipts, Cheques, Reconciliation, or Cash Closing.
+            $html = html_entity_decode($paymentPage->getContent(), ENT_QUOTES | ENT_HTML5, 'UTF-8');
+            $this->assertSame(1, preg_match('/<nav class="foodex-tabs"[^>]*>(.*?)<\\/nav>/s', $html, $nav));
+            preg_match_all('/<a href="([^"]+)"[^>]*>/', $nav[1], $links);
+            $visibleTabs = [];
+            foreach ($links[1] as $link) {
+                parse_str((string) parse_url($link, PHP_URL_QUERY), $params);
+                $this->assertSame((string) $storeB->id, $params['store_id'] ?? null);
+                $visibleTabs[] = $params['tab'] ?? null;
+            }
+            $this->assertSame(['payments', 'financing', 'guarantees', 'investments'], $visibleTabs);
+            $this->assertSame(1, substr_count($nav[1], 'aria-current="page"'));
+            $this->assertStringContainsString('flex-wrap:nowrap', $html);
+            $this->assertStringNotContainsString('tab=receipts', $nav[1]);
+            $this->assertStringNotContainsString('tab=overview', $nav[1]);
 
             // The existing TreasuryPlanning/GuaranteedContract services deliberately
             // reuse payments.read for these payment-family read-only workspaces.
@@ -104,6 +122,55 @@ final class V2TreasurySelectedStoreReadEntitlementTest extends TestCase
                     (string) ($query['query'] ?? ''),
                 ), 'Unentitled Treasury GET queried bank or cashbox metadata before rejection.');
             }
+        }
+
+        $this->assertDatabaseCount('enterprise_treasury_receipts', 0);
+        $this->assertDatabaseCount('enterprise_treasury_payments', 0);
+    }
+
+    public function test_receipt_validation_redirect_keeps_selected_store_tab_and_filters_without_writing(): void
+    {
+        [$actor, $storeA] = $this->operatorWithTwoStores();
+        $this->enableTreasury($actor);
+        app(ModuleEntitlementManager::class)->set(
+            'treasury',
+            new EntitlementScope(EntitlementScope::STORE, $storeA->id),
+            true,
+            ['treasury.receipts.read', 'treasury.receipts.manage'],
+            $actor,
+        );
+
+        foreach (['ar' => 'rtl', 'en' => 'ltr'] as $locale => $direction) {
+            $actor->forceFill(['locale' => $locale])->save();
+            $url = route('admin.erp.treasury.index', [
+                'tab' => 'receipts',
+                'store_id' => $storeA->id,
+                'status' => 'draft',
+                'date_from' => '2026-11-01',
+                'date_to' => '2026-11-30',
+            ]);
+
+            $this->actingAs($actor->fresh())->from($url)
+                ->post(route('admin.erp.treasury.receipts.store'), [
+                    'store_id' => $storeA->id,
+                    '_operation_key' => 'ui-invalid-receipt-'.$locale,
+                    'target_key' => 'cashbox:999999',
+                    'amount' => '1.0000', // Four decimal places violate exact 3dp validation.
+                    'value_date' => '2026-11-17',
+                    'reference' => 'TEST-VALIDATION',
+                ])
+                ->assertRedirect($url)
+                ->assertSessionHasErrors('amount');
+
+            $page = $this->actingAs($actor->fresh())->get($url)
+                ->assertOk()->assertSee('dir="'.$direction.'"', false)
+                ->assertSee('role="alert"', false);
+            $html = html_entity_decode($page->getContent(), ENT_QUOTES | ENT_HTML5, 'UTF-8');
+            $this->assertSame(1, preg_match('/<nav class="foodex-tabs"[^>]*>(.*?)<\\/nav>/s', $html, $nav));
+            $this->assertSame(1, substr_count($nav[1], 'aria-current="page"'));
+            $this->assertStringContainsString('tab=receipts', $nav[1]);
+            $this->assertStringContainsString('name="date_from"', $html);
+            $this->assertStringContainsString('2026-11-01', $html);
         }
 
         $this->assertDatabaseCount('enterprise_treasury_receipts', 0);
