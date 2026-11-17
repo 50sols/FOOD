@@ -68,7 +68,17 @@ final class V2TreasurySelectedStoreReadEntitlementTest extends TestCase
                 'tab' => 'payments',
             ]))->assertOk()->assertSee('dir="'.$direction.'"', false);
 
-            foreach (['overview', 'receipts', 'forecast', 'reports', 'cheques', 'reconciliation', 'cash_closing', 'financing', 'guarantees', 'investments'] as $tab) {
+            // The existing TreasuryPlanning/GuaranteedContract services deliberately
+            // reuse payments.read for these payment-family read-only workspaces.
+            // Do not invent another permission or call their authorized 200 a leak.
+            foreach (['financing', 'guarantees', 'investments'] as $tab) {
+                $this->actingAs($actor->fresh())->get(route('admin.erp.treasury.index', [
+                    'store_id' => $storeB->id,
+                    'tab' => $tab,
+                ]))->assertOk();
+            }
+
+            foreach (['overview', 'receipts', 'forecast', 'reports', 'cheques', 'reconciliation', 'cash_closing'] as $tab) {
                 $this->actingAs($actor->fresh())->get(route('admin.erp.treasury.index', [
                     'store_id' => $storeB->id,
                     'tab' => $tab,
@@ -133,6 +143,48 @@ final class V2TreasurySelectedStoreReadEntitlementTest extends TestCase
 
         $this->actingAs($actor->fresh())->get($url)->assertForbidden();
         $this->assertDatabaseCount('enterprise_treasury_payments', 0);
+    }
+
+    public function test_store_a_allow_store_b_deny_roleless_and_inactive_retail_role_are_authorized_by_server(): void
+    {
+        [$actor, $storeA, $storeB] = $this->operatorWithTwoStores();
+        $this->enableTreasury($actor);
+
+        $grants = app(ModuleEntitlementManager::class);
+        $grants->set('treasury', new EntitlementScope(EntitlementScope::STORE, $storeA->id), true, [
+            'treasury.receipts.read',
+        ], $actor);
+        $grants->set('treasury', new EntitlementScope(EntitlementScope::STORE, $storeB->id), false, [], $actor);
+
+        $urlA = route('admin.erp.treasury.index', ['store_id' => $storeA->id, 'tab' => 'receipts']);
+        $urlB = route('admin.erp.treasury.index', ['store_id' => $storeB->id, 'tab' => 'receipts']);
+
+        $unauthorized = User::factory()->create(['is_active' => true]);
+        $this->grantPlatformErpAccess($unauthorized);
+
+        foreach (['ar' => 'rtl', 'en' => 'ltr'] as $locale => $direction) {
+            $actor->forceFill(['locale' => $locale])->save();
+
+            $this->actingAs($actor->fresh())->get($urlA)
+                ->assertOk()->assertSee('dir="'.$direction.'"', false);
+            $this->actingAs($actor->fresh())->get($urlB)->assertForbidden();
+            $this->actingAs($unauthorized)->get($urlA)->assertForbidden();
+        }
+
+        // The assigned store role is the actual retail scope credential.
+        // A separate ERP test-navigation role must not resurrect it.
+        $retailRole = Role::query()->where('code', 'RETAIL_FINANCE')->firstOrFail();
+        $retailRole->forceFill(['is_active' => false])->save();
+
+        foreach (['ar', 'en'] as $locale) {
+            $actor->forceFill(['locale' => $locale])->save();
+            $this->actingAs($actor->fresh())->get($urlA)->assertForbidden();
+            $this->actingAs($actor->fresh())->get($urlB)->assertForbidden();
+        }
+
+        $this->assertDatabaseCount('enterprise_treasury_receipts', 0);
+        $this->assertDatabaseCount('enterprise_treasury_payments', 0);
+        $this->assertDatabaseCount('enterprise_treasury_reconciliations', 0);
     }
 
     /** @return array{User, Store, Store} */
