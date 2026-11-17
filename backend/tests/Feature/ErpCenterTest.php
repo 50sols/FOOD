@@ -1230,6 +1230,7 @@ final class ErpCenterTest extends TestCase
             ['finance.ar.read'],
         );
 
+        $beforeAccounts = DB::table('enterprise_finance_accounts')->count();
         foreach (['ar' => 'rtl', 'en' => 'ltr'] as $locale => $direction) {
             app()->setLocale($locale);
             $actor->forceFill(['locale' => $locale])->save();
@@ -1267,7 +1268,7 @@ final class ErpCenterTest extends TestCase
             ])->assertForbidden();
         }
 
-        $this->assertDatabaseCount('enterprise_finance_accounts', 0);
+        $this->assertSame($beforeAccounts, DB::table('enterprise_finance_accounts')->count());
         $this->assertDatabaseCount('enterprise_finance_journals', 0);
         $this->assertDatabaseCount('enterprise_finance_ledger_entries', 0);
 
