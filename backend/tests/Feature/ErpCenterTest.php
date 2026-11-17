@@ -762,9 +762,31 @@ final class ErpCenterTest extends TestCase
         $this->assertFalse($buyer->fresh()->hasPermission('procurement.suppliers.view', $entitled->id));
         $this->assertTrue($buyer->fresh()->hasPermission('procurement.suppliers.view', $first->id));
 
-        app()->forgetInstance(AdminNavigation::class);
-        $groups = collect(app(AdminNavigation::class)->groupsFor($buyer->fresh()));
-        $this->assertNull($groups->firstWhere('key', 'procurement'));
+        // Supplier DENY must hide only Suppliers, not the Buyer's separately
+        // authorized Requests read route. The single Sidebar destination must
+        // resolve to the same actual entitled B2B store in both locales.
+        foreach (['ar' => 'rtl', 'en' => 'ltr'] as $locale => $direction) {
+            app()->setLocale($locale);
+            $buyer->forceFill(['locale' => $locale])->save();
+            app()->forgetInstance(AdminNavigation::class);
+
+            $group = collect(app(AdminNavigation::class)->groupsFor($buyer->fresh()))
+                ->firstWhere('key', 'procurement');
+            $this->assertIsArray($group);
+            $item = collect($group['children'])->firstWhere('key', 'erp_procurement');
+            $this->assertIsArray($item);
+            $this->assertSame('admin.erp.procurement.index', $item['route']);
+            $this->assertSame(['store_id' => (string) $entitled->id], $item['params']);
+            $this->actingAs($buyer->fresh())->get(route($item['route'], $item['params']))
+                ->assertOk()
+                ->assertSee('dir="'.$direction.'"', false)
+                ->assertViewHas('activeTab', 'requests');
+
+            $this->actingAs($buyer->fresh())->get(route('admin.erp.procurement.index', [
+                'store_id' => $entitled->id,
+                'tab' => 'suppliers',
+            ]))->assertForbidden();
+        }
 
         $center = $this->actingAs($buyer->fresh())->get(route('admin.erp.index'))->assertOk();
         $card = collect($center->viewData('cards'))->firstWhere('key', 'procurement');
@@ -793,6 +815,10 @@ final class ErpCenterTest extends TestCase
         app()->forgetInstance(AdminNavigation::class);
         $this->assertNull(collect(app(AdminNavigation::class)->groupsFor($buyer->fresh()))
             ->firstWhere('key', 'procurement'));
+        $this->actingAs($buyer->fresh())->get(route('admin.erp.procurement.index', [
+            'store_id' => $entitled->id,
+            'tab' => 'requests',
+        ]))->assertForbidden();
         $this->assertDatabaseCount('enterprise_suppliers', 0);
     }
 
