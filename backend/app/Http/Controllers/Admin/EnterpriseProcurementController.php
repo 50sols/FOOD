@@ -714,6 +714,17 @@ final class EnterpriseProcurementController extends Controller
         abort_unless(is_array($selected), 403);
         $storeId = (int) $selected['id'];
 
+        // Store options reflect tenant membership, not Procurement authority.
+        // Reject a Retail-only or unrelated-role principal before resolving the
+        // enterprise hierarchy: a missing hierarchy is a setup conflict (409)
+        // only for a principal with an actual Procurement permission in this
+        // store. An unrelated Retail role must instead receive 403, without
+        // a tenant context write or support-access audit side effect.
+        if (! $actor->hasRole('SUPER_ADMIN')) {
+            abort_unless(collect($actor->effectivePermissionCodes($storeId))
+                ->contains(static fn (string $permission): bool => str_starts_with($permission, 'procurement.')), 403);
+        }
+
         // Legacy deployments with no Procurement entitlement policies still
         // use existing role/tenant authorization. Once any Procurement
         // entitlement is configured, its hierarchical DENY/ALLOW decisions
