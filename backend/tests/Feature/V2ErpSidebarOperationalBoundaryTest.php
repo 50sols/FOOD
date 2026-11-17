@@ -48,6 +48,14 @@ final class V2ErpSidebarOperationalBoundaryTest extends TestCase
         $this->assertSame('degraded', $card['status']);
         $this->assertNull($card['url']);
 
+        // A green-looking checklist link must not bypass an uncertified module.
+        $readiness = $center->viewData('moduleReadinessReports')['procurement'];
+        foreach (['suppliers', 'approved_requests', 'issued_orders', 'posted_receipts', 'handed_off_invoices'] as $stepKey) {
+            $step = collect($readiness)->firstWhere('key', $stepKey);
+            $this->assertIsArray($step);
+            $this->assertNull($step['url'], $stepKey);
+        }
+
         $this->get(route('admin.erp.procurement.index'))->assertForbidden();
         $this->post(route('admin.erp.procurement.requests.store'), [])->assertForbidden();
 
@@ -96,6 +104,33 @@ final class V2ErpSidebarOperationalBoundaryTest extends TestCase
             ->assertDontSee('data-erp-key="procurement"', false);
         $this->assertNull(collect($center->viewData('cards'))->firstWhere('key', 'procurement'));
         $this->get(route('admin.erp.procurement.index'))->assertForbidden();
+    }
+
+    public function test_global_finance_role_never_gets_privileged_readiness_setup_links(): void
+    {
+        $this->app['env'] = 'production';
+        $owner = $this->superAdmin('v2-erp-bi-readiness-owner@example.test');
+        $finance = User::factory()->create(['is_active' => true, 'locale' => 'en']);
+        $finance->roles()->attach(Role::query()->where('code', 'FINANCE')->firstOrFail());
+
+        app(EnterpriseModuleAdministration::class)->perform('enterprise_bi', 'enable', $owner);
+        app(ModuleEntitlementManager::class)->set(
+            'enterprise_bi',
+            EntitlementScope::platform(),
+            true,
+        );
+
+        $center = $this->actingAs($finance)->get(route('admin.erp.index'));
+        $center->assertOk();
+        $card = collect($center->viewData('cards'))->firstWhere('key', 'bi');
+        $this->assertIsArray($card);
+        $this->assertSame('degraded', $card['status']);
+        $this->assertNull($card['url']);
+
+        $steps = $center->viewData('moduleReadinessReports')['bi'];
+        foreach ($steps as $step) {
+            $this->assertNull($step['url'], $step['key']);
+        }
     }
 
     public function test_uncertified_module_routes_fail_closed_for_all_erp_domains(): void
