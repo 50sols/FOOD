@@ -195,6 +195,19 @@ class SystemUpdateAuthorizationTest extends TestCase
                     ->assertSee(__('admin.system_update_host.action_required', [], $locale))
                     ->assertSee(__('admin.system_update_host.signature_not_certified', [], $locale))
                     ->assertSee(__('admin.system_update_host.manual_verification', [], $locale))
+                    ->assertSee(__('update_host_readiness.checks.sodium_signature.label', [], $locale))
+                    ->assertSee(__('update_host_readiness.checks.sodium_signature.help', [], $locale))
+                    ->assertSee(__('update_host_readiness.checks.upload_temporary.label', [], $locale))
+                    ->assertSee(__('update_host_readiness.checks.upload_temporary.help', [], $locale))
+                    ->assertSee('data-host-requirement="upload_temporary"', false)
+                    ->assertSee(
+                        'data-host-requirement="sodium_signature" data-host-status="'
+                        .(extension_loaded('sodium')
+                            && function_exists('sodium_crypto_sign_verify_detached')
+                            && defined('SODIUM_CRYPTO_SIGN_PUBLICKEYBYTES')
+                            ? 'precheck-ok' : 'host-action-required').'"',
+                        false,
+                    )
                     ->assertSee('data-host-requirement="backup_directory" data-host-status="host-action-required"', false)
                     ->assertSee('data-host-requirement="update_lock" data-host-status="host-action-required"', false);
 
