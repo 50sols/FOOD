@@ -3804,6 +3804,22 @@ String? _safeSupportReference(String? value) {
   return RegExp(r'^[A-Za-z0-9._:/-]+$').hasMatch(reference) ? reference : null;
 }
 
+// A new authorization denial or invalid financial response must not be
+// disguised as the previously cached invoice/statement from an old session.
+// Keep stale readback only for recoverable network/server failures.
+bool _invalidatesCachedB2bFinancialRead(Object? error) {
+  if (error is! B2bApiException) return false;
+  if (error.code == 'invalid_response' || error.code == 'not_authorized') {
+    return true;
+  }
+  final status = error.statusCode;
+  return status != null &&
+      status >= 400 &&
+      status < 500 &&
+      status != 408 &&
+      status != 429;
+}
+
 Future<Object?> _loadB2bRemote(B2bApi api, String endpoint) async {
   try {
     return await api.get(endpoint);
@@ -6250,9 +6266,18 @@ class _InvoiceDetailRemoteStateState extends State<_InvoiceDetailRemoteState>
     final revision = ++_readRevision;
     final api = widget.api;
     final endpoint = widget.endpoint;
-    final value = await _loadB2bRemote(api, endpoint);
-    if (mounted && revision == _readRevision) _lastGood = value;
-    return value;
+    try {
+      final value = await _loadB2bRemote(api, endpoint);
+      if (mounted && revision == _readRevision) _lastGood = value;
+      return value;
+    } catch (error) {
+      if (mounted &&
+          revision == _readRevision &&
+          _invalidatesCachedB2bFinancialRead(error)) {
+        _lastGood = null;
+      }
+      rethrow;
+    }
   }
 
   void _reload() {
@@ -6970,7 +6995,8 @@ class _InvoiceDetailRemoteStateState extends State<_InvoiceDetailRemoteState>
           }
 
           if (snapshot.hasError) {
-            if (_lastGood != null) {
+            if (_lastGood != null &&
+                !_invalidatesCachedB2bFinancialRead(snapshot.error)) {
               return _body(_lastGood, stale: true);
             }
             return _B2bRemoteErrorCard(error: snapshot.error, onRetry: _reload);
@@ -7079,9 +7105,18 @@ class _InvoicesRemoteStateState extends State<_InvoicesRemoteState>
     final revision = ++_readRevision;
     final api = widget.api;
     final endpoint = _effectiveEndpoint();
-    final value = await api.get(endpoint);
-    if (mounted && revision == _readRevision) _lastGood = value;
-    return value;
+    try {
+      final value = await api.get(endpoint);
+      if (mounted && revision == _readRevision) _lastGood = value;
+      return value;
+    } catch (error) {
+      if (mounted &&
+          revision == _readRevision &&
+          _invalidatesCachedB2bFinancialRead(error)) {
+        _lastGood = null;
+      }
+      rethrow;
+    }
   }
 
   void _reload({int? page}) {
@@ -7789,7 +7824,10 @@ class _InvoicesRemoteStateState extends State<_InvoicesRemoteState>
             );
           }
           if (snapshot.hasError) {
-            if (_lastGood != null) return _body(_lastGood, stale: true);
+            if (_lastGood != null &&
+                !_invalidatesCachedB2bFinancialRead(snapshot.error)) {
+              return _body(_lastGood, stale: true);
+            }
             return _B2bRemoteErrorCard(error: snapshot.error, onRetry: _reload);
           }
           final value = snapshot.data ?? _lastGood;
