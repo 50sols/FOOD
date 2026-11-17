@@ -18,6 +18,7 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Gate;
 use RuntimeException;
+use Symfony\Component\Process\ExecutableFinder;
 use Throwable;
 use ZipArchive;
 
@@ -290,6 +291,10 @@ final class SystemUpdateController extends Controller
             'upload_temporary' => $this->hostPathWritableWithoutMutation(
                 trim((string) ini_get('upload_tmp_dir')) ?: sys_get_temp_dir(),
             ),
+            // The GET never invokes shells, probes the database or uploads
+            // artifacts. These are prerequisite hints, not verified backups.
+            'process_execution' => function_exists('proc_open') && function_exists('proc_close'),
+            'backup_cli_tools' => $this->databaseBackupToolsPresent(),
             'app_storage' => $this->hostPathWritableWithoutMutation(storage_path()),
             'cache' => $this->hostPathWritableWithoutMutation(base_path('bootstrap/cache')),
             'update_upload' => $this->hostPathWritableWithoutMutation(storage_path('app/private/updates/incoming')),
@@ -302,6 +307,32 @@ final class SystemUpdateController extends Controller
             ),
             'release_directory' => $this->hostPathWritableWithoutMutation(dirname(base_path())),
         ];
+    }
+
+    /**
+     * Check tool discovery only. File permissions, credentials, ability to run
+     * subprocesses and restoration are proven by an actual disposable backup
+     * test, not by merely finding a binary on the web host.
+     */
+    private function databaseBackupToolsPresent(): bool
+    {
+        $driver = (string) config('database.default', '');
+        if (! in_array($driver, ['mysql', 'mariadb', 'pgsql'], true)) {
+            return true;
+        }
+
+        $commands = $driver === 'pgsql'
+            ? [(string) config('foodex.pg_dump_binary', 'pg_dump'), (string) config('foodex.pg_restore_binary', 'pg_restore')]
+            : [(string) config('foodex.mysql_dump_binary', 'mysqldump'), (string) config('foodex.mysql_client_binary', 'mysql')];
+        $finder = new ExecutableFinder;
+
+        foreach ($commands as $binary) {
+            if ($binary === '' || $finder->find($binary) === null) {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     /**
