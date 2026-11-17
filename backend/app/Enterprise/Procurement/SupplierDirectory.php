@@ -153,7 +153,16 @@ final class SupplierDirectory
             if (isset($data['scope_type'])) {
                 $data['store_id'] = $data['scope_type'] === 'company' ? null : $scope->storeId;
             }
-            $locked->fill([...$data, 'updated_by' => $actor->id]);
+            $locked->fill($data);
+            // Retrying an already applied edit/archive must not mutate the
+            // record or append another success audit. In particular, a
+            // different replaying actor must not rewrite updated_by when
+            // no business field changed. The row remains scope-locked.
+            if (! $locked->isDirty()) {
+                return $locked->refresh();
+            }
+
+            $locked->updated_by = $actor->id;
             $locked->save();
 
             $this->audit->record(
