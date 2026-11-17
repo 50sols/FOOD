@@ -5391,7 +5391,15 @@ class _B2bAccountStatementRemoteStateState
       });
     } catch (error) {
       if (!mounted || revision != _readRevision) return;
+      final terminal = _invalidatesCachedB2bFinancialRead(error);
+      if (terminal) ++_exportRevision;
       setState(() {
+        if (terminal) {
+          // A revoked session or malformed financial read must remove both
+          // the cached statement and any pending old-session export.
+          _data = null;
+          _exporting = false;
+        }
         _error = error;
         _loading = false;
         _stale = _data != null;
