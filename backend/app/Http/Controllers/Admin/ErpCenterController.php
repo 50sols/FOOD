@@ -385,6 +385,16 @@ final class ErpCenterController extends Controller
         }
         if ($actionable && $needsOperationalStore && $operationalStoreId !== null) {
             $params['store_id'] = (string) $operationalStoreId;
+            if ($moduleCode === 'treasury') {
+                // The Sidebar and Treasury HTTP support payment-only (and
+                // other read-only) capabilities. Link to the same authorized
+                // tab instead of incorrectly marking the entire module denied.
+                // Receipts remains the default URL for a receipts reader.
+                $readTab = $this->firstTreasuryReadTabForStore($operationalStoreId);
+                if ($readTab !== null && $readTab !== 'receipts') {
+                    $params['tab'] = $readTab;
+                }
+            }
         }
 
         return $this->card(
@@ -499,15 +509,16 @@ final class ErpCenterController extends Controller
 
         foreach ($permissions as $permission) {
             foreach (app(OperationalTenantScope::class)->allowedStoreIds($actor, $permission) as $storeId) {
-                // The Treasury card opens Overview, whose authoritative
-                // read requires treasury.receipts.read. A payment-only store
-                // entitlement must not create a dead operational link.
-                if (! $actor->hasPermission($permission, $storeId)
-                    || ! $this->entitlements->allows(
+                // Treasury chooses the same first read-capable tab as the
+                // existing Sidebar. A broad module grant alone is not a
+                // usable tab; the read capability must match the exact store.
+                $canRead = $moduleCode === 'treasury'
+                    ? $this->firstTreasuryReadTabForStore($storeId) !== null
+                    : $this->entitlements->allows(
                         $moduleCode,
                         new EntitlementScope(EntitlementScope::STORE, $storeId),
-                        $moduleCode === 'treasury' ? 'treasury.receipts.read' : null,
-                    )) {
+                    );
+                if (! $actor->hasPermission($permission, $storeId) || ! $canRead) {
                     continue;
                 }
 
@@ -522,6 +533,29 @@ final class ErpCenterController extends Controller
                 } catch (Throwable) {
                     // Missing or invalid hierarchy never creates a live link.
                 }
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Mirror the already-authorized Treasury Sidebar tab order, without
+     * changing the HTTP/service entitlement or the selected store.
+     * No read capability means no Treasury operational destination.
+     */
+    private function firstTreasuryReadTabForStore(int $storeId): ?string
+    {
+        $scope = new EntitlementScope(EntitlementScope::STORE, $storeId);
+        foreach ([
+            'receipts' => 'treasury.receipts.read',
+            'payments' => 'treasury.payments.read',
+            'reconciliation' => 'treasury.reconciliation.read',
+            'cash_closing' => 'treasury.cash_closing.read',
+            'cheques' => 'treasury.cheques.read',
+        ] as $tab => $capability) {
+            if ($this->entitlements->allows('treasury', $scope, $capability)) {
+                return $tab;
             }
         }
 
