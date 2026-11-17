@@ -151,7 +151,8 @@ final class Customer360Controller extends Controller
                 'orders.created_at',
                 'stores.name as store_name',
             ], 'orders_page')
-            ->withQueryString();
+            ->withQueryString()
+            ->fragment('orders');
         $orders->setCollection($orders->getCollection()->map(function (mixed $row) use ($actor): array {
             $row = (object) $row;
             $channel = strtolower((string) $row->channel);
@@ -240,7 +241,8 @@ final class Customer360Controller extends Controller
                 'invoices.issued_at',
                 'stores.name as store_name',
             ], 'invoices_page')
-            ->withQueryString();
+            ->withQueryString()
+            ->fragment('invoices');
         $invoices->setCollection($invoices->getCollection()->map(function (mixed $row) use ($ledger): array {
             $row = (object) $row;
             $amounts = $ledger->invoiceAmounts(Invoice::query()->findOrFail((int) $row->id));
