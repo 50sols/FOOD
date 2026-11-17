@@ -115,7 +115,9 @@ final class V2SecurityCenterQueryTabAuthorityTest extends TestCase
         $this->actingAs($actor)->get(route('admin.sidebar-access.roles', [
             'role_id' => $inactive->id,
         ]))->assertOk()
-            ->assertViewHas('selectedRole', fn (Role $role): bool => $role->id === $inactive->id);
+            ->assertViewHas('selectedRole', fn (Role $role): bool => $role->id === $inactive->id)
+            ->assertViewHas('canEditRolePermissions', false)
+            ->assertSee('data-v2-role-status="inactive"', false);
 
         $archivedActor = User::factory()->create(['is_active' => true, 'locale' => 'en']);
         $archivedActor->roles()->attach($archived->id);
