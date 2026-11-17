@@ -44,7 +44,7 @@ $targetOptions=[
 @if($errors->any())<div class="foodex-state" role="alert"><ul>@foreach($errors->all() as $error)<li>{{ $error }}</li>@endforeach</ul></div>@endif
 <div class="foodex-card erp-note">{{ __('enterprise_treasury.sod_notice') }}</div>
 
-<nav class="foodex-tabs" aria-label="{{ __('enterprise_treasury.title') }}">
+<nav class="foodex-tabs foodex-tabs--horizontal" aria-label="{{ __('enterprise_treasury.title') }}">
 @foreach($tabs as $tab)
 <a href="{{ route('admin.erp.treasury.index',['tab'=>$tab,'store_id'=>$selectedStoreId]) }}" class="{{ $activeTab===$tab?'active':'' }}" @if($activeTab===$tab) aria-current="page" @endif>{{ __('enterprise_treasury.tabs.'.$tab) }}</a>
 @endforeach
