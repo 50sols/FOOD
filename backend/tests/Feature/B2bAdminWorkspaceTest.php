@@ -89,6 +89,76 @@ class B2bAdminWorkspaceTest extends TestCase
         }
     }
 
+    public function test_price_rule_candidate_test_is_read_only_and_save_uses_same_authority(): void
+    {
+        $admin = $this->user('B2B_ADMIN', 'en');
+        $store = app(WholesalePrincipal::class)->storeId();
+        $catalog = app(CatalogOwnership::class)->defaultCatalogForStore($store, 'b2b');
+        $unit = $this->unit();
+        $product = (int) DB::table('products')->insertGetId([
+            'catalog_id' => $catalog->id,
+            'unit_id' => $unit,
+            'sku' => 'PRECHECK-SANDBOX',
+            'name' => 'Disposable price candidate',
+            'is_active' => true,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        $tier = (int) DB::table('b2b_price_tiers')->insertGetId([
+            'code' => 'PRECHECK-SANDBOX',
+            'name' => 'Disposable tier',
+            'priority' => 10,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        $this->actingAs($admin)->put('/admin/b2b/settings/pricing-tiers', [
+            'enabled' => '1',
+            'setup_action' => 'save',
+        ])->assertRedirect()->assertSessionHasNoErrors();
+        $candidate = [
+            'price_tier_id' => $tier,
+            'product_id' => $product,
+            'unit_price' => '10.000',
+            'minimum_quantity' => '1.000',
+            'ordering_increment' => '1.000',
+            'replace_quantity_price_breaks' => '1',
+        ];
+        $auditBefore = DB::table('audit_logs')->count();
+
+        $this->actingAs($admin)->get('/admin/b2b/pricing')
+            ->assertOk()
+            ->assertSee(__('b2b_pricing_setup.rule_test'));
+        $this->actingAs($admin)->post('/admin/b2b/pricing', $candidate + [
+            'setup_action' => 'test',
+        ])->assertRedirect()->assertSessionHasNoErrors()
+            ->assertSessionHas('status', __('b2b_pricing_setup.rule_test_valid'));
+        $this->assertDatabaseCount('b2b_price_rules', 0);
+        $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+
+        $this->actingAs($admin)->post('/admin/b2b/pricing', array_replace($candidate, [
+            'unit_price' => '-1',
+            'setup_action' => 'test',
+        ]))->assertSessionHasErrors('unit_price');
+        $this->assertDatabaseCount('b2b_price_rules', 0);
+        $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+
+        $this->actingAs($admin)->post('/admin/b2b/pricing', $candidate + [
+            'setup_action' => 'save',
+        ])->assertRedirect()->assertSessionHasNoErrors();
+        $this->assertDatabaseHas('b2b_price_rules', [
+            'store_id' => $store,
+            'product_id' => $product,
+            'price_tier_id' => $tier,
+            'unit_price' => '10.000',
+        ]);
+        $this->assertDatabaseHas('audit_logs', ['event' => 'b2b.price_rule.saved']);
+
+        $retail = $this->user('B2C_STORE_ADMIN', 'ar');
+        $this->actingAs($retail)->post('/admin/b2b/pricing', $candidate + [
+            'setup_action' => 'test',
+        ])->assertForbidden();
+    }
+
     public function test_wholesale_pricing_mode_setup_help_and_readiness_are_localized(): void
     {
         foreach (['ar', 'en'] as $locale) {
