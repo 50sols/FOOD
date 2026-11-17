@@ -35,6 +35,11 @@ final class SystemUpdateController extends Controller
     {
         $this->authorizeSuperAdminUpdate($request);
 
+        // An updater may rebuild the in-process auth/config caches. The Gate
+        // has already authorized this exact request identity; pass it to the
+        // view rather than resolving a potentially reset global auth guard.
+        $actor = $request->user();
+        abort_unless($actor instanceof User, 401);
         $currentVersion = $this->currentVersion();
 
         // The feature's own first patch is executed by the old PHP request.
@@ -56,6 +61,7 @@ final class SystemUpdateController extends Controller
             ->all();
 
         return view('admin.system-update', [
+            'user' => $actor,
             'currentVersion' => $currentVersion,
             'historyRows' => UpdateHistory::query()->latest('id')->paginate(20)->withQueryString(),
             'updateStatusCounts' => $statusCounts,
