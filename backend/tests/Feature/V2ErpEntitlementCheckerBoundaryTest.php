@@ -2095,6 +2095,160 @@ final class V2ErpEntitlementCheckerBoundaryTest extends TestCase
         $this->assertSame($auditBefore + 3, DB::table('audit_logs')->count());
     }
 
+    public function test_purchase_request_http_create_submit_replay_and_forged_supplier_price_credit_actor_are_scoped_and_audited(): void
+    {
+        $storeA = $this->wholesaleStore();
+        $storeB = Store::query()->create([
+            'store_type_id' => $storeA->store_type_id,
+            'code' => 'P111-PR-FORGED-B',
+            'name' => 'P111 second procurement company store',
+            'is_active' => true,
+        ]);
+        app(OrganizationHierarchyService::class)->ensureDefaultScopeForStore($storeB);
+        $owner = $this->actor('SUPER_ADMIN');
+        $maker = $this->actor('PROCUREMENT_BUYER');
+        app(EnterpriseModuleAdministration::class)->perform('procurement', 'enable', $owner);
+        app(ModuleEntitlementManager::class)->set(
+            'procurement', EntitlementScope::platform(), true, null, $owner,
+        );
+
+        $supplierA = app(SupplierDirectory::class)->create(
+            $maker, app(TenantContextResolver::class)->wholesale($maker, $storeA->id), [
+                'scope_type' => 'store',
+                'code' => 'P111-PR-LEGAL-A',
+                'name_en' => 'P111 legal PR supplier A',
+                'tax_registration_number' => 'TAX-P111-PR-A',
+            ],
+        );
+        $supplierB = app(SupplierDirectory::class)->create(
+            $maker, app(TenantContextResolver::class)->wholesale($maker, $storeB->id), [
+                'scope_type' => 'store',
+                'code' => 'P111-PR-FOREIGN-B',
+                'name_en' => 'P111 foreign supplier B',
+            ],
+        );
+        $payload = [
+            'store_id' => $storeA->id,
+            'supplier_id' => $supplierA->id,
+            'currency_code' => 'KWD',
+            'reason' => 'P111 precision and forged identity lifecycle',
+            'item_code' => 'P111-REAL-SKU-001',
+            'description' => 'P111 legal catalog line',
+            'quantity' => '2.125',
+            'unit' => 'case',
+            'estimated_unit_cost' => '123.456',
+            // The POST boundary uses its validated whitelist, never the
+            // actor, amount, credit, tax or ownership asserted by the client.
+            'created_by' => $owner->id,
+            'submitted_by' => $owner->id,
+            'company_id' => 999999,
+            'organization_id' => 999999,
+            'unit_price' => '0.001',
+            'credit_limit' => '999999999.999',
+            'tax_amount' => '0.001',
+        ];
+        $auditBefore = DB::table('audit_logs')->count();
+        $this->actingAs($maker)->post(route('admin.erp.procurement.requests.store'), $payload)
+            ->assertRedirect()
+            ->assertSessionHas('status');
+
+        $row = DB::table('enterprise_purchase_requests')->where('reason', $payload['reason'])->first();
+        $this->assertNotNull($row);
+        $this->assertSame('draft', $row->status);
+        $this->assertSame((int) $maker->id, (int) $row->created_by);
+        $this->assertSame((int) $maker->id, (int) $row->updated_by);
+        $this->assertNull($row->submitted_by);
+        $this->assertSame((int) $storeA->id, (int) $row->store_id);
+        $this->assertSame((int) $supplierA->id, (int) $row->supplier_id);
+        $scopeA = app(TenantContextResolver::class)->wholesale($maker, $storeA->id)->enterpriseScope;
+        $this->assertSame($scopeA->companyId, (int) $row->company_id);
+        $this->assertSame($scopeA->organizationId, (int) $row->organization_id);
+        $this->assertSame('KWD', $row->currency_code);
+        $line = DB::table('enterprise_purchase_request_lines')
+            ->where('purchase_request_id', $row->id)->first();
+        $this->assertNotNull($line);
+        $this->assertSame('P111-REAL-SKU-001', $line->item_code);
+        $this->assertSame('case', $line->unit);
+        $this->assertSame('2.125', (string) $line->quantity);
+        $this->assertSame('123.456', (string) $line->estimated_unit_cost);
+        $this->assertSame(1, DB::table('audit_logs')
+            ->where('event', 'enterprise.purchase_request.created')
+            ->where('auditable_id', $row->id)->count());
+        $this->assertSame($auditBefore + 1, DB::table('audit_logs')->count());
+
+        $auditAfterCreate = DB::table('audit_logs')->count();
+        $requestsAfterCreate = DB::table('enterprise_purchase_requests')->count();
+        foreach (['ar' => 'rtl', 'en' => 'ltr'] as $locale => $direction) {
+            $maker->forceFill(['locale' => $locale])->save();
+            $this->actingAs($maker->fresh())->get(route('admin.erp.procurement.index', [
+                'store_id' => $storeA->id,
+                'tab' => 'requests',
+                'request' => $row->id,
+            ]))->assertOk()->assertSee('dir="'.$direction.'"', false)
+                ->assertSee($row->request_number);
+
+            $this->actingAs($maker->fresh())->post(route('admin.erp.procurement.requests.store'), [
+                ...$payload,
+                'reason' => 'P111 foreign supplier must not create PR',
+                'supplier_id' => $supplierB->id,
+            ])->assertNotFound();
+
+            $this->actingAs($maker->fresh())->post(route('admin.erp.procurement.requests.store'), [
+                ...$payload,
+                'reason' => 'P111 negative estimated cost must not create PR',
+                'estimated_unit_cost' => '-0.001',
+            ])->assertSessionHasErrors('estimated_unit_cost');
+
+            $this->actingAs($maker->fresh())->post(route('admin.erp.procurement.requests.store'), [
+                ...$payload,
+                'reason' => 'P111 invalid decimal quantity must not create PR',
+                'quantity' => '0',
+            ])->assertSessionHasErrors('quantity');
+        }
+        $this->assertSame($requestsAfterCreate, DB::table('enterprise_purchase_requests')->count());
+        $this->assertSame($auditAfterCreate, DB::table('audit_logs')->count());
+
+        // The first submit transitions draft -> submitted under lock;
+        // retrying that SAME transition must not append another audit.
+        foreach (['ar', 'en'] as $locale) {
+            $maker->forceFill(['locale' => $locale])->save();
+            $this->actingAs($maker->fresh())->post(route('admin.erp.procurement.requests.submit', $row->id), [
+                'store_id' => $storeA->id,
+                'submitted_by' => $owner->id,
+                'status' => 'approved',
+            ])->assertRedirect();
+        }
+        $this->assertDatabaseHas('enterprise_purchase_requests', [
+            'id' => $row->id,
+            'status' => 'submitted',
+            'created_by' => $maker->id,
+            'submitted_by' => $maker->id,
+            'decided_by' => null,
+        ]);
+        $this->assertSame(1, DB::table('audit_logs')
+            ->where('event', 'enterprise.purchase_request.submitted')
+            ->where('auditable_id', $row->id)->count());
+
+        // Revoke B while preserving the legitimate submitted request in A:
+        // a forged cross-store submit cannot use a global Buyer identity.
+        app(ModuleEntitlementManager::class)->set(
+            'procurement', new EntitlementScope(EntitlementScope::STORE, $storeB->id),
+            false, null, $owner,
+        );
+        $auditBeforeDeny = DB::table('audit_logs')->count();
+        foreach (['ar', 'en'] as $locale) {
+            $maker->forceFill(['locale' => $locale])->save();
+            $this->actingAs($maker->fresh())->post(route('admin.erp.procurement.requests.submit', $row->id), [
+                'store_id' => $storeB->id,
+                'user_id' => $owner->id,
+            ])->assertForbidden();
+        }
+        $this->assertDatabaseHas('enterprise_purchase_requests', [
+            'id' => $row->id, 'status' => 'submitted', 'store_id' => $storeA->id,
+        ]);
+        $this->assertSame($auditBeforeDeny, DB::table('audit_logs')->count());
+    }
+
     private function wholesaleStore(): Store
     {
         $store = Store::query()->findOrFail(app(WholesalePrincipal::class)->storeId());
