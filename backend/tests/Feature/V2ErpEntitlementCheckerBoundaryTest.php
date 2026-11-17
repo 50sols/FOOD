@@ -1984,6 +1984,117 @@ final class V2ErpEntitlementCheckerBoundaryTest extends TestCase
         $this->assertSame($auditBefore, DB::table('audit_logs')->count());
     }
 
+    public function test_supplier_legal_identity_create_service_edit_and_http_archive_respect_company_store_scope_and_audit(): void
+    {
+        $storeA = $this->wholesaleStore();
+        $storeB = Store::query()->create([
+            'store_type_id' => $storeA->store_type_id,
+            'code' => 'P111-SUPPLIER-SCOPE-B',
+            'name' => 'P111 Supplier scope Store B',
+            'is_active' => true,
+        ]);
+        app(OrganizationHierarchyService::class)->ensureDefaultScopeForStore($storeB);
+        $owner = $this->actor('SUPER_ADMIN');
+        $buyer = $this->actor('PROCUREMENT_BUYER');
+        app(EnterpriseModuleAdministration::class)->perform('procurement', 'enable', $owner);
+        app(ModuleEntitlementManager::class)->set(
+            'procurement', EntitlementScope::platform(), true, null, $owner,
+        );
+
+        $contextA = app(TenantContextResolver::class)->wholesale($buyer, $storeA->id);
+        $contextB = app(TenantContextResolver::class)->wholesale($buyer, $storeB->id);
+        $legal = [
+            'store_id' => $storeA->id,
+            'scope_type' => 'store',
+            'code' => 'P111-LEGAL-SUP',
+            'name_en' => 'P111 Legitimate Supplier',
+            'name_ar' => 'مورد قانوني للاختبار',
+            'tax_registration_number' => 'TAX-P111-001',
+            'commercial_registration_number' => 'CR-P111-001',
+            'payment_terms_days' => 30,
+        ];
+        $auditBefore = DB::table('audit_logs')->count();
+        $this->actingAs($buyer)->post(route('admin.erp.procurement.suppliers.store'), $legal)
+            ->assertRedirect()
+            ->assertSessionHas('status');
+
+        $supplier = DB::table('enterprise_suppliers')->where('code', $legal['code'])->first();
+        $this->assertNotNull($supplier);
+        $this->assertSame('active', $supplier->status);
+        $this->assertSame((int) $storeA->id, (int) $supplier->store_id);
+        $this->assertSame($contextA->enterpriseScope->companyId, (int) $supplier->company_id);
+        $this->assertSame($contextA->enterpriseScope->organizationId, (int) $supplier->organization_id);
+        $this->assertSame($buyer->id, (int) $supplier->created_by);
+        $this->assertSame('TAX-P111-001', $supplier->tax_registration_number);
+        $this->assertSame('CR-P111-001', $supplier->commercial_registration_number);
+        $this->assertSame(1, DB::table('audit_logs')
+            ->where('event', 'enterprise.supplier.created')
+            ->where('auditable_id', $supplier->id)
+            ->count());
+
+        // The existing domain update is real; an independent HTTP edit route
+        // has not been certified in P111 and must not be invented here.
+        $updated = app(SupplierDirectory::class)->update($buyer, $contextA, (int) $supplier->id, [
+            'name_en' => 'P111 Updated Legal Supplier',
+            'tax_registration_number' => 'TAX-P111-002',
+            'payment_terms_days' => 45,
+        ]);
+        $this->assertSame('P111 Updated Legal Supplier', $updated->name_en);
+        $this->assertSame('TAX-P111-002', $updated->tax_registration_number);
+        $this->assertSame('CR-P111-001', $updated->commercial_registration_number);
+        $this->assertSame((int) $storeA->id, (int) $updated->store_id);
+        $this->assertSame($buyer->id, (int) $updated->updated_by);
+        $this->assertSame(1, DB::table('audit_logs')
+            ->where('event', 'enterprise.supplier.updated')
+            ->where('auditable_id', $supplier->id)
+            ->count());
+
+        $auditAfterLegalUpdate = DB::table('audit_logs')->count();
+        foreach (['ar' => 'rtl', 'en' => 'ltr'] as $locale => $direction) {
+            $buyer->forceFill(['locale' => $locale])->save();
+            $this->actingAs($buyer->fresh())->get(route('admin.erp.procurement.index', [
+                'store_id' => $storeA->id,
+                'tab' => 'suppliers',
+                'supplier' => $supplier->id,
+            ]))->assertOk()->assertSee('dir="'.$direction.'"', false)
+                ->assertSee('TAX-P111-002');
+
+            // Global Buyer role can navigate B2B B, but the record is
+            // explicitly store-owned and must never become visible there.
+            $this->actingAs($buyer->fresh())->get(route('admin.erp.procurement.index', [
+                'store_id' => $storeB->id,
+                'tab' => 'suppliers',
+                'supplier' => $supplier->id,
+            ]))->assertNotFound();
+            $this->actingAs($buyer->fresh())->post(route('admin.erp.procurement.suppliers.archive', $supplier->id), [
+                'store_id' => $storeB->id,
+                'user_id' => $owner->id,
+                'company_id' => $contextA->enterpriseScope->companyId,
+            ])->assertNotFound();
+        }
+        $this->assertDatabaseHas('enterprise_suppliers', [
+            'id' => $supplier->id,
+            'status' => 'active',
+            'store_id' => $storeA->id,
+        ]);
+        $this->assertSame($auditAfterLegalUpdate, DB::table('audit_logs')->count());
+
+        $this->actingAs($buyer->fresh())->post(route('admin.erp.procurement.suppliers.archive', $supplier->id), [
+            'store_id' => $storeA->id,
+        ])->assertRedirect();
+        $this->assertDatabaseHas('enterprise_suppliers', [
+            'id' => $supplier->id,
+            'status' => 'inactive',
+            'store_id' => $storeA->id,
+            'commercial_registration_number' => 'CR-P111-001',
+        ]);
+        $this->assertSame(2, DB::table('audit_logs')
+            ->where('event', 'enterprise.supplier.updated')
+            ->where('auditable_id', $supplier->id)
+            ->count());
+        $this->assertSame($auditBefore + 3, DB::table('audit_logs')->count());
+    }
+
     private function wholesaleStore(): Store
     {
         $store = Store::query()->findOrFail(app(WholesalePrincipal::class)->storeId());
