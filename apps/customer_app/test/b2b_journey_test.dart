@@ -110,8 +110,8 @@ void main() {
             );
             expect(find.byKey(const ValueKey('b2b-invoice-detail-pdf')),
                 findsNothing);
-            expect(find.byKey(const ValueKey('b2b-invoice-pdf-31')),
-                findsNothing);
+            expect(
+                find.byKey(const ValueKey('b2b-invoice-pdf-31')), findsNothing);
 
             await tester.tap(
               find.byKey(const ValueKey('b2b-error-retry')),
@@ -125,7 +125,6 @@ void main() {
       }
     }
   }
-
 
   for (final locale in const <Locale>[Locale('ar'), Locale('en')]) {
     for (final detail in const <bool>[false, true]) {
@@ -171,8 +170,11 @@ void main() {
               ? find.byKey(const ValueKey('b2b-invoice-detail-pdf'))
               : find.byKey(const ValueKey('b2b-invoice-pdf-31'));
           await tester.ensureVisible(oldButton);
-          expect(Directionality.of(tester.element(oldButton)),
-              locale.languageCode == 'ar' ? TextDirection.rtl : TextDirection.ltr);
+          expect(
+              Directionality.of(tester.element(oldButton)),
+              locale.languageCode == 'ar'
+                  ? TextDirection.rtl
+                  : TextDirection.ltr);
           await tester.tap(oldButton);
           await tester.pump();
           expect(api.downloadPaths, hasLength(1));
@@ -195,24 +197,27 @@ void main() {
           expect(api.downloadPaths, hasLength(2));
           expect(api.downloadPaths[1], contains('store_id=9'));
           expect(api.downloadPaths[1], contains('/invoices/91/download'));
-          expect(tester.widget<ButtonStyleButton>(nextButton).onPressed, isNull);
+          expect(
+              tester.widget<ButtonStyleButton>(nextButton).onPressed, isNull);
 
           // The old completed bytes must not trigger the OS share sheet;
           // an old finally must not re-enable the still-pending new export.
-          api.pending[0].complete(Uint8List.fromList(const [37, 80, 68, 70, 45]));
+          api.pending[0]
+              .complete(Uint8List.fromList(const [37, 80, 68, 70, 45]));
           await tester.pump();
-          expect(tester.widget<ButtonStyleButton>(nextButton).onPressed, isNull);
+          expect(
+              tester.widget<ButtonStyleButton>(nextButton).onPressed, isNull);
           expect(find.byType(SnackBar), findsNothing);
 
           await tester.pumpWidget(const SizedBox());
-          api.pending[1].complete(Uint8List.fromList(const [37, 80, 68, 70, 45]));
+          api.pending[1]
+              .complete(Uint8List.fromList(const [37, 80, 68, 70, 45]));
           await tester.pump();
           expect(tester.takeException(), isNull);
         },
       );
     }
   }
-
 
   for (final locale in const <Locale>[Locale('ar'), Locale('en')]) {
     testWidgets(
@@ -7469,8 +7474,7 @@ class _ReauthInvoiceB2bApi implements B2bApi {
       'id': 31,
       'store_id': 7,
       'invoice_number': calls == 1 ? 'INV-31' : 'INV-REVALIDATED-31',
-      'display_invoice_number':
-          calls == 1 ? 'INV-31' : 'INV-REVALIDATED-31',
+      'display_invoice_number': calls == 1 ? 'INV-31' : 'INV-REVALIDATED-31',
       'status': 'issued',
       'display_status': 'partially_paid',
       'currency': 'KWD',
