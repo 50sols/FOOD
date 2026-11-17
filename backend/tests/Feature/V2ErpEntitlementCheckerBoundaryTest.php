@@ -1320,6 +1320,57 @@ final class V2ErpEntitlementCheckerBoundaryTest extends TestCase
         ]);
     }
 
+    public function test_authorized_b2b_store_without_enterprise_hierarchy_returns_409_after_authority_checks(): void
+    {
+        $this->app['env'] = 'production';
+        $csrfToken = 'p111-authorized-missing-hierarchy-csrf';
+        $this->withSession(['_token' => $csrfToken])->withHeader('X-CSRF-TOKEN', $csrfToken);
+
+        $primary = $this->wholesaleStore();
+        $unconfigured = Store::query()->create([
+            'store_type_id' => $primary->store_type_id,
+            'code' => 'P111-B2B-MISSING-ENTERPRISE-SCOPE',
+            'name' => 'P111 authorized but unconfigured B2B',
+            'is_active' => true,
+        ]);
+        // Deliberately DO NOT call ensureDefaultScopeForStore(): this is an
+        // authorized-but-unconfigured hierarchy, unlike a forged Retail scope.
+        $owner = $this->actor('SUPER_ADMIN');
+        $buyer = $this->actor('PROCUREMENT_BUYER');
+        app(EnterpriseModuleAdministration::class)->perform('procurement', 'enable', $owner);
+        app(ModuleEntitlementManager::class)->set(
+            'procurement', EntitlementScope::platform(), true, null, $owner,
+        );
+        $this->actingAs($buyer)->get(route('admin.erp.procurement.index', [
+            'store_id' => $primary->id,
+            'tab' => 'requests',
+        ]))->assertOk();
+
+        $auditBefore = DB::table('audit_logs')->count();
+        $requestsBefore = DB::table('enterprise_purchase_requests')->count();
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            $buyer->forceFill(['locale' => $locale])->save();
+            $this->actingAs($buyer->fresh())->get(route('admin.erp.procurement.index', [
+                'store_id' => $unconfigured->id,
+                'tab' => 'requests',
+            ]))->assertStatus(409);
+            $this->actingAs($buyer->fresh())->post(route('admin.erp.procurement.requests.store'), [
+                'store_id' => $unconfigured->id,
+                'currency_code' => 'KWD',
+                'reason' => 'P111 legitimate but unconfigured hierarchy',
+                'item_code' => 'P111-SETUP-409',
+                'description' => 'Reject before writes on missing hierarchy',
+                'quantity' => '1.000',
+                'unit' => 'case',
+                'estimated_unit_cost' => '1.000',
+            ])->assertStatus(409);
+        }
+
+        $this->assertSame($requestsBefore, DB::table('enterprise_purchase_requests')->count());
+        $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+    }
+
     private function wholesaleStore(): Store
     {
         $store = Store::query()->findOrFail(app(WholesalePrincipal::class)->storeId());
