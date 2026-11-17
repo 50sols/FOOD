@@ -262,6 +262,22 @@ final class GoodsReceiptManager
                 ]);
             }
 
+            // The draft GRN originally snapshots the issued PO supplier and
+            // currency. Imported or modified data cannot silently substitute
+            // a different supplier/order or currency at inventory posting.
+            // Both records are locked and store/company-scoped before this
+            // comparison; reject before any inventory or audit writes.
+            if ((int) $receipt->supplier_id !== (int) $order->supplier_id
+                || (string) $receipt->supplier_code !== (string) $order->supplier_code
+                || (string) $receipt->currency_code !== (string) $order->currency_code
+                || (string) $receipt->source_order_number !== (string) $order->order_number) {
+                throw ValidationException::withMessages([
+                    'purchase_order_id' => [
+                        __('enterprise_procurement.errors.receipt_source_invalid'),
+                    ],
+                ]);
+            }
+
             $lines = $receipt->lines()
                 ->orderBy('warehouse_id')
                 ->orderBy('line_no')
