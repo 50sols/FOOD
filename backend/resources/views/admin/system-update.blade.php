@@ -102,7 +102,7 @@
         </div>
         <div class="system-runtime-panels">
             @foreach($hostingChecks as $key => $ready)
-                @php($hostTranslation = in_array($key, ['sodium_signature', 'upload_temporary'], true) ? 'update_host_readiness' : 'admin.system_update_host')
+                @php($hostTranslation = in_array($key, ['sodium_signature', 'upload_temporary', 'process_execution', 'backup_cli_tools'], true) ? 'update_host_readiness' : 'admin.system_update_host')
                 <div class="foodex-alert {{ $ready ? 'info' : 'warning' }}" data-host-requirement="{{ $key }}" data-host-status="{{ $ready ? 'precheck-ok' : 'host-action-required' }}">
                     <strong>{{ __($hostTranslation.'.checks.'.$key.'.label') }}</strong>
                     <p>{{ __('admin.system_update_host.'.($ready ? 'precheck_ok' : 'host_action_required')) }}</p>
