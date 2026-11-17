@@ -355,8 +355,14 @@
             const page = new DOMParser().parseFromString(await response.text(), 'text/html');
             const source = page.getElementById('wa-workspace-panel-' + key);
             // An authentication redirect or non-authorized response must not
-            // be mistaken for a successful empty tab.
-            if (!source?.querySelector('.foodex-card')) throw new Error('Workspace response was incomplete');
+            // be mistaken for a successful empty tab. Operations uses the
+            // module-overview shell, while list and templates use cards.
+            const requiredId = {
+                campaigns: 'wa-campaign-list',
+                templates: 'wa-template-registry',
+                overview: 'wa-operations-title'
+            }[key];
+            if (!source?.querySelector('#' + requiredId)) throw new Error('Workspace response was incomplete');
             if (requestId !== ticket) return;
             panels.forEach(panel => {
                 if (panel.dataset.waWorkspacePanel === key) {
