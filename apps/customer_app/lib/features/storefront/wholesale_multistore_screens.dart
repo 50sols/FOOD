@@ -6244,11 +6244,23 @@ class _WholesaleCartDesignScreenState extends State<WholesaleCartDesignScreen>
         final target = _queuedQuantities.remove(id);
         if (target == null) break;
 
-        final value = await api.updateItem(id, target);
+        final scopedStoreId = storeId;
+        final value = api is WholesaleStoreScopedCartMutationApi
+            ? await api.updateItemForStore(scopedStoreId, id, target)
+            : await api.updateItem(id, target);
         if (!mounted) return;
 
         if (value is Map) {
           final authoritative = Map<String, dynamic>.from(value);
+          // Do not show an unrelated cart after a store/session switch or a
+          // contradictory legacy adapter response. Never infer money locally.
+          if (storeId != scopedStoreId ||
+              authoritative['store_id'] != scopedStoreId ||
+              authoritative['channel'] != 'b2b') {
+            throw const WholesaleCommerceException(
+              'The cart belongs to a different store. Refresh and try again.',
+            );
+          }
           setState(() {
             _cartOverride = authoritative;
             final optimistic = _optimisticQuantities[id];
