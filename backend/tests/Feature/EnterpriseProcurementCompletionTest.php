@@ -699,6 +699,91 @@ final class EnterpriseProcurementCompletionTest extends TestCase
         $this->assertSame(0, DB::table('enterprise_purchase_invoices')->count());
     }
 
+    public function test_ordered_not_received_kpi_counts_partial_posted_grns_without_multiplying_po_lines(): void
+    {
+        $this->enableProcurement();
+        [$actor, $store, $context] = $this->scopedUser(
+            $this->allPermissions(), 'P135-PARTIAL-REPORT',
+        );
+        $supplier = app(SupplierDirectory::class)->create($actor, $context, [
+            'scope_type' => 'store',
+            'code' => 'P135-PARTIAL-SUP',
+            'name_en' => 'Partial delivery supplier',
+        ]);
+        $order = $this->approvedOrder($actor, $context, $supplier->id, 5, 1.250);
+        $orderLine = $order->lines()->firstOrFail();
+
+        // Report-specific SQL fixture: status and GRN rows are deterministic.
+        // This tests aggregation only; it is not evidence of physical posting.
+        DB::table('enterprise_purchase_orders')->where('id', $order->id)->update([
+            'status' => 'issued',
+            'issued_by' => $actor->id,
+            'issued_at' => now(),
+        ]);
+        $warehouseId = DB::table('warehouses')->insertGetId([
+            'store_id' => $store->id,
+            'code' => 'P135-PARTIAL-WH',
+            'name' => 'Partial Receiving',
+            'is_active' => true,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        $scope = $context->enterpriseScope;
+        $addReceipt = function (string $number, string $status, string $received) use (
+            $actor, $scope, $store, $order, $orderLine, $warehouseId
+        ): void {
+            $receiptId = DB::table('enterprise_goods_receipts')->insertGetId([
+                'public_id' => (string) \Illuminate\Support\Str::uuid(),
+                'receipt_number' => $number,
+                'purchase_order_id' => $order->id,
+                'source_order_number' => $order->order_number,
+                'organization_id' => $scope->organizationId,
+                'company_id' => $scope->companyId,
+                'store_id' => $store->id,
+                'supplier_id' => $order->supplier_id,
+                'supplier_code' => $order->supplier_code,
+                'supplier_name_en' => $order->supplier_name_en,
+                'currency_code' => $order->currency_code,
+                'status' => $status,
+                'created_by' => $actor->id,
+                'posted_by' => $status === 'posted' ? $actor->id : null,
+                'posted_at' => $status === 'posted' ? now() : null,
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+            DB::table('enterprise_goods_receipt_lines')->insert([
+                'goods_receipt_id' => $receiptId,
+                'purchase_order_line_id' => $orderLine->id,
+                'line_no' => 1,
+                'item_code' => $orderLine->item_code,
+                'description' => $orderLine->description,
+                'ordered_quantity' => $orderLine->quantity,
+                'received_quantity' => $received,
+                'unit' => $orderLine->unit,
+                'unit_price' => $orderLine->unit_price,
+                'warehouse_id' => $warehouseId,
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+        };
+        $manager = app(ProcurementCompletionManager::class);
+        $outstanding = static function () use ($manager, $actor, $context): int {
+            $dashboard = $manager->dashboard($actor, $context);
+
+            return (int) collect($dashboard['kpis'])
+                ->firstWhere('key', 'ordered_not_received')['value'];
+        };
+
+        $this->assertSame(1, $outstanding());
+        $addReceipt('P135-DRAFT-IGNORED', 'draft', '5.000');
+        $this->assertSame(1, $outstanding());
+        $addReceipt('P135-PARTIAL-2', 'posted', '2.000');
+        $this->assertSame(1, $outstanding());
+        $addReceipt('P135-PARTIAL-3', 'posted', '3.000');
+        $this->assertSame(0, $outstanding());
+        $this->assertSame(0, DB::table('stock_movements')->count());
+    }
+
     public function test_completion_migration_is_reversible_without_leaving_parallel_authority(): void
     {
         $migration = require database_path(
