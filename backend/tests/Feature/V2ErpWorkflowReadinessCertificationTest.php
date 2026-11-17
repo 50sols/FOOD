@@ -63,6 +63,9 @@ final class V2ErpWorkflowReadinessCertificationTest extends TestCase
                 );
 
                 $this->actingAs($actor->fresh())->get(route($route))->assertForbidden();
+                $this->actingAs($actor->fresh())->get(route($route, [
+                    'store_id' => 999999999,
+                ]))->assertForbidden();
 
                 // A stale approval is not equivalent to approval of the
                 // currently installed manifest.
