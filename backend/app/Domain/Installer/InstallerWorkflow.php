@@ -693,7 +693,7 @@ final class InstallerWorkflow
         // inventory, financial policies and custody records are not: a DB can
         // contain them without having any users, orders or legacy products.
         foreach ([
-            'system_versions', 'users', 'orders', 'invoices', 'products', 'b2b_accounts',
+            'system_versions', 'users', 'stores', 'orders', 'invoices', 'products', 'b2b_accounts',
             'b2b_customers', 'b2c_customers', 'warehouses', 'enterprise_suppliers',
             'enterprise_purchase_requests', 'enterprise_purchase_orders',
             'enterprise_goods_receipts', 'enterprise_inventory_lots',
