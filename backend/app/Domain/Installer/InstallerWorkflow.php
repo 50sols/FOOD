@@ -387,7 +387,20 @@ final class InstallerWorkflow
 
     public function seedRequiredCoreData(): void
     {
+        // A direct invocation is not entitled to replay the fresh-install
+        // seeder against a configured site. CoreReferenceSeeder intentionally
+        // reconciles built-in permission grants, so even a second successful
+        // Artisan call can overwrite administrative role changes.
+        abort_if($this->state->isInstalled(), 404);
+        $existing = $this->environment->read(['APP_KEY']);
+        if (trim((string) ($existing['APP_KEY'] ?? '')) !== '') {
+            throw new RuntimeException((string) __('installer.environment_already_configured'));
+        }
+
         $this->applyDatabaseConfiguration();
+        // Permit an interrupted, not-yet-live installation to retry its core
+        // seed, but refuse user/order/version data before *any* seed write.
+        $this->assertFreshInstallDatabase();
 
         if (Artisan::call('db:seed', ['--class' => DatabaseSeeder::class, '--force' => true]) !== 0) {
             throw new RuntimeException((string) __('installer.errors.seed'));
@@ -605,13 +618,11 @@ final class InstallerWorkflow
                 $containsData = Schema::hasTable($table) && DB::table($table)->exists();
             } catch (Throwable) {
                 // Do not continue when the selected database cannot be inspected.
-                throw new RuntimeException('Unable to verify that the selected database is safe for a fresh install.');
+                throw new RuntimeException((string) __('installer.errors.database_safety_unverifiable'));
             }
 
             if ($containsData) {
-                throw new RuntimeException(
-                    'The selected database already contains FOODEX data. Choose an empty database for /install; existing sites must use System Updates.'
-                );
+                throw new RuntimeException((string) __('installer.errors.existing_business_data'));
             }
         }
     }
