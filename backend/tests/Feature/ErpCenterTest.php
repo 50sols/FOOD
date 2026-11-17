@@ -4,6 +4,8 @@ namespace Tests\Feature;
 
 use App\Enterprise\Entitlements\EntitlementScope;
 use App\Enterprise\Entitlements\ModuleEntitlementManager;
+use App\Enterprise\Health\ModuleHealthCheck;
+use App\Enterprise\Health\ModuleHealthProbe;
 use App\Enterprise\Organization\OrganizationHierarchyService;
 use App\Models\EnterpriseModuleEntitlement;
 use App\Models\Permission;
@@ -37,6 +39,82 @@ final class ErpCenterTest extends TestCase
         // Disposable signed evidence only for positive ERP Center test scenarios.
         // Production certification and trusted public keys stay empty by default.
         SyntheticErpWorkflowEvidence::install();
+    }
+
+    public function test_explicitly_disabled_module_explains_denial_without_an_action_or_internal_payload(): void
+    {
+        config()->set('security.mfa.enforce_privileged', false);
+        $admin = $this->userWithGlobalRole('SUPER_ADMIN', 'en', 'p135-disabled-diagnostic@example.test');
+        $this->app['env'] = 'production';
+        app(EnterpriseModuleAdministration::class)->perform('procurement', 'enable', $admin);
+        app(ModuleEntitlementManager::class)->set('procurement', EntitlementScope::platform(), true, null, $admin);
+        app(EnterpriseModuleAdministration::class)->perform('procurement', 'disable', $admin);
+
+        foreach (['ar' => 'rtl', 'en' => 'ltr'] as $locale => $direction) {
+            $admin->forceFill(['locale' => $locale])->save();
+            $response = $this->actingAs($admin->fresh())->get(route('admin.erp.index'));
+            $response->assertOk()
+                ->assertSee('dir="'.$direction.'"', false)
+                ->assertSee(__('admin.erp_center.denial_reasons.module_disabled', [], $locale));
+
+            $card = collect($response->viewData('cards'))->firstWhere('key', 'procurement');
+            $this->assertIsArray($card);
+            $this->assertSame('disabled', $card['status']);
+            $this->assertSame('module_disabled', $card['denial_reason']);
+            $this->assertNull($card['url']);
+            $this->assertSame(1, preg_match(
+                '/<article class="foodex-card erp-module[^"]*" data-erp-key="procurement".*?<\/article>/s',
+                (string) $response->getContent(),
+                $markup,
+            ));
+            $this->assertStringNotContainsString('foodex-action-primary', $markup[0]);
+            $this->assertStringNotContainsString('{"', $markup[0]);
+            $this->actingAs($admin->fresh())->get(route('admin.erp.procurement.index'))
+                ->assertForbidden();
+        }
+    }
+
+    public function test_unhealthy_certified_module_has_localized_nonactionable_diagnostics_without_probe_details(): void
+    {
+        config()->set('security.mfa.enforce_privileged', false);
+        $admin = $this->userWithGlobalRole('SUPER_ADMIN', 'en', 'p135-unhealthy-diagnostic@example.test');
+        $this->app['env'] = 'production';
+        $store = $this->wholesaleStore('P135-UNHEALTHY-DIAGNOSTIC');
+        app(EnterpriseModuleAdministration::class)->perform('procurement', 'enable', $admin);
+        app(ModuleEntitlementManager::class)->set('procurement', EntitlementScope::platform(), true, null, $admin);
+        config()->set('enterprise_module_health.probes.procurement', [ErpCenterOpaqueFailureProbe::class]);
+
+        foreach (['ar' => 'rtl', 'en' => 'ltr'] as $locale => $direction) {
+            $admin->forceFill(['locale' => $locale])->save();
+            $response = $this->actingAs($admin->fresh())->get(route('admin.erp.index'));
+            $response->assertOk()
+                ->assertSee('dir="'.$direction.'"', false)
+                ->assertSee(__('admin.erp_center.denial_reasons.unhealthy', [], $locale));
+
+            $card = collect($response->viewData('cards'))->firstWhere('key', 'procurement');
+            $this->assertIsArray($card);
+            $this->assertSame('degraded', $card['status']);
+            $this->assertSame('unhealthy', $card['denial_reason']);
+            $this->assertSame('error', $card['health']);
+            $this->assertNull($card['url']);
+            $this->assertSame(1, preg_match(
+                '/<article class="foodex-card erp-module[^"]*" data-erp-key="procurement".*?<\/article>/s',
+                (string) $response->getContent(),
+                $markup,
+            ));
+            $this->assertStringNotContainsString('foodex-action-primary', $markup[0]);
+            $this->assertStringNotContainsString('ERP_PRIVATE_PROBE_MARKER', $markup[0]);
+            $this->assertStringNotContainsString('{"', $markup[0]);
+            $this->assertSame(0, preg_match(
+                '/\b[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\b/i',
+                $markup[0],
+            ));
+
+            $this->actingAs($admin->fresh())->get(route('admin.erp.procurement.index', [
+                'store_id' => $store->id,
+            ]))->assertForbidden();
+        }
+        $this->assertDatabaseCount('enterprise_purchase_orders', 0);
     }
 
     public function test_disabled_module_is_explicit_and_never_exposes_an_operational_cta(): void
@@ -1186,5 +1264,24 @@ final class ErpCenterTest extends TestCase
         $user->roles()->attach(Role::query()->where('code', $roleCode)->firstOrFail());
 
         return $user;
+    }
+}
+
+/**
+ * Test-only failed health probe: internal messages/JSON/UUID must never be
+ * projected into the ERP Center's user-facing denial explanation.
+ */
+final class ErpCenterOpaqueFailureProbe implements ModuleHealthProbe
+{
+    public function check(): ModuleHealthCheck
+    {
+        return ModuleHealthCheck::error(
+            'p135-opaque-internal-check',
+            'ERP_PRIVATE_PROBE_MARKER',
+            [
+                'opaque_uuid' => '123e4567-e89b-42d3-a456-426614174000',
+                'opaque_json' => '{"internal":"not-for-user"}',
+            ],
+        );
     }
 }
