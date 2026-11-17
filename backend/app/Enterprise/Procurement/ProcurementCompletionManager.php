@@ -1569,7 +1569,26 @@ final class ProcurementCompletionManager
         array $filters = [],
         int $limit = 500,
     ): array {
+        // Reading supplier statements is necessary to enter the Reports tab,
+        // but it does not grant access to purchase orders, invoices or RFQs.
+        // Apply each report's canonical document permission at the service
+        // boundary too, so direct calls and CSV exports cannot bypass it.
         $scope = $this->scope($actor, $context, 'procurement.supplier_statements.view');
+        $documentPermission = match ($report) {
+            'open_orders', 'supplier_performance', 'contract_expiry' => 'procurement.purchase_orders.view',
+            'spend', 'match_exceptions' => 'procurement.purchase_invoices.view',
+            'savings' => 'procurement.purchase_requests.view',
+            default => throw ValidationException::withMessages([
+                'report' => ['Unknown procurement report.'],
+            ]),
+        };
+        $this->authorizer->authorize(
+            $actor,
+            $context,
+            $documentPermission,
+            'company',
+            $scope->companyId,
+        );
 
         return $this->reportForStore($report, $scope->storeId, $filters, $limit);
     }
