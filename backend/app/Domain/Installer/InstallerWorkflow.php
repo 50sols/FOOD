@@ -154,7 +154,7 @@ final class InstallerWorkflow
         $metadata = @lstat($path);
         if ($metadata === false
             || ($metadata['mode'] & 0170000) !== 0100000
-            || ($metadata['nlink'] ?? 0) !== 1) {
+            || $metadata['nlink'] !== 1) {
             return false;
         }
 
