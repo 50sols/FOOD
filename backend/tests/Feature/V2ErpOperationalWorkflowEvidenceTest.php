@@ -5,6 +5,8 @@ namespace Tests\Feature;
 use App\Enterprise\Health\ModuleHealthCheck;
 use App\Enterprise\Health\ModuleHealthProbe;
 use App\Enterprise\Modules\ModuleLifecycleManager;
+use App\Enterprise\Modules\ModuleManifestCatalog;
+use App\Enterprise\Modules\ModuleWorkflowAttestation;
 use App\Enterprise\Modules\ModuleOperationalReadiness;
 use App\Enterprise\Modules\ModuleState;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -97,6 +99,9 @@ final class V2ErpOperationalWorkflowEvidenceTest extends TestCase
         foreach ([
             ['version' => 2],
             ['head_sha' => 'not-a-git-sha'],
+            ['manifest_sha256' => str_repeat('0', 64)],
+            ['manifest_sha256' => 'not-a-manifest-hash'],
+            ['manifest_sha256' => []],
             ['review_issue' => 0],
             ['ci_run' => 'https://example.invalid/green'],
             ['key_id' => 'untrusted'],
@@ -119,6 +124,53 @@ final class V2ErpOperationalWorkflowEvidenceTest extends TestCase
         config()->set('enterprise_module_readiness.workflow_attestations.sample_optional', $good);
         config()->set('enterprise_module_readiness.certified_versions.sample_optional', 2);
         $this->assertSame('uncertified', $readiness->status('sample_optional', 2, ModuleState::ENABLED));
+    }
+
+    public function test_signed_manifest_digest_fails_closed_when_dependencies_or_scope_change_without_version_bump(): void
+    {
+        $this->enableSample();
+        $this->requireSampleWorkflow();
+        $readiness = app(ModuleOperationalReadiness::class);
+        $signed = $this->evidence();
+        $manifest = app(ModuleManifestCatalog::class)->require('sample_optional');
+        $digest = ModuleWorkflowAttestation::manifestSha256($manifest);
+
+        $this->assertIsString($digest);
+        $this->assertSame(64, strlen($digest));
+        $this->assertSame($digest, $signed['manifest_sha256']);
+        $this->assertSame('ready', $readiness->status('sample_optional', 1, ModuleState::ENABLED));
+
+        // A manifest version and cryptographically valid original signature
+        // cannot approve changed hard dependencies, required core, permissions,
+        // capabilities or health checks without a new reviewed attestation.
+        foreach ([
+            'hard_dependencies' => ['finance'],
+            'required_core' => ['identity', 'tenant_context', 'audit', 'catalog'],
+            'capabilities' => ['unreviewed.sensitive.action'],
+            'permissions' => ['finance.post'],
+            'health_checks' => ['provider.runtime'],
+        ] as $attribute => $unreviewedDefinition) {
+            $original = config('enterprise_modules.modules.sample_optional.'.$attribute);
+            config()->set('enterprise_modules.modules.sample_optional.'.$attribute, $unreviewedDefinition);
+
+            foreach (['ar', 'en'] as $locale) {
+                app()->setLocale($locale);
+                $this->assertSame(
+                    'uncertified',
+                    $readiness->status('sample_optional', 1, ModuleState::ENABLED),
+                    $attribute.' cannot reuse a signature for an older manifest.',
+                );
+            }
+
+            config()->set('enterprise_modules.modules.sample_optional.'.$attribute, $original);
+            $this->assertSame('ready', $readiness->status('sample_optional', 1, ModuleState::ENABLED));
+        }
+
+        // Clearing the trusted key or approval maps must still deny a signed
+        // manifest even when the original unmodified manifest is restored.
+        config()->set('enterprise_module_readiness.trusted_public_keys', []);
+        $this->assertSame('uncertified', $readiness->status('sample_optional', 1, ModuleState::ENABLED));
+        $this->assertSame([], config('enterprise_module_readiness.certified_versions.procurement', []));
     }
 
     public function test_untrusted_or_replayed_signature_never_turns_on_an_erp_module(): void
