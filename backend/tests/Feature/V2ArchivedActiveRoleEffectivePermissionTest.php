@@ -40,6 +40,7 @@ final class V2ArchivedActiveRoleEffectivePermissionTest extends TestCase
         $this->assertNotContains('security.view', $actor->effectivePermissionCodes());
 
         $before = $this->auditCounts();
+        $authorizationBefore = $this->authorizationSnapshot($actor->id);
         foreach (['ar' => 'rtl', 'en' => 'ltr'] as $locale => $direction) {
             $actor->forceFill(['locale' => $locale])->save();
             app()->setLocale($locale);
@@ -53,6 +54,7 @@ final class V2ArchivedActiveRoleEffectivePermissionTest extends TestCase
                 ->get(route('admin.sidebar-access.roles'))
                 ->assertForbidden();
             $this->assertSame($before, $this->auditCounts(), $direction);
+            $this->assertSame($authorizationBefore, $this->authorizationSnapshot($actor->id), $direction);
         }
         $this->assertDatabaseHas('roles', [
             'id' => $role->id,
@@ -117,6 +119,7 @@ final class V2ArchivedActiveRoleEffectivePermissionTest extends TestCase
         $this->override($actor, 'catalog.view', 'global', 'deny');
         $actor->forceFill(['has_permission_overrides' => true])->save();
         $before = $this->auditCounts();
+        $authorizationBefore = $this->authorizationSnapshot($actor->id);
 
         foreach (['ar' => 'rtl', 'en' => 'ltr'] as $locale => $direction) {
             $actor->forceFill(['locale' => $locale])->save();
@@ -129,6 +132,7 @@ final class V2ArchivedActiveRoleEffectivePermissionTest extends TestCase
             $this->actingAs($effective)->get(route('admin.catalog.index'))->assertForbidden();
             $this->actingAs($effective)->get(route('admin.security.index', ['section' => 'audit']))->assertForbidden();
             $this->assertSame($before, $this->auditCounts(), $direction);
+            $this->assertSame($authorizationBefore, $this->authorizationSnapshot($actor->id), $direction);
         }
 
         $actor->forceFill(['is_active' => false])->save();
@@ -188,6 +192,48 @@ final class V2ArchivedActiveRoleEffectivePermissionTest extends TestCase
             'store_roles' => DB::table('user_store_roles')->count(),
             'overrides' => DB::table('user_permission_overrides')->count(),
             'sidebar' => DB::table('admin_sidebar_role_visibility')->count(),
+        ];
+    }
+
+    /** @return array<string, mixed> */
+    private function authorizationSnapshot(int $userId): array
+    {
+        $roleIds = DB::table('role_user')
+            ->where('user_id', $userId)
+            ->pluck('role_id')
+            ->merge(DB::table('user_store_roles')->where('user_id', $userId)->pluck('role_id'))
+            ->unique()
+            ->values();
+
+        return [
+            'user_authority_flags' => DB::table('users')->where('id', $userId)->value('has_permission_overrides'),
+            'global_roles' => DB::table('role_user')
+                ->where('user_id', $userId)
+                ->orderBy('role_id')
+                ->get(['role_id'])
+                ->map(fn ($row): array => (array) $row)
+                ->all(),
+            'store_roles' => DB::table('user_store_roles')
+                ->where('user_id', $userId)
+                ->orderBy('store_id')
+                ->orderBy('role_id')
+                ->get(['store_id', 'role_id'])
+                ->map(fn ($row): array => (array) $row)
+                ->all(),
+            'role_permissions' => DB::table('permission_role')
+                ->whereIn('role_id', $roleIds)
+                ->orderBy('role_id')
+                ->orderBy('permission_id')
+                ->get(['role_id', 'permission_id'])
+                ->map(fn ($row): array => (array) $row)
+                ->all(),
+            'permission_overrides' => DB::table('user_permission_overrides')
+                ->where('user_id', $userId)
+                ->orderBy('scope_key')
+                ->orderBy('permission_id')
+                ->get(['permission_id', 'scope_key', 'store_id', 'effect'])
+                ->map(fn ($row): array => (array) $row)
+                ->all(),
         ];
     }
 }
