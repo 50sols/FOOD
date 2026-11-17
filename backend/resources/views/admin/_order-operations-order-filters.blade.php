@@ -31,7 +31,18 @@
 .order-grid-filter-popover label{display:grid;gap:4px;font-size:.68rem;font-weight:800}
 .order-grid-filter-popover input,.order-grid-filter-popover select{width:100%}
 .order-grid-new-order{flex:0 0 auto;white-space:nowrap}
+/* The parent Orders toolbar uses flex:0 0 auto below 1180px; constrain this
+   filter slot rather than allowing its intrinsic input widths to spill outside. */
+@media(max-width:1180px){
+    .order-workspace-filter-slot:has([data-order-grid-filter-controls]){flex:0 1 60%;max-width:60%;min-width:0}
+}
 @media(max-width:767px){
+    .order-workspace-bar:has([data-order-grid-filter-controls]){flex-wrap:wrap}
+    .order-workspace-bar:has([data-order-grid-filter-controls]) .order-workspace-tabs{flex:1 1 100%;max-width:100%}
+    .order-workspace-filter-slot:has([data-order-grid-filter-controls]){flex:1 1 100%;width:100%;max-width:100%;min-width:0;margin-inline-start:0}
+    .order-grid-filter-controls{width:100%;flex-wrap:wrap;justify-content:flex-end}
+    .order-grid-filter-form{order:2;flex:1 1 100%;width:100%}
+    .order-grid-new-order{order:1}
     .order-grid-filter-controls{gap:4px}
     .order-grid-filter-form{padding:2px}
     .order-grid-filter-primary input,.order-grid-filter-primary select,.order-grid-filter-popover input,.order-grid-filter-popover select{font-size:1rem!important}
