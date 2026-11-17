@@ -840,7 +840,7 @@ final class EnterpriseTreasuryController extends Controller
                 && ($previousParts['host'] ?? null) === ($routeParts['host'] ?? null)
                 && ($previousParts['port'] ?? null) === ($routeParts['port'] ?? null)
                 && ($previousParts['path'] ?? null) === ($routeParts['path'] ?? null)
-                && isset($previousParts['query']) && is_string($previousParts['query'])) {
+                && isset($previousParts['query'])) {
                 parse_str($previousParts['query'], $previousQuery);
                 if (($previousQuery['tab'] ?? null) === $tab
                     && ($previousQuery['store_id'] ?? null) === (string) $storeId) {
