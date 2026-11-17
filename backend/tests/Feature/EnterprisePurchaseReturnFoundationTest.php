@@ -577,10 +577,6 @@ final class EnterprisePurchaseReturnFoundationTest extends TestCase
             ]],
         ]);
 
-        // Preserve the maker/checker fixture's dedicated procurement role
-        // while generating the receipt, then admit the actor to the HTTP workbench.
-        $this->allowReturnsWorkbench($actor, $store);
-
         foreach (['ar' => 'rtl', 'en' => 'ltr'] as $locale => $direction) {
             app()->setLocale($locale);
             $actor->forceFill(['locale' => $locale])->save();
@@ -634,10 +630,7 @@ final class EnterprisePurchaseReturnFoundationTest extends TestCase
             ]],
         ]);
 
-        $this->allowReturnsWorkbench($owner, $store);
-
         [$foreign, $otherStore] = $this->scopedUser($this->allPermissions(), 'P243-SEC-FOREIGN');
-        $this->allowReturnsWorkbench($foreign, $otherStore);
         [$limited, $limitedStore] = $this->scopedUser(['procurement.suppliers.view'], 'P243-SEC-LIMITED');
         $this->grantPlatformErpAccess($limited);
 
@@ -676,8 +669,6 @@ final class EnterprisePurchaseReturnFoundationTest extends TestCase
     {
         config()->set('security.mfa.enforce_privileged', false);
         [$actor, $store] = $this->scopedUser($this->allPermissions(), 'P243-MODULE-OFF');
-        $this->allowReturnsWorkbench($actor, $store);
-
         $this->actingAs($actor)
             ->get(route('admin.erp.procurement.index', [
                 'tab' => 'returns',
@@ -698,32 +689,6 @@ final class EnterprisePurchaseReturnFoundationTest extends TestCase
                 'store_id' => $store->id,
             ]))
             ->assertForbidden();
-    }
-
-    /**
-     * The public ERP HTTP route requires a canonical Retail dashboard persona,
-     * not merely a custom scope role that is valid for the domain service.
-     * Mirror EnterpriseProcurementWorkbenchTest's production-route actor.
-     */
-    private function allowReturnsWorkbench(User $actor, Store $store): void
-    {
-        $role = Role::query()->firstOrCreate(
-            ['code' => 'B2C_STORE_ADMIN'],
-            ['name' => 'Retail Store Admin', 'scope' => 'store', 'is_active' => true, 'is_system' => true],
-        );
-        foreach (['procurement.suppliers.view', 'procurement.purchase_returns.view'] as $code) {
-            $permission = Permission::query()->firstOrCreate(
-                ['code' => $code],
-                ['name' => $code],
-            );
-            $role->permissions()->syncWithoutDetaching([$permission->id]);
-        }
-
-        DB::table('user_store_roles')->updateOrInsert(
-            ['user_id' => $actor->id, 'store_id' => $store->id, 'role_id' => $role->id],
-            ['created_at' => now(), 'updated_at' => now()],
-        );
-        $this->grantPlatformErpAccess($actor);
     }
 
     private function enableProcurement(): void
@@ -792,7 +757,7 @@ final class EnterprisePurchaseReturnFoundationTest extends TestCase
     {
         $catalog = Catalog::query()->create([
             'store_id' => $store->id,
-            'channel' => 'b2c',
+            'channel' => 'b2b',
             'code' => 'prtn-'.strtolower($sku),
             'name' => $sku.' Catalog',
             'is_active' => true,
@@ -876,7 +841,14 @@ final class EnterprisePurchaseReturnFoundationTest extends TestCase
         }
 
         $user = User::factory()->create(['is_active' => true]);
-        $store = $this->createRetailStore($storeCode);
+        $store = $this->createWholesaleStore($storeCode);
+
+        // The application channel check needs a canonical Wholesale persona.
+        // Keep its built-in permissions empty so each scoped test role remains
+        // the sole source of document permissions.
+        $channelRole = Role::query()->where('code', 'PROCUREMENT_BUYER')->firstOrFail();
+        $channelRole->permissions()->sync([]);
+        $user->roles()->syncWithoutDetaching([$channelRole->id]);
 
         DB::table('user_store_roles')->insert([
             'user_id' => $user->id,
@@ -889,20 +861,15 @@ final class EnterprisePurchaseReturnFoundationTest extends TestCase
         return [
             $user,
             $store,
-            app(TenantContextResolver::class)->retail($user, $store->id),
+            app(TenantContextResolver::class)->wholesale($user, $store->id),
         ];
     }
 
-    private function createRetailStore(string $code): Store
+    private function createWholesaleStore(string $code): Store
     {
-        $typeId = (int) DB::table('store_types')->where('code', 'B2C')->value('id');
+        $typeId = (int) DB::table('store_types')->where('code', 'B2B')->value('id');
         if ($typeId < 1) {
-            $typeId = DB::table('store_types')->insertGetId([
-                'code' => 'B2C',
-                'name' => 'Retail',
-                'created_at' => now(),
-                'updated_at' => now(),
-            ]);
+            $this->fail('CoreReferenceSeeder must provide the Wholesale store type.');
         }
 
         $store = Store::query()->create([

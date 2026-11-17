@@ -8,7 +8,6 @@ use App\Enterprise\Wms\WarehouseLocationService;
 use App\Enterprise\Wms\WmsDemandPlanningService;
 use App\Models\Role;
 use App\Models\User;
-use App\Models\UserStoreRole;
 use Carbon\CarbonImmutable;
 use Database\Seeders\CoreReferenceSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -457,7 +456,7 @@ final class EnterpriseWmsProfessionalCompletionTest extends TestCase
     /** @return array<string,int> */
     private function fixture(): array
     {
-        $storeTypeId = (int) DB::table('store_types')->where('code', 'B2C')->value('id');
+        $storeTypeId = (int) DB::table('store_types')->where('code', 'B2B')->value('id');
         $storeId = (int) DB::table('stores')->insertGetId([
             'store_type_id' => $storeTypeId,
             'code' => 'WMS-PRO-COMP',
@@ -469,7 +468,7 @@ final class EnterpriseWmsProfessionalCompletionTest extends TestCase
         $unitId = (int) DB::table('units')->orderBy('id')->value('id');
         $catalogId = (int) DB::table('catalogs')->insertGetId([
             'store_id' => $storeId,
-            'channel' => 'b2c',
+            'channel' => 'b2b',
             'code' => 'wms-professional',
             'name' => 'WMS Professional Catalog',
             'is_active' => true,
@@ -541,12 +540,8 @@ final class EnterpriseWmsProfessionalCompletionTest extends TestCase
             'is_active' => true,
         ]);
         $this->grantPlatformErpAccess($user);
-        $role = Role::query()->where('code', 'RETAIL_INVENTORY')->firstOrFail();
-        UserStoreRole::query()->create([
-            'user_id' => $user->id,
-            'store_id' => $storeId,
-            'role_id' => $role->id,
-        ]);
+        $role = Role::query()->where('code', 'INVENTORY')->firstOrFail();
+        $user->roles()->syncWithoutDetaching([$role->id]);
 
         return $user;
     }
@@ -560,7 +555,7 @@ final class EnterpriseWmsProfessionalCompletionTest extends TestCase
         string $number,
     ): void {
         $customerId = (int) DB::table('customers')->insertGetId([
-            'type' => 'b2c',
+            'type' => 'b2b',
             'name' => $number.' Customer',
             'created_at' => $at->utc()->toDateTimeString(),
             'updated_at' => $at->utc()->toDateTimeString(),
@@ -569,7 +564,7 @@ final class EnterpriseWmsProfessionalCompletionTest extends TestCase
             'store_id' => $storeId,
             'customer_id' => $customerId,
             'order_number' => $number.'-'.$storeId,
-            'channel' => 'b2c',
+            'channel' => 'b2b',
             'status' => $status,
             'currency' => 'KWD',
             'subtotal' => $quantity,
