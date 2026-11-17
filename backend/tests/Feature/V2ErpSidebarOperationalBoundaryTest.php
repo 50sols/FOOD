@@ -55,6 +55,48 @@ final class V2ErpSidebarOperationalBoundaryTest extends TestCase
         $this->get(route('admin.erp.procurement.index'))->assertForbidden();
     }
 
+    public function test_platform_owner_without_an_active_wholesale_store_keeps_read_only_setup_diagnostics(): void
+    {
+        $this->app['env'] = 'production';
+        Store::query()->where('code', 'V2-ERP-BOUNDARY-WHOLESALE')->update(['is_active' => false]);
+        $actor = $this->superAdmin('v2-erp-no-b2b-diagnostics@example.test');
+
+        // A visibility-only exception must never create a B2B store, scope,
+        // certified module or operational authorization.
+        $this->assertSame([], app(\App\Services\OperationalTenantScope::class)
+            ->allowedStoreIds($actor, 'procurement.suppliers.view', 'B2B'));
+
+        $center = $this->actingAs($actor)->get(route('admin.erp.index'));
+        $center->assertOk();
+
+        $card = collect($center->viewData('cards'))->firstWhere('key', 'procurement');
+        $this->assertIsArray($card);
+        $this->assertSame('setup_required', $card['status']);
+        $this->assertNull($card['url']);
+        $this->get(route('admin.erp.procurement.index'))->assertForbidden();
+    }
+
+    public function test_platform_entitlement_without_procurement_role_does_not_reveal_the_module(): void
+    {
+        $this->app['env'] = 'production';
+        $owner = $this->superAdmin('v2-erp-module-owner@example.test');
+        $finance = User::factory()->create(['is_active' => true, 'locale' => 'en']);
+        $finance->roles()->attach(Role::query()->where('code', 'FINANCE')->firstOrFail());
+
+        app(EnterpriseModuleAdministration::class)->perform('procurement', 'enable', $owner);
+        app(ModuleEntitlementManager::class)->set(
+            'procurement',
+            EntitlementScope::platform(),
+            true,
+        );
+
+        $center = $this->actingAs($finance)->get(route('admin.erp.index'));
+        $center->assertOk()
+            ->assertDontSee('data-erp-key="procurement"', false);
+        $this->assertNull(collect($center->viewData('cards'))->firstWhere('key', 'procurement'));
+        $this->get(route('admin.erp.procurement.index'))->assertForbidden();
+    }
+
     public function test_uncertified_module_routes_fail_closed_for_all_erp_domains(): void
     {
         $this->actingAs($this->superAdmin('v2-erp-cross-module@example.test'));
