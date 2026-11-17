@@ -1444,7 +1444,7 @@ final class ProcurementCompletionManager
             // A previous human approval applies only to the reviewed
             // variance/tolerance snapshot. Imports or corrections to a draft
             // invoice must never reuse that approval against changed figures.
-            $reviewChanged = $status === 'approved' && $existing !== null && (
+            $reviewChanged = $status === 'approved' && (
                 (float) $existing->quantity_variance !== $quantityVariance
                 || (float) $existing->value_variance !== $valueVariance
                 || (float) $existing->quantity_tolerance !== $quantityTolerance
