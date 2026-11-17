@@ -112,8 +112,23 @@ final class SystemUpdateController extends Controller
         }
 
         $directory = storage_path('app/private/updates/incoming');
+        if (! $this->hostPathWritableWithoutMutation($directory)) {
+            return redirect()
+                ->route('admin.system-update.index')
+                ->withErrors(['update' => __('update_signed_manifest.upload_staging_unavailable')]);
+        }
+
         if (! is_dir($directory) && ! @mkdir($directory, 0750, true) && ! is_dir($directory)) {
-            throw new RuntimeException('Update upload directory could not be prepared.');
+            return redirect()
+                ->route('admin.system-update.index')
+                ->withErrors(['update' => __('update_signed_manifest.upload_staging_unavailable')]);
+        }
+
+        clearstatcache(true, $directory);
+        if (! $this->hostPathWritableWithoutMutation($directory)) {
+            return redirect()
+                ->route('admin.system-update.index')
+                ->withErrors(['update' => __('update_signed_manifest.upload_staging_unavailable')]);
         }
 
         $fileName = 'update-'.bin2hex(random_bytes(12)).'.zip';

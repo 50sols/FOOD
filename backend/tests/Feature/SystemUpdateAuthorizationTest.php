@@ -13,6 +13,7 @@ use Database\Seeders\CoreReferenceSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Routing\Middleware\ThrottleRequests;
+use Illuminate\Support\Facades\File;
 use ReflectionMethod;
 use Tests\TestCase;
 
@@ -330,6 +331,52 @@ class SystemUpdateAuthorizationTest extends TestCase
         ])->assertSessionHasErrors(['update']);
 
         $this->assertDatabaseCount('update_history', 0);
+    }
+
+    public function test_symlinked_update_upload_staging_is_refused_before_package_move(): void
+    {
+        if (! function_exists('symlink') || ! function_exists('sodium_crypto_sign_keypair')) {
+            $this->markTestSkipped('Symlink and Sodium support are required.');
+        }
+
+        $actor = $this->userWithRole('SUPER_ADMIN');
+        $root = sys_get_temp_dir().'/foodex-update-upload-'.bin2hex(random_bytes(8));
+        mkdir($root, 0750, true);
+        mkdir($root.'/outside', 0750, true);
+
+        $oldStoragePath = storage_path();
+        $storage = $root.'/storage';
+        app()->useStoragePath($storage);
+        $incoming = storage_path('app/private/updates/incoming');
+        mkdir(dirname($incoming), 0750, true);
+
+        try {
+            if (! @symlink($root.'/outside', $incoming) || ! is_link($incoming)) {
+                $this->markTestSkipped('This test runner cannot create directory symlinks.');
+            }
+
+            $bytes = 'signed disposable package bytes';
+            [$payload, $public] = $this->signedManifestForBytes($bytes);
+            config([
+                'update_signatures.publisher_key_id' => 'ci-only-ephemeral',
+                'update_signatures.publisher_public_key_b64' => $public,
+            ]);
+
+            $this->actingAs($actor)->post(route('admin.system-update.store'), [
+                'package' => UploadedFile::fake()->createWithContent('patch.zip', $bytes),
+                'signed_manifest' => UploadedFile::fake()->createWithContent('signed.json', $payload),
+            ])->assertSessionHasErrors(['update']);
+
+            $this->assertDatabaseCount('update_history', 0);
+            $this->assertSame([], array_values(array_diff(scandir($root.'/outside') ?: [], ['.', '..'])));
+            $this->assertTrue(is_link($incoming));
+        } finally {
+            app()->useStoragePath($oldStoragePath);
+            if (is_link($incoming)) {
+                @unlink($incoming);
+            }
+            File::deleteDirectory($root);
+        }
     }
 
     public function test_valid_test_signature_reaches_zip_validation_and_rejects_zip_slip_with_data_untouched(): void
