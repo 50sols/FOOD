@@ -718,37 +718,39 @@ final class EnterpriseProcurementController extends Controller
     /** @return array{ResolvedTenantContext,list<array{id:int,name:string,code:string,channel:string}>,int} */
     private function context(Request $request, User $actor): array
     {
-        $options = $this->storeOptions($actor);
+        // A tenant assignment is not an ERP authorization grant. Derive both
+        // the selected store and the visible chooser from effective permission
+        // and the same hierarchical entitlement used by direct HTTP actions.
+        $candidates = $this->storeOptions($actor);
+        abort_if($candidates === [], 403);
+
+        $hasEntitlementPolicy = DB::table('enterprise_module_entitlements')
+            ->where('module_code', 'procurement')
+            ->exists();
+        $options = array_values(array_filter(
+            $candidates,
+            fn (array $option): bool => $this->canUseProcurementStore(
+                $actor,
+                (int) $option['id'],
+                $hasEntitlementPolicy,
+            ),
+        ));
         abort_if($options === [], 403);
 
+        // An explicitly supplied invalid, inaccessible or cross-channel store
+        // must never silently fall back to a different, authorized store.
         $requested = $request->integer('store_id');
-        $selected = collect($options)->firstWhere('id', $requested > 0 ? $requested : $options[0]['id']);
+        abort_if($request->exists('store_id') && $requested <= 0, 403);
+        $selected = collect($options)->firstWhere(
+            'id',
+            $requested > 0 ? $requested : $options[0]['id'],
+        );
         abort_unless(is_array($selected), 403);
         $storeId = (int) $selected['id'];
 
-        // Store options reflect tenant membership, not Procurement authority.
-        // Reject a Retail-only or unrelated-role principal before resolving the
-        // enterprise hierarchy: a missing hierarchy is a setup conflict (409)
-        // only for a principal with an actual Procurement permission in this
-        // store. An unrelated Retail role must instead receive 403, without
-        // a tenant context write or support-access audit side effect.
-        if (! $actor->hasRole('SUPER_ADMIN')) {
-            abort_unless(collect($actor->effectivePermissionCodes($storeId))
-                ->contains(static fn (string $permission): bool => str_starts_with($permission, 'procurement.')), 403);
-        }
-
-        // Legacy deployments with no Procurement entitlement policies still
-        // use existing role/tenant authorization. Once any Procurement
-        // entitlement is configured, its hierarchical DENY/ALLOW decisions
-        // are authoritative for reads and every state-changing action.
-        // A global role (including Super Admin) cannot override store DENY.
-        if (DB::table('enterprise_module_entitlements')->where('module_code', 'procurement')->exists()) {
-            abort_unless($this->entitlements->allows(
-                'procurement',
-                new EntitlementScope(EntitlementScope::STORE, $storeId),
-            ), 403);
-        }
-
+        // Tenant resolution remains authoritative for company/legal-entity
+        // scope. Only a genuinely permitted store with missing hierarchy may
+        // surface a setup conflict (409); authorization denial is always 403.
         $context = $selected['channel'] === 'b2c'
             ? $this->tenants->retail($actor, $storeId, $actor->hasRole('SUPER_ADMIN'), $request)
             : $this->tenants->wholesale($actor, $storeId);
@@ -756,6 +758,31 @@ final class EnterpriseProcurementController extends Controller
         abort_if($context->enterpriseScope === null, 409, 'Enterprise data scope is required.');
 
         return [$context, $options, $storeId];
+    }
+
+    private function canUseProcurementStore(User $actor, int $storeId, bool $hasEntitlementPolicy): bool
+    {
+        if (! $actor->is_active) {
+            return false;
+        }
+
+        // User::effectivePermissionCodes applies active-role/channel rules and
+        // explicit GLOBAL or STORE permission DENY precedence. A Retail Finance
+        // assignment alone must not authorize Procurement in that Retail store.
+        $hasProcurementPermission = collect($actor->effectivePermissionCodes($storeId))
+            ->contains(static fn (string $permission): bool => str_starts_with($permission, 'procurement.'));
+
+        if (! $hasProcurementPermission) {
+            return false;
+        }
+
+        // Preserve the existing legacy-unenrolled policy contract, but once
+        // Procurement entitlements are configured, the selected STORE lineage
+        // (including explicit DENY over Platform ALLOW) is authoritative.
+        return ! $hasEntitlementPolicy || $this->entitlements->allows(
+            'procurement',
+            new EntitlementScope(EntitlementScope::STORE, $storeId),
+        );
     }
 
     /** @return list<array{id:int,name:string,code:string,channel:string}> */
@@ -838,7 +865,10 @@ final class EnterpriseProcurementController extends Controller
 
     private function allowed(User $actor, int $storeId, string $permission): bool
     {
-        return $actor->hasRole('SUPER_ADMIN') || $actor->hasPermission($permission, $storeId);
+        // The User policy already implements the active Super Admin exception,
+        // effective permission DENYs and role/channel restrictions. Repeating
+        // hasRole() here would let a deactivated privileged actor bypass it.
+        return $actor->hasPermission($permission, $storeId);
     }
 
     /** @return array<string,bool> */
@@ -870,6 +900,7 @@ final class EnterpriseProcurementController extends Controller
     {
         $actor = $request->user();
         abort_unless($actor instanceof User, 401);
+        abort_unless($actor->is_active, 403);
 
         return $actor;
     }
