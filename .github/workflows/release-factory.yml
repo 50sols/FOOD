@@ -384,7 +384,7 @@ jobs:
     name: Validate clean install from exact Setup ZIP
     needs: [plan, setup]
     if: needs.plan.outputs.dashboard_only != 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
     env:
       CURRENT_VERSION: ${{ needs.plan.outputs.version }}
