@@ -42,6 +42,93 @@ void main() {
 
   for (final locale in const <Locale>[Locale('ar'), Locale('en')]) {
     for (final detail in const <bool>[false, true]) {
+      for (final denialStatus in const <int>[401, 403, 404]) {
+        testWidgets(
+          'MOB-C03 ${detail ? 'detail' : 'list'} drops cached finance on '
+          '$denialStatus ${locale.languageCode}',
+          (tester) async {
+            tester.view.physicalSize = const Size(390, 844);
+            tester.view.devicePixelRatio = 1;
+            addTearDown(() {
+              tester.view.resetPhysicalSize();
+              tester.view.resetDevicePixelRatio();
+            });
+            final api = _ReauthInvoiceB2bApi(denialStatus);
+            await tester.pumpWidget(
+              MaterialApp(
+                locale: locale,
+                home: AppTranslations(
+                  locale: locale,
+                  overrides: const <String, String>{},
+                  child: B2bJourneyScreen(
+                    definition: CustomerRouteDefinition(
+                      pattern: detail
+                          ? CustomerRoutePaths.b2bInvoiceDetails
+                          : CustomerRoutePaths.b2bInvoices,
+                      label: 'B2B invoice',
+                      channel: CustomerChannel.b2b,
+                      requiresAuth: true,
+                    ),
+                    location: detail
+                        ? '/b2b/invoices/31?store_id=7'
+                        : '/b2b/invoices?store_id=7',
+                    actionApi: _FakeCustomerActionApi(),
+                    api: api,
+                  ),
+                ),
+              ),
+            );
+            await _pumpCustomerFrames(tester);
+            expect(api.calls, 1);
+            expect(find.textContaining('INV-31'), findsWidgets);
+
+            if (detail) {
+              tester.binding.handleAppLifecycleStateChanged(
+                AppLifecycleState.resumed,
+              );
+            } else {
+              await tester.tap(
+                find.byKey(const ValueKey('b2b-invoices-refresh')),
+              );
+            }
+            await _pumpCustomerFrames(tester);
+            expect(api.calls, 2);
+            expect(find.textContaining('INV-31'), findsNothing);
+            expect(
+              find.byKey(ValueKey(
+                denialStatus == 403 ? 'b2b-forbidden' : 'b2b-error',
+              )),
+              findsOneWidget,
+            );
+            expect(
+              Directionality.of(tester.element(find.byKey(ValueKey(
+                denialStatus == 403 ? 'b2b-forbidden' : 'b2b-error',
+              )))),
+              locale.languageCode == 'ar'
+                  ? TextDirection.rtl
+                  : TextDirection.ltr,
+            );
+            expect(find.byKey(const ValueKey('b2b-invoice-detail-pdf')),
+                findsNothing);
+            expect(find.byKey(const ValueKey('b2b-invoice-pdf-31')),
+                findsNothing);
+
+            await tester.tap(
+              find.byKey(const ValueKey('b2b-error-retry')),
+            );
+            await _pumpCustomerFrames(tester);
+            expect(api.calls, 3);
+            expect(find.textContaining('INV-REVALIDATED-31'), findsWidgets);
+            expect(tester.takeException(), isNull);
+          },
+        );
+      }
+    }
+  }
+
+
+  for (final locale in const <Locale>[Locale('ar'), Locale('en')]) {
+    for (final detail in const <bool>[false, true]) {
       testWidgets(
         'MOB-C03 ${detail ? 'detail' : 'list'} PDF cannot cross Customer '
         'store/session scope ${locale.languageCode}',
@@ -7360,6 +7447,60 @@ class _DeferredPurchaseReportB2bApi implements B2bApi {
     final reply = Completer<Object?>();
     replies.add(reply);
     return reply.future;
+  }
+}
+
+class _ReauthInvoiceB2bApi implements B2bApi {
+  _ReauthInvoiceB2bApi(this.denialStatus);
+
+  final int denialStatus;
+  int calls = 0;
+
+  @override
+  Future<Object?> get(String path) async {
+    calls++;
+    if (calls == 2) {
+      throw B2bApiException(
+        'not_authorized',
+        statusCode: denialStatus,
+      );
+    }
+    final invoice = <String, Object?>{
+      'id': 31,
+      'store_id': 7,
+      'invoice_number': calls == 1 ? 'INV-31' : 'INV-REVALIDATED-31',
+      'display_invoice_number':
+          calls == 1 ? 'INV-31' : 'INV-REVALIDATED-31',
+      'status': 'issued',
+      'display_status': 'partially_paid',
+      'currency': 'KWD',
+      'total': 60.125,
+      'paid_amount': 20.000,
+      'outstanding_amount': 40.125,
+      'credit_amount': 0.000,
+      'items': <Object?>[],
+      'payments': <Object?>[],
+      'ledger_entries': <Object?>[],
+    };
+    if (Uri.parse(path).pathSegments.length == 5) {
+      return {'data': invoice};
+    }
+    return {
+      'data': [invoice],
+      'summary': {
+        'totals': [
+          {
+            'currency': 'KWD',
+            'total': 60.125,
+            'paid': 20.000,
+            'outstanding': 40.125,
+            'overdue': 0.000,
+            'credit': 0.000,
+          },
+        ],
+      },
+      'meta': {'page': 1, 'per_page': 20, 'total': 1, 'has_more': false},
+    };
   }
 }
 
