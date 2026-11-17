@@ -324,6 +324,130 @@ void main() {
       },
     );
   }
+
+  for (final language in const <String>['ar', 'en']) {
+    testWidgets(
+      'MOB-C03 ambiguous checkout POST preserves coupon and retry key in $language',
+      (tester) async {
+        await tester.binding.setSurfaceSize(const Size(390, 844));
+        addTearDown(() => tester.binding.setSurfaceSize(null));
+        final api = _AmbiguousCheckoutWholesaleApi();
+        await tester.pumpWidget(
+          FoodexCustomerApp(
+            locale: Locale(language),
+            initialRoute: '/b2b/checkout?store_id=70',
+            session: const CustomerSession.authenticated(
+              CustomerChannel.b2b,
+              accessToken: 'scoped-replay-token',
+              b2bRetailStoreId: 7,
+            ),
+            b2cCatalogApi: const _ResponsiveCatalogApi(),
+            b2cAccountApi: const _ResponsiveAccountApi(),
+            actionApi: const _ResponsiveActionApi(),
+            b2bApi: const _ResponsiveB2bApi(),
+            storefrontApi: const _ResponsiveStorefrontApi(),
+            wholesaleCommerceApi: api,
+          ),
+        );
+        for (var frame = 0; frame < 20; frame++) {
+          await tester.pump(const Duration(milliseconds: 50));
+        }
+        final coupon = find.byKey(const ValueKey('b2b-checkout-coupon'));
+        final apply = find.byKey(const ValueKey('b2b-checkout-apply-coupon'));
+        await tester.ensureVisible(coupon);
+        await tester.enterText(coupon, 'SAVE');
+        tester.testTextInput.hide();
+        await tester.pump();
+        await tester.ensureVisible(apply);
+        await tester.pump();
+        await tester.tap(apply);
+        await tester.pump();
+        expect(find.byKey(const ValueKey('b2b-checkout-coupon-applied')),
+            findsOneWidget);
+
+        final submit = find.byKey(const ValueKey('b2b-checkout-submit'));
+        await tester.ensureVisible(submit);
+        await tester.pump();
+        await tester.tap(submit);
+        for (var frame = 0; frame < 5; frame++) {
+          await tester.pump(const Duration(milliseconds: 50));
+        }
+        expect(api.checkoutKeys, hasLength(1));
+        expect(api.checkoutCoupons, ['SAVE']);
+        expect(api.checkoutStores, [70]);
+        // A lost POST response is not evidence the server rejected the order.
+        // Never issue a second POST automatically or clear the accepted quote.
+        expect(find.text(language == 'ar' ? 'حسنًا' : 'OK'), findsOneWidget);
+        await tester.tap(find.text(language == 'ar' ? 'حسنًا' : 'OK'));
+        await tester.pump();
+        expect(api.checkoutKeys, hasLength(1));
+        expect(find.byKey(const ValueKey('b2b-checkout-data')), findsOneWidget);
+        expect(find.byKey(const ValueKey('b2b-checkout-coupon-applied')),
+            findsOneWidget);
+        expect(tester.takeException(), isNull);
+
+        await tester.ensureVisible(submit);
+        await tester.tap(submit);
+        for (var frame = 0; frame < 5; frame++) {
+          await tester.pump(const Duration(milliseconds: 50));
+        }
+        expect(api.checkoutKeys, hasLength(2));
+        expect(api.checkoutKeys[1], api.checkoutKeys[0]);
+        expect(api.checkoutCoupons, ['SAVE', 'SAVE']);
+        expect(api.checkoutStores, [70, 70]);
+        expect(tester.takeException(), isNull);
+      },
+    );
+  }
+}
+
+class _AmbiguousCheckoutWholesaleApi extends _DelayedQuoteWholesaleApi {
+  final checkoutKeys = <String>[];
+  final checkoutCoupons = <String?>[];
+  final checkoutStores = <int>[];
+
+  @override
+  Future<Object?> quote({
+    required int storeId,
+    String? couponCode,
+    String? paymentMethod,
+  }) async {
+    if (storeId != 70) throw StateError('foreign store quote');
+    return {
+      'data': {
+        'store_id': storeId,
+        'channel': 'b2b',
+        'currency': 'EGP',
+        'coupon': {'code': couponCode},
+        'grand_total': 75.125,
+      },
+    };
+  }
+
+  @override
+  Future<Object?> checkout({
+    required int storeId,
+    required int addressId,
+    required String paymentMethod,
+    String? requestedDeliveryDate,
+    String? note,
+    String? couponCode,
+    required String idempotencyKey,
+  }) async {
+    checkoutKeys.add(idempotencyKey);
+    checkoutCoupons.add(couponCode);
+    checkoutStores.add(storeId);
+    if (checkoutKeys.length == 1) {
+      throw const WholesaleCommerceException('Checkout response lost');
+    }
+    return {
+      'id': 9001,
+      'store_id': storeId,
+      'channel': 'b2b',
+      'currency': 'EGP',
+      'grand_total': 75.125,
+    };
+  }
 }
 
 class _DelayedQuoteWholesaleApi extends _ResponsiveWholesaleApi
