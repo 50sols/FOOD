@@ -6258,9 +6258,13 @@ class _WholesaleCartDesignScreenState extends State<WholesaleCartDesignScreen>
           // to authoritative GET; a claimed cart must match the active store.
           // Do not show an unrelated cart after a store/session switch or a
           // contradictory legacy adapter response. Never infer money locally.
+          // Non-HTTP legacy adapters may omit channel on a store-bound cart.
+          // The HTTP adapter separately requires the canonical B2B channel;
+          // explicit B2C or foreign-store snapshots always fail closed.
           if (storeId != scopedStoreId ||
               authoritative['store_id'] != scopedStoreId ||
-              authoritative['channel'] != 'b2b') {
+              (authoritative['channel'] != null &&
+                  authoritative['channel'] != 'b2b')) {
             throw WholesaleCommerceException(
               Localizations.localeOf(context).languageCode == 'en'
                   ? 'The cart belongs to a different store. Refresh and try again.'
