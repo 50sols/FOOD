@@ -229,6 +229,16 @@ final class SystemUpdateController extends Controller
     {
         return [
             'zip_extension' => extension_loaded('zip') && class_exists(ZipArchive::class),
+            // Ed25519 is a hosting prerequisite only; it does NOT certify
+            // that the update pipeline authenticates the signed publisher.
+            'sodium_signature' => extension_loaded('sodium')
+                && function_exists('sodium_crypto_sign_verify_detached')
+                && defined('SODIUM_CRYPTO_SIGN_PUBLICKEYBYTES'),
+            // A readable php.ini value is not an upload test; check only the
+            // effective PHP temporary directory and never create a probe here.
+            'upload_temporary' => $this->hostPathWritableWithoutMutation(
+                trim((string) ini_get('upload_tmp_dir')) ?: sys_get_temp_dir(),
+            ),
             'app_storage' => $this->hostPathWritableWithoutMutation(storage_path()),
             'cache' => $this->hostPathWritableWithoutMutation(base_path('bootstrap/cache')),
             'update_upload' => $this->hostPathWritableWithoutMutation(storage_path('app/private/updates/incoming')),
