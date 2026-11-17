@@ -31,10 +31,10 @@
                 $activeTab = 'readiness';
             }
         @endphp
-        <nav class="foodex-tabs" aria-label="{{ __('whatsapp.connections.section_navigation') }}">
-            <a class="foodex-tab" href="{{ route('admin.whatsapp.index', ['tab' => 'readiness']) }}" @if($activeTab === 'readiness') aria-current="page" @endif>{{ __('whatsapp.readiness') }}</a>
+        <nav class="foodex-tabs" style="flex-wrap:nowrap;overflow-x:auto;white-space:nowrap" aria-label="{{ __('whatsapp.connections.section_navigation') }}">
+            <a class="foodex-tab {{ $activeTab === 'readiness' ? 'active' : '' }}" href="{{ route('admin.whatsapp.index', ['tab' => 'readiness']) }}" @if($activeTab === 'readiness') aria-current="page" @endif>{{ __('whatsapp.readiness') }}</a>
             @if($state->available)
-            <a class="foodex-tab" href="{{ route('admin.whatsapp.index', ['tab' => 'controls']) }}" @if($activeTab === 'controls') aria-current="page" @endif>{{ __('whatsapp.capabilities') }}</a>
+            <a class="foodex-tab {{ $activeTab === 'controls' ? 'active' : '' }}" href="{{ route('admin.whatsapp.index', ['tab' => 'controls']) }}" @if($activeTab === 'controls') aria-current="page" @endif>{{ __('whatsapp.capabilities') }}</a>
             @endif
         </nav>
         <div data-whatsapp-panel="readiness" @if($activeTab !== 'readiness') hidden @endif>
