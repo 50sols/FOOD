@@ -479,6 +479,7 @@ class AdminNavigation
                     ->whereHas('store', fn ($query) => $query->where('stores.is_active', true))
                     ->whereHas('role', fn ($query) => $query
                         ->where('roles.is_active', true)
+                ->whereNull('roles.archived_at')
                         ->where('roles.scope', 'store'))
                     ->with('role:id,code')
                     ->get()
@@ -490,6 +491,7 @@ class AdminNavigation
         } else {
             $codes = $user->roles()
                 ->where('roles.is_active', true)
+                ->whereNull('roles.archived_at')
                 ->where('roles.scope', 'global')
                 ->pluck('roles.code')
                 ->filter(fn ($code) => is_string($code) && $code !== '')
@@ -578,6 +580,7 @@ class AdminNavigation
 
         if ($globalRoles !== [] && $user->roles()
             ->where('roles.is_active', true)
+                ->whereNull('roles.archived_at')
             ->where('roles.scope', 'global')
             ->whereIn('roles.code', $globalRoles)
             ->exists()) {
@@ -596,6 +599,7 @@ class AdminNavigation
             ->whereIn('store_id', $retailStoreIds)
             ->whereHas('role', fn ($query) => $query
                 ->where('roles.is_active', true)
+                ->whereNull('roles.archived_at')
                 ->where('roles.scope', 'store')
                 ->whereIn('roles.code', $storeRoles))
             ->exists();
@@ -612,6 +616,7 @@ class AdminNavigation
         // not expose ERP Center/My Work links that management HTTP denies.
         return $user->roles()
             ->where('roles.is_active', true)
+                ->whereNull('roles.archived_at')
             ->where('roles.scope', 'global')
             ->whereNotIn('roles.code', ['B2B_DRIVER', 'B2C_DRIVER', 'VAN_OPERATOR'])
             ->exists();
@@ -633,6 +638,7 @@ class AdminNavigation
             ->whereIn('store_id', $retailStoreIds)
             ->whereHas('role', fn ($query) => $query
                 ->where('roles.is_active', true)
+                ->whereNull('roles.archived_at')
                 ->where('roles.scope', 'store')
                 ->where('roles.code', 'B2C_STORE_ADMIN'))
             ->exists();
@@ -646,6 +652,7 @@ class AdminNavigation
 
         return $user->roles()
             ->where('roles.is_active', true)
+                ->whereNull('roles.archived_at')
             ->where('roles.scope', 'global')
             ->whereIn('roles.code', ['CUSTOMER_SERVICE_MANAGER', 'CUSTOMER_SERVICE_SUPERVISOR', 'CUSTOMER_SERVICE_AGENT'])
             ->exists();
@@ -766,6 +773,7 @@ class AdminNavigation
             ->whereIn('store_id', $retailStoreIds)
             ->whereHas('role', fn ($query) => $query
                 ->where('roles.is_active', true)
+                ->whereNull('roles.archived_at')
                 ->where('roles.scope', 'store')
                 ->whereIn('roles.code', $storeRoles)
                 ->whereHas('permissions', fn ($permissions) => $permissions->where('permissions.code', $permission)))
