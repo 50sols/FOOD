@@ -154,7 +154,7 @@ final class V2TreasurySelectedStoreReadEntitlementTest extends TestCase
         $grants->set('treasury', new EntitlementScope(EntitlementScope::STORE, $storeA->id), true, [
             'treasury.receipts.read',
         ], $actor);
-        $grants->set('treasury', new EntitlementScope(EntitlementScope::STORE, $storeB->id), false, [], $actor);
+        $grants->set('treasury', new EntitlementScope(EntitlementScope::STORE, $storeB->id), false, null, $actor);
 
         $urlA = route('admin.erp.treasury.index', ['store_id' => $storeA->id, 'tab' => 'receipts']);
         $urlB = route('admin.erp.treasury.index', ['store_id' => $storeB->id, 'tab' => 'receipts']);
