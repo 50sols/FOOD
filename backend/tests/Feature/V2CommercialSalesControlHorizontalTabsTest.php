@@ -2,6 +2,7 @@
 
 namespace Tests\Feature;
 
+use App\Enums\StoreBusinessProfile;
 use App\Models\Role;
 use App\Models\User;
 use App\Services\WholesalePrincipal;
@@ -72,16 +73,32 @@ final class V2CommercialSalesControlHorizontalTabsTest extends TestCase
 
     public function test_roleless_and_retail_actors_cannot_access_wholesale_commercial_tabs(): void
     {
-        $storeId = app(WholesalePrincipal::class)->storeId();
         $roleless = User::factory()->create(['is_active' => true]);
         $this->actingAs($roleless)
-            ->get(route('admin.commercial.sales-control', ['store_id' => $storeId]))
+            ->get(route('admin.commercial.sales-control'))
             ->assertForbidden();
 
+        // An actual assigned retail role and B2C store cannot inherit the
+        // B2B Sales Control route through a tab/deep-link switch.
+        $retailStoreId = (int) DB::table('stores')->insertGetId([
+            'store_type_id' => DB::table('store_types')->where('code', 'B2C')->value('id'),
+            'business_profile' => StoreBusinessProfile::RETAIL_STORE->value,
+            'code' => 'P229-COMMERCIAL-UX-RETAIL',
+            'name' => 'Retail Commerce scope',
+            'is_active' => true,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
         $retail = User::factory()->create(['is_active' => true]);
-        $retail->roles()->attach(Role::query()->where('code', 'B2C_STORE_ADMIN')->firstOrFail());
+        DB::table('user_store_roles')->insert([
+            'user_id' => $retail->id,
+            'store_id' => $retailStoreId,
+            'role_id' => Role::query()->where('code', 'B2C_STORE_ADMIN')->firstOrFail()->id,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
         $this->actingAs($retail)
-            ->get(route('admin.commercial.sales-control', ['store_id' => $storeId]))
+            ->get(route('admin.commercial.sales-control', ['store_id' => $retailStoreId]))
             ->assertNotFound();
     }
 }
