@@ -41,6 +41,51 @@ final class ErpCenterTest extends TestCase
         SyntheticErpWorkflowEvidence::install();
     }
 
+    public function test_erp_overview_replaces_whatsapp_internal_uuid_with_neutral_reference_in_both_locales(): void
+    {
+        config()->set('security.mfa.enforce_privileged', false);
+        $admin = $this->userWithGlobalRole('SUPER_ADMIN', 'en', 'p135-work-uuid-admin@example.test');
+        $this->app['env'] = 'production';
+        $store = $this->wholesaleStore('P135-ERP-UUID-PREVIEW');
+        $opaqueUuid = '123e4567-e89b-42d3-a456-426614174000';
+        $conversationId = DB::table('whats_app_conversations')->insertGetId([
+            'public_id' => $opaqueUuid,
+            'store_id' => $store->id,
+            'status' => 'WAITING_FOR_AGENT',
+            'primary_agent_id' => $admin->id,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        foreach (['ar' => 'rtl', 'en' => 'ltr'] as $locale => $direction) {
+            $admin->forceFill(['locale' => $locale])->save();
+            $response = $this->actingAs($admin->fresh())->get(route('admin.erp.index'));
+            $response->assertOk()
+                ->assertSee('dir="'.$direction.'"', false)
+                ->assertDontSee($opaqueUuid);
+
+            $item = collect($response->viewData('myWorkItems'))->firstWhere('kind', 'conversation');
+            $this->assertIsArray($item);
+            $this->assertSame('—', $item['reference']);
+            $this->assertSame(
+                route('admin.whatsapp-inbox.index', ['conversation' => $conversationId], false),
+                $item['deep_link'],
+            );
+
+            $activity = collect($response->viewData('activity'))->firstWhere('kind', 'conversation');
+            $this->assertIsArray($activity);
+            $this->assertSame('—', $activity['reference']);
+            $this->assertSame($item['deep_link'], $activity['deep_link']);
+        }
+
+        // The canonical source identifier and deep link are not rewritten:
+        // only ERP Center's compact presentation is sanitized.
+        $this->assertDatabaseHas('whats_app_conversations', [
+            'id' => $conversationId,
+            'public_id' => $opaqueUuid,
+        ]);
+    }
+
     public function test_explicitly_disabled_module_explains_denial_without_an_action_or_internal_payload(): void
     {
         config()->set('security.mfa.enforce_privileged', false);
