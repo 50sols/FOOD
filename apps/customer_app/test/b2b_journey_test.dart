@@ -41,6 +41,81 @@ void main() {
   const b2b = CustomerSession.authenticated(CustomerChannel.b2b);
 
   for (final locale in const <Locale>[Locale('ar'), Locale('en')]) {
+    testWidgets(
+      'MOB-C03 statement revocation clears cached ledger and pending export ${locale.languageCode}',
+      (tester) async {
+        tester.view.physicalSize = const Size(390, 844);
+        tester.view.devicePixelRatio = 1;
+        addTearDown(() {
+          tester.view.resetPhysicalSize();
+          tester.view.resetDevicePixelRatio();
+        });
+        final api = _ReauthStatementB2bApi();
+        await tester.pumpWidget(
+          MaterialApp(
+            locale: locale,
+            home: AppTranslations(
+              locale: locale,
+              overrides: const <String, String>{},
+              child: B2bJourneyScreen(
+                definition: const CustomerRouteDefinition(
+                  pattern: CustomerRoutePaths.b2bAccountStatement,
+                  label: 'B2B statement',
+                  channel: CustomerChannel.b2b,
+                  requiresAuth: true,
+                ),
+                location: '/b2b/account-statement?store_id=7',
+                actionApi: _FakeCustomerActionApi(),
+                api: api,
+              ),
+            ),
+          ),
+        );
+        await _pumpCustomerFrames(tester);
+        expect(api.reads, 1);
+        expect(find.textContaining('49.875 KWD'), findsWidgets);
+        final export = find.byKey(const ValueKey('b2b-statement-export-pdf'));
+        await tester.ensureVisible(export);
+        await tester.tap(export);
+        await tester.pump();
+        expect(api.downloads, 1);
+        expect(tester.widget<FilledButton>(export).onPressed, isNull);
+
+        // All-time deliberately keeps the same store/period request path.
+        // A 403 here must invalidate last-good, not display stale ledger.
+        final allTime = find.byKey(
+          const ValueKey('b2b-statement-preset-all'),
+        );
+        await tester.ensureVisible(allTime);
+        await tester.tap(allTime);
+        await _pumpCustomerFrames(tester);
+        expect(api.reads, 2);
+        final denial = find.byKey(const ValueKey('b2b-forbidden'));
+        expect(denial, findsOneWidget);
+        expect(find.byKey(const ValueKey('b2b-statement-data')), findsNothing);
+        expect(find.textContaining('49.875 KWD'), findsNothing);
+        expect(
+          Directionality.of(tester.element(denial)),
+          locale.languageCode == 'ar'
+              ? TextDirection.rtl
+              : TextDirection.ltr,
+        );
+
+        api.pending.complete(_DeferredStatementExportApi.document());
+        await tester.pump();
+        expect(find.byType(SnackBar), findsNothing);
+
+        await tester.tap(find.byKey(const ValueKey('b2b-error-retry')));
+        await _pumpCustomerFrames(tester);
+        expect(api.reads, 3);
+        expect(find.textContaining('10.125 KWD'), findsWidgets);
+        expect(tester.takeException(), isNull);
+      },
+    );
+  }
+
+
+  for (final locale in const <Locale>[Locale('ar'), Locale('en')]) {
     for (final detail in const <bool>[false, true]) {
       for (final denialStatus in const <int>[401, 403, 404]) {
         testWidgets(
@@ -7505,6 +7580,38 @@ class _ReauthInvoiceB2bApi implements B2bApi {
       },
       'meta': {'page': 1, 'per_page': 20, 'total': 1, 'has_more': false},
     };
+  }
+}
+
+class _ReauthStatementB2bApi implements B2bApi, B2bDownloadApi {
+  int reads = 0;
+  int downloads = 0;
+  final Completer<B2bDownload> pending = Completer<B2bDownload>();
+
+  @override
+  Future<Object?> get(String path) async {
+    reads++;
+    if (reads == 2) {
+      throw const B2bApiException('not_authorized', statusCode: 403);
+    }
+    final balance = reads == 1 ? -49.875 : -10.125;
+    return {
+      'data': {
+        'currency': 'KWD',
+        'balance': balance,
+        'closing_balance': balance,
+        'period_debits': 0,
+        'period_credits': 0,
+        'transactions': <Object?>[],
+        'pagination': {'current_page': 1, 'last_page': 1},
+      },
+    };
+  }
+
+  @override
+  Future<B2bDownload> download(String path) {
+    downloads++;
+    return pending.future;
   }
 }
 
