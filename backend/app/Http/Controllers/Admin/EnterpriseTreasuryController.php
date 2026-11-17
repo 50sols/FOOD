@@ -73,6 +73,23 @@ final class EnterpriseTreasuryController extends Controller
         abort_unless(in_array($tab, self::TABS, true), 404);
         abort_unless($this->allowed($actor, $storeId, 'finance.view'), 403);
 
+        // The selected store must authorize this *tab's* read capability before
+        // even loading cashbox/bank metadata. A broad Finance role, healthy
+        // module or a different Treasury tab's grant is never sufficient.
+        // Match the capability already enforced by each downstream service.
+        $readCapability = match ($tab) {
+            'overview', 'receipts', 'forecast', 'reports' => 'treasury.receipts.read',
+            'payments', 'financing', 'guarantees', 'investments' => 'treasury.payments.read',
+            'cheques' => 'treasury.cheques.read',
+            'reconciliation' => 'treasury.reconciliation.read',
+            'cash_closing' => 'treasury.cash_closing.read',
+        };
+        abort_unless($this->entitlements->allows(
+            'treasury',
+            new EntitlementScope(EntitlementScope::STORE, $storeId),
+            $readCapability,
+        ), 403);
+
         $cashboxes = EnterpriseCashbox::query()
             ->where('store_id', $storeId)
             ->where('is_active', true)
