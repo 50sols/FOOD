@@ -104,6 +104,64 @@ jobs:
             test -s "backend/public/preview/$runtime/flutter_bootstrap.js"
             test -d "backend/public/preview/$runtime/assets"
           done
+      - name: Normalize generated Flutter service worker version to immutable source SHA
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Flutter embeds a per-build volatile serviceWorkerVersion in bootstrap.
+          # Every copy of the generated preview bootstrap must use the same
+          # source-derived cache-buster so separate builds of one commit have
+          # the same bytes, while a different source commit invalidates cache.
+          python3 - <<'PY'
+          import pathlib
+          import re
+          import subprocess
+
+          sha = subprocess.check_output(
+              ["git", "rev-parse", "HEAD"], text=True
+          ).strip()
+          if not re.fullmatch(r"[0-9a-f]{40}", sha):
+              raise SystemExit("Expected a full immutable Git SHA.")
+          version = sha
+          quoted = re.compile(
+              r"""(?P<prefix>\b(?:const|let|var)\s+serviceWorkerVersion\s*=\s*)"""
+              r"""(?P<quote>['"])[^'"\r\n]*(?P=quote)"""
+          )
+          paths = [
+              pathlib.Path(f"{root}/flutter_bootstrap.js")
+              for root in (
+                  "apps/customer_app/build/web",
+                  "apps/driver_app/build/web",
+                  "backend/public/preview/customer",
+                  "backend/public/preview/driver",
+              )
+          ]
+          for path in paths:
+              source = path.read_text(encoding="utf-8")
+              matches = list(quoted.finditer(source))
+              if len(matches) != 1:
+                  raise SystemExit(
+                      f"Refusing unsupported Flutter bootstrap shape: {path}"
+                  )
+              found = matches[0]
+              normalized = (
+                  source[:found.start()]
+                  + found.group("prefix")
+                  + found.group("quote")
+                  + version
+                  + found.group("quote")
+                  + source[found.end():]
+              )
+              path.write_text(normalized, encoding="utf-8")
+              if quoted.search(normalized).group(0) != (
+                  found.group("prefix")
+                  + found.group("quote")
+                  + version
+                  + found.group("quote")
+              ):
+                  raise SystemExit(f"Failed bootstrap check: {path}")
+          print("PASS: four source-SHA-stable preview bootstraps")
+          PY
       - name: Build the actual repository-selected Update ZIP (not a PHPUnit fixture)
         shell: bash
         run: |
