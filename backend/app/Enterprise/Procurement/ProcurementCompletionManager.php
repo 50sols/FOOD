@@ -1441,7 +1441,18 @@ final class ProcurementCompletionManager
                 ->lockForUpdate()
                 ->first();
             $status = $existing?->status;
-            if ($status === null || in_array($status, ['auto_approved', 'pending'], true)) {
+            // A previous human approval applies only to the reviewed
+            // variance/tolerance snapshot. Imports or corrections to a draft
+            // invoice must never reuse that approval against changed figures.
+            $reviewChanged = $status === 'approved' && $existing !== null && (
+                (float) $existing->quantity_variance !== $quantityVariance
+                || (float) $existing->value_variance !== $valueVariance
+                || (float) $existing->quantity_tolerance !== $quantityTolerance
+                || (float) $existing->value_tolerance !== $valueTolerance
+            );
+            if ($reviewChanged) {
+                $status = 'pending';
+            } elseif ($status === null || in_array($status, ['auto_approved', 'pending'], true)) {
                 $status = $autoApproved ? 'auto_approved' : 'pending';
             }
 
@@ -1456,6 +1467,9 @@ final class ProcurementCompletionManager
                     'exception_reason' => $autoApproved
                         ? null
                         : 'PO / GRN / invoice quantity or value is outside configured tolerance.',
+                    'review_note' => $reviewChanged ? null : $existing?->review_note,
+                    'reviewed_by' => $reviewChanged ? null : $existing?->reviewed_by,
+                    'reviewed_at' => $reviewChanged ? null : $existing?->reviewed_at,
                     'updated_at' => now(),
                     'created_at' => $existing !== null ? $existing->created_at : now(),
                 ],
