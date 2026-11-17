@@ -206,12 +206,10 @@ final class PurchaseOrderManager
             // state transition or audit entry, whether or not a contract exists.
             foreach ($lines as $line) {
                 if (
-                    ! is_numeric($line->quantity)
-                    || ! is_finite((float) $line->quantity)
+                    ! is_finite((float) $line->quantity)
                     || (float) $line->quantity <= 0
                     || ($line->unit_price !== null && (
-                        ! is_numeric($line->unit_price)
-                        || ! is_finite((float) $line->unit_price)
+                        ! is_finite((float) $line->unit_price)
                         || (float) $line->unit_price < 0
                     ))
                 ) {
