@@ -156,7 +156,7 @@ final class V2WhatsAppCampaignWorkspaceTabsTest extends TestCase
             'campaign_recipients' => DB::table('whats_app_campaign_recipients')->count(),
             'templates' => DB::table('whats_app_templates')->count(),
             'consents' => DB::table('whats_app_marketing_consents')->count(),
-            'outbound' => DB::table('whats_app_outbound_messages')->count(),
+            'messages' => DB::table('whats_app_messages')->count(),
         ];
     }
 }
