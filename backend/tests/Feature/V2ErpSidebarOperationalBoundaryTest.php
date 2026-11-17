@@ -145,6 +145,18 @@ final class V2ErpSidebarOperationalBoundaryTest extends TestCase
         ] as $routeName) {
             $this->get(route($routeName))->assertForbidden();
         }
+
+        // A blocked navigation card must not leave a direct-write bypass:
+        // denial belongs to the HTTP middleware, before controller validation
+        // or any workflow-side mutation can occur.
+        foreach ([
+            'admin.erp.wms.transfers.store',
+            'admin.erp.finance.journals.post',
+            'admin.erp.treasury.payments.post',
+            'admin.erp.bi.schedules.store',
+        ] as $routeName) {
+            $this->post(route($routeName), [])->assertForbidden();
+        }
     }
 
     public function test_every_erp_business_route_is_covered_by_the_server_guard(): void
