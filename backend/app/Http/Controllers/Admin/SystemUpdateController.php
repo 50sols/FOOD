@@ -2,6 +2,8 @@
 
 namespace App\Http\Controllers\Admin;
 
+use App\Domain\Updater\SignedUpdateEnvelope;
+use App\Domain\Updater\TrustedUpdateSignatureVerifier;
 use App\Domain\Updater\UpdateManager;
 use App\Domain\Updater\UpdatePackageManifest;
 use App\Domain\Updater\UpdateVersion;
@@ -24,6 +26,7 @@ final class SystemUpdateController extends Controller
 {
     public function __construct(
         private readonly UpdateManager $manager,
+        private readonly TrustedUpdateSignatureVerifier $signatureVerifier,
         private readonly MobileReleaseArtifactMirror $mobileArtifacts,
         private readonly SystemAdministrationRuntime $systemRuntime,
     ) {}
@@ -61,6 +64,7 @@ final class SystemUpdateController extends Controller
             'recoveryOperations' => $this->systemRuntime->recentOperations(50),
             'isProduction' => app()->environment('production'),
             'hostingChecks' => $this->hostingPermissionChecks(),
+            'signatureVerificationConfigured' => $this->hasConfiguredTrustedPublisher(),
         ]);
     }
 
@@ -68,20 +72,33 @@ final class SystemUpdateController extends Controller
     {
         $this->authorizeSuperAdminUpdate($request);
 
-        $validated = $request->validate([
+        $request->validate([
             'package' => ['required', 'file', 'max:512000'],
-            'target_version' => ['required', 'string', 'max:64', 'regex:/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/'],
-            'minimum_current_version' => ['required', 'string', 'max:64', 'regex:/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/'],
-            'sha256' => ['required', 'regex:/^[a-fA-F0-9]{64}$/'],
-            'release_notes' => ['nullable', 'string', 'max:5000'],
-            'contains_migrations' => ['nullable', 'boolean'],
+            'signed_manifest' => ['required', 'file', 'max:16'],
         ]);
 
         $user = $request->user();
         abort_unless($user instanceof User, 401);
 
         $upload = $request->file('package');
-        abort_if($upload === null, 422, 'Update package is required.');
+        $signedManifestFile = $request->file('signed_manifest');
+        abort_if($upload === null || $signedManifestFile === null, 422, 'Signed update package is required.');
+
+        // The signed sidecar, not user-entered fields or a ZIP member, is
+        // authoritative. Verify against an independently pinned host key
+        // BEFORE entering UpdateManager or touching any release files.
+        try {
+            $rawManifest = $signedManifestFile->get();
+            if (! is_string($rawManifest)) {
+                throw new RuntimeException('Signed update manifest cannot be read.');
+            }
+            $signed = SignedUpdateEnvelope::parse($rawManifest);
+            $signed->verify($this->signatureVerifier, $this->trustedPublisherKeys());
+        } catch (Throwable) {
+            return redirect()
+                ->route('admin.system-update.index')
+                ->withErrors(['update' => __('update_signed_manifest.invalid_signature')]);
+        }
 
         $directory = storage_path('app/private/updates/incoming');
         if (! is_dir($directory) && ! @mkdir($directory, 0750, true) && ! is_dir($directory)) {
@@ -93,13 +110,12 @@ final class SystemUpdateController extends Controller
         $packagePath = $directory.'/'.$fileName;
 
         try {
-            $manifest = new UpdatePackageManifest(
-                (string) $validated['target_version'],
-                (string) $validated['minimum_current_version'],
-                strtolower((string) $validated['sha256']),
-                (string) ($validated['release_notes'] ?? ''),
-                $this->packageContainsMigrations($packagePath) || $request->boolean('contains_migrations'),
-            );
+            $manifest = $signed->manifest;
+            // A signed "no migrations" declaration cannot mask migration
+            // files. Never derive a more permissive declaration from the ZIP.
+            if (! $manifest->containsMigrations && $this->packageContainsMigrations($packagePath)) {
+                throw new RuntimeException(__('update_signed_manifest.invalid_signature'));
+            }
 
             $history = $this->manager->execute(
                 $manifest,
@@ -216,6 +232,42 @@ final class SystemUpdateController extends Controller
             $actor instanceof User && $actor->is_active && $actor->hasRole('SUPER_ADMIN'),
             403,
         );
+    }
+
+    /**
+     * @return array<string, string>
+     */
+    private function trustedPublisherKeys(): array
+    {
+        $keyId = trim((string) config('update_signatures.publisher_key_id', ''));
+        $publicKey = trim((string) config('update_signatures.publisher_public_key_b64', ''));
+
+        if ($keyId === '' || $publicKey === '') {
+            return [];
+        }
+
+        return [$keyId => $publicKey];
+    }
+
+    private function hasConfiguredTrustedPublisher(): bool
+    {
+        $keys = $this->trustedPublisherKeys();
+        if (count($keys) !== 1 || ! function_exists('sodium_crypto_sign_verify_detached')
+            || ! defined('SODIUM_CRYPTO_SIGN_PUBLICKEYBYTES')) {
+            return false;
+        }
+
+        $id = array_key_first($keys);
+        if (! is_string($id) || preg_match('/\\A[a-zA-Z0-9][a-zA-Z0-9_.-]{0,79}\\z/D', $id) !== 1) {
+            return false;
+        }
+
+        $base64 = $keys[$id];
+        $decoded = base64_decode($base64, true);
+
+        return is_string($decoded)
+            && strlen($decoded) === SODIUM_CRYPTO_SIGN_PUBLICKEYBYTES
+            && hash_equals(base64_encode($decoded), $base64);
     }
 
     /**
