@@ -72,6 +72,38 @@ jobs:
           unzip -v | head -3
           mysql --version
           mysqladmin --version
+      - name: Set up canonical Flutter preview builder
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.47.5'
+          cache: true
+      - name: Build actual Customer and Driver frontend runtime assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf backend/public/preview/customer backend/public/preview/driver
+          pushd apps/customer_app
+          flutter pub get
+          flutter build web --release --target=lib/preview_main.dart \
+            --base-href=/preview/customer/ \
+            --dart-define=FOODEX_PREVIEW_CONTRACT_VERSION=shared-flutter-v1
+          popd
+          pushd apps/driver_app
+          flutter create --platforms=web --project-name foodex_driver_app .
+          flutter pub get
+          flutter build web --release --target=lib/preview_main.dart \
+            --base-href=/preview/driver/ \
+            --dart-define=FOODEX_PREVIEW_CONTRACT_VERSION=shared-flutter-v1
+          popd
+          mkdir -p backend/public/preview
+          cp -a apps/customer_app/build/web backend/public/preview/customer
+          cp -a apps/driver_app/build/web backend/public/preview/driver
+          for runtime in customer driver; do
+            test -s "backend/public/preview/$runtime/index.html"
+            test -s "backend/public/preview/$runtime/main.dart.js"
+            test -s "backend/public/preview/$runtime/flutter_bootstrap.js"
+            test -d "backend/public/preview/$runtime/assets"
+          done
       - name: Build the actual repository-selected Update ZIP (not a PHPUnit fixture)
         shell: bash
         run: |
