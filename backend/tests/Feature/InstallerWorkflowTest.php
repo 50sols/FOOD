@@ -484,7 +484,7 @@ class InstallerWorkflowTest extends TestCase
         try {
             app(InstallerWorkflow::class)->seedRequiredCoreData();
             $this->fail('An existing supplier must block a new install even if users and orders are empty.');
-        } catch (\\RuntimeException $exception) {
+        } catch (\RuntimeException $exception) {
             $this->assertSame((string) __('installer.errors.existing_business_data'), $exception->getMessage());
         }
 
@@ -523,7 +523,7 @@ class InstallerWorkflowTest extends TestCase
         try {
             app(InstallerWorkflow::class)->seedRequiredCoreData();
             $this->fail('Existing enterprise credit terms must block a fresh install before any seed.');
-        } catch (\\RuntimeException $exception) {
+        } catch (\RuntimeException $exception) {
             $this->assertSame((string) __('installer.errors.existing_business_data'), $exception->getMessage());
         }
 
