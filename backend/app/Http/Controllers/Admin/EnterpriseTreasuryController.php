@@ -83,6 +83,7 @@ final class EnterpriseTreasuryController extends Controller
             'cheques' => 'treasury.cheques.read',
             'reconciliation' => 'treasury.reconciliation.read',
             'cash_closing' => 'treasury.cash_closing.read',
+            default => '', // Fail closed if a future tab lacks a read-capability mapping.
         };
         $treasuryStoreScope = new EntitlementScope(EntitlementScope::STORE, $storeId);
         abort_unless($this->entitlements->allows(
