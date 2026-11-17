@@ -1481,6 +1481,128 @@ final class ErpCenterTest extends TestCase
         $this->assertDatabaseCount('enterprise_treasury_payments', 0);
     }
 
+    public function test_treasury_unhealthy_probe_removes_receipt_card_and_denies_the_same_http_store_in_both_locales(): void
+    {
+        config()->set('security.mfa.enforce_privileged', false);
+        $admin = $this->userWithGlobalRole('SUPER_ADMIN', 'en', 'p135-treasury-health-admin@example.test');
+        $manager = $this->userWithGlobalRole('TREASURY_MANAGER', 'en', 'p135-treasury-health-manager@example.test');
+        $store = $this->wholesaleStore('P135-TREASURY-HEALTH');
+
+        app(EnterpriseModuleAdministration::class)->perform('treasury', 'enable', $admin);
+        app(ModuleEntitlementManager::class)->set(
+            'treasury', new EntitlementScope(EntitlementScope::STORE, $store->id),
+            true, ['treasury.receipts.read'],
+        );
+
+        $this->assertTrue($manager->fresh()->hasPermission('finance.view', $store->id));
+        foreach (['ar' => 'rtl', 'en' => 'ltr'] as $locale => $direction) {
+            app()->setLocale($locale);
+            $manager->forceFill(['locale' => $locale])->save();
+            $actor = $manager->fresh();
+            $center = $this->actingAs($actor)->get(route('admin.erp.index'))
+                ->assertOk()->assertSee('dir="'.$direction.'"', false);
+            $card = collect($center->viewData('cards'))->firstWhere('key', 'treasury');
+            $this->assertIsArray($card);
+            $this->assertSame('available', $card['status']);
+            $this->assertSame(route('admin.erp.treasury.index', [
+                'store_id' => $store->id,
+            ]), $card['url']);
+            $this->actingAs($actor)->get(route('admin.erp.treasury.index', [
+                'store_id' => $store->id, 'tab' => 'receipts',
+            ]))->assertOk();
+        }
+
+        // A healthy probe is independent of module ENABLED, role permission
+        // and STORE receipt entitlement. Readiness must also reject an error.
+        config()->set('enterprise_module_health.probes.treasury', [ErpCenterOpaqueFailureProbe::class]);
+        foreach (['en' => 'ltr', 'ar' => 'rtl'] as $locale => $direction) {
+            app()->setLocale($locale);
+            $manager->forceFill(['locale' => $locale])->save();
+            $actor = $manager->fresh();
+            $center = $this->actingAs($actor)->get(route('admin.erp.index'))
+                ->assertOk()->assertSee('dir="'.$direction.'"', false);
+            $card = collect($center->viewData('cards'))->firstWhere('key', 'treasury');
+            $this->assertIsArray($card);
+            $this->assertSame('degraded', $card['status']);
+            $this->assertSame('unhealthy', $card['denial_reason']);
+            $this->assertNull($card['url']);
+            $this->actingAs($actor)->get(route('admin.erp.treasury.index', [
+                'store_id' => $store->id, 'tab' => 'receipts',
+            ]))->assertForbidden();
+            $this->assertStringNotContainsString('ERP_PRIVATE_PROBE_MARKER', $center->getContent());
+        }
+        $this->assertDatabaseCount('enterprise_treasury_receipts', 0);
+        $this->assertDatabaseCount('enterprise_treasury_payments', 0);
+    }
+
+    public function test_enterprise_bi_unhealthy_probe_hides_existing_report_card_and_denies_direct_http(): void
+    {
+        config()->set('security.mfa.enforce_privileged', false);
+        $admin = $this->userWithGlobalRole('SUPER_ADMIN', 'en', 'p135-bi-health-admin@example.test');
+        $reporter = $this->userWithGlobalRole('FINANCE', 'en', 'p135-bi-health-reporter@example.test');
+
+        app(EnterpriseModuleAdministration::class)->perform('enterprise_bi', 'enable', $admin);
+        app(ModuleEntitlementManager::class)->set(
+            'enterprise_bi', EntitlementScope::platform(), true, null, $admin,
+        );
+
+        foreach (['ar' => 'rtl', 'en' => 'ltr'] as $locale => $direction) {
+            app()->setLocale($locale);
+            $reporter->forceFill(['locale' => $locale])->save();
+            $actor = $reporter->fresh();
+            $center = $this->actingAs($actor)->get(route('admin.erp.index'))
+                ->assertOk()->assertSee('dir="'.$direction.'"', false);
+            $card = collect($center->viewData('cards'))->firstWhere('key', 'bi');
+            $this->assertIsArray($card);
+            $this->assertSame('available', $card['status']);
+            $this->assertSame(route('admin.erp.bi'), $card['url']);
+            $this->actingAs($actor)->get($card['url'])->assertOk();
+        }
+
+        config()->set('enterprise_module_health.probes.enterprise_bi', [ErpCenterOpaqueFailureProbe::class]);
+        foreach (['en' => 'ltr', 'ar' => 'rtl'] as $locale => $direction) {
+            app()->setLocale($locale);
+            $reporter->forceFill(['locale' => $locale])->save();
+            $actor = $reporter->fresh();
+            $center = $this->actingAs($actor)->get(route('admin.erp.index'))
+                ->assertOk()->assertSee('dir="'.$direction.'"', false);
+            $card = collect($center->viewData('cards'))->firstWhere('key', 'bi');
+            $this->assertIsArray($card);
+            $this->assertSame('degraded', $card['status']);
+            $this->assertSame('unhealthy', $card['denial_reason']);
+            $this->assertNull($card['url']);
+            $this->actingAs($actor)->get(route('admin.erp.bi'))->assertForbidden();
+            $this->assertStringNotContainsString('ERP_PRIVATE_PROBE_MARKER', $center->getContent());
+        }
+        $this->assertDatabaseCount('enterprise_scheduled_reports', 0);
+    }
+
+    public function test_inactive_enterprise_bi_reporting_role_cannot_open_direct_http_despite_platform_entitlement(): void
+    {
+        config()->set('security.mfa.enforce_privileged', false);
+        $admin = $this->userWithGlobalRole('SUPER_ADMIN', 'en', 'p135-bi-inactive-admin@example.test');
+        $reporter = $this->userWithGlobalRole('FINANCE', 'en', 'p135-bi-inactive-reporter@example.test');
+
+        app(EnterpriseModuleAdministration::class)->perform('enterprise_bi', 'enable', $admin);
+        app(ModuleEntitlementManager::class)->set(
+            'enterprise_bi', EntitlementScope::platform(), true, null, $admin,
+        );
+        $this->actingAs($reporter->fresh())->get(route('admin.erp.bi'))->assertOk();
+
+        Role::query()->where('code', 'FINANCE')->firstOrFail()
+            ->forceFill(['is_active' => false])->save();
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            $reporter->forceFill(['locale' => $locale])->save();
+            $actor = $reporter->fresh();
+            $this->assertFalse($actor->hasPermission('reports.view'));
+            $this->actingAs($actor)->get(route('admin.erp.bi'))->assertForbidden();
+            $this->actingAs($actor)->get(route('admin.erp.index'))->assertForbidden();
+        }
+        $this->assertDatabaseCount('enterprise_scheduled_reports', 0);
+    }
+
     private function wholesaleStore(string $code): Store
     {
         $typeId = (int) DB::table('store_types')->where('code', 'B2B')->value('id');
