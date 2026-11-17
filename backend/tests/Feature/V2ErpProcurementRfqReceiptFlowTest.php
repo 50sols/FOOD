@@ -281,7 +281,7 @@ final class V2ErpProcurementRfqReceiptFlowTest extends TestCase
             ->update(['unit_price' => '6.000', 'line_total' => '12.000']);
         DB::table('enterprise_purchase_invoices')->where('id', $invoice->id)
             ->update(['total_amount' => '12.000']);
-        $match = app(\\App\\Enterprise\\Procurement\\ProcurementCompletionManager::class)
+        $match = app(\App\Enterprise\Procurement\ProcurementCompletionManager::class)
             ->syncMatchForInvoice((int) $invoice->id);
         $this->assertSame('pending', $match->status);
         $this->assertNull($match->reviewed_by);
