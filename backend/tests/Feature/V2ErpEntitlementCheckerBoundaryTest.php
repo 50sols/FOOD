@@ -589,6 +589,146 @@ final class V2ErpEntitlementCheckerBoundaryTest extends TestCase
         $this->assertSame($before + 1, DB::table('enterprise_suppliers')->count());
     }
 
+    public function test_procurement_reports_and_csv_export_respect_store_entitlement_and_do_not_leak_sibling_orders(): void
+    {
+        $primary = $this->wholesaleStore();
+        $sibling = Store::query()->create([
+            'store_type_id' => $primary->store_type_id,
+            'code' => 'P111-REPORT-SIBLING',
+            'name' => 'P111 Reports Sibling',
+            'is_active' => true,
+        ]);
+        app(OrganizationHierarchyService::class)->ensureDefaultScopeForStore($sibling);
+
+        $admin = $this->actor('SUPER_ADMIN');
+        $buyer = $this->actor('PROCUREMENT_BUYER');
+        $checker = $this->actor('PROCUREMENT_APPROVER');
+        app(EnterpriseModuleAdministration::class)->perform('procurement', 'enable', $admin);
+        $entitlements = app(ModuleEntitlementManager::class);
+        $entitlements->set('procurement', EntitlementScope::platform(), true, null, $admin);
+
+        $adminContext = app(TenantContextResolver::class)->wholesale($admin, $primary->id);
+        $buyerContext = app(TenantContextResolver::class)->wholesale($buyer, $primary->id);
+        $checkerContext = app(TenantContextResolver::class)->wholesale($checker, $primary->id);
+
+        $supplier = app(SupplierDirectory::class)->create($admin, $adminContext, [
+            'scope_type' => 'store',
+            'code' => 'P111-REPORT-SUP',
+            'name_en' => 'P111 Reports Supplier',
+        ]);
+        $requests = app(PurchaseRequestManager::class);
+        $request = $requests->create($buyer, $buyerContext, [
+            'supplier_id' => $supplier->id,
+            'currency_code' => 'KWD',
+            'reason' => 'P111 scoped reports origin',
+            'lines' => [[
+                'item_code' => 'P111-REPORT-SKU',
+                'description' => 'Scoped source order',
+                'quantity' => 2,
+                'unit' => 'each',
+                'estimated_unit_cost' => '1.250',
+            ]],
+        ]);
+        $requests->submit($buyer, $buyerContext, $request->id);
+        $requests->approve($checker, $checkerContext, $request->id);
+        $order = app(PurchaseOrderManager::class)
+            ->createFromApprovedRequest($admin, $adminContext, $request->id);
+
+        $this->assertDatabaseHas('enterprise_purchase_requests', [
+            'id' => $request->id,
+            'created_by' => $buyer->id,
+            'decided_by' => $checker->id,
+            'status' => 'approved',
+        ]);
+        $auditBefore = DB::table('audit_logs')->count();
+        $ordersBefore = DB::table('enterprise_purchase_orders')->count();
+
+        foreach (['ar' => 'rtl', 'en' => 'ltr'] as $locale => $direction) {
+            app()->setLocale($locale);
+            $admin->forceFill(['locale' => $locale])->save();
+            $actor = $admin->fresh();
+
+            $this->actingAs($actor)->get(route('admin.erp.procurement.index', [
+                'store_id' => $primary->id,
+                'tab' => 'reports',
+                'report' => 'open_orders',
+            ]))
+                ->assertOk()
+                ->assertSee('dir="'.$direction.'"', false)
+                ->assertSee($order->order_number);
+
+            $authorizedCsv = $this->actingAs($actor)->get(
+                route('admin.erp.procurement.reports.export', [
+                    'store_id' => $primary->id,
+                    'report' => 'open_orders',
+                ]),
+            );
+            $authorizedCsv->assertOk();
+            $this->assertStringContainsString($order->order_number, $authorizedCsv->streamedContent());
+
+            // Global B2B role and platform entitlement do not override an
+            // explicit STORE denial on either report or download endpoints.
+            $entitlements->set(
+                'procurement',
+                new EntitlementScope(EntitlementScope::STORE, $primary->id),
+                false,
+                null,
+                $admin,
+            );
+
+            $this->actingAs($admin->fresh())->get(route('admin.erp.procurement.index', [
+                'store_id' => $primary->id,
+                'tab' => 'reports',
+                'report' => 'open_orders',
+            ]))->assertForbidden();
+            $this->actingAs($admin->fresh())->get(route('admin.erp.procurement.reports.export', [
+                'store_id' => $primary->id,
+                'report' => 'open_orders',
+            ]))->assertForbidden();
+
+            // A separate entitled B2B store must not inherit the first
+            // company's purchase order through dashboard or CSV export.
+            $this->actingAs($admin->fresh())->get(route('admin.erp.procurement.index', [
+                'store_id' => $sibling->id,
+                'tab' => 'reports',
+                'report' => 'open_orders',
+            ]))
+                ->assertOk()
+                ->assertSee('dir="'.$direction.'"', false)
+                ->assertDontSee($order->order_number);
+
+            $siblingCsv = $this->actingAs($admin->fresh())->get(
+                route('admin.erp.procurement.reports.export', [
+                    'store_id' => $sibling->id,
+                    'report' => 'open_orders',
+                ]),
+            );
+            $siblingCsv->assertOk();
+            $this->assertStringNotContainsString($order->order_number, $siblingCsv->streamedContent());
+
+            $entitlements->set(
+                'procurement',
+                new EntitlementScope(EntitlementScope::STORE, $primary->id),
+                true,
+                null,
+                $admin,
+            );
+        }
+
+        $this->assertSame($ordersBefore, DB::table('enterprise_purchase_orders')->count());
+        $this->assertDatabaseHas('enterprise_purchase_orders', [
+            'id' => $order->id,
+            'store_id' => $primary->id,
+        ]);
+        // Entitlement setup is audited separately; read/export requests must
+        // never create a purchase-order or finance-posting audit event.
+        $this->assertSame(0, DB::table('audit_logs')
+            ->where('event', 'enterprise.purchase_order.issued')
+            ->where('auditable_id', $order->id)
+            ->count());
+        $this->assertGreaterThanOrEqual($auditBefore, DB::table('audit_logs')->count());
+    }
+
     private function wholesaleStore(): Store
     {
         $store = Store::query()->findOrFail(app(WholesalePrincipal::class)->storeId());
