@@ -78,7 +78,7 @@ final class InstallerWorkflow
             'storage' => storage_path(),
             'bootstrap/cache' => base_path('bootstrap/cache'),
         ] as $label => $path) {
-            if (! is_dir($path) || ! is_writable($path)) {
+            if (! $this->isWritableInstallerDirectory($path)) {
                 $failures[] = (string) __('installer.errors.path_writable', ['path' => $label]);
             }
         }
@@ -196,7 +196,28 @@ final class InstallerWorkflow
             $candidate = $parent;
         }
 
-        return is_writable($candidate);
+        return $this->isWritableInstallerDirectory($candidate);
+    }
+
+    /**
+     * Checking is_writable() alone can misreport a 0555 cPanel directory as
+     * ready when CI or a PHP process runs with elevated permissions. Do not
+     * probe by creating files or changing host ACLs during installer preflight.
+     */
+    private function isWritableInstallerDirectory(string $directory): bool
+    {
+        if (! is_dir($directory) || ! is_writable($directory)) {
+            return false;
+        }
+
+        if (PHP_OS_FAMILY !== 'Windows') {
+            $mode = @fileperms($directory);
+            if ($mode === false || ($mode & 0222) === 0) {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     private function hasInstallerSymlinkComponent(string $path): bool
