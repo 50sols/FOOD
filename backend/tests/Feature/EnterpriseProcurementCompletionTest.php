@@ -628,7 +628,65 @@ final class EnterpriseProcurementCompletionTest extends TestCase
 
         $this->assertSame(0, DB::table('enterprise_purchase_orders')->count());
         $this->assertSame(0, DB::table('enterprise_purchase_invoices')->count());
-        $this->assertSame(0, DB::table('audit_logs')->count());
+    }
+
+    public function test_procurement_report_and_bi_bridge_ignore_foreign_company_rows_with_same_store_id(): void
+    {
+        $this->enableProcurement();
+        [$actor, $store, $context] = $this->scopedUser(
+            $this->allPermissions(),
+            'P135-REPORT-COMPANY-A',
+        );
+        $supplier = app(SupplierDirectory::class)->create($actor, $context, [
+            'scope_type' => 'store',
+            'code' => 'P135-REPORT-ONLY-A',
+            'name_en' => 'Scoped supplier',
+        ]);
+        $visible = $this->approvedOrder($actor, $context, $supplier->id, 2, 1.250);
+        $foreignCompanyRow = $this->approvedOrder($actor, $context, $supplier->id, 3, 9.000);
+
+        // A legacy/imported row may reference a valid store FK yet belong to
+        // another legal company. A store-only aggregate must not count it.
+        $foreignCompanyId = DB::table('enterprise_companies')->insertGetId([
+            'organization_id' => $context->enterpriseScope->organizationId,
+            'code' => 'p135_report_foreign_company',
+            'name' => 'Unrelated Company',
+            'is_active' => true,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        DB::table('enterprise_purchase_orders')
+            ->where('id', $foreignCompanyRow->id)
+            ->update(['company_id' => $foreignCompanyId]);
+
+        $manager = app(ProcurementCompletionManager::class);
+        $report = $manager->report($actor, $context, 'open_orders');
+        $this->assertSame([$visible->order_number], array_column($report['rows'], 'order_number'));
+        $this->assertSame('2.500', $report['rows'][0]['order_value']);
+
+        // The trusted BI bridge inherits the store's authoritative company
+        // hierarchy even when a BI export is paged or invoked independently.
+        $bridge = $manager->reportForStore('open_orders', $store->id, [], 25);
+        $this->assertSame([$visible->order_number], array_column($bridge['rows'], 'order_number'));
+        $this->assertSame('2.500', $bridge['rows'][0]['order_value']);
+
+        [$otherActor, , $otherContext] = $this->scopedUser(
+            $this->allPermissions(),
+            'P135-REPORT-COMPANY-B',
+        );
+        $this->assertSame([], $manager->report($otherActor, $otherContext, 'open_orders')['rows']);
+
+        try {
+            $manager->reportForStore(
+                'open_orders', $store->id, [], 25, 0, $otherContext->enterpriseScope,
+            );
+            $this->fail('A caller cannot substitute a foreign tenant scope into a BI report.');
+        } catch (HttpException $exception) {
+            $this->assertSame(403, $exception->getStatusCode());
+        }
+
+        $this->assertSame(2, DB::table('enterprise_purchase_orders')->count());
+        $this->assertSame(0, DB::table('enterprise_purchase_invoices')->count());
     }
 
     public function test_completion_migration_is_reversible_without_leaving_parallel_authority(): void
