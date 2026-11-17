@@ -137,7 +137,7 @@ body{margin:0;background:var(--foodex-background);color:var(--foodex-ink)}
 <section class="foodex-module-overview" data-foodex-module-overview="finance">
 <form method="get" action="{{ route('admin.erp.finance.index') }}" class="foodex-module-toolbar">
 <input type="hidden" name="store_id" value="{{ $storeId }}"><input type="hidden" name="tab" value="overview">
-<label class="foodex-module-filter-group"><span>{{ __('finance_workbench.common.period') }}</span><select name="period_id"><option value="">{{ __('finance_workbench.dashboard.latest_period') }}</option>@foreach($data['periods'] as $period)<option value="{{ $period->id }}" @selected((int)request('period_id')===(int)$period->id)>{{ $period->code }} · {{ $period->name }}</option>@endforeach</select></label>
+<label class="foodex-module-filter-group"><span>{{ __('finance_workbench.common.period') }}</span><select name="period_id"><option value="">{{ __('finance_workbench.dashboard.latest_period') }}</option>@foreach(($data['periods'] ?? []) as $period)<option value="{{ $period->id }}" @selected((int)request('period_id')===(int)$period->id)>{{ $period->code }} · {{ $period->name }}</option>@endforeach</select></label>
 <button class="finance-button primary" type="submit">{{ __('finance_workbench.actions.apply') }}</button>
 @if($access['reports_read'] ?? false)
 <a class="finance-button" href="{{ route('admin.erp.finance.index',[...$routeBase,'tab'=>'reports']) }}">{{ __('finance_workbench.actions.open_reports') }}</a>
@@ -221,10 +221,16 @@ $trendMax=max(1,max(array_map(fn($r)=>max(abs((float)$r['revenue']),abs((float)$
 @endif
 <article class="foodex-viz-card foodex-module-chart">
 <div class="foodex-viz-header"><div><h2 class="foodex-viz-title">{{ __('finance_workbench.dashboard.aging') }}</h2><p class="foodex-viz-subtitle">{{ __('finance_workbench.dashboard.aging_help') }}</p></div></div>
-<div class="foodex-module-chart-table-wrap"><table class="foodex-module-chart-table"><thead><tr><th>{{ __('finance_workbench.common.aging_bucket') }}</th>@if($access['ar_read'] ?? false)<th>{{ __('finance_workbench.dashboard.ar') }}</th>@endif@if($access['ap_read'] ?? false)<th>{{ __('finance_workbench.dashboard.ap') }}</th>@endif</tr></thead><tbody>
+<div class="foodex-module-chart-table-wrap"><table class="foodex-module-chart-table"><thead><tr><th>{{ __('finance_workbench.common.aging_bucket') }}</th>
+@if($access['ar_read'] ?? false)<th>{{ __('finance_workbench.dashboard.ar') }}</th>@endif
+@if($access['ap_read'] ?? false)<th>{{ __('finance_workbench.dashboard.ap') }}</th>@endif
+</tr></thead><tbody>
 @foreach(['current','1_30','31_60','61_90','91_plus'] as $bucket)
 @php $arRow=collect($data['aging']['ar'])->firstWhere('bucket',$bucket); $apRow=collect($data['aging']['ap'])->firstWhere('bucket',$bucket); @endphp
-<tr><td>{{ $statusLabel($bucket) }}</td>@if($access['ar_read'] ?? false)<td class="finance-money">{{ $money($arRow['amount'] ?? 0) }}</td>@endif@if($access['ap_read'] ?? false)<td class="finance-money">{{ $money($apRow['amount'] ?? 0) }}</td>@endif</tr>
+<tr><td>{{ $statusLabel($bucket) }}</td>
+@if($access['ar_read'] ?? false)<td class="finance-money">{{ $money($arRow['amount'] ?? 0) }}</td>@endif
+@if($access['ap_read'] ?? false)<td class="finance-money">{{ $money($apRow['amount'] ?? 0) }}</td>@endif
+</tr>
 @endforeach
 </tbody></table></div>
 </article>
