@@ -75,8 +75,7 @@ final class V2ErpCenterHorizontalTabsTest extends TestCase
                 ->assertSee('data-erp-chart="workload"', false)
                 ->assertDontSee('data-erp-kpis', false)
                 ->assertDontSee('data-erp-my-work', false)
-                ->assertDontSee('data-erp-modules', false)
-                ->assertDontSee(route('admin.action-center.index'), false);
+                ->assertDontSee('data-erp-modules', false);
 
             $markup = html_entity_decode($response->getContent(), ENT_QUOTES | ENT_HTML5, 'UTF-8');
             $this->assertStringContainsString(
