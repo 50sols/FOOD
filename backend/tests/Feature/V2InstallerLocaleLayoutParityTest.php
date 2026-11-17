@@ -135,6 +135,10 @@ final class V2InstallerLocaleLayoutParityTest extends TestCase
     {
         $state = app(InstallState::class);
         $beforeEnvironment = file_get_contents($this->fixtureDirectory.'/.env');
+        // The first GET deliberately mints the install CSRF/progress token.
+        // Establish the stable baseline after the legitimate one-time mint,
+        // then assert the read-only Document Root precheck never advances it.
+        $initialToken = $state->token();
         $beforeProgress = $state->progress();
 
         $cases = [
