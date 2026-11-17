@@ -4,6 +4,7 @@ namespace App\Enterprise\Modules;
 
 use App\Enterprise\Health\ModuleHealthService;
 use App\Enterprise\Health\ModuleHealthStatus;
+use Throwable;
 
 /**
  * Version-scoped operational attestation is separate from lifecycle ENABLED.
@@ -11,7 +12,10 @@ use App\Enterprise\Health\ModuleHealthStatus;
  */
 final class ModuleOperationalReadiness
 {
-    public function __construct(private readonly ModuleHealthService $health) {}
+    public function __construct(
+        private readonly ModuleHealthService $health,
+        private readonly ModuleManifestCatalog $manifests,
+    ) {}
 
     public function status(string $code, int $manifestVersion, ModuleState $state): string
     {
@@ -70,6 +74,25 @@ final class ModuleOperationalReadiness
         $attestations = config('enterprise_module_readiness.workflow_attestations', []);
         $attestation = is_array($attestations) ? ($attestations[$code] ?? null) : null;
         if (! is_array($attestation) || ($attestation['version'] ?? null) !== $manifestVersion) {
+            return false;
+        }
+
+        try {
+            $manifest = $this->manifests->require($code);
+        } catch (Throwable) {
+            // A missing/malformed canonical manifest is never an approval.
+            return false;
+        }
+
+        if ($manifest->version !== $manifestVersion) {
+            return false;
+        }
+
+        $expectedDigest = ModuleWorkflowAttestation::manifestSha256($manifest);
+        $signedDigest = $attestation['manifest_sha256'] ?? null;
+        if ($expectedDigest === null
+            || ! is_string($signedDigest)
+            || ! hash_equals($expectedDigest, $signedDigest)) {
             return false;
         }
 
