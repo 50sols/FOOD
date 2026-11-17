@@ -241,7 +241,7 @@ final class ErpCenterController extends Controller
      * unchanged; this projection only sanitizes the two summary previews.
      *
      * @param  Collection<int, array<string, mixed>>  $items
-     * @return Collection<int, array<string, mixed>>
+     * @return Collection<int, non-empty-array<string, mixed>>
      */
     private function safePreviewReferences(Collection $items): Collection
     {
