@@ -178,6 +178,68 @@ jobs:
             --manifest dist/update/FOODEX-Update.json \
             --target-version 1.0.127 \
             --minimum-current-version 1.0.125
+      - name: Verify and reject ephemeral Ed25519 signatures against EXACT built ZIP
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Test-only ephemeral signing: no publisher key and no signed release output.
+          php <<'PHP'
+          <?php
+          require 'backend/app/Domain/Updater/UpdateVersion.php';
+          require 'backend/app/Domain/Updater/UpdatePackageManifest.php';
+          require 'backend/app/Domain/Updater/TrustedUpdateSignatureVerifier.php';
+          require 'backend/app/Domain/Updater/SignedUpdateEnvelope.php';
+          require 'backend/app/Domain/Updater/UpdatePackageValidator.php';
+          use App\Domain\Updater\UpdatePackageManifest;
+          use App\Domain\Updater\TrustedUpdateSignatureVerifier;
+          use App\Domain\Updater\SignedUpdateEnvelope;
+          use App\Domain\Updater\UpdatePackageValidator;
+          $archive = 'dist/update/FOODEX-Update.zip';
+          $data = json_decode(file_get_contents('dist/update/FOODEX-Update.json'), true, 512, JSON_THROW_ON_ERROR);
+          $digest = hash_file('sha256', $archive);
+          if (!hash_equals($digest, $data['sha256'])) {
+              throw new RuntimeException('Actual ZIP digest does not match its manifest.');
+          }
+          $manifest = new UpdatePackageManifest('1.0.127', '1.0.125', $digest, 'ephemeral CI source ZIP verification only', true);
+          $verifier = new TrustedUpdateSignatureVerifier();
+          $keypair = sodium_crypto_sign_keypair();
+          $public = base64_encode(sodium_crypto_sign_publickey($keypair));
+          $secret = sodium_crypto_sign_secretkey($keypair);
+          $keyId = 'ci-disposable-only';
+          $signature = base64_encode(sodium_crypto_sign_detached($verifier->canonicalPayload($manifest, $keyId), $secret));
+          $signed = json_encode([
+              'format' => 'foodex-signed-update-v1',
+              'signer_key_id' => $keyId,
+              'target_version' => $manifest->targetVersion,
+              'minimum_current_version' => $manifest->minimumCurrentVersion,
+              'archive_sha256' => $digest,
+              'contains_migrations' => true,
+              'release_notes' => $manifest->releaseNotes,
+              'signature' => $signature,
+          ], JSON_THROW_ON_ERROR);
+          $envelope = SignedUpdateEnvelope::parse($signed);
+          $envelope->verify($verifier, [$keyId => $public]);
+          (new UpdatePackageValidator())->validate($envelope->manifest, '1.0.125', $archive);
+          $mustReject = static function (callable $operation, string $case): void {
+              try {
+                  $operation();
+              } catch (InvalidArgumentException $e) {
+                  return;
+              }
+              throw new RuntimeException("Failed to reject {$case}");
+          };
+          $mustReject(static fn () => $envelope->verify($verifier, []), 'untrusted key');
+          $wrongKey = sodium_crypto_sign_keypair();
+          $mustReject(static fn () => $envelope->verify($verifier, [$keyId => base64_encode(sodium_crypto_sign_publickey($wrongKey))]), 'wrong publisher key');
+          $corrupt = json_decode($signed, true, 512, JSON_THROW_ON_ERROR);
+          $corrupt['signature'] = base64_encode(str_repeat("\0", SODIUM_CRYPTO_SIGN_BYTES));
+          $mustReject(static fn () => SignedUpdateEnvelope::parse(json_encode($corrupt, JSON_THROW_ON_ERROR))->verify($verifier, [$keyId => $public]), 'modified signature');
+          $badDigest = new UpdatePackageManifest('1.0.127', '1.0.125', str_repeat('0', 64), $manifest->releaseNotes, true);
+          $mustReject(static fn () => (new UpdatePackageValidator())->validate($badDigest, '1.0.125', $archive), 'changed archive SHA-256');
+          $changedManifest = new UpdatePackageManifest('1.0.128', '1.0.125', $digest, $manifest->releaseNotes, true);
+          $mustReject(static fn () => $verifier->verify($changedManifest, $keyId, $signature, [$keyId => $public]), 'changed signed target version');
+          echo "PASS: actual source ZIP digest and test-only ephemeral Ed25519 allow/deny; no release signing\n";
+          PHP
       - name: Upgrade real disposable v125 MySQL dataset with EXACT generated ZIP
         shell: bash
         run: |
