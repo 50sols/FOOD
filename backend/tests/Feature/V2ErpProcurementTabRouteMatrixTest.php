@@ -278,10 +278,13 @@ final class V2ErpProcurementTabRouteMatrixTest extends TestCase
                     'tab' => $tab,
                 ]);
                 $this->assertStringContainsString('href="'.e($href).'"', $rail);
-                $this->assertStringContainsString(
-                    e(__('enterprise_procurement.tabs.'.$tab, [], $locale)),
-                    $rail,
-                );
+                $translatedLabel = __('enterprise_procurement.tabs.'.$tab, [], $locale);
+                $this->assertNotSame('enterprise_procurement.tabs.'.$tab, $translatedLabel);
+                $this->assertSame(1, preg_match(
+                    $locale === 'ar' ? '/[\x{0600}-\x{06FF}]/u' : '/[A-Za-z]/',
+                    $translatedLabel,
+                ));
+                $this->assertStringContainsString(e($translatedLabel), $rail);
                 $this->actingAs($user)->get($href)->assertOk();
             }
 
