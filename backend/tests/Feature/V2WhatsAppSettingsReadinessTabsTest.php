@@ -37,22 +37,31 @@ final class V2WhatsAppSettingsReadinessTabsTest extends TestCase
             $response = $this->actingAs($actor)->get($base);
             $response->assertOk()->assertSee($heading)->assertSee('dir="'.$direction.'"', false)
                 ->assertSee('data-whatsapp-panel="profiles"', false)
-                ->assertSee('data-whatsapp-panel="create"', false)
-                ->assertSee('data-whatsapp-panel="health"', false)
+                ->assertDontSee('data-whatsapp-panel="create"', false)
+                ->assertDontSee('data-whatsapp-panel="health"', false)
+                ->assertDontSee('name="credential_secret"', false)
                 ->assertDontSee('name="provider_metadata"', false)
                 ->assertDontSee('name="webhook_metadata"', false);
 
-            $this->assertMatchesRegularExpression('/data-whatsapp-panel="health"[^>]*hidden/', $response->getContent());
-            $this->assertMatchesRegularExpression('/data-whatsapp-panel="create"[^>]*hidden/', $response->getContent());
-
+            // Inactive tabs are not merely CSS-hidden: the server must not
+            // include their forms or sensitive state in the returned HTML.
             $newProfile = $this->actingAs($actor)->get(route('admin.whatsapp.connections.index', ['tab' => 'create']));
-            $newProfile->assertOk()->assertSee('name="name"', false);
-            $this->assertDoesNotMatchRegularExpression('/data-whatsapp-panel="create"[^>]*hidden/', $newProfile->getContent());
+            $newProfile->assertOk()->assertSee('name="name"', false)
+                ->assertSee('data-whatsapp-panel="create"', false)
+                ->assertDontSee('data-whatsapp-panel="profiles"', false)
+                ->assertDontSee('data-whatsapp-panel="health"', false);
+
+            $health = $this->actingAs($actor)->get(route('admin.whatsapp.connections.index', ['tab' => 'health']));
+            $health->assertOk()->assertSee('data-whatsapp-panel="health"', false)
+                ->assertDontSee('data-whatsapp-panel="profiles"', false)
+                ->assertDontSee('data-whatsapp-panel="create"', false)
+                ->assertDontSee('name="credential_secret"', false);
 
             foreach ([['tab' => 'not-a-section'], ['tab' => ['create']]] as $invalid) {
                 $safe = $this->actingAs($actor)->get(route('admin.whatsapp.connections.index', $invalid));
-                $safe->assertOk();
-                $this->assertMatchesRegularExpression('/data-whatsapp-panel="create"[^>]*hidden/', $safe->getContent());
+                $safe->assertOk()->assertSee('data-whatsapp-panel="profiles"', false)
+                    ->assertDontSee('data-whatsapp-panel="create"', false)
+                    ->assertDontSee('data-whatsapp-panel="health"', false);
             }
         }
     }
@@ -102,11 +111,19 @@ final class V2WhatsAppSettingsReadinessTabsTest extends TestCase
             $readiness = $this->actingAs($actor)->get(route('admin.whatsapp.index'));
             $readiness->assertOk()->assertSee('dir="'.$direction.'"', false)
                 ->assertSee('data-whatsapp-panel="readiness"', false);
-            $this->assertMatchesRegularExpression('/data-whatsapp-panel="readiness"[^>]*>/', $readiness->getContent());
+            $readiness->assertDontSee('data-whatsapp-panel="controls"', false)
+                ->assertDontSee('name="action"', false);
 
             $bad = $this->actingAs($actor)->get(route('admin.whatsapp.index', ['tab' => ['controls']]));
-            $bad->assertOk();
-            $this->assertDoesNotMatchRegularExpression('/data-whatsapp-panel="readiness"[^>]*hidden/', $bad->getContent());
+            $bad->assertOk()->assertSee('data-whatsapp-panel="readiness"', false)
+                ->assertDontSee('data-whatsapp-panel="controls"', false)
+                ->assertDontSee('name="action"', false);
+
+            $controls = $this->actingAs($actor)->get(route('admin.whatsapp.index', ['tab' => 'controls']));
+            $controls->assertOk();
+            if (str_contains($controls->getContent(), 'data-whatsapp-panel="controls"')) {
+                $controls->assertDontSee('data-whatsapp-panel="readiness"', false);
+            }
         }
 
         $ordinary = User::factory()->create(['is_active' => true, 'locale' => 'en']);
@@ -209,7 +226,7 @@ final class V2WhatsAppSettingsReadinessTabsTest extends TestCase
             $actor = $this->superAdmin($locale);
             $this->actingAs($actor)->post(route('admin.whatsapp.connections.store'), [
                 'name' => 'Unconfigured provider '.$locale,
-                'display_phone_number' => '+96550000090',
+                'display_phone_number' => $locale === 'ar' ? '+96550000092' : '+96550000090',
                 'provider_type' => 'meta_cloud',
                 'provider_phone_number_id' => 'not-a-real-provider-id',
             ])->assertRedirect(route('admin.whatsapp.connections.index'));
