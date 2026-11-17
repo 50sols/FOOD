@@ -27,8 +27,10 @@ final class V2ErpWorkflowReadinessCertificationTest extends TestCase
     /** @var array<string, string> */
     private const ROUTES = [
         'procurement' => 'admin.erp.procurement.index',
+        'inventory_wms' => 'admin.erp.wms.index',
         'finance' => 'admin.erp.finance.index',
         'treasury' => 'admin.erp.treasury.index',
+        'enterprise_bi' => 'admin.erp.bi',
     ];
 
     protected function setUp(): void
