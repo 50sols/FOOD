@@ -885,9 +885,17 @@ class B2bWorkspaceController extends Controller
         $actor = $this->actor($request);
         $data = $request->validate([
             'minimum_order_egp' => ['required', 'numeric', 'min:0', 'max:99999999.99', 'decimal:0,2'],
+            'setup_action' => ['sometimes', 'in:save,test'],
         ]);
         $storeId = $this->principal->storeId();
         $this->operationalScope->assertStore($actor, $storeId, 'settings.manage', 'b2b');
+
+        // Precheck is scoped and read-only. A candidate value is not a published policy.
+        if (($data['setup_action'] ?? 'save') === 'test') {
+            return back()->with('status', __('b2b_minimum_order_setup.test_valid', [
+                'amount' => number_format((float) $data['minimum_order_egp'], 2, '.', ''),
+            ]));
+        }
 
         $previous = $minimumOrders->minimumForStore($storeId);
         $minimum = round((float) $data['minimum_order_egp'], 2);
