@@ -241,7 +241,8 @@ PHP;
                 'update_signatures.publisher_public_key_b64' => $wrongPublicKey,
             ]);
 
-            app()->instance(UpdateRuntime::class, $this->failAfterApplyRuntime($email));
+            $faultRuntime = $this->failAfterApplyRuntime($email);
+            app()->instance(UpdateRuntime::class, $faultRuntime);
 
             $this->signedPost($user, $pair, $keyId, $archivePath, '1.0.127', '1.0.125', true)
                 ->assertRedirect(route('admin.system-update.index'))
@@ -262,7 +263,11 @@ PHP;
             $this->assertSame('failed', $history->status);
             $this->assertSame($actualDigest, $history->package_hash);
             $this->assertSame('health_check', $history->failed_stage);
-            $this->assertSame('passed', $history->execution_evidence['rollback_files'] ?? null);
+            $this->assertSame(
+                'passed',
+                $history->execution_evidence['rollback_files'] ?? null,
+                'File rollback diagnostic: '.($faultRuntime->rollbackFilesFailure ?? 'no exception was captured.'),
+            );
             $this->assertSame('passed', $history->execution_evidence['rollback_database'] ?? null);
             $this->assertSame('passed', $history->execution_evidence['rollback_health_check'] ?? null);
             $this->assertSame('exited_after_rollback', $history->execution_evidence['maintenance_mode'] ?? null);
@@ -290,6 +295,8 @@ PHP;
         return new class($runtime, $email) implements UpdateRuntime
         {
             private bool $healthFailureInjected = false;
+
+            public ?string $rollbackFilesFailure = null;
 
             public function __construct(
                 private readonly LaravelUpdateRuntime $runtime,
@@ -350,7 +357,12 @@ PHP;
 
             public function rollbackFiles(string $backupReference): void
             {
-                $this->runtime->rollbackFiles($backupReference);
+                try {
+                    $this->runtime->rollbackFiles($backupReference);
+                } catch (Throwable $exception) {
+                    $this->rollbackFilesFailure = $exception::class.': '.$exception->getMessage();
+                    throw $exception;
+                }
             }
 
             public function verifyDatabaseBackup(string $backupReference): void
