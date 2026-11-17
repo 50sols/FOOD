@@ -1203,7 +1203,6 @@ final class V2ErpEntitlementCheckerBoundaryTest extends TestCase
         $this->assertSame($auditAfterGrant, DB::table('audit_logs')->count());
     }
 
-
     public function test_forged_nonpositive_or_malformed_store_id_never_falls_back_to_an_authorized_store(): void
     {
         $this->app['env'] = 'production';
