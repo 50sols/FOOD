@@ -2415,6 +2415,213 @@ final class V2ErpEntitlementCheckerBoundaryTest extends TestCase
         }
     }
 
+    public function test_procurement_rfq_http_draft_publish_cancel_keeps_real_request_supplier_store_due_date_and_single_audit(): void
+    {
+        $storeA = $this->wholesaleStore();
+        $storeB = Store::query()->create([
+            'store_type_id' => $storeA->store_type_id,
+            'code' => 'P111-RFQ-SCOPE-B',
+            'name' => 'P111 RFQ foreign wholesale store',
+            'is_active' => true,
+        ]);
+        app(OrganizationHierarchyService::class)->ensureDefaultScopeForStore($storeB);
+        $owner = $this->actor('SUPER_ADMIN');
+        $maker = $this->actor('PROCUREMENT_BUYER');
+        $checker = $this->actor('PROCUREMENT_MANAGER');
+        app(EnterpriseModuleAdministration::class)->perform('procurement', 'enable', $owner);
+        app(ModuleEntitlementManager::class)->set(
+            'procurement', EntitlementScope::platform(), true, null, $owner,
+        );
+        $supplierA = app(SupplierDirectory::class)->create(
+            $maker, app(TenantContextResolver::class)->wholesale($maker, $storeA->id), [
+                'scope_type' => 'store',
+                'code' => 'P111-RFQ-SUP-A',
+                'name_en' => 'P111 eligible RFQ supplier A',
+            ],
+        );
+        $supplierB = app(SupplierDirectory::class)->create(
+            $maker, app(TenantContextResolver::class)->wholesale($maker, $storeB->id), [
+                'scope_type' => 'store',
+                'code' => 'P111-RFQ-SUP-B',
+                'name_en' => 'P111 foreign RFQ supplier B',
+            ],
+        );
+        $this->actingAs($maker)->post(route('admin.erp.procurement.requests.store'), [
+            'store_id' => $storeA->id,
+            'supplier_id' => $supplierA->id,
+            'currency_code' => 'KWD',
+            'reason' => 'P111 RFQ status scope evidence',
+            'description' => 'Source-linked RFQ line',
+            'item_code' => 'P111-RFQ-ITEM',
+            'quantity' => '2.125',
+            'unit' => 'case',
+            'estimated_unit_cost' => '4.125',
+        ])->assertRedirect();
+        $request = DB::table('enterprise_purchase_requests')
+            ->where('reason', 'P111 RFQ status scope evidence')->first();
+        $this->assertNotNull($request);
+        $due = now()->addDays(5)->startOfMinute()->toDateTimeString();
+        $payload = [
+            'store_id' => $storeA->id,
+            'purchase_request_id' => $request->id,
+            'title' => 'P111 source-linked RFQ without premature approval',
+            'response_due_at' => $due,
+            'created_by' => $owner->id,
+            'status' => 'awarded',
+            'supplier_id' => $supplierB->id,
+        ];
+        $auditBefore = DB::table('audit_logs')->count();
+
+        // A draft PR and a forged old RFQ deadline cannot be elevated into a
+        // real published RFQ or an approved purchase order via form fields.
+        $this->actingAs($maker)->post(route('admin.erp.procurement.rfqs.store'), $payload)
+            ->assertSessionHasErrors('purchase_request_id');
+        $this->actingAs($maker)->post(route('admin.erp.procurement.rfqs.store'), [
+            ...$payload,
+            'response_due_at' => now()->subDays(2)->toDateTimeString(),
+        ])->assertSessionHasErrors('response_due_at');
+        $this->assertDatabaseCount('enterprise_procurement_rfqs', 0);
+        $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+
+        $this->actingAs($maker)->post(route('admin.erp.procurement.requests.submit', $request->id), [
+            'store_id' => $storeA->id,
+        ])->assertRedirect();
+        $this->assertDatabaseHas('enterprise_purchase_requests', [
+            'id' => $request->id, 'status' => 'submitted', 'submitted_by' => $maker->id,
+        ]);
+        $auditAfterSubmit = DB::table('audit_logs')->count();
+
+        foreach (['ar', 'en'] as $locale) {
+            $maker->forceFill(['locale' => $locale])->save();
+            $this->actingAs($maker->fresh())->post(route('admin.erp.procurement.rfqs.store'), [
+                ...$payload,
+                'store_id' => $storeB->id,
+            ])->assertNotFound();
+        }
+        $this->assertSame($auditAfterSubmit, DB::table('audit_logs')->count());
+
+        $this->actingAs($maker->fresh())->post(route('admin.erp.procurement.rfqs.store'), $payload)
+            ->assertRedirect()->assertSessionHas('status');
+        $rfq = DB::table('enterprise_procurement_rfqs')
+            ->where('purchase_request_id', $request->id)->first();
+        $this->assertNotNull($rfq);
+        $this->assertSame('draft', $rfq->status);
+        $this->assertSame((int) $maker->id, (int) $rfq->created_by);
+        $this->assertSame((int) $storeA->id, (int) $rfq->store_id);
+        $this->assertSame('KWD', $rfq->currency_code);
+        $this->assertSame($due, (string) $rfq->response_due_at);
+        $rfqLine = DB::table('enterprise_procurement_rfq_lines')
+            ->where('rfq_id', $rfq->id)->first();
+        $this->assertNotNull($rfqLine);
+        $this->assertSame('P111-RFQ-ITEM', $rfqLine->item_code);
+        $this->assertSame('case', $rfqLine->unit);
+        $this->assertSame('2.125', (string) $rfqLine->quantity);
+        $this->assertSame('4.125', (string) $rfqLine->baseline_unit_cost);
+        $this->assertSame(1, DB::table('audit_logs')
+            ->where('event', 'enterprise.procurement.rfq.created')->count());
+
+        $auditAfterRfqCreated = DB::table('audit_logs')->count();
+        $this->actingAs($maker->fresh())->post(route('admin.erp.procurement.rfqs.store'), [
+            ...$payload,
+            'title' => 'A replay cannot rewrite the original RFQ title',
+            'created_by' => $owner->id,
+        ])->assertRedirect();
+        $this->assertDatabaseCount('enterprise_procurement_rfqs', 1);
+        $this->assertDatabaseHas('enterprise_procurement_rfqs', [
+            'id' => $rfq->id, 'title' => $payload['title'], 'status' => 'draft',
+        ]);
+        $this->assertSame($auditAfterRfqCreated, DB::table('audit_logs')->count());
+
+        foreach (['ar' => 'rtl', 'en' => 'ltr'] as $locale => $direction) {
+            $maker->forceFill(['locale' => $locale])->save();
+            $this->actingAs($maker->fresh())->get(route('admin.erp.procurement.index', [
+                'store_id' => $storeA->id, 'tab' => 'rfqs', 'rfq' => $rfq->id,
+            ]))->assertOk()->assertSee('dir="'.$direction.'"', false)
+                ->assertSee($rfq->rfq_number);
+            $this->actingAs($maker->fresh())->get(route('admin.erp.procurement.index', [
+                'store_id' => $storeB->id, 'tab' => 'rfqs', 'rfq' => $rfq->id,
+            ]))->assertNotFound();
+        }
+        $auditBeforeForeignSupplier = DB::table('audit_logs')->count();
+        $this->actingAs($maker->fresh())->post(route('admin.erp.procurement.rfqs.publish', $rfq->id), [
+            'store_id' => $storeA->id,
+            'supplier_ids' => [$supplierA->id, $supplierB->id],
+        ])->assertSessionHasErrors('supplier_ids');
+        $this->assertDatabaseHas('enterprise_procurement_rfqs', [
+            'id' => $rfq->id, 'status' => 'draft',
+        ]);
+        $this->assertSame(0, DB::table('enterprise_procurement_rfq_invitations')
+            ->where('rfq_id', $rfq->id)->count());
+        $this->assertSame($auditBeforeForeignSupplier, DB::table('audit_logs')->count());
+
+        $this->actingAs($maker->fresh())->post(route('admin.erp.procurement.rfqs.publish', $rfq->id), [
+            'store_id' => $storeA->id,
+            'supplier_ids' => [$supplierA->id],
+            'published_by' => $owner->id,
+            'expires_at' => now()->addYears(4)->toDateTimeString(),
+        ])->assertRedirect()->assertSessionHas('status');
+        $this->assertDatabaseHas('enterprise_procurement_rfqs', [
+            'id' => $rfq->id, 'status' => 'published',
+            'published_by' => $maker->id,
+        ]);
+        $invitation = DB::table('enterprise_procurement_rfq_invitations')
+            ->where('rfq_id', $rfq->id)->first();
+        $this->assertNotNull($invitation);
+        $this->assertSame((int) $supplierA->id, (int) $invitation->supplier_id);
+        $this->assertSame('invited', $invitation->status);
+        $this->assertSame($due, (string) $invitation->expires_at);
+        $this->assertSame(64, strlen((string) $invitation->token_hash));
+        $this->assertSame(1, DB::table('audit_logs')
+            ->where('event', 'enterprise.procurement.rfq.published')->count());
+
+        $auditAfterPublish = DB::table('audit_logs')->count();
+        $this->actingAs($maker->fresh())->post(route('admin.erp.procurement.rfqs.publish', $rfq->id), [
+            'store_id' => $storeA->id,
+            'supplier_ids' => [$supplierA->id],
+        ])->assertRedirect();
+        $this->assertSame(1, DB::table('enterprise_procurement_rfq_invitations')
+            ->where('rfq_id', $rfq->id)->count());
+        $this->assertSame($auditAfterPublish, DB::table('audit_logs')->count());
+
+        // Visible quote/award controls are not an authorization grant:
+        // BUYER lacks approval rights, regardless of forged quote/actor IDs.
+        $this->actingAs($maker->fresh())->post(route('admin.erp.procurement.rfqs.award', [
+            'rfq' => $rfq->id, 'quote' => 999999,
+        ]), [
+            'store_id' => $storeA->id,
+            'awarded_by' => $owner->id,
+        ])->assertForbidden();
+        $this->assertDatabaseCount('enterprise_purchase_orders', 0);
+        $this->assertSame($auditAfterPublish, DB::table('audit_logs')->count());
+
+        $this->actingAs($maker->fresh())->post(route('admin.erp.procurement.rfqs.cancel', $rfq->id), [
+            'store_id' => $storeA->id,
+        ])->assertRedirect();
+        $cancelled = DB::table('enterprise_procurement_rfqs')->where('id', $rfq->id)->first();
+        $this->assertSame('cancelled', $cancelled->status);
+        $this->assertSame((int) $maker->id, (int) $cancelled->cancelled_by);
+        $this->assertNotNull($cancelled->cancelled_at);
+        $this->assertDatabaseHas('enterprise_procurement_rfq_invitations', [
+            'id' => $invitation->id, 'status' => 'revoked',
+        ]);
+        $this->assertSame(1, DB::table('audit_logs')
+            ->where('event', 'enterprise.procurement.rfq.cancelled')->count());
+
+        $auditAfterCancel = DB::table('audit_logs')->count();
+        $this->actingAs($maker->fresh())->post(route('admin.erp.procurement.rfqs.cancel', $rfq->id), [
+            'store_id' => $storeA->id,
+        ])->assertRedirect();
+        $this->assertSame($auditAfterCancel, DB::table('audit_logs')->count());
+        $this->assertSame((string) $cancelled->cancelled_at, (string) DB::table('enterprise_procurement_rfqs')
+            ->where('id', $rfq->id)->value('cancelled_at'));
+
+        $this->actingAs($checker)->post(route('admin.erp.procurement.rfqs.award', [
+            'rfq' => $rfq->id, 'quote' => 999999,
+        ]), ['store_id' => $storeA->id])->assertSessionHasErrors('status');
+        $this->assertDatabaseCount('enterprise_purchase_orders', 0);
+        $this->assertSame($auditAfterCancel, DB::table('audit_logs')->count());
+    }
+
     private function wholesaleStore(): Store
     {
         $store = Store::query()->findOrFail(app(WholesalePrincipal::class)->storeId());
