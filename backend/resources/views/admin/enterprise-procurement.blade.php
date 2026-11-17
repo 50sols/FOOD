@@ -80,8 +80,8 @@ $base=['store_id'=>$selectedStoreId,'tab'=>$activeTab];
 <p class="foodex-subtitle span-all">{{ __('supplier_setup_help.scope_help') }}</p>
 <label>{{ __('enterprise_procurement.code') }}<input name="code" required maxlength="64" pattern="[A-Za-z0-9][A-Za-z0-9._-]*" placeholder="SUP-EXAMPLE"></label>
 <p class="foodex-subtitle span-all">{{ __('supplier_setup_help.code_help') }}</p>
-<label>{{ __('enterprise_procurement.name_en') }}<input name="name_en" required maxlength="190"></label>
-<p class="foodex-subtitle span-all">{{ __('supplier_setup_help.name_help') }}</p> {{-- localization-gate: allow form field name identifies persisted bilingual attribute; visible label is translated --}}
+<label>{{ __('enterprise_procurement.name_en') }}<input name="name_en" required maxlength="190"></label> {{-- localization-gate: allow form field name identifies persisted bilingual attribute; visible label is translated --}}
+<p class="foodex-subtitle span-all">{{ __('supplier_setup_help.name_help') }}</p>
 <label>{{ __('enterprise_procurement.name_ar') }}<input name="name_ar" maxlength="190" dir="rtl"></label> {{-- localization-gate: allow form field name identifies persisted bilingual attribute; visible label is translated --}}
 <label>{{ __('enterprise_procurement.contact') }}<input name="contact_name" maxlength="190"></label>
 <label>{{ __('enterprise_procurement.email') }}<input type="email" name="email" maxlength="190"></label>
