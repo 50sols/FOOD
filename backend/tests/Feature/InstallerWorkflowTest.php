@@ -478,6 +478,55 @@ class InstallerWorkflowTest extends TestCase
         $this->assertSame($adminSettings, $flags->snapshot());
     }
 
+    public function test_fresh_setup_refuses_existing_store_master_without_reseeding_or_mutating_settings(): void
+    {
+        // Disposable test database only: an existing store is genuine business
+        // master data even when no user/order/warehouse/product has been added.
+        $storeTypeId = DB::table('store_types')->insertGetId([
+            'code' => 'B2B',
+            'name' => 'Wholesale',
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        DB::table('stores')->insert([
+            'store_type_id' => $storeTypeId,
+            'code' => 'SANDBOX_EXISTING',
+            'name' => 'Existing sandbox store',
+            'is_active' => true,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        DB::table('settings')->insert([
+            'store_id' => null,
+            'key' => 'commercial_rules_enabled',
+            'value' => 'false',
+            'is_secret' => false,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $storeBefore = DB::table('stores')->first();
+        $settingBefore = DB::table('settings')->where('key', 'commercial_rules_enabled')->first();
+        $rolesBefore = DB::table('roles')->orderBy('id')->get()->all();
+
+        Artisan::shouldReceive('call')->never();
+
+        foreach (['testDatabaseConnection', 'seedRequiredCoreData'] as $method) {
+            try {
+                app(InstallerWorkflow::class)->{$method}();
+                $this->fail('Existing store master data must block '.$method.' before setup mutation.');
+            } catch (\RuntimeException $exception) {
+                $this->assertSame((string) __('installer.errors.existing_business_data'), $exception->getMessage());
+            }
+        }
+
+        $this->assertEquals($storeBefore, DB::table('stores')->first());
+        $this->assertEquals($settingBefore, DB::table('settings')->where('key', 'commercial_rules_enabled')->first());
+        $this->assertEquals($rolesBefore, DB::table('roles')->orderBy('id')->get()->all());
+        $this->assertDatabaseCount('users', 0);
+        $this->assertDatabaseCount('orders', 0);
+    }
+
     public function test_fresh_install_seed_refuses_existing_supplier_without_touching_admin_configuration(): void
     {
         // Disposable SQLite fixture: no real tenant or production seeding.
