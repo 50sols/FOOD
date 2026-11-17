@@ -1483,6 +1483,91 @@ final class ProcurementCompletionManager
 
     public function assertMatchAllowsHandoff(int $invoiceId): void
     {
+        // Procurement does not own Finance/AP posting. Before it publishes the
+        // immutable handoff event, the invoice must still match its posted
+        // receipt and its own persisted line-level monetary snapshot.
+        $source = DB::table('enterprise_purchase_invoices as invoices')
+            ->join('enterprise_goods_receipts as receipts', 'receipts.id', '=', 'invoices.goods_receipt_id')
+            ->where('invoices.id', $invoiceId)
+            ->first([
+                'invoices.total_amount',
+                'invoices.goods_receipt_id',
+                'invoices.source_receipt_number',
+                'invoices.source_order_number',
+                'invoices.supplier_id',
+                'invoices.currency_code',
+                'invoices.organization_id',
+                'invoices.company_id',
+                'invoices.store_id',
+                'receipts.receipt_number',
+                'receipts.source_order_number as receipt_order_number',
+                'receipts.supplier_id as receipt_supplier_id',
+                'receipts.currency_code as receipt_currency_code',
+                'receipts.organization_id as receipt_organization_id',
+                'receipts.company_id as receipt_company_id',
+                'receipts.store_id as receipt_store_id',
+                'receipts.status as receipt_status',
+            ]);
+
+        $invalid = $source === null
+            || $source->receipt_status !== 'posted'
+            || (string) $source->source_receipt_number !== (string) $source->receipt_number
+            || (string) $source->source_order_number !== (string) $source->receipt_order_number
+            || (int) $source->supplier_id !== (int) $source->receipt_supplier_id
+            || (string) $source->currency_code !== (string) $source->receipt_currency_code
+            || (int) $source->organization_id !== (int) $source->receipt_organization_id
+            || (int) $source->company_id !== (int) $source->receipt_company_id
+            || (int) $source->store_id !== (int) $source->receipt_store_id;
+
+        if (! $invalid) {
+            $lines = DB::table('enterprise_purchase_invoice_lines as invoice_lines')
+                ->leftJoin('enterprise_goods_receipt_lines as receipt_lines', 'receipt_lines.id', '=', 'invoice_lines.goods_receipt_line_id')
+                ->where('invoice_lines.purchase_invoice_id', $invoiceId)
+                ->get([
+                    'invoice_lines.invoice_quantity',
+                    'invoice_lines.unit_price',
+                    'invoice_lines.line_total',
+                    'invoice_lines.purchase_order_line_id',
+                    'receipt_lines.goods_receipt_id as source_receipt_id',
+                    'receipt_lines.purchase_order_line_id as source_po_line_id',
+                ]);
+
+            $invalid = $lines->isEmpty();
+            $lineTotal = 0;
+            foreach ($lines as $line) {
+                $quantity = (float) $line->invoice_quantity;
+                $price = (float) $line->unit_price;
+                $amount = (float) $line->line_total;
+                if (
+                    $line->source_receipt_id === null
+                    || (int) $line->source_receipt_id !== (int) $source->goods_receipt_id
+                    || (int) $line->purchase_order_line_id !== (int) $line->source_po_line_id
+                    || ! is_finite($quantity)
+                    || ! is_finite($price)
+                    || ! is_finite($amount)
+                    || $quantity <= 0
+                    || $price < 0
+                    || (int) round($quantity * $price * 1000) !== (int) round($amount * 1000)
+                ) {
+                    $invalid = true;
+                    break;
+                }
+
+                $lineTotal += (int) round($amount * 1000);
+            }
+
+            if (! is_finite((float) $source->total_amount)
+                || (int) round((float) $source->total_amount * 1000) !== $lineTotal) {
+                $invalid = true;
+            }
+        }
+
+        if ($invalid) {
+            throw ValidationException::withMessages([
+                'three_way_match' => [__('enterprise_procurement.errors.invoice_line_source_changed')],
+            ]);
+        }
+
         $match = $this->syncMatchForInvoice($invoiceId);
         if (! in_array($match->status, ['auto_approved', 'approved'], true)) {
             throw ValidationException::withMessages([
