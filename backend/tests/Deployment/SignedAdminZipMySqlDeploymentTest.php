@@ -241,6 +241,8 @@ PHP;
                 'update_signatures.publisher_public_key_b64' => $wrongPublicKey,
             ]);
 
+            app()->instance(UpdateRuntime::class, $this->failAfterApplyRuntime($email));
+
             $this->signedPost($user, $pair, $keyId, $archivePath, '1.0.127', '1.0.125', true)
                 ->assertRedirect(route('admin.system-update.index'))
                 ->assertSessionHasErrors(['update']);
@@ -250,7 +252,6 @@ PHP;
             $this->assertSame('1.0.125', trim((string) file_get_contents($versionPath)));
 
             config(['update_signatures.publisher_public_key_b64' => $publicKey]);
-            app()->instance(UpdateRuntime::class, $this->failAfterApplyRuntime($email));
 
             $this->signedPost($user, $pair, $keyId, $archivePath, '1.0.127', '1.0.125', true)
                 ->assertRedirect(route('admin.system-update.index'))
