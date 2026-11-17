@@ -2410,7 +2410,7 @@ final class V2ErpEntitlementCheckerBoundaryTest extends TestCase
             ]);
             $this->assertSame($auditBeforeReplay, DB::table('audit_logs')->count());
             $this->assertSame(0, DB::table('audit_logs')
-                ->where('event', 'enterprise.purchase_request.'.$opposite.'d')
+                ->where('event', 'enterprise.purchase_request.'.($opposite === 'approve' ? 'approved' : 'rejected'))
                 ->where('auditable_id', $row->id)->count());
         }
     }
