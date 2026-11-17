@@ -449,6 +449,12 @@ final class V2ErpProcurementRfqReceiptFlowTest extends TestCase
         }
         DB::table('enterprise_goods_receipts')->where('id', $receipt->id)
             ->update(['currency_code' => $order->currency_code]);
+
+        // The repeated forged HTTP attempts above legitimately consume the
+        // production 30/minute throttle. Advance the isolated test clock into
+        // the next window before proving a restored request is idempotent;
+        // do not disable route throttling or weaken its denial assertions.
+        $this->travel(61)->seconds();
         $this->actingAs($checker->fresh())
             ->post(route('admin.erp.procurement.receipts.post', $receipt->id), [
                 'store_id' => $store->id,
