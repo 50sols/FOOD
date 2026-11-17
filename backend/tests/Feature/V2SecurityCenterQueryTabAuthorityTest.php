@@ -164,6 +164,40 @@ final class V2SecurityCenterQueryTabAuthorityTest extends TestCase
         $this->assertSame($before, $this->securityCounts());
     }
 
+    public function test_explicit_roles_manage_deny_blocks_role_matrix_even_with_other_allow_roles(): void
+    {
+        $security = $this->customRole('V2_3982_SCOPE_VIEWER', 'global', ['security.view']);
+        $editor = $this->customRole('V2_3982_SCOPE_EDITOR', 'global', ['roles.manage']);
+        $actor = User::factory()->create(['is_active' => true, 'locale' => 'ar']);
+        $actor->roles()->attach([$security->id, $editor->id]);
+
+        DB::table('user_permission_overrides')->insert([
+            'user_id' => $actor->id,
+            'permission_id' => Permission::query()->where('code', 'roles.manage')->firstOrFail()->id,
+            'scope_key' => 'global',
+            'store_id' => null,
+            'effect' => 'deny',
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        $actor->forceFill(['has_permission_overrides' => true])->save();
+        $denied = $actor->fresh();
+        $before = $this->securityCounts();
+
+        $this->assertTrue($denied->hasPermission('security.view'));
+        $this->assertFalse($denied->hasPermission('roles.manage'));
+        $this->actingAs($denied)->get(route('admin.security.index', [
+            'section' => 'users',
+        ]))->assertOk();
+        $this->actingAs($denied)->get(route('admin.sidebar-access.roles', [
+            'role_id' => $editor->id,
+        ]))->assertForbidden();
+        $this->actingAs($denied)->get(route('admin.sidebar-access.roles', [], false).'?role_id%5B%5D=1')
+            ->assertForbidden();
+
+        $this->assertSame($before, $this->securityCounts());
+    }
+
     public function test_store_only_security_role_and_roleless_actor_cannot_open_platform_security_urls(): void
     {
         $storeRole = $this->customRole('V2_3982_STORE_SECURITY', 'store', [
