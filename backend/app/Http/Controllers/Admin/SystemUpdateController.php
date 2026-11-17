@@ -225,13 +225,13 @@ final class SystemUpdateController extends Controller
      */
     private function authorizeSuperAdminUpdate(Request $request): void
     {
-        Gate::authorize('system.update');
-
+        // A ZIP update rebuilds configuration caches inside an HTTP request.
+        // Bind Gate to the authenticated request actor explicitly, so an
+        // Artisan bootstrap cannot replace the implicit Gate user resolver.
         $actor = $request->user();
-        abort_unless(
-            $actor instanceof User && $actor->is_active && $actor->hasRole('SUPER_ADMIN'),
-            403,
-        );
+        abort_unless($actor instanceof User, 401);
+        Gate::forUser($actor)->authorize('system.update');
+        abort_unless($actor->is_active && $actor->hasRole('SUPER_ADMIN'), 403);
     }
 
     /**
