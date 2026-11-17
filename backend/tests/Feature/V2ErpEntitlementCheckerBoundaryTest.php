@@ -41,8 +41,12 @@ final class V2ErpEntitlementCheckerBoundaryTest extends TestCase
 
         config()->set('security.mfa.enforce_privileged', false);
         $this->seed(CoreReferenceSeeder::class);
-        // Disposable signed readiness only in PHPUnit; never a production certificate.
-        SyntheticErpWorkflowEvidence::install();
+        // P135's signed test helper is unmerged on this independent P111 branch.
+        // Install it only when present in the synthesized test checkout; never
+        // allow test fixtures to become a runtime certification or a dependency.
+        if (class_exists(SyntheticErpWorkflowEvidence::class)) {
+            SyntheticErpWorkflowEvidence::install();
+        }
         config()->set(
             'enterprise_module_readiness.certified_versions.procurement',
             app(ModuleRegistry::class)->manifest('procurement')->version,
