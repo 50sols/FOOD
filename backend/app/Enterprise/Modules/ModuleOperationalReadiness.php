@@ -15,6 +15,7 @@ final class ModuleOperationalReadiness
     public function __construct(
         private readonly ModuleHealthService $health,
         private readonly ModuleManifestCatalog $manifests,
+        private readonly ModuleRegistry $registry,
     ) {}
 
     public function status(string $code, int $manifestVersion, ModuleState $state): string
@@ -93,6 +94,29 @@ final class ModuleOperationalReadiness
         if ($expectedDigest === null
             || ! is_string($signedDigest)
             || ! hash_equals($expectedDigest, $signedDigest)) {
+            return false;
+        }
+
+        // The persisted installation must match the current source manifest
+        // and its version. A stale installation row cannot reuse a signed
+        // certificate for another manifest merely because ENABLED remains set.
+        try {
+            $registration = $this->registry->registration($code);
+            if ($registration === null
+                || $registration->manifest_version !== $manifestVersion
+                || ! is_array($registration->manifest)) {
+                return false;
+            }
+
+            $installedManifest = ModuleManifest::fromArray($registration->manifest);
+            $installedDigest = ModuleWorkflowAttestation::manifestSha256($installedManifest);
+            if ($installedManifest->code !== $code
+                || $installedManifest->version !== $manifestVersion
+                || $installedDigest === null
+                || ! hash_equals($expectedDigest, $installedDigest)) {
+                return false;
+            }
+        } catch (Throwable) {
             return false;
         }
 
