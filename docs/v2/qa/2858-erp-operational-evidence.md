@@ -286,3 +286,37 @@ race and rollback where necessary) under their original Issues/PRs.
 and G0–G13 original proofs are complete. Keep
 `certified_versions=[]`, trusted keys and workflow attestations empty.
 No source-complete claim from any test that is SKIPPED.
+
+
+## P135 existing ERP navigation and workbench UI regression evidence (2026-11-17)
+
+**Placement/ownership:** The existing Procurement business-domain Sidebar has exactly
+one canonical `admin.erp.procurement.index` link. Its authorized sibling
+functions stay inside the same Procurement Workbench using native, server
+rendered `<nav class="foodex-tabs"> / <a href>` links; NO new Sidebar,
+route or screen. The UI markup/layout is independently owned by #3964
+original PR #3965 (Procurement) and #3960 original PR #3961 (ERP Center).
+P135 tests remain in P135-owned test files; no peer-owned Blade edited.
+
+**Added HTTP/markup checks on the original #2858 branch (execution is
+PENDING exact-head GitHub Actions and must not be called PASS early):**
+
+| Acceptance | Original P135 test | Evidence scope |
+| --- | --- | --- |
+| Sidebar route only if server allows | `V2ErpProcurementTabRouteMatrixTest::test_one_authorized_sidebar_destination_renders_keyboard_focusable_localized_workbench_tabs_and_feedback` | Exactly one canonical Procurement Sidebar route; GET its concrete route returns 200 for same actor, tab requests 200; revoke test-only certification and Sidebar link disappears **and** direct GET returns 403 |
+| Procurement tabs stay inside Workbench | Same test + existing `test_all_eleven_existing_tabs_allow_direct_authorized_ready_http_in_ar_and_en` | All current permitted tabs are native `href` anchors inside one labelled `<nav>`, with exactly one `aria-current=page`. Other tabs do not become Sidebar destinations; check each true target against same selected `store_id` |
+| Arabic/English and RTL/LTR | Same tests, plus `ErpCenterTest::test_uncertified_erp_card_keeps_translated_readiness_explanation_and_accessible_empty_state_without_a_denied_cta` | Render actual authenticated AR `dir=rtl` and EN `dir=ltr`; check localized title/tab labels/explicit uncertified reason and real missing-cert HTTP 403 |
+| Keyboard/accessibility *structural* contract | Same tests | Real native keyboard-focusable links, labelled `<nav>`, one `aria-current`, no `tabindex=-1` on tab rail; `:focus-visible` CSS and `role=status` (empty/flash), `role=alert` (validation errors) in existing markup |
+| Responsive HTML/CSS *source* contract | Same tests | Existing viewport meta, 767/1023px CSS breakpoints and bounded scrollable table wrapper; no UI markup or CSS modification. **Real browser checks at 320/360/390/412/430/768/1024/1280px remain NOT VERIFIED**, not fabricated PHPUnit success |
+| Synchronous loading and error paths | Procurement test and ERP Center test | Existing server navigation/non-JS `<noscript>` store-switch fallback; translated empty-state status and live simulated session status/validation error. There is no async loading widget in this scope; end-to-end network loading/failure, keyboard TAB/Escape and focus movement require a browser test, **NOT VERIFIED** |
+| Denied workbench has no fake CTA | ERP Center new test and existing `V2ErpDenialDiagnosticsTest`, `ErpCenterTest`, `V2SidebarOperationalReadinessProjectionTest` | Enabled + entitled but *real config* cert maps cleared → `uncertified` localized reason, exact module card contains neither `href` nor Open button; direct route HTTP 403; no module granted by saved UI preference |
+| Negative security | Existing P135 11-tab tests + Store A/B and inactive/archived role tests | Explicit DENY, forged/cross-channel store_id, roleless/inactive/archived, uncertified direct URL remain denied independently of visual navigation |
+
+**Important evidence limitations:** Laravel HTTP/HTML assertions cannot
+measure actual focus order, viewport overflow, screen-reader speech, AJAX
+load performance or a user pressing the keyboard. Those items require
+separate browser acceptance on the final integrated view after original
+#3961/#3965 merges, with test results and measured evidence. Never claim
+visual/manual accessibility PASS from source markup alone. Only the
+exact-final-HEAD Required CI success plus genuine G0–G13 acceptance can
+authorize completion; `certified_versions=[]` remains unchanged.
