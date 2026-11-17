@@ -769,8 +769,20 @@ final class ErpCenterTest extends TestCase
         $center = $this->actingAs($buyer->fresh())->get(route('admin.erp.index'))->assertOk();
         $card = collect($center->viewData('cards'))->firstWhere('key', 'procurement');
         $this->assertIsArray($card);
-        $this->assertSame('not_entitled', $card['status']);
-        $this->assertNull($card['url']);
+        // A supplier-specific DENY does not revoke the Buyer's separate
+        // purchase-request read permission. The Center links to the existing
+        // Workbench's first authorized tab; this is not a supplier grant.
+        $this->assertTrue($buyer->fresh()->hasPermission('procurement.purchase_requests.view', $entitled->id));
+        $this->assertSame('available', $card['status']);
+        $this->assertSame(route('admin.erp.procurement.index', [
+            'store_id' => $entitled->id,
+        ]), $card['url']);
+        $this->actingAs($buyer->fresh())->get($card['url'])
+            ->assertOk()
+            ->assertViewHas('activeTab', 'requests');
+
+        // The *denied* Supplier tab must still reject a forged direct URL,
+        // while other authorized read workflows remain accessible.
         $this->actingAs($buyer->fresh())->get(route('admin.erp.procurement.index', [
             'store_id' => $entitled->id,
             'tab' => 'suppliers',
