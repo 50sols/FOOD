@@ -667,7 +667,18 @@ final class InstallerWorkflow
      */
     private function assertFreshInstallDatabase(): void
     {
-        foreach (['system_versions', 'users', 'orders', 'invoices', 'products', 'b2b_accounts'] as $table) {
+        // Core references and the migration-created provisional company hierarchy
+        // are allowed during an interrupted *fresh* install. Real ERP masters,
+        // inventory, financial policies and custody records are not: a DB can
+        // contain them without having any users, orders or legacy products.
+        foreach ([
+            'system_versions', 'users', 'orders', 'invoices', 'products', 'b2b_accounts',
+            'b2b_customers', 'b2c_customers', 'warehouses', 'enterprise_suppliers',
+            'enterprise_purchase_requests', 'enterprise_purchase_orders',
+            'enterprise_goods_receipts', 'enterprise_inventory_lots',
+            'enterprise_finance_credit_terms', 'collection_accounts',
+            'collection_transactions', 'payments',
+        ] as $table) {
             try {
                 $containsData = Schema::hasTable($table) && DB::table($table)->exists();
             } catch (Throwable) {
