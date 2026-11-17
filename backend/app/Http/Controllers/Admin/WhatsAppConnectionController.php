@@ -162,11 +162,13 @@ final class WhatsAppConnectionController extends Controller
             );
             $health->outboundSucceeded($profile);
         } catch (Throwable $exception) {
-            $health->providerError($profile, $exception->getMessage());
+            // The health message is rendered to every whatsapp.view reader,
+            // so never persist provider text that may contain a token or recipient.
+            $health->providerError($profile, __('whatsapp.connections.test_send_failed'));
 
             // The provider's error may contain credential or recipient data.
-            // Keep its sanitized diagnostics in connection health, not in the
-            // browser error message or unfiltered session old input.
+            // Persist only the generic health status above; it is rendered to
+            // whatsapp.view readers as well as returned in the current form.
             return $this->validationBack(
                 $request,
                 ValidationException::withMessages([

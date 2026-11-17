@@ -247,6 +247,8 @@ final class V2WhatsAppSettingsReadinessTabsTest extends TestCase
             $this->assertSame([__('whatsapp.connections.test_send_failed')], $errors);
             $this->assertStringNotContainsString('Meta connection is not configured.', implode(' ', $errors));
             $this->assertSame([], session('_old_input', []));
+            $this->assertSame(__('whatsapp.connections.test_send_failed'), $profile->fresh()->last_provider_error);
+            $this->assertStringNotContainsString('+96550000091', (string) $profile->fresh()->last_provider_error);
             $this->assertNull($profile->fresh()->last_outbound_at);
         }
     }

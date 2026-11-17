@@ -619,7 +619,7 @@ return [
         'credentials_help' => 'Get the access token and webhook secrets from the authorized Meta app administrator. Enter them only in protected password fields; never in notes or metadata. No prefilled examples. Testing contacts the provider; Save alone is not a connection test.',
         'metadata_preserved_help' => 'Advanced provider/webhook metadata is not requested as raw JSON. Existing saved metadata is preserved when editing this form.',
         'readiness_truth_help' => 'Readiness comes from the last real Test connection result and profile state. Draft, never tested, disabled or degraded is not operational readiness; global lifecycle and emergency stop still apply.',
-        'test_send_failed' => 'The test message could not be sent. Check connection readiness and provider settings before retrying; technical details remain protected.',
+        'test_send_failed' => 'The test message could not be sent. Check connection readiness and provider settings before retrying. Provider error details are not shown here.',
         'title' => 'WhatsApp connections',
         'description' => 'Manage saved provider and phone-number profiles without changing source code or redeploying FOOD.',
         'module_controls' => 'Module controls',
