@@ -177,6 +177,151 @@ final class V2ErpProcurementRfqReceiptFlowTest extends TestCase
         }
     }
 
+    public function test_invoice_match_approved_snapshot_and_finance_outbox_reject_forged_source_and_replay(): void
+    {
+        $store = $this->store();
+        $maker = $this->actor('PROCUREMENT_BUYER', 'ar');
+        $checker = $this->actor('PROCUREMENT_MANAGER', 'en');
+        [$supplierId, $requestId, $rfqId, $quoteId] = $this->quotedRequest($maker, $store);
+
+        $this->actingAs($checker)->post(route('admin.erp.procurement.requests.decision', $requestId), [
+            'store_id' => $store->id, 'decision' => 'approve',
+        ])->assertRedirect();
+        $this->actingAs($checker)->post(route('admin.erp.procurement.rfqs.award', [
+            'rfq' => $rfqId, 'quote' => $quoteId,
+        ]), ['store_id' => $store->id])->assertRedirect();
+        $order = DB::table('enterprise_purchase_orders')->where('procurement_rfq_id', $rfqId)->first();
+        $this->assertNotNull($order);
+        $line = DB::table('enterprise_purchase_order_lines')->where('purchase_order_id', $order->id)->first();
+        $this->assertNotNull($line);
+
+        $this->actingAs($checker)->post(route('admin.erp.procurement.orders.issue', $order->id), [
+            'store_id' => $store->id,
+        ])->assertRedirect();
+        [, $warehouse] = $this->stockTarget($store);
+        $this->actingAs($checker)->post(route('admin.erp.procurement.receipts.store', $order->id), [
+            'store_id' => $store->id,
+            'warehouse_id' => $warehouse->id,
+            'lines' => [['purchase_order_line_id' => $line->id, 'quantity' => '2.000']],
+        ])->assertRedirect();
+        $receipt = DB::table('enterprise_goods_receipts')->where('purchase_order_id', $order->id)->first();
+        $this->assertNotNull($receipt);
+        $this->actingAs($checker)->post(route('admin.erp.procurement.receipts.post', $receipt->id), [
+            'store_id' => $store->id,
+        ])->assertRedirect();
+        $receiptLineId = (int) DB::table('enterprise_goods_receipt_lines')
+            ->where('goods_receipt_id', $receipt->id)->value('id');
+        $this->assertGreaterThan(0, $receiptLineId);
+
+        // Commercial supplier, currency, tax and total claims in HTTP body
+        // must not replace server-authoritative receipt and line snapshots.
+        $this->actingAs($checker)->post(route('admin.erp.procurement.invoices.store', $receipt->id), [
+            'store_id' => $store->id, 'supplier_id' => 999999, 'currency_code' => 'USD',
+            'supplier_invoice_number' => 'P135-MATCH-REF-001',
+            'invoice_date' => now()->toDateString(), 'total_amount' => '0.001',
+            'tax_amount' => '999.000',
+            'lines' => [[
+                'goods_receipt_line_id' => $receiptLineId,
+                'quantity' => '2.000', 'unit_price' => '5.000',
+            ]],
+        ])->assertRedirect();
+        $invoice = DB::table('enterprise_purchase_invoices')
+            ->where('supplier_invoice_number', 'P135-MATCH-REF-001')->first();
+        $this->assertNotNull($invoice);
+        $this->assertSame((int) $supplierId, (int) $invoice->supplier_id);
+        $this->assertSame('KWD', $invoice->currency_code);
+        $this->assertSame('10.000', number_format((float) $invoice->total_amount, 3, '.', ''));
+        $this->assertDatabaseHas('enterprise_procurement_match_reviews', [
+            'purchase_invoice_id' => $invoice->id,
+            'status' => 'pending',
+            'value_variance' => '1.500',
+        ]);
+        $this->actingAs($checker)->post(route('admin.erp.procurement.invoices.store', $receipt->id), [
+            'store_id' => $store->id,
+            'supplier_invoice_number' => 'P135-MATCH-REF-001',
+            'invoice_date' => now()->toDateString(),
+            'lines' => [['goods_receipt_line_id' => $receiptLineId, 'quantity' => '1.000']],
+        ])->assertRedirect()->assertSessionHasErrors('supplier_invoice_number');
+
+        $this->actingAs($checker)->post(route('admin.erp.procurement.invoices.handoff', $invoice->id), [
+            'store_id' => $store->id,
+        ])->assertRedirect()->assertSessionHasErrors('three_way_match');
+        $this->actingAs($checker)->post(route('admin.erp.procurement.matches.review', $invoice->id), [
+            'store_id' => $store->id, 'decision' => 'approve', 'note' => 'Reviewed source variance',
+        ])->assertRedirect();
+        $this->assertDatabaseHas('enterprise_procurement_match_reviews', [
+            'purchase_invoice_id' => $invoice->id, 'status' => 'approved',
+        ]);
+
+        foreach ([
+            ['total_amount', '11.000'],
+            ['currency_code', 'USD'],
+            ['source_order_number', 'FORGED-PO-NUMBER'],
+        ] as [$field, $value]) {
+            DB::table('enterprise_purchase_invoices')->where('id', $invoice->id)
+                ->update([$field => $value]);
+            $this->actingAs($checker)->post(route('admin.erp.procurement.invoices.handoff', $invoice->id), [
+                'store_id' => $store->id,
+            ])->assertRedirect()->assertSessionHasErrors('three_way_match');
+            $this->assertDatabaseHas('enterprise_purchase_invoices', [
+                'id' => $invoice->id, 'status' => 'draft', 'outbox_event_id' => null,
+            ]);
+            DB::table('enterprise_purchase_invoices')->where('id', $invoice->id)->update([
+                $field => match ($field) {
+                    'total_amount' => '10.000',
+                    'currency_code' => 'KWD',
+                    default => $order->order_number,
+                },
+            ]);
+        }
+
+        $invoiceLineId = (int) DB::table('enterprise_purchase_invoice_lines')
+            ->where('purchase_invoice_id', $invoice->id)->value('id');
+        DB::table('enterprise_purchase_invoice_lines')->where('id', $invoiceLineId)
+            ->update(['unit_price' => '6.000', 'line_total' => '12.000']);
+        DB::table('enterprise_purchase_invoices')->where('id', $invoice->id)
+            ->update(['total_amount' => '12.000']);
+        $match = app(\\App\\Enterprise\\Procurement\\ProcurementCompletionManager::class)
+            ->syncMatchForInvoice((int) $invoice->id);
+        $this->assertSame('pending', $match->status);
+        $this->assertNull($match->reviewed_by);
+        $this->actingAs($checker)->post(route('admin.erp.procurement.invoices.handoff', $invoice->id), [
+            'store_id' => $store->id,
+        ])->assertRedirect()->assertSessionHasErrors('three_way_match');
+
+        $this->assertSame(0, DB::table('enterprise_outbox_messages')
+            ->where('event_type', 'ProcurementPurchaseInvoiceHandedOff')->count());
+        $this->assertDatabaseCount('enterprise_finance_source_postings', 0);
+
+        $this->actingAs($checker)->post(route('admin.erp.procurement.matches.review', $invoice->id), [
+            'store_id' => $store->id, 'decision' => 'approve', 'note' => 'Re-reviewed corrected variance',
+        ])->assertRedirect();
+        $this->actingAs($checker)->post(route('admin.erp.procurement.invoices.handoff', $invoice->id), [
+            'store_id' => $store->id,
+        ])->assertRedirect();
+        $this->actingAs($checker)->post(route('admin.erp.procurement.invoices.handoff', $invoice->id), [
+            'store_id' => $store->id,
+        ])->assertRedirect();
+
+        $this->assertSame(1, DB::table('enterprise_outbox_messages')
+            ->where('event_type', 'ProcurementPurchaseInvoiceHandedOff')->count());
+        $this->assertSame(1, DB::table('audit_logs')
+            ->where('event', 'enterprise.purchase_invoice.handed_off')
+            ->where('auditable_id', $invoice->id)->count());
+        $this->assertDatabaseHas('enterprise_purchase_invoices', [
+            'id' => $invoice->id, 'status' => 'handed_off', 'handed_off_by' => $checker->id,
+        ]);
+        $this->assertDatabaseCount('enterprise_finance_source_postings', 0);
+
+        // A handed-off invoice is immutable even at its match review route.
+        $this->actingAs($checker)->post(route('admin.erp.procurement.matches.review', $invoice->id), [
+            'store_id' => $store->id, 'decision' => 'reject',
+        ])->assertRedirect()->assertSessionHasErrors('status');
+        $this->assertDatabaseHas('enterprise_procurement_match_reviews', [
+            'purchase_invoice_id' => $invoice->id, 'status' => 'approved',
+        ]);
+    }
+
     public function test_receipt_http_rejects_extra_precision_and_overreceipt_without_duplicate_stock_posting(): void
     {
         $store = $this->store();
