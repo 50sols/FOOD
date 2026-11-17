@@ -45,7 +45,7 @@ final class V2RestaurantIntegrationWorkspaceTabsTest extends TestCase
                 // A single creation form per selected sibling, with no hidden POST duplicates.
                 $expectedForm = match ($tab) {
                     'connectors' => 'name="provider_key"',
-                    'api-clients' => 'name="scopes[]"',
+                    'api-clients' => 'name="name"',
                     'webhooks' => 'name="target_url"',
                     default => null,
                 };
