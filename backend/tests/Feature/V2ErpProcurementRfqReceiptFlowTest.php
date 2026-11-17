@@ -374,6 +374,41 @@ final class V2ErpProcurementRfqReceiptFlowTest extends TestCase
             ->where('product_id', $product->id)->value('quantity'));
         $this->assertSame($beforePostedAudits + 1, DB::table('audit_logs')
             ->where('event', 'enterprise.goods_receipt.posted')->count());
+
+        // A posted status is not an authorization bypass: after an imported
+        // header corruption, an idempotent retry must refuse a false success
+        // even though it will never generate a second stock movement.
+        DB::table('enterprise_goods_receipts')->where('id', $receipt->id)
+            ->update(['currency_code' => 'USD']);
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            $checker->forceFill(['locale' => $locale])->save();
+            $this->actingAs($checker->fresh())
+                ->post(route('admin.erp.procurement.receipts.post', $receipt->id), [
+                    'store_id' => $store->id,
+                ])->assertRedirect()->assertSessionHasErrors('purchase_order_id');
+            $this->assertSame(
+                __('enterprise_procurement.errors.receipt_source_invalid', [], $locale),
+                session('errors')->first('purchase_order_id'),
+            );
+            $this->assertSame(1, DB::table('stock_movements')
+                ->where('reference_type', 'enterprise_goods_receipt_line')
+                ->where('reference_id', $receiptLine->id)->count());
+            $this->assertSame($beforePostedAudits + 1, DB::table('audit_logs')
+                ->where('event', 'enterprise.goods_receipt.posted')->count());
+            $this->assertDatabaseHas('enterprise_goods_receipts', [
+                'id' => $receipt->id, 'supplier_id' => $supplierId,
+                'store_id' => $store->id, 'status' => 'posted',
+            ]);
+        }
+        DB::table('enterprise_goods_receipts')->where('id', $receipt->id)
+            ->update(['currency_code' => $order->currency_code]);
+        $this->actingAs($checker->fresh())
+            ->post(route('admin.erp.procurement.receipts.post', $receipt->id), [
+                'store_id' => $store->id,
+            ])->assertRedirect()->assertSessionHasNoErrors();
+        $this->assertSame($beforePostedAudits + 1, DB::table('audit_logs')
+            ->where('event', 'enterprise.goods_receipt.posted')->count());
     }
 
     public function test_rfq_cannot_award_before_independent_checker_approves_without_mutating_supplier_or_price(): void
