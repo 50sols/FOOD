@@ -123,8 +123,16 @@ jobs:
         run: bash scripts/release-readiness.sh
       - id: plan
         shell: bash
+        env:
+          REQUESTED_PUBLISH: ${{ inputs.publish }}
         run: |
           set -euo pipefail
+          if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" \
+            && "${REQUESTED_PUBLISH,,}" == "true" \
+            && "$GITHUB_REF" != "refs/heads/main" ]]; then
+            echo "::error::Publishing is permitted only from main; V2 validation runs must remain nonpublishing."
+            exit 1
+          fi
           version="$(tr -d '[:space:]' < VERSION)"
           customer="$(awk '/^version:/{print $2; exit}' apps/customer_app/pubspec.yaml | tr -d '"')"
           driver="$(awk '/^version:/{print $2; exit}' apps/driver_app/pubspec.yaml | tr -d '"')"
@@ -218,7 +226,10 @@ jobs:
   dashboard-only:
     name: Route Dashboard-only release
     needs: plan
-    if: needs.plan.outputs.dashboard_only == 'true'
+    if: >-
+      needs.plan.outputs.dashboard_only == 'true' &&
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'push' || inputs.publish)
     runs-on: ubuntu-latest
     steps:
       - name: Dispatch canonical Dashboard update workflow
