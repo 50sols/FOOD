@@ -54,6 +54,12 @@ void main() {
         await tester.pumpWidget(
           MaterialApp(
             locale: locale,
+            builder: (context, child) => Directionality(
+              textDirection: locale.languageCode == 'ar'
+                  ? TextDirection.rtl
+                  : TextDirection.ltr,
+              child: child!,
+            ),
             home: AppTranslations(
               locale: locale,
               overrides: const <String, String>{},
@@ -129,6 +135,12 @@ void main() {
             await tester.pumpWidget(
               MaterialApp(
                 locale: locale,
+                builder: (context, child) => Directionality(
+                  textDirection: locale.languageCode == 'ar'
+                      ? TextDirection.rtl
+                      : TextDirection.ltr,
+                  child: child!,
+                ),
                 home: AppTranslations(
                   locale: locale,
                   overrides: const <String, String>{},
@@ -215,6 +227,12 @@ void main() {
           final actionApi = _FakeCustomerActionApi();
           Widget scoped(int storeId, int invoiceId) => MaterialApp(
                 locale: locale,
+                builder: (context, child) => Directionality(
+                  textDirection: locale.languageCode == 'ar'
+                      ? TextDirection.rtl
+                      : TextDirection.ltr,
+                  child: child!,
+                ),
                 home: AppTranslations(
                   locale: locale,
                   overrides: const <String, String>{},
@@ -7537,6 +7555,9 @@ class _ReauthInvoiceB2bApi implements B2bApi {
   Future<Object?> get(String path) async {
     calls++;
     if (calls == 2) {
+      // Mimic an actual HTTP response: the new FutureBuilder must first
+      // subscribe before the 401/403/404 arrives.
+      await Future<void>.delayed(const Duration(milliseconds: 50));
       throw B2bApiException(
         'not_authorized',
         statusCode: denialStatus,
@@ -7620,7 +7641,7 @@ class _DeferredInvoicePdfApi implements B2bApi, B2bDocumentApi {
   Future<Object?> get(String path) async {
     final uri = Uri.parse(path);
     final storeId = int.parse(uri.queryParameters['store_id'] ?? '7');
-    final invoiceId = uri.pathSegments.contains('91') ? 91 : 31;
+    final invoiceId = uri.pathSegments.contains('91') || storeId == 9 ? 91 : 31;
     final invoice = <String, Object?>{
       'id': invoiceId,
       'store_id': storeId,
