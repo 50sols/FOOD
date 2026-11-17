@@ -3,6 +3,9 @@
 namespace Tests\Feature;
 
 use App\Domain\SmartOrdering\Models\SmartOrderingSite;
+use App\Enterprise\Modules\ModuleOperationalReadiness;
+use App\Enterprise\Modules\ModuleRegistry;
+use App\Enterprise\Modules\ModuleState;
 use App\Models\Permission;
 use App\Models\Role;
 use App\Models\Store;
@@ -10,6 +13,7 @@ use App\Models\User;
 use Database\Seeders\CoreReferenceSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Route;
 use Illuminate\Support\Str;
 use Tests\TestCase;
 
@@ -335,6 +339,207 @@ final class V2RestaurantIntegrationWorkspaceTabsTest extends TestCase
         $this->actingAs($wholesale)->get(route('admin.smart-ordering.integrations.index', [
             'site' => $siteA->getKey(), 'tab' => 'webhooks',
         ]))->assertForbidden();
+    }
+
+    public function test_store_manager_positive_path_is_scoped_and_remains_localized_for_every_tab(): void
+    {
+        $site = $this->restaurantSite();
+        $manager = $this->roleUser('B2C_STORE_ADMIN');
+        DB::table('user_store_roles')->insert([
+            'user_id' => $manager->id,
+            'store_id' => $site->store_id,
+            'role_id' => Role::query()->where('code', 'B2C_STORE_ADMIN')->firstOrFail()->id,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $this->assertTrue($manager->fresh()->hasPermission('smart_ordering.view', (int) $site->store_id));
+        $this->assertTrue($manager->fresh()->hasPermission('smart_ordering.manage', (int) $site->store_id));
+
+        foreach (['ar' => 'rtl', 'en' => 'ltr'] as $locale => $direction) {
+            $manager->forceFill(['locale' => $locale])->save();
+            foreach (['overview', 'logs', 'reports', 'connectors', 'api-clients', 'webhooks'] as $tab) {
+                $this->actingAs($manager->fresh())->get(route('admin.smart-ordering.integrations.index', [
+                    'site' => $site->getKey(),
+                    'tab' => $tab,
+                ]))->assertOk()
+                    ->assertSee('dir="'.$direction.'"', false)
+                    ->assertSee('id="ri-panel-'.$tab.'"', false);
+            }
+        }
+
+        $back = route('admin.smart-ordering.integrations.index', [
+            'site' => $site->getKey(), 'tab' => 'api-clients',
+        ]);
+        $this->actingAs($manager->fresh())->from($back)->post(
+            route('admin.smart-ordering.integrations.api-clients.store', $site),
+            [
+                '_integration_form' => 'api-clients',
+                'name' => 'Authorized Store API Client',
+                'scopes' => ['restaurant.read'],
+            ],
+        )->assertRedirect($back)->assertSessionHas('restaurant_api_credential');
+
+        $this->assertDatabaseCount('restaurant_saas_api_clients', 1);
+        $this->assertDatabaseHas('restaurant_saas_api_clients', [
+            'site_id' => $site->getKey(),
+            'name' => 'Authorized Store API Client',
+        ]);
+    }
+
+    public function test_disabled_lifecycle_and_explicit_store_entitlement_deny_block_get_and_post(): void
+    {
+        $site = $this->restaurantSite();
+        $owner = $this->roleUser('SUPER_ADMIN');
+        $indexUrl = $this->indexUrl($site, ['tab' => 'api-clients']);
+        $postUrl = route('admin.smart-ordering.integrations.api-clients.store', $site);
+        $input = [
+            'support_access' => 1,
+            '_integration_form' => 'api-clients',
+            'name' => 'Denied API Client',
+            'scopes' => ['restaurant.read'],
+        ];
+
+        $this->actingAs($owner)->get($indexUrl)->assertOk();
+
+        DB::table('enterprise_modules')
+            ->where('code', 'smart_ordering')
+            ->update(['state' => ModuleState::DISABLED->value]);
+
+        $this->actingAs($owner)->get($indexUrl)->assertNotFound();
+        $this->actingAs($owner)->post($postUrl, $input)->assertNotFound();
+
+        DB::table('enterprise_modules')
+            ->where('code', 'smart_ordering')
+            ->update(['state' => ModuleState::ENABLED->value]);
+
+        DB::table('enterprise_module_entitlements')
+            ->where('module_code', 'smart_ordering')
+            ->where('scope_type', 'store')
+            ->where('scope_id', $site->store_id)
+            ->update(['is_enabled' => false]);
+
+        $this->actingAs($owner)->get($indexUrl)->assertNotFound();
+        $this->actingAs($owner)->post($postUrl, $input)->assertNotFound();
+
+        $this->assertDatabaseCount('restaurant_saas_api_clients', 0);
+    }
+
+    public function test_view_only_permission_deny_and_inactive_actor_reject_real_mutation_routes(): void
+    {
+        $site = $this->restaurantSite();
+        $operator = $this->roleUser('B2C_STORE_ADMIN', 'en');
+        DB::table('user_store_roles')->insert([
+            'user_id' => $operator->id,
+            'store_id' => $site->store_id,
+            'role_id' => Role::query()->where('code', 'B2C_STORE_ADMIN')->firstOrFail()->id,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        DB::table('user_permission_overrides')->insert([
+            'user_id' => $operator->id,
+            'permission_id' => Permission::query()->where('code', 'smart_ordering.manage')->firstOrFail()->id,
+            'scope_key' => 'global',
+            'store_id' => null,
+            'effect' => 'deny',
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        $operator->forceFill(['has_permission_overrides' => true])->save();
+
+        foreach (['connectors', 'api-clients', 'webhooks', 'logs', 'reports'] as $tab) {
+            $this->actingAs($operator->fresh())->get(route('admin.smart-ordering.integrations.index', [
+                'site' => $site->getKey(), 'tab' => $tab,
+            ]))->assertOk()->assertDontSee('name="_integration_form"', false);
+        }
+
+        $this->actingAs($operator->fresh())->post(route('admin.smart-ordering.integrations.api-clients.store', $site), [
+            '_integration_form' => 'api-clients',
+            'name' => 'Forged Role',
+            'scopes' => ['restaurant.read'],
+        ])->assertForbidden();
+
+        $this->actingAs($operator->fresh())->post(route('admin.smart-ordering.integrations.webhooks.store', $site), [
+            '_integration_form' => 'webhooks',
+            'target_url' => 'https://example.test/callback',
+            'event_types' => ['order.created'],
+        ])->assertForbidden();
+
+        $operator->forceFill(['is_active' => false])->save();
+
+        $this->actingAs($operator->fresh())->get(route('admin.smart-ordering.integrations.index', [
+            'site' => $site->getKey(), 'tab' => 'logs',
+        ]))->assertForbidden();
+
+        $this->actingAs($operator->fresh())->post(route('admin.smart-ordering.integrations.api-clients.store', $site), [
+            '_integration_form' => 'api-clients',
+            'name' => 'Inactive Role',
+            'scopes' => ['restaurant.read'],
+        ])->assertForbidden();
+
+        $this->assertDatabaseCount('restaurant_saas_api_clients', 0);
+        $this->assertDatabaseCount('restaurant_saas_webhook_subscriptions', 0);
+    }
+
+    public function test_csrf_protected_web_routes_have_no_get_mutation_method_and_render_tokens(): void
+    {
+        $site = $this->restaurantSite();
+        $owner = $this->roleUser('SUPER_ADMIN');
+
+        foreach ([
+            'admin.smart-ordering.integrations.api-clients.store',
+            'admin.smart-ordering.integrations.webhooks.store',
+            'admin.smart-ordering.integrations.install',
+        ] as $name) {
+            $route = Route::getRoutes()->getByName($name);
+            $this->assertNotNull($route);
+            $this->assertContains('POST', $route->methods());
+            $this->assertContains('web', $route->gatherMiddleware());
+            $this->assertContains('management.dashboard', $route->gatherMiddleware());
+
+            $this->actingAs($owner)->get(route($name, $site))->assertStatus(405);
+        }
+
+        foreach (['connectors', 'api-clients', 'webhooks'] as $tab) {
+            $this->actingAs($owner)->get($this->indexUrl($site, ['tab' => $tab]))
+                ->assertOk()
+                ->assertSee('name="_token"', false);
+        }
+
+        $this->assertDatabaseCount('restaurant_saas_api_clients', 0);
+        $this->assertDatabaseCount('restaurant_saas_webhook_subscriptions', 0);
+    }
+
+    public function test_uncertified_status_cannot_be_mistaken_for_enterprise_module_readiness(): void
+    {
+        $site = $this->restaurantSite();
+        $registry = app(ModuleRegistry::class);
+        $manifestVersion = $registry->manifest('smart_ordering')->version;
+
+        $this->assertSame(ModuleState::ENABLED, $registry->state('smart_ordering'));
+
+        config()->set('enterprise_module_readiness.certified_versions.smart_ordering', null);
+
+        $this->assertSame(
+            'uncertified',
+            app(ModuleOperationalReadiness::class)->status(
+                'smart_ordering',
+                $manifestVersion,
+                $registry->state('smart_ordering'),
+            ),
+        );
+
+        // The existing ERP readiness middleware protects only ERP route names.
+        // Restaurant Integrations still uses its own server-side module
+        // lifecycle + store entitlement + permission contract; do not fake
+        // certification or widen the unrelated ERP middleware in this issue.
+        $this->assertSame('admin.smart-ordering.integrations.index', Route::getRoutes()
+            ->getByName('admin.smart-ordering.integrations.index')->getName());
+        $this->assertDatabaseHas('enterprise_module_entitlements', [
+            'module_code' => 'smart_ordering',
+            'scope_id' => $site->store_id,
+            'is_enabled' => true,
+        ]);
     }
 
     private function restaurantSite(): SmartOrderingSite
