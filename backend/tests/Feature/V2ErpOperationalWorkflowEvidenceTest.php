@@ -279,6 +279,45 @@ final class V2ErpOperationalWorkflowEvidenceTest extends TestCase
         }
     }
 
+    public function test_signed_workflow_proof_rechecks_persisted_lifecycle_instead_of_trusting_stale_enabled_argument(): void
+    {
+        $this->enableSample();
+        $this->requireSampleWorkflow();
+        $this->evidence();
+
+        $readiness = app(ModuleOperationalReadiness::class);
+        $lifecycle = app(ModuleLifecycleManager::class);
+
+        $this->assertSame('ready', $readiness->status('sample_optional', 1, ModuleState::ENABLED));
+
+        // A caller may have read ENABLED immediately before another request
+        // suspended/disabled the persisted module. The signed manifest and
+        // trusted workflow proof alone must not let the stale caller say ready.
+        foreach ([ModuleState::SUSPENDED, ModuleState::MAINTENANCE, ModuleState::DISABLED] as $state) {
+            $lifecycle->transition('sample_optional', $state);
+
+            foreach (['ar', 'en'] as $locale) {
+                app()->setLocale($locale);
+                $this->assertSame(
+                    'uncertified',
+                    $readiness->status('sample_optional', 1, ModuleState::ENABLED),
+                    $state->value.' persisted lifecycle must deny stale caller state.',
+                );
+                $this->assertSame('inactive', $readiness->status('sample_optional', 1, $state));
+            }
+
+            if ($state === ModuleState::DISABLED) {
+                $lifecycle->transition('sample_optional', ModuleState::ENABLING);
+            }
+
+            $lifecycle->transition('sample_optional', ModuleState::ENABLED);
+            $this->assertSame('ready', $readiness->status('sample_optional', 1, ModuleState::ENABLED));
+        }
+
+        // This test changes only disposable Laravel fixture module state.
+        // No production certification, grants or trust keys are provisioned.
+    }
+
     public function test_operational_proof_never_bypasses_disabled_lifecycle_or_failing_health(): void
     {
         config()->set('enterprise_module_readiness.certified_versions.sample_optional', 1);
