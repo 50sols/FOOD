@@ -24,6 +24,8 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Route;
 use Illuminate\Support\Facades\Schema;
+use Illuminate\Support\Collection;
+use Illuminate\Support\Str;
 use Throwable;
 
 final class ErpCenterController extends Controller
@@ -226,11 +228,37 @@ final class ErpCenterController extends Controller
             'summary' => $summary,
             'kpis' => $kpis,
             'workload' => $workload,
-            'myWorkItems' => collect($work['items']->items())->take(6)->values(),
-            'activity' => $work['activity']->take(8)->values(),
+            'myWorkItems' => $this->safePreviewReferences(collect($work['items']->items())->take(6)->values()),
+            'activity' => $this->safePreviewReferences($work['activity']->take(8)->values()),
             'selectedModule' => $request->string('module')->toString(),
             'selectedStatus' => $selectedStatus,
         ]);
+    }
+
+    /**
+     * ERP Center displays compact user-facing references, not internal UUIDs
+     * or serialized payloads. Keep the canonical work item and deep link
+     * unchanged; this projection only sanitizes the two summary previews.
+     *
+     * @param Collection<int, array<string, mixed>> $items
+     * @return Collection<int, array<string, mixed>>
+     */
+    private function safePreviewReferences(Collection $items): Collection
+    {
+        return $items->map(static function (array $item): array {
+            $value = is_string($item['reference'] ?? null)
+                ? trim($item['reference'])
+                : '';
+            $serialized = $value !== ''
+                && in_array($value[0], ['{', '['], true)
+                && json_decode($value, true) !== null;
+
+            if ($value === '' || Str::isUuid($value) || $serialized) {
+                $item['reference'] = '—';
+            }
+
+            return $item;
+        });
     }
 
     private function bootstrapLocalSuperAdminModules(User $actor): void
