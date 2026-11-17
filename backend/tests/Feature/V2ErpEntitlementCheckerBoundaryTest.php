@@ -12,6 +12,9 @@ use App\Enterprise\Procurement\PurchaseOrderManager;
 use App\Enterprise\Procurement\PurchaseRequestManager;
 use App\Enterprise\Procurement\SupplierDirectory;
 use App\Models\Catalog;
+use App\Models\EnterpriseBusinessUnit;
+use App\Models\EnterpriseCompany;
+use App\Models\EnterpriseLegalEntity;
 use App\Models\Permission;
 use App\Models\Product;
 use App\Models\Role;
@@ -598,7 +601,33 @@ final class V2ErpEntitlementCheckerBoundaryTest extends TestCase
             'name' => 'P111 Reports Sibling',
             'is_active' => true,
         ]);
-        app(OrganizationHierarchyService::class)->ensureDefaultScopeForStore($sibling);
+        $hierarchy = app(OrganizationHierarchyService::class);
+        $primaryScope = $hierarchy->scopeForStore($primary->id);
+        $this->assertIsArray($primaryScope);
+        // Distinct company (not just a second store in the default company).
+        // Verify both the company and selected-store disclosure boundary.
+        $foreignCompany = EnterpriseCompany::query()->create([
+            'organization_id' => $primaryScope['organization_id'],
+            'code' => 'P111_REPORT_OTHER_COMPANY',
+            'name' => 'P111 Reporting Other Company',
+            'is_active' => true,
+        ]);
+        $foreignEntity = EnterpriseLegalEntity::query()->create([
+            'company_id' => $foreignCompany->id,
+            'code' => 'P111_REPORT_OTHER_ENTITY',
+            'name' => 'P111 Reporting Other Entity',
+            'is_active' => true,
+        ]);
+        $foreignUnit = EnterpriseBusinessUnit::query()->create([
+            'legal_entity_id' => $foreignEntity->id,
+            'code' => 'P111_REPORT_OTHER_UNIT',
+            'name' => 'P111 Reporting Other Unit',
+            'is_active' => true,
+        ]);
+        $hierarchy->assignStore($sibling, $foreignUnit);
+        $siblingScope = $hierarchy->scopeForStore($sibling->id);
+        $this->assertIsArray($siblingScope);
+        $this->assertNotSame($primaryScope['company_id'], $siblingScope['company_id']);
 
         $admin = $this->actor('SUPER_ADMIN');
         $buyer = $this->actor('PROCUREMENT_BUYER');
