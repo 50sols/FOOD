@@ -5,12 +5,15 @@ namespace Tests\Feature;
 use App\Enterprise\Entitlements\EntitlementScope;
 use App\Enterprise\Entitlements\ModuleEntitlementManager;
 use App\Enterprise\Modules\ModuleRegistry;
+use App\Enterprise\Organization\OrganizationHierarchyService;
 use App\Http\Middleware\EnsureErpOperationalReadiness;
 use App\Models\Role;
+use App\Models\Store;
 use App\Models\User;
 use App\Services\EnterpriseModuleAdministration;
 use Database\Seeders\CoreReferenceSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Route;
 use Tests\TestCase;
 
@@ -23,6 +26,7 @@ final class V2ErpSidebarOperationalBoundaryTest extends TestCase
         parent::setUp();
         $this->seed(CoreReferenceSeeder::class);
         config()->set('enterprise_module_readiness.certified_versions', []);
+        $this->wholesaleStore();
     }
 
     public function test_enabled_entitled_sidebar_module_is_not_a_direct_operational_grant(): void
@@ -104,5 +108,18 @@ final class V2ErpSidebarOperationalBoundaryTest extends TestCase
         $user->roles()->attach(Role::query()->where('code', 'SUPER_ADMIN')->firstOrFail());
 
         return $user;
+    }
+
+    private function wholesaleStore(): Store
+    {
+        $store = Store::query()->create([
+            'store_type_id' => (int) DB::table('store_types')->where('code', 'B2B')->value('id'),
+            'code' => 'V2-ERP-BOUNDARY-WHOLESALE',
+            'name' => 'V2 ERP Boundary Wholesale',
+            'is_active' => true,
+        ]);
+        app(OrganizationHierarchyService::class)->ensureDefaultScopeForStore($store);
+
+        return $store;
     }
 }
