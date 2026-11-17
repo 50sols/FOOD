@@ -461,7 +461,14 @@ class B2bWorkspaceController extends Controller
         $storeId = $this->principal->storeId();
         abort_unless($this->pricingMode->tiersEnabled($storeId), 409, 'B2B pricing tiers are disabled.');
         $this->operationalScope->assertStore($actor, $storeId, 'b2b.pricing.manage', 'b2b');
+        $request->validate(['setup_action' => ['sometimes', 'in:save,test']]);
         $request->merge(['store_id' => $storeId]);
+
+        if ($request->input('setup_action') === 'test') {
+            $pricing->validateCandidate($request);
+
+            return back()->with('status', __('b2b_pricing_setup.rule_test_valid'));
+        }
 
         $pricing->upsert($request);
 
