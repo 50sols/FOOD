@@ -14,6 +14,7 @@ use App\Models\User;
 use Database\Seeders\CoreReferenceSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
+use Tests\Support\SyntheticErpWorkflowEvidence;
 use Tests\TestCase;
 
 final class V2TreasurySelectedStoreReadEntitlementTest extends TestCase
@@ -32,8 +33,8 @@ final class V2TreasurySelectedStoreReadEntitlementTest extends TestCase
         );
         // P135 adds signed operational proof. Use its isolated synthetic fixture
         // only when the original P135 branch is eventually integrated.
-        if (class_exists(\Tests\Support\SyntheticErpWorkflowEvidence::class)) {
-            \Tests\Support\SyntheticErpWorkflowEvidence::install();
+        if (class_exists(SyntheticErpWorkflowEvidence::class)) {
+            SyntheticErpWorkflowEvidence::install();
         }
     }
 
