@@ -123,7 +123,7 @@ final class V2RetailDashboardTabShapeScopeTest extends TestCase
                 'store_id' => $storeOne,
                 'dashboard_tab' => 'sales',
             ]))
-            ->assertUnauthorized();
+            ->assertForbidden();
     }
 
     /**
