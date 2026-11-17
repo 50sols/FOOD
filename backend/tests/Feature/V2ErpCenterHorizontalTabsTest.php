@@ -42,16 +42,15 @@ final class V2ErpCenterHorizontalTabsTest extends TestCase
             $markup = $response->getContent();
             preg_match_all('/<section\\b[^>]*\\bdata-erp-panel="([^"]+)"[^>]*>/s', $markup, $matches, PREG_SET_ORDER);
 
-            $this->assertCount(4, $matches, 'A panel must not disappear or be duplicated.');
-            $visible = [];
-            foreach ($matches as $match) {
-                $this->assertContains($match[1], self::PANELS);
-                if (! preg_match('/\\bhidden\\b/', $match[0])) {
-                    $visible[] = $match[1];
+            $this->assertCount(1, $matches, 'Only the authorized selected panel may be present in the HTML.');
+            $this->assertSame($expected, $matches[0][1], json_encode($query));
+            $this->assertStringContainsString('aria-labelledby="erp-tab-'.$expected.'"', $matches[0][0]);
+            $this->assertStringNotContainsString(' hidden', $matches[0][0]);
+            foreach (self::PANELS as $panel) {
+                if ($panel !== $expected) {
+                    $this->assertStringNotContainsString('data-erp-panel="'.$panel.'"', $markup);
                 }
-                $this->assertStringContainsString('aria-labelledby="erp-tab-'.$match[1].'"', $match[0]);
             }
-            $this->assertSame([$expected], $visible, json_encode($query));
             $this->assertSame(4, substr_count($markup, 'data-erp-tab="'));
             $this->assertSame(1, substr_count($markup, 'class="foodex-tab active"'));
         }
@@ -74,10 +73,10 @@ final class V2ErpCenterHorizontalTabsTest extends TestCase
                 ->assertSee('class="foodex-tabs erp-workspace-tabs"', false)
                 ->assertSee('aria-current="page"', false)
                 ->assertSee('data-erp-chart="workload"', false)
-                ->assertSee('data-erp-kpis', false)
-                ->assertSee('data-erp-my-work', false)
-                ->assertSee('data-erp-modules', false)
-                ->assertSee(route('admin.action-center.index'), false);
+                ->assertDontSee('data-erp-kpis', false)
+                ->assertDontSee('data-erp-my-work', false)
+                ->assertDontSee('data-erp-modules', false)
+                ->assertDontSee(route('admin.action-center.index'), false);
 
             $markup = html_entity_decode($response->getContent(), ENT_QUOTES | ENT_HTML5, 'UTF-8');
             $this->assertStringContainsString(
@@ -86,10 +85,35 @@ final class V2ErpCenterHorizontalTabsTest extends TestCase
                 ]),
                 $markup,
             );
+            // The modules filter links are emitted only when the modules panel is selected.
+            $modulesHtml = html_entity_decode(
+                $this->actingAs($actor->fresh())
+                    ->get(route('admin.erp.index', ['status' => 'available', 'tab' => 'modules']))
+                    ->assertOk()
+                    ->assertSee('data-erp-modules', false)
+                    ->assertDontSee('data-erp-my-work', false)
+                    ->getContent(),
+                ENT_QUOTES | ENT_HTML5,
+                'UTF-8',
+            );
             $this->assertStringContainsString(
                 route('admin.erp.index', ['status' => 'available', 'tab' => 'modules']).'#erp-modules',
-                $markup,
+                $modulesHtml,
             );
+            // Do not ship follow-up work, KPI cards or their deep links in inactive panels.
+            $this->actingAs($actor->fresh())
+                ->get(route('admin.erp.index', ['tab' => 'snapshot']))
+                ->assertOk()
+                ->assertSee('data-erp-kpis', false)
+                ->assertDontSee('data-erp-my-work', false)
+                ->assertDontSee('data-erp-modules', false);
+            $this->actingAs($actor->fresh())
+                ->get(route('admin.erp.index', ['tab' => 'follow_up']))
+                ->assertOk()
+                ->assertSee('data-erp-my-work', false)
+                ->assertSee(route('admin.action-center.index'), false)
+                ->assertDontSee('data-erp-kpis', false)
+                ->assertDontSee('data-erp-modules', false);
             foreach (self::PANELS as $key) {
                 $this->assertStringContainsString('id="erp-tab-'.$key.'"', $markup);
             }
