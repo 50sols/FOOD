@@ -349,6 +349,52 @@ final class V2ErpProcurementRfqReceiptFlowTest extends TestCase
                 ->update($trustedReceiptHeader);
         }
 
+        // A persisted draft can be altered after valid HTTP creation. The
+        // posting boundary must reauthenticate every PO-line snapshot field
+        // and reject zero/negative quantities before any stock or GL write.
+        $trustedLine = [
+            'item_code' => $line->item_code,
+            'unit' => $line->unit,
+            'ordered_quantity' => $line->quantity,
+            'unit_price' => $line->unit_price,
+            'received_quantity' => '2.000',
+        ];
+        foreach ([
+            ['item_code' => 'FORGED-ITEM'],
+            ['unit' => 'forged-unit'],
+            ['ordered_quantity' => '1.000'],
+            ['unit_price' => '0.001'],
+            ['received_quantity' => '0.000'],
+            ['received_quantity' => '-1.000'],
+        ] as $tamper) {
+            DB::table('enterprise_goods_receipt_lines')
+                ->where('id', $receiptLine->id)->update($tamper);
+
+            foreach (['ar', 'en'] as $locale) {
+                app()->setLocale($locale);
+                $checker->forceFill(['locale' => $locale])->save();
+                $this->actingAs($checker->fresh())
+                    ->post(route('admin.erp.procurement.receipts.post', $receipt->id), [
+                        'store_id' => $store->id,
+                    ])->assertRedirect()->assertSessionHasErrors('lines');
+                $this->assertSame(
+                    __('enterprise_procurement.errors.receipt_source_invalid', [], $locale),
+                    session('errors')->first('lines'),
+                );
+                $this->assertDatabaseHas('enterprise_goods_receipts', [
+                    'id' => $receipt->id, 'status' => 'draft', 'posted_by' => null,
+                ]);
+                $this->assertSame($beforeMovements, DB::table('stock_movements')->count());
+                $this->assertSame($beforePostedAudits, DB::table('audit_logs')
+                    ->where('event', 'enterprise.goods_receipt.posted')->count());
+                $this->assertNull(DB::table('inventories')
+                    ->where('warehouse_id', $warehouse->id)
+                    ->where('product_id', $product->id)->value('quantity'));
+            }
+            DB::table('enterprise_goods_receipt_lines')
+                ->where('id', $receiptLine->id)->update($trustedLine);
+        }
+
         // An entirely restored authentic GRN posts ONCE; a retry is idempotent
         // and never duplicates inventory, award, stock movement or audit.
         $this->actingAs($checker->fresh())
