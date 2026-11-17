@@ -148,6 +148,45 @@ final class V2EnterpriseBiIndependentPageTabsTest extends TestCase
         $this->assertContains($response->status(), [403, 404]);
     }
 
+    public function test_schedule_post_preserves_selected_workspace_on_success_and_validation_error(): void
+    {
+        [$actor, $store] = $this->authorizedStoreActor();
+        $from = now()->subDay()->toDateString();
+        $to = now()->toDateString();
+        $returnTo = route('admin.erp.bi', [
+            'bi_tab' => 'schedules',
+            'report' => 'orders.summary',
+            'scope' => 'store:'.$store->id,
+            'from' => $from,
+            'to' => $to,
+        ]);
+        $schedulePayload = [
+            'report' => 'orders.summary',
+            'scope_type' => 'store',
+            'scope_id' => $store->id,
+            'from' => $from,
+            'to' => $to,
+            'dimensions' => ['date'],
+            'measures' => ['orders'],
+            'interval_minutes' => 1440,
+        ];
+
+        $this->from($returnTo)
+            ->actingAs($actor)
+            ->post(route('admin.erp.bi.schedules.store'), $schedulePayload)
+            ->assertRedirect($returnTo)
+            ->assertSessionHasErrors(['next_run_at']);
+
+        $this->from($returnTo)
+            ->actingAs($actor)
+            ->post(route('admin.erp.bi.schedules.store'), [
+                ...$schedulePayload,
+                'next_run_at' => now()->addDay()->format('Y-m-d H:i:s'),
+            ])
+            ->assertRedirect($returnTo)
+            ->assertSessionHasNoErrors();
+    }
+
     /** @return array{User, Store} */
     private function authorizedStoreActor(): array
     {
