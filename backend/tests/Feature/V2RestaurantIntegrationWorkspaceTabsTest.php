@@ -497,7 +497,11 @@ final class V2RestaurantIntegrationWorkspaceTabsTest extends TestCase
             $this->assertContains('web', $route->gatherMiddleware());
             $this->assertContains('management.dashboard', $route->gatherMiddleware());
 
-            $this->actingAs($owner)->get(route($name, $site))->assertStatus(405);
+            // The install POST shares its URI with the GET integration index.
+            // This is normal REST routing, not permission to run an install via GET.
+            if ($name !== 'admin.smart-ordering.integrations.install') {
+                $this->actingAs($owner)->get(route($name, $site))->assertStatus(405);
+            }
         }
 
         foreach (['connectors', 'api-clients', 'webhooks'] as $tab) {
@@ -508,6 +512,34 @@ final class V2RestaurantIntegrationWorkspaceTabsTest extends TestCase
 
         $this->assertDatabaseCount('restaurant_saas_api_clients', 0);
         $this->assertDatabaseCount('restaurant_saas_webhook_subscriptions', 0);
+    }
+
+    public function test_invalid_csrf_token_is_rejected_when_real_web_csrf_middleware_runs(): void
+    {
+        $site = $this->restaurantSite();
+        $owner = $this->roleUser('SUPER_ADMIN');
+        $this->actingAs($owner)->withSession(['_token' => 'csrf-valid-session-token']);
+
+        // Laravel deliberately skips CSRF verification in the PHPUnit
+        // 'testing' environment. Change only the app environment inside this
+        // request to exercise the exact production web middleware; restore it
+        // unconditionally, including when the assertion fails.
+        $originalEnvironment = $this->app['env'];
+        $this->app['env'] = 'production';
+
+        try {
+            $this->post(route('admin.smart-ordering.integrations.api-clients.store', $site), [
+                '_token' => 'csrf-forged-token',
+                'support_access' => 1,
+                '_integration_form' => 'api-clients',
+                'name' => 'Forged CSRF Client',
+                'scopes' => ['restaurant.read'],
+            ])->assertStatus(419);
+        } finally {
+            $this->app['env'] = $originalEnvironment;
+        }
+
+        $this->assertDatabaseCount('restaurant_saas_api_clients', 0);
     }
 
     public function test_uncertified_status_cannot_be_mistaken_for_enterprise_module_readiness(): void
