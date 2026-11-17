@@ -6246,7 +6246,8 @@ class _WholesaleCartDesignScreenState extends State<WholesaleCartDesignScreen>
 
         final scopedStoreId = storeId;
         final value = api is WholesaleStoreScopedCartMutationApi
-            ? await api.updateItemForStore(scopedStoreId, id, target)
+            ? await (api as WholesaleStoreScopedCartMutationApi)
+                .updateItemForStore(scopedStoreId, id, target)
             : await api.updateItem(id, target);
         if (!mounted) return;
 
