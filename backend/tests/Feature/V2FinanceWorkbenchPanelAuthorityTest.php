@@ -212,6 +212,67 @@ final class V2FinanceWorkbenchPanelAuthorityTest extends TestCase
         );
     }
 
+    public function test_ar_only_authorized_reader_gets_no_payables_or_gl_navigation_or_ledger_data(): void
+    {
+        [$reader, $store] = $this->authorizedViewer('FIN-P303-UX-AR-ONLY');
+        $context = app(TenantContextResolver::class)->retail($reader, $store->id);
+        $scope = $context->enterpriseScope;
+        $this->assertNotNull($scope);
+
+        // Only disposable test entitlements are restricted. The runtime module
+        // certification, role catalog, and actual finance authority stay intact.
+        app(ModuleEntitlementManager::class)->set(
+            FinanceFoundationService::MODULE,
+            new EntitlementScope(EntitlementScope::LEGAL_ENTITY, $scope->legalEntityId),
+            true,
+            ['finance.ar.read'],
+            $reader,
+        );
+
+        foreach (['en' => 'ltr', 'ar' => 'rtl'] as $locale => $direction) {
+            app()->setLocale($locale);
+            $reader->forceFill(['locale' => $locale])->save();
+
+            $response = $this->actingAs($reader->fresh())->get(route('admin.erp.finance.index', [
+                'store_id' => $store->id,
+                'tab' => 'receivables',
+                'finance_panel' => 'documents',
+                'date_from' => '2026-01-01',
+                'date_to' => '2026-12-31',
+            ]))->assertOk()
+                ->assertSee('dir="'.$direction.'"', false)
+                ->assertSee('data-finance-subpanel="documents"', false);
+
+            $markup = html_entity_decode($response->getContent(), ENT_QUOTES | ENT_HTML5, 'UTF-8');
+            $this->assertSame(1, preg_match('/<nav class="finance-tabs"[^>]*>(.*?)<\/nav>/s', $markup, $nav));
+            $this->assertStringContainsString('tab=receivables', $nav[1]);
+            $this->assertStringNotContainsString(__('finance_workbench.tabs.journals'), $nav[1]);
+            $this->assertStringNotContainsString(__('finance_workbench.tabs.payables'), $nav[1]);
+            $this->assertStringNotContainsString('is-disabled', $nav[1]);
+            $this->assertStringNotContainsString('tab=journals', $nav[1]);
+            $this->assertStringNotContainsString('tab=payables', $nav[1]);
+
+            foreach (['journals', 'payables'] as $deniedTab) {
+                $this->actingAs($reader->fresh())->get(route('admin.erp.finance.index', [
+                    'store_id' => $store->id,
+                    'tab' => $deniedTab,
+                ]))->assertForbidden();
+            }
+        }
+    }
+
+    public function test_uncertified_finance_module_does_not_render_even_an_ar_document_tab(): void
+    {
+        [$actor, $store] = $this->authorizedViewer('FIN-P303-UX-UNREADY');
+        config()->set('enterprise_module_readiness.certified_versions.finance', null);
+
+        $this->actingAs($actor)->get(route('admin.erp.finance.index', [
+            'store_id' => $store->id,
+            'tab' => 'receivables',
+            'finance_panel' => 'documents',
+        ]))->assertForbidden();
+    }
+
     public function test_gl_links_project_existing_read_permission_not_journal_ids_alone(): void
     {
         $template = file_get_contents(resource_path('views/admin/finance-workbench.blade.php'));
