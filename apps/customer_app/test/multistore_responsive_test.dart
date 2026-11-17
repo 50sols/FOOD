@@ -270,7 +270,11 @@ void main() {
             wholesaleCommerceApi: api,
           ),
         );
-        await tester.pumpAndSettle();
+        // Checkout includes a continuously animated loading surface: use a
+        // bounded frame budget rather than waiting for animations to settle.
+        for (var frame = 0; frame < 20; frame++) {
+          await tester.pump(const Duration(milliseconds: 50));
+        }
         final field = find.byKey(const ValueKey('b2b-checkout-coupon'));
         final apply = find.byKey(const ValueKey('b2b-checkout-apply-coupon'));
         await tester.ensureVisible(field);
@@ -305,7 +309,9 @@ void main() {
             'grand_total': 60.125,
           },
         });
-        await tester.pumpAndSettle();
+        for (var frame = 0; frame < 10; frame++) {
+          await tester.pump(const Duration(milliseconds: 50));
+        }
         final applied =
             find.byKey(const ValueKey('b2b-checkout-coupon-applied'));
         expect(applied, findsOneWidget);
