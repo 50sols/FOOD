@@ -429,7 +429,6 @@ void main() {
     }
   });
 
-
   test('Store-scoped PATCH rejects foreign B2B store without retry in AR/EN',
       () async {
     for (final locale in ['ar', 'en']) {
