@@ -269,7 +269,29 @@ jobs:
           export FOODEX_ACTUAL_UPDATE_ZIP="$GITHUB_WORKSPACE/dist/update/FOODEX-Update.zip"
           export FOODEX_ACTUAL_UPDATE_SHA256="$(sha256sum "$FOODEX_ACTUAL_UPDATE_ZIP" | cut -d' ' -f1)"
           php artisan key:generate --force
-          php artisan test --filter=test_actual_source_update_zip_rejects_wrong_key_and_restores_after_health_failure
+          test_report="$RUNNER_TEMP/g005-actual-zip-recovery.junit.xml"
+          php artisan test tests/Deployment/SignedAdminZipMySqlDeploymentTest.php --filter=test_actual_source_update_zip_rejects_wrong_key_and_restores_after_health_failure --fail-on-empty-test-suite --fail-on-skipped --fail-on-risky --log-junit="$test_report"
+          python3 - "$test_report" <<'PY'
+          import sys
+          import xml.etree.ElementTree as ET
+
+          report = ET.parse(sys.argv[1]).getroot()
+          suites = report.findall("testsuite")
+          if not suites and report.tag == "testsuite":
+              suites = [report]
+          if not suites:
+              suites = report.findall(".//testsuite")
+
+          totals = {
+              key: sum(int(suite.attrib.get(key, "0")) for suite in suites)
+              for key in ("tests", "assertions", "failures", "errors", "skipped")
+          }
+          print(f"Exact source-built ZIP recovery test totals: {totals}")
+          if totals["tests"] < 1 or totals["assertions"] < 1 or any(
+              totals[key] for key in ("failures", "errors", "skipped")
+          ):
+              raise SystemExit("Required exact-ZIP recovery test did not execute and pass with assertions")
+          PY
       - name: Upgrade real disposable v125 MySQL dataset with EXACT generated ZIP
         shell: bash
         run: |
