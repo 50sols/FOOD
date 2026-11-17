@@ -1480,21 +1480,59 @@ final class ErpCenterTest extends TestCase
             ]))->assertOk();
         }
 
-        // No receipts.read at ANY authorized store must not create an
-        // AVAILABLE/linked Treasury Overview card from payment-only grants.
+        // A payments-only store already admits the real Treasury Payments
+        // HTTP read route. The Center must link to that exact same tab, not
+        // incorrectly label the whole module "not entitled". It must never
+        // grant access to Overview (which requires receipts.read).
         $entitlements->set('treasury', new EntitlementScope(EntitlementScope::STORE, $storeA->id), true, [
             'treasury.payments.read',
         ]);
+        foreach (['ar' => 'rtl', 'en' => 'ltr'] as $locale => $direction) {
+            $manager->forceFill(['locale' => $locale])->save();
+            app()->setLocale($locale);
+            app()->forgetInstance(AdminNavigation::class);
+
+            $response = $this->actingAs($manager->fresh())->get(route('admin.erp.index'));
+            $response->assertOk()->assertSee('dir="'.$direction.'"', false);
+            $card = collect($response->viewData('cards'))->firstWhere('key', 'treasury');
+            $this->assertIsArray($card);
+            $this->assertSame('available', $card['status']);
+            $this->assertSame(
+                route('admin.erp.treasury.index', [
+                    'store_id' => $storeA->id,
+                    'tab' => 'payments',
+                ]),
+                $card['url'],
+            );
+            $this->actingAs($manager->fresh())->get($card['url'])
+                ->assertOk()
+                ->assertViewHas('activeTab', 'payments');
+            $this->actingAs($manager->fresh())->get(route('admin.erp.treasury.index', [
+                'store_id' => $storeA->id,
+                'tab' => 'overview',
+            ]))->assertForbidden();
+        }
+
+        // A module grant without ANY read capability is not permission to
+        // open a Treasury workspace, even if finance.view is present.
+        foreach ([$storeA, $storeB] as $store) {
+            $entitlements->set(
+                'treasury',
+                new EntitlementScope(EntitlementScope::STORE, $store->id),
+                true,
+                ['treasury.payments.manage'],
+            );
+        }
         app()->forgetInstance(AdminNavigation::class);
-        $response = $this->actingAs($manager->fresh())->get(route('admin.erp.index'));
-        $response->assertOk();
+        $response = $this->actingAs($manager->fresh())->get(route('admin.erp.index'))->assertOk();
         $card = collect($response->viewData('cards'))->firstWhere('key', 'treasury');
         $this->assertIsArray($card);
         $this->assertSame('not_entitled', $card['status']);
+        $this->assertSame('entitlement_scope', $card['denial_reason']);
         $this->assertNull($card['url']);
         $this->actingAs($manager->fresh())->get(route('admin.erp.treasury.index', [
             'store_id' => $storeA->id,
-            'tab' => 'overview',
+            'tab' => 'payments',
         ]))->assertForbidden();
 
         $roleless = User::factory()->create(['is_active' => true]);
