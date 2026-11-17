@@ -161,6 +161,17 @@ final class EnterpriseTreasuryController extends Controller
                 && $this->entitlements->allows('treasury', new EntitlementScope(EntitlementScope::STORE, $storeId), 'treasury.reconciliation.manage'),
             'canApproveReconciliation' => $this->allowed($actor, $storeId, 'finance.manage')
                 && $this->entitlements->allows('treasury', new EntitlementScope(EntitlementScope::STORE, $storeId), 'treasury.reconciliation.approve'),
+            // Cheque issuance/transition and cash-closing creation/approval have
+            // independent capabilities and an independent maker/checker.
+            // Project service-level authority, never finance.manage alone.
+            'canManageCheque' => $this->allowed($actor, $storeId, 'finance.manage')
+                && $this->entitlements->allows('treasury', $treasuryStoreScope, 'treasury.cheques.manage'),
+            'canApproveCheque' => $this->allowed($actor, $storeId, 'finance.manage')
+                && $this->entitlements->allows('treasury', $treasuryStoreScope, 'treasury.cheques.approve'),
+            'canManageCashClosing' => $this->allowed($actor, $storeId, 'finance.manage')
+                && $this->entitlements->allows('treasury', $treasuryStoreScope, 'treasury.cash_closing.manage'),
+            'canApproveCashClosing' => $this->allowed($actor, $storeId, 'finance.manage')
+                && $this->entitlements->allows('treasury', $treasuryStoreScope, 'treasury.cash_closing.approve'),
             'rows' => null,
             'guaranteeToken' => 'ui-guarantee-'.Str::ulid(),
             'canManageGuarantees' => $this->allowed($actor, $storeId, 'finance.manage')
