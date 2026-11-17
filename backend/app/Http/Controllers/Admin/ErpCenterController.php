@@ -245,9 +245,10 @@ final class ErpCenterController extends Controller
      */
     private function safePreviewReferences(Collection $items): Collection
     {
-        // The input is already a bounded, detached preview collection.
-        // Preserve its invariant Collection generic while sanitizing rows.
-        return $items->transform(static function (array $item): array {
+        // Operate only on the bounded, detached preview collection. A plain
+        // loop preserves its invariant generic type; map()/transform() can
+        // infer a non-empty-array subtype that PHPStan cannot covary.
+        foreach ($items as $index => $item) {
             $value = is_string($item['reference'] ?? null)
                 ? trim($item['reference'])
                 : '';
@@ -257,10 +258,11 @@ final class ErpCenterController extends Controller
 
             if ($value === '' || Str::isUuid($value) || $serialized) {
                 $item['reference'] = '—';
+                $items->put($index, $item);
             }
+        }
 
-            return $item;
-        });
+        return $items;
     }
 
     private function bootstrapLocalSuperAdminModules(User $actor): void
