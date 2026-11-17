@@ -62,6 +62,33 @@ class B2bAdminWorkspaceTest extends TestCase
             ->assertOk();
     }
 
+    public function test_wholesale_price_rule_help_reuses_authorized_pricing_workspace_in_both_locales(): void
+    {
+        foreach (['ar', 'en'] as $locale) {
+            $admin = $this->user('B2B_ADMIN', $locale);
+            $this->actingAs($admin)
+                ->put('/admin/b2b/settings/pricing-tiers', ['enabled' => '1'])
+                ->assertRedirect();
+
+            $this->actingAs($admin)->get('/admin/b2b/pricing')
+                ->assertOk()
+                ->assertSee('data-v2-stage2-price-rule-setup-help', false)
+                ->assertSee('data-readiness-state="partial-review"', false)
+                ->assertSee(__('b2b_pricing_setup.rule_title'))
+                ->assertSee(__('b2b_pricing_setup.rule_source'))
+                ->assertSee(__('b2b_pricing_setup.rule_example'))
+                ->assertSee(__('b2b_pricing_setup.rule_default'))
+                ->assertSee(__('b2b_pricing_setup.rule_validation'))
+                ->assertSee(__('b2b_pricing_setup.rule_permissions'))
+                ->assertSee(__('b2b_pricing_setup.rule_test_help'));
+
+            // Existing settings remain the only read-only mode precheck.
+            $this->actingAs($admin)->get('/admin/b2b/settings')
+                ->assertOk()
+                ->assertDontSee('data-v2-stage2-price-rule-setup-help', false);
+        }
+    }
+
     public function test_wholesale_pricing_mode_setup_help_and_readiness_are_localized(): void
     {
         foreach (['ar', 'en'] as $locale) {
