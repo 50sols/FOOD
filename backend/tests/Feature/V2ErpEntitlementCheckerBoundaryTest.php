@@ -1944,6 +1944,30 @@ final class V2ErpEntitlementCheckerBoundaryTest extends TestCase
         $auditBefore = DB::table('audit_logs')->count();
         foreach (['ar' => 'rtl', 'en' => 'ltr'] as $locale => $direction) {
             $maker->forceFill(['locale' => $locale])->save();
+            // List-to-record navigation retains last applied search/status/
+            // pagination, but never changes the authorized store or tab.
+            $prefix = substr($record->request_number, 0, 7);
+            $filtered = $this->actingAs($maker->fresh())->get(route('admin.erp.procurement.index', [
+                'store_id' => $primary->id,
+                'tab' => 'requests',
+                'q' => $prefix,
+                'status' => 'draft',
+                'page' => 1,
+            ]))->assertOk();
+            $html = html_entity_decode($filtered->getContent(), ENT_QUOTES | ENT_HTML5, 'UTF-8');
+            $this->assertSame(1, preg_match(
+                '/href="([^"]*\\brequest='.preg_quote((string) $record->id, '/').'[^"]*)"/',
+                $html,
+                $exactRecordLink,
+            ));
+            parse_str((string) parse_url($exactRecordLink[1], PHP_URL_QUERY), $preserved);
+            $this->assertSame('requests', $preserved['tab'] ?? null);
+            $this->assertSame((string) $primary->id, (string) ($preserved['store_id'] ?? ''));
+            $this->assertSame($prefix, $preserved['q'] ?? null);
+            $this->assertSame('draft', $preserved['status'] ?? null);
+            $this->assertSame('1', (string) ($preserved['page'] ?? ''));
+            $this->assertSame((string) $record->id, (string) ($preserved['request'] ?? ''));
+
             $this->actingAs($maker->fresh())->get(route('admin.erp.procurement.index', [
                 'store_id' => $primary->id,
                 'tab' => 'requests',
