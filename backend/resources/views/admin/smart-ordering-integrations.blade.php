@@ -47,19 +47,18 @@ $workspaceTabs=[
 ];
 $tabInput=request()->query('tab','overview');
 $activeTab=is_string($tabInput)&&array_key_exists($tabInput,$workspaceTabs)?$tabInput:'overview';
+$canManageIntegrations=$user->is_active&&$user->hasPermission('smart_ordering.manage',(int)$site->store_id);
 $failedForm=old('_integration_form');
-if($errors->any()&&is_string($failedForm)&&array_key_exists($failedForm,$workspaceTabs)){
+if($canManageIntegrations&&$errors->any()&&is_string($failedForm)&&array_key_exists($failedForm,$workspaceTabs)){
     $activeTab=$failedForm;
-}elseif(session('restaurant_api_credential')){
+}elseif($canManageIntegrations&&session('restaurant_api_credential')){
     $activeTab='api-clients';
-}elseif(session('restaurant_webhook_secret')){
+}elseif($canManageIntegrations&&session('restaurant_webhook_secret')){
     $activeTab='webhooks';
 }
 $supportContext=request()->boolean('support_access');
 $workspaceQuery=$filters+($supportContext?['support_access'=>1]:[]);
 $oldText=static fn(string $name): string => is_scalar(old($name))?(string)old($name):'';
-$canManageIntegrations=$user->is_active&&$user->hasPermission('smart_ordering.manage',(int)$site->store_id);
-
 @endphp
 <div class="foodex-admin-layout" data-foodex-mobile-web-page="restaurant-integrations">
 <aside class="sidebar">@include('admin._sidebar',['navGroups'=>app(\App\Support\AdminNavigation::class)->groupsFor($user),'navContext'=>'smart_ordering','user'=>$user])</aside>
@@ -68,8 +67,8 @@ $canManageIntegrations=$user->is_active&&$user->hasPermission('smart_ordering.ma
 <div class="foodex-page-toolbar"><div><h1>{{ __('restaurant_integrations.title') }}</h1><p>{{ __('restaurant_integrations.subtitle') }}</p></div><a class="foodex-action-primary" href="{{ route('admin.smart-ordering.index',['store_id'=>$site->store_id] + (request()->boolean('support_access') ? ['support_access'=>1] : [])) }}">{{ __('restaurant_integrations.back') }}</a></div>
 @include('admin._smart-ordering-workspace-nav')
 @if(session('status'))<div class="foodex-alert success" role="status">{{ session('status') }}</div>@endif
-@if(session('restaurant_api_credential'))<section class="panel"><strong>{{ __('restaurant_integrations.credential_once') }}</strong><div class="ri-secret">{{ session('restaurant_api_credential') }}</div></section>@endif
-@if(session('restaurant_webhook_secret'))<section class="panel"><strong>{{ __('restaurant_integrations.secret_once') }}</strong><div class="ri-secret">{{ session('restaurant_webhook_secret') }}</div></section>@endif
+@if($canManageIntegrations&&session('restaurant_api_credential'))<section class="panel"><strong>{{ __('restaurant_integrations.credential_once') }}</strong><div class="ri-secret">{{ session('restaurant_api_credential') }}</div></section>@endif
+@if($canManageIntegrations&&session('restaurant_webhook_secret'))<section class="panel"><strong>{{ __('restaurant_integrations.secret_once') }}</strong><div class="ri-secret">{{ session('restaurant_webhook_secret') }}</div></section>@endif
 @if($errors->any())<div class="foodex-alert error" role="alert" id="ri-validation-error" tabindex="-1">{{ $errors->first() }}</div>@endif
 
 <nav class="foodex-tabs ri-workspace-tabs" aria-label="{{ __('restaurant_integrations.title') }}" data-integration-workspace-tabs>
