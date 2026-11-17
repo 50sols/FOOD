@@ -365,6 +365,13 @@ final class V2ErpEntitlementCheckerBoundaryTest extends TestCase
                 'name_en' => 'Forbidden Retail Supplier',
                 'name_ar' => 'مورد غير مصرح',
             ])->assertForbidden();
+            $this->actingAs($actor)->post(route('admin.erp.procurement.suppliers.store'), [
+                'store_id' => $retail->id,
+                'scope_type' => 'store',
+                'code' => 'P111-RETAIL-FORGED-TEST',
+                'name_en' => 'Forbidden Retail Supplier Test',
+                'setup_action' => 'test',
+            ])->assertForbidden();
         }
 
         $this->assertDatabaseMissing('enterprise_suppliers', [
