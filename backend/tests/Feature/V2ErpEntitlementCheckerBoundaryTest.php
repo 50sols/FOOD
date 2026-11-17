@@ -847,6 +847,18 @@ final class V2ErpEntitlementCheckerBoundaryTest extends TestCase
                     'store_id' => $store->id,
                     'tab' => 'requests',
                 ]))->assertOk()->assertSee('dir="'.$direction.'"', false);
+                // Every advertised operational tab is a real role-authorized
+                // HTTP destination, not merely a visible link on ERP Center.
+                foreach (['suppliers', 'orders'] as $tab) {
+                    $tabResponse = $this->actingAs($user)->get(route('admin.erp.procurement.index', [
+                        'store_id' => $store->id,
+                        'tab' => $tab,
+                    ]));
+                    $tabResponse->assertOk()->assertSee('dir="'.$direction.'"', false);
+                    $this->assertSame($tab, $tabResponse->viewData('activeTab'));
+                    $this->assertContains($tab, collect($tabResponse->viewData('tabs'))->pluck('key')->all());
+                }
+
                 $this->actingAs($user)->get(route('admin.erp.procurement.index', [
                     'store_id' => $store->id,
                     'tab' => 'invalid-tab-forged',
@@ -917,6 +929,114 @@ final class V2ErpEntitlementCheckerBoundaryTest extends TestCase
                     $this->assertNull($item, 'Revoked store advertised to '.$role);
                 }
             }
+        }
+    }
+
+    public function test_procurement_tab_permissions_deny_suppliers_and_orders_without_hiding_authorized_requests(): void
+    {
+        $this->app['env'] = 'production';
+        $store = $this->wholesaleStore();
+        $owner = $this->actor('SUPER_ADMIN');
+        $buyer = $this->actor('PROCUREMENT_BUYER');
+
+        app(EnterpriseModuleAdministration::class)->perform('procurement', 'enable', $owner);
+        app(ModuleEntitlementManager::class)->set(
+            'procurement', EntitlementScope::platform(), true, null, $owner,
+        );
+        foreach (['procurement.suppliers.view', 'procurement.purchase_orders.view'] as $code) {
+            DB::table('user_permission_overrides')->insert([
+                'user_id' => $buyer->id,
+                'permission_id' => Permission::query()->where('code', $code)->firstOrFail()->id,
+                'scope_key' => 'global',
+                'store_id' => null,
+                'effect' => 'deny',
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+        }
+        $buyer->forceFill(['has_permission_overrides' => true])->save();
+
+        foreach (['ar' => 'rtl', 'en' => 'ltr'] as $locale => $direction) {
+            app()->setLocale($locale);
+            $buyer->forceFill(['locale' => $locale])->save();
+            $actor = $buyer->fresh();
+
+            $this->assertTrue($actor->hasPermission('procurement.purchase_requests.view', $store->id));
+            $this->assertFalse($actor->hasPermission('procurement.suppliers.view', $store->id));
+            $this->assertFalse($actor->hasPermission('procurement.purchase_orders.view', $store->id));
+
+            $requests = $this->actingAs($actor)->get(route('admin.erp.procurement.index', [
+                'store_id' => $store->id,
+                'tab' => 'requests',
+            ]));
+            $requests->assertOk()->assertSee('dir="'.$direction.'"', false);
+            $visible = collect($requests->viewData('tabs'))->pluck('key')->all();
+            $this->assertContains('requests', $visible);
+            $this->assertNotContains('suppliers', $visible);
+            $this->assertNotContains('orders', $visible);
+
+            foreach (['suppliers', 'orders'] as $forbiddenTab) {
+                $this->actingAs($actor)->get(route('admin.erp.procurement.index', [
+                    'store_id' => $store->id,
+                    'tab' => $forbiddenTab,
+                ]))->assertForbidden();
+            }
+        }
+    }
+
+    public function test_procurement_lifecycle_and_stale_manifest_fail_closed_for_card_and_direct_http(): void
+    {
+        // Only disposable signed evidence is used by this suite; these are
+        // HTTP gate tests, never an operational G0-G13 certification.
+        $this->app['env'] = 'production';
+        $store = $this->wholesaleStore();
+        $owner = $this->actor('SUPER_ADMIN');
+        $buyer = $this->actor('PROCUREMENT_BUYER');
+        $lifecycle = app(EnterpriseModuleAdministration::class);
+        $lifecycle->perform('procurement', 'enable', $owner);
+        app(ModuleEntitlementManager::class)->set(
+            'procurement', EntitlementScope::platform(), true, null, $owner,
+        );
+        $manifestVersion = app(ModuleRegistry::class)->manifest('procurement')->version;
+
+        foreach (['suspend', 'disable'] as $action) {
+            $lifecycle->perform('procurement', $action, $owner);
+            foreach (['ar' => 'rtl', 'en' => 'ltr'] as $locale => $direction) {
+                app()->setLocale($locale);
+                $owner->forceFill(['locale' => $locale])->save();
+                $buyer->forceFill(['locale' => $locale])->save();
+
+                $center = $this->actingAs($owner->fresh())->get(route('admin.erp.index'));
+                $center->assertOk()->assertSee('dir="'.$direction.'"', false);
+                $card = collect($center->viewData('cards'))->firstWhere('key', 'procurement');
+                $this->assertIsArray($card);
+                $this->assertNotSame('available', $card['status']);
+                $this->assertNull($card['url']);
+
+                $this->actingAs($buyer->fresh())->get(route('admin.erp.procurement.index', [
+                    'store_id' => $store->id,
+                    'tab' => 'requests',
+                ]))->assertForbidden();
+            }
+            $lifecycle->perform('procurement', 'enable', $owner);
+        }
+
+        config()->set('enterprise_module_readiness.certified_versions.procurement', $manifestVersion + 1);
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            $owner->forceFill(['locale' => $locale])->save();
+            $buyer->forceFill(['locale' => $locale])->save();
+            $center = $this->actingAs($owner->fresh())->get(route('admin.erp.index'));
+            $center->assertOk();
+            $card = collect($center->viewData('cards'))->firstWhere('key', 'procurement');
+            $this->assertIsArray($card);
+            $this->assertSame('degraded', $card['status']);
+            $this->assertSame('uncertified', $card['denial_reason']);
+            $this->assertNull($card['url']);
+            $this->actingAs($buyer->fresh())->get(route('admin.erp.procurement.index', [
+                'store_id' => $store->id,
+                'tab' => 'requests',
+            ]))->assertForbidden();
         }
     }
 
