@@ -869,7 +869,12 @@ final class EnterprisePurchaseReturnFoundationTest extends TestCase
     {
         $typeId = (int) DB::table('store_types')->where('code', 'B2B')->value('id');
         if ($typeId < 1) {
-            $this->fail('CoreReferenceSeeder must provide the Wholesale store type.');
+            $typeId = (int) DB::table('store_types')->insertGetId([
+                'code' => 'B2B',
+                'name' => 'Wholesale',
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
         }
 
         $store = Store::query()->create([

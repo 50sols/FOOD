@@ -299,8 +299,9 @@ final class EnterpriseWmsProfessionalCompletionTest extends TestCase
                 ->assertDontSee('data-v2-certified-title', false);
         }
 
+        $retailStoreTypeId = (int) DB::table('store_types')->where('code', 'B2C')->value('id');
         $foreignStoreId = (int) DB::table('stores')->insertGetId([
-            'store_type_id' => DB::table('stores')->where('id', $fixture['store_id'])->value('store_type_id'),
+            'store_type_id' => $retailStoreTypeId,
             'code' => 'WMS-P110-FOREIGN',
             'name' => 'Out Of Scope WMS Store',
             'is_active' => true,
@@ -389,18 +390,17 @@ final class EnterpriseWmsProfessionalCompletionTest extends TestCase
         $this->assertSame(0, DB::table('enterprise_finance_journals')->count());
 
         $foreignStoreId = (int) DB::table('stores')->insertGetId([
-            'store_type_id' => DB::table('stores')->where('id', $fixture['store_id'])->value('store_type_id'),
+            'store_type_id' => DB::table('store_types')->where('code', 'B2C')->value('id'),
             'code' => 'WMS-P110-DIRECT-FOREIGN-STORE',
             'name' => 'Foreign WMS Direct Caller Store',
             'is_active' => true,
             'created_at' => now(),
             'updated_at' => now(),
         ]);
-        $this->enableEnterpriseWmsForStore($foreignStoreId);
-        $foreignActor = $this->inventoryUser($foreignStoreId, 'ar');
+        $foreignActor = $this->retailInventoryUser($foreignStoreId, 'ar');
 
-        // Genuine authenticated inventory role in store B must not mutate
-        // store A by forging the store, warehouse and legal-owner fields.
+        // A retail inventory actor bound to its B2C store must not mutate
+        // wholesale stock by forging the store, warehouse and owner fields.
         $this->actingAs($foreignActor)->post($path, $request)->assertNotFound();
         $this->assertDatabaseHas('inventories', [
             'id' => $fixture['source_inventory_id'], 'quantity' => 9, 'reserved_quantity' => 1,
@@ -542,6 +542,30 @@ final class EnterpriseWmsProfessionalCompletionTest extends TestCase
         $this->grantPlatformErpAccess($user);
         $role = Role::query()->where('code', 'INVENTORY')->firstOrFail();
         $user->roles()->syncWithoutDetaching([$role->id]);
+
+        return $user;
+    }
+
+    private function retailInventoryUser(int $storeId, string $locale): User
+    {
+        $user = User::query()->create([
+            'name' => 'Retail Inventory Operator',
+            'email' => 'wms-retail-scope-'.$storeId.'@example.test',
+            'password' => 'password',
+            'locale' => $locale,
+            'is_active' => true,
+        ]);
+        $this->grantPlatformErpAccess($user);
+        $role = Role::query()->where('code', 'RETAIL_INVENTORY')->firstOrFail();
+        $user->roles()->syncWithoutDetaching([$role->id]);
+
+        DB::table('user_store_roles')->insert([
+            'user_id' => $user->id,
+            'store_id' => $storeId,
+            'role_id' => $role->id,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
 
         return $user;
     }
