@@ -795,4 +795,145 @@ void main() {
       // invoice detail. Producer #2633 must prove this with real DB/HTTP.
     }
   });
+
+  test('Scoped B2B invoice list rejects forged echoed filter in AR/EN',
+      () async {
+    for (final locale in ['ar', 'en']) {
+      for (final payload in [
+        '{"data":[],"filters":{"store_id":99}}',
+        '{"data":[],"filters":{"store_id":"7"}}',
+        '{"data":[],"filters":{"store_id":null}}',
+        '{"data":[],"filters":null}',
+      ]) {
+        var requests = 0;
+        final api = HttpB2bApi(
+          baseUrl: 'https://foodex.example',
+          token: 'scoped-token',
+          retailStoreContextId: 17,
+          locale: locale,
+          maxGetAttempts: 3,
+          client: MockClient((request) async {
+            requests++;
+            expect(request.method, 'GET');
+            expect(request.url.path, '/api/v1/b2b/invoices');
+            expect(request.url.queryParameters['store_id'], '7');
+            expect(request.headers['Authorization'], 'Bearer scoped-token');
+            expect(request.headers['X-FOODEX-Customer-Domain'], 'b2b');
+            expect(request.headers['X-FOODEX-Retail-Store-ID'], '17');
+            expect(request.headers['Accept-Language'], locale);
+            return http.Response(
+              payload,
+              200,
+              headers: {'content-type': 'application/json'},
+            );
+          }),
+        );
+        await expectLater(
+          api.get('/api/v1/b2b/invoices?store_id=7'),
+          throwsA(isA<B2bApiException>()
+              .having((error) => error.code, 'code', 'invalid_response')),
+        );
+        expect(requests, 1);
+      }
+    }
+  });
+
+  test('Scoped B2B invoice detail rejects contradictory seller in AR/EN',
+      () async {
+    for (final locale in ['ar', 'en']) {
+      for (final seller in [
+        '{"store_id":99,"name":"Other Store"}',
+        '{"store_id":"7","name":"Wrong Type"}',
+        '{"store_id":null,"name":"Missing Scope"}',
+        '"unexpected string"',
+      ]) {
+        var requests = 0;
+        final api = HttpB2bApi(
+          baseUrl: 'https://foodex.example',
+          token: 'scoped-token',
+          retailStoreContextId: 17,
+          locale: locale,
+          maxGetAttempts: 3,
+          client: MockClient((request) async {
+            requests++;
+            expect(request.method, 'GET');
+            expect(request.url.path, '/api/v1/b2b/invoices/31');
+            expect(request.url.queryParameters['store_id'], '7');
+            expect(request.headers['Authorization'], 'Bearer scoped-token');
+            expect(request.headers['X-FOODEX-Customer-Domain'], 'b2b');
+            expect(request.headers['X-FOODEX-Retail-Store-ID'], '17');
+            expect(request.headers['Accept-Language'], locale);
+            return http.Response(
+              '{"data":{"id":31,"store_id":7,"seller":$seller}}',
+              200,
+              headers: {'content-type': 'application/json'},
+            );
+          }),
+        );
+        await expectLater(
+          api.get('/api/v1/b2b/invoices/31?store_id=7'),
+          throwsA(isA<B2bApiException>()
+              .having((error) => error.code, 'code', 'invalid_response')),
+        );
+        expect(requests, 1);
+      }
+    }
+  });
+
+  test('Scoped B2B list and invoice preserve matching seller and 3dp',
+      () async {
+    for (final locale in ['ar', 'en']) {
+      final requests = <String>[];
+      final api = HttpB2bApi(
+        baseUrl: 'https://foodex.example',
+        token: 'scoped-token',
+        retailStoreContextId: 17,
+        locale: locale,
+        client: MockClient((request) async {
+          requests.add(request.url.path);
+          expect(request.url.queryParameters['store_id'], '7');
+          expect(request.headers['Authorization'], 'Bearer scoped-token');
+          expect(request.headers['X-FOODEX-Customer-Domain'], 'b2b');
+          expect(request.headers['X-FOODEX-Retail-Store-ID'], '17');
+          expect(request.headers['Accept-Language'], locale);
+          if (request.url.path == '/api/v1/b2b/invoices') {
+            return http.Response(
+              '{"data":[{"id":31,"store_id":7,"seller":{"store_id":7},'
+              '"paid_amount":20.125,"outstanding_amount":39.875}],'
+              '"filters":{"store_id":7}}',
+              200,
+              headers: {'content-type': 'application/json'},
+            );
+          }
+          return http.Response(
+            '{"data":{"id":31,"store_id":7,"seller":{"store_id":7},'
+            '"display_status":"partially_paid","paid_amount":20.125,'
+            '"outstanding_amount":39.875,"payments":[{"id":901,'
+            '"amount":20.125,"currency":"EGP"}]}}',
+            200,
+            headers: {'content-type': 'application/json'},
+          );
+        }),
+      );
+      final invoiceList =
+          await api.get('/api/v1/b2b/invoices?store_id=7') as Map;
+      final rows = invoiceList['data'] as List;
+      expect(rows.length, 1);
+      expect((rows.single as Map)['paid_amount'], 20.125);
+      expect((rows.single as Map)['outstanding_amount'], 39.875);
+
+      final invoice =
+          await api.get('/api/v1/b2b/invoices/31?store_id=7') as Map;
+      final detail = invoice['data'] as Map;
+      expect(detail['display_status'], 'partially_paid');
+      expect(detail['paid_amount'], 20.125);
+      expect(detail['outstanding_amount'], 39.875);
+      expect((detail['seller'] as Map)['store_id'], 7);
+      expect(((detail['payments'] as List).single as Map)['id'], 901);
+      expect(requests, [
+        '/api/v1/b2b/invoices',
+        '/api/v1/b2b/invoices/31',
+      ]);
+    }
+  });
 }
