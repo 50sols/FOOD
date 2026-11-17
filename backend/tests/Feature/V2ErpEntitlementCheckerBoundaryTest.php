@@ -1040,6 +1040,152 @@ final class V2ErpEntitlementCheckerBoundaryTest extends TestCase
         }
     }
 
+    public function test_broken_procurement_health_probe_degrades_card_and_denies_http_without_writes_in_both_locales(): void
+    {
+        // Probe configuration is a server-side operational requirement, not a
+        // UI preference or an entitlement that an enabled module can bypass.
+        $this->app['env'] = 'production';
+        $store = $this->wholesaleStore();
+        $owner = $this->actor('SUPER_ADMIN');
+        $buyer = $this->actor('PROCUREMENT_BUYER');
+
+        app(EnterpriseModuleAdministration::class)->perform('procurement', 'enable', $owner);
+        app(ModuleEntitlementManager::class)->set(
+            'procurement', EntitlementScope::platform(), true, null, $owner,
+        );
+        // Invalid probe configuration triggers an actual ModuleHealthService
+        // ERROR, not a manually forged health/status tag.
+        config()->set('enterprise_module_health.probes.procurement', ['nonexistent-procurement-health-probe']);
+
+        $reason = 'P111 unhealthy probe must never create request';
+        $requestsBefore = DB::table('enterprise_purchase_requests')->count();
+        $auditBefore = DB::table('audit_logs')->count();
+
+        foreach (['ar' => 'rtl', 'en' => 'ltr'] as $locale => $direction) {
+            app()->setLocale($locale);
+            $owner->forceFill(['locale' => $locale])->save();
+            $buyer->forceFill(['locale' => $locale])->save();
+
+            $page = $this->actingAs($owner->fresh())->get(route('admin.erp.index'));
+            $page->assertOk()->assertSee('dir="'.$direction.'"', false);
+            $card = collect($page->viewData('cards'))->firstWhere('key', 'procurement');
+            $this->assertIsArray($card);
+            $this->assertSame('degraded', $card['status']);
+            $this->assertSame('unhealthy', $card['denial_reason']);
+            $this->assertSame('error', $card['health']);
+            $this->assertNull($card['url'], 'Failed health must suppress business CTA');
+
+            $this->actingAs($buyer->fresh())->get(route('admin.erp.procurement.index', [
+                'store_id' => $store->id,
+                'tab' => 'requests',
+            ]))->assertForbidden();
+            $this->actingAs($buyer->fresh())->post(route('admin.erp.procurement.requests.store'), [
+                'store_id' => $store->id,
+                'currency_code' => 'KWD',
+                'reason' => $reason,
+                'item_code' => 'P111-HEALTH-DENY',
+                'description' => 'Must be blocked before mutation',
+                'quantity' => '1.000',
+                'unit' => 'case',
+                'estimated_unit_cost' => '2.000',
+            ])->assertForbidden();
+        }
+
+        $this->assertSame($requestsBefore, DB::table('enterprise_purchase_requests')->count());
+        $this->assertDatabaseMissing('enterprise_purchase_requests', ['reason' => $reason]);
+        $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+    }
+
+    public function test_missing_store_entitlement_and_missing_required_certification_cannot_be_bypassed_by_reenable(): void
+    {
+        // Once Procurement is enrolled in the entitlement policy, absent
+        // effective STORE grants fail closed even if another B2B store is allowed.
+        $this->app['env'] = 'production';
+        $primary = $this->wholesaleStore();
+        $sibling = Store::query()->create([
+            'store_type_id' => $primary->store_type_id,
+            'code' => 'P111-MISSING-ENTITLEMENT-SIBLING',
+            'name' => 'P111 entitlement sibling',
+            'is_active' => true,
+        ]);
+        app(OrganizationHierarchyService::class)->ensureDefaultScopeForStore($sibling);
+
+        $owner = $this->actor('SUPER_ADMIN');
+        $buyer = $this->actor('PROCUREMENT_BUYER');
+        app(EnterpriseModuleAdministration::class)->perform('procurement', 'enable', $owner);
+        $entitlements = app(ModuleEntitlementManager::class);
+        $entitlements->set(
+            'procurement',
+            new EntitlementScope(EntitlementScope::STORE, $sibling->id),
+            true,
+            null,
+            $owner,
+        );
+        $reason = 'P111 absent entitlement must never create request';
+        $countBefore = DB::table('enterprise_purchase_requests')->count();
+        $auditBefore = DB::table('audit_logs')->count();
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            $buyer->forceFill(['locale' => $locale])->save();
+            $this->actingAs($buyer->fresh())->get(route('admin.erp.procurement.index', [
+                'store_id' => $primary->id,
+                'tab' => 'requests',
+            ]))->assertForbidden();
+            $this->actingAs($buyer->fresh())->post(route('admin.erp.procurement.requests.store'), [
+                'store_id' => $primary->id,
+                'currency_code' => 'KWD',
+                'reason' => $reason,
+                'item_code' => 'P111-ENTITLEMENT-DENY',
+                'description' => 'Cannot write through an absent scope grant',
+                'quantity' => '1.000',
+                'unit' => 'case',
+                'estimated_unit_cost' => '1.000',
+            ])->assertForbidden();
+            // The other entitled B2B tenant can still perform its own read.
+            $this->actingAs($buyer->fresh())->get(route('admin.erp.procurement.index', [
+                'store_id' => $sibling->id,
+                'tab' => 'requests',
+            ]))->assertOk();
+        }
+
+        $this->assertSame($countBefore, DB::table('enterprise_purchase_requests')->count());
+        $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+
+        // A newly granted store scope does not override an absent exact-version
+        // operational certification. The manifest/version requirement stays
+        // independent of entitlement and channel/role admission.
+        $entitlements->set(
+            'procurement',
+            new EntitlementScope(EntitlementScope::STORE, $primary->id),
+            true,
+            null,
+            $owner,
+        );
+        config()->set('enterprise_module_readiness.certified_versions.procurement', null);
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            $buyer->forceFill(['locale' => $locale])->save();
+            $this->actingAs($buyer->fresh())->get(route('admin.erp.procurement.index', [
+                'store_id' => $primary->id,
+                'tab' => 'requests',
+            ]))->assertForbidden();
+        }
+
+        // A test-only exact-manifest readiness fixture restores authorized GET
+        // after every independent guard passes. This is NOT real G0-G13 proof.
+        config()->set(
+            'enterprise_module_readiness.certified_versions.procurement',
+            app(ModuleRegistry::class)->manifest('procurement')->version,
+        );
+        $this->actingAs($buyer->fresh())->get(route('admin.erp.procurement.index', [
+            'store_id' => $primary->id,
+            'tab' => 'requests',
+        ]))->assertOk();
+        $this->assertSame($countBefore, DB::table('enterprise_purchase_requests')->count());
+        $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+    }
+
     private function wholesaleStore(): Store
     {
         $store = Store::query()->findOrFail(app(WholesalePrincipal::class)->storeId());
