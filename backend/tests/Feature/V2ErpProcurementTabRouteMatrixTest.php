@@ -156,7 +156,7 @@ final class V2ErpProcurementTabRouteMatrixTest extends TestCase
 
             $markup = (string) $response->getContent();
             $this->assertSame(1, preg_match(
-                '/<nav class="foodex-tabs"[^>]*>(.*?)<\/nav>/s',
+                '/<nav class="foodex-tabs(?: [^"]+)?"[^>]*>(.*?)<\/nav>/s',
                 $markup,
                 $matches,
             ));
