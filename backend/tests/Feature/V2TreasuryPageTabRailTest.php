@@ -12,6 +12,7 @@ use App\Enterprise\Treasury\TreasuryReceiptService;
 use App\Models\Role;
 use App\Models\Store;
 use App\Models\User;
+use App\Support\ResolvedTenantContext;
 use App\Support\TenantContextResolver;
 use Database\Seeders\CoreReferenceSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -121,7 +122,7 @@ final class V2TreasuryPageTabRailTest extends TestCase
         return $store;
     }
 
-    private function enableTreasury(User $actor, \App\Support\ResolvedTenantContext $context): void
+    private function enableTreasury(User $actor, ResolvedTenantContext $context): void
     {
         $registry = app(ModuleRegistry::class);
         if (! $registry->isEnabled(TreasuryReceiptService::MODULE)) {
