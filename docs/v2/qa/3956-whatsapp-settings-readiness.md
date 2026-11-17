@@ -17,6 +17,14 @@
 | Provider/webhook advanced metadata | Preconfigured/internal | Existing stored structured metadata in authoritative connection profile | **No business-facing raw JSON editor**; omission on update preserves prior maps from the **transactionally locked record**. Legacy explicit JSON API validation/secret-key prohibition remains | Same manager audit/revalidation logic; no silent reset |
 | Capability flags, lifecycle, emergency state, test numbers | Configured/preexisting | Existing WhatsApp module controls; `RuntimePolicy` and `StateManager` authoritative | Existing server enums, revision and confirm guards unchanged | `whatsapp.settings`; Super Admin on privileged controls; never activate just by choosing a tab |
 
+### Validation context and protected provider diagnostics (Device D continuation)
+
+- Existing **Create** Save uses the original POST and same validator; rejection now redirects to `/admin/settings/whatsapp/connections?tab=create`, not a guessed referer or unrelated screen. Restore only string-valued public name/phone/provider fields, each bounded by its exact validator max; malformed arrays, provider/webhook metadata, credentials and webhook secrets are **never flashed into the session**.
+- Existing **Edit** and **Replace Secret** failures return to the preexisting Profiles panel with validation errors but no `_old_input`; rejected secret rotation/metadata must not persist or change revision. Successful Create still lands on the saved Profiles panel and is **Draft**, not provider-certified.
+- Existing **Test** connection action still invokes the actual provider validator and never blesses an untested Draft. A failed real **Send Test Message** now exposes only `whatsapp.connections.test_send_failed` in AR/EN and never interpolates raw provider/transport exceptions into HTML or flashed input. Existing ConnectionHealthRecorder retains sanitized diagnostics; success is not forged.
+- New HTTP regression tests in `V2WhatsAppSettingsReadinessTabsTest` cover EN/AR invalid Create, safe tab retention and public-field retention, no flashed secrets/legacy JSON, failed credential rotation and legacy metadata rejection with zero mutation, and provider test failure with generic localized error and no delivery success.
+- **Readiness:** externally verified WhatsApp Business phone ID/account/app, approved token, webhook ownership, queue/worker health, consent and authorized Meta live Test remain `EXTERNAL / NOT_READY` until real provider confirmation. No credentials, personal recipient, secret or signed trust key is seeded or invented.
+
 ## Security/QA evidence and limitations
 
 - Existing controllers decide `whatsapp.view`, `whatsapp.settings`, active user, Super Admin; `ConnectionProfileManager` transaction/locking/secret masking/audit is preserved.
