@@ -1045,6 +1045,11 @@ final class V2ErpEntitlementCheckerBoundaryTest extends TestCase
         // Probe configuration is a server-side operational requirement, not a
         // UI preference or an entitlement that an enabled module can bypass.
         $this->app['env'] = 'production';
+        // Model a valid production CSRF submission: a 403 must originate in
+        // Procurement authorization/readiness, never in the unrelated 419 gate.
+        $csrfToken = 'p111-csrf-token-in-request';
+        $this->withSession(['_token' => $csrfToken])
+            ->withHeader('X-CSRF-TOKEN', $csrfToken);
         $store = $this->wholesaleStore();
         $owner = $this->actor('SUPER_ADMIN');
         $buyer = $this->actor('PROCUREMENT_BUYER');
@@ -1101,6 +1106,11 @@ final class V2ErpEntitlementCheckerBoundaryTest extends TestCase
         // Once Procurement is enrolled in the entitlement policy, absent
         // effective STORE grants fail closed even if another B2B store is allowed.
         $this->app['env'] = 'production';
+        // Model a valid production CSRF submission: a 403 must originate in
+        // Procurement authorization/readiness, never in the unrelated 419 gate.
+        $csrfToken = 'p111-csrf-token-in-request';
+        $this->withSession(['_token' => $csrfToken])
+            ->withHeader('X-CSRF-TOKEN', $csrfToken);
         $primary = $this->wholesaleStore();
         $sibling = Store::query()->create([
             'store_type_id' => $primary->store_type_id,
