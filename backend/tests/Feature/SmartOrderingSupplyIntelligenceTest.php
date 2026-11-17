@@ -573,7 +573,9 @@ class SmartOrderingSupplyIntelligenceTest extends TestCase
             'created_at' => now(),
             'updated_at' => now(),
         ]);
-        $this->actingAs($otherActor)->get($url)->assertForbidden();
+        // A foreign store is deliberately obscured by OperationalTenantScope
+        // before the site/entitlement can be enumerated to another retailer.
+        $this->actingAs($otherActor)->get($url)->assertNotFound();
 
         $this->actingAs($actor);
         DB::table('smart_ordering_entitlements')
