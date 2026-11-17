@@ -112,7 +112,7 @@ class WholesaleMinimumOrderTest extends TestCase
             'minimum_order_egp' => '1750.25',
             'setup_action' => 'test',
         ])->assertRedirect()->assertSessionHasNoErrors()
-            ->assertSessionHas('status', __('b2b_minimum_order_setup.test_valid', ['amount' => '1,750.25']));
+            ->assertSessionHas('status', __('b2b_minimum_order_setup.test_valid', ['amount' => '1750.25']));
 
         $this->assertDatabaseMissing('settings', [
             'store_id' => $storeId,
