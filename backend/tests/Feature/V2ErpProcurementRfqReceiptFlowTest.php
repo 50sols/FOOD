@@ -177,6 +177,101 @@ final class V2ErpProcurementRfqReceiptFlowTest extends TestCase
         }
     }
 
+    public function test_rfq_cannot_award_before_independent_checker_approves_without_mutating_supplier_or_price(): void
+    {
+        $store = $this->store();
+        $maker = $this->actor('PROCUREMENT_BUYER', 'ar');
+        $checker = $this->actor('PROCUREMENT_MANAGER', 'en');
+        [$supplierId, $requestId, $rfqId, $quoteId] = $this->quotedRequest($maker, $store);
+        $this->assertGreaterThan(0, $supplierId);
+
+        // An RFQ and an authentic, submitted supplier quote do not constitute
+        // approval. Even a valid independent checker must approve the PR first.
+        $beforeAudits = DB::table('audit_logs')
+            ->where('event', 'enterprise.procurement.rfq.awarded')->count();
+
+        foreach (['ar' => 'rtl', 'en' => 'ltr'] as $locale => $direction) {
+            app()->setLocale($locale);
+            $checker->forceFill(['locale' => $locale])->save();
+            $this->actingAs($checker->fresh())->post(route('admin.erp.procurement.rfqs.award', [
+                'rfq' => $rfqId, 'quote' => $quoteId,
+            ]), ['store_id' => $store->id])
+                ->assertRedirect()->assertSessionHasErrors('purchase_request_id');
+        }
+
+        $this->assertDatabaseHas('enterprise_purchase_requests', [
+            'id' => $requestId, 'store_id' => $store->id,
+            'status' => 'submitted', 'supplier_id' => null, 'decided_by' => null,
+        ]);
+        $this->assertDatabaseHas('enterprise_procurement_rfqs', [
+            'id' => $rfqId, 'status' => 'published', 'awarded_quote_id' => null,
+        ]);
+        $this->assertDatabaseHas('enterprise_procurement_quotes', [
+            'id' => $quoteId, 'supplier_id' => $supplierId, 'status' => 'submitted',
+        ]);
+        $this->assertDatabaseCount('enterprise_purchase_orders', 0);
+        $this->assertSame('5.000', number_format((float) DB::table('enterprise_purchase_request_lines')
+            ->where('purchase_request_id', $requestId)->value('estimated_unit_cost'), 3, '.', ''));
+        $this->assertSame($beforeAudits, DB::table('audit_logs')
+            ->where('event', 'enterprise.procurement.rfq.awarded')->count());
+    }
+
+    public function test_tampered_persisted_supplier_quote_negative_money_or_quantity_cannot_create_po(): void
+    {
+        $store = $this->store();
+        $maker = $this->actor('PROCUREMENT_BUYER', 'ar');
+        $checker = $this->actor('PROCUREMENT_MANAGER', 'en');
+        [$supplierId, $requestId, $rfqId, $quoteId] = $this->quotedRequest($maker, $store);
+
+        $this->actingAs($checker)->post(route('admin.erp.procurement.requests.decision', $requestId), [
+            'store_id' => $store->id, 'decision' => 'approve',
+        ])->assertRedirect();
+        $this->assertDatabaseHas('enterprise_purchase_requests', [
+            'id' => $requestId, 'status' => 'approved', 'decided_by' => $checker->id,
+            'supplier_id' => null,
+        ]);
+
+        // A corrupted import / forged persisted quote can make its line total
+        // agree with its header yet still violate nonnegative money or the
+        // authoritative RFQ quantity. Never trust header-total parity alone.
+        $originalLine = DB::table('enterprise_procurement_quote_lines')
+            ->where('quote_id', $quoteId)->first();
+        $this->assertNotNull($originalLine);
+        $awardAuditCount = DB::table('audit_logs')
+            ->where('event', 'enterprise.procurement.rfq.awarded')->count();
+
+        foreach ([
+            ['locale' => 'ar', 'quantity' => '2.000', 'unit_price' => '-4.250',
+                'line_total' => '-8.500', 'total_amount' => '-8.500'],
+            ['locale' => 'en', 'quantity' => '3.000', 'unit_price' => '4.250',
+                'line_total' => '12.750', 'total_amount' => '12.750'],
+        ] as $tamper) {
+            app()->setLocale($tamper['locale']);
+            $checker->forceFill(['locale' => $tamper['locale']])->save();
+            DB::table('enterprise_procurement_quote_lines')->where('id', $originalLine->id)->update([
+                'quantity' => $tamper['quantity'],
+                'unit_price' => $tamper['unit_price'],
+                'line_total' => $tamper['line_total'],
+            ]);
+            DB::table('enterprise_procurement_quotes')->where('id', $quoteId)
+                ->update(['total_amount' => $tamper['total_amount']]);
+
+            $this->actingAs($checker->fresh())->post(route('admin.erp.procurement.rfqs.award', [
+                'rfq' => $rfqId, 'quote' => $quoteId,
+            ]), ['store_id' => $store->id])
+                ->assertRedirect()->assertSessionHasErrors('quote_id');
+
+            $this->assertUnawarded($requestId, $rfqId, '5.000');
+            $this->assertDatabaseHas('enterprise_procurement_quotes', [
+                'id' => $quoteId, 'rfq_id' => $rfqId,
+                'supplier_id' => $supplierId, 'status' => 'submitted',
+            ]);
+            $this->assertSame($awardAuditCount, DB::table('audit_logs')
+                ->where('event', 'enterprise.procurement.rfq.awarded')->count());
+            $this->assertDatabaseCount('enterprise_goods_receipts', 0);
+        }
+    }
+
     public function test_awarded_rfq_without_matching_purchase_order_fails_closed_instead_of_returning_phantom_id(): void
     {
         $store = $this->store();
