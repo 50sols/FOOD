@@ -1,0 +1,134 @@
+# G005: unsigned, nonpublishing source-built Update ZIP acceptance on exact V2 PR head.
+# This DOES NOT certify trusted signatures or authorize a release/production upgrade.
+name: FOODEX V2 Update ZIP staging acceptance
+
+on:
+  pull_request:
+    branches: [Foodex_V2]
+    paths:
+      - '.github/workflows/v2-update-zip-staging-acceptance.yml'
+      - 'scripts/build-update-bundle.py'
+      - 'scripts/ci-127-upgrade.sh'
+      - 'backend/app/Domain/Updater/**'
+      - 'backend/app/Http/Controllers/Admin/SystemUpdateController.php'
+      - 'backend/tests/Deployment/**'
+      - 'backend/config/update_signatures.php'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: v2-update-staging-pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  actual-source-zip-upgrade:
+    name: Build source ZIP and upgrade disposable v125 MySQL installation
+    if: github.event.pull_request.base.ref == 'Foodex_V2'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: foodex_ci_only
+          MYSQL_DATABASE: foodex_upgrade_127
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -proot"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=12
+    steps:
+      - name: Checkout exact unmerged PR head and supported baseline tag
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify immutable source and supported version
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          test "$(tr -d '[:space:]' < VERSION)" = "1.0.127"
+          test "$(git show v1.0.125:VERSION | tr -d '[:space:]')" = "1.0.125"
+      - name: Setup PHP and Composer for disposable upgrade
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          extensions: mbstring, pdo_mysql, zip, fileinfo, openssl
+          tools: composer:v2
+          coverage: none
+      - name: Verify build and database tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 --version
+          composer --version
+          unzip -v | head -3
+          mysql --version
+          mysqladmin --version
+      - name: Build the actual repository-selected Update ZIP (not a PHPUnit fixture)
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/build-update-bundle.py \
+            --base v1.0.125 \
+            --target-version 1.0.127 \
+            --minimum-current-version 1.0.125 \
+            --output-dir dist/update \
+            --release-notes "UNTRUSTED CI-only V2 staging, not a signed publisher release"
+          test -s dist/update/FOODEX-Update.zip
+          python3 scripts/verify-recovery-update-manifest.py \
+            --package dist/update/FOODEX-Update.zip \
+            --manifest dist/update/FOODEX-Update.json \
+            --target-version 1.0.127 \
+            --minimum-current-version 1.0.125
+      - name: Upgrade real disposable v125 MySQL dataset with EXACT generated ZIP
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash scripts/ci-127-upgrade.sh
+      - name: Record nonpublishing artifact provenance (not trusted signing)
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib, json, os, pathlib
+          root=pathlib.Path("dist/update")
+          archive=root/"FOODEX-Update.zip"
+          manifest=json.loads((root/"FOODEX-Update.json").read_text())
+          digest=hashlib.sha256(archive.read_bytes()).hexdigest()
+          assert manifest["source_commit"] == os.environ["EXPECTED_SHA"]
+          assert manifest["sha256"] == digest
+          assert manifest["minimum_current_version"] == "1.0.125"
+          assert manifest["target_version"] == "1.0.127"
+          (root/"V2_UPDATE_STAGING_EVIDENCE.json").write_text(json.dumps({
+             "status": "UNTRUSTED_CI_STAGING_ONLY",
+             "signed": False,
+             "source_commit": os.environ["EXPECTED_SHA"],
+             "version": "1.0.127",
+             "minimum_current_version": "1.0.125",
+             "sha256": digest,
+             "actual_v125_upgrade_zip": "PASS",
+             "environment": "DISPOSABLE_MYSQL_CI_ONLY",
+             "publisher_signature_enforcement": "NOT_TESTED_BY_THIS_WORKFLOW",
+           },indent=2)+"\n")
+          PY
+      - name: Retain CI-only real Update ZIP and preservation evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: v2-update-zip-staging-evidence
+          path: |
+            dist/update/FOODEX-Update.zip
+            dist/update/FOODEX-Update.json
+            dist/update/FOODEX-Update.sha256.txt
+            dist/update/V2_UPDATE_STAGING_EVIDENCE.json
+          if-no-files-found: error
+          retention-days: 7
