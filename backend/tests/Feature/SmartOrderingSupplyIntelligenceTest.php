@@ -511,6 +511,44 @@ class SmartOrderingSupplyIntelligenceTest extends TestCase
         }
     }
 
+    public function test_supply_invalid_mapping_post_returns_to_selected_tab_without_writes(): void
+    {
+        $f = $this->fixture();
+        $actor = $f['actor'];
+        $role = Role::query()->where('code', 'B2C_STORE_ADMIN')->firstOrFail();
+        DB::table('user_store_roles')->insert([
+            'user_id' => $actor->id,
+            'store_id' => $f['restaurant_store_id'],
+            'role_id' => $role->id,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $url = route('admin.smart-ordering.supply.index', [
+            'site' => $f['site_id'],
+            'tab' => 'mapping',
+            'from' => now('Asia/Kuwait')->subDays(7)->toDateString(),
+            'to' => now('Asia/Kuwait')->toDateString(),
+            'branch_id' => $f['branch_id'],
+            'q' => 'FDX-',
+        ]);
+        $before = DB::table('smart_ordering_supply_mappings')->count();
+
+        $this->actingAs($actor)->from($url)
+            ->post(route('admin.smart-ordering.supply.mappings.store', $f['site']), [])
+            ->assertRedirect($url)
+            ->assertSessionHasErrors([
+                'menu_item_public_id', 'foodex_product_id', 'quantity_per_item',
+            ]);
+
+        $this->assertSame($before, DB::table('smart_ordering_supply_mappings')->count());
+        $this->actingAs($actor)->get($url)
+            ->assertOk()
+            ->assertSee('name="tab" value="mapping"', false)
+            ->assertSee('name="q" value="FDX-"', false)
+            ->assertSee('<h2>'.e(__('smart_ordering_supply.mappings_title')).'</h2>', false);
+    }
+
     public function test_supply_tabs_hide_mutations_for_explicit_manage_deny_and_reject_foreign_or_disabled_site(): void
     {
         $f = $this->fixture();
