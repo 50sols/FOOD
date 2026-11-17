@@ -102,8 +102,13 @@ final class ModuleOperationalReadiness
         // certificate for another manifest merely because ENABLED remains set.
         try {
             $registration = $this->registry->registration($code);
+            // Never trust only the caller-supplied lifecycle snapshot.
+            // A concurrent admin may have suspended/disabled the persisted
+            // ERP module after that snapshot while its attestation remains
+            // cryptographically valid for the unchanged manifest version.
             if ($registration === null
-                || $registration->manifest_version !== $manifestVersion) {
+                || $registration->manifest_version !== $manifestVersion
+                || $registration->getRawOriginal('state') !== ModuleState::ENABLED->value) {
                 return false;
             }
 
