@@ -1648,6 +1648,80 @@ void main() {
     expect(find.text('company_name'), findsNothing);
   });
 
+  testWidgets('B2B profile finance hub is English and left-to-right', (
+    tester,
+  ) async {
+    final api = _PathB2bApi({
+      '/api/v1/profile': {
+        'name': 'Buyer One',
+        'email': 'buyer@example.test',
+        'locale': 'en',
+        'customer': {
+          'id': 19,
+          'type': 'b2b',
+          'name': 'Buyer One',
+          'phone': '55512345',
+          'email': 'buyer@example.test',
+        },
+        'business_account': {
+          'id': 27,
+          'company_name': 'Acme Foods',
+          'status': 'active',
+          'tax_number': 'TAX-872',
+        },
+        'addresses': const <Object>[],
+        'favorites': const <Object>[],
+      },
+      '/api/v1/b2b/account-summary?store_id=7': {
+        'data': {
+          'currency': 'KWD',
+          'balance': -125.0,
+          'balance_direction': 'customer_owes_company',
+          'total_debits': 420.0,
+          'total_purchases': 400.0,
+          'outstanding_receivable': 125.0,
+          'credit_limit': 1000.0,
+          'available_credit_line': 875.0,
+          'purchasing_power': 875.0,
+        },
+      },
+    });
+
+    await tester.pumpWidget(
+      FoodexCustomerApp(
+        session: const CustomerSession.authenticated(
+          CustomerChannel.b2b,
+          accessToken: 'token',
+          platformWide: true,
+        ),
+        locale: const Locale('en'),
+        initialRoute: '/b2b/profile?channel=wholesale&store_id=7',
+        b2bApi: api,
+      ),
+    );
+    await _pumpCustomerFrames(tester);
+
+    final financeHub = find.byKey(const ValueKey('b2b-account-hub'));
+    expect(financeHub, findsOneWidget);
+    expect(
+      Directionality.of(tester.element(financeHub)),
+      TextDirection.ltr,
+    );
+    expect(find.text('Financial account summary'), findsOneWidget);
+    expect(find.text('Total purchases'), findsOneWidget);
+    expect(find.text('Total outstanding debt'), findsOneWidget);
+    expect(find.text('Current balance'), findsOneWidget);
+    expect(find.text('Credit limit'), findsOneWidget);
+    expect(find.text('Available credit'), findsOneWidget);
+    expect(find.text('Available purchasing power'), findsOneWidget);
+    expect(find.text('1000.000 KWD'), findsOneWidget);
+    expect(find.text('875.000 KWD'), findsNWidgets(2));
+    expect(
+      find.byKey(const ValueKey('b2b-profile-open-statement')),
+      findsOneWidget,
+    );
+  });
+
   testWidgets(
     'B2B storefront keeps server branding and enforces green theme on mobile',
     (tester) async {
