@@ -62,7 +62,7 @@ final class V2Customer360TabHistoryContextTest extends TestCase
             $this->assertStringNotContainsString('history.replaceState(', $html);
             $this->assertStringContainsString("window.addEventListener('popstate', restoreTabFromUrl)", $html);
             $this->assertStringContainsString("window.addEventListener('hashchange', restoreTabFromUrl)", $html);
-            $this->assertStringContainsString("const available = tabs.some((tab) => tab.dataset.c360Tab === requested);", $html);
+            $this->assertStringContainsString('const available = tabs.some((tab) => tab.dataset.c360Tab === requested);', $html);
             $this->assertStringContainsString("activate(available ? requested : 'finance');", $html);
             $this->assertStringContainsString("window.location.hash !== '#'+name", $html);
 
