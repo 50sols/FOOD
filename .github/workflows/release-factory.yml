@@ -346,9 +346,25 @@ jobs:
             "$stage/backend/bootstrap/cache"
           cp VERSION "$stage/VERSION"
           cp Release/INSTALL-FIRST.txt "$stage/INSTALL-FIRST.txt"
-          # zip updates existing archives: remove the old output first.
+          # Use the same integrity-only deterministic ZIP writer as the
+          # Foodex_V2 staged fresh-install gate. A successful checksum does
+          # not authenticate publisher identity or authorize publication.
+          # Rebuild from THIS immutable tree, compare exact bytes and only
+          # then run the canonical package security verifier.
           rm -f "$GITHUB_WORKSPACE/FOODEX-Laravel-Setup.zip"
-          (cd "$stage" && zip -qr "$GITHUB_WORKSPACE/FOODEX-Laravel-Setup.zip" .)
+          repeat="$RUNNER_TEMP/FOODEX-Laravel-Setup-repeat.zip"
+          rm -f "$repeat"
+          source_epoch="$(git show -s --format=%ct HEAD)"
+          python3 scripts/v2_build_setup_zip.py \
+            --source-root "$stage" \
+            --output "$GITHUB_WORKSPACE/FOODEX-Laravel-Setup.zip" \
+            --source-date-epoch "$source_epoch"
+          python3 scripts/v2_build_setup_zip.py \
+            --source-root "$stage" \
+            --output "$repeat" \
+            --source-date-epoch "$source_epoch"
+          cmp "$GITHUB_WORKSPACE/FOODEX-Laravel-Setup.zip" "$repeat"
+          rm -f "$repeat"
           test -s FOODEX-Laravel-Setup.zip
           # Validate the actual assembled artifact before upload/signing;
           # this CI integrity check is not publisher authentication.
