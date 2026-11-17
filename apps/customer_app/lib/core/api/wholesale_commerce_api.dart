@@ -114,15 +114,18 @@ class HttpWholesaleCommerceApi
     int storeId,
     int productId,
     double quantity,
-  ) =>
-      _request(
-        'POST',
-        '/api/v1/cart/items',
-        body: {
-          'store_id': storeId,
-          'product_id': productId,
-          'quantity': quantity,
-        },
+  ) async =>
+      _scopedResponse(
+        await _request(
+          'POST',
+          '/api/v1/cart/items',
+          body: {
+            'store_id': storeId,
+            'product_id': productId,
+            'quantity': quantity,
+          },
+        ),
+        storeId: storeId,
       );
 
   @override
@@ -131,16 +134,19 @@ class HttpWholesaleCommerceApi
     int productId,
     double quantity,
     String sellingUnitCode,
-  ) =>
-      _request(
-        'POST',
-        '/api/v1/cart/items',
-        body: {
-          'store_id': storeId,
-          'product_id': productId,
-          'quantity': quantity,
-          'selling_unit_code': sellingUnitCode,
-        },
+  ) async =>
+      _scopedResponse(
+        await _request(
+          'POST',
+          '/api/v1/cart/items',
+          body: {
+            'store_id': storeId,
+            'product_id': productId,
+            'quantity': quantity,
+            'selling_unit_code': sellingUnitCode,
+          },
+        ),
+        storeId: storeId,
       );
 
   @override
