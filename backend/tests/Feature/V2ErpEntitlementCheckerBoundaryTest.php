@@ -513,6 +513,75 @@ final class V2ErpEntitlementCheckerBoundaryTest extends TestCase
         ]);
     }
 
+    public function test_supplier_setup_candidate_uses_existing_authority_and_validator_without_writes_in_both_locales(): void
+    {
+        $store = $this->wholesaleStore();
+        $admin = $this->actor('SUPER_ADMIN');
+        app(EnterpriseModuleAdministration::class)->perform('procurement', 'enable', $admin);
+        app(ModuleEntitlementManager::class)->set(
+            'procurement', EntitlementScope::platform(), true, null, $admin,
+        );
+
+        $candidate = [
+            'store_id' => $store->id,
+            'scope_type' => 'store',
+            'code' => 'P111-SUPPLIER-PREFLIGHT',
+            'name_en' => 'Fictional Supplier Example',
+            'name_ar' => 'مثال مورد خيالي',
+            'payment_terms_days' => 30,
+        ];
+        $before = DB::table('enterprise_suppliers')->count();
+        $auditBefore = DB::table('audit_logs')->count();
+
+        foreach (['ar' => 'rtl', 'en' => 'ltr'] as $locale => $direction) {
+            $admin->forceFill(['locale' => $locale])->save();
+            $actor = $admin->fresh();
+
+            $this->actingAs($actor)->get(route('admin.erp.procurement.index', [
+                'store_id' => $store->id,
+                'tab' => 'suppliers',
+            ]))->assertOk()->assertSee('dir="'.$direction.'"', false)
+                ->assertSee(__('supplier_setup_help.test', [], $locale));
+
+            $this->actingAs($actor)->post(route('admin.erp.procurement.suppliers.store'), [
+                ...$candidate,
+                'setup_action' => 'test',
+            ])->assertRedirect()->assertSessionHas('status');
+            $this->assertSame($before, DB::table('enterprise_suppliers')->count());
+            $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+        }
+
+        $this->actingAs($admin)->post(route('admin.erp.procurement.suppliers.store'), [
+            ...$candidate,
+            'setup_action' => 'test',
+            'payment_terms_days' => 3651,
+        ])->assertSessionHasErrors(['payment_terms_days']);
+        $this->actingAs($admin)->post(route('admin.erp.procurement.suppliers.store'), [
+            ...$candidate,
+            'setup_action' => 'unexpected',
+        ])->assertSessionHasErrors(['setup_action']);
+        $this->assertSame($before, DB::table('enterprise_suppliers')->count());
+        $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+
+        $this->actingAs($admin)->post(route('admin.erp.procurement.suppliers.store'), [
+            ...$candidate,
+            'setup_action' => 'save',
+        ])->assertRedirect()->assertSessionHas('status');
+        $this->assertDatabaseHas('enterprise_suppliers', [
+            'code' => 'P111-SUPPLIER-PREFLIGHT',
+            'scope_type' => 'store',
+            'store_id' => $store->id,
+        ]);
+        $this->assertSame($before + 1, DB::table('enterprise_suppliers')->count());
+        $this->assertSame($auditBefore + 1, DB::table('audit_logs')->count());
+
+        $this->actingAs($admin)->post(route('admin.erp.procurement.suppliers.store'), [
+            ...$candidate,
+            'setup_action' => 'test',
+        ])->assertSessionHasErrors(['code']);
+        $this->assertSame($before + 1, DB::table('enterprise_suppliers')->count());
+    }
+
     private function wholesaleStore(): Store
     {
         $store = Store::query()->findOrFail(app(WholesalePrincipal::class)->storeId());
