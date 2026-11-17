@@ -2274,6 +2274,147 @@ final class V2ErpEntitlementCheckerBoundaryTest extends TestCase
         $this->assertSame($auditBeforeDeny, DB::table('audit_logs')->count());
     }
 
+    public function test_independent_checker_approves_or_rejects_submitted_requests_once_with_immutable_decisions_and_scoped_audit(): void
+    {
+        $storeA = $this->wholesaleStore();
+        $storeB = Store::query()->create([
+            'store_type_id' => $storeA->store_type_id,
+            'code' => 'P111-DECISION-FOREIGN-B2B',
+            'name' => 'P111 separate checker tenant store',
+            'is_active' => true,
+        ]);
+        app(OrganizationHierarchyService::class)->ensureDefaultScopeForStore($storeB);
+
+        $owner = $this->actor('SUPER_ADMIN');
+        $maker = $this->actor('PROCUREMENT_BUYER');
+        $checker = $this->actor('PROCUREMENT_APPROVER');
+        $secondChecker = $this->actor('PROCUREMENT_APPROVER');
+        app(EnterpriseModuleAdministration::class)->perform('procurement', 'enable', $owner);
+        app(ModuleEntitlementManager::class)->set(
+            'procurement', EntitlementScope::platform(), true, null, $owner,
+        );
+        $supplier = app(SupplierDirectory::class)->create(
+            $maker,
+            app(TenantContextResolver::class)->wholesale($maker, $storeA->id),
+            [
+                'scope_type' => 'store',
+                'code' => 'P111-DECISION-LEGAL-SUP',
+                'name_en' => 'P111 independent checker legal supplier',
+            ],
+        );
+        $this->assertFalse($maker->hasPermission('procurement.purchase_requests.approve', $storeA->id));
+        $this->assertTrue($checker->hasPermission('procurement.purchase_requests.approve', $storeA->id));
+
+        foreach (['approved' => 'approve', 'rejected' => 'reject'] as $expectedStatus => $decision) {
+            $reason = 'P111 independent checker '.$expectedStatus;
+            $this->actingAs($maker)->post(route('admin.erp.procurement.requests.store'), [
+                'store_id' => $storeA->id,
+                'supplier_id' => $supplier->id,
+                'currency_code' => 'KWD',
+                'reason' => $reason,
+                'item_code' => 'P111-DECISION-SKU',
+                'description' => 'P111 separately approved or rejected request',
+                'quantity' => '1.250',
+                'unit' => 'case',
+                'estimated_unit_cost' => '9.875',
+            ])->assertRedirect();
+            $row = DB::table('enterprise_purchase_requests')->where('reason', $reason)->first();
+            $this->assertNotNull($row);
+            $this->assertSame('draft', $row->status);
+            $this->assertSame((int) $supplier->id, (int) $row->supplier_id);
+            $this->actingAs($maker)->post(route('admin.erp.procurement.requests.submit', $row->id), [
+                'store_id' => $storeA->id,
+            ])->assertRedirect();
+            $submitted = DB::table('enterprise_purchase_requests')->where('id', $row->id)->first();
+            $this->assertSame('submitted', $submitted->status);
+            $this->assertNotNull($submitted->submitted_at);
+            $this->assertSame((int) $maker->id, (int) $submitted->submitted_by);
+
+            $auditBeforeDenied = DB::table('audit_logs')->count();
+            foreach (['ar' => 'rtl', 'en' => 'ltr'] as $locale => $direction) {
+                $maker->forceFill(['locale' => $locale])->save();
+                $checker->forceFill(['locale' => $locale])->save();
+
+                // A valid form/header or forged decision-maker never grants
+                // a Buyer approval authority. Authorization is server-side.
+                $this->actingAs($maker->fresh())->post(route('admin.erp.procurement.requests.decision', $row->id), [
+                    'store_id' => $storeA->id,
+                    'decision' => $decision,
+                    'decided_by' => $owner->id,
+                    'status' => $expectedStatus,
+                ])->assertForbidden();
+
+                // The checker is authorized in both wholesale stores, but
+                // the persisted Store A request must not be found in Store B.
+                $this->actingAs($checker->fresh())->post(route('admin.erp.procurement.requests.decision', $row->id), [
+                    'store_id' => $storeB->id,
+                    'decision' => $decision,
+                ])->assertNotFound();
+
+                $this->actingAs($checker->fresh())->get(route('admin.erp.procurement.index', [
+                    'store_id' => $storeA->id,
+                    'tab' => 'requests',
+                    'request' => $row->id,
+                ]))->assertOk()->assertSee('dir="'.$direction.'"', false);
+            }
+            $this->assertSame($auditBeforeDenied, DB::table('audit_logs')->count());
+            $note = $expectedStatus === 'approved'
+                ? 'Independent checker verified legal supply'
+                : 'Independent checker rejected invalid requested terms';
+            $this->actingAs($checker->fresh())->post(route('admin.erp.procurement.requests.decision', $row->id), [
+                'store_id' => $storeA->id,
+                'decision' => $decision,
+                'note' => $note,
+                'status' => $expectedStatus === 'approved' ? 'rejected' : 'approved',
+                'decided_by' => $owner->id,
+                'submitted_by' => $owner->id,
+                'decided_at' => now()->addYear()->toDateTimeString(),
+            ])->assertRedirect()->assertSessionHas('status');
+
+            $decided = DB::table('enterprise_purchase_requests')->where('id', $row->id)->first();
+            $this->assertSame($expectedStatus, $decided->status);
+            $this->assertSame((int) $checker->id, (int) $decided->decided_by);
+            $this->assertSame((int) $maker->id, (int) $decided->submitted_by);
+            $this->assertSame((string) $submitted->submitted_at, (string) $decided->submitted_at);
+            $this->assertNotNull($decided->decided_at);
+            $this->assertSame($note, $decided->decision_note);
+            $this->assertSame((int) $supplier->id, (int) $decided->supplier_id);
+            $this->assertSame(1, DB::table('audit_logs')
+                ->where('event', 'enterprise.purchase_request.'.$expectedStatus)
+                ->where('auditable_id', $row->id)->count());
+
+            $auditBeforeReplay = DB::table('audit_logs')->count();
+            foreach ([$checker, $secondChecker] as $retryActor) {
+                $this->actingAs($retryActor->fresh())->post(route('admin.erp.procurement.requests.decision', $row->id), [
+                    'store_id' => $storeA->id,
+                    'decision' => $decision,
+                    'note' => 'Forged repeat should not overwrite historical decision',
+                ])->assertRedirect();
+            }
+            $replayed = DB::table('enterprise_purchase_requests')->where('id', $row->id)->first();
+            $this->assertSame((string) $decided->decided_at, (string) $replayed->decided_at);
+            $this->assertSame((int) $checker->id, (int) $replayed->decided_by);
+            $this->assertSame($note, $replayed->decision_note);
+            $this->assertSame((int) $supplier->id, (int) $replayed->supplier_id);
+            $this->assertSame($auditBeforeReplay, DB::table('audit_logs')->count());
+
+            $opposite = $decision === 'approve' ? 'reject' : 'approve';
+            $this->actingAs($checker->fresh())->post(route('admin.erp.procurement.requests.decision', $row->id), [
+                'store_id' => $storeA->id,
+                'decision' => $opposite,
+            ])->assertSessionHasErrors('status');
+            $this->assertDatabaseHas('enterprise_purchase_requests', [
+                'id' => $row->id,
+                'status' => $expectedStatus,
+                'decided_by' => $checker->id,
+            ]);
+            $this->assertSame($auditBeforeReplay, DB::table('audit_logs')->count());
+            $this->assertSame(0, DB::table('audit_logs')
+                ->where('event', 'enterprise.purchase_request.'.$opposite.'d')
+                ->where('auditable_id', $row->id)->count());
+        }
+    }
+
     private function wholesaleStore(): Store
     {
         $store = Store::query()->findOrFail(app(WholesalePrincipal::class)->storeId());
