@@ -61,6 +61,72 @@ final class V2RetailDashboardTabShapeScopeTest extends TestCase
         }
     }
 
+    public function test_retail_tabs_are_44px_single_row_keyboard_links_with_exactly_one_current_page_in_ar_and_en(): void
+    {
+        $storeOne = $this->retailStore('V2-4004-A11Y-A');
+        $storeTwo = $this->retailStore('V2-4004-A11Y-B');
+        $actor = $this->retailActor([$storeOne, $storeTwo]);
+        $counts = $this->businessCounts();
+        $tabs = ['overview', 'sales', 'inventory', 'customers', 'analytics'];
+
+        foreach (['ar' => 'rtl', 'en' => 'ltr'] as $locale => $direction) {
+            $actor->forceFill(['locale' => $locale])->save();
+
+            foreach ($tabs as $index => $selectedTab) {
+                $storeId = $index % 2 === 0 ? $storeOne : $storeTwo;
+                $query = [
+                    'store_id' => $storeId,
+                    'dashboard_tab' => $selectedTab,
+                ];
+
+                $html = $this->actingAs($actor->fresh())
+                    ->get(route('admin.b2c.dashboard', $query))
+                    ->assertOk()
+                    ->assertSee('dir="'.$direction.'"', false)
+                    ->assertSee('data-dashboard-pane="'.$selectedTab.'"', false)
+                    ->getContent();
+
+                $this->assertSame(
+                    1,
+                    preg_match('/<nav class="dashboard-tabs"[^>]*>(.*?)<\\/nav>/s', $html, $matches),
+                );
+                $nav = $matches[1];
+                $this->assertSame(5, preg_match_all('/<a\\b[^>]*class="dashboard-tab(?: active)?"[^>]*>/s', $nav));
+                $this->assertSame(
+                    1,
+                    preg_match_all('/<a\\b[^>]*class="dashboard-tab active"[^>]*aria-current="page"/s', $nav),
+                );
+                $this->assertStringNotContainsString('role="tab"', $nav);
+                $this->assertStringNotContainsString('aria-selected', $nav);
+                $this->assertStringContainsString(
+                    'href="'.e(route('admin.b2c.dashboard', $query)).'"',
+                    $nav,
+                );
+
+                // This is a native GET navigation rail, not a client-side tab widget.
+                // Enter follows an anchor; Space and arrows retain browser scrolling.
+                $this->assertStringContainsString(
+                    '.dashboard-tabs{display:flex;flex-wrap:nowrap;align-items:center;',
+                    $html,
+                );
+                $this->assertStringContainsString(
+                    'max-width:100%;min-width:0;overflow-x:auto;overscroll-behavior-inline:contain',
+                    $html,
+                );
+                $this->assertStringContainsString(
+                    '.dashboard-tab{min-height:44px;flex:0 0 auto;',
+                    $html,
+                );
+                $this->assertStringContainsString(
+                    '.dashboard-tab:focus-visible{outline:3px solid var(--foodex-green-dark);outline-offset:1px;',
+                    $html,
+                );
+            }
+        }
+
+        $this->assertSame($counts, $this->businessCounts());
+    }
+
     public function test_malformed_dashboard_tab_shape_returns_404_without_mutating_retail_data_or_changing_legacy_scalar_fallback(): void
     {
         $storeId = $this->retailStore('V2-3978-SHAPE');
