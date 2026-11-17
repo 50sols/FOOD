@@ -24,7 +24,7 @@ final class V2InspectorBackupLinkAuthorityTest extends TestCase
 
     public function test_platform_health_reader_does_not_see_backup_link_or_gain_update_authority_in_ar_en(): void
     {
-        $reader = $this->actor('V2_4002_INSPECTOR', ['platform.manage']);
+        $reader = $this->actor('V2_4002_INSPECTOR', ['platform.manage', 'settings.view']);
         $before = $this->mutationCounts();
 
         foreach (['ar' => 'rtl', 'en' => 'ltr'] as $locale => $direction) {
@@ -73,7 +73,7 @@ final class V2InspectorBackupLinkAuthorityTest extends TestCase
 
     public function test_explicit_system_update_deny_cannot_be_overridden_by_inspector_navigation(): void
     {
-        $actor = $this->actor('V2_4002_PLATFORM_UPDATER', ['platform.manage', 'system.update']);
+        $actor = $this->actor('V2_4002_PLATFORM_UPDATER', ['platform.manage', 'settings.view', 'system.update']);
         $this->assertTrue($actor->hasPermission('system.update'));
 
         DB::table('user_permission_overrides')->insert([
@@ -107,7 +107,7 @@ final class V2InspectorBackupLinkAuthorityTest extends TestCase
     public function test_roleless_and_inactive_users_cannot_bypass_inspector_direct_url(): void
     {
         $roleless = User::factory()->create(['is_active' => true, 'locale' => 'en']);
-        $inactive = $this->actor('V2_4002_INACTIVE', ['platform.manage']);
+        $inactive = $this->actor('V2_4002_INACTIVE', ['platform.manage', 'settings.view']);
         $inactive->forceFill(['is_active' => false])->save();
 
         foreach ([$roleless, $inactive->fresh()] as $actor) {
