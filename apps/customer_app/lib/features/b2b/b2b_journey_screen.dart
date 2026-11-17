@@ -6290,7 +6290,9 @@ class _InvoiceDetailRemoteStateState extends State<_InvoiceDetailRemoteState>
 
   void _reload() {
     if (!mounted) return;
-    setState(() => _future = _fetch());
+    setState(() {
+      _future = _fetch();
+    });
   }
 
   Map<Object?, Object?> _map(Object? raw) =>
