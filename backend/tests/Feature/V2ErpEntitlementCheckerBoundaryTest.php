@@ -13,6 +13,7 @@ use App\Enterprise\Procurement\PurchaseRequestManager;
 use App\Enterprise\Procurement\SupplierDirectory;
 use App\Models\Catalog;
 use App\Models\Product;
+use App\Models\Permission;
 use App\Models\Role;
 use App\Models\Store;
 use App\Models\User;
@@ -40,6 +41,8 @@ final class V2ErpEntitlementCheckerBoundaryTest extends TestCase
 
         config()->set('security.mfa.enforce_privileged', false);
         $this->seed(CoreReferenceSeeder::class);
+        // Disposable signed readiness only in PHPUnit; never a production certificate.
+        SyntheticErpWorkflowEvidence::install();
         config()->set(
             'enterprise_module_readiness.certified_versions.procurement',
             app(ModuleRegistry::class)->manifest('procurement')->version,
@@ -230,6 +233,140 @@ final class V2ErpEntitlementCheckerBoundaryTest extends TestCase
             'store_id' => $sibling->id,
             'reason' => $request['reason'],
         ]);
+    }
+
+    public function test_store_only_entitlement_revocation_denies_direct_requests_read_and_mutation_without_platform_fallback(): void
+    {
+        $store = $this->wholesaleStore();
+        $admin = $this->actor('SUPER_ADMIN');
+        $buyer = $this->actor('PROCUREMENT_BUYER');
+        app(EnterpriseModuleAdministration::class)->perform('procurement', 'enable', $admin);
+        $entitlements = app(ModuleEntitlementManager::class);
+        $scope = new EntitlementScope(EntitlementScope::STORE, $store->id);
+        $entitlements->set('procurement', $scope, true, null, $admin);
+        $this->assertDatabaseMissing('enterprise_module_entitlements', [
+            'module_code' => 'procurement',
+            'scope_key' => 'platform:0',
+        ]);
+
+        foreach (['ar' => 'rtl', 'en' => 'ltr'] as $locale => $direction) {
+            $buyer->forceFill(['locale' => $locale])->save();
+            $this->actingAs($buyer->fresh())
+                ->get(route('admin.erp.procurement.index', [
+                    'store_id' => $store->id,
+                    'tab' => 'requests',
+                ]))
+                ->assertOk()
+                ->assertSee('dir="'.$direction.'"', false);
+        }
+
+        // Revoking the only STORE entitlement must reject direct HTTP even
+        // though the same actor retains their global Procurement Buyer role.
+        $entitlements->set('procurement', $scope, false, null, $admin);
+        $auditBefore = DB::table('audit_logs')->count();
+        foreach (['ar', 'en'] as $locale) {
+            $buyer->forceFill(['locale' => $locale])->save();
+            $this->actingAs($buyer->fresh())->get(route('admin.erp.procurement.index', [
+                'store_id' => $store->id,
+                'tab' => 'requests',
+            ]))->assertForbidden();
+
+            $this->actingAs($buyer->fresh())->post(route('admin.erp.procurement.requests.store'), [
+                'store_id' => $store->id,
+                'currency_code' => 'KWD',
+                'reason' => 'P111 revoked store only is forbidden',
+                'item_code' => 'P111-REVOKED',
+                'description' => 'Never persist after revocation',
+                'quantity' => 1,
+                'unit' => 'case',
+                'estimated_unit_cost' => '1.000',
+            ])->assertForbidden();
+        }
+
+        $this->assertDatabaseMissing('enterprise_purchase_requests', [
+            'reason' => 'P111 revoked store only is forbidden',
+        ]);
+        $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+    }
+
+    public function test_global_supplier_deny_and_unrelated_retail_assignment_reject_direct_http_before_setup_conflict(): void
+    {
+        $wholesale = $this->wholesaleStore();
+        $sibling = Store::query()->create([
+            'store_type_id' => $wholesale->store_type_id,
+            'code' => 'P111-GLOBAL-DENY-B2B',
+            'name' => 'P111 GLOBAL DENY B2B',
+            'is_active' => true,
+        ]);
+        app(OrganizationHierarchyService::class)->ensureDefaultScopeForStore($sibling);
+        $retail = Store::query()->create([
+            'store_type_id' => (int) DB::table('store_types')->where('code', 'B2C')->value('id'),
+            'code' => 'P111-FOREIGN-RETAIL',
+            'name' => 'P111 unrelated Retail',
+            'is_active' => true,
+        ]);
+        // No ERP hierarchy is created for this Retail store: an unrelated
+        // Retail Finance assignment must receive 403, not a misleading 409.
+        $admin = $this->actor('SUPER_ADMIN');
+        $buyer = $this->actor('PROCUREMENT_BUYER');
+        $buyer->storeRoleAssignments()->create([
+            'store_id' => $retail->id,
+            'role_id' => Role::query()->where('code', 'RETAIL_FINANCE')->firstOrFail()->id,
+        ]);
+        app(EnterpriseModuleAdministration::class)->perform('procurement', 'enable', $admin);
+        app(ModuleEntitlementManager::class)->set(
+            'procurement', EntitlementScope::platform(), true, null, $admin,
+        );
+
+        foreach (['procurement.suppliers.view', 'procurement.suppliers.manage'] as $code) {
+            $permission = Permission::query()->where('code', $code)->firstOrFail();
+            foreach ([
+                ['scope_key' => 'global', 'store_id' => null, 'effect' => 'deny'],
+                ['scope_key' => 'store:'.$sibling->id, 'store_id' => $sibling->id, 'effect' => 'allow'],
+            ] as $override) {
+                DB::table('user_permission_overrides')->insert([
+                    'user_id' => $buyer->id,
+                    'permission_id' => $permission->id,
+                    ...$override,
+                    'created_at' => now(),
+                    'updated_at' => now(),
+                ]);
+            }
+        }
+        $buyer->forceFill(['has_permission_overrides' => true])->save();
+        $this->assertFalse($buyer->fresh()->hasPermission('procurement.suppliers.view', $sibling->id));
+        $this->assertTrue($buyer->fresh()->hasPermission('procurement.purchase_requests.view', $sibling->id));
+        $this->assertFalse($buyer->fresh()->hasRole('PROCUREMENT_BUYER', $retail->id));
+        $this->assertFalse($buyer->fresh()->hasPermission('procurement.suppliers.view', $retail->id));
+        $auditBefore = DB::table('audit_logs')->count();
+
+        foreach (['ar' => 'rtl', 'en' => 'ltr'] as $locale => $direction) {
+            $buyer->forceFill(['locale' => $locale])->save();
+            $actor = $buyer->fresh();
+            // Supplier-specific DENY does not revoke independent Requests.
+            $this->actingAs($actor)->get(route('admin.erp.procurement.index', [
+                'store_id' => $sibling->id, 'tab' => 'requests',
+            ]))->assertOk()->assertSee('dir="'.$direction.'"', false);
+
+            $this->actingAs($actor)->get(route('admin.erp.procurement.index', [
+                'store_id' => $sibling->id, 'tab' => 'suppliers',
+            ]))->assertForbidden();
+            $this->actingAs($actor)->get(route('admin.erp.procurement.index', [
+                'store_id' => $retail->id, 'tab' => 'suppliers',
+            ]))->assertForbidden();
+            $this->actingAs($actor)->post(route('admin.erp.procurement.suppliers.store'), [
+                'store_id' => $retail->id,
+                'scope_type' => 'store',
+                'code' => 'P111-RETAIL-FORGED',
+                'name_en' => 'Forbidden Retail Supplier',
+                'name_ar' => 'مورد غير مصرح',
+            ])->assertForbidden();
+        }
+
+        $this->assertDatabaseMissing('enterprise_suppliers', [
+            'code' => 'P111-RETAIL-FORGED',
+        ]);
+        $this->assertSame($auditBefore, DB::table('audit_logs')->count());
     }
 
     public function test_historical_unmatched_invoice_get_keeps_pending_row_without_creating_or_approving_review_in_ar_en(): void
