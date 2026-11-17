@@ -513,6 +513,91 @@ final class ErpCenterTest extends TestCase
         }
     }
 
+    public function test_wholesale_store_only_procurement_sidebar_chooses_entitled_store_instead_of_first_b2b_store(): void
+    {
+        config()->set('security.mfa.enforce_privileged', false);
+        $admin = $this->userWithGlobalRole('SUPER_ADMIN', 'en', 'p135-procurement-link-admin@example.test');
+        $buyer = $this->userWithGlobalRole('PROCUREMENT_BUYER', 'en', 'p135-procurement-link-buyer@example.test');
+        $first = $this->wholesaleStore('P135-ALPHABET-FIRST-NO-ENTITLEMENT');
+        $entitled = $this->wholesaleStore('P135-ZULU-SECOND-ENTITLED');
+
+        app(EnterpriseModuleAdministration::class)->perform('procurement', 'enable', $admin);
+        $entitlements = app(ModuleEntitlementManager::class);
+        $entitlements->set('procurement', new EntitlementScope(EntitlementScope::STORE, $entitled->id), true);
+        $this->assertDatabaseMissing('enterprise_module_entitlements', [
+            'module_code' => 'procurement',
+            'scope_key' => 'platform:0',
+        ]);
+        $this->assertTrue($buyer->hasPermission('procurement.suppliers.view', $first->id));
+        $this->assertTrue($buyer->hasPermission('procurement.suppliers.view', $entitled->id));
+
+        foreach (['ar' => 'rtl', 'en' => 'ltr'] as $locale => $direction) {
+            app()->setLocale($locale);
+            $buyer->forceFill(['locale' => $locale])->save();
+            app()->forgetInstance(AdminNavigation::class);
+
+            $group = collect(app(AdminNavigation::class)->groupsFor($buyer->fresh()))
+                ->firstWhere('key', 'procurement');
+            $this->assertIsArray($group);
+            $item = collect($group['children'])->firstWhere('key', 'erp_procurement');
+            $this->assertIsArray($item);
+            $this->assertSame('admin.erp.procurement.index', $item['route']);
+            $this->assertSame(['store_id' => (string) $entitled->id], $item['params']);
+
+            $page = $this->actingAs($buyer->fresh())
+                ->get(route($item['route'], $item['params']))
+                ->assertOk()
+                ->assertSee('dir="'.$direction.'"', false);
+            $this->assertSame($entitled->id, $page->viewData('selectedStoreId'));
+
+            $center = $this->actingAs($buyer->fresh())
+                ->get(route('admin.erp.index'))
+                ->assertOk();
+            $card = collect($center->viewData('cards'))->firstWhere('key', 'procurement');
+            $this->assertIsArray($card);
+            $this->assertSame('available', $card['status']);
+            $this->assertSame(route('admin.erp.procurement.index', [
+                'store_id' => $entitled->id,
+            ]), $card['url']);
+        }
+
+        // A user-level store DENY wins over the Wholesale role and the
+        // still-present module entitlement; never substitute the first store.
+        DB::table('user_permission_overrides')->insert([
+            'user_id' => $buyer->id,
+            'permission_id' => Permission::query()->where('code', 'procurement.suppliers.view')->firstOrFail()->id,
+            'scope_key' => 'store:'.$entitled->id,
+            'store_id' => $entitled->id,
+            'effect' => 'deny',
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        $buyer->forceFill(['has_permission_overrides' => true])->save();
+        $this->assertFalse($buyer->fresh()->hasPermission('procurement.suppliers.view', $entitled->id));
+        $this->assertTrue($buyer->fresh()->hasPermission('procurement.suppliers.view', $first->id));
+
+        app()->forgetInstance(AdminNavigation::class);
+        $groups = collect(app(AdminNavigation::class)->groupsFor($buyer->fresh()));
+        $this->assertNull($groups->firstWhere('key', 'procurement'));
+
+        $center = $this->actingAs($buyer->fresh())->get(route('admin.erp.index'))->assertOk();
+        $card = collect($center->viewData('cards'))->firstWhere('key', 'procurement');
+        $this->assertIsArray($card);
+        $this->assertSame('not_entitled', $card['status']);
+        $this->assertNull($card['url']);
+        $this->actingAs($buyer->fresh())->get(route('admin.erp.procurement.index', [
+            'store_id' => $entitled->id,
+            'tab' => 'suppliers',
+        ]))->assertForbidden();
+
+        // Disabling the only store grant cannot create a platform fallback.
+        $entitlements->set('procurement', new EntitlementScope(EntitlementScope::STORE, $entitled->id), false);
+        app()->forgetInstance(AdminNavigation::class);
+        $this->assertNull(collect(app(AdminNavigation::class)->groupsFor($buyer->fresh()))
+            ->firstWhere('key', 'procurement'));
+        $this->assertDatabaseCount('enterprise_suppliers', 0);
+    }
+
     public function test_wholesale_procurement_read_projection_does_not_invent_an_entitlement_or_readiness(): void
     {
         $admin = $this->userWithGlobalRole('SUPER_ADMIN', 'en', 'erp-wholesale-guard-admin@example.test');
