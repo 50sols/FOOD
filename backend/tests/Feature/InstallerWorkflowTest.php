@@ -13,6 +13,7 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Log;
 use Symfony\Component\Console\Output\BufferedOutput;
+use Symfony\Component\HttpKernel\Exception\HttpException;
 use Tests\TestCase;
 
 class InstallerWorkflowTest extends TestCase
@@ -345,7 +346,7 @@ class InstallerWorkflowTest extends TestCase
         app(InstallState::class)->writeLock('1.0.0');
         Artisan::shouldReceive('call')->never();
 
-        $this->expectException(\Symfony\Component\HttpKernel\Exception\HttpException::class);
+        $this->expectException(HttpException::class);
         $this->expectExceptionCode(0);
 
         app(InstallerWorkflow::class)->seedRequiredCoreData();
