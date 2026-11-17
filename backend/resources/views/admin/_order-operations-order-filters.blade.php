@@ -51,7 +51,7 @@
         @endif
         <input type="hidden" name="action_required" value="{{ ($selectedActionRequired ?? false) ? 1 : 0 }}">
 
-        <div class="order-grid-filter-primary" data-order-primary-filters role="group" aria-label="{{ $isAr ? 'فلاتر الطلبات الأساسية' : 'Primary order filters' }}">
+        <div class="order-grid-filter-primary" data-order-primary-filters role="group" tabindex="0" aria-label="{{ $isAr ? 'فلاتر الطلبات الأساسية' : 'Primary order filters' }}">
         <label>
             <span class="order-grid-filter-label">{{ __('order_operations.filters.order_number') }}</span>
             <input type="search"
