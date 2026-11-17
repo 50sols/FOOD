@@ -39,7 +39,9 @@ final class V2RestaurantGrowthHorizontalTabsTest extends TestCase
                 $response = $this->actingAs($actor)->get($url)->assertOk();
                 $html = $response->getContent();
 
-                $this->assertStringContainsString('class="foodex-tabs rg-tabs"', $html);
+                $this->assertStringContainsString('class="foodex-tabs foodex-tabs--horizontal"', $html);
+                $this->assertStringContainsString('.foodex-tabs.foodex-tabs--horizontal{min-width:0;max-width:100%;flex-wrap:nowrap;overflow-x:auto;', $html);
+                $this->assertStringContainsString('.foodex-tabs.foodex-tabs--horizontal > a:focus-visible', $html);
                 $this->assertSame(6, preg_match_all('/data-growth-tab="[^"]+"/', $html));
                 $this->assertSame(1, preg_match_all('/data-growth-panel="[^"]+"/', $html));
                 $this->assertSame(1, preg_match_all('/data-growth-tab="[^"]+"[^>]*aria-current="page"/', $html));
