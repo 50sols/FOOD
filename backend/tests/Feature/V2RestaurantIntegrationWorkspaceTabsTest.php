@@ -339,6 +339,13 @@ final class V2RestaurantIntegrationWorkspaceTabsTest extends TestCase
         $this->actingAs($wholesale)->get(route('admin.smart-ordering.integrations.index', [
             'site' => $siteA->getKey(), 'tab' => 'webhooks',
         ]))->assertForbidden();
+
+        $this->actingAs($wholesale)->post(route('admin.smart-ordering.integrations.webhooks.store', $siteA), [
+            '_integration_form' => 'webhooks',
+            'target_url' => 'https://example.test/forged-b2b',
+            'event_types' => ['order.created'],
+        ])->assertForbidden();
+        $this->assertDatabaseCount('restaurant_saas_webhook_subscriptions', 0);
     }
 
     public function test_store_manager_positive_path_is_scoped_and_remains_localized_for_every_tab(): void
@@ -534,6 +541,13 @@ final class V2RestaurantIntegrationWorkspaceTabsTest extends TestCase
                 '_integration_form' => 'api-clients',
                 'name' => 'Forged CSRF Client',
                 'scopes' => ['restaurant.read'],
+            ])->assertStatus(419);
+
+            $this->post(route('admin.smart-ordering.integrations.webhooks.store', $site), [
+                'support_access' => 1,
+                '_integration_form' => 'webhooks',
+                'target_url' => 'https://example.test/unauthorized-csrf',
+                'event_types' => ['order.created'],
             ])->assertStatus(419);
         } finally {
             $this->app['env'] = $originalEnvironment;
