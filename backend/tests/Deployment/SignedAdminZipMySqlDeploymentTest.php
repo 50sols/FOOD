@@ -214,7 +214,6 @@ PHP;
         $pair = sodium_crypto_sign_keypair();
         $keyId = 'g005-actual-zip-ci-only';
         $publicKey = base64_encode(sodium_crypto_sign_publickey($pair));
-        $secretKey = sodium_crypto_sign_secretkey($pair);
         $wrongPair = sodium_crypto_sign_keypair();
         $wrongPublicKey = base64_encode(sodium_crypto_sign_publickey($wrongPair));
         $upload = storage_path('app/g005-actual-zip-preserve.bin');
@@ -242,7 +241,7 @@ PHP;
                 'update_signatures.publisher_public_key_b64' => $wrongPublicKey,
             ]);
 
-            $this->signedPost($user, $secretKey, $keyId, $archivePath, '1.0.127', '1.0.125', true)
+            $this->signedPost($user, $pair, $keyId, $archivePath, '1.0.127', '1.0.125', true)
                 ->assertRedirect(route('admin.system-update.index'))
                 ->assertSessionHasErrors(['update']);
             $this->assertSame(0, DB::table('update_history')->where('to_version', '1.0.127')->count());
@@ -253,7 +252,7 @@ PHP;
             config(['update_signatures.publisher_public_key_b64' => $publicKey]);
             app()->instance(UpdateRuntime::class, $this->failAfterApplyRuntime($email));
 
-            $this->signedPost($user, $secretKey, $keyId, $archivePath, '1.0.127', '1.0.125', true)
+            $this->signedPost($user, $pair, $keyId, $archivePath, '1.0.127', '1.0.125', true)
                 ->assertRedirect(route('admin.system-update.index'))
                 ->assertSessionHasErrors(['update']);
 
