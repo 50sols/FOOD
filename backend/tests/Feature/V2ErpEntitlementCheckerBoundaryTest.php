@@ -23,6 +23,7 @@ use App\Models\User;
 use App\Models\Warehouse;
 use App\Services\EnterpriseModuleAdministration;
 use App\Services\WholesalePrincipal;
+use App\Support\AdminNavigation;
 use App\Support\TenantContextResolver;
 use Database\Seeders\CoreReferenceSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -756,6 +757,167 @@ final class V2ErpEntitlementCheckerBoundaryTest extends TestCase
             ->where('auditable_id', $order->id)
             ->count());
         $this->assertGreaterThanOrEqual($auditBefore, DB::table('audit_logs')->count());
+    }
+
+    public function test_procurement_erp_center_sidebar_http_readiness_parity_for_four_roles(): void
+    {
+        // A production-like isolated DB must never let the local Super Admin
+        // bootstrap create operational approvals or entitlements on GET.
+        $this->app['env'] = 'production';
+        $store = $this->wholesaleStore();
+        $owner = $this->actor('SUPER_ADMIN');
+        $actors = [
+            'PROCUREMENT_BUYER' => $this->actor('PROCUREMENT_BUYER'),
+            'PROCUREMENT_MANAGER' => $this->actor('PROCUREMENT_MANAGER'),
+            'PROCUREMENT_APPROVER' => $this->actor('PROCUREMENT_APPROVER'),
+            'SUPER_ADMIN' => $owner,
+        ];
+
+        app(EnterpriseModuleAdministration::class)->perform('procurement', 'enable', $owner);
+        app(ModuleEntitlementManager::class)->set(
+            'procurement', EntitlementScope::platform(), true, null, $owner,
+        );
+        config()->set('enterprise_module_readiness.certified_versions.procurement', null);
+
+        foreach (['ar' => 'rtl', 'en' => 'ltr'] as $locale => $direction) {
+            app()->setLocale($locale);
+            foreach ($actors as $role => $actor) {
+                $actor->forceFill(['locale' => $locale])->save();
+                $user = $actor->fresh();
+                $page = $this->actingAs($user)->get(route('admin.erp.index'));
+                $page->assertOk()->assertSee('dir="'.$direction.'"', false);
+                $card = collect($page->viewData('cards'))->firstWhere('key', 'procurement');
+                $this->assertIsArray($card, $role);
+                $this->assertSame('degraded', $card['status'], $role);
+                $this->assertSame('uncertified', $card['denial_reason'], $role);
+                $this->assertNull($card['url'], $role);
+                $this->assertSame('healthy', $card['health'], 'Health alone must not certify '.$role);
+                $page->assertSee(
+                    __('admin.erp_center.denial_reasons.uncertified', [], $locale),
+                );
+
+                $item = collect(app(AdminNavigation::class)->groupsFor($user))
+                    ->flatMap(static fn (array $group): array => $group['children'])
+                    ->firstWhere('key', 'erp_procurement');
+                if ($role === 'SUPER_ADMIN') {
+                    $this->assertIsArray($item);
+                    $this->assertSame('admin.enterprise-modules.show', $item['route']);
+                    $this->assertSame(['module' => 'procurement'], $item['params']);
+                    $this->actingAs($user)
+                        ->get(route('admin.enterprise-modules.show', ['module' => 'procurement']))
+                        ->assertOk();
+                } else {
+                    $this->assertNull($item, 'Uncertified business route visible to '.$role);
+                    $this->actingAs($user)
+                        ->get(route('admin.enterprise-modules.show', ['module' => 'procurement']))
+                        ->assertForbidden();
+                }
+
+                // HTTP readiness must forbid direct URL entry even for an
+                // authenticated role and without a valid operational tab.
+                $this->actingAs($user)->get(route('admin.erp.procurement.index', [
+                    'store_id' => $store->id,
+                    'tab' => 'requests',
+                ]))->assertForbidden();
+            }
+        }
+
+        config()->set(
+            'enterprise_module_readiness.certified_versions.procurement',
+            app(ModuleRegistry::class)->manifest('procurement')->version,
+        );
+
+        foreach (['ar' => 'rtl', 'en' => 'ltr'] as $locale => $direction) {
+            app()->setLocale($locale);
+            foreach ($actors as $role => $actor) {
+                $actor->forceFill(['locale' => $locale])->save();
+                $user = $actor->fresh();
+                $page = $this->actingAs($user)->get(route('admin.erp.index'));
+                $page->assertOk()->assertSee('dir="'.$direction.'"', false);
+                $card = collect($page->viewData('cards'))->firstWhere('key', 'procurement');
+                $this->assertIsArray($card, $role);
+                $this->assertSame('available', $card['status'], $role);
+                $this->assertSame(route('admin.erp.procurement.index'), $card['url'], $role);
+                $item = collect(app(AdminNavigation::class)->groupsFor($user))
+                    ->flatMap(static fn (array $group): array => $group['children'])
+                    ->firstWhere('key', 'erp_procurement');
+                $this->assertIsArray($item, $role);
+                $this->assertSame('admin.erp.procurement.index', $item['route'], $role);
+                $this->actingAs($user)->get(route('admin.erp.procurement.index', [
+                    'store_id' => $store->id,
+                    'tab' => 'requests',
+                ]))->assertOk()->assertSee('dir="'.$direction.'"', false);
+                $this->actingAs($user)->get(route('admin.erp.procurement.index', [
+                    'store_id' => $store->id,
+                    'tab' => 'invalid-tab-forged',
+                ]))->assertNotFound();
+            }
+        }
+    }
+
+    public function test_revoked_procurement_store_entitlement_cannot_leave_business_card_or_sidebar_action(): void
+    {
+        $this->app['env'] = 'production';
+        $store = $this->wholesaleStore();
+        $owner = $this->actor('SUPER_ADMIN');
+        $actors = [
+            'PROCUREMENT_BUYER' => $this->actor('PROCUREMENT_BUYER'),
+            'PROCUREMENT_MANAGER' => $this->actor('PROCUREMENT_MANAGER'),
+            'PROCUREMENT_APPROVER' => $this->actor('PROCUREMENT_APPROVER'),
+            'SUPER_ADMIN' => $owner,
+        ];
+
+        app(EnterpriseModuleAdministration::class)->perform('procurement', 'enable', $owner);
+        config()->set(
+            'enterprise_module_readiness.certified_versions.procurement',
+            app(ModuleRegistry::class)->manifest('procurement')->version,
+        );
+        $entitlements = app(ModuleEntitlementManager::class);
+        $entitlements->set('procurement', EntitlementScope::platform(), true, null, $owner);
+        $entitlements->set(
+            'procurement',
+            new EntitlementScope(EntitlementScope::STORE, $store->id),
+            false,
+            null,
+            $owner,
+        );
+        $this->assertDatabaseHas('enterprise_module_entitlements', [
+            'module_code' => 'procurement',
+            'scope_key' => 'store:'.$store->id,
+            'is_enabled' => false,
+        ]);
+
+        foreach (['ar' => 'rtl', 'en' => 'ltr'] as $locale => $direction) {
+            app()->setLocale($locale);
+            foreach ($actors as $role => $actor) {
+                $actor->forceFill(['locale' => $locale])->save();
+                $user = $actor->fresh();
+                $this->actingAs($user)->get(route('admin.erp.procurement.index', [
+                    'store_id' => $store->id,
+                    'tab' => 'requests',
+                ]))->assertForbidden();
+
+                $page = $this->actingAs($user)->get(route('admin.erp.index'));
+                $page->assertOk()->assertSee('dir="'.$direction.'"', false);
+                $card = collect($page->viewData('cards'))->firstWhere('key', 'procurement');
+                $this->assertIsArray($card, $role);
+                // Regression contract: a platform ALLOW must never conceal
+                // a concrete selected Wholesale store DENY. This currently
+                // exposes a source parity gap in ERP Center/Navigation.
+                $this->assertSame('not_entitled', $card['status'], $role);
+                $this->assertNull($card['url'], $role);
+
+                $item = collect(app(AdminNavigation::class)->groupsFor($user))
+                    ->flatMap(static fn (array $group): array => $group['children'])
+                    ->firstWhere('key', 'erp_procurement');
+                if ($role === 'SUPER_ADMIN') {
+                    $this->assertIsArray($item);
+                    $this->assertSame('admin.enterprise-modules.show', $item['route']);
+                } else {
+                    $this->assertNull($item, 'Revoked store advertised to '.$role);
+                }
+            }
+        }
     }
 
     private function wholesaleStore(): Store
