@@ -35,6 +35,9 @@ final class V2ErpCenterHorizontalTabsTest extends TestCase
             [['tab' => 'modules'], 'modules'],
             [['tab' => 'unknown'], 'snapshot'],
             [['tab' => ['analytics']], 'snapshot'],
+            [['module' => 'procurement'], 'modules'],
+            [['module' => 'missing-module'], 'snapshot'],
+            [['module' => 'procurement', 'tab' => ['analytics']], 'modules'],
             [['status' => 'available'], 'modules'],
             [['status' => 'available', 'tab' => ['analytics']], 'modules'],
         ] as [$query, $expected]) {
