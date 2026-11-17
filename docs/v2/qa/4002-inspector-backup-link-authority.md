@@ -33,7 +33,7 @@ The existing Inspector runtime panel keeps its system status badge and metrics f
 ## Tests / error and abuse cases
 
 New `V2InspectorBackupLinkAuthorityTest` uses RefreshDatabase/CoreReferenceSeeder and real authenticated HTTP:
-- Platform-only active custom role `platform.manage`: Inspector GET 200, runtime health visible and translated direction; **no** Inspector Backup Center link; direct updater GET and backup POST 403 in AR/EN.
+- Active custom role with `platform.manage` plus the independent Dashboard admission permission `settings.view` (not `system.update`): Inspector GET 200, runtime health visible and translated direction; **no** Inspector Backup Center link; direct updater GET and backup POST 403 in AR/EN. The separate Dashboard gate must not be bypassed by a test fixture.
 - Active SUPER_ADMIN: status + original authorized Backup Center link in AR/EN without any POST.
 - Active platform role with `system.update` inherited but explicit user GLOBAL DENY: Inspector remains 200, link absent; direct updater GET 403 in AR/EN.
 - Inactive platform role holder and roleless actor: direct Inspector GET 403.
