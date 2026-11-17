@@ -99,6 +99,95 @@ final class V2RestaurantIntegrationWorkspaceTabsTest extends TestCase
         $this->assertDatabaseCount('restaurant_saas_webhook_subscriptions', 0);
     }
 
+    public function test_deep_link_tabs_preserve_validated_observability_filters_and_site_without_hidden_actions(): void
+    {
+        $site = $this->restaurantSite();
+        $owner = $this->roleUser('SUPER_ADMIN', 'en');
+        $filters = [
+            'provider' => 'provider_alpha',
+            'direction' => 'outbound',
+            'status' => 'retry',
+            'webhook_status' => 'pending',
+            'event_type' => 'order.created',
+            'q' => 'test needle',
+            'from' => '2026-11-01',
+            'to' => '2026-11-02',
+        ];
+
+        $response = $this->actingAs($owner)->get($this->indexUrl($site, ['tab' => 'logs'] + $filters));
+        $response->assertOk()
+            ->assertSee('id="ri-panel-logs"', false)
+            ->assertSee('name="tab" value="logs"', false)
+            ->assertSee('name="q" value="test needle"', false)
+            ->assertDontSee('name="provider_key"', false)
+            ->assertDontSee('name="target_url"', false);
+
+        foreach (['overview', 'logs', 'reports', 'connectors', 'api-clients', 'webhooks'] as $tab) {
+            $expected = route('admin.smart-ordering.integrations.index', [
+                'site' => $site->getKey(), 'tab' => $tab,
+            ] + $filters + ['support_access' => 1]);
+            $response->assertSee($expected);
+        }
+
+        $this->assertDatabaseCount('restaurant_saas_api_clients', 0);
+        $this->assertDatabaseCount('restaurant_saas_webhook_subscriptions', 0);
+    }
+
+    public function test_malformed_tabs_never_render_hidden_mutations_or_unrelated_credentials(): void
+    {
+        $site = $this->restaurantSite();
+        $owner = $this->roleUser('SUPER_ADMIN', 'en');
+
+        foreach (['not-a-real-panel', ['api-clients'], ['webhooks' => '1'], ''] as $malformed) {
+            $this->actingAs($owner)->get($this->indexUrl($site, [
+                'tab' => $malformed,
+                'status' => 'retry',
+                'q' => 'safe search',
+            ]))->assertOk()
+                ->assertSee('id="ri-panel-overview"', false)
+                ->assertDontSee('data-ri-active-panel', false)
+                ->assertDontSee('name="_integration_form"', false)
+                ->assertDontSee('name="provider_key"', false)
+                ->assertDontSee('name="target_url"', false)
+                ->assertDontSee('id="ri-panel-api-clients"', false)
+                ->assertDontSee('id="ri-panel-webhooks"', false);
+        }
+
+        $this->assertDatabaseCount('restaurant_saas_api_clients', 0);
+        $this->assertDatabaseCount('restaurant_saas_webhook_subscriptions', 0);
+    }
+
+    public function test_foreign_store_post_actions_are_denied_even_with_an_authorized_tab_parameter(): void
+    {
+        $siteA = $this->restaurantSite();
+        $siteB = $this->restaurantSite();
+        $retail = $this->roleUser('B2C_STORE_ADMIN');
+        DB::table('user_store_roles')->insert([
+            'user_id' => $retail->id,
+            'store_id' => $siteA->store_id,
+            'role_id' => Role::query()->where('code', 'B2C_STORE_ADMIN')->firstOrFail()->id,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $this->actingAs($retail)->from($this->indexUrl($siteB, ['tab' => 'api-clients']))
+            ->post(route('admin.smart-ordering.integrations.api-clients.store', $siteB), [
+                '_integration_form' => 'api-clients',
+                'name' => 'Foreign Client',
+                'scopes' => ['restaurant.read'],
+            ])->assertForbidden();
+
+        $this->actingAs($retail)->from($this->indexUrl($siteB, ['tab' => 'webhooks']))
+            ->post(route('admin.smart-ordering.integrations.webhooks.store', $siteB), [
+                '_integration_form' => 'webhooks',
+                'target_url' => 'https://example.test/hook',
+                'event_types' => ['order.created'],
+            ])->assertForbidden();
+
+        $this->assertDatabaseCount('restaurant_saas_api_clients', 0);
+        $this->assertDatabaseCount('restaurant_saas_webhook_subscriptions', 0);
+    }
+
     public function test_failed_create_returns_to_exact_form_tab_restores_old_inputs_and_error_focus(): void
     {
         $site = $this->restaurantSite();
