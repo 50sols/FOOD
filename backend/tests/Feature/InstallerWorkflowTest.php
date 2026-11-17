@@ -272,6 +272,85 @@ class InstallerWorkflowTest extends TestCase
         }
     }
 
+    public function test_direct_core_seed_refuses_existing_operator_and_preserves_admin_changes(): void
+    {
+        // This fixture is disposable. Never use db:seed to audit a live tenant.
+        $workflow = app(InstallerWorkflow::class);
+        $workflow->seedRequiredCoreData();
+
+        $flags = app(CommercialFeatureFlags::class);
+        $adminSettings = [
+            'commercial_rules_enabled' => false,
+            'flash_offers_enabled' => false,
+            'customer_flash_popup_enabled' => false,
+            'van_offers_enabled' => false,
+        ];
+        $flags->persist($adminSettings);
+
+        $roleId = (int) DB::table('roles')->where('code', 'B2B_ADMIN')->value('id');
+        $this->assertGreaterThan(0, $roleId);
+        $beforeGrants = DB::table('permission_role')->where('role_id', $roleId)
+            ->orderBy('permission_id')->pluck('permission_id')->all();
+
+        DB::table('users')->insert([
+            'name' => 'Existing Operator',
+            'email' => 'untouched-seed-operator@example.test',
+            'password' => 'not-an-actual-password-hash',
+            'locale' => 'en',
+            'is_active' => true,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        Artisan::shouldReceive('call')->never();
+
+        try {
+            $workflow->seedRequiredCoreData();
+            $this->fail('A live database must never be reseeded through /install.');
+        } catch (\\RuntimeException $exception) {
+            $this->assertSame((string) __('installer.errors.existing_business_data'), $exception->getMessage());
+        }
+
+        $this->assertDatabaseHas('users', [
+            'email' => 'untouched-seed-operator@example.test',
+            'password' => 'not-an-actual-password-hash',
+        ]);
+        $this->assertSame($beforeGrants, DB::table('permission_role')->where('role_id', $roleId)
+            ->orderBy('permission_id')->pluck('permission_id')->all());
+        $this->assertSame($adminSettings, $flags->snapshot());
+    }
+
+    public function test_direct_seed_refuses_configured_application_key_without_mutating_reference_data(): void
+    {
+        app(InstallerEnvironment::class)->write([
+            'APP_KEY' => 'base64:'.base64_encode(str_repeat('K', 32)),
+        ]);
+        $this->assertDatabaseCount('roles', 0);
+
+        Artisan::shouldReceive('call')->never();
+
+        try {
+            app(InstallerWorkflow::class)->seedRequiredCoreData();
+            $this->fail('Configured sites must not be treated as first-install seeds.');
+        } catch (\\RuntimeException $exception) {
+            $this->assertSame((string) __('installer.environment_already_configured'), $exception->getMessage());
+        }
+
+        $this->assertDatabaseCount('roles', 0);
+        $this->assertDatabaseCount('users', 0);
+    }
+
+    public function test_direct_seed_refuses_completed_installer_lock_without_db_writes(): void
+    {
+        app(InstallState::class)->writeLock('1.0.0');
+        Artisan::shouldReceive('call')->never();
+
+        $this->expectException(\\Symfony\\Component\\HttpKernel\\Exception\\HttpException::class);
+        $this->expectExceptionCode(0);
+
+        app(InstallerWorkflow::class)->seedRequiredCoreData();
+    }
+
     public function test_storage_configuration_rejects_foreign_symlink_without_changing_environment(): void
     {
         if (! function_exists('symlink')) {
@@ -353,7 +432,7 @@ class InstallerWorkflowTest extends TestCase
         ]);
 
         $this->expectException(\RuntimeException::class);
-        $this->expectExceptionMessage('already contains FOODEX data');
+        $this->expectExceptionMessage((string) __('installer.errors.existing_business_data'));
         app(InstallerWorkflow::class)->testDatabaseConnection();
     }
 
@@ -368,7 +447,7 @@ class InstallerWorkflowTest extends TestCase
         ]);
 
         $this->expectException(\RuntimeException::class);
-        $this->expectExceptionMessage('already contains FOODEX data');
+        $this->expectExceptionMessage((string) __('installer.errors.existing_business_data'));
         app(InstallerWorkflow::class)->testDatabaseConnection();
     }
 
@@ -390,7 +469,7 @@ class InstallerWorkflowTest extends TestCase
             app(InstallerWorkflow::class)->runMigrations();
             $this->fail('Migrations must reject an existing FOODEX database.');
         } catch (\RuntimeException $exception) {
-            $this->assertStringContainsString('already contains FOODEX data', $exception->getMessage());
+            $this->assertStringContainsString((string) __('installer.errors.existing_business_data'), $exception->getMessage());
         }
         $this->assertDatabaseHas('users', [
             'email' => 'existing-before-migrate@example.test',
