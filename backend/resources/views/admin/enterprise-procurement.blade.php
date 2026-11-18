@@ -126,17 +126,17 @@ $detailContext=array_merge(
 @if($activeTab==='requests')
 @if($can['request_manage'])
 <details class="foodex-card erp-create"><summary>+ {{ __('enterprise_procurement.new_request') }}</summary>
-<form method="post" action="{{ route('admin.erp.procurement.requests.store') }}" class="erp-form">@csrf<input type="hidden" name="store_id" value="{{ $selectedStoreId }}">
-<label>{{ __('enterprise_procurement.supplier') }}<select name="supplier_id"><option value="">{{ __('enterprise_procurement.all') }}</option>@foreach($suppliersForLookup as $supplier)<option value="{{ $supplier->id }}">{{ $supplier->code }} · {{ app()->getLocale()==='ar' && $supplier->name_ar ? $supplier->name_ar : $supplier->name_en }}</option>@endforeach</select></label>
-<label>{{ __('enterprise_procurement.currency') }}<input name="currency_code" value="KWD" required maxlength="3"></label>
-<label>{{ __('enterprise_procurement.needed_by') }}<input type="date" name="needed_by"></label>
-<label class="span-2">{{ __('enterprise_procurement.reason') }}<input name="reason" maxlength="2000"></label>
-<label>{{ __('enterprise_procurement.item_code') }}<input name="item_code" maxlength="96"></label>
-<label class="span-2">{{ __('enterprise_procurement.description_field') }}<input name="description" required maxlength="255"></label>
-<label>{{ __('enterprise_procurement.quantity') }}<input type="number" name="quantity" step="0.001" min="0.001" required></label>
-<label>{{ __('enterprise_procurement.unit') }}<input name="unit" required maxlength="32"></label>
-<label>{{ __('enterprise_procurement.unit_cost') }}<input type="number" name="estimated_unit_cost" step="0.001" min="0"></label>
-<label class="span-all">{{ __('enterprise_procurement.notes') }}<textarea name="notes" maxlength="4000"></textarea></label>
+<form method="post" action="{{ route('admin.erp.procurement.requests.store') }}" class="erp-form">@csrf<input type="hidden" name="store_id" value="{{ $selectedStoreId }}"><input type="hidden" name="idempotency_key" value="{{ old('idempotency_key', $purchaseRequestIdempotencyKey) }}">
+<label>{{ __('enterprise_procurement.supplier') }}<select name="supplier_id"><option value="" @selected(old('supplier_id') === null)>{{ __('enterprise_procurement.all') }}</option>@foreach($suppliersForLookup as $supplier)<option value="{{ $supplier->id }}" @selected((int) old('supplier_id') === (int) $supplier->id)>{{ $supplier->code }} · {{ app()->getLocale()==='ar' && $supplier->name_ar ? $supplier->name_ar : $supplier->name_en }}</option>@endforeach</select></label>
+<label>{{ __('enterprise_procurement.currency') }}<input name="currency_code" value="{{ old('currency_code', 'KWD') }}" required maxlength="3"></label>
+<label>{{ __('enterprise_procurement.needed_by') }}<input type="date" name="needed_by" value="{{ old('needed_by') }}"></label>
+<label class="span-2">{{ __('enterprise_procurement.reason') }}<input name="reason" value="{{ old('reason') }}" maxlength="2000"></label>
+<label>{{ __('enterprise_procurement.item_code') }}<input name="item_code" value="{{ old('item_code') }}" maxlength="96"></label>
+<label class="span-2">{{ __('enterprise_procurement.description_field') }}<input name="description" value="{{ old('description') }}" required maxlength="255"></label>
+<label>{{ __('enterprise_procurement.quantity') }}<input type="number" name="quantity" value="{{ old('quantity') }}" step="0.001" min="0.001" required></label>
+<label>{{ __('enterprise_procurement.unit') }}<input name="unit" value="{{ old('unit') }}" required maxlength="32"></label>
+<label>{{ __('enterprise_procurement.unit_cost') }}<input type="number" name="estimated_unit_cost" value="{{ old('estimated_unit_cost') }}" step="0.001" min="0"></label>
+<label class="span-all">{{ __('enterprise_procurement.notes') }}<textarea name="notes" maxlength="4000">{{ old('notes') }}</textarea></label>
 <div><button class="foodex-primary">{{ __('enterprise_procurement.create') }}</button></div>
 </form></details>
 @endif
@@ -155,6 +155,23 @@ $detailContext=array_merge(
 </div></td></tr>@empty<tr><td colspan="6"><div class="foodex-empty-state">{{ __('enterprise_procurement.empty') }}</div></td></tr>@endforelse
 </tbody></table></section>
 @if($detail)<section class="foodex-card erp-detail"><h2>{{ $detail->request_number }}</h2><div class="erp-detail-grid"><div><small>{{ __('enterprise_procurement.status') }}</small><strong>{{ $statusLabel($detail->status) }}</strong></div><div><small>{{ __('enterprise_procurement.supplier') }}</small><strong>{{ $detail->supplier?->code ?? '—' }}</strong></div><div><small>{{ __('enterprise_procurement.reason') }}</small><strong>{{ $detail->reason ?: '—' }}</strong></div></div><div class="erp-lines">@foreach($detail->lines as $line)<div class="erp-line"><strong>{{ $line->description }}</strong><span>{{ $line->quantity }} {{ $line->unit }}</span><span>{{ $line->item_code ?: '—' }}</span><span>{{ $line->estimated_unit_cost ?? '—' }} {{ $detail->currency_code }}</span></div>@endforeach</div></section>@endif
+@endif
+
+@if($activeTab==='requests' && $detail && $can['request_manage'] && $detail->status==='draft' && (int) $detail->created_by === (int) $user->id)
+<section class="foodex-card erp-detail" aria-labelledby="purchase-request-edit-title">
+<h2 id="purchase-request-edit-title">{{ __('purchase_requests.edit_draft') }} · {{ $detail->request_number }}</h2>
+<form method="post" action="{{ route('admin.erp.procurement.requests.store') }}" class="erp-form">@csrf
+<input type="hidden" name="store_id" value="{{ $selectedStoreId }}"><input type="hidden" name="purchase_request_id" value="{{ $detail->id }}">
+<label>{{ __('enterprise_procurement.supplier') }}<select name="supplier_id"><option value="" @selected((int) old('supplier_id', $detail->supplier_id) === 0)>{{ __('enterprise_procurement.all') }}</option>@if($detail->supplier_id && !$suppliersForLookup->contains('id', (int) $detail->supplier_id))<option value="{{ $detail->supplier_id }}" @selected((int) old('supplier_id', $detail->supplier_id) === (int) $detail->supplier_id)>{{ $detail->supplier?->code ?? '—' }}</option>@endif @foreach($suppliersForLookup as $supplier)<option value="{{ $supplier->id }}" @selected((int) old('supplier_id', $detail->supplier_id) === (int) $supplier->id)>{{ $supplier->code }} · {{ app()->getLocale()==='ar' && $supplier->name_ar ? $supplier->name_ar : $supplier->name_en }}</option>@endforeach</select></label>
+<label>{{ __('enterprise_procurement.currency') }}<input name="currency_code" value="{{ old('currency_code', $detail->currency_code) }}" required maxlength="3"></label>
+<label>{{ __('enterprise_procurement.needed_by') }}<input type="date" name="needed_by" value="{{ old('needed_by', $detail->needed_by?->toDateString()) }}"></label>
+<label class="span-2">{{ __('enterprise_procurement.reason') }}<input name="reason" value="{{ old('reason', $detail->reason) }}" maxlength="2000"></label>
+<label class="span-all">{{ __('enterprise_procurement.notes') }}<textarea name="notes" maxlength="4000">{{ old('notes', $detail->notes) }}</textarea></label>
+<div class="span-all erp-lines">@foreach($detail->lines as $index => $line)
+<div class="erp-line erp-line--five"><label>{{ __('enterprise_procurement.item_code') }}<input name="lines[{{ $index }}][item_code]" value="{{ old('lines.'.$index.'.item_code', $line->item_code) }}" maxlength="96"></label><label>{{ __('enterprise_procurement.description_field') }}<input name="lines[{{ $index }}][description]" value="{{ old('lines.'.$index.'.description', $line->description) }}" required maxlength="255"></label><label>{{ __('enterprise_procurement.quantity') }}<input type="number" name="lines[{{ $index }}][quantity]" value="{{ old('lines.'.$index.'.quantity', $line->quantity) }}" step="0.001" min="0.001" required></label><label>{{ __('enterprise_procurement.unit') }}<input name="lines[{{ $index }}][unit]" value="{{ old('lines.'.$index.'.unit', $line->unit) }}" required maxlength="32"></label><label>{{ __('enterprise_procurement.unit_cost') }}<input type="number" name="lines[{{ $index }}][estimated_unit_cost]" value="{{ old('lines.'.$index.'.estimated_unit_cost', $line->estimated_unit_cost) }}" step="0.001" min="0"></label></div>
+@endforeach</div>
+<div><button class="foodex-primary">{{ __('purchase_requests.save_draft') }}</button></div>
+</form></section>
 @endif
 
 @if($activeTab==='orders')

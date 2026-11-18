@@ -24,7 +24,9 @@ use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Str;
 use Illuminate\Validation\Rule;
+use Illuminate\Validation\ValidationException;
 
 final class EnterpriseProcurementController extends Controller
 {
@@ -93,6 +95,7 @@ final class EnterpriseProcurementController extends Controller
             'activeContracts' => [],
             'reportData' => null,
             'reportName' => null,
+            'purchaseRequestIdempotencyKey' => null,
         ];
 
         if ($this->allowed($actor, $storeId, 'procurement.suppliers.view')) {
@@ -121,6 +124,7 @@ final class EnterpriseProcurementController extends Controller
                 break;
 
             case 'requests':
+                $data['purchaseRequestIdempotencyKey'] = (string) Str::uuid();
                 $data['rows'] = $this->requests->paginate($actor, $context, [
                     'q' => $request->query('q'),
                     'status' => $request->query('status'),
@@ -511,31 +515,65 @@ final class EnterpriseProcurementController extends Controller
     {
         [$actor, $context, $storeId] = $this->mutationContext($request);
         $payload = $request->validate([
+            'purchase_request_id' => ['sometimes', 'required', 'integer', 'min:1'],
+            'idempotency_key' => ['sometimes', 'nullable', 'uuid'],
             'supplier_id' => ['nullable', 'integer', 'min:1'],
             'currency_code' => ['required', 'string', 'size:3'],
             'needed_by' => ['nullable', 'date'],
             'reason' => ['nullable', 'string', 'max:2000'],
             'notes' => ['nullable', 'string', 'max:4000'],
+            'lines' => ['sometimes', 'required', 'array', 'min:1', 'max:100'],
+            'lines.*.item_code' => ['nullable', 'string', 'max:96'],
+            'lines.*.description' => ['required_with:lines', 'string', 'max:255'],
+            'lines.*.quantity' => ['required_with:lines', 'numeric', 'min:0.001', 'max:999999999'],
+            'lines.*.unit' => ['required_with:lines', 'string', 'max:32'],
+            'lines.*.estimated_unit_cost' => ['nullable', 'numeric', 'min:0', 'max:999999999'],
             'item_code' => ['nullable', 'string', 'max:96'],
-            'description' => ['required', 'string', 'max:255'],
-            'quantity' => ['required', 'numeric', 'gt:0'],
-            'unit' => ['required', 'string', 'max:32'],
+            'description' => ['required_without:lines', 'string', 'max:255'],
+            'quantity' => ['required_without:lines', 'numeric', 'min:0.001', 'max:999999999'],
+            'unit' => ['required_without:lines', 'string', 'max:32'],
             'estimated_unit_cost' => ['nullable', 'numeric', 'min:0'],
         ]);
-        $purchaseRequest = $this->requests->create($actor, $context, [
-            'supplier_id' => $payload['supplier_id'] ?? null,
-            'currency_code' => $payload['currency_code'],
-            'needed_by' => $payload['needed_by'] ?? null,
-            'reason' => $payload['reason'] ?? null,
-            'notes' => $payload['notes'] ?? null,
-            'lines' => [[
+
+        $lines = isset($payload['lines'])
+            ? array_values($payload['lines'])
+            : [[
                 'item_code' => $payload['item_code'] ?? null,
                 'description' => $payload['description'],
                 'quantity' => $payload['quantity'],
                 'unit' => $payload['unit'],
                 'estimated_unit_cost' => $payload['estimated_unit_cost'] ?? null,
-            ]],
-        ]);
+            ]];
+        $attributes = [
+            'supplier_id' => $payload['supplier_id'] ?? null,
+            'currency_code' => $payload['currency_code'],
+            'needed_by' => $payload['needed_by'] ?? null,
+            'reason' => $payload['reason'] ?? null,
+            'notes' => $payload['notes'] ?? null,
+            'lines' => $lines,
+        ];
+
+        if (isset($payload['purchase_request_id'])) {
+            $purchaseRequestId = (int) $payload['purchase_request_id'];
+            $purchaseRequest = $this->requests->updateDraft($actor, $context, $purchaseRequestId, $attributes);
+
+            return $this->backTo('requests', $storeId, ['request' => $purchaseRequest->id])
+                ->with('status', __('purchase_requests.draft_updated'));
+        }
+
+        $bodyKey = $payload['idempotency_key'] ?? null;
+        $headerKey = $request->header('Idempotency-Key');
+        if ($bodyKey !== null && $headerKey !== null && ! hash_equals((string) $bodyKey, (string) $headerKey)) {
+            throw ValidationException::withMessages([
+                'idempotency_key' => [__('purchase_requests.idempotency_key_mismatch')],
+            ]);
+        }
+        $purchaseRequest = $this->requests->create(
+            $actor,
+            $context,
+            $attributes,
+            $headerKey ?? $bodyKey,
+        );
 
         return $this->backTo('requests', $storeId, ['request' => $purchaseRequest->id])
             ->with('status', __('enterprise_procurement.flash.request_created'));

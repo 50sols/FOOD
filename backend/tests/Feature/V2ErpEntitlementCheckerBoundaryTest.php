@@ -2271,6 +2271,208 @@ final class V2ErpEntitlementCheckerBoundaryTest extends TestCase
         $this->assertSame($auditBeforeDeny, DB::table('audit_logs')->count());
     }
 
+    public function test_purchase_request_create_idempotency_replays_by_store_and_maker_and_rejects_changed_payload(): void
+    {
+        $store = $this->wholesaleStore();
+        $otherStore = Store::query()->create([
+            'store_type_id' => $store->store_type_id,
+            'code' => 'P111-PR-REPLAY-OTHER',
+            'name' => 'P111 other idempotency store',
+            'is_active' => true,
+        ]);
+        app(OrganizationHierarchyService::class)->ensureDefaultScopeForStore($otherStore);
+        $owner = $this->actor('SUPER_ADMIN');
+        $maker = $this->actor('PROCUREMENT_BUYER');
+        $otherMaker = $this->actor('PROCUREMENT_BUYER');
+        app(EnterpriseModuleAdministration::class)->perform('procurement', 'enable', $owner);
+        app(ModuleEntitlementManager::class)->set('procurement', EntitlementScope::platform(), true, null, $owner);
+
+        $payload = [
+            'store_id' => $store->id,
+            'idempotency_key' => '7bcdf271-6e11-4b2c-bfc8-8c0679e3ca12',
+            'currency_code' => 'KWD',
+            'reason' => 'P111 create replay remains one draft',
+            'item_code' => 'P111-REPLAY-ITEM',
+            'description' => 'Replay-safe request line',
+            'quantity' => '2.100',
+            'unit' => 'case',
+            'estimated_unit_cost' => '4.000',
+        ];
+        $auditBefore = DB::table('audit_logs')->count();
+
+        $this->actingAs($maker)->post(route('admin.erp.procurement.requests.store'), $payload)->assertRedirect();
+        $request = DB::table('enterprise_purchase_requests')
+            ->where('created_by', $maker->id)
+            ->where('idempotency_key', $payload['idempotency_key'])
+            ->first();
+        $this->assertNotNull($request);
+
+        // Decimal formatting differences map to the same database precision
+        // and therefore the same request payload identity.
+        $this->actingAs($maker->fresh())->post(route('admin.erp.procurement.requests.store'), [
+            ...$payload,
+            'quantity' => '2.1',
+            'estimated_unit_cost' => '4',
+        ])->assertRedirect();
+        $this->assertSame(1, DB::table('enterprise_purchase_requests')
+            ->where('created_by', $maker->id)
+            ->where('idempotency_key', $payload['idempotency_key'])
+            ->count());
+        $this->assertSame(1, DB::table('audit_logs')
+            ->where('event', 'enterprise.purchase_request.created')
+            ->where('auditable_id', $request->id)
+            ->count());
+
+        $this->actingAs($maker->fresh())->post(route('admin.erp.procurement.requests.store'), [
+            ...$payload,
+            'quantity' => '3.000',
+        ])->assertSessionHasErrors('idempotency_key');
+        $this->assertSame(1, DB::table('enterprise_purchase_requests')
+            ->where('created_by', $maker->id)
+            ->where('idempotency_key', $payload['idempotency_key'])
+            ->count());
+        $this->assertSame($auditBefore + 1, DB::table('audit_logs')->count());
+
+        // The same opaque key is independently available to a different
+        // maker and to the original maker in a different authorized store.
+        $this->actingAs($otherMaker)->post(route('admin.erp.procurement.requests.store'), $payload)->assertRedirect();
+        $this->actingAs($maker->fresh())->post(route('admin.erp.procurement.requests.store'), [
+            ...$payload,
+            'store_id' => $otherStore->id,
+        ])->assertRedirect();
+        $this->assertSame(1, DB::table('enterprise_purchase_requests')
+            ->where('store_id', $store->id)
+            ->where('created_by', $otherMaker->id)
+            ->where('idempotency_key', $payload['idempotency_key'])
+            ->count());
+        $this->assertSame(1, DB::table('enterprise_purchase_requests')
+            ->where('store_id', $otherStore->id)
+            ->where('created_by', $maker->id)
+            ->where('idempotency_key', $payload['idempotency_key'])
+            ->count());
+        $this->assertSame($auditBefore + 3, DB::table('audit_logs')->count());
+    }
+
+    public function test_purchase_request_draft_edit_is_maker_scoped_replay_safe_and_denies_foreign_or_approved_requests(): void
+    {
+        $storeA = $this->wholesaleStore();
+        $storeB = Store::query()->create([
+            'store_type_id' => $storeA->store_type_id,
+            'code' => 'P111-PR-EDIT-FOREIGN',
+            'name' => 'P111 foreign request edit store',
+            'is_active' => true,
+        ]);
+        app(OrganizationHierarchyService::class)->ensureDefaultScopeForStore($storeB);
+        $owner = $this->actor('SUPER_ADMIN');
+        $maker = $this->actor('PROCUREMENT_BUYER');
+        $otherMaker = $this->actor('PROCUREMENT_BUYER');
+        $checker = $this->actor('PROCUREMENT_APPROVER');
+        app(EnterpriseModuleAdministration::class)->perform('procurement', 'enable', $owner);
+        app(ModuleEntitlementManager::class)->set('procurement', EntitlementScope::platform(), true, null, $owner);
+
+        $this->actingAs($maker)->post(route('admin.erp.procurement.requests.store'), [
+            'store_id' => $storeA->id,
+            'idempotency_key' => '8b5e510f-ec41-4d86-b0f7-e10c2da72053',
+            'currency_code' => 'KWD',
+            'reason' => 'P111 request draft before edit',
+            'item_code' => 'P111-EDIT-OLD',
+            'description' => 'Original draft line',
+            'quantity' => '1.000',
+            'unit' => 'case',
+            'estimated_unit_cost' => '2.500',
+        ])->assertRedirect();
+        $request = DB::table('enterprise_purchase_requests')
+            ->where('created_by', $maker->id)
+            ->where('reason', 'P111 request draft before edit')
+            ->first();
+        $this->assertNotNull($request);
+
+        $edit = [
+            'store_id' => $storeA->id,
+            'purchase_request_id' => $request->id,
+            'currency_code' => 'KWD',
+            'needed_by' => '2026-12-05',
+            'reason' => 'P111 request draft edited',
+            'notes' => 'Edited before submission',
+            'lines' => [[
+                'item_code' => 'P111-EDIT-NEW',
+                'description' => 'Updated draft line',
+                'quantity' => '3.125',
+                'unit' => 'box',
+                'estimated_unit_cost' => '6.750',
+            ]],
+        ];
+        $auditBeforeEdit = DB::table('audit_logs')->count();
+        $this->actingAs($maker->fresh())->post(route('admin.erp.procurement.requests.store'), $edit)
+            ->assertRedirect()->assertSessionHas('status');
+
+        $this->assertDatabaseHas('enterprise_purchase_requests', [
+            'id' => $request->id,
+            'created_by' => $maker->id,
+            'updated_by' => $maker->id,
+            'status' => 'draft',
+            'reason' => 'P111 request draft edited',
+            'notes' => 'Edited before submission',
+            'needed_by' => '2026-12-05',
+        ]);
+        $this->assertDatabaseHas('enterprise_purchase_request_lines', [
+            'purchase_request_id' => $request->id,
+            'item_code' => 'P111-EDIT-NEW',
+            'description' => 'Updated draft line',
+            'quantity' => '3.125',
+            'unit' => 'box',
+            'estimated_unit_cost' => '6.750',
+        ]);
+        $this->assertSame(1, DB::table('audit_logs')
+            ->where('event', 'enterprise.purchase_request.updated')
+            ->where('auditable_id', $request->id)
+            ->count());
+        $this->assertSame($auditBeforeEdit + 1, DB::table('audit_logs')->count());
+
+        // Retrying the exact same edit is a no-op and cannot append a second audit.
+        $this->actingAs($maker->fresh())->post(route('admin.erp.procurement.requests.store'), $edit)->assertRedirect();
+        $this->assertSame($auditBeforeEdit + 1, DB::table('audit_logs')->count());
+
+        // A different buyer may have the same role but cannot edit this maker's draft.
+        $this->actingAs($otherMaker)->post(route('admin.erp.procurement.requests.store'), $edit)->assertForbidden();
+
+        // Selecting another authorized store cannot turn the foreign ID into an upsert.
+        $this->actingAs($maker->fresh())->post(route('admin.erp.procurement.requests.store'), [
+            ...$edit,
+            'store_id' => $storeB->id,
+            'reason' => 'must not cross store',
+        ])->assertNotFound();
+
+        // A missing supplied ID is also a scoped lookup failure, never a create.
+        $requestCount = DB::table('enterprise_purchase_requests')->count();
+        $this->actingAs($maker->fresh())->post(route('admin.erp.procurement.requests.store'), [
+            ...$edit,
+            'purchase_request_id' => 999999999,
+        ])->assertNotFound();
+        $this->assertSame($requestCount, DB::table('enterprise_purchase_requests')->count());
+
+        $this->actingAs($maker->fresh())->post(route('admin.erp.procurement.requests.submit', $request->id), [
+            'store_id' => $storeA->id,
+        ])->assertRedirect();
+        $this->actingAs($checker)->post(route('admin.erp.procurement.requests.decision', $request->id), [
+            'store_id' => $storeA->id,
+            'decision' => 'approve',
+        ])->assertRedirect();
+        $this->assertDatabaseHas('enterprise_purchase_requests', ['id' => $request->id, 'status' => 'approved']);
+
+        $approvedAuditCount = DB::table('audit_logs')->count();
+        $this->actingAs($maker->fresh())->post(route('admin.erp.procurement.requests.store'), [
+            ...$edit,
+            'reason' => 'must not edit approved request',
+        ])->assertForbidden();
+        $this->assertDatabaseHas('enterprise_purchase_requests', [
+            'id' => $request->id,
+            'status' => 'approved',
+            'reason' => 'P111 request draft edited',
+        ]);
+        $this->assertSame($approvedAuditCount, DB::table('audit_logs')->count());
+    }
+
     public function test_independent_checker_approves_or_rejects_submitted_requests_once_with_immutable_decisions_and_scoped_audit(): void
     {
         $storeA = $this->wholesaleStore();
