@@ -1142,7 +1142,7 @@ class AdminNavigation
             'params' => $params,
             'permission' => null,
         ];
-        if ($item === null || ($wholesaleTreasuryStoreId === null && $wmsStoreId === null && ! $this->enterpriseModuleAccessible($user, $moduleCode))) {
+        if ($wholesaleTreasuryStoreId === null && $wmsStoreId === null && ! $this->enterpriseModuleAccessible($user, $moduleCode)) {
             return null;
         }
 

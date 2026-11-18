@@ -18,7 +18,6 @@ use App\Services\EnterpriseModuleAdministration;
 use App\Services\EnterpriseMyWork;
 use App\Services\OperationalTenantScope;
 use App\Support\AdminNavigation;
-use App\Support\TenantContextResolver;
 use Illuminate\Contracts\View\View;
 use Illuminate\Http\Request;
 use Illuminate\Support\Collection;
@@ -60,7 +59,6 @@ final class ErpCenterController extends Controller
         private readonly EnterpriseModuleAdministration $moduleAdministration,
         private readonly ModuleEntitlementManager $entitlementManager,
         private readonly ModuleEntitlementResolver $entitlements,
-        private readonly TenantContextResolver $tenants,
         private readonly ModuleHealthService $health,
         private readonly ModuleOperationalReadiness $readiness,
         private readonly EnterpriseActionCenter $actionCenter,
