@@ -57,7 +57,10 @@ final class SystemLookupController extends Controller
         $actor = $this->actor($request);
         $this->authorizeView($actor);
 
-        $key = $this->typeKey((string) $request->query('type', 'payment-operation-types'));
+        $requestedType = $request->query('type', 'payment-operation-types');
+        // Reject array/nested GET tab selectors before invoking typeKey().
+        abort_unless(is_string($requestedType), 404);
+        $key = $this->typeKey($requestedType);
         $definition = self::TYPES[$key];
         $status = (string) $request->query('status', 'all');
         $search = trim((string) $request->query('q', ''));
