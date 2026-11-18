@@ -333,6 +333,65 @@ class SystemUpdateAuthorizationTest extends TestCase
         $this->assertDatabaseCount('update_history', 0);
     }
 
+    public function test_signed_update_failing_file_move_cleans_partial_private_zip_and_returns_localized_host_error(): void
+    {
+        if (! function_exists('sodium_crypto_sign_keypair')) {
+            $this->markTestSkipped('Sodium support is required.');
+        }
+
+        $actor = $this->userWithRole('SUPER_ADMIN');
+        $source = tempnam(sys_get_temp_dir(), 'foodex-move-source-');
+        $this->assertIsString($source);
+        $bytes = 'signed non-ZIP fixture; the move must fail before ZIP validation';
+        file_put_contents($source, $bytes);
+        [$signedManifest, $public] = $this->signedManifestForBytes($bytes);
+
+        config([
+            'update_signatures.publisher_key_id' => 'ci-only-ephemeral',
+            'update_signatures.publisher_public_key_b64' => $public,
+        ]);
+
+        $oldStoragePath = storage_path();
+        $privateStorage = sys_get_temp_dir().'/foodex-move-failure-'.bin2hex(random_bytes(8));
+        mkdir($privateStorage, 0750, true);
+        app()->useStoragePath($privateStorage);
+        $incoming = storage_path('app/private/updates/incoming');
+        mkdir($incoming, 0750, true);
+
+        try {
+            $failingUpload = new class($source, 'update.zip', 'application/zip', null, true) extends UploadedFile
+            {
+                public function move(string $directory, ?string $name = null): \\Symfony\\Component\\HttpFoundation\\File\\File
+                {
+                    // Simulate a cPanel filesystem failure AFTER a partial
+                    // private ZIP has been written, not merely a blocked preflight.
+                    file_put_contents($directory.'/'.$name, 'incomplete upload');
+                    throw new \\Symfony\\Component\\HttpFoundation\\File\\Exception\\FileException(
+                        'Unable to write /home/private-operator/secret-path',
+                    );
+                }
+            };
+
+            $this->actingAs($actor)
+                ->post(route('admin.system-update.store'), [
+                    'package' => $failingUpload,
+                    'signed_manifest' => UploadedFile::fake()->createWithContent('signed.json', $signedManifest),
+                ])
+                ->assertRedirect(route('admin.system-update.index'))
+                ->assertSessionHasErrors([
+                    'update' => __('update_signed_manifest.upload_staging_unavailable'),
+                ]);
+
+            $this->assertDatabaseCount('update_history', 0);
+            $this->assertSame([], array_values(array_diff(scandir($incoming) ?: [], ['.', '..'])));
+            $this->assertSame($bytes, file_get_contents($source));
+        } finally {
+            app()->useStoragePath($oldStoragePath);
+            File::deleteDirectory($privateStorage);
+            @unlink($source);
+        }
+    }
+
     public function test_symlinked_update_upload_staging_is_refused_before_package_move(): void
     {
         if (! function_exists('symlink') || ! function_exists('sodium_crypto_sign_keypair')) {
