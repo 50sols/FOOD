@@ -2099,7 +2099,7 @@ final class V2ErpEntitlementCheckerBoundaryTest extends TestCase
             'organization_id' => 999999,
             'created_by' => $owner->id,
             'updated_by' => $owner->id,
-        ])->assertRedirect()->assertSessionHas('status', __('enterprise_procurement.flash.supplier_updated'));
+        ])->assertRedirect()->assertSessionHas('status', __('p111_procurement.supplier.updated'));
 
         $updated = DB::table('enterprise_suppliers')->where('id', $supplier->id)->first();
         $this->assertSame('P111 Updated Legal Supplier', $updated->name_en);
@@ -2146,7 +2146,7 @@ final class V2ErpEntitlementCheckerBoundaryTest extends TestCase
                 'supplier' => $supplier->id,
             ]))->assertOk()->assertSee('dir="'.$direction.'"', false)
                 ->assertSee('TAX-P111-002')
-                ->assertSee(__('enterprise_procurement.edit_supplier'))
+                ->assertSee(__('p111_procurement.supplier.edit_title'))
                 ->assertSee('name="supplier_id"', false);
 
             // Global Buyer role can navigate B2B B, but the record is

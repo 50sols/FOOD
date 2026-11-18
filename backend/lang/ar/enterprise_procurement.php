@@ -81,8 +81,6 @@ return [
     'email' => 'البريد الإلكتروني',
     'phone' => 'الهاتف',
     'new_supplier' => 'مورد جديد',
-    'edit_supplier' => 'تعديل بيانات المورد',
-    'save_supplier' => 'حفظ بيانات المورد',
     'new_request' => 'طلب شراء جديد',
     'request_line' => 'بند طلب الشراء',
     'receipt_from_order' => 'استلام أمر شراء مُصدر',
@@ -269,7 +267,6 @@ return [
     ],
     'flash' => [
         'supplier_created' => 'تم إنشاء المورد.',
-        'supplier_updated' => 'تم تحديث بيانات المورد.',
         'supplier_archived' => 'تمت أرشفة المورد.',
         'supplier_governance_updated' => 'تم تحديث حوكمة المورد.',
         'rfq_created' => 'تم إنشاء طلب العرض.',

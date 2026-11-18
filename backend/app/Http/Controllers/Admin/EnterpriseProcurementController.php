@@ -508,7 +508,7 @@ final class EnterpriseProcurementController extends Controller
             );
 
             return $this->backTo('suppliers', $storeId, ['supplier' => $supplier->id])
-                ->with('status', __('enterprise_procurement.flash.supplier_updated'));
+                ->with('status', __('p111_procurement.supplier.updated'));
         }
 
         $supplier = $this->suppliers->create($actor, $context, $attributes);
