@@ -37,7 +37,29 @@ final class ModuleOperationalReadiness
             return 'uncertified';
         }
 
-        return $this->health->report($code)->status === ModuleHealthStatus::HEALTHY
+        $health = $this->health->report($code);
+        if ($health->status !== ModuleHealthStatus::HEALTHY) {
+            return 'unhealthy';
+        }
+
+        try {
+            $requiredChecks = $this->manifests->require($code)->healthChecks;
+        } catch (Throwable) {
+            return 'unhealthy';
+        }
+
+        // Empty/unconfigured probes are not a successful execution of the
+        // health checks bound into an exact-version signed module manifest.
+        // In particular Procurement declares 'database' and must really
+        // execute that check before its operational HTTP link becomes ready.
+        $passedChecks = [];
+        foreach ($health->checks as $check) {
+            if ($check->status === ModuleHealthStatus::HEALTHY && ! $check->isStale()) {
+                $passedChecks[] = $check->key;
+            }
+        }
+
+        return array_diff($requiredChecks, $passedChecks) === []
             ? 'ready'
             : 'unhealthy';
     }
