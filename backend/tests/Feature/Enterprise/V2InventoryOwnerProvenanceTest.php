@@ -1203,6 +1203,38 @@ final class V2InventoryOwnerProvenanceTest extends TestCase
         $this->assertFalse($advisory['certified']);
         $this->assertSame($approved->id, $advisory['policy']->id);
 
+        // A proposed immutable SHA must bind the same exact trigger and
+        // evidence policy later reviewed. Direct-row drift cannot become
+        // an approved operational policy, and its request UUID cannot be
+        // replayed to hide the tamper.
+        DB::table('enterprise_inventory_ownership_rule_revisions')
+            ->where('id', $approved->id)->update(['title_transfer_trigger' => 'NONE']);
+        $tampered = $service->advisoryFor(
+            $checker, $stock['store_id'], 'B2C', null, (int) $request['warehouse_id'],
+        );
+        $this->assertSame('UNKNOWN', $tampered['state']);
+        $this->assertFalse($tampered['certified']);
+        $this->assertNull($tampered['policy']);
+        try {
+            $service->review($checker, (int) $approved->id, true);
+            $this->fail('Tampered approved policy may not be replayed as approved.');
+        } catch (HttpException $exception) {
+            $this->assertSame(409, $exception->getStatusCode());
+        }
+        try {
+            $service->propose($maker, $request);
+            $this->fail('Request UUID replay must not return a modified revision.');
+        } catch (ValidationException $exception) {
+            $this->assertArrayHasKey('request_uuid', $exception->errors());
+        }
+        DB::table('enterprise_inventory_ownership_rule_revisions')
+            ->where('id', $approved->id)->update(['title_transfer_trigger' => 'CONTRACT_EVENT']);
+        $restored = $service->advisoryFor(
+            $checker, $stock['store_id'], 'B2C', null, (int) $request['warehouse_id'],
+        );
+        $this->assertSame($approved->id, $restored['policy']->id);
+        $this->assertFalse($restored['certified']);
+
         // An ownership policy for a different sales channel cannot be
         // presented as title guidance for the current warehouse/store.
         try {
@@ -1475,6 +1507,12 @@ final class V2InventoryOwnerProvenanceTest extends TestCase
         $this->assertNull($revoked['policy']);
         $this->assertSame('UNKNOWN', $revoked['state']);
         $this->assertFalse($revoked['certified']);
+        try {
+            $service->review($checker, (int) $approved->id, true);
+            $this->fail('An approval replay must not return a now-revoked supplier policy as active.');
+        } catch (HttpException $exception) {
+            $this->assertSame(409, $exception->getStatusCode());
+        }
 
         DB::table('enterprise_suppliers')->where('id', $supplierId)
             ->update(['status' => 'active']);
@@ -1483,6 +1521,12 @@ final class V2InventoryOwnerProvenanceTest extends TestCase
         $expired = $service->advisoryFor($checker, $stock['store_id'], 'B2C', $supplierId, $warehouseId);
         $this->assertNull($expired['policy']);
         $this->assertFalse($expired['certified']);
+        try {
+            $service->review($checker, (int) $approved->id, true);
+            $this->fail('An approval replay must not accept now-expired supplier evidence.');
+        } catch (HttpException $exception) {
+            $this->assertSame(409, $exception->getStatusCode());
+        }
 
         DB::table('enterprise_supplier_documents')->where('id', $documentId)
             ->update(['expires_at' => now()->addDays(10)->toDateString()]);
