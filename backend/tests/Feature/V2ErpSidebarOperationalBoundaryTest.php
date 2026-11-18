@@ -159,6 +159,65 @@ final class V2ErpSidebarOperationalBoundaryTest extends TestCase
         }
     }
 
+
+    public function test_platform_allow_cannot_override_explicit_wholesale_store_entitlement_deny(): void
+    {
+        $actor = $this->superAdmin('v2-erp-store-deny@example.test');
+        $store = Store::query()->where('code', 'V2-ERP-BOUNDARY-WHOLESALE')->firstOrFail();
+
+        app(EnterpriseModuleAdministration::class)->perform('procurement', 'enable', $actor);
+        $manager = app(ModuleEntitlementManager::class);
+        $manager->set('procurement', EntitlementScope::platform(), true);
+        $manager->set(
+            'procurement',
+            new EntitlementScope(EntitlementScope::STORE, (int) $store->getKey()),
+            false,
+        );
+
+        $center = $this->actingAs($actor)->get(route('admin.erp.index'));
+        $center->assertOk();
+
+        $card = collect($center->viewData('cards'))->firstWhere('key', 'procurement');
+        $this->assertIsArray($card);
+        $this->assertSame('not_entitled', $card['status']);
+        $this->assertNull($card['url']);
+
+        $steps = $center->viewData('moduleReadinessReports')['procurement'];
+        foreach (['suppliers', 'approved_requests', 'issued_orders', 'posted_receipts', 'handed_off_invoices'] as $key) {
+            $step = collect($steps)->firstWhere('key', $key);
+            $this->assertIsArray($step);
+            $this->assertNull($step['url'], $key);
+        }
+    }
+
+    public function test_wholesale_treasury_readiness_never_links_to_cross_channel_retail_master(): void
+    {
+        $actor = $this->superAdmin('v2-erp-treasury-cross-channel@example.test');
+        $retail = Store::query()->create([
+            'store_type_id' => (int) DB::table('store_types')->where('code', 'B2C')->value('id'),
+            'code' => 'V2-ERP-BOUNDARY-RETAIL',
+            'name' => 'Retail-only treasury master boundary fixture',
+            'is_active' => true,
+        ]);
+        app(OrganizationHierarchyService::class)->ensureDefaultScopeForStore($retail);
+
+        // The legacy Treasury Master route aggregates both B2B and B2C. A
+        // Wholesale ERP checklist must never deep-link to that mixed scope.
+        $scope = app(OperationalTenantScope::class);
+        $this->assertContains((int) $retail->getKey(), $scope->allowedStoreIds($actor, 'finance.view'));
+        $this->assertNotContains((int) $retail->getKey(), $scope->allowedStoreIds($actor, 'finance.view', 'B2B'));
+
+        $center = $this->actingAs($actor)->get(route('admin.erp.index'));
+        $center->assertOk();
+        $steps = $center->viewData('treasuryReadinessSteps');
+        $this->assertNotEmpty($steps);
+        foreach (['cashbox', 'bank_account'] as $key) {
+            $step = collect($steps)->firstWhere('key', $key);
+            $this->assertIsArray($step);
+            $this->assertNull($step['url'], $key);
+        }
+    }
+
     public function test_every_erp_business_route_is_covered_by_the_server_guard(): void
     {
         foreach ([
