@@ -106,7 +106,8 @@ final class InventoryOwnershipRuleService
             $existing = DB::table('enterprise_inventory_ownership_rule_revisions')
                 ->where('request_uuid', $requestUuid)->first();
             if ($existing !== null) {
-                if ($existing->payload_sha256 !== $sha || (int) $existing->proposed_by !== (int) $actor->id) {
+                if (! $this->revisionMatchesProposal($existing)
+                    || $existing->payload_sha256 !== $sha || (int) $existing->proposed_by !== (int) $actor->id) {
                     throw ValidationException::withMessages(['request_uuid' => ['Conflicting policy request replay.']]);
                 }
 
@@ -155,19 +156,23 @@ final class InventoryOwnershipRuleService
             // channel reassignment even when its stored store_id is unchanged.
             abort_unless((int) $rule->company_id === $this->companyForStore((int) $rule->store_id), 409);
             $this->assertChannel((int) $rule->store_id, (string) $rule->channel);
+            // A review must bind exactly the policy fields the maker proposed.
+            // Changing a draft's checker/trigger/evidence after proposal cannot
+            // be silently ratified by a later reviewer or a replay request.
+            abort_unless($this->revisionMatchesProposal($rule), 409);
             abort_if((int) $rule->proposed_by === (int) $checker->id, 403);
             $target = $approve ? 'APPROVED_RULE' : 'REJECTED';
+            // Idempotent approval replay must not claim success on a revoked
+            // supplier, inactive warehouse or now-expired source document.
+            if ($approve) {
+                abort_unless($this->referencesStillValid($rule), 409);
+            }
             if ($rule->status !== 'DRAFT') {
                 abort_unless($rule->status === $target && (int) $rule->reviewed_by === (int) $checker->id, 409);
 
                 return $rule;
             }
             if ($approve) {
-                // Proposal-time supplier/warehouse/document validation cannot be
-                // trusted at approval time: references may have been revoked or
-                // moved to another company/store while awaiting the checker.
-                abort_unless($this->referencesStillValid($rule), 409);
-
                 // Serialize approvals for a store before checking competing
                 // approved policies; concurrent reviewers must not both win.
                 DB::table('stores')->where('id', $rule->store_id)->lockForUpdate()->first();
@@ -242,7 +247,8 @@ final class InventoryOwnershipRuleService
         // supplier, warehouse or source-document scope is revoked. Fail closed
         // rather than silently falling back to a less specific policy: the
         // checker must re-evaluate the explicit business scope first.
-        if ($first !== null && ! $this->referencesStillValid($first['rule'])) {
+        if ($first !== null && (! $this->revisionMatchesProposal($first['rule'])
+            || ! $this->referencesStillValid($first['rule']))) {
             return ['state' => 'UNKNOWN', 'certified' => false, 'policy' => null];
         }
 
@@ -252,6 +258,57 @@ final class InventoryOwnershipRuleService
 
         return ['state' => $ambiguous ? 'CONFLICT' : 'UNKNOWN', 'certified' => false,
             'policy' => $ambiguous ? null : ($first['rule'] ?? null)];
+    }
+
+    /**
+     * A revision must still match the exact original proposal fingerprint.
+     * This detects drift to a stored policy; SHA-256 is NOT a trusted issuer
+     * signature and cannot certify or transfer stock title.
+     */
+    private function revisionMatchesProposal(object $rule): bool
+    {
+        try {
+            $evidence = json_decode((string) $rule->required_evidence_classes, true, 512, JSON_THROW_ON_ERROR);
+            if (! is_array($evidence) || ! array_is_list($evidence)
+                || $evidence === [] || count($evidence) > 8) {
+                return false;
+            }
+
+            foreach ($evidence as $class) {
+                if (! in_array($class, [
+                    'SIGNED_CONTRACT', 'CONSIGNMENT_AGREEMENT',
+                    'TITLE_ADDENDUM', 'TRANSFER_CONFIRMATION',
+                ], true)) {
+                    return false;
+                }
+            }
+
+            $effective = strtotime((string) $rule->effective_at);
+            if ($effective === false) {
+                return false;
+            }
+
+            $snapshot = [
+                'company_id' => (int) $rule->company_id,
+                'store_id' => (int) $rule->store_id,
+                'channel' => (string) $rule->channel,
+                'supplier_id' => $rule->supplier_id === null ? null : (int) $rule->supplier_id,
+                'warehouse_id' => $rule->warehouse_id === null ? null : (int) $rule->warehouse_id,
+                'supplier_document_id' => $rule->supplier_document_id === null ? null : (int) $rule->supplier_document_id,
+                'initial_owner_kind' => (string) $rule->initial_owner_kind,
+                'title_transfer_trigger' => (string) $rule->title_transfer_trigger,
+                'required_evidence_classes' => $evidence,
+                'checker_permission' => (string) $rule->checker_permission,
+                'effective_at' => date('Y-m-d H:i:s', $effective),
+            ];
+
+            $recorded = (string) $rule->payload_sha256;
+
+            return preg_match('/\A[a-f0-9]{64}\z/D', $recorded) === 1
+                && hash_equals($recorded, hash('sha256', json_encode($snapshot, JSON_THROW_ON_ERROR)));
+        } catch (\Throwable) {
+            return false;
+        }
     }
 
     /**
