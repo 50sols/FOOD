@@ -174,7 +174,7 @@ final class PurchaseRequestManager
      * authorized POST collection action. A missing or foreign ID is never an
      * upsert; status and creator checks are repeated under the row lock.
      *
-     * @param array<string, mixed> $attributes
+     * @param  array<string, mixed>  $attributes
      */
     public function updateDraft(
         User $actor,
