@@ -115,8 +115,7 @@ final class V2Customer360DirectoryReturnContextTest extends TestCase
                 'origin_store_id' => $storeId,
                 'page' => 3,
             ]))
-            ->assertViewHas('statementFilters', fn (array $v): bool =>
-                ($v['statement_from'] ?? null) === '2026-01-01'
+            ->assertViewHas('statementFilters', fn (array $v): bool => ($v['statement_from'] ?? null) === '2026-01-01'
                 && ($v['statement_to'] ?? null) === '2026-02-28');
 
         $html = html_entity_decode((string) $response->getContent(), ENT_QUOTES | ENT_HTML5, 'UTF-8');
