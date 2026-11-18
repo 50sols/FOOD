@@ -3,6 +3,9 @@
 namespace Tests\Feature;
 
 use App\Enterprise\Entitlements\EntitlementScope;
+use App\Enterprise\Health\ModuleHealthCheck;
+use App\Enterprise\Health\ModuleHealthProbe;
+use App\Enterprise\Health\ModuleHealthService;
 use App\Enterprise\Entitlements\ModuleEntitlementManager;
 use App\Enterprise\Modules\ModuleOperationalReadiness;
 use App\Enterprise\Modules\ModuleRegistry;
@@ -250,6 +253,194 @@ final class V2ProcurementErpCenterHttpContractTest extends TestCase
         }
     }
 
+    public function test_revoked_certification_stays_unavailable_after_suspend_and_reenable_until_valid_test_evidence_is_restored(): void
+    {
+        $store = $this->wholesaleStore('P135-HTTP-REVOKE-REENABLE');
+        $admin = $this->enableAndEntitle($store);
+        $manager = $this->userWithRole('PROCUREMENT_MANAGER');
+        $version = app(ModuleRegistry::class)->manifest('procurement')->version;
+        $module = app(EnterpriseModuleAdministration::class);
+        $workbenchUrl = route('admin.erp.procurement.index', [
+            'store_id' => $store->id,
+            'tab' => 'suppliers',
+        ]);
+
+        $this->assertSame('ready', $this->readiness());
+        $this->actingAs($manager->fresh())->get($workbenchUrl)->assertOk();
+
+        config()->set('enterprise_module_readiness.certified_versions.procurement', null);
+        $this->assertSame('uncertified', $this->readiness());
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            $manager->forceFill(['locale' => $locale])->save();
+            $this->assertProcurementHttpUnavailable($manager->fresh(), $workbenchUrl);
+        }
+
+        $module->perform('procurement', 'suspend', $admin);
+        $this->assertSame('inactive', $this->readiness());
+        $this->actingAs($manager->fresh())->get($workbenchUrl)->assertForbidden();
+
+        $module->perform('procurement', 'enable', $admin);
+        $this->assertDatabaseHas('enterprise_modules', [
+            'code' => 'procurement',
+            'state' => 'ENABLED',
+        ]);
+
+        // ENABLED and preserved role + store entitlement must never recreate
+        // revoked exact-version certification or silently reauthorize HTTP.
+        $this->assertSame('uncertified', $this->readiness());
+        $this->assertProcurementHttpUnavailable($manager->fresh(), $workbenchUrl);
+        $this->assertDatabaseHas('enterprise_module_entitlements', [
+            'module_code' => 'procurement',
+            'scope_key' => 'store:'.$store->id,
+            'is_enabled' => true,
+        ]);
+
+        // This restoration is strictly the disposable PHPUnit signature
+        // fixture installed in setUp, NEVER a live G0-G13 certification.
+        config()->set('enterprise_module_readiness.certified_versions.procurement', $version);
+        $this->assertSame('ready', $this->readiness());
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            $manager->forceFill(['locale' => $locale])->save();
+            $center = $this->actingAs($manager->fresh())->get(route('admin.erp.index'))->assertOk();
+            $card = collect($center->viewData('cards'))->firstWhere('key', 'procurement');
+            $this->assertIsArray($card);
+            $this->assertSame('available', $card['status']);
+            $this->assertIsString($card['url']);
+            $this->actingAs($manager->fresh())->get($workbenchUrl)->assertOk();
+        }
+    }
+
+    public function test_missing_workflow_config_forged_signature_and_stale_installed_manifest_never_expose_actionable_http(): void
+    {
+        $store = $this->wholesaleStore('P135-HTTP-CONFIG-SIGNATURE');
+        $this->enableAndEntitle($store);
+        $manager = $this->userWithRole('PROCUREMENT_MANAGER');
+        $registry = app(ModuleRegistry::class);
+        $version = $registry->manifest('procurement')->version;
+        $registration = $registry->requireRegistration('procurement');
+        $originalManifest = $registration->getAttribute('manifest');
+        $requiredWorkflow = config('enterprise_module_readiness.required_workflows.procurement');
+        $signedFixture = config('enterprise_module_readiness.workflow_attestations.procurement');
+        $workbenchUrl = route('admin.erp.procurement.index', [
+            'store_id' => $store->id, 'tab' => 'suppliers',
+        ]);
+
+        $this->assertIsArray($originalManifest);
+        $this->assertIsArray($signedFixture);
+        $this->assertSame('ready', $this->readiness());
+
+        // A missing mandatory workflow matrix is not an optional module.
+        config()->set('enterprise_module_readiness.required_workflows.procurement', []);
+        $this->assertSame('uncertified', $this->readiness());
+        $this->assertProcurementHttpUnavailable($manager->fresh(), $workbenchUrl);
+        config()->set('enterprise_module_readiness.required_workflows.procurement', $requiredWorkflow);
+
+        // An apparently plausible new Git SHA invalidates the Ed25519 proof.
+        config()->set('enterprise_module_readiness.workflow_attestations.procurement', [
+            ...$signedFixture,
+            'head_sha' => str_repeat('f', 40),
+        ]);
+        $this->assertSame('uncertified', $this->readiness());
+        $this->assertProcurementHttpUnavailable($manager->fresh(), $workbenchUrl);
+        config()->set('enterprise_module_readiness.workflow_attestations.procurement', $signedFixture);
+
+        // Source certification of version N cannot authorize an installed N+1
+        // even when the stored lifecycle stays ENABLED.
+        $registration->forceFill(['manifest_version' => $version + 1])->save();
+        $this->assertSame('uncertified', $this->readiness());
+        $this->assertProcurementHttpUnavailable($manager->fresh(), $workbenchUrl);
+        $registration->forceFill(['manifest_version' => $version])->save();
+
+        // Same version, altered permissions: SHA-256 installed manifest mismatch.
+        $registration->forceFill([
+            'manifest' => [...$originalManifest, 'permissions' => ['forged.procurement.post']],
+        ])->save();
+        $this->assertSame('uncertified', $this->readiness());
+        $this->assertProcurementHttpUnavailable($manager->fresh(), $workbenchUrl);
+        $registration->forceFill(['manifest' => $originalManifest])->save();
+
+        $this->assertSame('ready', $this->readiness());
+        $this->actingAs($manager->fresh())->get($workbenchUrl)->assertOk();
+    }
+
+    public function test_degraded_operational_health_blocks_even_exact_version_signed_test_evidence_without_leaking_probe_details(): void
+    {
+        $store = $this->wholesaleStore('P135-HTTP-DEGRADED-HEALTH');
+        $admin = $this->enableAndEntitle($store);
+        $manager = $this->userWithRole('PROCUREMENT_MANAGER');
+
+        // Set the failed probe before the first health report; no stale
+        // memoized HEALTHY result from an earlier simulated HTTP request.
+        config()->set('enterprise_module_health.probes.procurement', [
+            P135ProcurementDegradedHealthProbe::class,
+        ]);
+        app()->forgetInstance(ModuleHealthService::class);
+
+        $this->assertSame('unhealthy', $this->readiness());
+        $this->assertDatabaseHas('enterprise_modules', [
+            'code' => 'procurement', 'state' => 'ENABLED',
+        ]);
+        $this->assertTrue($manager->fresh()->hasPermission('procurement.suppliers.view', $store->id));
+
+        foreach (['ar' => 'rtl', 'en' => 'ltr'] as $locale => $direction) {
+            app()->setLocale($locale);
+            $manager->forceFill(['locale' => $locale])->save();
+            $actor = $manager->fresh();
+            $auditBefore = DB::table('audit_logs')->count();
+            $center = $this->actingAs($actor)->get(route('admin.erp.index'));
+            $center->assertOk()->assertSee('dir="'.$direction.'"', false);
+            $card = collect($center->viewData('cards'))->firstWhere('key', 'procurement');
+            $this->assertIsArray($card);
+            $this->assertSame('degraded', $card['status']);
+            $this->assertSame('unhealthy', $card['denial_reason']);
+            $this->assertSame('degraded', $card['health']);
+            $this->assertNull($card['url']);
+            $center->assertDontSee('PRIVATE-P135-PROBE-DETAIL');
+
+            $this->actingAs($actor)->get(route('admin.erp.procurement.index', [
+                'store_id' => $store->id, 'tab' => 'suppliers',
+            ]))->assertForbidden();
+            $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+        }
+
+        $this->assertDatabaseCount('enterprise_purchase_orders', 0);
+        $this->assertDatabaseCount('enterprise_goods_receipts', 0);
+        $this->assertDatabaseCount('enterprise_purchase_invoices', 0);
+        $this->assertDatabaseCount('enterprise_outbox_messages', 0);
+
+        // Lifecycle and signed test configuration were not changed by a
+        // read-only degraded health probe.
+        $this->assertSame('unhealthy', $this->readiness());
+        $this->assertTrue($admin->fresh()->hasRole('SUPER_ADMIN'));
+    }
+
+    private function assertProcurementHttpUnavailable(User $actor, string $workbenchUrl): void
+    {
+        $auditBefore = DB::table('audit_logs')->count();
+        $center = $this->actingAs($actor)->get(route('admin.erp.index'))->assertOk();
+        $card = collect($center->viewData('cards'))->firstWhere('key', 'procurement');
+
+        // The Center may entirely omit the module for this actor; either
+        // presentation is secure only if no actionable URL survives.
+        if (is_array($card)) {
+            $this->assertNotSame('available', $card['status']);
+            $this->assertNull($card['url']);
+        } else {
+            $this->assertNull($card);
+            $center->assertDontSee(
+                'data-erp-key="procurement" data-erp-status="available"',
+                false,
+            );
+        }
+
+        $this->actingAs($actor)->get($workbenchUrl)->assertForbidden();
+        $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+    }
+
     private function enableAndEntitle(Store $store): User
     {
         $admin = $this->userWithRole('SUPER_ADMIN');
@@ -321,5 +512,17 @@ final class V2ProcurementErpCenterHttpContractTest extends TestCase
             ]);
         }
         $actor->forceFill(['has_permission_overrides' => true])->save();
+    }
+}
+
+/**
+ * Disposable negative probe; it never runs in live app configuration.
+ * Its internal message must not escape into an ERP Center denial page.
+ */
+final class P135ProcurementDegradedHealthProbe implements ModuleHealthProbe
+{
+    public function check(): ModuleHealthCheck
+    {
+        return ModuleHealthCheck::degraded('procurement-runtime', 'PRIVATE-P135-PROBE-DETAIL');
     }
 }
