@@ -370,6 +370,19 @@ final class V2ArOfficerAuthorizationContractTest extends TestCase
         $this->assertTrue($actor->hasPermission('finance.view', $store->id));
         $this->assertTrue($actor->hasPermission('finance.manage', $store->id));
         $this->assertTrue($access->canRead($actor, $store->id));
+        $this->assertTrue($access->canReadCapability($actor, $store->id, 'finance.ar.read'));
+        foreach ([
+            'finance.gl.read',
+            'finance.ap.read',
+            'finance.foundation.read',
+            'finance.opening_balances.read',
+            'finance.unknown.read',
+        ] as $capability) {
+            $this->assertFalse(
+                $access->canReadCapability($actor, $store->id, $capability),
+                "AR_OFFICER must not inherit {$capability} by combining Finance roles.",
+            );
+        }
         $this->assertTrue($access->canPerform(
             $actor, $store->id, 'finance.manage', 'finance.ar.manage',
         ));
@@ -418,6 +431,7 @@ final class V2ArOfficerAuthorizationContractTest extends TestCase
             'finance.gl.manage',
         ]);
         $this->assertFalse($access->canRead($actor, $store->id));
+        $this->assertFalse($access->canReadCapability($actor, $store->id, 'finance.ar.read'));
         $this->assertFalse($access->canPerform(
             $actor, $store->id, 'finance.manage', 'finance.ar.manage',
         ));
