@@ -1794,14 +1794,13 @@ final class V2ReceivableSettlementWorkbenchTest extends TestCase
         // Model the mixed-channel edge case: Retail's operational store scope
         // shares the exact enterprise organization/company/legal entity with
         // Wholesale, so legal-entity filtering alone would leak the document.
-        $retailBusinessUnitId = (int) DB::table('enterprise_store_scopes')
-            ->where('store_id', $retailStore->id)
+        $wholesaleBusinessUnitId = (int) DB::table('enterprise_store_scopes')
+            ->where('store_id', $wholesale['store']->id)
             ->value('business_unit_id');
-        DB::table('enterprise_business_units')->where('id', $retailBusinessUnitId)->update([
-            'organization_id' => $scope->organizationId,
-            'company_id' => $scope->companyId,
-            'legal_entity_id' => $scope->legalEntityId,
-        ]);
+        $this->assertGreaterThan(0, $wholesaleBusinessUnitId);
+        DB::table('enterprise_store_scopes')
+            ->where('store_id', $retailStore->id)
+            ->update(['business_unit_id' => $wholesaleBusinessUnitId]);
         $retailDocumentId = DB::table('enterprise_ar_documents')->insertGetId([
             'organization_id' => $scope->organizationId,
             'company_id' => $scope->companyId,
