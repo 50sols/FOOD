@@ -32,6 +32,7 @@ use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Pagination\LengthAwarePaginator;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Route;
+use Illuminate\Validation\ValidationException;
 use Tests\Support\SyntheticErpWorkflowEvidence;
 use Tests\TestCase;
 
@@ -3353,7 +3354,7 @@ final class V2ErpEntitlementCheckerBoundaryTest extends TestCase
                 ]],
             ]);
             $this->fail('Service must reject precision not representable by DECIMAL(14,3) and DECIMAL(18,3).');
-        } catch (\Illuminate\Validation\ValidationException $exception) {
+        } catch (ValidationException $exception) {
             $this->assertArrayHasKey('lines.0.quantity', $exception->errors());
             $this->assertArrayHasKey('lines.0.estimated_unit_cost', $exception->errors());
         }
