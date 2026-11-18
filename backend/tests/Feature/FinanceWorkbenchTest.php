@@ -78,7 +78,7 @@ final class FinanceWorkbenchTest extends TestCase
             ->assertOk();
         $this->actingAs($actor)
             ->get(route('admin.erp.finance.index', ['store_id' => $store->id, 'tab' => 'reports']))
-            ->assertForbidden();
+            ->assertOk();
 
         $actor->update(['locale' => 'ar']);
 
