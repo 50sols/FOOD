@@ -15,6 +15,7 @@ use Illuminate\Http\UploadedFile;
 use Illuminate\Routing\Middleware\ThrottleRequests;
 use Illuminate\Support\Facades\File;
 use ReflectionMethod;
+use Symfony\Component\HttpFoundation\File\Exception\FileException;
 use Tests\TestCase;
 
 class SystemUpdateAuthorizationTest extends TestCase
@@ -366,7 +367,7 @@ class SystemUpdateAuthorizationTest extends TestCase
                     // Simulate a cPanel filesystem failure AFTER a partial
                     // private ZIP has been written, not merely a blocked preflight.
                     file_put_contents($directory.'/'.$name, 'incomplete upload');
-                    throw new \Symfony\Component\HttpFoundation\File\Exception\FileException(
+                    throw new FileException(
                         'Unable to write /home/private-operator/secret-path',
                     );
                 }
