@@ -32,6 +32,7 @@ class HttpB2bApi implements B2bApi, B2bDocumentApi, B2bDownloadApi {
     required this.baseUrl,
     required this.token,
     this.retailStoreContextId,
+    this.locale = 'ar',
     this.requestTimeout = const Duration(seconds: 20),
     this.maxGetAttempts = 2,
     http.Client? client,
@@ -41,6 +42,7 @@ class HttpB2bApi implements B2bApi, B2bDocumentApi, B2bDownloadApi {
   final String baseUrl;
   final String token;
   final int? retailStoreContextId;
+  final String locale;
   final Duration requestTimeout;
   final int maxGetAttempts;
   final http.Client _client;
@@ -62,7 +64,20 @@ class HttpB2bApi implements B2bApi, B2bDocumentApi, B2bDownloadApi {
         supportReference: _supportReference(response.headers),
       );
     }
-    return response.bodyBytes;
+    // An expired session or reverse-proxy error can redirect a successful
+    // HTTP GET to an HTML/JSON login page. Never share that response as an
+    // invoice PDF: the server alone owns the actual document contents.
+    final bytes = response.bodyBytes;
+    final contentType =
+        response.headers['content-type']?.split(';').first.trim().toLowerCase();
+    final supportedType = contentType == null ||
+        contentType.isEmpty ||
+        contentType == 'application/pdf' ||
+        contentType == 'application/octet-stream';
+    if (!supportedType || !_hasPdfSignature(bytes)) {
+      throw const B2bApiException('invalid_document');
+    }
+    return bytes;
   }
 
   @override
@@ -82,25 +97,146 @@ class HttpB2bApi implements B2bApi, B2bDocumentApi, B2bDownloadApi {
         supportReference: _supportReference(response.headers),
       );
     }
-    return response.body.isEmpty ? null : jsonDecode(response.body);
+    // Every B2B balance, invoice and statement read must be a server JSON
+    // object. A 200 HTML login redirect, truncated body or JSON scalar is
+    // not a settled ledger or a successful empty financial response.
+    final mime =
+        response.headers['content-type']?.split(';').first.trim().toLowerCase();
+    if (response.body.isEmpty ||
+        (mime != null &&
+            mime.isNotEmpty &&
+            mime != 'application/json' &&
+            !mime.endsWith('+json'))) {
+      throw const B2bApiException('invalid_response');
+    }
+    try {
+      final decoded = jsonDecode(response.body);
+      if (decoded is Map<String, dynamic>) {
+        // The server enforces access. Reject an inconsistent, explicitly
+        // scoped invoice response before it is displayed to the customer.
+        final uri = Uri.parse(path);
+        final requestedStore =
+            int.tryParse(uri.queryParameters['store_id'] ?? '');
+        final segments = uri.pathSegments;
+        final invoiceEndpoint = segments.length >= 4 &&
+            segments[0] == 'api' &&
+            segments[1] == 'v1' &&
+            segments[2] == 'b2b' &&
+            segments[3] == 'invoices' &&
+            (segments.length == 4 ||
+                (segments.length == 5 && (int.tryParse(segments[4]) ?? 0) > 0));
+        // An authorized store response can still describe a different
+        // invoice. The detail route must echo the requested server ID.
+        if (invoiceEndpoint && segments.length == 5) {
+          final detail = decoded['data'];
+          if (detail is! Map<String, dynamic> ||
+              detail['id'] != int.tryParse(segments[4])) {
+            throw const B2bApiException('invalid_response');
+          }
+        }
+        if (requestedStore != null && invoiceEndpoint) {
+          // The list producer MUST echo its applied store filter. A missing
+          // filter on an empty HTTP-200 page is not proof of authorization
+          // for the selected store; never present it as "no invoices".
+          if (segments.length == 4) {
+            final filters = decoded['filters'];
+            if (filters is! Map<String, dynamic> ||
+                filters['store_id'] != requestedStore) {
+              throw const B2bApiException('invalid_response');
+            }
+          }
+          final data = decoded['data'];
+          final Iterable<Object?> invoices;
+          if (data is Map<String, dynamic>) {
+            invoices = [data];
+          } else if (data is List) {
+            invoices = data;
+          } else {
+            throw const B2bApiException('invalid_response');
+          }
+          for (final invoice in invoices) {
+            if (invoice is! Map<String, dynamic> ||
+                invoice['store_id'] != requestedStore) {
+              throw const B2bApiException('invalid_response');
+            }
+            // Invoice details echo their server-owned seller/store identity.
+            // Reject contradictory seller provenance without inferring it
+            // from the selected Retail or Wholesale context in Flutter.
+            final seller = invoice['seller'];
+            if (seller != null &&
+                (seller is! Map<String, dynamic> ||
+                    (seller.containsKey('store_id') &&
+                        seller['store_id'] != requestedStore))) {
+              throw const B2bApiException('invalid_response');
+            }
+          }
+        }
+        // Statement rows are also financial identities. A scoped response
+        // must not contain an explicitly different store, even if HTTP 200.
+        // Null store IDs are valid for shared payments/account adjustments
+        // and must remain the server's decision, not be remapped by Flutter.
+        final statementEndpoint = segments.length == 4 &&
+            segments[0] == 'api' &&
+            segments[1] == 'v1' &&
+            segments[2] == 'b2b' &&
+            segments[3] == 'account-statement';
+        if (requestedStore != null && statementEndpoint) {
+          final statement = decoded['data'];
+          // A scoped statement can be empty. Check statement-level provenance
+          // independently of transaction rows so a foreign-store empty
+          // response cannot masquerade as a valid zero-activity statement.
+          if (statement is Map<String, dynamic> &&
+              statement['store_id'] != null &&
+              statement['store_id'] != requestedStore) {
+            throw const B2bApiException('invalid_response');
+          }
+          final rows = statement is Map<String, dynamic>
+              ? statement['transactions']
+              : null;
+          if (rows is! List) {
+            throw const B2bApiException('invalid_response');
+          }
+          for (final row in rows) {
+            if (row is! Map<String, dynamic> ||
+                (row['store_id'] != null &&
+                    row['store_id'] != requestedStore)) {
+              throw const B2bApiException('invalid_response');
+            }
+          }
+        }
+        return decoded;
+      }
+    } on FormatException {
+      // Do not surface proxy/parser details or synthesize money as zero.
+    }
+    throw const B2bApiException('invalid_response');
   }
 
   Future<http.Response> _getWithRetry(String path, String accept) async {
     Object? lastError;
     for (var attempt = 1; attempt <= maxGetAttempts; attempt++) {
       try {
-        return await _client
-            .get(
-              Uri.parse('$baseUrl$path'),
-              headers: {
-                'Accept': accept,
-                'Authorization': 'Bearer $token',
-                'X-FOODEX-Customer-Domain': 'b2b',
-                if (retailStoreContextId != null)
-                  'X-FOODEX-Retail-Store-ID': retailStoreContextId.toString(),
-              },
-            )
-            .timeout(requestTimeout);
+        final response = await _client.get(
+          Uri.parse('$baseUrl$path'),
+          headers: {
+            'Accept': accept,
+            'Authorization': 'Bearer $token',
+            'X-FOODEX-Customer-Domain': 'b2b',
+            'Accept-Language': locale == 'en' ? 'en' : 'ar',
+            if (retailStoreContextId != null)
+              'X-FOODEX-Retail-Store-ID': retailStoreContextId.toString(),
+          },
+        ).timeout(requestTimeout);
+        // These are safe invoice/statement/document reads, not financial
+        // mutations. Keep the caller's session, store and locale on retry.
+        if (attempt < maxGetAttempts &&
+            (response.statusCode == 502 ||
+                response.statusCode == 503 ||
+                response.statusCode == 504)) {
+          await Future<void>.delayed(Duration(milliseconds: 200 * attempt));
+          continue;
+        }
+        return response;
       } on TimeoutException catch (error) {
         lastError = error;
       } on http.ClientException catch (error) {
@@ -138,17 +274,61 @@ class HttpB2bApi implements B2bApi, B2bDocumentApi, B2bDownloadApi {
       );
     }
 
+    // A successful HTTP status can be an HTML authentication redirect or
+    // JSON gateway error. Verify the declared format before sharing bytes.
+    final requestedFormat =
+        Uri.parse(path).queryParameters['format']?.toLowerCase();
+    final bytes = response.bodyBytes;
+    final mime =
+        response.headers['content-type']?.split(';').first.trim().toLowerCase();
+    const xlsxMime =
+        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+    final binaryMime = mime == 'application/octet-stream';
+    final isPdf = requestedFormat != 'xlsx' &&
+        _hasPdfSignature(bytes) &&
+        (mime == 'application/pdf' || binaryMime);
+    final isXlsx = requestedFormat != 'pdf' &&
+        _hasXlsxSignature(bytes) &&
+        (mime == xlsxMime || binaryMime);
+    if (!isPdf && !isXlsx) {
+      throw const B2bApiException('invalid_document');
+    }
+
+    final extension = isPdf ? 'pdf' : 'xlsx';
     final disposition = response.headers['content-disposition'] ?? '';
     final filenameMatch = RegExp(r'filename="?([^";]+)"?', caseSensitive: false)
         .firstMatch(disposition);
-    final mime = response.headers['content-type']?.split(';').first.trim();
+    final candidate = filenameMatch?.group(1)?.trim();
+    final safeFilename = candidate != null &&
+            candidate.isNotEmpty &&
+            candidate.length <= 180 &&
+            !candidate.startsWith('.') &&
+            !RegExp(r'[/\\\x00-\x1f\x7f]').hasMatch(candidate) &&
+            candidate.toLowerCase().endsWith('.$extension')
+        ? candidate
+        : 'foodex-account-statement.$extension';
     return B2bDownload(
-      bytes: response.bodyBytes,
-      mimeType: mime == null || mime.isEmpty ? 'application/octet-stream' : mime,
-      filename: filenameMatch?.group(1) ?? 'foodex-account-statement',
+      bytes: bytes,
+      mimeType: isPdf ? 'application/pdf' : xlsxMime,
+      filename: safeFilename,
     );
   }
 }
+
+bool _hasPdfSignature(Uint8List bytes) =>
+    bytes.length >= 5 &&
+    bytes[0] == 0x25 &&
+    bytes[1] == 0x50 &&
+    bytes[2] == 0x44 &&
+    bytes[3] == 0x46 &&
+    bytes[4] == 0x2D;
+
+bool _hasXlsxSignature(Uint8List bytes) =>
+    bytes.length >= 4 &&
+    bytes[0] == 0x50 &&
+    bytes[1] == 0x4b &&
+    bytes[2] == 0x03 &&
+    bytes[3] == 0x04;
 
 class B2bApiException implements Exception {
   const B2bApiException(

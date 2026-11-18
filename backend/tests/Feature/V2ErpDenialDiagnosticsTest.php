@@ -151,7 +151,7 @@ final class V2ErpDenialDiagnosticsTest extends TestCase
         $admin->forceFill(['locale' => $locale])->save();
         app()->setLocale($locale);
 
-        $response = $this->actingAs($admin->fresh())->get(route('admin.erp.index'));
+        $response = $this->actingAs($admin->fresh())->get(route('admin.erp.index', ['tab' => 'modules']));
         $response->assertOk()->assertSee('dir="'.$direction.'"', false);
 
         $card = collect($response->viewData('cards'))->firstWhere('key', 'procurement');
