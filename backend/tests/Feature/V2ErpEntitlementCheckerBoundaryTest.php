@@ -3234,6 +3234,23 @@ final class V2ErpEntitlementCheckerBoundaryTest extends TestCase
         ])->assertSessionHasErrors(['code']);
         $this->assertSame($supplierAuditAfterArchive, DB::table('audit_logs')->count());
         $this->assertSame(1, DB::table('enterprise_suppliers')->where('code', $legal['code'])->count());
+
+        // An archived supplier remains in audit/history but is not an active
+        // source for newly created Purchase Requests, even to the old owner.
+        $requestCountBeforeArchived = DB::table('enterprise_purchase_requests')->count();
+        $this->actingAs($buyer->fresh())->post(route('admin.erp.procurement.requests.store'), [
+            'store_id' => $storeA->id,
+            'supplier_id' => $supplier->id,
+            'currency_code' => 'KWD',
+            'reason' => 'P111 archived supplier cannot source a new request',
+            'item_code' => 'P111-ARCHIVED-SUPPLIER',
+            'description' => 'Inactive legal supplier no new orders',
+            'quantity' => '1.000',
+            'unit' => 'case',
+            'estimated_unit_cost' => '2.500',
+        ])->assertNotFound();
+        $this->assertSame($requestCountBeforeArchived, DB::table('enterprise_purchase_requests')->count());
+        $this->assertSame($supplierAuditAfterArchive, DB::table('audit_logs')->count());
     }
 
     public function test_purchase_request_three_decimal_precision_create_edit_submit_and_replay_are_atomic(): void
