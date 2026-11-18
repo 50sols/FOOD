@@ -14,6 +14,7 @@ use App\Models\Inventory;
 use App\Models\Role;
 use App\Models\User;
 use App\Models\UserStoreRole;
+use App\Services\DemoDataManager;
 use Database\Seeders\CoreReferenceSeeder;
 use Illuminate\Database\QueryException;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -180,6 +181,7 @@ final class V2InventoryOwnerProvenanceTest extends TestCase
         $this->assertNotNull($event);
         $this->assertSame($movementId, (int) $event->source_stock_movement_id);
         $this->assertSame($stock['inventory_id'], (int) $event->inventory_id);
+        $this->assertSame('OWN-OWNER-MOVEMENT-EVENT', $event->movement_store_code);
         $this->assertSame('p110_owner_event_test', $event->movement_type);
         $this->assertSame('0.125', number_format((float) $event->movement_quantity, 3, '.', ''));
         $this->assertSame(1, (int) $event->owner_position_count);
@@ -335,8 +337,8 @@ final class V2InventoryOwnerProvenanceTest extends TestCase
         $this->assertSame($movementCountBeforeBadInventory, DB::table('stock_movements')->count());
         $this->assertSame($eventCountBeforeBadInventory, DB::table('enterprise_inventory_owner_movement_events')->count());
 
-        // A demo_seed marker on a normal store is not enough to suppress an
-        // event or weaken its source guard.
+        // Every movement is evented, and a demo_seed marker on a live store
+        // cannot opt its source row out of the append-only guard.
         $demoSeedMovement = $movement;
         $demoSeedMovement['type'] = 'demo_seed';
         $demoSeedMovement['reference_type'] = 'demo_seed';
@@ -350,6 +352,64 @@ final class V2InventoryOwnerProvenanceTest extends TestCase
         } catch (QueryException $exception) {
             $this->assertNotEmpty($exception->getMessage());
         }
+
+        // A mutable live-store code change after an event must not retroactively
+        // grant the synthetic cleanup exception to the event-linked movement.
+        $renamedLiveStock = $this->stock('OWNER-EVENT-RENAMED-LIVE');
+        $renamedLiveMovement = $movement;
+        $renamedLiveMovement['inventory_id'] = $renamedLiveStock['inventory_id'];
+        $renamedLiveMovement['store_id'] = $renamedLiveStock['store_id'];
+        $renamedLiveMovement['type'] = 'p110_owner_event_renamed_live';
+        $renamedLiveMovement['reference_id'] = 9;
+        $renamedLiveMovementId = (int) DB::table('stock_movements')->insertGetId($renamedLiveMovement);
+        DB::table('stores')->where('id', $renamedLiveStock['store_id'])
+            ->update(['code' => 'FOODEX-DEMO-B2C-RENAMED-LIVE']);
+        $this->assertDatabaseHas('enterprise_inventory_owner_movement_events', [
+            'source_stock_movement_id' => $renamedLiveMovementId,
+            'movement_store_code' => 'OWN-OWNER-EVENT-RENAMED-LIVE',
+        ]);
+        foreach ([
+            fn () => DB::table('stock_movements')->where('id', $renamedLiveMovementId)->update(['quantity' => '8.888']),
+            fn () => DB::table('stock_movements')->where('id', $renamedLiveMovementId)->delete(),
+        ] as $forbiddenMutation) {
+            try {
+                $forbiddenMutation();
+                $this->fail('Renaming a live store into the reserved demo prefix cannot grant source update/delete access.');
+            } catch (QueryException $exception) {
+                $this->assertNotEmpty($exception->getMessage());
+            }
+        }
+        $coverage = new \ReflectionMethod(InventoryLegalTitleAttestationVerifier::class, 'hasCompleteOwnerMovementEventCoverage');
+        $this->assertTrue($coverage->invoke(app(InventoryLegalTitleAttestationVerifier::class), $renamedLiveStock['inventory_id']));
+        $this->assertDatabaseHas('enterprise_inventory_owner_movement_events', [
+            'source_stock_movement_id' => $renamedLiveMovementId,
+        ]);
+        DB::table('stores')->where('id', $renamedLiveStock['store_id'])
+            ->update(['code' => 'OWN-OWNER-EVENT-RENAMED-LIVE']);
+
+        // The performance namespace is narrower: a matching mutable code is
+        // insufficient unless this is the deterministic fixture event type.
+        $perfLookalikeStock = $this->stock('OWNER-EVENT-PERF-LOOKALIKE');
+        DB::table('stores')->where('id', $perfLookalikeStock['store_id'])
+            ->update(['code' => 'FOODEX-DEMO-B2C-PERF-LOOKALIKE']);
+        $perfLookalikeMovement = $movement;
+        $perfLookalikeMovement['inventory_id'] = $perfLookalikeStock['inventory_id'];
+        $perfLookalikeMovement['store_id'] = $perfLookalikeStock['store_id'];
+        $perfLookalikeMovement['type'] = 'p110_owner_event_perf_lookalike';
+        $perfLookalikeMovement['reference_type'] = 'non_performance_source';
+        $perfLookalikeMovement['reference_id'] = 10;
+        $perfLookalikeMovementId = (int) DB::table('stock_movements')->insertGetId($perfLookalikeMovement);
+        try {
+            DB::table('stock_movements')->where('id', $perfLookalikeMovementId)->delete();
+            $this->fail('The performance fixture cleanup exception requires both its insertion-time namespace and reference type.');
+        } catch (QueryException $exception) {
+            $this->assertNotEmpty($exception->getMessage());
+        }
+        $this->assertDatabaseHas('enterprise_inventory_owner_movement_events', [
+            'source_stock_movement_id' => $perfLookalikeMovementId,
+            'movement_store_code' => 'FOODEX-DEMO-B2C-PERF-LOOKALIKE',
+            'movement_reference_type' => 'non_performance_source',
+        ]);
 
         // DemoDataManager's verified synthetic store can still be cleared.
         // Non-seed movement events survive both source deletion and inventory cleanup.
@@ -365,23 +425,26 @@ final class V2InventoryOwnerProvenanceTest extends TestCase
         $demoInventoryMovementId = (int) DB::table('stock_movements')->insertGetId($demoInventoryMovement);
         $this->assertSame(1, DB::table('enterprise_inventory_owner_movement_events')
             ->where('source_stock_movement_id', $demoInventoryMovementId)->count());
-        DB::table('stock_movements')->where('id', $demoInventoryMovementId)->delete();
-        $this->assertDatabaseHas('enterprise_inventory_owner_movement_events', [
-            'source_stock_movement_id' => $demoInventoryMovementId,
-            'inventory_id' => $demoStock['inventory_id'],
-        ]);
-
         $demoSeedInventoryMovement = $demoInventoryMovement;
         $demoSeedInventoryMovement['type'] = 'seed_opening_balance';
         $demoSeedInventoryMovement['reference_type'] = 'demo_seed';
         $demoSeedInventoryMovement['reference_id'] = 8;
         $demoSeedInventoryMovementId = (int) DB::table('stock_movements')->insertGetId($demoSeedInventoryMovement);
-        $this->assertSame(0, DB::table('enterprise_inventory_owner_movement_events')
+        $this->assertSame(1, DB::table('enterprise_inventory_owner_movement_events')
             ->where('source_stock_movement_id', $demoSeedInventoryMovementId)->count());
-        DB::table('stock_movements')->where('id', $demoSeedInventoryMovementId)->delete();
-        DB::table('inventories')->where('id', $demoStock['inventory_id'])->delete();
+
+        app(DemoDataManager::class)->clear();
+
+        $this->assertDatabaseMissing('stock_movements', ['id' => $demoInventoryMovementId]);
+        $this->assertDatabaseMissing('stock_movements', ['id' => $demoSeedInventoryMovementId]);
+        $this->assertDatabaseMissing('inventories', ['id' => $demoStock['inventory_id']]);
+        $this->assertDatabaseMissing('stores', ['id' => $demoStock['store_id']]);
         $this->assertDatabaseHas('enterprise_inventory_owner_movement_events', [
             'source_stock_movement_id' => $demoInventoryMovementId,
+            'inventory_id' => $demoStock['inventory_id'],
+        ]);
+        $this->assertDatabaseHas('enterprise_inventory_owner_movement_events', [
+            'source_stock_movement_id' => $demoSeedInventoryMovementId,
             'inventory_id' => $demoStock['inventory_id'],
         ]);
 
@@ -434,6 +497,10 @@ final class V2InventoryOwnerProvenanceTest extends TestCase
 
         $this->seed(CoreReferenceSeeder::class);
         $stock = $this->stock('OWNER-EVENT-MISSING-ROW');
+        // Even when somebody mutates the code directly after seeding, it does
+        // not exempt unrecorded legacy movement rows from coverage.
+        DB::table('stores')->where('id', $stock['store_id'])
+            ->update(['code' => 'FOODEX-DEMO-B2C-MISSING-EVENT']);
         $movement = [
             'inventory_id' => $stock['inventory_id'],
             'store_id' => $stock['store_id'],
@@ -461,9 +528,15 @@ final class V2InventoryOwnerProvenanceTest extends TestCase
         $this->assertDatabaseMissing('enterprise_inventory_owner_movement_events', [
             'source_stock_movement_id' => $movementId,
         ]);
+        try {
+            DB::table('stock_movements')->where('id', $movementId)->delete();
+            $this->fail('A missing owner event cannot be replaced by the mutable demo prefix to authorize source deletion.');
+        } catch (QueryException $exception) {
+            $this->assertNotEmpty($exception->getMessage());
+        }
         $verifier = app(InventoryLegalTitleAttestationVerifier::class);
         $guards = new \ReflectionMethod(InventoryLegalTitleAttestationVerifier::class, 'hasProtectedStockMovementHistory');
-        $this->assertFalse($guards->invoke($verifier), 'An existing non-demo movement with no event must remain uncertified after trigger recovery.');
+        $this->assertFalse($guards->invoke($verifier), 'An existing movement with no event remains uncertified even after its live store is renamed into the demo prefix and the trigger is restored.');
     }
 
     public function test_inventory_deletion_cannot_cascade_erase_legal_owner_claims(): void

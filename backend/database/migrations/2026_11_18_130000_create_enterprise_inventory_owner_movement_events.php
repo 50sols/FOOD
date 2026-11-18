@@ -46,6 +46,7 @@ return new class extends Migration
                 $table->unsignedBigInteger('source_stock_movement_id');
                 $table->unsignedBigInteger('inventory_id');
                 $table->unsignedBigInteger('movement_store_id')->nullable();
+                $table->string('movement_store_code')->nullable();
                 $table->unsignedBigInteger('movement_user_id')->nullable();
                 $table->string('movement_type');
                 $table->decimal('movement_quantity', 14, 3);
@@ -118,7 +119,6 @@ AFTER INSERT ON stock_movements
 FOR EACH ROW
 BEGIN
     DECLARE v_inventory_count BIGINT DEFAULT 0;
-    DECLARE v_demo_inventory_count BIGINT DEFAULT 0;
     DECLARE v_owner_position_count BIGINT DEFAULT 0;
     DECLARE v_owner_position_id BIGINT UNSIGNED DEFAULT NULL;
     DECLARE v_owner_snapshot_state VARCHAR(40) DEFAULT 'NO_OWNER_POSITION';
@@ -127,14 +127,15 @@ BEGIN
     DECLARE v_supplier_id BIGINT UNSIGNED DEFAULT NULL;
     DECLARE v_owner_quantity DECIMAL(14, 3) DEFAULT NULL;
     DECLARE v_owner_reserved_quantity DECIMAL(14, 3) DEFAULT NULL;
-    DECLARE v_owner_source_updated_at TIMESTAMP NULL DEFAULT NULL;
+    DECLARE v_owner_source_updated_at TIMESTAMP DEFAULT NULL;
     DECLARE v_attestation_id BIGINT UNSIGNED DEFAULT NULL;
     DECLARE v_trusted_key_id VARCHAR(64) DEFAULT NULL;
     DECLARE v_attestation_revision_sha256 CHAR(64) DEFAULT NULL;
     DECLARE v_attestation_document_sha256 CHAR(64) DEFAULT NULL;
     DECLARE v_observed_inventory_quantity DECIMAL(14, 3) DEFAULT NULL;
     DECLARE v_observed_inventory_reserved_quantity DECIMAL(14, 3) DEFAULT NULL;
-    DECLARE v_observed_inventory_updated_at TIMESTAMP NULL DEFAULT NULL;
+    DECLARE v_observed_inventory_updated_at TIMESTAMP DEFAULT NULL;
+    DECLARE v_movement_store_code VARCHAR(255) DEFAULT NULL;
 
     SELECT COUNT(*) INTO v_inventory_count
     FROM inventories
@@ -145,20 +146,16 @@ BEGIN
             SET MESSAGE_TEXT = 'Cannot record P110 owner event without canonical inventory';
     END IF;
 
-    SELECT COUNT(*) INTO v_demo_inventory_count
+    SELECT store.code INTO v_movement_store_code
     FROM inventories AS inventory
     INNER JOIN warehouses AS warehouse ON warehouse.id = inventory.warehouse_id
     INNER JOIN stores AS store ON store.id = warehouse.store_id
-    WHERE inventory.id = NEW.inventory_id
-        AND store.code LIKE 'FOODEX-DEMO-B2C-%';
+    WHERE inventory.id = NEW.inventory_id;
 
-    -- Exclude only the repository-seeded movement in a verified disposable
-    -- demo store. A live-store `demo_seed` reference is still an owner event.
-    IF v_demo_inventory_count = 0 OR NEW.reference_type IS NULL OR NEW.reference_type <> 'demo_seed' THEN
-        SELECT COUNT(*), MIN(id)
-        INTO v_owner_position_count, v_owner_position_id
-        FROM enterprise_inventory_owner_positions
-        WHERE inventory_id = NEW.inventory_id;
+    SELECT COUNT(*), MIN(id)
+    INTO v_owner_position_count, v_owner_position_id
+    FROM enterprise_inventory_owner_positions
+    WHERE inventory_id = NEW.inventory_id;
 
         IF v_owner_position_count = 1 THEN
             SELECT owner_key, owner_kind, supplier_id, quantity, reserved_quantity, source_inventory_updated_at
@@ -192,26 +189,25 @@ BEGIN
         FROM inventories
         WHERE id = NEW.inventory_id;
 
-        INSERT INTO enterprise_inventory_owner_movement_events (
-            source_stock_movement_id, inventory_id, movement_store_id, movement_user_id,
-            movement_type, movement_quantity, movement_reference_type, movement_reference_id, movement_created_at,
-            owner_position_count, owner_snapshot_state, owner_position_id, owner_key, owner_kind, supplier_id,
-            owner_quantity, owner_reserved_quantity, owner_source_inventory_updated_at,
-            observed_attestation_id, observed_trusted_key_id,
-            observed_attestation_revision_sha256, observed_attestation_document_sha256,
-            observed_inventory_quantity, observed_inventory_reserved_quantity, observed_inventory_updated_at,
-            recorded_at
-        ) VALUES (
-            NEW.id, NEW.inventory_id, NEW.store_id, NEW.user_id,
-            NEW.type, NEW.quantity, NEW.reference_type, NEW.reference_id, NEW.created_at,
-            v_owner_position_count, v_owner_snapshot_state, v_owner_position_id, v_owner_key, v_owner_kind, v_supplier_id,
-            v_owner_quantity, v_owner_reserved_quantity, v_owner_source_updated_at,
-            v_attestation_id, v_trusted_key_id,
-            v_attestation_revision_sha256, v_attestation_document_sha256,
-            v_observed_inventory_quantity, v_observed_inventory_reserved_quantity, v_observed_inventory_updated_at,
-            CURRENT_TIMESTAMP
-        );
-    END IF;
+    INSERT INTO enterprise_inventory_owner_movement_events (
+        source_stock_movement_id, inventory_id, movement_store_id, movement_store_code, movement_user_id,
+        movement_type, movement_quantity, movement_reference_type, movement_reference_id, movement_created_at,
+        owner_position_count, owner_snapshot_state, owner_position_id, owner_key, owner_kind, supplier_id,
+        owner_quantity, owner_reserved_quantity, owner_source_inventory_updated_at,
+        observed_attestation_id, observed_trusted_key_id,
+        observed_attestation_revision_sha256, observed_attestation_document_sha256,
+        observed_inventory_quantity, observed_inventory_reserved_quantity, observed_inventory_updated_at,
+        recorded_at
+    ) VALUES (
+        NEW.id, NEW.inventory_id, NEW.store_id, v_movement_store_code, NEW.user_id,
+        NEW.type, NEW.quantity, NEW.reference_type, NEW.reference_id, NEW.created_at,
+        v_owner_position_count, v_owner_snapshot_state, v_owner_position_id, v_owner_key, v_owner_kind, v_supplier_id,
+        v_owner_quantity, v_owner_reserved_quantity, v_owner_source_updated_at,
+        v_attestation_id, v_trusted_key_id,
+        v_attestation_revision_sha256, v_attestation_document_sha256,
+        v_observed_inventory_quantity, v_observed_inventory_reserved_quantity, v_observed_inventory_updated_at,
+        CURRENT_TIMESTAMP
+    );
 END
 SQL);
 
@@ -236,14 +232,20 @@ CREATE TRIGGER p110_owner_event_movement_no_delete
 BEFORE DELETE ON stock_movements
 FOR EACH ROW
 BEGIN
-    IF EXISTS (
+    IF NOT EXISTS (
         SELECT 1
         FROM enterprise_inventory_owner_movement_events AS owner_event
-        INNER JOIN inventories AS inventory ON inventory.id = OLD.inventory_id
-        LEFT JOIN warehouses AS warehouse ON warehouse.id = inventory.warehouse_id
-        LEFT JOIN stores AS store ON store.id = warehouse.store_id
         WHERE owner_event.source_stock_movement_id = OLD.id
-            AND (store.code IS NULL OR store.code NOT LIKE 'FOODEX-DEMO-B2C-%')
+            AND (
+                (
+                    owner_event.movement_store_code LIKE 'FOODEX-DEMO-B2C-%'
+                    AND owner_event.movement_store_code NOT LIKE 'FOODEX-DEMO-B2C-PERF-%'
+                )
+                OR (
+                    owner_event.movement_store_code LIKE 'FOODEX-DEMO-B2C-PERF-%'
+                    AND owner_event.movement_reference_type = 'performance_fixture'
+                )
+            )
     ) THEN
         SIGNAL SQLSTATE '45000'
             SET MESSAGE_TEXT = 'Canonical stock movement snapshots are append-only';
@@ -297,18 +299,9 @@ SQL);
 CREATE TRIGGER p110_owner_event_after_movement_insert
 AFTER INSERT ON stock_movements
 FOR EACH ROW
-WHEN (NEW.reference_type IS NULL OR NEW.reference_type <> 'demo_seed')
-OR NOT EXISTS (
-    SELECT 1
-    FROM inventories AS inventory
-    INNER JOIN warehouses AS warehouse ON warehouse.id = inventory.warehouse_id
-    INNER JOIN stores AS store ON store.id = warehouse.store_id
-    WHERE inventory.id = NEW.inventory_id
-        AND store.code LIKE 'FOODEX-DEMO-B2C-%'
-)
 BEGIN
     INSERT INTO enterprise_inventory_owner_movement_events (
-        source_stock_movement_id, inventory_id, movement_store_id, movement_user_id,
+        source_stock_movement_id, inventory_id, movement_store_id, movement_store_code, movement_user_id,
         movement_type, movement_quantity, movement_reference_type, movement_reference_id, movement_created_at,
         owner_position_count, owner_snapshot_state, owner_position_id, owner_key, owner_kind, supplier_id,
         owner_quantity, owner_reserved_quantity, owner_source_inventory_updated_at,
@@ -318,7 +311,7 @@ BEGIN
         recorded_at
     )
     SELECT
-        NEW.id, NEW.inventory_id, NEW.store_id, NEW.user_id,
+        NEW.id, NEW.inventory_id, NEW.store_id, movement_store.code, NEW.user_id,
         NEW.type, NEW.quantity, NEW.reference_type, NEW.reference_id, NEW.created_at,
         COALESCE(owner_snapshot.position_count, 0),
         CASE
@@ -343,6 +336,8 @@ BEGIN
         inventory.quantity, inventory.reserved_quantity, inventory.updated_at,
         CURRENT_TIMESTAMP
     FROM inventories AS inventory
+    LEFT JOIN warehouses AS movement_warehouse ON movement_warehouse.id = inventory.warehouse_id
+    LEFT JOIN stores AS movement_store ON movement_store.id = movement_warehouse.store_id
     LEFT JOIN (
         SELECT inventory_id, COUNT(*) AS position_count, MIN(id) AS position_id
         FROM enterprise_inventory_owner_positions
@@ -379,18 +374,20 @@ SQL);
 CREATE TRIGGER p110_owner_event_movement_no_delete
 BEFORE DELETE ON stock_movements
 FOR EACH ROW
-WHEN EXISTS (
+WHEN NOT EXISTS (
     SELECT 1
     FROM enterprise_inventory_owner_movement_events AS owner_event
     WHERE owner_event.source_stock_movement_id = OLD.id
-)
-AND NOT EXISTS (
-    SELECT 1
-    FROM inventories AS inventory
-    INNER JOIN warehouses AS warehouse ON warehouse.id = inventory.warehouse_id
-    INNER JOIN stores AS store ON store.id = warehouse.store_id
-    WHERE inventory.id = OLD.inventory_id
-        AND store.code LIKE 'FOODEX-DEMO-B2C-%'
+        AND (
+            (
+                owner_event.movement_store_code LIKE 'FOODEX-DEMO-B2C-%'
+                AND owner_event.movement_store_code NOT LIKE 'FOODEX-DEMO-B2C-PERF-%'
+            )
+            OR (
+                owner_event.movement_store_code LIKE 'FOODEX-DEMO-B2C-PERF-%'
+                AND owner_event.movement_reference_type = 'performance_fixture'
+            )
+        )
 )
 BEGIN
     SELECT RAISE(ABORT, 'Canonical stock movement snapshots are append-only');

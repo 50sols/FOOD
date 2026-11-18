@@ -6,6 +6,7 @@ use App\Models\User;
 use App\Services\OperationalTenantScope;
 use Carbon\CarbonImmutable;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Facades\Storage;
 use Throwable;
 
@@ -246,6 +247,7 @@ final class InventoryLegalTitleAttestationVerifier
                     ->where('tbl_name', 'stock_movements')
                     ->where('name', 'p110_owner_event_after_movement_insert')
                     ->where('sql', 'like', '%enterprise_inventory_owner_movement_events%')
+                    ->where('sql', 'like', '%movement_store_code%')
                     ->count();
 
                 $eventSourceGuards = DB::table('sqlite_master')
@@ -269,8 +271,17 @@ final class InventoryLegalTitleAttestationVerifier
                     ->where('sql', 'like', '%RAISE(ABORT%')
                     ->count();
 
+                $eventDeleteGuard = DB::table('sqlite_master')
+                    ->where('type', 'trigger')
+                    ->where('tbl_name', 'stock_movements')
+                    ->where('name', 'p110_owner_event_movement_no_delete')
+                    ->where('sql', 'like', '%movement_store_code%')
+                    ->where('sql', 'like', '%performance_fixture%')
+                    ->count();
+
                 return $movements === 2 && $attestations === 2
-                    && $eventWriter === 1 && $eventSourceGuards === 2 && $ownerEvents === 2
+                    && $eventWriter === 1 && $eventSourceGuards === 2 && $eventDeleteGuard === 1 && $ownerEvents === 2
+                    && Schema::hasColumn('enterprise_inventory_owner_movement_events', 'movement_store_code')
                     && $this->hasCompleteOwnerMovementEventCoverage($inventoryId);
             }
 
@@ -312,6 +323,7 @@ final class InventoryLegalTitleAttestationVerifier
                     ->where('ACTION_TIMING', 'AFTER')
                     ->where('EVENT_MANIPULATION', 'INSERT')
                     ->where('ACTION_STATEMENT', 'like', '%enterprise_inventory_owner_movement_events%')
+                    ->where('ACTION_STATEMENT', 'like', '%movement_store_code%')
                     ->count();
 
                 $eventSourceGuards = DB::table('information_schema.TRIGGERS')
@@ -343,6 +355,16 @@ final class InventoryLegalTitleAttestationVerifier
                     ->where('ACTION_STATEMENT', 'like', '%SIGNAL%')
                     ->count();
 
+                $eventDeleteGuard = DB::table('information_schema.TRIGGERS')
+                    ->where('TRIGGER_SCHEMA', $schema)
+                    ->where('EVENT_OBJECT_TABLE', 'stock_movements')
+                    ->where('TRIGGER_NAME', 'p110_owner_event_movement_no_delete')
+                    ->where('ACTION_TIMING', 'BEFORE')
+                    ->where('EVENT_MANIPULATION', 'DELETE')
+                    ->where('ACTION_STATEMENT', 'like', '%movement_store_code%')
+                    ->where('ACTION_STATEMENT', 'like', '%performance_fixture%')
+                    ->count();
+
                 // Trigger-level atomicity depends on transactional source and
                 // snapshot tables. A non-InnoDB writer would otherwise be
                 // able to commit a movement without its event on rollback.
@@ -359,7 +381,8 @@ final class InventoryLegalTitleAttestationVerifier
                     ->count();
 
                 return $movements === 2 && $attestations === 2
-                    && $eventWriter === 1 && $eventSourceGuards === 2 && $ownerEvents === 2
+                    && $eventWriter === 1 && $eventSourceGuards === 2 && $eventDeleteGuard === 1 && $ownerEvents === 2
+                    && Schema::hasColumn('enterprise_inventory_owner_movement_events', 'movement_store_code')
                     && $transactionalTables === 5
                     && $this->hasCompleteOwnerMovementEventCoverage($inventoryId);
             }
@@ -385,18 +408,9 @@ final class InventoryLegalTitleAttestationVerifier
                 '=',
                 'movement.id',
             )
-            ->leftJoin('inventories as inventory', 'inventory.id', '=', 'movement.inventory_id')
-            ->leftJoin('warehouses as warehouse', 'warehouse.id', '=', 'inventory.warehouse_id')
-            ->leftJoin('stores as store', 'store.id', '=', 'warehouse.store_id')
             ->where(function ($query): void {
                 $query->whereNull('owner_event.source_stock_movement_id')
                     ->orWhereColumn('owner_event.inventory_id', '<>', 'movement.inventory_id');
-            })
-            ->where(function ($query): void {
-                $query->whereNull('movement.reference_type')
-                    ->orWhere('movement.reference_type', '<>', 'demo_seed')
-                    ->orWhereNull('store.code')
-                    ->orWhere('store.code', 'not like', 'FOODEX-DEMO-B2C-%');
             });
 
         if ($inventoryId !== null) {
