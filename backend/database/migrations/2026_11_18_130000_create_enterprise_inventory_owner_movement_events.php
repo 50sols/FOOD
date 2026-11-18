@@ -240,6 +240,7 @@ BEGIN
                 (
                     owner_event.movement_store_code LIKE 'FOODEX-DEMO-B2C-%'
                     AND owner_event.movement_store_code NOT LIKE 'FOODEX-DEMO-B2C-PERF-%'
+                    AND owner_event.movement_reference_type = 'demo_seed'
                 )
                 OR (
                     owner_event.movement_store_code LIKE 'FOODEX-DEMO-B2C-PERF-%'
@@ -382,6 +383,7 @@ WHEN NOT EXISTS (
             (
                 owner_event.movement_store_code LIKE 'FOODEX-DEMO-B2C-%'
                 AND owner_event.movement_store_code NOT LIKE 'FOODEX-DEMO-B2C-PERF-%'
+                AND owner_event.movement_reference_type = 'demo_seed'
             )
             OR (
                 owner_event.movement_store_code LIKE 'FOODEX-DEMO-B2C-PERF-%'

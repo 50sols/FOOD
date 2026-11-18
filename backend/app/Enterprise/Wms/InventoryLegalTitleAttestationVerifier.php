@@ -277,6 +277,7 @@ final class InventoryLegalTitleAttestationVerifier
                     ->where('name', 'p110_owner_event_movement_no_delete')
                     ->where('sql', 'like', '%movement_store_code%')
                     ->where('sql', 'like', '%performance_fixture%')
+                    ->where('sql', 'like', '%demo_seed%')
                     ->count();
 
                 return $movements === 2 && $attestations === 2
@@ -363,6 +364,7 @@ final class InventoryLegalTitleAttestationVerifier
                     ->where('EVENT_MANIPULATION', 'DELETE')
                     ->where('ACTION_STATEMENT', 'like', '%movement_store_code%')
                     ->where('ACTION_STATEMENT', 'like', '%performance_fixture%')
+                    ->where('ACTION_STATEMENT', 'like', '%demo_seed%')
                     ->count();
 
                 // Trigger-level atomicity depends on transactional source and

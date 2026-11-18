@@ -411,16 +411,46 @@ final class V2InventoryOwnerProvenanceTest extends TestCase
             'movement_reference_type' => 'non_performance_source',
         ]);
 
+        // A mutable reserved code alone is not sufficient for cleanup. Only
+        // the actual demo seeder's reference marker can authorize source removal.
+        $demoLookalikeStock = $this->stock('OWNER-EVENT-DEMO-LOOKALIKE');
+        DB::table('stores')->where('id', $demoLookalikeStock['store_id'])
+            ->update(['code' => 'FOODEX-DEMO-B2C-LEGACY-LIVE']);
+        $nonSeedDemoMovement = $movement;
+        $nonSeedDemoMovement['inventory_id'] = $demoLookalikeStock['inventory_id'];
+        $nonSeedDemoMovement['store_id'] = $demoLookalikeStock['store_id'];
+        $nonSeedDemoMovement['type'] = 'p110_owner_event_demo_lookalike';
+        $nonSeedDemoMovement['reference_type'] = 'live_receipt';
+        $nonSeedDemoMovement['reference_id'] = 11;
+        $nonSeedDemoMovementId = (int) DB::table('stock_movements')->insertGetId($nonSeedDemoMovement);
+        try {
+            DB::table('stock_movements')->where('id', $nonSeedDemoMovementId)->delete();
+            $this->fail('A non-seed event at a reserved demo prefix must remain append-only.');
+        } catch (QueryException $exception) {
+            $this->assertNotEmpty($exception->getMessage());
+        }
+        $this->assertDatabaseHas('enterprise_inventory_owner_movement_events', [
+            'source_stock_movement_id' => $nonSeedDemoMovementId,
+            'movement_store_code' => 'FOODEX-DEMO-B2C-LEGACY-LIVE',
+            'movement_reference_type' => 'live_receipt',
+        ]);
+        DB::table('stores')->where('id', $demoLookalikeStock['store_id'])
+            ->update(['code' => 'OWN-OWNER-EVENT-DEMO-LOOKALIKE']);
+
         // DemoDataManager's verified synthetic store can still be cleared.
-        // Non-seed movement events survive both source deletion and inventory cleanup.
+        // Only authentic demo_seed source movements qualify for cleanup.
         $demoStock = $this->stock('OWNER-EVENT-DEMO-CLEANUP');
+        $demoProductId = (int) DB::table('inventories')
+            ->where('id', $demoStock['inventory_id'])->value('product_id');
+        DB::table('products')->where('id', $demoProductId)
+            ->update(['sku' => 'FOODEX-DEMO-P-OWNER-EVENT-CLEANUP']);
         DB::table('stores')->where('id', $demoStock['store_id'])
             ->update(['code' => 'FOODEX-DEMO-B2C-OWNER-EVENT']);
         $demoInventoryMovement = $movement;
         $demoInventoryMovement['inventory_id'] = $demoStock['inventory_id'];
         $demoInventoryMovement['store_id'] = $demoStock['store_id'];
-        $demoInventoryMovement['type'] = 'demo_inventory_preview';
-        $demoInventoryMovement['reference_type'] = 'demo_preview';
+        $demoInventoryMovement['type'] = 'seed_opening_balance';
+        $demoInventoryMovement['reference_type'] = 'demo_seed';
         $demoInventoryMovement['reference_id'] = 5;
         $demoInventoryMovementId = (int) DB::table('stock_movements')->insertGetId($demoInventoryMovement);
         $this->assertSame(1, DB::table('enterprise_inventory_owner_movement_events')
@@ -487,6 +517,51 @@ final class V2InventoryOwnerProvenanceTest extends TestCase
             }
             $this->assertTrue($guards->invoke($verifier));
         }
+    }
+
+    public function test_event_cleanup_guard_without_demo_seed_predicate_fails_closed(): void
+    {
+        if (DB::connection()->getDriverName() !== 'sqlite') {
+            $this->markTestSkipped('Altered trigger policy is safely exercised through isolated SQLite DDL.');
+        }
+
+        $verifier = app(InventoryLegalTitleAttestationVerifier::class);
+        $guards = new \ReflectionMethod(InventoryLegalTitleAttestationVerifier::class, 'hasProtectedStockMovementHistory');
+        $this->assertTrue($guards->invoke($verifier));
+
+        DB::unprepared('DROP TRIGGER IF EXISTS p110_owner_event_movement_no_delete');
+        DB::unprepared(<<<'SQL'
+CREATE TRIGGER p110_owner_event_movement_no_delete
+BEFORE DELETE ON stock_movements
+FOR EACH ROW
+WHEN NOT EXISTS (
+    SELECT 1
+    FROM enterprise_inventory_owner_movement_events AS owner_event
+    WHERE owner_event.source_stock_movement_id = OLD.id
+        AND (
+            (
+                owner_event.movement_store_code LIKE 'FOODEX-DEMO-B2C-%'
+                AND owner_event.movement_store_code NOT LIKE 'FOODEX-DEMO-B2C-PERF-%'
+            )
+            OR (
+                owner_event.movement_store_code LIKE 'FOODEX-DEMO-B2C-PERF-%'
+                AND owner_event.movement_reference_type = 'performance_fixture'
+            )
+        )
+)
+BEGIN
+    SELECT RAISE(ABORT, 'Canonical stock movement snapshots are append-only');
+END
+SQL);
+
+        $migration = require database_path('migrations/2026_11_18_130000_create_enterprise_inventory_owner_movement_events.php');
+        try {
+            $this->assertFalse($guards->invoke($verifier), 'A generic demo-prefix delete rule without demo_seed must not certify title.');
+        } finally {
+            $migration->up();
+        }
+
+        $this->assertTrue($guards->invoke($verifier));
     }
 
     public function test_missing_event_for_real_movement_keeps_title_uncertified_after_trigger_restore(): void
