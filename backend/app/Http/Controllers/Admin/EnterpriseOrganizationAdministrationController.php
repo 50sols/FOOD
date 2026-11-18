@@ -122,8 +122,9 @@ final class EnterpriseOrganizationAdministrationController extends Controller
     {
         $actor = $this->platformAdmin($request);
         $data = $this->validatedRecord($request, Rule::unique('enterprise_organizations', 'code'));
-        if ($request->boolean('_setup_test')) {
-            return back()->with('status', __('enterprise_organization.setup_test_passed'));
+        if ($request->has('_setup_test')) {
+            return back()->withInput($request->only(['name', 'code', 'is_active', '_setup_test']))
+                ->with('status', __('enterprise_organization.setup_test_passed'));
         }
 
         $organization = $this->administration->createOrganization($data, $actor);
@@ -135,8 +136,9 @@ final class EnterpriseOrganizationAdministrationController extends Controller
     {
         $actor = $this->platformAdmin($request);
         $data = $this->validatedRecord($request, Rule::unique('enterprise_organizations', 'code')->ignore($organization->id));
-        if ($request->boolean('_setup_test')) {
-            return back()->with('status', __('enterprise_organization.setup_test_passed'));
+        if ($request->has('_setup_test')) {
+            return back()->withInput($request->only(['name', 'code', 'is_active', '_setup_test']))
+                ->with('status', __('enterprise_organization.setup_test_passed'));
         }
 
         $this->administration->updateOrganization($organization, $data, $actor);
@@ -151,8 +153,9 @@ final class EnterpriseOrganizationAdministrationController extends Controller
             $request,
             Rule::unique('enterprise_companies', 'code')->where('organization_id', $organization->id),
         );
-        if ($request->boolean('_setup_test')) {
-            return back()->with('status', __('enterprise_organization.setup_test_passed'));
+        if ($request->has('_setup_test')) {
+            return back()->withInput($request->only(['name', 'code', 'is_active', '_setup_test']))
+                ->with('status', __('enterprise_organization.setup_test_passed'));
         }
 
         $company = $this->administration->createCompany($organization, $data, $actor);
@@ -167,8 +170,9 @@ final class EnterpriseOrganizationAdministrationController extends Controller
             $request,
             Rule::unique('enterprise_companies', 'code')->where('organization_id', $company->organization_id)->ignore($company->id),
         );
-        if ($request->boolean('_setup_test')) {
-            return back()->with('status', __('enterprise_organization.setup_test_passed'));
+        if ($request->has('_setup_test')) {
+            return back()->withInput($request->only(['name', 'code', 'is_active', '_setup_test']))
+                ->with('status', __('enterprise_organization.setup_test_passed'));
         }
 
         $this->administration->updateCompany($company, $data, $actor);
@@ -183,8 +187,9 @@ final class EnterpriseOrganizationAdministrationController extends Controller
             $request,
             Rule::unique('enterprise_legal_entities', 'code')->where('company_id', $company->id),
         );
-        if ($request->boolean('_setup_test')) {
-            return back()->with('status', __('enterprise_organization.setup_test_passed'));
+        if ($request->has('_setup_test')) {
+            return back()->withInput($request->only(['name', 'code', 'is_active', '_setup_test']))
+                ->with('status', __('enterprise_organization.setup_test_passed'));
         }
 
         $entity = $this->administration->createLegalEntity($company, $data, $actor);
@@ -199,8 +204,9 @@ final class EnterpriseOrganizationAdministrationController extends Controller
             $request,
             Rule::unique('enterprise_legal_entities', 'code')->where('company_id', $legalEntity->company_id)->ignore($legalEntity->id),
         );
-        if ($request->boolean('_setup_test')) {
-            return back()->with('status', __('enterprise_organization.setup_test_passed'));
+        if ($request->has('_setup_test')) {
+            return back()->withInput($request->only(['name', 'code', 'is_active', '_setup_test']))
+                ->with('status', __('enterprise_organization.setup_test_passed'));
         }
 
         $this->administration->updateLegalEntity($legalEntity, $data, $actor);
@@ -215,8 +221,9 @@ final class EnterpriseOrganizationAdministrationController extends Controller
             $request,
             Rule::unique('enterprise_business_units', 'code')->where('legal_entity_id', $legalEntity->id),
         );
-        if ($request->boolean('_setup_test')) {
-            return back()->with('status', __('enterprise_organization.setup_test_passed'));
+        if ($request->has('_setup_test')) {
+            return back()->withInput($request->only(['name', 'code', 'is_active', '_setup_test']))
+                ->with('status', __('enterprise_organization.setup_test_passed'));
         }
 
         $unit = $this->administration->createBusinessUnit($legalEntity, $data, $actor);
@@ -231,8 +238,9 @@ final class EnterpriseOrganizationAdministrationController extends Controller
             $request,
             Rule::unique('enterprise_business_units', 'code')->where('legal_entity_id', $businessUnit->legal_entity_id)->ignore($businessUnit->id),
         );
-        if ($request->boolean('_setup_test')) {
-            return back()->with('status', __('enterprise_organization.setup_test_passed'));
+        if ($request->has('_setup_test')) {
+            return back()->withInput($request->only(['name', 'code', 'is_active', '_setup_test']))
+                ->with('status', __('enterprise_organization.setup_test_passed'));
         }
 
         $this->administration->updateBusinessUnit($businessUnit, $data, $actor);
