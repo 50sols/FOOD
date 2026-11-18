@@ -11,6 +11,9 @@ on:
       - 'scripts/ci-127-upgrade.sh'
       - 'backend/app/Domain/Updater/**'
       - 'backend/app/Http/Controllers/Admin/SystemUpdateController.php'
+      - 'backend/app/Services/BuiltInJobRoleCatalog.php'
+      - 'backend/database/migrations/**'
+      - 'backend/database/seeders/**'
       - 'backend/tests/Deployment/**'
       - 'backend/config/update_signatures.php'
 
