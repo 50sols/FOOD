@@ -70,10 +70,6 @@ final class InventoryOwnershipRuleService
         if ($data['initial_owner_kind'] !== 'SUPPLIER' && $supplierId !== null) {
             throw ValidationException::withMessages(['supplier_id' => ['Supplier scope requires supplier-owned title intent.']]);
         }
-        if (strtotime($data['effective_at']) < now()->startOfDay()->timestamp) {
-            throw ValidationException::withMessages(['effective_at' => ['Retroactive ownership rules are not permitted.']]);
-        }
-
         $evidenceClasses = array_values(array_unique($data['required_evidence_classes']));
         sort($evidenceClasses);
         $snapshot = [
@@ -95,7 +91,7 @@ final class InventoryOwnershipRuleService
 
         return DB::transaction(function () use ($actor, $snapshot, $sha, $requestUuid, $ruleUuid): object {
             $existing = DB::table('enterprise_inventory_ownership_rule_revisions')
-                ->where('request_uuid', $requestUuid)->first();
+                ->where('request_uuid', $requestUuid)->lockForUpdate()->first();
             if ($existing !== null) {
                 if (! $this->revisionMatchesProposal($existing)
                     || $existing->payload_sha256 !== $sha || (int) $existing->proposed_by !== (int) $actor->id) {
@@ -103,6 +99,14 @@ final class InventoryOwnershipRuleService
                 }
 
                 return $existing;
+            }
+
+            // Replay identity is resolved before checking whether a new
+            // proposal's effective date has since become stale. This keeps
+            // idempotent retries stable while still rejecting retroactive
+            // proposals with a new request UUID.
+            if (strtotime($snapshot['effective_at']) < now()->startOfDay()->timestamp) {
+                throw ValidationException::withMessages(['effective_at' => ['Retroactive ownership rules are not permitted.']]);
             }
 
             $latest = DB::table('enterprise_inventory_ownership_rule_revisions')

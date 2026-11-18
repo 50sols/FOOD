@@ -1198,6 +1198,12 @@ final class V2InventoryOwnerProvenanceTest extends TestCase
         $this->assertSame('APPROVED_RULE', $approved->status);
         $this->assertSame($approved->id, $service->review($checker, (int) $draft->id, true)->id);
         $this->travelTo(now()->addDays(3));
+        $replayCount = DB::table('enterprise_inventory_ownership_rule_revisions')->count();
+        $replayAuditCount = DB::table('audit_logs')->count();
+        $expiredReplay = $service->propose($maker, $request);
+        $this->assertSame($approved->id, $expiredReplay->id);
+        $this->assertSame($replayCount, DB::table('enterprise_inventory_ownership_rule_revisions')->count());
+        $this->assertSame($replayAuditCount, DB::table('audit_logs')->count());
         $advisory = $service->advisoryFor($checker, $stock['store_id'], 'B2C', null, (int) $request['warehouse_id']);
         $this->assertSame('UNKNOWN', $advisory['state']);
         $this->assertFalse($advisory['certified']);
@@ -1221,12 +1227,20 @@ final class V2InventoryOwnerProvenanceTest extends TestCase
         } catch (HttpException $exception) {
             $this->assertSame(409, $exception->getStatusCode());
         }
+        $beforeTamperedReplay = (array) DB::table('enterprise_inventory_ownership_rule_revisions')
+            ->where('id', $approved->id)->first();
+        $tamperedReplayCount = DB::table('enterprise_inventory_ownership_rule_revisions')->count();
+        $tamperedReplayAuditCount = DB::table('audit_logs')->count();
         try {
             $service->propose($maker, $request);
             $this->fail('Request UUID replay must not return a modified revision.');
         } catch (ValidationException $exception) {
             $this->assertArrayHasKey('request_uuid', $exception->errors());
         }
+        $this->assertSame($beforeTamperedReplay, (array) DB::table('enterprise_inventory_ownership_rule_revisions')
+            ->where('id', $approved->id)->first());
+        $this->assertSame($tamperedReplayCount, DB::table('enterprise_inventory_ownership_rule_revisions')->count());
+        $this->assertSame($tamperedReplayAuditCount, DB::table('audit_logs')->count());
         DB::table('enterprise_inventory_ownership_rule_revisions')
             ->where('id', $approved->id)->update(['title_transfer_trigger' => 'CONTRACT_EVENT']);
         $restored = $service->advisoryFor(
