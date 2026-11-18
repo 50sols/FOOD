@@ -497,6 +497,79 @@ class CheckoutDomainTest extends TestCase
         $this->assertDatabaseCount('orders', 1);
     }
 
+    public function test_checkout_idempotency_binds_server_cart_and_replays_only_consumed_same_intent(): void
+    {
+        $this->addCartItem(1);
+
+        $payload = [
+            'store_id' => $this->storeId,
+            'address_id' => $this->address->id,
+            'payment_method' => 'cash_on_delivery',
+            // Client-submitted prices and credit never become checkout authority.
+            'unit_price' => 0.001,
+            'grand_total' => 0.001,
+            'discount_total' => 999,
+            'credit_limit' => 999999,
+        ];
+
+        $first = $this->withHeader('Idempotency-Key', 'cart-bound-checkout-0001')
+            ->postJson('/api/v1/checkout', $payload)
+            ->assertCreated()
+            ->assertJsonPath('items.0.unit_price', 1.25);
+
+        $originalId = (int) $first->json('id');
+
+        // The original cart is consumed; an ambiguous network retry must
+        // read back the immutable order without reposting payment/inventory.
+        $this->withHeader('Idempotency-Key', 'cart-bound-checkout-0001')
+            ->postJson('/api/v1/checkout', $payload)
+            ->assertOk()
+            ->assertJsonPath('id', $originalId);
+
+        $this->assertDatabaseCount('orders', 1);
+        $this->assertDatabaseCount('invoices', 1);
+        $this->assertDatabaseCount('payments', 1);
+        $this->assertDatabaseHas('order_items', [
+            'order_id' => $originalId,
+            'product_id' => $this->productId,
+            'quantity' => 1,
+            'unit_price' => 1.25,
+        ]);
+
+        // A new cart with a changed server-observed physical quantity is a
+        // different purchase. Reusing the old key must fail without writes.
+        $this->addCartItem(2);
+
+        $this->withHeader('Idempotency-Key', 'cart-bound-checkout-0001')
+            ->postJson('/api/v1/checkout', $payload)
+            ->assertConflict();
+
+        $this->assertDatabaseCount('orders', 1);
+        $this->assertDatabaseCount('invoices', 1);
+        $this->assertDatabaseCount('payments', 1);
+        $this->assertDatabaseHas('cart_items', [
+            'product_id' => $this->productId,
+            'quantity' => 2,
+        ]);
+        $this->assertSame(
+            1.0,
+            (float) DB::table('inventories')
+                ->where('warehouse_id', $this->warehouseId)
+                ->where('product_id', $this->productId)
+                ->value('reserved_quantity'),
+        );
+
+        // The new intent is allowed only with its own idempotency key.
+        $second = $this->withHeader('Idempotency-Key', 'cart-bound-checkout-0002')
+            ->postJson('/api/v1/checkout', $payload)
+            ->assertCreated();
+
+        $this->assertNotSame($originalId, (int) $second->json('id'));
+        $this->assertDatabaseCount('orders', 2);
+        $this->assertDatabaseCount('payments', 2);
+        $this->assertDatabaseCount('invoices', 2);
+    }
+
     public function test_checkout_derives_order_channel_from_authoritative_cart_not_client_persona(): void
     {
         $this->addCartItem(1);

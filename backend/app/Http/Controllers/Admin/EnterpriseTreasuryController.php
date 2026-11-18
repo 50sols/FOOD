@@ -67,8 +67,11 @@ final class EnterpriseTreasuryController extends Controller
         abort_unless($this->modules->isEnabled('treasury'), 404, 'Treasury module is disabled.');
 
         [$context, $storeOptions, $storeId] = $this->context($request, $actor);
-        $tab = (string) $request->query('tab', 'overview');
-        abort_unless(in_array($tab, self::TABS, true), 404);
+        $tab = $request->query('tab', 'overview');
+        // The tab is navigation only. Reject array/nested query values before
+        // string conversion or sensitive Treasury reads; never expose another
+        // panel or trigger any financial workflow from a malformed GET.
+        abort_unless(is_string($tab) && in_array($tab, self::TABS, true), 404);
         abort_unless($this->allowed($actor, $storeId, 'finance.view'), 403);
 
         $cashboxes = EnterpriseCashbox::query()

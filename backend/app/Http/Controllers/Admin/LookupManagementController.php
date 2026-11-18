@@ -34,8 +34,12 @@ final class LookupManagementController extends Controller
         $actor = $this->actor($request);
         $this->authorizeView($actor);
 
-        $type = in_array((string) $request->query('type'), ['brands', 'units'], true)
-            ? (string) $request->query('type')
+        $requestedType = $request->query('type', 'brands');
+        // The page tab is a GET selector, never a permission decision. A
+        // nested query must fail closed instead of casting an array to text.
+        abort_unless(is_string($requestedType), 404);
+        $type = in_array($requestedType, ['brands', 'units'], true)
+            ? $requestedType
             : 'brands';
         $table = $type;
         $stores = $this->scope->visibleRetailStores($actor);

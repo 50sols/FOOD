@@ -1,4 +1,3 @@
-import 'dart:math' as math;
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
@@ -24,6 +23,7 @@ import '../storefront/storefront_design_system.dart';
 import 'business_account_profile.dart';
 import 'business_dashboard_smart_analytics_launcher.dart';
 import 'dashboard_single_screen.dart';
+import 'wholesale_financial_summary.dart';
 import '../../shared/customer_action_widgets.dart';
 import '../../shared/customer_persistent_footer.dart';
 import '../../shared/customer_ui_v3/customer_ui_v3.dart';
@@ -847,7 +847,8 @@ class _B2bDashboardRemoteStateState extends State<_B2bDashboardRemoteState>
 
   String _money(Object? value, String currency) {
     final amount = double.tryParse(value?.toString() ?? '');
-    if (amount == null) return '—';
+    // Dashboard numbers are display-only. Never render NaN/Infinity as money.
+    if (amount == null || !amount.isFinite) return '—';
     return foodexMoneyText(amount, currency);
   }
 
@@ -1321,10 +1322,15 @@ class _B2bDashboardRemoteStateState extends State<_B2bDashboardRemoteState>
           final currency = finance['currency']?.toString() ??
               data['currency']?.toString() ??
               '';
-          final rawBalance =
-              double.tryParse(finance['balance']?.toString() ?? '');
-          final creditBalance = finance['customer_credit_balance'] ??
-              (rawBalance == null ? null : math.max(rawBalance, 0));
+          // The server owns the customer credit balance. An absent or
+          // contradictory snapshot must not be recalculated on the device.
+          final creditBalance =
+              WholesaleFinancialSummary.dashboardCustomerCredit(
+            finance,
+            // The backend supplies both from the same authoritative ledger.
+            // Missing or contradictory top-level currency is not a credit proof.
+            dashboardCurrency: data['currency']?.toString() ?? '',
+          );
           final purchaseValue =
               data['purchase_total'] ?? operations['purchases_this_month'];
           final generatedAt = freshness['generated_at']?.toString();
@@ -2706,6 +2712,9 @@ class _PurchaseReportRemoteStateState
     extends State<_PurchaseReportRemoteState> {
   late Future<Object?> _future;
   Map<Object?, Object?>? _lastData;
+  int _readRevision = 0;
+  B2bApi? _readApi;
+  String? _readPath;
   _PurchaseReportPeriod _period = _PurchaseReportPeriod.all;
   DateTime? _from;
   DateTime? _to;
@@ -2727,9 +2736,22 @@ class _PurchaseReportRemoteStateState
   }
 
   Future<Object?> _load() async {
-    final value = await _loadB2bRemote(widget.api, _requestEndpoint());
+    // A new Customer session, store, filter or page cannot display an old
+    // report or allow a delayed previous request to overwrite its cache.
+    final revision = ++_readRevision;
+    final api = widget.api;
+    final path = _requestEndpoint();
+    final scopeChanged = !identical(_readApi, api) || _readPath != path;
+    _readApi = api;
+    _readPath = path;
+    if (scopeChanged) _lastData = null;
+
+    final value = await _loadB2bRemote(api, path);
+    if (!mounted || revision != _readRevision) return null;
     if (value is Map) {
       _lastData = Map<Object?, Object?>.from(value);
+    } else {
+      _lastData = null;
     }
     return value;
   }
@@ -2835,9 +2857,14 @@ class _PurchaseReportRemoteStateState
             return _B2bRemoteErrorCard(error: snapshot.error, onRetry: _reload);
           }
 
-          final fresh = snapshot.data is Map
-              ? Map<Object?, Object?>.from(snapshot.data as Map)
-              : null;
+          // FutureBuilder can retain prior-future snapshot data while a
+          // different-scope request is waiting. Only a completed request
+          // may be considered fresh for this scope.
+          Map<Object?, Object?>? fresh;
+          if (snapshot.connectionState == ConnectionState.done &&
+              snapshot.data is Map) {
+            fresh = Map<Object?, Object?>.from(snapshot.data as Map);
+          }
           final data = fresh ?? _lastData;
           if (data == null) {
             return Card(
@@ -3441,7 +3468,8 @@ class _PurchaseTrendBars extends StatelessWidget {
           scrollDirection: Axis.horizontal,
           child: Row(
             children: rows.map((row) {
-              final value = _reportDouble(row['purchase_total']);
+              final amount = _reportFiniteDouble(row['purchase_total']);
+              final value = amount ?? 0;
               final period = row['period']?.toString() ?? '';
               return SizedBox(
                 key: ValueKey('b2b-purchases-bar-$period'),
@@ -3451,7 +3479,7 @@ class _PurchaseTrendBars extends StatelessWidget {
                   child: Column(
                     children: [
                       Text(
-                        _reportCompactNumber(value),
+                        amount == null ? '—' : _reportCompactNumber(value),
                         style: Theme.of(context)
                             .textTheme
                             .labelSmall
@@ -3520,7 +3548,9 @@ class _PurchaseCategoryDistribution extends StatelessWidget {
           final row = entry.value;
           final color = FoodexChartPalette
               .series[entry.key % FoodexChartPalette.series.length];
-          final percentage = _reportDouble(row['percentage']);
+          final percentage = _reportFiniteDouble(row['percentage']);
+          final percentageLabel =
+              percentage == null ? '—' : '${percentage.toStringAsFixed(1)}%';
           return Padding(
             padding: const EdgeInsets.symmetric(vertical: 5),
             child: Row(
@@ -3549,7 +3579,7 @@ class _PurchaseCategoryDistribution extends StatelessWidget {
                   ),
                 ),
                 Text(
-                  '${percentage.toStringAsFixed(1)}% · '
+                  '$percentageLabel · '
                   '${_reportMoney(row['purchase_total'], currency)}',
                   style: Theme.of(context).textTheme.bodySmall?.copyWith(
                         fontSize:
@@ -3578,11 +3608,25 @@ List<Map<Object?, Object?>> _reportRows(Object? value) => value is List
         .toList(growable: false)
     : const <Map<Object?, Object?>>[];
 
-double _reportDouble(Object? value) =>
-    value is num ? value.toDouble() : double.tryParse('$value') ?? 0;
+double? _reportFiniteDouble(Object? value) {
+  if (value is num) {
+    return value.isFinite ? value.toDouble() : null;
+  }
+  if (value is String) {
+    final amount = double.tryParse(value.trim());
+    return amount != null && amount.isFinite ? amount : null;
+  }
+  return null;
+}
 
-String _reportMoney(Object? value, String currency) =>
-    foodexMoneyText(_reportDouble(value), currency);
+// The chart geometry may use zero as a harmless empty bar, but displayed
+// financial totals must never turn an unknown or nonfinite value into money.
+double _reportDouble(Object? value) => _reportFiniteDouble(value) ?? 0;
+
+String _reportMoney(Object? value, String currency) {
+  final amount = _reportFiniteDouble(value);
+  return amount == null ? '—' : foodexMoneyText(amount, currency);
+}
 
 String _reportCompactNumber(double value) {
   if (value.abs() >= 1000000) {
@@ -3758,6 +3802,22 @@ String? _safeSupportReference(String? value) {
     return null;
   }
   return RegExp(r'^[A-Za-z0-9._:/-]+$').hasMatch(reference) ? reference : null;
+}
+
+// A new authorization denial or invalid financial response must not be
+// disguised as the previously cached invoice/statement from an old session.
+// Keep stale readback only for recoverable network/server failures.
+bool _invalidatesCachedB2bFinancialRead(Object? error) {
+  if (error is! B2bApiException) return false;
+  if (error.code == 'invalid_response' || error.code == 'not_authorized') {
+    return true;
+  }
+  final status = error.statusCode;
+  return status != null &&
+      status >= 400 &&
+      status < 500 &&
+      status != 408 &&
+      status != 429;
 }
 
 Future<Object?> _loadB2bRemote(B2bApi api, String endpoint) async {
@@ -4192,7 +4252,6 @@ class _B2bMorePageState extends State<_B2bMorePage> {
   static const deep = CustomerUiColors.deepGreen;
   static const dark = CustomerUiColors.deepGreenStrong;
   static const soft = CustomerUiColors.limeSoft;
-  static const border = CustomerUiColors.border;
 
   late Future<Object?> finance = widget.api.get(widget.financeEndpoint);
 
@@ -4580,10 +4639,6 @@ class _FinanceCard extends StatelessWidget {
   final void Function(String) open;
   final VoidCallback retry;
 
-  double _n(Object? value) => value is num
-      ? value.toDouble()
-      : double.tryParse(value?.toString() ?? '') ?? 0;
-
   String _money(double value, String currency) =>
       foodexMoneyText(value, currency);
 
@@ -4624,24 +4679,79 @@ class _FinanceCard extends StatelessWidget {
             final data = envelope['data'] is Map
                 ? Map<Object?, Object?>.from(envelope['data'] as Map)
                 : envelope;
-            final balance = _n(data['balance']);
-            final currency = data['currency']?.toString() ?? '';
-            final totalPurchases = _n(
+            // The active More-page finance card must validate the same
+            // authoritative signed credit snapshot as the legacy account hub.
+            // Never display a fabricated zero debt or a reversed balance.
+            final summary = WholesaleFinancialSummary.tryParse(data);
+            final totalPurchases = WholesaleFinancialSummary.nonNegativeAmount(
               data['total_purchases'] ?? data['total_debits'],
             );
-            final totalDebt = _n(
+            final totalDebt = WholesaleFinancialSummary.nonNegativeAmount(
               data['outstanding_receivable'] ??
                   data['open_amount'] ??
-                  (balance < 0 ? balance.abs() : 0),
+                  (summary != null && summary.balance < 0
+                      ? -summary.balance
+                      : 0.0),
             );
+            if (summary == null ||
+                totalPurchases == null ||
+                totalDebt == null) {
+              // The narrow/large-text More page must keep its dashboard
+              // shortcut and let the localized failure copy wrap naturally.
+              return Padding(
+                key: const ValueKey('b2b-finance-summary-invalid'),
+                padding: const EdgeInsets.symmetric(vertical: 4),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    Row(
+                      children: [
+                        Expanded(child: Text(context.tr('b2b.remote.error'))),
+                        IconButton(
+                          key: const ValueKey('b2b-more-business-dashboard'),
+                          tooltip: context.tr('b2b.dashboard.title'),
+                          onPressed: () => open(dashboardRoute),
+                          icon: const Icon(Icons.grid_view_rounded),
+                        ),
+                      ],
+                    ),
+                    Align(
+                      alignment: AlignmentDirectional.centerStart,
+                      child: TextButton.icon(
+                        onPressed: retry,
+                        icon: const Icon(Icons.refresh_rounded),
+                        label: Text(context.tr('customer.action.retry')),
+                      ),
+                    ),
+                  ],
+                ),
+              );
+            }
+            final currency = summary.currency;
             final values = <(String, String)>[
               (
-                ar ? 'إجمالي مشترياتك' : 'Total purchases',
+                context.tr('b2b.profile.total_purchases'),
                 _money(totalPurchases, currency),
               ),
               (
-                ar ? 'إجمالي مديونيتك' : 'Total debt',
+                context.tr('b2b.profile.total_debt'),
                 _money(totalDebt, currency),
+              ),
+              (
+                context.tr('b2b.dashboard.balance'),
+                _money(summary.balance, currency),
+              ),
+              (
+                context.tr('b2b.dashboard.credit_limit'),
+                _money(summary.creditLimit, currency),
+              ),
+              (
+                context.tr('b2b.dashboard.available_credit'),
+                _money(summary.availableCreditLine, currency),
+              ),
+              (
+                context.tr('b2b.checkout.purchasing_power'),
+                _money(summary.purchasingPower, currency),
               ),
             ];
             return Column(
@@ -4664,7 +4774,7 @@ class _FinanceCard extends StatelessWidget {
                     const SizedBox(width: 9),
                     Expanded(
                       child: Text(
-                        ar ? 'ملخص الحساب المالي' : 'Financial account summary',
+                        context.tr('b2b.profile.financial_summary'),
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                         style: TextStyle(
@@ -4701,58 +4811,58 @@ class _FinanceCard extends StatelessWidget {
                   ],
                 ),
                 const SizedBox(height: 12),
-                Row(
-                  children: [
-                    for (var i = 0; i < values.length; i++) ...[
-                      if (i > 0)
-                        Container(
-                          width: 1,
-                          height: 48,
-                          color: _B2bMorePageState.border,
-                        ),
-                      Expanded(
-                        child: Padding(
-                          padding: const EdgeInsets.symmetric(horizontal: 3),
-                          child: Column(
-                            children: [
-                              Text(
-                                values[i].$1,
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                                textAlign: TextAlign.center,
-                                style: TextStyle(
-                                  color: Theme.of(context)
-                                      .colorScheme
-                                      .onSurfaceVariant,
-                                  fontSize: 9.5,
-                                  fontWeight: FontWeight.w600,
-                                ),
-                              ),
-                              const SizedBox(height: 5),
-                              FittedBox(
-                                fit: BoxFit.scaleDown,
-                                child: Text(
-                                  values[i].$2,
+                LayoutBuilder(
+                  builder: (context, constraints) {
+                    final itemWidth = (constraints.maxWidth - 12) / 2;
+                    return Wrap(
+                      spacing: 12,
+                      runSpacing: 12,
+                      children: [
+                        for (var i = 0; i < values.length; i++)
+                          SizedBox(
+                            width: itemWidth,
+                            child: Column(
+                              children: [
+                                Text(
+                                  values[i].$1,
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  textAlign: TextAlign.center,
                                   style: TextStyle(
-                                    color:
-                                        Theme.of(context).colorScheme.onSurface,
-                                    fontSize: 12,
-                                    fontWeight: FontWeight.w900,
+                                    color: Theme.of(context)
+                                        .colorScheme
+                                        .onSurfaceVariant,
+                                    fontSize: 9.5,
+                                    fontWeight: FontWeight.w600,
                                   ),
                                 ),
-                              ),
-                            ],
+                                const SizedBox(height: 5),
+                                FittedBox(
+                                  fit: BoxFit.scaleDown,
+                                  child: Text(
+                                    values[i].$2,
+                                    style: TextStyle(
+                                      color: Theme.of(context)
+                                          .colorScheme
+                                          .onSurface,
+                                      fontSize: 12,
+                                      fontWeight: FontWeight.w900,
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
                           ),
-                        ),
-                      ),
-                    ],
-                  ],
+                      ],
+                    );
+                  },
                 ),
                 const SizedBox(height: 10),
                 Material(
                   color: _B2bMorePageState.soft,
                   borderRadius: BorderRadius.circular(15),
                   child: InkWell(
+                    key: const ValueKey('b2b-profile-open-statement'),
                     onTap: () => open(statementRoute),
                     borderRadius: BorderRadius.circular(15),
                     child: Padding(
@@ -4990,14 +5100,34 @@ class _B2bAccountHubState extends State<_B2bAccountHub> {
                 final data = envelope['data'] is Map
                     ? Map<Object?, Object?>.from(envelope['data'] as Map)
                     : envelope;
-                final balance = _number(data['balance']);
-                final currency = data['currency']?.toString() ?? '';
-                final direction = data['balance_direction']?.toString() ?? '';
-                final directionLabel = switch (direction) {
-                  'customer_owes_company' => isArabic ? 'عليك' : 'You owe',
-                  'company_owes_customer' =>
-                    isArabic ? 'لك' : 'Credit due to you',
-                  _ => isArabic ? 'متوازن' : 'Settled',
+                // Financial figures must agree with the authoritative signed
+                // ledger. Never turn a malformed or stale B2B response into
+                // a fictional zero balance or a reversed credit/debt label.
+                final summary = WholesaleFinancialSummary.tryParse(data);
+                if (summary == null) {
+                  return Column(
+                    key: const ValueKey('b2b-finance-summary-invalid'),
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      Text(context.tr('b2b.remote.error')),
+                      const SizedBox(height: 8),
+                      OutlinedButton.icon(
+                        onPressed: _retryFinance,
+                        icon: const Icon(Icons.refresh),
+                        label: Text(context.tr('customer.action.retry')),
+                      ),
+                    ],
+                  );
+                }
+                final balance = summary.balance;
+                final currency = summary.currency;
+                final directionLabel = switch (summary.direction) {
+                  WholesaleBalanceDirection.customerOwesCompany =>
+                    context.tr('b2b.dashboard.balance.you_owe'),
+                  WholesaleBalanceDirection.companyOwesCustomer =>
+                    context.tr('b2b.dashboard.balance.credit'),
+                  WholesaleBalanceDirection.settled =>
+                    context.tr('b2b.dashboard.balance.settled'),
                 };
 
                 return Column(
@@ -5020,19 +5150,19 @@ class _B2bAccountHubState extends State<_B2bAccountHub> {
                     ),
                     _FinanceValue(
                       label: isArabic ? 'حد الائتمان' : 'Credit limit',
-                      value: _money(_number(data['credit_limit']), currency),
+                      value: _money(summary.creditLimit, currency),
                     ),
                     _FinanceValue(
                       label: isArabic ? 'الائتمان المتاح' : 'Available credit',
                       value: _money(
-                        _number(data['available_credit_line']),
+                        summary.availableCreditLine,
                         currency,
                       ),
                     ),
                     _FinanceValue(
                       label: isArabic ? 'القوة الشرائية' : 'Purchasing power',
                       value: _money(
-                        _number(data['purchasing_power']),
+                        summary.purchasingPower,
                         currency,
                       ),
                     ),
@@ -5164,9 +5294,6 @@ class _B2bAccountHubState extends State<_B2bAccountHub> {
     );
   }
 
-  double _number(Object? value) =>
-      value is num ? value.toDouble() : double.tryParse('$value') ?? 0;
-
   String _money(double value, String currency) {
     return foodexMoneyText(value, currency);
   }
@@ -5199,6 +5326,10 @@ class _B2bAccountStatementRemoteStateState
   String? _from;
   String? _to;
   String? _storeId;
+  int _readRevision = 0;
+  int _exportRevision = 0;
+  B2bApi? _readApi;
+  String? _readPath;
 
   @override
   void initState() {
@@ -5240,18 +5371,33 @@ class _B2bAccountStatementRemoteStateState
   }
 
   Future<void> _load() async {
+    // A new session/store/filter must never reuse the previous statement.
+    // Only a refresh of the exact same scoped request may retain last-good
+    // values with an explicit stale indicator if that refresh fails.
+    final revision = ++_readRevision;
+    final api = widget.api;
+    final path = _requestPath;
+    final scopeChanged = !identical(_readApi, api) || _readPath != path;
+    if (scopeChanged) ++_exportRevision;
+    _readApi = api;
+    _readPath = path;
     if (mounted) {
       setState(() {
+        if (scopeChanged) {
+          _data = null;
+          _stale = false;
+          _exporting = false;
+        }
         _loading = _data == null;
         _error = null;
       });
     }
     try {
-      final value = await _loadB2bRemote(widget.api, _requestPath);
+      final value = await _loadB2bRemote(api, path);
       final envelope = value is Map ? Map<Object?, Object?>.from(value) : null;
       final raw = envelope?['data'];
       final statement = raw is Map ? Map<Object?, Object?>.from(raw) : envelope;
-      if (!mounted) return;
+      if (!mounted || revision != _readRevision) return;
       setState(() {
         _data = statement;
         _error = null;
@@ -5259,8 +5405,16 @@ class _B2bAccountStatementRemoteStateState
         _stale = false;
       });
     } catch (error) {
-      if (!mounted) return;
+      if (!mounted || revision != _readRevision) return;
+      final terminal = _invalidatesCachedB2bFinancialRead(error);
+      if (terminal) ++_exportRevision;
       setState(() {
+        if (terminal) {
+          // A revoked session or malformed financial read must remove both
+          // the cached statement and any pending old-session export.
+          _data = null;
+          _exporting = false;
+        }
         _error = error;
         _loading = false;
         _stale = _data != null;
@@ -5269,6 +5423,8 @@ class _B2bAccountStatementRemoteStateState
   }
 
   Future<void> _pickDate({required bool from}) async {
+    final revision = _readRevision;
+    final api = widget.api;
     final current = DateTime.tryParse((from ? _from : _to) ?? '');
     final selected = await showDatePicker(
       context: context,
@@ -5276,7 +5432,12 @@ class _B2bAccountStatementRemoteStateState
       firstDate: DateTime(2020),
       lastDate: DateTime.now().add(const Duration(days: 366)),
     );
-    if (selected == null) return;
+    if (!mounted ||
+        selected == null ||
+        revision != _readRevision ||
+        !identical(widget.api, api)) {
+      return;
+    }
     setState(() {
       if (from) {
         _from = _isoDate(selected);
@@ -5327,6 +5488,9 @@ class _B2bAccountStatementRemoteStateState
 
   Future<void> _export(String format) async {
     if (_exporting) return;
+    final exportRevision = ++_exportRevision;
+    final api = widget.api;
+    final scopePath = _requestPath;
     setState(() => _exporting = true);
     final locale =
         Localizations.localeOf(context).languageCode == 'ar' ? 'ar' : 'en';
@@ -5339,15 +5503,23 @@ class _B2bAccountStatementRemoteStateState
     };
     final subject = context.tr('b2b.statement.title');
     try {
-      if (widget.api is! B2bDownloadApi) {
+      if (api is! B2bDownloadApi) {
         throw UnsupportedError('B2B statement export is unavailable.');
       }
-      final download = await (widget.api as B2bDownloadApi).download(
+      final download = await (api as B2bDownloadApi).download(
         Uri(
           path: '/api/v1/b2b/account-statement/export',
           queryParameters: query,
         ).toString(),
       );
+      // An old account, store or period must never reach the OS share
+      // surface after the scope changes during document download.
+      if (!mounted ||
+          exportRevision != _exportRevision ||
+          !identical(widget.api, api) ||
+          scopePath != _requestPath) {
+        return;
+      }
       await SharePlus.instance.share(
         ShareParams(
           files: [
@@ -5361,12 +5533,20 @@ class _B2bAccountStatementRemoteStateState
         ),
       );
     } catch (_) {
-      if (!mounted) return;
+      if (!mounted ||
+          exportRevision != _exportRevision ||
+          !identical(widget.api, api) ||
+          scopePath != _requestPath) {
+        return;
+      }
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text(context.tr('b2b.statement.export_failed'))),
       );
     } finally {
-      if (mounted) setState(() => _exporting = false);
+      // Late completion must not unlock a newer scope's export button.
+      if (mounted && exportRevision == _exportRevision) {
+        setState(() => _exporting = false);
+      }
     }
   }
 
@@ -5393,8 +5573,23 @@ class _B2bAccountStatementRemoteStateState
         : <Object?, Object?>{};
     final currentPage = _int(pagination['current_page'], fallback: _page);
     final lastPage = _int(pagination['last_page'], fallback: currentPage);
-    final closing = _amount(data['closing_balance']);
-    final current = _amount(data['balance']);
+    // Reject corrupt financial snapshots instead of presenting a false settled state.
+    // The legacy statement response may contain only "balance".
+    final closingRaw = data.containsKey('closing_balance')
+        ? data['closing_balance']
+        : data['balance'];
+    final currentRaw =
+        data.containsKey('balance') ? data['balance'] : closingRaw;
+    final closing = _finiteAmount(closingRaw);
+    final current = _finiteAmount(currentRaw);
+    if (closing == null ||
+        current == null ||
+        !RegExp(r'^[A-Z]{3}$').hasMatch(currency)) {
+      return _B2bRemoteErrorCard(
+        error: StateError('Invalid authoritative Wholesale statement balance'),
+        onRetry: _load,
+      );
+    }
     final direction = closing > 0
         ? context.tr('b2b.statement.owed_to_you')
         : closing < 0
@@ -5979,15 +6174,24 @@ class _B2bAccountStatementRemoteStateState
         _ => CustomerUiColors.inkSoft,
       };
 
-  static double _amount(Object? value) =>
-      double.tryParse(value?.toString() ?? '') ?? 0;
+  static double? _finiteAmount(Object? value) {
+    final amount = value is num
+        ? value.toDouble()
+        : value is String
+            ? double.tryParse(value.trim())
+            : null;
+    return amount != null && amount.isFinite ? amount : null;
+  }
+
+  // Use zero only for neutral sign coloring, never to display money.
+  static double _amount(Object? value) => _finiteAmount(value) ?? 0;
 
   static int _int(Object? value, {required int fallback}) =>
       int.tryParse(value?.toString() ?? '') ?? fallback;
 
   static String _money(Object? value, String currency) {
-    final amount = _amount(value);
-    return foodexMoneyText(amount, currency);
+    final amount = _finiteAmount(value);
+    return amount == null ? '—' : foodexMoneyText(amount, currency);
   }
 
   static String _shortDate(String? value) {
@@ -6045,6 +6249,8 @@ class _InvoiceDetailRemoteStateState extends State<_InvoiceDetailRemoteState>
     with WidgetsBindingObserver {
   late Future<Object?> _future;
   Object? _lastGood;
+  int _readRevision = 0;
+  int _pdfRevision = 0;
   bool _sharingPdf = false;
 
   @override
@@ -6058,6 +6264,10 @@ class _InvoiceDetailRemoteStateState extends State<_InvoiceDetailRemoteState>
   void didUpdateWidget(covariant _InvoiceDetailRemoteState oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.api != widget.api || oldWidget.endpoint != widget.endpoint) {
+      // A PDF obtained for an old login, invoice, or store must never reach
+      // the OS share sheet after the protected route changes.
+      ++_pdfRevision;
+      _sharingPdf = false;
       _lastGood = null;
       _future = _fetch();
     }
@@ -6070,19 +6280,34 @@ class _InvoiceDetailRemoteStateState extends State<_InvoiceDetailRemoteState>
 
   @override
   void dispose() {
+    ++_pdfRevision;
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
   }
 
   Future<Object?> _fetch() async {
-    final value = await _loadB2bRemote(widget.api, widget.endpoint);
-    _lastGood = value;
-    return value;
+    final revision = ++_readRevision;
+    final api = widget.api;
+    final endpoint = widget.endpoint;
+    try {
+      final value = await _loadB2bRemote(api, endpoint);
+      if (mounted && revision == _readRevision) _lastGood = value;
+      return value;
+    } catch (error) {
+      if (mounted &&
+          revision == _readRevision &&
+          _invalidatesCachedB2bFinancialRead(error)) {
+        _lastGood = null;
+      }
+      rethrow;
+    }
   }
 
   void _reload() {
     if (!mounted) return;
-    setState(() => _future = _fetch());
+    setState(() {
+      _future = _fetch();
+    });
   }
 
   Map<Object?, Object?> _map(Object? raw) =>
@@ -6097,9 +6322,14 @@ class _InvoiceDetailRemoteStateState extends State<_InvoiceDetailRemoteState>
   }
 
   String _money(Object? value, String currency) {
-    final amount = double.tryParse(value?.toString() ?? '');
-    if (amount == null) return '—';
-    return foodexMoneyText(amount, currency);
+    final amount = WholesaleFinancialSummary.nonNegativeAmount(value);
+    final normalizedCurrency = currency.trim().toUpperCase();
+    final validCurrency = normalizedCurrency.length == 3 &&
+        normalizedCurrency.codeUnits.every(
+          (unit) => unit >= 65 && unit <= 90,
+        );
+    if (amount == null || !validCurrency) return '—';
+    return foodexMoneyText(amount, normalizedCurrency);
   }
 
   String _displayDate(Object? value) {
@@ -6154,9 +6384,18 @@ class _InvoiceDetailRemoteStateState extends State<_InvoiceDetailRemoteState>
         '$rawPath${rawPath.contains('?') ? '&' : '?'}locale=${ar ? 'ar' : 'en'}';
     final number = data['display_invoice_number']?.toString() ??
         (data['id'] == null ? 'invoice' : 'invoice-${data['id']}');
+    final pdfRevision = ++_pdfRevision;
+    final scopeApi = widget.api;
+    final scopeEndpoint = widget.endpoint;
     setState(() => _sharingPdf = true);
     try {
       final bytes = await (documentApi as B2bDocumentApi).getBytes(path);
+      if (!mounted ||
+          pdfRevision != _pdfRevision ||
+          !identical(widget.api, scopeApi) ||
+          widget.endpoint != scopeEndpoint) {
+        return;
+      }
       final name = '$number.pdf';
       await SharePlus.instance.share(
         ShareParams(
@@ -6172,7 +6411,7 @@ class _InvoiceDetailRemoteStateState extends State<_InvoiceDetailRemoteState>
         ),
       );
     } catch (_) {
-      if (!mounted) return;
+      if (!mounted || pdfRevision != _pdfRevision) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(
@@ -6183,7 +6422,9 @@ class _InvoiceDetailRemoteStateState extends State<_InvoiceDetailRemoteState>
         ),
       );
     } finally {
-      if (mounted) setState(() => _sharingPdf = false);
+      if (mounted && pdfRevision == _pdfRevision) {
+        setState(() => _sharingPdf = false);
+      }
     }
   }
 
@@ -6280,10 +6521,18 @@ class _InvoiceDetailRemoteStateState extends State<_InvoiceDetailRemoteState>
     final ledger = _rows(data['ledger_entries']);
     final status =
         data['display_status']?.toString() ?? data['status']?.toString() ?? '';
+    // A missing or contradictory settlement position is not a zero balance.
+    // Only the server can certify invoice debt versus customer credit.
     final credit =
-        double.tryParse(data['credit_amount']?.toString() ?? '') ?? 0;
-    final outstanding =
-        double.tryParse(data['outstanding_amount']?.toString() ?? '') ?? 0;
+        WholesaleFinancialSummary.nonNegativeAmount(data['credit_amount']);
+    final outstanding = WholesaleFinancialSummary.nonNegativeAmount(
+      data['outstanding_amount'],
+    );
+    final confirmedBalance = credit != null &&
+        outstanding != null &&
+        !(credit > 0.0005 && outstanding > 0.0005);
+    final hasCredit = confirmedBalance && credit > 0.0005;
+    final hasDebt = confirmedBalance && outstanding > 0.0005;
     final rawInvoiceNumber =
         data['display_invoice_number']?.toString().trim().isNotEmpty == true
             ? data['display_invoice_number'].toString().trim()
@@ -6324,74 +6573,101 @@ class _InvoiceDetailRemoteStateState extends State<_InvoiceDetailRemoteState>
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Container(
-                    key: const ValueKey('b2b-invoice-brand'),
-                    width: 72,
-                    height: 54,
-                    padding: const EdgeInsets.all(6),
-                    decoration: BoxDecoration(
-                      color: Theme.of(context).colorScheme.surface,
-                      borderRadius: BorderRadius.circular(16),
-                    ),
-                    child: (seller['logo_url']?.toString().trim().isNotEmpty ??
-                            false)
-                        ? Image.network(
-                            seller['logo_url'].toString(),
-                            fit: BoxFit.contain,
-                            semanticLabel:
-                                seller['name']?.toString() ?? 'FOODEX',
-                            errorBuilder: (_, __, ___) => Image.asset(
-                              'assets/branding/foodex-economical-group.webp',
-                              fit: BoxFit.contain,
-                              semanticLabel: context.tr(
-                                'customer.brand.economic_group',
-                              ),
-                            ),
-                          )
-                        : Image.asset(
-                            'assets/branding/foodex-economical-group.webp',
-                            fit: BoxFit.contain,
-                            semanticLabel: context.tr(
-                              'customer.brand.economic_group',
-                            ),
-                          ),
-                  ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: Text.rich(
-                      key: const ValueKey('b2b-invoice-detail-number'),
-                      TextSpan(
-                        style:
-                            Theme.of(context).textTheme.titleMedium?.copyWith(
-                                  color: Theme.of(context)
-                                      .colorScheme
-                                      .onPrimaryContainer,
-                                  fontWeight: FontWeight.w800,
-                                ),
-                        children: [
-                          TextSpan(
-                            text: ar ? 'رقم الفاتورة ' : 'Invoice ',
-                          ),
-                          TextSpan(
-                            text: invoiceNumber,
-                            style: const TextStyle(
-                              fontWeight: FontWeight.w900,
-                            ),
-                          ),
-                        ],
-                      ),
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                  ),
-                  Chip(
+              LayoutBuilder(
+                builder: (context, constraints) {
+                  // Reserve a second line for the full server status on narrow
+                  // layouts. An English "Partially settled" Chip is 255px wide:
+                  // it cannot share a 326px header with the 72px brand.
+                  final compactHeader = constraints.maxWidth < 440;
+                  final statusChip = Chip(
                     key: const ValueKey('b2b-invoice-status-chip'),
                     label: Text(_statusLabel(status, ar)),
-                  ),
-                ],
+                  );
+                  return Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Container(
+                            key: const ValueKey('b2b-invoice-brand'),
+                            width: 72,
+                            height: 54,
+                            padding: const EdgeInsets.all(6),
+                            decoration: BoxDecoration(
+                              color: Theme.of(context).colorScheme.surface,
+                              borderRadius: BorderRadius.circular(16),
+                            ),
+                            child: (seller['logo_url']
+                                        ?.toString()
+                                        .trim()
+                                        .isNotEmpty ??
+                                    false)
+                                ? Image.network(
+                                    seller['logo_url'].toString(),
+                                    fit: BoxFit.contain,
+                                    semanticLabel:
+                                        seller['name']?.toString() ?? 'FOODEX',
+                                    errorBuilder: (_, __, ___) => Image.asset(
+                                      'assets/branding/foodex-economical-group.webp',
+                                      fit: BoxFit.contain,
+                                      semanticLabel: context.tr(
+                                        'customer.brand.economic_group',
+                                      ),
+                                    ),
+                                  )
+                                : Image.asset(
+                                    'assets/branding/foodex-economical-group.webp',
+                                    fit: BoxFit.contain,
+                                    semanticLabel: context.tr(
+                                      'customer.brand.economic_group',
+                                    ),
+                                  ),
+                          ),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: Text.rich(
+                              key: const ValueKey('b2b-invoice-detail-number'),
+                              TextSpan(
+                                style: Theme.of(context)
+                                    .textTheme
+                                    .titleMedium
+                                    ?.copyWith(
+                                      color: Theme.of(context)
+                                          .colorScheme
+                                          .onPrimaryContainer,
+                                      fontWeight: FontWeight.w800,
+                                    ),
+                                children: [
+                                  TextSpan(
+                                    text: ar ? 'رقم الفاتورة ' : 'Invoice ',
+                                  ),
+                                  TextSpan(
+                                    text: invoiceNumber,
+                                    style: const TextStyle(
+                                      fontWeight: FontWeight.w900,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
+                          if (!compactHeader) statusChip,
+                        ],
+                      ),
+                      if (compactHeader)
+                        Align(
+                          alignment: AlignmentDirectional.centerEnd,
+                          child: Padding(
+                            padding: const EdgeInsets.only(top: 6),
+                            child: statusChip,
+                          ),
+                        ),
+                    ],
+                  );
+                },
               ),
               const SizedBox(height: 14),
               Wrap(
@@ -6467,16 +6743,22 @@ class _InvoiceDetailRemoteStateState extends State<_InvoiceDetailRemoteState>
             ),
             const SizedBox(width: 8),
             _settlementMetric(
-              label: credit > 0.0005
-                  ? (ar ? 'رصيد دائن' : 'Credit')
-                  : (ar ? 'المديونية' : 'Debt'),
-              value: credit > 0.0005
-                  ? _money(data['credit_amount'], currency)
-                  : _money(data['outstanding_amount'], currency),
-              icon: credit > 0.0005
-                  ? Icons.savings_outlined
-                  : Icons.account_balance_wallet_outlined,
-              emphasized: credit > 0.0005 || outstanding > 0.0005,
+              label: !confirmedBalance
+                  ? context.tr('b2b.invoice.balance_unverified')
+                  : hasCredit
+                      ? (ar ? 'رصيد دائن' : 'Credit')
+                      : (ar ? 'المديونية' : 'Debt'),
+              value: !confirmedBalance
+                  ? '—'
+                  : hasCredit
+                      ? _money(data['credit_amount'], currency)
+                      : _money(data['outstanding_amount'], currency),
+              icon: !confirmedBalance
+                  ? Icons.error_outline_rounded
+                  : hasCredit
+                      ? Icons.savings_outlined
+                      : Icons.account_balance_wallet_outlined,
+              emphasized: hasCredit || hasDebt,
             ),
           ],
         ),
@@ -6508,13 +6790,13 @@ class _InvoiceDetailRemoteStateState extends State<_InvoiceDetailRemoteState>
                   ar ? 'المدفوع' : 'Paid',
                   _money(data['paid_amount'], currency),
                 ),
-                if (outstanding > 0.0005)
+                if (hasDebt)
                   _summaryRow(
                     ar ? 'المديونية' : 'Debt',
                     _money(data['outstanding_amount'], currency),
                     strong: true,
                   ),
-                if (credit > 0.0005)
+                if (hasCredit)
                   _summaryRow(
                     ar ? 'رصيد لك' : 'Credit to you',
                     _money(data['credit_amount'], currency),
@@ -6542,9 +6824,13 @@ class _InvoiceDetailRemoteStateState extends State<_InvoiceDetailRemoteState>
           )
         else
           ...items.map((item) {
-            final itemCurrency = item['currency']?.toString().isNotEmpty == true
-                ? item['currency'].toString()
-                : currency;
+            final rawItemCurrency = item['currency'];
+            final itemCurrency =
+                rawItemCurrency is String && rawItemCurrency.trim().isNotEmpty
+                    ? rawItemCurrency.trim().toUpperCase()
+                    : currency.trim().toUpperCase();
+            final itemCurrencyMatches =
+                itemCurrency == currency.trim().toUpperCase();
             final imageUrl = item['image_url']?.toString().trim() ?? '';
             return Card(
               key: ValueKey('b2b-invoice-item-${item['id']}'),
@@ -6584,7 +6870,11 @@ class _InvoiceDetailRemoteStateState extends State<_InvoiceDetailRemoteState>
                     ),
                     const SizedBox(width: 8),
                     Text(
-                      _money(item['line_total'], itemCurrency),
+                      _money(
+                        item['line_total'],
+                        itemCurrencyMatches ? itemCurrency : '',
+                      ),
+                      key: ValueKey('b2b-invoice-item-amount-${item['id']}'),
                       style: const TextStyle(fontWeight: FontWeight.w900),
                     ),
                   ],
@@ -6609,22 +6899,46 @@ class _InvoiceDetailRemoteStateState extends State<_InvoiceDetailRemoteState>
                 )
               : Column(
                   children: payments.map((payment) {
-                    final paymentCurrency =
-                        payment['currency']?.toString() ?? currency;
+                    final rawPaymentCurrency = payment['currency'];
+                    final paymentCurrency = rawPaymentCurrency is String &&
+                            rawPaymentCurrency.trim().isNotEmpty
+                        ? rawPaymentCurrency.trim().toUpperCase()
+                        : currency.trim().toUpperCase();
+                    final paymentCurrencyMatches =
+                        paymentCurrency == currency.trim().toUpperCase();
                     final method = payment['method']?.toString() ?? '';
                     final reference = payment['reference']?.toString() ?? '';
+                    // Payment state comes from the scoped invoice API only.
+                    // "captured" must never be relabeled as "paid" or
+                    // interpreted locally as Treasury/GL settlement.
+                    final paymentStatusLabel = switch (payment['status']) {
+                      'paid' => ar ? 'مدفوع' : 'Paid',
+                      'captured' => ar ? 'تم التحصيل' : 'Captured',
+                      _ => ar ? 'غير مؤكد' : 'Unverified',
+                    };
                     return ListTile(
+                      key: ValueKey('b2b-invoice-payment-${payment['id']}'),
                       leading: const Icon(Icons.payments_outlined),
                       title: Text(
-                        _money(payment['amount'], paymentCurrency),
+                        _money(
+                          payment['amount'],
+                          paymentCurrencyMatches ? paymentCurrency : '',
+                        ),
+                        key: ValueKey(
+                          'b2b-invoice-payment-amount-${payment['id']}',
+                        ),
                         style: const TextStyle(fontWeight: FontWeight.w800),
                       ),
                       subtitle: Text(
                         [
+                          paymentStatusLabel,
                           if (method.isNotEmpty) method,
                           if (reference.isNotEmpty) reference,
                           _displayDate(payment['paid_at']),
                         ].join(' · '),
+                        key: ValueKey(
+                          'b2b-invoice-payment-status-${payment['id']}',
+                        ),
                       ),
                     );
                   }).toList(growable: false),
@@ -6643,15 +6957,30 @@ class _InvoiceDetailRemoteStateState extends State<_InvoiceDetailRemoteState>
             key: const ValueKey('b2b-invoice-ledger'),
             child: Column(
               children: ledger.map((entry) {
-                final entryCurrency = entry['currency']?.toString() ?? currency;
+                final rawEntryCurrency = entry['currency'];
+                final entryCurrency = rawEntryCurrency is String &&
+                        rawEntryCurrency.trim().isNotEmpty
+                    ? rawEntryCurrency.trim().toUpperCase()
+                    : currency.trim().toUpperCase();
+                final entryCurrencyMatches =
+                    entryCurrency == currency.trim().toUpperCase();
                 final debit =
-                    double.tryParse(entry['debit']?.toString() ?? '') ?? 0;
+                    WholesaleFinancialSummary.nonNegativeAmount(entry['debit']);
                 final creditAmount =
-                    double.tryParse(entry['credit']?.toString() ?? '') ?? 0;
-                final amountText = debit > 0.0005
-                    ? (ar ? 'مدين ' : 'Debit ') + _money(debit, entryCurrency)
-                    : (ar ? 'دائن ' : 'Credit ') +
-                        _money(creditAmount, entryCurrency);
+                    WholesaleFinancialSummary.nonNegativeAmount(
+                        entry['credit']);
+                // The server ledger contract requires exactly one finite,
+                // non-negative side to be positive. Never invent a zero entry.
+                final amountText = entryCurrencyMatches &&
+                        debit != null &&
+                        creditAmount != null &&
+                        ((debit > 0.0005) != (creditAmount > 0.0005))
+                    ? debit > 0.0005
+                        ? (ar ? 'مدين ' : 'Debit ') +
+                            _money(debit, entryCurrency)
+                        : (ar ? 'دائن ' : 'Credit ') +
+                            _money(creditAmount, entryCurrency)
+                    : '—';
                 return ListTile(
                   title: Text(
                     _ledgerTypeLabel(entry['type']?.toString() ?? '', ar),
@@ -6665,7 +6994,10 @@ class _InvoiceDetailRemoteStateState extends State<_InvoiceDetailRemoteState>
                       _displayDate(entry['occurred_at']),
                     ].join(' · '),
                   ),
-                  trailing: Text(amountText),
+                  trailing: Text(
+                    amountText,
+                    key: ValueKey('b2b-invoice-ledger-amount-${entry['id']}'),
+                  ),
                 );
               }).toList(growable: false),
             ),
@@ -6688,7 +7020,8 @@ class _InvoiceDetailRemoteStateState extends State<_InvoiceDetailRemoteState>
           }
 
           if (snapshot.hasError) {
-            if (_lastGood != null) {
+            if (_lastGood != null &&
+                !_invalidatesCachedB2bFinancialRead(snapshot.error)) {
               return _body(_lastGood, stale: true);
             }
             return _B2bRemoteErrorCard(error: snapshot.error, onRetry: _reload);
@@ -6717,6 +7050,8 @@ class _InvoicesRemoteStateState extends State<_InvoicesRemoteState>
   late TextEditingController _searchController;
   late Future<Object?> _future;
   Object? _lastGood;
+  int _readRevision = 0;
+  int _pdfRevision = 0;
   DateTime? _from;
   DateTime? _to;
   String _status = '';
@@ -6736,6 +7071,9 @@ class _InvoicesRemoteStateState extends State<_InvoicesRemoteState>
   void didUpdateWidget(covariant _InvoicesRemoteState oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.api != widget.api || oldWidget.endpoint != widget.endpoint) {
+      ++_pdfRevision;
+      _sharingPdf = false;
+      _lastGood = null;
       _searchController.dispose();
       _syncFromEndpoint();
       _future = _fetch();
@@ -6749,6 +7087,7 @@ class _InvoicesRemoteStateState extends State<_InvoicesRemoteState>
 
   @override
   void dispose() {
+    ++_pdfRevision;
     WidgetsBinding.instance.removeObserver(this);
     _searchController.dispose();
     super.dispose();
@@ -6788,9 +7127,21 @@ class _InvoicesRemoteStateState extends State<_InvoicesRemoteState>
   }
 
   Future<Object?> _fetch() async {
-    final value = await widget.api.get(_effectiveEndpoint());
-    _lastGood = value;
-    return value;
+    final revision = ++_readRevision;
+    final api = widget.api;
+    final endpoint = _effectiveEndpoint();
+    try {
+      final value = await api.get(endpoint);
+      if (mounted && revision == _readRevision) _lastGood = value;
+      return value;
+    } catch (error) {
+      if (mounted &&
+          revision == _readRevision &&
+          _invalidatesCachedB2bFinancialRead(error)) {
+        _lastGood = null;
+      }
+      rethrow;
+    }
   }
 
   void _reload({int? page}) {
@@ -6802,6 +7153,8 @@ class _InvoicesRemoteStateState extends State<_InvoicesRemoteState>
   }
 
   Future<void> _pickDate({required bool from}) async {
+    final scopeApi = widget.api;
+    final scopeEndpoint = widget.endpoint;
     final initial = from ? (_from ?? DateTime.now()) : (_to ?? DateTime.now());
     final picked = await showDatePicker(
       context: context,
@@ -6809,7 +7162,12 @@ class _InvoicesRemoteStateState extends State<_InvoicesRemoteState>
       firstDate: DateTime(2020),
       lastDate: DateTime.now().add(const Duration(days: 366)),
     );
-    if (picked == null) return;
+    if (picked == null ||
+        !mounted ||
+        !identical(widget.api, scopeApi) ||
+        widget.endpoint != scopeEndpoint) {
+      return;
+    }
     setState(() {
       if (from) {
         _from = picked;
@@ -6854,9 +7212,18 @@ class _InvoicesRemoteStateState extends State<_InvoicesRemoteState>
         '$rawPath${rawPath.contains('?') ? '&' : '?'}locale=${ar ? 'ar' : 'en'}';
     final number = row['display_invoice_number']?.toString() ??
         (row['id'] == null ? 'invoice' : 'invoice-${row['id']}');
+    final pdfRevision = ++_pdfRevision;
+    final scopeApi = widget.api;
+    final scopeEndpoint = widget.endpoint;
     setState(() => _sharingPdf = true);
     try {
       final bytes = await (documentApi as B2bDocumentApi).getBytes(path);
+      if (!mounted ||
+          pdfRevision != _pdfRevision ||
+          !identical(widget.api, scopeApi) ||
+          widget.endpoint != scopeEndpoint) {
+        return;
+      }
       final name = '$number.pdf';
       await SharePlus.instance.share(
         ShareParams(
@@ -6872,7 +7239,7 @@ class _InvoicesRemoteStateState extends State<_InvoicesRemoteState>
         ),
       );
     } catch (_) {
-      if (!mounted) return;
+      if (!mounted || pdfRevision != _pdfRevision) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(
@@ -6883,7 +7250,9 @@ class _InvoicesRemoteStateState extends State<_InvoicesRemoteState>
         ),
       );
     } finally {
-      if (mounted) setState(() => _sharingPdf = false);
+      if (mounted && pdfRevision == _pdfRevision) {
+        setState(() => _sharingPdf = false);
+      }
     }
   }
 
@@ -6912,7 +7281,8 @@ class _InvoicesRemoteStateState extends State<_InvoicesRemoteState>
   }
 
   String _money(Object? value, String currency) {
-    final amount = double.tryParse(value?.toString() ?? '') ?? 0;
+    final amount = double.tryParse(value?.toString() ?? '');
+    if (amount == null || !amount.isFinite) return '—';
     return foodexMoneyText(amount, currency).trim();
   }
 
@@ -7479,7 +7849,10 @@ class _InvoicesRemoteStateState extends State<_InvoicesRemoteState>
             );
           }
           if (snapshot.hasError) {
-            if (_lastGood != null) return _body(_lastGood, stale: true);
+            if (_lastGood != null &&
+                !_invalidatesCachedB2bFinancialRead(snapshot.error)) {
+              return _body(_lastGood, stale: true);
+            }
             return _B2bRemoteErrorCard(error: snapshot.error, onRetry: _reload);
           }
           final value = snapshot.data ?? _lastGood;
