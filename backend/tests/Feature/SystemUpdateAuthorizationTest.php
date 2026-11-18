@@ -361,12 +361,12 @@ class SystemUpdateAuthorizationTest extends TestCase
         try {
             $failingUpload = new class($source, 'update.zip', 'application/zip', null, true) extends UploadedFile
             {
-                public function move(string $directory, ?string $name = null): \\Symfony\\Component\\HttpFoundation\\File\\File
+                public function move(string $directory, ?string $name = null): \Symfony\Component\HttpFoundation\File\File
                 {
                     // Simulate a cPanel filesystem failure AFTER a partial
                     // private ZIP has been written, not merely a blocked preflight.
                     file_put_contents($directory.'/'.$name, 'incomplete upload');
-                    throw new \\Symfony\\Component\\HttpFoundation\\File\\Exception\\FileException(
+                    throw new \Symfony\Component\HttpFoundation\File\Exception\FileException(
                         'Unable to write /home/private-operator/secret-path',
                     );
                 }
