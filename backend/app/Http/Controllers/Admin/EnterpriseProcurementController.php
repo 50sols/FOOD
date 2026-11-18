@@ -46,6 +46,54 @@ final class EnterpriseProcurementController extends Controller
         'reports' => 'procurement.supplier_statements.view',
     ];
 
+    /**
+     * Mirror each route's existing service-level permission BEFORE resolving
+     * enterprise hierarchy. This is an entry-point denial guard, not a grant:
+     * each manager retains its independent record, scope and SoD authorization.
+     *
+     * @var array<string, list<string>>
+     */
+    private const ACTION_PERMISSIONS = [
+        'admin.erp.procurement.suppliers.store' => ['procurement.suppliers.manage'],
+        'admin.erp.procurement.suppliers.governance' => ['procurement.suppliers.manage'],
+        'admin.erp.procurement.suppliers.archive' => ['procurement.suppliers.manage'],
+        'admin.erp.procurement.rfqs.store' => ['procurement.purchase_requests.manage'],
+        'admin.erp.procurement.rfqs.publish' => ['procurement.purchase_requests.manage'],
+        'admin.erp.procurement.rfqs.cancel' => ['procurement.purchase_requests.manage'],
+        'admin.erp.procurement.rfqs.award' => [
+            'procurement.purchase_requests.approve',
+            'procurement.purchase_orders.manage',
+        ],
+        'admin.erp.procurement.rfqs.documents.download' => ['procurement.purchase_requests.view'],
+        'admin.erp.procurement.contracts.store' => ['procurement.purchase_orders.manage'],
+        'admin.erp.procurement.contracts.activate' => ['procurement.purchase_orders.manage'],
+        'admin.erp.procurement.contracts.terminate' => ['procurement.purchase_orders.manage'],
+        'admin.erp.procurement.contracts.documents.store' => ['procurement.purchase_orders.manage'],
+        'admin.erp.procurement.contracts.documents.download' => ['procurement.purchase_orders.view'],
+        'admin.erp.procurement.orders.contract' => ['procurement.purchase_orders.manage'],
+        'admin.erp.procurement.matches.review' => ['procurement.purchase_invoices.handoff'],
+        'admin.erp.procurement.reports.export' => [
+            'procurement.supplier_statements.view',
+            'reports.export',
+        ],
+        'admin.erp.procurement.requests.store' => ['procurement.purchase_requests.manage'],
+        'admin.erp.procurement.requests.submit' => ['procurement.purchase_requests.manage'],
+        'admin.erp.procurement.requests.decision' => ['procurement.purchase_requests.approve'],
+        'admin.erp.procurement.requests.cancel' => ['procurement.purchase_requests.manage'],
+        'admin.erp.procurement.orders.create' => ['procurement.purchase_orders.manage'],
+        'admin.erp.procurement.orders.issue' => ['procurement.purchase_orders.issue'],
+        'admin.erp.procurement.orders.cancel' => ['procurement.purchase_orders.manage'],
+        'admin.erp.procurement.receipts.store' => ['procurement.goods_receipts.manage'],
+        'admin.erp.procurement.receipts.post' => ['procurement.goods_receipts.post'],
+        'admin.erp.procurement.receipts.cancel' => ['procurement.goods_receipts.manage'],
+        'admin.erp.procurement.invoices.store' => ['procurement.purchase_invoices.manage'],
+        'admin.erp.procurement.invoices.handoff' => ['procurement.purchase_invoices.handoff'],
+        'admin.erp.procurement.invoices.cancel' => ['procurement.purchase_invoices.manage'],
+        'admin.erp.procurement.returns.store' => ['procurement.purchase_returns.manage'],
+        'admin.erp.procurement.returns.post' => ['procurement.purchase_returns.post'],
+        'admin.erp.procurement.returns.cancel' => ['procurement.purchase_returns.manage'],
+    ];
+
     public function __construct(
         private readonly SupplierDirectory $suppliers,
         private readonly PurchaseRequestManager $requests,
@@ -66,9 +114,20 @@ final class EnterpriseProcurementController extends Controller
         $actor = $this->actor($request);
         abort_unless($this->modules->isEnabled('procurement'), 404, 'Procurement module is disabled.');
 
-        [$context, $storeOptions, $storeId] = $this->context($request, $actor);
-        $tab = (string) $request->query('tab', $this->firstVisibleTab($actor, $storeId));
-        abort_unless(array_key_exists($tab, self::TABS), 404);
+        // A valid but unauthorized explicit tab must fail with 403 before a
+        // missing enterprise hierarchy could incorrectly surface HTTP 409.
+        $requestedTab = $request->query('tab');
+        abort_unless(
+            $requestedTab === null || (is_string($requestedTab) && array_key_exists($requestedTab, self::TABS)),
+            404,
+        );
+        $requiredPermission = is_string($requestedTab) ? self::TABS[$requestedTab] : null;
+        [$context, $storeOptions, $storeId] = $this->context(
+            $request,
+            $actor,
+            $requiredPermission === null ? [] : [$requiredPermission],
+        );
+        $tab = is_string($requestedTab) ? $requestedTab : $this->firstVisibleTab($actor, $storeId);
         $this->authorizeTab($actor, $storeId, $tab);
 
         $data = [
@@ -762,13 +821,22 @@ final class EnterpriseProcurementController extends Controller
     {
         $actor = $this->actor($request);
         abort_unless($this->modules->isEnabled('procurement'), 404, 'Procurement module is disabled.');
-        [$context, , $storeId] = $this->context($request, $actor);
+
+        $routeName = $request->route()?->getName();
+        $requiredPermissions = is_string($routeName) ? (self::ACTION_PERMISSIONS[$routeName] ?? null) : null;
+        // Unknown endpoints must not inherit the broad Procurement role as
+        // authority for mutations, exports or private document downloads.
+        abort_unless(is_array($requiredPermissions) && $requiredPermissions !== [], 403);
+        [$context, , $storeId] = $this->context($request, $actor, $requiredPermissions);
 
         return [$actor, $context, $storeId];
     }
 
-    /** @return array{ResolvedTenantContext,list<array{id:int,name:string,code:string,channel:string}>,int} */
-    private function context(Request $request, User $actor): array
+    /**
+     * @param list<string> $requiredPermissions
+     * @return array{ResolvedTenantContext,list<array{id:int,name:string,code:string,channel:string}>,int}
+     */
+    private function context(Request $request, User $actor, array $requiredPermissions = []): array
     {
         // A tenant assignment is not an ERP authorization grant. Preserve the
         // existing B2B and B2C Procurement contexts, then derive both the
@@ -788,7 +856,7 @@ final class EnterpriseProcurementController extends Controller
                 $actor,
                 (int) $option['id'],
                 $hasEntitlementPolicy,
-            ),
+            ) && $this->hasRequiredPermissions($actor, (int) $option['id'], $requiredPermissions),
         ));
         abort_if($options === [], 403);
 
@@ -813,6 +881,20 @@ final class EnterpriseProcurementController extends Controller
         abort_if($context->enterpriseScope === null, 409, 'Enterprise data scope is required.');
 
         return [$context, $options, $storeId];
+    }
+
+    /**
+     * @param list<string> $requiredPermissions
+     */
+    private function hasRequiredPermissions(User $actor, int $storeId, array $requiredPermissions): bool
+    {
+        foreach ($requiredPermissions as $permission) {
+            if (! $this->allowed($actor, $storeId, $permission)) {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     private function canUseProcurementStore(User $actor, int $storeId, bool $hasEntitlementPolicy): bool
