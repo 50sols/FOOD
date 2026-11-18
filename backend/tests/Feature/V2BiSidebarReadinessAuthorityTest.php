@@ -234,6 +234,7 @@ final class V2BiSidebarReadinessAuthorityTest extends TestCase
     {
         $actor = User::factory()->create(['is_active' => true, 'locale' => 'en']);
         $actor->roles()->attach(Role::query()->where('code', 'EXECUTIVE_VIEWER')->firstOrFail());
+
         return $actor->fresh();
     }
 
