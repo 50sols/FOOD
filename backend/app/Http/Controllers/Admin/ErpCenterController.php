@@ -611,7 +611,7 @@ final class ErpCenterController extends Controller
             'key' => 'bank_account',
             'complete' => $bankAccountTableReady && $storeIds !== [] && $storesWithBankAccount === count($storeIds),
             'detail' => __('admin.erp_center.treasury_readiness.steps.bank_account.detail', ['configured' => $storesWithBankAccount, 'stores' => count($storeIds)]),
-            'url' => $masterUrl ? $masterUrl.'?tab=bank_accounts' : null,
+            'url' => $masterUrl,
         ];
 
         $receiptTableReady = isset($availableTables['enterprise_treasury_receipts']);
