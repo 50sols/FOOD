@@ -479,11 +479,12 @@ final class ErpCenterController extends Controller
 
         $storeIds = $this->operationalTenants->allowedStoreIds($actor, 'finance.view', self::WHOLESALE_CHANNEL);
         $manageStoreIds = $this->operationalTenants->allowedStoreIds($actor, 'finance.manage', self::WHOLESALE_CHANNEL);
-        // Treasury Master has its own retail/store finance.view HTTP scope.
-        // Keep its setup link only for actors that can actually enter it.
-        $masterUrl = $this->operationalTenants->allowedStoreIds($actor, 'finance.view') !== []
-            && Route::has('admin.treasury.master.index')
-                ? route('admin.treasury.master.index') : null;
+        // Treasury Master is a channel-agnostic Retail/Wholesale workspace,
+        // while the ERP readiness report is exclusively Wholesale. Linking
+        // there can expose Retail cashboxes/bank accounts in a B2B journey.
+        // Do not advertise a cross-channel setup link until that destination
+        // accepts and enforces a B2B tenant context server-side.
+        $masterUrl = null;
         $treasuryUrl = is_string($card['url']) ? $card['url'] : null;
         $canManagePlatform = Gate::forUser($actor)->allows('platform.manage');
         $organizationUrl = $canManagePlatform && Route::has('admin.enterprise-organizations.index')
@@ -713,14 +714,12 @@ final class ErpCenterController extends Controller
         string $route,
         array $params = [],
     ): ?array {
-        // The platform owner may inspect a module's setup/denial state before
-        // any Wholesale store exists. That is a diagnostic projection, not a
-        // tenant or operational grant. Other actors need an authorized B2B
-        // store or an explicit module-level platform entitlement and role.
+        // A platform owner may inspect setup diagnostics without a store,
+        // never perform business operations on that basis. Other actors must
+        // hold a real authorized Wholesale scope, regardless of broad
+        // platform entitlements or unrelated Retail grants.
         $hasWholesaleScope = $this->hasWholesalePermissionInScope($actor, $permissions);
-        $hasPlatformModuleAccess = $this->entitlements->allows($moduleCode, EntitlementScope::platform())
-            && $this->navigation->hasAnyPermissionInScope($actor, $permissions);
-        if (! $hasWholesaleScope && ! $actor->hasRole('SUPER_ADMIN') && ! $hasPlatformModuleAccess) {
+        if (! $hasWholesaleScope && ! $actor->hasRole('SUPER_ADMIN')) {
             return null;
         }
 
@@ -820,10 +819,10 @@ final class ErpCenterController extends Controller
 
     private function isEntitled(User $actor, string $moduleCode, array $permissions): bool
     {
-        if ($this->entitlements->allows($moduleCode, EntitlementScope::platform())) {
-            return true;
-        }
-
+        // A PLATFORM allow is only inherited by an effective STORE scope.
+        // Resolve each permitted B2B store: an explicit STORE deny must
+        // override PLATFORM allow before any operational link is advertised.
+        // No Wholesale store means diagnostics only, including Super Admin.
         foreach ($permissions as $permission) {
             foreach ($this->operationalTenants->allowedStoreIds($actor, $permission, self::WHOLESALE_CHANNEL) as $storeId) {
                 if ($this->entitlements->allows(
