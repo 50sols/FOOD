@@ -903,8 +903,12 @@ body{margin:0;background:var(--foodex-background);color:var(--foodex-ink)}
             let next = index;
             if (event.key === 'Home') next = 0;
             else if (event.key === 'End') next = tabs.length - 1;
-            else if (event.key === 'ArrowLeft') next = Math.max(0, index - 1);
-            else next = Math.min(tabs.length - 1, index + 1);
+            else {
+                // Arrow keys follow the visual tab order in both LTR and RTL.
+                const isRtl = document.documentElement.dir === 'rtl';
+                const direction = event.key === 'ArrowLeft' ? (isRtl ? 1 : -1) : (isRtl ? -1 : 1);
+                next = Math.max(0, Math.min(tabs.length - 1, index + direction));
+            }
             tabs[next].focus();
             activate(tabs[next].dataset.c360Tab, true);
         });
