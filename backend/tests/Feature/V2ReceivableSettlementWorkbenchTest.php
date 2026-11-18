@@ -1783,7 +1783,7 @@ final class V2ReceivableSettlementWorkbenchTest extends TestCase
     public function test_wholesale_ar_queries_and_writes_exclude_retail_stores_in_a_shared_legal_entity(): void
     {
         $wholesale = $this->fixture('P303-AR-B2B', wholesale: true);
-        $retail = $this->fixture('P303-AR-B2C');
+        $retailStore = $this->retailStore('P303-AR-B2C');
         $context = app(TenantContextResolver::class)->wholesale(
             $wholesale['maker'],
             $wholesale['store']->id,
@@ -1795,29 +1795,44 @@ final class V2ReceivableSettlementWorkbenchTest extends TestCase
         // shares the exact enterprise organization/company/legal entity with
         // Wholesale, so legal-entity filtering alone would leak the document.
         $retailBusinessUnitId = (int) DB::table('enterprise_store_scopes')
-            ->where('store_id', $retail['store']->id)
+            ->where('store_id', $retailStore->id)
             ->value('business_unit_id');
         DB::table('enterprise_business_units')->where('id', $retailBusinessUnitId)->update([
             'organization_id' => $scope->organizationId,
             'company_id' => $scope->companyId,
             'legal_entity_id' => $scope->legalEntityId,
         ]);
-        $retailDocument = $retail['document']->forceFill([
+        $retailDocumentId = DB::table('enterprise_ar_documents')->insertGetId([
             'organization_id' => $scope->organizationId,
             'company_id' => $scope->companyId,
             'legal_entity_id' => $scope->legalEntityId,
+            'store_id' => $retailStore->id,
+            'customer_id' => $wholesale['document']->customer_id,
+            'document_number' => 'AR-P303-AR-B2C',
+            'idempotency_key' => 'p303-ar-b2c-document',
+            'request_hash' => str_repeat('c', 64),
+            'document_type' => 'invoice',
+            'entry_date' => '2027-01-05',
+            'due_date' => '2027-02-05',
+            'amount' => '100.000',
+            'currency_code' => 'KWD',
+            'receivable_account_id' => $wholesale['document']->receivable_account_id,
+            'offset_account_id' => $wholesale['document']->offset_account_id,
+            'status' => 'posted',
+            'created_by' => $wholesale['maker']->id,
+            'created_at' => now(),
+            'updated_at' => now(),
         ]);
-        $retailDocument->save();
 
         $documents = app(AccountsReceivableService::class)->paginate($wholesale['maker'], $context);
         $ids = $documents->getCollection()->modelKeys();
         $this->assertContains($wholesale['document']->id, $ids);
-        $this->assertNotContains($retailDocument->id, $ids);
+        $this->assertNotContains($retailDocumentId, $ids);
 
         $aging = app(AccountsReceivableService::class)->paginateAging($wholesale['maker'], $context);
         $agingIds = $aging->getCollection()->pluck('id')->map(static fn ($id): int => (int) $id)->all();
         $this->assertContains((int) $wholesale['document']->id, $agingIds);
-        $this->assertNotContains((int) $retailDocument->id, $agingIds);
+        $this->assertNotContains($retailDocumentId, $agingIds);
 
         $agingTotals = app(AccountsReceivableService::class)->agingTotals($wholesale['maker'], $context);
         $this->assertSame(1, (int) $agingTotals->sum('document_count'));
@@ -1826,7 +1841,7 @@ final class V2ReceivableSettlementWorkbenchTest extends TestCase
         try {
             app(AccountsReceivableService::class)->createDraft($wholesale['maker'], $context, [
                 'idempotency_key' => 'p303-b2b-rejects-b2c-store',
-                'store_id' => $retail['store']->id,
+                'store_id' => $retailStore->id,
                 'customer_id' => $wholesale['document']->customer_id,
                 'entry_date' => '2027-01-05',
                 'due_date' => '2027-02-05',
