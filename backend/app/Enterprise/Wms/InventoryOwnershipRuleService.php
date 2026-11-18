@@ -52,16 +52,7 @@ final class InventoryOwnershipRuleService
             throw ValidationException::withMessages(['supplier_id' => ['A supplier-owned rule requires a scoped supplier.']]);
         }
         if ($supplierId !== null) {
-            abort_unless(DB::table('enterprise_suppliers')->where('id', $supplierId)
-                ->where('company_id', $companyId)
-                ->where('status', 'active')
-                ->where(function ($scope) use ($storeId): void {
-                    $scope->where(function ($company): void {
-                        $company->where('scope_type', 'company')->whereNull('store_id');
-                    })->orWhere(function ($store) use ($storeId): void {
-                        $store->where('scope_type', 'store')->where('store_id', $storeId);
-                    });
-                })->exists(), 404);
+            abort_unless($this->supplierInScope($supplierId, $companyId, $storeId), 404);
         }
         if ($warehouseId !== null) {
             abort_unless(DB::table('warehouses')->where('id', $warehouseId)
@@ -221,6 +212,12 @@ final class InventoryOwnershipRuleService
         // Never serve a previous company's policy as current title guidance.
         $this->assertChannel($storeId, $channel);
         $companyId = $this->companyForStore($storeId);
+        // A client-supplied supplier context is not an authority to read the
+        // generic fallback policy of a different supplier or legal store.
+        // Reject stale/revoked/foreign supplier identities before selection.
+        if ($supplierId !== null) {
+            abort_unless($this->supplierInScope($supplierId, $companyId, $storeId), 404);
+        }
         $rules = DB::table('enterprise_inventory_ownership_rule_revisions')
             ->where('company_id', $companyId)
             ->where('store_id', $storeId)->where('channel', $channel)
@@ -327,17 +324,9 @@ final class InventoryOwnershipRuleService
             return false;
         }
 
-        if ($supplierId !== null && ! DB::table('enterprise_suppliers')
-            ->where('id', $supplierId)
-            ->where('company_id', (int) $rule->company_id)
-            ->where('status', 'active')
-            ->where(function ($scope) use ($storeId): void {
-                $scope->where(function ($company): void {
-                    $company->where('scope_type', 'company')->whereNull('store_id');
-                })->orWhere(function ($store) use ($storeId): void {
-                    $store->where('scope_type', 'store')->where('store_id', $storeId);
-                });
-            })->exists()) {
+        if ($supplierId !== null && ! $this->supplierInScope(
+            $supplierId, (int) $rule->company_id, $storeId,
+        )) {
             return false;
         }
 
@@ -358,6 +347,26 @@ final class InventoryOwnershipRuleService
         }
 
         return true;
+    }
+
+    /**
+     * A legal-company supplier can be company-wide, or explicitly scoped to
+     * this store. Retail/Wholesale identity and activity are never inferred
+     * from an arbitrary supplier_id supplied by the caller.
+     */
+    private function supplierInScope(int $supplierId, int $companyId, int $storeId): bool
+    {
+        return DB::table('enterprise_suppliers')
+            ->where('id', $supplierId)
+            ->where('company_id', $companyId)
+            ->where('status', 'active')
+            ->where(function ($scope) use ($storeId): void {
+                $scope->where(function ($company): void {
+                    $company->where('scope_type', 'company')->whereNull('store_id');
+                })->orWhere(function ($store) use ($storeId): void {
+                    $store->where('scope_type', 'store')->where('store_id', $storeId);
+                });
+            })->exists();
     }
 
     private function authorize(User $actor, int $storeId, string $permission): void
