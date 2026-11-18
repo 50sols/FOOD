@@ -100,17 +100,6 @@ class CheckoutController extends Controller
             }
         }
 
-        if (! in_array($paymentMethod, $allowedMethods, true)) {
-            $userLocale = $user->locale;
-            $locale = in_array($userLocale, ['ar', 'en'], true)
-                ? $userLocale
-                : strtolower((string) $request->getPreferredLanguage(['ar', 'en']));
-
-            throw ValidationException::withMessages([
-                'payment_method' => [__('checkout_errors.payment_method_not_configured', [], $locale === 'ar' ? 'ar' : 'en')],
-            ]);
-        }
-
         $requestHash = hash('sha256', json_encode([
             'store_id' => $storeId,
             'address_id' => $addressId,
@@ -133,6 +122,7 @@ class CheckoutController extends Controller
             $storeId,
             $channel,
             $paymentMethod,
+            $allowedMethods,
             $requestedDeliveryDate,
             $note,
             $idempotencyKey,
@@ -156,14 +146,66 @@ class CheckoutController extends Controller
                 $locale = in_array($userLocale, ['ar', 'en'], true)
                     ? $userLocale
                     : strtolower((string) $request->getPreferredLanguage(['ar', 'en']));
+                $conflict = __('checkout_errors.idempotency_reuse_conflict', [], $locale === 'ar' ? 'ar' : 'en');
+
+                // Old orders retain the legacy request-only digest. New orders
+                // additionally bind the key to immutable, server-issued order
+                // lines; no client-supplied item price or cart hash is trusted.
+                $originalItems = OrderItem::query()
+                    ->where('order_id', $existing->getKey())
+                    ->orderBy('id')
+                    ->get();
+                $originalCartHash = $this->checkoutCartFingerprint($originalItems, true);
+                $boundHash = $this->checkoutBoundRequestHash($requestHash, $originalCartHash);
+                $savedHash = (string) $existing->checkout_request_hash;
 
                 abort_if(
-                    ! hash_equals((string) $existing->checkout_request_hash, $requestHash),
+                    ! hash_equals($savedHash, $requestHash)
+                        && ! hash_equals($savedHash, $boundHash),
                     409,
-                    __('checkout_errors.idempotency_reuse_conflict', [], $locale === 'ar' ? 'ar' : 'en'),
+                    $conflict,
                 );
 
+                // A successful checkout deletes its cart. A retry with no cart
+                // still returns that exact order; a newly changed cart using
+                // the old key must never silently return an obsolete purchase.
+                $currentCart = Cart::query()
+                    ->where('store_id', $storeId)
+                    ->where($customerColumn, $customer->getKey())
+                    ->where('channel', $channel)
+                    ->lockForUpdate()
+                    ->first();
+                if ($currentCart instanceof Cart) {
+                    $currentItems = CartItem::query()
+                        ->where('cart_id', $currentCart->getKey())
+                        ->orderBy('id')
+                        ->lockForUpdate()
+                        ->get();
+                    abort_if(
+                        ! hash_equals(
+                            $originalCartHash,
+                            $this->checkoutCartFingerprint($currentItems),
+                        ),
+                        409,
+                        $conflict,
+                    );
+                }
+
                 return [$existing, false];
+            }
+
+            // A previously committed order must be replayable even if the
+            // current credit balance or permitted payment methods have since
+            // changed. New checkouts still require current method eligibility.
+            if (! in_array($paymentMethod, $allowedMethods, true)) {
+                $userLocale = $user->locale;
+                $locale = in_array($userLocale, ['ar', 'en'], true)
+                    ? $userLocale
+                    : strtolower((string) $request->getPreferredLanguage(['ar', 'en']));
+
+                throw ValidationException::withMessages([
+                    'payment_method' => [__('checkout_errors.payment_method_not_configured', [], $locale === 'ar' ? 'ar' : 'en')],
+                ]);
             }
 
             $cart = Cart::query()
@@ -184,6 +226,13 @@ class CheckoutController extends Controller
                 ->get();
 
             abort_if($lockedItems->isEmpty(), 409, $this->localizedCartConflict($request, $user, 'checkout_cart_empty'));
+
+            // Bind checkout idempotency to the exact server-observed product,
+            // base quantity and selling-unit selection while rows are locked.
+            $boundRequestHash = $this->checkoutBoundRequestHash(
+                $requestHash,
+                $this->checkoutCartFingerprint($lockedItems),
+            );
 
             // This is the authoritative reprice point. No submitted or stale cart price is trusted.
             $quote = $quotes->quoteCart(
@@ -298,7 +347,7 @@ class CheckoutController extends Controller
                 'price_tier_code_snapshot' => $headerSnapshot['price_tier_code_snapshot'],
                 'pricing_snapshot' => $headerSnapshot['pricing_snapshot'],
                 'checkout_idempotency_key' => $idempotencyKey,
-                'checkout_request_hash' => $requestHash,
+                'checkout_request_hash' => $boundRequestHash,
                 'payment_method' => $paymentMethod,
                 'customer_note' => $note,
             ]);
@@ -426,6 +475,46 @@ class CheckoutController extends Controller
             $this->orderPayload($order->fresh()),
             $created ? 201 : 200,
         );
+    }
+
+    /**
+     * A stable, order-independent fingerprint of purchased physical lines.
+     * Ignore cart row IDs (deleted after checkout) and never trust a client
+     * price, discount, tier, store selector or supplied hash.
+     *
+     * @param  iterable<CartItem|OrderItem>  $items
+     */
+    private function checkoutCartFingerprint(iterable $items, bool $fromOrder = false): string
+    {
+        $lines = [];
+
+        foreach ($items as $item) {
+            $sellingUnitCode = trim((string) ($fromOrder
+                ? $item->selling_unit_code_snapshot
+                : $item->selling_unit_code));
+
+            $lines[] = json_encode([
+                (int) $item->product_id,
+                number_format((float) $item->quantity, 3, '.', ''),
+                $sellingUnitCode,
+                $sellingUnitCode === ''
+                    ? null
+                    : number_format((float) $item->selling_unit_quantity, 3, '.', ''),
+            ], JSON_THROW_ON_ERROR);
+        }
+
+        sort($lines, SORT_STRING);
+
+        return hash('sha256', json_encode($lines, JSON_THROW_ON_ERROR));
+    }
+
+    private function checkoutBoundRequestHash(string $requestHash, string $cartHash): string
+    {
+        return hash('sha256', json_encode([
+            'version' => 2,
+            'request_hash' => $requestHash,
+            'cart_hash' => $cartHash,
+        ], JSON_THROW_ON_ERROR));
     }
 
     private function localizedCartConflict(Request $request, User $user, string $key): string
