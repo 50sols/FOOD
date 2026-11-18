@@ -321,6 +321,61 @@ final class V2ArOfficerAuthorizationContractTest extends TestCase
         $this->assertSame($before['ledger'], DB::table('enterprise_finance_ledger_entries')->count());
     }
 
+    public function test_standalone_ar_officer_has_only_b2b_receivables_capability_and_explicit_store_deny_wins(): void
+    {
+        $this->enableFinance();
+        $actor = $this->officer();
+        $store = Store::query()->create([
+            'store_type_id' => (int) DB::table('store_types')->where('code', 'B2B')->value('id'),
+            'code' => 'V2-AR-STANDALONE-STORE',
+            'name' => 'Wholesale AR scoped positive store',
+            'is_active' => true,
+        ]);
+        $hierarchy = app(OrganizationHierarchyService::class);
+        $hierarchy->ensureDefaultScopeForStore($store);
+        $scope = $hierarchy->scopeForStore($store->id);
+        $this->assertNotNull($scope);
+
+        app(ModuleEntitlementManager::class)->set(
+            FinanceFoundationService::MODULE,
+            new EntitlementScope(EntitlementScope::LEGAL_ENTITY, (int) $scope['legal_entity_id']),
+            true,
+            ['finance.ar.read', 'finance.ar.manage', 'finance.gl.read', 'finance.ap.read'],
+        );
+
+        $access = app(FinanceWorkbenchAccess::class);
+        $actor = $actor->fresh();
+
+        // The generic B2B role gate stays CLOSED. No broad Finance channel
+        // admission is needed to authorize an explicitly entitled AR duty.
+        $this->assertTrue($actor->hasPermission('finance.view'));
+        $this->assertFalse($actor->hasPermission('finance.view', $store->id));
+        $this->assertTrue($access->canRead($actor, $store->id));
+        $this->assertTrue($access->canReadCapability($actor, $store->id, 'finance.ar.read'));
+        $this->assertTrue($access->canPerform($actor, $store->id, 'finance.manage', 'finance.ar.manage'));
+        foreach (['finance.foundation.read', 'finance.gl.read', 'finance.ap.read'] as $capability) {
+            $this->assertFalse($access->canReadCapability($actor, $store->id, $capability));
+        }
+        $this->assertFalse($access->canPerform(
+            $actor, $store->id, 'finance.manage', 'finance.gl.manage',
+        ));
+
+        // Store-scoped DENY beats an otherwise valid global AR role and
+        // inherited legal-entity entitlement; historical assignment remains.
+        DB::table('user_permission_overrides')->insert([
+            'user_id' => $actor->id,
+            'permission_id' => Permission::query()->where('code', 'finance.view')->firstOrFail()->id,
+            'scope_key' => 'store:'.$store->id,
+            'store_id' => $store->id,
+            'effect' => 'deny',
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        $actor->forceFill(['has_permission_overrides' => true])->save();
+        $this->assertFalse($access->canRead($actor->fresh(), $store->id));
+        $this->assertFalse($access->canReadCapability($actor->fresh(), $store->id, 'finance.ar.read'));
+    }
+
     public function test_ar_officer_finance_access_remains_ar_only_with_a_second_b2b_channel_role(): void
     {
         $this->enableFinance();
