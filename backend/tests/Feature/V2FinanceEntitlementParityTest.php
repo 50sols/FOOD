@@ -57,7 +57,7 @@ final class V2FinanceEntitlementParityTest extends TestCase
         }
     }
 
-    public function test_retail_finance_reader_without_global_erp_role_has_matching_sidebar_and_http_access(): void
+    public function test_retail_finance_reader_never_enters_the_erp_finance_center(): void
     {
         $store = Store::query()->create([
             'store_type_id' => DB::table('store_types')->where('code', 'B2C')->value('id'),
@@ -107,10 +107,10 @@ final class V2FinanceEntitlementParityTest extends TestCase
 
         $this->grantPlatformErpAccess($actor);
         $this->assertTrue(app(AdminNavigation::class)->canAccessPlatformErp($actor->fresh()));
-        $this->assertTrue($this->financeEntryVisible($actor->fresh()));
+        $this->assertFalse($this->financeEntryVisible($actor->fresh()));
         $this->actingAs($actor->fresh())
             ->get(route('admin.erp.finance.index', ['store_id' => $store->id], false))
-            ->assertOk();
+            ->assertNotFound();
     }
 
     public function test_store_specific_deny_hides_finance_and_blocks_both_read_and_write_without_changes(): void

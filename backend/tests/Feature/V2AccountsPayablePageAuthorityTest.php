@@ -138,7 +138,7 @@ final class V2AccountsPayablePageAuthorityTest extends TestCase
             'created_at' => now(),
             'updated_at' => now(),
         ]);
-        $posterContext = app(TenantContextResolver::class)->retail($poster, $store->id);
+        $posterContext = app(TenantContextResolver::class)->wholesale($poster, $store->id);
 
         $posted = $service->post($poster, $posterContext, $accrual->id);
         $retry = $service->post($poster, $posterContext, $accrual->id);
@@ -275,7 +275,7 @@ final class V2AccountsPayablePageAuthorityTest extends TestCase
      */
     private function operator(string $code, string $locale = 'en'): array
     {
-        $type = (int) DB::table('store_types')->where('code', 'B2C')->value('id');
+        $type = (int) DB::table('store_types')->where('code', 'B2B')->value('id');
         $store = Store::query()->create([
             'store_type_id' => $type,
             'code' => $code,
@@ -284,7 +284,7 @@ final class V2AccountsPayablePageAuthorityTest extends TestCase
         ]);
         app(OrganizationHierarchyService::class)->ensureDefaultScopeForStore($store);
 
-        $role = Role::query()->where('code', 'B2C_STORE_ADMIN')->where('scope', 'store')->firstOrFail();
+        $role = Role::query()->where('code', 'B2B_ADMIN')->firstOrFail();
         foreach (['finance.view', 'finance.manage'] as $codePermission) {
             $permission = Permission::query()->firstOrCreate(
                 ['code' => $codePermission],
@@ -295,15 +295,9 @@ final class V2AccountsPayablePageAuthorityTest extends TestCase
 
         $actor = User::factory()->create(['locale' => $locale, 'is_active' => true]);
         $this->grantPlatformErpAccess($actor);
-        DB::table('user_store_roles')->insert([
-            'user_id' => $actor->id,
-            'store_id' => $store->id,
-            'role_id' => $role->id,
-            'created_at' => now(),
-            'updated_at' => now(),
-        ]);
+        $actor->roles()->attach($role->id);
 
-        return [$actor, $store, app(TenantContextResolver::class)->retail($actor, $store->id)];
+        return [$actor, $store, app(TenantContextResolver::class)->wholesale($actor, $store->id)];
     }
 
     /** @param list<string>|null $capabilities */

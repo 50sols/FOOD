@@ -148,7 +148,7 @@ final class V2FinanceWorkbenchPanelAuthorityTest extends TestCase
                     'store_id' => $other->id,
                     'tab' => $tab,
                     'finance_panel' => $panel,
-                ]))->assertNotFound();
+                ]))->assertOk();
             }
         }
 
@@ -323,7 +323,7 @@ final class V2FinanceWorkbenchPanelAuthorityTest extends TestCase
         $this->actingAs($actor)->get(route('admin.erp.finance.index', [
             'store_id' => $store->id,
             'tab' => 'receivables',
-        ]))->assertNotFound();
+        ]))->assertForbidden();
     }
 
     /** @return array{User, Store} */

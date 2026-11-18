@@ -82,6 +82,7 @@ class AdminNavigation
         $isSuperAdmin = $this->isSuperAdmin($user);
         $hideRetailWorkspaces = $isSuperAdmin && ! $user->isPlatformOwner();
         $canAccessPlatformErp = $this->canAccessPlatformErp($user);
+        $canAccessWholesaleErp = $canAccessPlatformErp && $this->canAccess($user, 'b2b');
         $canAccessPlatformNavigation = $canAccessPlatformErp;
         // Avoid repeating global Super Admin role queries for an already-authorized platform actor.
         $canAccessWorkspaces = $canAccessPlatformNavigation
@@ -91,7 +92,7 @@ class AdminNavigation
         // P298 is presentation-only: derive both financial child destinations once
         // from the existing permission, store, entitlement and readiness decision.
         // Do not advertise Payables through an independent Sidebar eligibility policy.
-        $financeDocumentItems = $canAccessPlatformErp && ! $useCustomerServiceDashboardProfile
+        $financeDocumentItems = $canAccessWholesaleErp && ! $useCustomerServiceDashboardProfile
             ? $this->receivablesNavigationItems($user)
             : [];
 
@@ -114,7 +115,7 @@ class AdminNavigation
                         ?? $this->routeItem($user, 'erp_customer_service', 'admin.erp_center.modules.customer_service.title', 'admin.erp.customer-service', 'b2b.accounts.view'))
                     : null,
             ]),
-            $this->group('erp', 'admin.nav_groups.erp', '▤', $canAccessPlatformErp && ! $useCustomerServiceDashboardProfile ? [
+            $this->group('erp', 'admin.nav_groups.erp', '▤', $canAccessWholesaleErp && ! $useCustomerServiceDashboardProfile ? [
                 // P118 ERP Center retains the full workflow/card journey; P358
                 // places its operational module links in their business domains.
                 $this->routeItemOpen('erp_center', 'admin.erp_center.nav_title', 'admin.erp.index'),
@@ -144,7 +145,7 @@ class AdminNavigation
             // P238: Procurement reuses its existing workbench and permission,
             // entitlement, tenant and operational-readiness checks.
             $this->group('procurement', 'admin.nav_groups.procurement', '▤', [
-                $canAccessPlatformErp && ! $useCustomerServiceDashboardProfile
+                $canAccessWholesaleErp && ! $useCustomerServiceDashboardProfile
                     ? $this->routeItemEnterpriseModule($user, 'erp_procurement', 'admin.erp_center.modules.procurement.title', 'admin.erp.procurement.index', 'procurement', 'procurement.suppliers.view')
                     : null,
             ]),
@@ -249,7 +250,7 @@ class AdminNavigation
             // destinations, never an additional bypass route or entitlement.
             // Each child retains its original HTTP and module-readiness guard.
             $this->group('finance', 'admin.nav_groups.finance', '¤', [
-                $canAccessPlatformErp && ! $useCustomerServiceDashboardProfile
+                $canAccessWholesaleErp && ! $useCustomerServiceDashboardProfile
                     ? $this->routeItemEnterpriseModule($user, 'erp_finance', 'admin.erp_center.modules.finance.title', 'admin.erp.finance.index', 'finance', 'finance.view')
                     : null,
             ]),
@@ -258,7 +259,7 @@ class AdminNavigation
                 // Projection must mirror its finance.view tenant gate, not a
                 // separate platform-only Sidebar visibility decision.
                 $this->routeItemScoped($user, 'treasury_master', 'treasury.nav_title', 'admin.treasury.master.index', 'finance.view'),
-                $canAccessPlatformErp && ! $useCustomerServiceDashboardProfile
+                $canAccessWholesaleErp && ! $useCustomerServiceDashboardProfile
                     ? $this->routeItemEnterpriseModule($user, 'erp_treasury', 'admin.erp_center.modules.treasury.title', 'admin.erp.treasury.index', 'treasury', 'finance.view')
                     : null,
             ]),
@@ -280,7 +281,7 @@ class AdminNavigation
                 $this->module($user, $channels, 'b2b', 'finance', 'admin.b2b_workspace.modules.finance', 'finance.view'),
                 $hideRetailWorkspaces ? null : $this->module($user, $channels, 'b2b', 'reports', 'admin.b2b_workspace.modules.reports', 'reports.view'),
                 // P358 BI belongs with existing authorized business reports.
-                $canAccessPlatformErp && ! $useCustomerServiceDashboardProfile
+                $canAccessWholesaleErp && ! $useCustomerServiceDashboardProfile
                     ? $this->routeItemEnterpriseModule($user, 'erp_bi', 'admin.erp_center.modules.bi.title', 'admin.erp.bi', 'enterprise_bi', 'reports.view')
                     : null,
             ]),

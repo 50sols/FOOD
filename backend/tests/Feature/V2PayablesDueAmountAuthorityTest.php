@@ -182,8 +182,8 @@ final class V2PayablesDueAmountAuthorityTest extends TestCase
         $store = $this->store($code);
         $maker = $this->actor($store, $code.'-MAKER', ['finance.view', 'finance.manage', 'finance.post']);
         $checker = $this->actor($store, $code.'-CHECKER', ['finance.view', 'finance.post']);
-        $context = app(TenantContextResolver::class)->retail($maker, $store->id);
-        $checkerContext = app(TenantContextResolver::class)->retail($checker, $store->id);
+        $context = app(TenantContextResolver::class)->wholesale($maker, $store->id);
+        $checkerContext = app(TenantContextResolver::class)->wholesale($checker, $store->id);
         $scope = $context->enterpriseScope;
         $this->assertNotNull($scope);
 
@@ -285,7 +285,7 @@ final class V2PayablesDueAmountAuthorityTest extends TestCase
     private function store(string $code): Store
     {
         $store = Store::query()->create([
-            'store_type_id' => DB::table('store_types')->where('code', 'B2C')->value('id'),
+            'store_type_id' => DB::table('store_types')->where('code', 'B2B')->value('id'),
             'code' => $code,
             'name' => $code,
             'is_active' => true,
@@ -312,6 +312,7 @@ final class V2PayablesDueAmountAuthorityTest extends TestCase
         }
         $actor = User::factory()->create(['is_active' => true]);
         $this->grantPlatformErpAccess($actor);
+        $actor->roles()->attach(Role::query()->where('code', 'B2B_ADMIN')->firstOrFail()->id);
         DB::table('user_store_roles')->insert([
             'user_id' => $actor->id,
             'store_id' => $store->id,

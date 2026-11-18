@@ -21,8 +21,8 @@ use Illuminate\Support\Facades\DB;
 use Tests\TestCase;
 
 /**
- * P288/#3894: a second store-scoped role is neither a blanket Retail grant
- * nor an escape hatch from an explicit deny on a different assigned store.
+ * P288/#3894: store-scoped Wholesale finance roles respect assignment and
+ * cannot bypass an explicit deny on a different assigned store.
  */
 final class V2ReceivablesAgingMultiRoleScopeTest extends TestCase
 {
@@ -40,7 +40,7 @@ final class V2ReceivablesAgingMultiRoleScopeTest extends TestCase
         );
     }
 
-    public function test_two_scoped_retail_roles_do_not_bypass_store_or_explicit_ar_denial_in_either_locale(): void
+    public function test_two_scoped_wholesale_roles_do_not_bypass_store_or_explicit_ar_denial_in_either_locale(): void
     {
         $storeA = $this->retailStore('P288-MULTI-A');
         $storeB = $this->retailStore('P288-MULTI-B');
@@ -48,21 +48,20 @@ final class V2ReceivablesAgingMultiRoleScopeTest extends TestCase
 
         $actor = User::factory()->create(['locale' => 'en', 'is_active' => true]);
         $this->grantPlatformErpAccess($actor);
+        $b2bRole = Role::query()->where('code', 'B2B_ADMIN')->firstOrFail();
+        $b2bRole->permissions()->detach(Permission::query()->where('code', 'finance.view')->firstOrFail()->id);
+        $actor->roles()->attach($b2bRole->id);
         $financeView = Permission::query()->where('code', 'finance.view')->firstOrFail();
 
-        foreach ([
-            [$storeA, 'B2C_STORE_ADMIN'],
-            [$storeB, 'RETAIL_FINANCE'],
-        ] as [$store, $roleCode]) {
-            $role = Role::query()
-                ->where('code', $roleCode)
-                ->where('scope', 'store')
-                ->where('is_active', true)
-                ->firstOrFail();
-            // CoreReferenceSeeder creates the role identities; the feature
-            // fixture grants the same scoped read permission as P288/#3085.
-            $role->permissions()->syncWithoutDetaching([$financeView->id]);
-            $this->assertTrue($role->permissions()->where('code', 'finance.view')->exists());
+        foreach ([[$storeA, 'A'], [$storeB, 'B']] as [$store, $suffix]) {
+            $role = Role::query()->create([
+                'code' => 'V2_P288_WHOLESALE_'.$suffix,
+                'name' => 'V2 P288 Wholesale '.$suffix,
+                'scope' => 'store',
+                'is_active' => true,
+                'is_system' => false,
+            ]);
+            $role->permissions()->attach($financeView->id);
 
             DB::table('user_store_roles')->insert([
                 'user_id' => $actor->id,
@@ -74,7 +73,7 @@ final class V2ReceivablesAgingMultiRoleScopeTest extends TestCase
         }
 
         $resolver = app(TenantContextResolver::class);
-        $context = $resolver->retail($actor->fresh(), $storeA->id);
+        $context = $resolver->wholesale($actor->fresh(), $storeA->id);
         $scope = $context->enterpriseScope;
         $this->assertNotNull($scope);
 
@@ -158,7 +157,7 @@ final class V2ReceivablesAgingMultiRoleScopeTest extends TestCase
             $principal = $actor->fresh();
 
             // Assigned-but-denied Store A must be 403, even when another
-            // independently authorized Retail store remains accessible.
+            // independently authorized Wholesale store remains accessible.
             $this->actingAs($principal)
                 ->get(route('admin.erp.finance.index', [
                     'store_id' => $storeA->id,
@@ -188,8 +187,7 @@ final class V2ReceivablesAgingMultiRoleScopeTest extends TestCase
     private function retailStore(string $code): Store
     {
         $store = Store::query()->create([
-            'store_type_id' => DB::table('store_types')->where('code', 'B2C')->value('id'),
-            'business_profile' => 'RETAIL_STORE',
+            'store_type_id' => DB::table('store_types')->where('code', 'B2B')->value('id'),
             'code' => $code,
             'name' => $code,
             'is_active' => true,

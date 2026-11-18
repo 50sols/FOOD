@@ -204,7 +204,7 @@ final class V2AccountantRoleAuthorityTest extends TestCase
 
         $this->actingAs($actor->fresh())
             ->get(route('admin.erp.finance.index', ['store_id' => $store->id]))
-            ->assertForbidden();
+            ->assertNotFound();
     }
 
     public function test_single_accountant_can_reach_b2b_finance_workbench_only_with_matching_read_entitlement(): void

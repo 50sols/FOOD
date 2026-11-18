@@ -70,7 +70,11 @@ final class ErpCenterController extends Controller
         // The ERP Center is a platform workspace, not a Retail-store shortcut.
         // Enforce the same global-role admission used by the canonical Sidebar
         // at the HTTP boundary; a hidden menu alone must never grant access.
-        abort_unless($this->navigation->canAccessPlatformErp($actor), 403);
+        abort_unless(
+            $this->navigation->canAccessPlatformErp($actor)
+                && $this->navigation->canAccess($actor, 'b2b'),
+            403,
+        );
 
         $this->bootstrapLocalSuperAdminModules($actor);
 

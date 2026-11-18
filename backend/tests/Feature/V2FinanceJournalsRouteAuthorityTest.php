@@ -313,7 +313,7 @@ final class V2FinanceJournalsRouteAuthorityTest extends TestCase
         bool $independentOrganization = false,
     ): array {
         $store = Store::query()->create([
-            'store_type_id' => (int) DB::table('store_types')->where('code', 'B2C')->value('id'),
+            'store_type_id' => (int) DB::table('store_types')->where('code', 'B2B')->value('id'),
             'code' => $storeCode,
             'name' => $storeCode,
             'is_active' => true,
@@ -355,7 +355,7 @@ final class V2FinanceJournalsRouteAuthorityTest extends TestCase
         ]);
         $this->grantPlatformErpAccess($actor);
         $role = $this->roleWithPermissions($permissions, $storeCode);
-
+        $actor->roles()->attach(Role::query()->where('code', 'B2B_ADMIN')->firstOrFail()->id);
         DB::table('user_store_roles')->insert([
             'user_id' => $actor->id,
             'store_id' => $store->id,
@@ -364,7 +364,7 @@ final class V2FinanceJournalsRouteAuthorityTest extends TestCase
             'updated_at' => now(),
         ]);
 
-        return [$actor, $store, app(TenantContextResolver::class)->retail($actor, $store->id)];
+        return [$actor, $store, app(TenantContextResolver::class)->wholesale($actor, $store->id)];
     }
 
     /** @param list<string> $permissions */

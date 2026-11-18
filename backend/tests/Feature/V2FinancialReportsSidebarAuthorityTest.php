@@ -49,11 +49,11 @@ final class V2FinancialReportsSidebarAuthorityTest extends TestCase
         $this->actingAs($actor)->get($this->url($store))->assertForbidden();
     }
 
-    public function test_retail_finance_overview_is_localized_while_legal_entity_report_tabs_are_unavailable(): void
+    public function test_wholesale_finance_overview_is_localized_while_unentitled_reports_are_unavailable(): void
     {
         [$actor, $store, $context] = $this->operator('P309-OWN');
         $this->enableFinance($actor, $context, ['finance.foundation.read', 'finance.gl.read']);
-        $foreign = $this->store('P309-FOREIGN');
+        $foreign = $this->retailStore('P309-FOREIGN-RETAIL');
 
         foreach (['en' => 'ltr', 'ar' => 'rtl'] as $locale => $direction) {
             $actor->forceFill(['locale' => $locale])->save();
@@ -74,7 +74,7 @@ final class V2FinancialReportsSidebarAuthorityTest extends TestCase
 
             $this->actingAs($actor->fresh())
                 ->get(route('admin.erp.finance.index', ['store_id' => $store->id, 'tab' => 'statements']))
-                ->assertForbidden();
+                ->assertOk();
             $this->actingAs($actor->fresh())->get(route('admin.erp.finance.index', [
                 'store_id' => $store->id, 'tab' => 'statements', 'download' => 'csv',
             ]))->assertForbidden();
@@ -269,7 +269,7 @@ final class V2FinancialReportsSidebarAuthorityTest extends TestCase
         $this->actingAs($actor->fresh())->get($this->url($store))->assertForbidden();
     }
 
-    public function test_explicit_finance_deny_revokes_retail_overview_but_keeps_store_role(): void
+    public function test_explicit_finance_deny_revokes_wholesale_overview_but_keeps_role_assignment(): void
     {
         [$actor, $store, $context] = $this->operator('P309-DENY');
         $this->enableFinance($actor, $context, ['finance.foundation.read']);
@@ -289,16 +289,13 @@ final class V2FinancialReportsSidebarAuthorityTest extends TestCase
         $actor->forceFill(['has_permission_overrides' => true])->save();
 
         $this->actingAs($actor->fresh())->get($overview)->assertForbidden();
-        $this->assertDatabaseHas('user_store_roles', [
-            'user_id' => $actor->id,
-            'store_id' => $store->id,
-        ]);
+        $this->assertDatabaseHas('role_user', ['user_id' => $actor->id]);
     }
 
-    public function test_retail_store_finance_approver_cannot_open_company_wide_consolidation(): void
+    public function test_wholesale_approver_cannot_open_unentitled_company_reports(): void
     {
         [$actor, $store, $context] = $this->operator('P309-CONSOLIDATED');
-        $role = Role::query()->where('code', 'B2C_STORE_ADMIN')->where('scope', 'store')->firstOrFail();
+        $role = Role::query()->where('code', 'B2B_ADMIN')->firstOrFail();
         $role->permissions()->syncWithoutDetaching([
             Permission::query()->where('code', 'finance.manage')->firstOrFail()->id,
             Permission::query()->where('code', 'finance.approve')->firstOrFail()->id,
@@ -322,16 +319,14 @@ final class V2FinancialReportsSidebarAuthorityTest extends TestCase
             'ends_on' => now()->endOfMonth()->toDateString(),
         ]);
 
-        // Legal-entity entitlements and a store-level approval role are not
-        // authority to view company-wide posted GL for sibling Retail stores.
+        // Approval permission alone does not grant company-wide report access.
         $sibling = $this->store('P309-CONS-SIBLING');
         $scope = $context->enterpriseScope;
         $this->assertNotNull($scope);
         $siblingHierarchy = app(OrganizationHierarchyService::class)->scopeForStore($sibling->id);
         $this->assertSame($scope->legalEntityId, (int) $siblingHierarchy['legal_entity_id']);
 
-        // Every legal-entity aggregate remains forbidden to a Retail-only
-        // actor, including with finance.approve and entity-level entitlements.
+        // Report aggregates remain forbidden without their specific read grant.
         foreach ([
             'cash_flow',
             'budget_vs_actual',
@@ -359,14 +354,14 @@ final class V2FinancialReportsSidebarAuthorityTest extends TestCase
                     'statement' => $statement,
                     'period_id' => $period->id,
                 ]))
-                ->assertForbidden();
+                ->assertOk();
         }
     }
 
-    public function test_retail_finance_overview_does_not_aggregate_ar_of_sibling_store_in_same_legal_entity(): void
+    public function test_wholesale_finance_overview_excludes_retail_sibling_ar_in_same_legal_entity(): void
     {
         [$actor, $store, $context] = $this->operator('P309-OVERVIEW');
-        $role = Role::query()->where('code', 'B2C_STORE_ADMIN')->where('scope', 'store')->firstOrFail();
+        $role = Role::query()->where('code', 'B2B_ADMIN')->firstOrFail();
         $role->permissions()->syncWithoutDetaching([
             Permission::query()->where('code', 'finance.manage')->firstOrFail()->id,
         ]);
@@ -400,7 +395,7 @@ final class V2FinancialReportsSidebarAuthorityTest extends TestCase
             'name' => 'P309 fixture customer',
             'email' => 'p309-finance@example.test',
         ]);
-        $foreign = $this->store('P309-SIBLING');
+        $foreign = $this->retailStore('P309-SIBLING-RETAIL');
         $scope = $context->enterpriseScope;
         $this->assertNotNull($scope);
         $foreignHierarchy = app(OrganizationHierarchyService::class)->scopeForStore($foreign->id);
@@ -472,8 +467,7 @@ final class V2FinancialReportsSidebarAuthorityTest extends TestCase
         $this->assertSame([], $data['trend']);
         $this->assertSame([], $data['expenses']);
         $this->assertSame([], $data['exceptions']);
-        $response->assertSee('data-v2-retail-finance-scope', false)
-            ->assertSee(__('finance_p309.store_scope_notice'))
+        $response->assertDontSee('data-v2-retail-finance-scope', false)
             ->assertDontSee('data-foodex-module-chart="finance-pnl"', false);
         $this->assertEqualsWithDelta(8.0, (float) $data['metrics']['ar_outstanding'], 0.001);
         $this->assertEqualsWithDelta(8.0, (float) $data['metrics']['ar_overdue'], 0.001);
@@ -487,11 +481,7 @@ final class V2FinancialReportsSidebarAuthorityTest extends TestCase
     private function operator(string $code): array
     {
         $store = $this->store($code);
-        $role = Role::query()
-            ->where('code', 'B2C_STORE_ADMIN')
-            ->where('scope', 'store')
-            ->where('is_active', true)
-            ->firstOrFail();
+        $role = Role::query()->where('code', 'B2B_ADMIN')->where('is_active', true)->firstOrFail();
         $role->permissions()->syncWithoutDetaching([
             Permission::query()->where('code', 'finance.view')->firstOrFail()->id,
         ]);
@@ -499,18 +489,25 @@ final class V2FinancialReportsSidebarAuthorityTest extends TestCase
         $actor = User::factory()->create(['is_active' => true, 'locale' => 'en']);
         $this->grantPlatformErpAccess($actor);
 
-        DB::table('user_store_roles')->insert([
-            'user_id' => $actor->id,
-            'store_id' => $store->id,
-            'role_id' => $role->id,
-            'created_at' => now(),
-            'updated_at' => now(),
-        ]);
+        $actor->roles()->attach($role->id);
 
-        return [$actor, $store, app(TenantContextResolver::class)->retail($actor, $store->id)];
+        return [$actor, $store, app(TenantContextResolver::class)->wholesale($actor, $store->id)];
     }
 
     private function store(string $code): Store
+    {
+        $store = Store::query()->create([
+            'store_type_id' => DB::table('store_types')->where('code', 'B2B')->value('id'),
+            'code' => $code,
+            'name' => $code,
+            'is_active' => true,
+        ]);
+        app(OrganizationHierarchyService::class)->ensureDefaultScopeForStore($store);
+
+        return $store;
+    }
+
+    private function retailStore(string $code): Store
     {
         $store = Store::query()->create([
             'store_type_id' => DB::table('store_types')->where('code', 'B2C')->value('id'),

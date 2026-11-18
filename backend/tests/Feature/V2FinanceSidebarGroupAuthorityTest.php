@@ -49,7 +49,7 @@ final class V2FinanceSidebarGroupAuthorityTest extends TestCase
 
     public function test_finance_and_treasury_groups_expose_real_scoped_destinations_in_both_locales(): void
     {
-        [$actor, $store, $context] = $this->reader('V2-P279-OWN', 'B2C');
+        [$actor, $store, $context] = $this->reader('V2-P279-OWN', 'B2B');
         $this->enableModule($actor, $context, FinanceFoundationService::MODULE);
         $this->enableModule($actor, $context, TreasuryReceiptService::MODULE);
 
@@ -104,7 +104,7 @@ final class V2FinanceSidebarGroupAuthorityTest extends TestCase
 
     public function test_disabled_modules_do_not_create_dead_finance_or_treasury_workbench_links(): void
     {
-        [$actor, $store] = $this->reader('V2-P279-DISABLED', 'B2C');
+        [$actor, $store] = $this->reader('V2-P279-DISABLED', 'B2B');
 
         $this->assertNull($this->navigationGroups($actor)->firstWhere('key', 'finance'));
         $group = $this->navigationGroups($actor)->firstWhere('key', 'treasury');
@@ -124,7 +124,7 @@ final class V2FinanceSidebarGroupAuthorityTest extends TestCase
 
     public function test_uncertified_finance_module_is_not_advertised_as_an_operational_workbench(): void
     {
-        [$actor, $store, $context] = $this->reader('V2-P279-UNCERTIFIED', 'B2C');
+        [$actor, $store, $context] = $this->reader('V2-P279-UNCERTIFIED', 'B2B');
         $this->enableModule($actor, $context, FinanceFoundationService::MODULE);
 
         config()->set('enterprise_module_readiness.certified_versions.finance', null);
@@ -139,7 +139,7 @@ final class V2FinanceSidebarGroupAuthorityTest extends TestCase
 
     public function test_explicit_finance_deny_removes_group_and_blocks_all_three_direct_routes(): void
     {
-        [$actor, $store, $context] = $this->reader('V2-P279-DENY', 'B2C');
+        [$actor, $store, $context] = $this->reader('V2-P279-DENY', 'B2B');
         $this->enableModule($actor, $context, FinanceFoundationService::MODULE);
         $this->enableModule($actor, $context, TreasuryReceiptService::MODULE);
         $this->assertNotNull($this->navigationGroups($actor)->firstWhere('key', 'finance'));
@@ -172,7 +172,7 @@ final class V2FinanceSidebarGroupAuthorityTest extends TestCase
 
     public function test_eligible_reader_cannot_open_another_retail_or_wholesale_store(): void
     {
-        [$actor, $store, $context] = $this->reader('V2-P279-SCOPE', 'B2C');
+        [$actor, $store, $context] = $this->reader('V2-P279-SCOPE', 'B2B');
         $foreignRetail = $this->store('V2-P279-OTHER-RETAIL', 'B2C');
         $foreignWholesale = $this->store('V2-P279-OTHER-WHOLESALE', 'B2B');
         $this->enableModule($actor, $context, FinanceFoundationService::MODULE);
@@ -199,7 +199,7 @@ final class V2FinanceSidebarGroupAuthorityTest extends TestCase
     public function test_roleless_and_inactive_users_have_no_finance_group_or_direct_read_access(): void
     {
         $roleless = User::factory()->create(['is_active' => true]);
-        [$inactive, $store] = $this->reader('V2-P279-INACTIVE', 'B2C');
+        [$inactive, $store] = $this->reader('V2-P279-INACTIVE', 'B2B');
         $inactive->forceFill(['is_active' => false])->save();
 
         foreach ([$roleless, $inactive->fresh()] as $actor) {
@@ -226,21 +226,15 @@ final class V2FinanceSidebarGroupAuthorityTest extends TestCase
     private function reader(string $code, string $channel): array
     {
         $store = $this->store($code, $channel);
-        $role = Role::query()->where('code', 'B2C_STORE_ADMIN')->where('scope', 'store')->firstOrFail();
+        $role = Role::query()->where('code', 'B2B_ADMIN')->firstOrFail();
         $permission = Permission::query()->where('code', 'finance.view')->firstOrFail();
         $role->permissions()->syncWithoutDetaching([$permission->id]);
 
         $actor = User::factory()->create(['locale' => 'en', 'is_active' => true]);
         $this->grantPlatformErpAccess($actor);
-        DB::table('user_store_roles')->insert([
-            'user_id' => $actor->id,
-            'store_id' => $store->id,
-            'role_id' => $role->id,
-            'created_at' => now(),
-            'updated_at' => now(),
-        ]);
+        $actor->roles()->attach($role->id);
 
-        return [$actor, $store, app(TenantContextResolver::class)->retail($actor, $store->id)];
+        return [$actor, $store, app(TenantContextResolver::class)->wholesale($actor, $store->id)];
     }
 
     private function store(string $code, string $channel): Store

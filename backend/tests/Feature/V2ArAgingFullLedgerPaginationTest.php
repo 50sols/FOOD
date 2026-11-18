@@ -217,11 +217,7 @@ final class V2ArAgingFullLedgerPaginationTest extends TestCase
     private function operator(string $code): array
     {
         $store = $this->retailStore($code);
-        $role = Role::query()
-            ->where('code', 'B2C_STORE_ADMIN')
-            ->where('scope', 'store')
-            ->where('is_active', true)
-            ->firstOrFail();
+        $role = Role::query()->where('code', 'B2B_ADMIN')->where('is_active', true)->firstOrFail();
         $permissionIds = Permission::query()
             ->whereIn('code', ['finance.view', 'finance.manage'])
             ->pluck('id')
@@ -229,21 +225,15 @@ final class V2ArAgingFullLedgerPaginationTest extends TestCase
         $role->permissions()->syncWithoutDetaching($permissionIds);
         $actor = User::factory()->create(['is_active' => true, 'locale' => 'en']);
         $this->grantPlatformErpAccess($actor);
-        DB::table('user_store_roles')->insert([
-            'user_id' => $actor->id,
-            'store_id' => $store->id,
-            'role_id' => $role->id,
-            'created_at' => now(),
-            'updated_at' => now(),
-        ]);
+        $actor->roles()->attach($role->id);
 
-        return [$actor, $store, app(TenantContextResolver::class)->retail($actor, $store->id)];
+        return [$actor, $store, app(TenantContextResolver::class)->wholesale($actor, $store->id)];
     }
 
     private function retailStore(string $code): Store
     {
         $store = Store::query()->create([
-            'store_type_id' => DB::table('store_types')->where('code', 'B2C')->value('id'),
+            'store_type_id' => DB::table('store_types')->where('code', 'B2B')->value('id'),
             'code' => $code,
             'name' => $code,
             'is_active' => true,

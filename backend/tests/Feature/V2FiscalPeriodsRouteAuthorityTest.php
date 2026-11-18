@@ -277,7 +277,7 @@ final class V2FiscalPeriodsRouteAuthorityTest extends TestCase
         bool $separateLegalEntity = false,
     ): array {
         $store = Store::query()->create([
-            'store_type_id' => (int) DB::table('store_types')->where('code', 'B2C')->value('id'),
+            'store_type_id' => (int) DB::table('store_types')->where('code', 'B2B')->value('id'),
             'code' => $storeCode,
             'name' => $storeCode,
             'is_active' => true,
@@ -313,8 +313,8 @@ final class V2FiscalPeriodsRouteAuthorityTest extends TestCase
             app(OrganizationHierarchyService::class)->ensureDefaultScopeForStore($store);
         }
 
-        // The seeded B2C_STORE_ADMIN already has finance.manage.
-        // Use a dedicated least-privilege role to prove viewer/manager separation.
+        // Keep Finance grants least-privilege while separately granting the
+        // B2B workspace admission role required by ERP.
         $role = Role::query()->create([
             'code' => 'V2_2612_'.str_replace('-', '_', $storeCode),
             'name' => 'V2 Fiscal Period '.$storeCode,
@@ -337,7 +337,7 @@ final class V2FiscalPeriodsRouteAuthorityTest extends TestCase
             'is_active' => true,
         ]);
         $this->grantPlatformErpAccess($actor);
-
+        $actor->roles()->attach(Role::query()->where('code', 'B2B_ADMIN')->firstOrFail()->id);
         DB::table('user_store_roles')->insert([
             'user_id' => $actor->id,
             'store_id' => $store->id,
@@ -346,7 +346,7 @@ final class V2FiscalPeriodsRouteAuthorityTest extends TestCase
             'updated_at' => now(),
         ]);
 
-        return [$actor, $store, app(TenantContextResolver::class)->retail($actor, $store->id)];
+        return [$actor, $store, app(TenantContextResolver::class)->wholesale($actor, $store->id)];
     }
 
     private function enableFinance(

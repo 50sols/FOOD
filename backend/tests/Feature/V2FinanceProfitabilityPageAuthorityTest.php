@@ -42,7 +42,7 @@ final class V2FinanceProfitabilityPageAuthorityTest extends TestCase
         );
     }
 
-    public function test_retail_profit_center_is_visible_but_corporate_profit_and_loss_is_denied_in_both_locales(): void
+    public function test_wholesale_profit_center_is_visible_but_unentitled_profit_and_loss_is_denied_in_both_locales(): void
     {
         [$actor, $store, $context] = $this->operator('P283-OWN');
         $this->enableFinance($actor, $context);
@@ -50,11 +50,11 @@ final class V2FinanceProfitabilityPageAuthorityTest extends TestCase
         $center = app(FinancePlanningService::class)->createProfitCenter(
             $actor,
             $context,
-            ['code' => 'P283-PROFIT', 'name' => 'P283 Retail Profit Center'],
+            ['code' => 'P283-PROFIT', 'name' => 'P283 Wholesale Profit Center'],
         );
         $this->assertDatabaseHas('enterprise_profit_centers', [
             'id' => $center->id,
-            'name' => 'P283 Retail Profit Center',
+            'name' => 'P283 Wholesale Profit Center',
         ]);
 
         $finance = app(FinanceFoundationService::class);
@@ -82,7 +82,7 @@ final class V2FinanceProfitabilityPageAuthorityTest extends TestCase
                 ->assertSee('data-finance-workbench="true"', false)
                 ->assertSee('dir="'.$direction.'"', false)
                 ->assertSee(__('finance_workbench.profit_centers.title'))
-                ->assertSee('P283 Retail Profit Center');
+                ->assertSee('P283 Wholesale Profit Center');
 
             $this->actingAs($actor->fresh())
                 ->get(route('admin.erp.finance.index', [
@@ -99,7 +99,7 @@ final class V2FinanceProfitabilityPageAuthorityTest extends TestCase
     {
         [$actor, $store, $context] = $this->operator('P283-OWN-STORE');
         $this->enableFinance($actor, $context);
-        $foreign = $this->createStore('P283-OTHER-STORE');
+        $foreign = $this->createRetailStore('P283-OTHER-STORE');
 
         $this->actingAs($actor)->get($this->url($store, 'profit_centers'))->assertOk();
         $this->actingAs($actor)->get($this->url($foreign, 'profit_centers'))->assertNotFound();
@@ -194,10 +194,7 @@ final class V2FinanceProfitabilityPageAuthorityTest extends TestCase
     private function operator(string $code): array
     {
         $store = $this->createStore($code);
-        $role = Role::query()
-            ->where('code', 'B2C_STORE_ADMIN')
-            ->where('scope', 'store')
-            ->firstOrFail();
+        $role = Role::query()->where('code', 'B2B_ADMIN')->firstOrFail();
 
         $role->permissions()->syncWithoutDetaching(
             Permission::query()->whereIn('code', ['finance.view', 'finance.manage'])->pluck('id'),
@@ -205,18 +202,25 @@ final class V2FinanceProfitabilityPageAuthorityTest extends TestCase
 
         $actor = User::factory()->create(['is_active' => true, 'locale' => 'en']);
         $this->grantPlatformErpAccess($actor);
-        DB::table('user_store_roles')->insert([
-            'user_id' => $actor->id,
-            'store_id' => $store->id,
-            'role_id' => $role->id,
-            'created_at' => now(),
-            'updated_at' => now(),
-        ]);
+        $actor->roles()->attach($role->id);
 
-        return [$actor, $store, app(TenantContextResolver::class)->retail($actor, $store->id)];
+        return [$actor, $store, app(TenantContextResolver::class)->wholesale($actor, $store->id)];
     }
 
     private function createStore(string $code): Store
+    {
+        $store = Store::query()->create([
+            'store_type_id' => DB::table('store_types')->where('code', 'B2B')->value('id'),
+            'code' => $code,
+            'name' => $code,
+            'is_active' => true,
+        ]);
+        app(OrganizationHierarchyService::class)->ensureDefaultScopeForStore($store);
+
+        return $store;
+    }
+
+    private function createRetailStore(string $code): Store
     {
         $store = Store::query()->create([
             'store_type_id' => DB::table('store_types')->where('code', 'B2C')->value('id'),
