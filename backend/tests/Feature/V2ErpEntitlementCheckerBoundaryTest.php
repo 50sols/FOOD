@@ -2531,6 +2531,31 @@ final class V2ErpEntitlementCheckerBoundaryTest extends TestCase
             'overview', 'suppliers', 'requests', 'rfqs', 'orders', 'contracts',
             'receipts', 'invoices', 'matches', 'returns', 'statements', 'reports',
         ];
+        // The controller's actual private tab map, not a fixture-only
+        // duplicate, is the authority for order and supported tabs.
+        $tabsConstant = (new \ReflectionClass(EnterpriseProcurementController::class))
+            ->getReflectionConstant('TABS');
+        $this->assertInstanceOf(\ReflectionClassConstant::class, $tabsConstant);
+        $this->assertSame($canonical, array_keys($tabsConstant->getValue()));
+
+        // Catch silent Laravel translation-key fallbacks: comparing a rendered
+        // fallback against the same missing key would otherwise pass.
+        foreach (['ar', 'en'] as $locale) {
+            $labels = trans('enterprise_procurement.tabs', [], $locale);
+            $this->assertIsArray($labels);
+            $this->assertSame($canonical, array_keys($labels), $locale.' must localize the actual canonical tabs in order');
+            foreach ($labels as $tab => $label) {
+                $this->assertIsString($label);
+                $this->assertNotSame('', trim($label), $locale.':'.$tab);
+                $this->assertNotSame('enterprise_procurement.tabs.'.$tab, $label);
+                $this->assertSame(
+                    1,
+                    preg_match($locale === 'ar' ? '/[\x{0600}-\x{06FF}]/u' : '/[A-Za-z]/', $label),
+                    $locale.':'.$tab.' needs a genuine localized caption',
+                );
+            }
+        }
+
         $namedRoutes = collect(app('router')->getRoutes()->getRoutes())
             ->filter(static fn ($route): bool => $route->getName() === 'admin.erp.procurement.index');
         $this->assertCount(1, $namedRoutes, 'Each tab must use the one canonical GET route');
@@ -2641,6 +2666,63 @@ final class V2ErpEntitlementCheckerBoundaryTest extends TestCase
         $this->assertSame($auditBefore, DB::table('audit_logs')->count());
     }
 
+    public function test_statements_filter_and_paginator_keep_supplier_dates_currency_and_scope_in_both_locales(): void
+    {
+        $store = $this->wholesaleStore();
+        $owner = $this->actor('SUPER_ADMIN');
+        $manager = $this->actor('PROCUREMENT_MANAGER');
+        app(EnterpriseModuleAdministration::class)->perform('procurement', 'enable', $owner);
+        app(ModuleEntitlementManager::class)->set(
+            'procurement', EntitlementScope::platform(), true, null, $owner,
+        );
+        $supplier = app(SupplierDirectory::class)->create(
+            $manager,
+            app(TenantContextResolver::class)->wholesale($manager, $store->id),
+            [
+                'scope_type' => 'store',
+                'code' => 'P111-STATEMENT-FILTER-SCOPE',
+                'name_en' => 'P111 Statement Filter Supplier',
+            ],
+        );
+
+        $query = [
+            'tab' => 'statements',
+            'store_id' => $store->id,
+            'supplier_id' => $supplier->id,
+            'from' => '2026-01-01',
+            'to' => '2026-11-18',
+            'as_of' => '2026-11-18',
+            'currency_code' => 'KWD',
+        ];
+        $auditBefore = DB::table('audit_logs')->count();
+
+        foreach (['ar' => 'rtl', 'en' => 'ltr'] as $locale => $direction) {
+            app()->setLocale($locale);
+            $manager->forceFill(['locale' => $locale])->save();
+            $response = $this->actingAs($manager->fresh())->get(
+                route('admin.erp.procurement.index', $query),
+            );
+            $response->assertOk()->assertViewHas('activeTab', 'statements')
+                ->assertSee('dir="'.$direction.'"', false)
+                ->assertSee('name="from" value="2026-01-01"', false)
+                ->assertSee('name="to" value="2026-11-18"', false)
+                ->assertSee('name="as_of" value="2026-11-18"', false)
+                ->assertSee('name="currency_code" value="KWD"', false);
+
+            $statement = $response->viewData('statement');
+            $this->assertInstanceOf(LengthAwarePaginator::class, $statement);
+            parse_str((string) parse_url($statement->url(2), PHP_URL_QUERY), $pageTwo);
+            foreach ($query as $key => $value) {
+                $this->assertSame((string) $value, (string) ($pageTwo[$key] ?? ''), $locale.':'.$key);
+            }
+            $this->assertSame('2', (string) ($pageTwo['page'] ?? ''));
+            $this->assertSame(1, substr_count($response->getContent(), 'data-procurement-tabs'));
+        }
+
+        // Filtered financial GETs cannot post invoices or create audit events.
+        $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+    }
+
     public function test_procurement_denied_tabs_are_hidden_and_direct_get_denied_while_unknown_tab_is_404(): void
     {
         $store = $this->wholesaleStore();
@@ -2708,6 +2790,14 @@ final class V2ErpEntitlementCheckerBoundaryTest extends TestCase
                 'tab' => 'forged_unregistered_tab',
                 'store_id' => $store->id,
             ]))->assertNotFound();
+            // Invalid scalar/array selectors are not permission scopes and
+            // cannot be coerced to a fallback authorized tab.
+            foreach (['', ['requests'], ['requests', 'suppliers']] as $invalidTab) {
+                $this->actingAs($buyer->fresh())->get(route('admin.erp.procurement.index', [
+                    'tab' => $invalidTab,
+                    'store_id' => $store->id,
+                ]))->assertNotFound();
+            }
         }
         $this->assertSame($auditBefore, DB::table('audit_logs')->count());
     }
