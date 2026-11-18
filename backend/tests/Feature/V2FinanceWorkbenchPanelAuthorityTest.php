@@ -9,6 +9,7 @@ use App\Enterprise\Modules\ModuleLifecycleManager;
 use App\Enterprise\Modules\ModuleRegistry;
 use App\Enterprise\Modules\ModuleState;
 use App\Enterprise\Organization\OrganizationHierarchyService;
+use App\Models\Customer;
 use App\Models\Permission;
 use App\Models\Role;
 use App\Models\Store;
@@ -166,6 +167,102 @@ final class V2FinanceWorkbenchPanelAuthorityTest extends TestCase
             'tab' => 'payables',
             'finance_panel' => 'aging',
         ]))->assertForbidden();
+    }
+
+    public function test_store_denial_blocks_foreign_settlement_document_without_financial_writes(): void
+    {
+        [$actor, $actorStore] = $this->authorizedViewer('FIN-P303-G009-DENY');
+        $foreignStore = $this->createStore('FIN-P303-G009-FOREIGN');
+        $scope = app(OrganizationHierarchyService::class)->scopeForStore((int) $foreignStore->id);
+        $this->assertNotNull($scope);
+
+        $customer = Customer::query()->create([
+            'type' => 'b2b',
+            'name' => 'G009 foreign store customer',
+            'email' => 'g009-foreign-store@example.test',
+        ]);
+        $now = now();
+        $account = static fn (string $code, string $name, string $type, string $normalBalance): int => DB::table(
+            'enterprise_finance_accounts',
+        )->insertGetId([
+            'organization_id' => $scope['organization_id'],
+            'company_id' => $scope['company_id'],
+            'legal_entity_id' => $scope['legal_entity_id'],
+            'code' => $code,
+            'name' => $name,
+            'type' => $type,
+            'normal_balance' => $normalBalance,
+            'allow_posting' => true,
+            'status' => 'active',
+            'created_by' => $actor->id,
+            'created_at' => $now,
+            'updated_at' => $now,
+        ]);
+        $receivableAccountId = $account('1200-G009-DENY', 'G009 Receivable', 'asset', 'debit');
+        $revenueAccountId = $account('4000-G009-DENY', 'G009 Revenue', 'revenue', 'credit');
+        $foreignDocumentId = DB::table('enterprise_ar_documents')->insertGetId([
+            'organization_id' => $scope['organization_id'],
+            'company_id' => $scope['company_id'],
+            'legal_entity_id' => $scope['legal_entity_id'],
+            'store_id' => $foreignStore->id,
+            'customer_id' => $customer->id,
+            'document_number' => 'AR-G009-FOREIGN-DENY',
+            'idempotency_key' => 'g009-foreign-document-deny',
+            'request_hash' => str_repeat('g', 64),
+            'document_type' => 'invoice',
+            'entry_date' => '2026-11-18',
+            'due_date' => '2026-12-18',
+            'amount' => '100.000',
+            'currency_code' => 'KWD',
+            'receivable_account_id' => $receivableAccountId,
+            'offset_account_id' => $revenueAccountId,
+            'status' => 'posted',
+            'created_by' => $actor->id,
+            'posted_at' => $now,
+            'posted_by' => $actor->id,
+            'created_at' => $now,
+            'updated_at' => $now,
+        ]);
+        $this->assertDatabaseHas('enterprise_ar_documents', [
+            'id' => $foreignDocumentId,
+            'store_id' => $foreignStore->id,
+            'status' => 'posted',
+        ]);
+
+        $permissionId = Permission::query()->where('code', 'finance.view')->firstOrFail()->id;
+        DB::table('user_permission_overrides')->insert([
+            'user_id' => $actor->id,
+            'permission_id' => $permissionId,
+            'scope_key' => 'store:'.$foreignStore->id,
+            'store_id' => $foreignStore->id,
+            'effect' => 'deny',
+            'created_at' => $now,
+            'updated_at' => $now,
+        ]);
+        $actor->forceFill(['has_permission_overrides' => true])->save();
+
+        $this->actingAs($actor->fresh())->get(route('admin.erp.finance.index', [
+            'store_id' => $actorStore->id,
+            'tab' => 'receivables',
+            'finance_panel' => 'settlements',
+        ]))->assertOk();
+
+        $financialRowsBefore = [
+            DB::table('enterprise_finance_journals')->count(),
+            DB::table('enterprise_ar_allocations')->count(),
+        ];
+
+        $this->actingAs($actor->fresh())->get(route('admin.erp.finance.index', [
+            'store_id' => $foreignStore->id,
+            'tab' => 'receivables',
+            'finance_panel' => 'settlements',
+            'settlement_document_id' => $foreignDocumentId,
+        ]))->assertForbidden();
+
+        $this->assertSame($financialRowsBefore, [
+            DB::table('enterprise_finance_journals')->count(),
+            DB::table('enterprise_ar_allocations')->count(),
+        ]);
     }
 
     public function test_ar_ap_reader_without_gl_entitlement_sees_no_journal_navigation(): void
