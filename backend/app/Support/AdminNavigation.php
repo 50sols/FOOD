@@ -144,7 +144,7 @@ class AdminNavigation
             // P238: Procurement reuses its existing workbench and permission,
             // entitlement, tenant and operational-readiness checks.
             $this->group('procurement', 'admin.nav_groups.procurement', '▤', [
-                $canAccessPlatformErp && ! $useCustomerServiceDashboardProfile
+                ! $useCustomerServiceDashboardProfile
                     ? $this->routeItemEnterpriseModule($user, 'erp_procurement', 'admin.erp_center.modules.procurement.title', 'admin.erp.procurement.index', 'procurement', 'procurement.suppliers.view')
                     : null,
             ]),
@@ -249,7 +249,7 @@ class AdminNavigation
             // destinations, never an additional bypass route or entitlement.
             // Each child retains its original HTTP and module-readiness guard.
             $this->group('finance', 'admin.nav_groups.finance', '¤', [
-                $canAccessPlatformErp && ! $useCustomerServiceDashboardProfile
+                ! $useCustomerServiceDashboardProfile
                     ? $this->routeItemEnterpriseModule($user, 'erp_finance', 'admin.erp_center.modules.finance.title', 'admin.erp.finance.index', 'finance', 'finance.view')
                     : null,
             ]),
@@ -258,7 +258,7 @@ class AdminNavigation
                 // Projection must mirror its finance.view tenant gate, not a
                 // separate platform-only Sidebar visibility decision.
                 $this->routeItemScoped($user, 'treasury_master', 'treasury.nav_title', 'admin.treasury.master.index', 'finance.view'),
-                $canAccessPlatformErp && ! $useCustomerServiceDashboardProfile
+                ! $useCustomerServiceDashboardProfile
                     ? $this->routeItemEnterpriseModule($user, 'erp_treasury', 'admin.erp_center.modules.treasury.title', 'admin.erp.treasury.index', 'treasury', 'finance.view')
                     : null,
             ]),
@@ -280,7 +280,7 @@ class AdminNavigation
                 $this->module($user, $channels, 'b2b', 'finance', 'admin.b2b_workspace.modules.finance', 'finance.view'),
                 $hideRetailWorkspaces ? null : $this->module($user, $channels, 'b2b', 'reports', 'admin.b2b_workspace.modules.reports', 'reports.view'),
                 // P358 BI belongs with existing authorized business reports.
-                $canAccessPlatformErp && ! $useCustomerServiceDashboardProfile
+                ! $useCustomerServiceDashboardProfile
                     ? $this->routeItemEnterpriseModule($user, 'erp_bi', 'admin.erp_center.modules.bi.title', 'admin.erp.bi', 'enterprise_bi', 'reports.view')
                     : null,
             ]),
@@ -893,6 +893,19 @@ class AdminNavigation
         return false;
     }
 
+    /** @param list<string> $permissions */
+    public function hasAnyPermissionInChannel(User $user, array $permissions, string $channel): bool
+    {
+        foreach ($permissions as $permission) {
+            if ($this->hasPermission($user, $permission)
+                || app(OperationalTenantScope::class)->allowedStoreIds($user, $permission, $channel) !== []) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     /**
      * The Orders workspace admits only the canonical Wholesale principal or
      * an authorized Retail store. A global orders.view role alone does not
@@ -1117,7 +1130,18 @@ class AdminNavigation
             $params['store_id'] = (string) $wmsStoreId;
         }
 
-        $item = $this->routeItemScoped($user, $key, $label, $route, $permission, $params);
+        if (! Route::has($route)
+            || ! $this->hasAnyPermissionInChannel($user, [$permission], 'b2b')) {
+            return null;
+        }
+
+        $item = [
+            'key' => $key,
+            'label' => $label,
+            'route' => $route,
+            'params' => $params,
+            'permission' => null,
+        ];
         if ($item === null || ($wholesaleTreasuryStoreId === null && $wmsStoreId === null && ! $this->enterpriseModuleAccessible($user, $moduleCode))) {
             return null;
         }
@@ -1141,7 +1165,7 @@ class AdminNavigation
             'procurement.purchase_requests.view',
             'procurement.purchase_orders.view',
         ] as $permission) {
-            foreach (app(OperationalTenantScope::class)->allowedStoreIds($user, $permission) as $storeId) {
+            foreach (app(OperationalTenantScope::class)->allowedStoreIds($user, $permission, 'b2b') as $storeId) {
                 if (! $user->hasPermission($permission, $storeId)
                     || ! $this->enterpriseEntitlements->allows(
                         'procurement',
@@ -1174,7 +1198,7 @@ class AdminNavigation
             return null;
         }
 
-        $storeIds = app(OperationalTenantScope::class)->allowedStoreIds($user, 'inventory.view');
+        $storeIds = app(OperationalTenantScope::class)->allowedStoreIds($user, 'inventory.view', 'b2b');
         foreach ($storeIds as $storeId) {
             if ($this->enterpriseEntitlements->allows(
                 'inventory_wms',
@@ -1222,9 +1246,8 @@ class AdminNavigation
             return [];
         }
 
-        $retailStoreIds = $this->tenantContext->retailStoreIds($user);
         $canWholesale = $this->canAccess($user, 'b2b');
-        if (! $canWholesale && $retailStoreIds === []) {
+        if (! $canWholesale) {
             return [];
         }
 
@@ -1233,18 +1256,7 @@ class AdminNavigation
         $stores = DB::table('stores as store')
             ->join('store_types as type', 'type.id', '=', 'store.store_type_id')
             ->where('store.is_active', true)
-            ->where(function ($query) use ($canWholesale, $retailStoreIds): void {
-                if ($canWholesale) {
-                    $query->where('type.code', 'B2B');
-                }
-                if ($retailStoreIds !== []) {
-                    $method = $canWholesale ? 'orWhere' : 'where';
-                    $query->{$method}(function ($retail) use ($retailStoreIds): void {
-                        $retail->where('type.code', 'B2C')
-                            ->whereIn('store.id', $retailStoreIds);
-                    });
-                }
-            })
+            ->where('type.code', 'B2B')
             ->select(['store.id', 'type.code as channel'])
             ->orderBy('type.code')
             ->orderBy('store.code')
@@ -1363,25 +1375,17 @@ class AdminNavigation
             return $this->enterpriseModuleAccessMemo[$memoKey] = true;
         }
 
-        foreach ($this->tenantContext->retailStoreIds($user) as $storeId) {
-            if ($this->enterpriseEntitlements->allows(
-                $moduleCode,
-                new EntitlementScope(EntitlementScope::STORE, $storeId),
-            )) {
-                return $this->enterpriseModuleAccessMemo[$memoKey] = true;
-            }
-        }
-
-        // Read-only parity with the existing Procurement HTTP store chooser:
-        // a role-entitled Wholesale store may carry the module entitlement
-        // without a platform-wide grant. The same scoped supplier permission
-        // and explicit user DENYs govern this single existing menu route.
-        if ($moduleCode === 'procurement') {
-            foreach (app(OperationalTenantScope::class)->allowedStoreIds(
-                $user,
-                'procurement.suppliers.view',
-                'b2b',
-            ) as $storeId) {
+        // ERP scoped links are for the existing Wholesale channel only. A
+        // Retail store assignment/entitlement must not expose an ERP route.
+        $permission = match ($moduleCode) {
+            'procurement' => 'procurement.suppliers.view',
+            'inventory_wms' => 'inventory.view',
+            'treasury' => 'finance.view',
+            'enterprise_bi' => 'reports.view',
+            default => null,
+        };
+        if ($permission !== null) {
+            foreach (app(OperationalTenantScope::class)->allowedStoreIds($user, $permission, 'b2b') as $storeId) {
                 if ($this->enterpriseEntitlements->allows(
                     $moduleCode,
                     new EntitlementScope(EntitlementScope::STORE, $storeId),
@@ -1414,9 +1418,8 @@ class AdminNavigation
             return null;
         }
 
-        $retailStoreIds = $this->tenantContext->retailStoreIds($user);
         $canWholesale = $this->canAccess($user, 'b2b');
-        if (! $canWholesale && $retailStoreIds === []) {
+        if (! $canWholesale) {
             return null;
         }
 
@@ -1425,18 +1428,7 @@ class AdminNavigation
         $stores = DB::table('stores as store')
             ->join('store_types as type', 'type.id', '=', 'store.store_type_id')
             ->where('store.is_active', true)
-            ->where(function ($query) use ($canWholesale, $retailStoreIds): void {
-                if ($canWholesale) {
-                    $query->where('type.code', 'B2B');
-                }
-                if ($retailStoreIds !== []) {
-                    $method = $canWholesale ? 'orWhere' : 'where';
-                    $query->{$method}(function ($retail) use ($retailStoreIds): void {
-                        $retail->where('type.code', 'B2C')
-                            ->whereIn('store.id', $retailStoreIds);
-                    });
-                }
-            })
+            ->where('type.code', 'B2B')
             ->orderBy('type.code')
             ->orderBy('store.code')
             ->limit(100)

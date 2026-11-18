@@ -1311,6 +1311,44 @@ final class ErpCenterTest extends TestCase
         }
     }
 
+    public function test_retail_store_scope_never_creates_an_erp_finance_destination(): void
+    {
+        config()->set('security.mfa.enforce_privileged', false);
+        $admin = $this->userWithGlobalRole('SUPER_ADMIN', 'en', 'p135-retail-finance-admin@example.test');
+        $actor = User::query()->create([
+            'name' => 'Retail finance actor',
+            'email' => 'p135-retail-finance-actor@example.test',
+            'password' => 'password',
+            'locale' => 'en',
+            'is_active' => true,
+        ]);
+        $retailTypeId = (int) DB::table('store_types')->where('code', 'B2C')->value('id');
+        $this->assertGreaterThan(0, $retailTypeId);
+        $retail = Store::query()->create([
+            'store_type_id' => $retailTypeId,
+            'code' => 'P135-RETAIL-FINANCE-ONLY',
+            'name' => 'P135 Retail Finance Only',
+            'is_active' => true,
+        ]);
+        $retailRole = Role::query()->where('code', 'RETAIL_FINANCE')->firstOrFail();
+        $this->assertSame('store', $retailRole->scope);
+        $actor->storeRoleAssignments()->create([
+            'store_id' => $retail->id,
+            'role_id' => $retailRole->id,
+        ]);
+        $this->assertTrue($actor->fresh()->hasPermission('finance.view', $retail->id));
+
+        app(EnterpriseModuleAdministration::class)->perform('finance', 'enable', $admin);
+
+        $navigation = app(AdminNavigation::class);
+        $this->assertNull($navigation->firstAuthorizedFinanceStoreId($actor->fresh()));
+        $this->assertFalse($navigation->hasAnyPermissionInChannel($actor->fresh(), ['finance.view'], 'b2b'));
+        $financeItems = collect($navigation->groupsFor($actor->fresh()))
+            ->flatMap(fn (array $group): array => $group['children'])
+            ->filter(fn (array $item): bool => in_array($item['key'], ['erp_finance', 'erp_receivables', 'erp_payables'], true));
+        $this->assertCount(0, $financeItems);
+    }
+
     public function test_accountant_ar_only_card_is_the_same_authorized_legal_store_http_without_gl_or_ap_grants(): void
     {
         config()->set('security.mfa.enforce_privileged', false);
@@ -1331,6 +1369,7 @@ final class ErpCenterTest extends TestCase
             true,
             ['finance.ar.read'],
         );
+        $entitlements->set('finance', EntitlementScope::platform(), false);
 
         // Neither ACCOUNTANT nor a STORE-only grant can create a legal-entity
         // ledger. The Center and actual HTTP must both refuse the shortcut.

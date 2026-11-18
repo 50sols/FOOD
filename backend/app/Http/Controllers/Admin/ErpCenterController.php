@@ -309,7 +309,7 @@ final class ErpCenterController extends Controller
         string $route,
         array $params = [],
     ): ?array {
-        if (! $this->navigation->hasAnyPermissionInScope($actor, $permissions)) {
+        if (! $this->navigation->hasAnyPermissionInChannel($actor, $permissions, 'b2b')) {
             return null;
         }
 
@@ -418,7 +418,7 @@ final class ErpCenterController extends Controller
         string $route,
         array $params = [],
     ): ?array {
-        if ($permissions !== [] && ! $this->navigation->hasAnyPermissionInScope($actor, $permissions)) {
+        if ($permissions !== [] && ! $this->navigation->hasAnyPermissionInChannel($actor, $permissions, 'b2b')) {
             return null;
         }
 
@@ -454,26 +454,17 @@ final class ErpCenterController extends Controller
             return true;
         }
 
-        foreach ($this->tenants->retailStoreIds($actor) as $storeId) {
-            if ($this->entitlements->allows(
-                $moduleCode,
-                new EntitlementScope(EntitlementScope::STORE, $storeId),
-            )) {
-                return true;
-            }
-        }
-
-        // P135: Procurement's existing Wholesale workbench accepts an
-        // authorized B2B store as well as Retail. A store-only entitlement
-        // must not be mislabeled "not entitled" by this read-only Center.
-        // The canonical operational scope filters explicit user DENYs;
-        // this does not change role grants or HTTP authorization.
-        if ($moduleCode === 'procurement') {
-            foreach (app(OperationalTenantScope::class)->allowedStoreIds(
-                $actor,
-                'procurement.suppliers.view',
-                'b2b',
-            ) as $storeId) {
+        // ERP workspaces are Wholesale-only: only a server-authorized B2B
+        // store may satisfy a scoped module entitlement in the Center.
+        $permission = match ($moduleCode) {
+            'procurement' => 'procurement.suppliers.view',
+            'inventory_wms' => 'inventory.view',
+            'treasury' => 'finance.view',
+            'enterprise_bi' => 'reports.view',
+            default => null,
+        };
+        if ($permission !== null) {
+            foreach (app(OperationalTenantScope::class)->allowedStoreIds($actor, $permission, 'b2b') as $storeId) {
                 if ($this->entitlements->allows(
                     $moduleCode,
                     new EntitlementScope(EntitlementScope::STORE, $storeId),
@@ -508,7 +499,7 @@ final class ErpCenterController extends Controller
         };
 
         foreach ($permissions as $permission) {
-            foreach (app(OperationalTenantScope::class)->allowedStoreIds($actor, $permission) as $storeId) {
+            foreach (app(OperationalTenantScope::class)->allowedStoreIds($actor, $permission, 'b2b') as $storeId) {
                 // Treasury chooses the same first read-capable tab as the
                 // existing Sidebar. A broad module grant alone is not a
                 // usable tab; the read capability must match the exact store.
@@ -572,7 +563,7 @@ final class ErpCenterController extends Controller
             return true;
         }
 
-        foreach (app(OperationalTenantScope::class)->allowedStoreIds($actor, 'finance.view') as $storeId) {
+        foreach (app(OperationalTenantScope::class)->allowedStoreIds($actor, 'finance.view', 'b2b') as $storeId) {
             if ($actor->hasPermission('finance.view', $storeId)
                 && $this->entitlements->allows(
                     'finance',
@@ -616,7 +607,7 @@ final class ErpCenterController extends Controller
             $card = $cardsByKey->get($definition['card']);
             if (! is_array($card)
                 || ! in_array($card['status'], ['available', 'degraded'], true)
-                || ! $this->navigation->hasAnyPermissionInScope($actor, [$definition['permission']])) {
+                || ! $this->navigation->hasAnyPermissionInChannel($actor, [$definition['permission']], 'b2b')) {
                 continue;
             }
 
