@@ -1235,6 +1235,19 @@ final class V2InventoryOwnerProvenanceTest extends TestCase
         $this->assertSame($approved->id, $restored['policy']->id);
         $this->assertFalse($restored['certified']);
 
+        // Even a legitimately approved generic FOODEX policy cannot be used
+        // to paper over a caller-supplied foreign store's supplier identity.
+        $otherStore = $this->stock('FOREIGN-ADVISORY-SUPPLIER');
+        $foreignSupplierId = $this->supplier($otherStore['store_id']);
+        try {
+            $service->advisoryFor(
+                $checker, $stock['store_id'], 'B2C', $foreignSupplierId, (int) $request['warehouse_id'],
+            );
+            $this->fail('A generic rule is not authority to use a foreign supplier context.');
+        } catch (HttpException $exception) {
+            $this->assertSame(404, $exception->getStatusCode());
+        }
+
         // An ownership policy for a different sales channel cannot be
         // presented as title guidance for the current warehouse/store.
         try {
@@ -1503,10 +1516,12 @@ final class V2InventoryOwnerProvenanceTest extends TestCase
 
         DB::table('enterprise_suppliers')->where('id', $supplierId)
             ->update(['status' => 'inactive']);
-        $revoked = $service->advisoryFor($checker, $stock['store_id'], 'B2C', $supplierId, $warehouseId);
-        $this->assertNull($revoked['policy']);
-        $this->assertSame('UNKNOWN', $revoked['state']);
-        $this->assertFalse($revoked['certified']);
+        try {
+            $service->advisoryFor($checker, $stock['store_id'], 'B2C', $supplierId, $warehouseId);
+            $this->fail('An inactive explicit supplier cannot obtain a generic title policy.');
+        } catch (HttpException $exception) {
+            $this->assertSame(404, $exception->getStatusCode());
+        }
         try {
             $service->review($checker, (int) $approved->id, true);
             $this->fail('An approval replay must not return a now-revoked supplier policy as active.');
@@ -1532,10 +1547,14 @@ final class V2InventoryOwnerProvenanceTest extends TestCase
             ->update(['expires_at' => now()->addDays(10)->toDateString()]);
         DB::table('enterprise_suppliers')->where('id', $supplierId)
             ->update(['store_id' => $foreign['store_id']]);
-        $foreignScoped = $service->advisoryFor(
-            $checker, $stock['store_id'], 'B2C', $supplierId, $warehouseId,
-        );
-        $this->assertNull($foreignScoped['policy']);
+        try {
+            $service->advisoryFor(
+                $checker, $stock['store_id'], 'B2C', $supplierId, $warehouseId,
+            );
+            $this->fail('Explicit foreign supplier context must be rejected, not mapped to fallback.');
+        } catch (HttpException $exception) {
+            $this->assertSame(404, $exception->getStatusCode());
+        }
 
         DB::table('enterprise_suppliers')->where('id', $supplierId)
             ->update(['store_id' => $stock['store_id']]);
