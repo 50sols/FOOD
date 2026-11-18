@@ -1942,6 +1942,131 @@ final class V2ErpEntitlementCheckerBoundaryTest extends TestCase
         $this->assertSame($auditBefore, DB::table('audit_logs')->count());
     }
 
+    public function test_action_permission_denial_precedes_unconfigured_store_409_for_get_and_post(): void
+    {
+        $this->app['env'] = 'production';
+        $csrfToken = 'p111-specific-operation-denial-csrf';
+        $this->withSession(['_token' => $csrfToken])->withHeader('X-CSRF-TOKEN', $csrfToken);
+
+        $configured = $this->wholesaleStore();
+        $unconfigured = Store::query()->create([
+            'store_type_id' => $configured->store_type_id,
+            'code' => 'P111-PARTIAL-PERMISSION-UNCONFIGURED',
+            'name' => 'P111 partially authorized but missing hierarchy',
+            'is_active' => true,
+        ]);
+        // No hierarchy: only a genuinely authorized action can reach 409.
+        $this->assertDatabaseMissing('enterprise_store_scopes', ['store_id' => $unconfigured->id]);
+        $owner = $this->actor('SUPER_ADMIN');
+        $buyer = $this->actor('PROCUREMENT_BUYER');
+        $approver = $this->actor('PROCUREMENT_APPROVER');
+        app(EnterpriseModuleAdministration::class)->perform('procurement', 'enable', $owner);
+        app(ModuleEntitlementManager::class)->set(
+            'procurement', EntitlementScope::platform(), true, null, $owner,
+        );
+
+        // Buyer retains Supplier read/manage but an explicit global DENY
+        // revokes both Request read and Request manage on every B2B store.
+        foreach (['procurement.purchase_requests.view', 'procurement.purchase_requests.manage'] as $code) {
+            DB::table('user_permission_overrides')->insert([
+                'user_id' => $buyer->id,
+                'permission_id' => Permission::query()->where('code', $code)->firstOrFail()->id,
+                'scope_key' => 'global',
+                'store_id' => null,
+                'effect' => 'deny',
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+        }
+        $buyer->forceFill(['has_permission_overrides' => true])->save();
+        $this->assertTrue($buyer->fresh()->hasPermission('procurement.suppliers.view', $configured->id));
+        $this->assertTrue($buyer->fresh()->hasPermission('procurement.suppliers.manage', $configured->id));
+        $this->assertFalse($buyer->fresh()->hasPermission('procurement.purchase_requests.view', $configured->id));
+        $this->assertFalse($buyer->fresh()->hasPermission('procurement.purchase_requests.manage', $configured->id));
+        $this->assertFalse($approver->fresh()->hasPermission('procurement.suppliers.manage', $configured->id));
+
+        $reason = 'P111 denied action cannot create purchase request';
+        $auditBefore = DB::table('audit_logs')->count();
+        $requestsBefore = DB::table('enterprise_purchase_requests')->count();
+
+        foreach (['ar' => 'rtl', 'en' => 'ltr'] as $locale => $direction) {
+            app()->setLocale($locale);
+            $buyer->forceFill(['locale' => $locale])->save();
+            $approver->forceFill(['locale' => $locale])->save();
+
+            // Valid role+store+entitlement still allows an unrelated Supplier
+            // read: the permission DENY applies to the exact requested action.
+            $this->actingAs($buyer->fresh())->get(route('admin.erp.procurement.index', [
+                'store_id' => $configured->id,
+                'tab' => 'suppliers',
+            ]))->assertOk()->assertSee('dir="'.$direction.'"', false);
+
+            $this->actingAs($buyer->fresh())->get(route('admin.erp.procurement.index', [
+                'store_id' => $configured->id,
+                'tab' => 'requests',
+            ]))->assertForbidden();
+
+            // Same actor and unconfigured B2B store: Supplier authority may
+            // reach setup 409; explicit Request DENY must return 403 first.
+            $this->actingAs($buyer->fresh())->get(route('admin.erp.procurement.index', [
+                'store_id' => $unconfigured->id,
+                'tab' => 'suppliers',
+            ]))->assertStatus(409);
+            $this->actingAs($buyer->fresh())->get(route('admin.erp.procurement.index', [
+                'store_id' => $unconfigured->id,
+                'tab' => 'requests',
+            ]))->assertForbidden();
+
+            $this->actingAs($buyer->fresh())->post(route('admin.erp.procurement.requests.store'), [
+                'store_id' => $unconfigured->id,
+                'currency_code' => 'KWD',
+                'reason' => $reason,
+                'item_code' => 'P111-DENIED-ACTION',
+                'description' => 'Explicit deny must precede missing scope',
+                'quantity' => '1.000',
+                'unit' => 'case',
+                'estimated_unit_cost' => '1.000',
+            ])->assertForbidden();
+
+            // An Approver can read Suppliers, but cannot execute the
+            // Supplier-manage POST, even if the enterprise store is unconfigured.
+            $this->actingAs($approver->fresh())->get(route('admin.erp.procurement.index', [
+                'store_id' => $unconfigured->id,
+                'tab' => 'suppliers',
+            ]))->assertStatus(409);
+            $this->actingAs($approver->fresh())->post(route('admin.erp.procurement.suppliers.store'), [
+                'store_id' => $unconfigured->id,
+                'scope_type' => 'store',
+                'code' => 'P111-DENIED-SUPPLIER-MANAGE',
+                'name_en' => 'Never persisted',
+            ])->assertForbidden();
+        }
+
+        $this->assertSame($requestsBefore, DB::table('enterprise_purchase_requests')->count());
+        $this->assertDatabaseMissing('enterprise_purchase_requests', ['reason' => $reason]);
+        $this->assertDatabaseMissing('enterprise_suppliers', ['code' => 'P111-DENIED-SUPPLIER-MANAGE']);
+        $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+    }
+
+    public function test_every_procurement_http_action_has_an_explicit_permission_precheck(): void
+    {
+        // Future routes must fail closed until their service-level permissions
+        // are deliberately mapped at the canonical Procurement controller.
+        $constant = (new \ReflectionClass(\App\Http\Controllers\Admin\EnterpriseProcurementController::class))
+            ->getReflectionConstant('ACTION_PERMISSIONS');
+        $this->assertInstanceOf(\ReflectionClassConstant::class, $constant);
+        $mapped = array_keys($constant->getValue());
+        sort($mapped);
+
+        $registered = collect(array_keys(\Illuminate\Support\Facades\Route::getRoutes()->getRoutesByName()))
+            ->filter(static fn (string $name): bool => str_starts_with($name, 'admin.erp.procurement.')
+                && $name !== 'admin.erp.procurement.index')
+            ->sort()
+            ->values()
+            ->all();
+        $this->assertSame($registered, $mapped);
+    }
+
     public function test_authorized_b2b_store_without_enterprise_hierarchy_returns_409_after_authority_checks(): void
     {
         $this->app['env'] = 'production';
