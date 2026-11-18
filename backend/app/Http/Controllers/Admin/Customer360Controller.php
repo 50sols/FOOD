@@ -111,12 +111,26 @@ final class Customer360Controller extends Controller
             fn (PlatformCustomer $customer): array => $this->summaryRow($customer, $actor, $access),
         );
 
+        // Carry only server-validated directory filters and Laravel's current
+        // page to the record link. Never accept an arbitrary return URL.
+        $listReturnContext = [];
+        foreach (['q', 'origin_channel', 'registration_source', 'active', 'origin_store_id', 'date_from', 'date_to'] as $key) {
+            $value = $filters[$key] ?? null;
+            if ($value !== null && $value !== '') {
+                $listReturnContext['list_'.$key] = $value;
+            }
+        }
+        if ($customers->currentPage() > 1) {
+            $listReturnContext['list_page'] = $customers->currentPage();
+        }
+
         return view('admin.customer-360-index', [
             'user' => $actor,
             'navGroups' => $this->navigation->groupsFor($actor),
             'navContext' => 'customer_360',
             'customers' => $customers,
             'filters' => $filters,
+            'listReturnContext' => $listReturnContext,
             'access' => $access,
             'accessModeLabel' => $this->businessLabel((string) $access['mode']),
             'originStores' => $this->originStores($access),
@@ -133,6 +147,32 @@ final class Customer360Controller extends Controller
         $actor = $this->actor($request);
         $access = $this->access($actor);
         $customer = $this->findVisible($platformCustomer, $access);
+
+        // A directory back-link is UI context, not authorization. Only named
+        // validated fields are projected; a forged store can never widen scope.
+        $requestedListContext = $request->validate([
+            'list_q' => ['nullable', 'string', 'max:120'],
+            'list_origin_channel' => ['nullable', Rule::in(['b2b', 'b2c', 'unknown'])],
+            'list_registration_source' => ['nullable', Rule::in(['customer_app', 'dashboard', 'import', 'migration'])],
+            'list_active' => ['nullable', Rule::in(['0', '1'])],
+            'list_origin_store_id' => ['nullable', 'integer', 'min:1'],
+            'list_date_from' => ['nullable', 'date'],
+            'list_date_to' => ['nullable', 'date', 'after_or_equal:list_date_from'],
+            'list_page' => ['nullable', 'integer', 'min:1'],
+        ]);
+        if (isset($requestedListContext['list_origin_store_id'])) {
+            abort_unless(in_array((int) $requestedListContext['list_origin_store_id'], $access['origin_store_ids'], true), 404);
+        }
+        $listReturnContext = array_filter(
+            $requestedListContext,
+            static fn ($value): bool => $value !== null && $value !== '',
+        );
+        $directoryQuery = [];
+        foreach ($listReturnContext as $key => $value) {
+            $directoryQuery[substr($key, 5)] = $value;
+        }
+        $backToListUrl = route('admin.customer-360.index', $directoryQuery);
+
         $summary = $this->summaryRow($customer, $actor, $access);
         $domains = $this->domainIds($customer, $access);
 
@@ -309,6 +349,8 @@ final class Customer360Controller extends Controller
             'user' => $actor,
             'navGroups' => $this->navigation->groupsFor($actor),
             'navContext' => 'customer_360',
+            'backToListUrl' => $backToListUrl,
+            'listReturnContext' => $listReturnContext,
             'customer' => $customer,
             'summary' => $summary,
             'access' => $access,
