@@ -667,7 +667,7 @@ final class V2ErpEntitlementCheckerBoundaryTest extends TestCase
         $auditBefore = DB::table('audit_logs')->count();
         $this->actingAs($actor->fresh())
             ->get(route('admin.erp.finance.index', ['store_id' => $foreign->id, 'tab' => 'payables']))
-            ->assertForbidden();
+            ->assertNotFound();
         $this->actingAs($actor->fresh())
             ->post(route('admin.erp.finance.accounts.store'), [
                 'store_id' => $foreign->id,
