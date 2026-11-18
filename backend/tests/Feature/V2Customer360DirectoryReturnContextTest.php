@@ -111,9 +111,9 @@ final class V2Customer360DirectoryReturnContextTest extends TestCase
             'return_url' => 'https://untrusted.example.test/foreign',
         ]))->assertOk()
             ->assertViewHas('backToListUrl', route('admin.customer-360.index', [
-                'page' => 3,
-                'origin_store_id' => $storeId,
                 'q' => 'Scoped',
+                'origin_store_id' => $storeId,
+                'page' => 3,
             ]))
             ->assertViewHas('statementFilters', fn (array $v): bool =>
                 ($v['statement_from'] ?? null) === '2026-01-01'
