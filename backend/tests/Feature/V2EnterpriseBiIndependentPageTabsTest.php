@@ -157,7 +157,13 @@ final class V2EnterpriseBiIndependentPageTabsTest extends TestCase
     public function test_tab_query_cannot_select_a_foreign_bi_store(): void
     {
         [, $assignedStore] = $this->authorizedStoreActor();
-        $foreignStore = $this->store('BI-TABS-3951-FOREIGN');
+        $foreignStore = Store::query()->create([
+            'store_type_id' => $assignedStore->store_type_id,
+            'code' => 'BI-TABS-3951-FOREIGN',
+            'name' => 'Foreign BI Tabs Store',
+            'is_active' => true,
+        ]);
+        app(OrganizationHierarchyService::class)->ensureDefaultScopeForStore($foreignStore);
         $actor = User::factory()->create(['is_active' => true, 'locale' => 'en']);
         $actor->roles()->attach(Role::query()->where('code', 'BUSINESS_ANALYST')->firstOrFail());
         DB::table('user_store_roles')->insert([
