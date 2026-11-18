@@ -275,6 +275,12 @@ final class EnterpriseGoodsReceiptFoundationTest extends TestCase
             ->whereIn('reference_id', $receiptLineIds);
         $this->assertSame(2, $movements->count());
         $this->assertSame('1.500', number_format((float) $movements->sum('quantity'), 3, '.', ''));
+        $movementIds = $movements->pluck('id');
+        $ownerEvents = DB::table('enterprise_inventory_owner_movement_events')
+            ->whereIn('source_stock_movement_id', $movementIds);
+        $this->assertSame(2, $ownerEvents->count(), 'Each posted GRN movement must have exactly one immutable event, including replay.');
+        $this->assertSame(2, (clone $ownerEvents)->where('owner_snapshot_state', 'UNKNOWN')->count());
+        $this->assertSame(2, (clone $ownerEvents)->where('owner_position_count', 1)->count());
         $this->assertSame(2, DB::table('audit_logs')
             ->where('event', 'enterprise.goods_receipt.posted')
             ->whereIn('auditable_id', $receiptIds)

@@ -170,6 +170,20 @@ final class EnterprisePurchaseReturnFoundationTest extends TestCase
             ->where('inventory_id', $inventory->id)->value('quantity'), 3, '.', ''));
         $this->assertSame(1, DB::table('enterprise_inventory_owner_positions')
             ->where('inventory_id', $inventory->id)->count());
+        $returnMovement = DB::table('stock_movements')
+            ->where('inventory_id', $inventory->id)
+            ->where('type', 'purchase_return')
+            ->where('reference_type', 'enterprise_purchase_return_line')
+            ->where('reference_id', $posted->lines[0]->id)
+            ->firstOrFail();
+        $returnEvent = DB::table('enterprise_inventory_owner_movement_events')
+            ->where('source_stock_movement_id', $returnMovement->id)->firstOrFail();
+        $this->assertSame('UNKNOWN', $returnEvent->owner_snapshot_state);
+        $this->assertSame('0.875', number_format((float) $returnEvent->owner_quantity, 3, '.', ''));
+        $this->assertSame('0.875', number_format((float) $returnEvent->canonical_quantity_after, 3, '.', ''));
+        $this->assertSame('-0.625', number_format((float) $returnEvent->movement_quantity, 3, '.', ''));
+        $this->assertSame(1, DB::table('enterprise_inventory_owner_movement_events')
+            ->where('source_stock_movement_id', $returnMovement->id)->count(), 'Return replay must not append a duplicate event.');
 
         $draft = $manager->createFromPostedReceipt($actor, $context, $receipt->id, [
             'lines' => [['goods_receipt_line_id' => $source->id, 'quantity' => '0.250']],

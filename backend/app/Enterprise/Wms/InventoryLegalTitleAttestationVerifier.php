@@ -203,10 +203,12 @@ final class InventoryLegalTitleAttestationVerifier
     }
 
     /**
-     * A signed inventory snapshot requires a protected movement history AND
-     * an immutable attestation row. Otherwise an attacker could first delete
-     * the certificate, then erase an intervening movement and reintroduce
-     * stale title evidence (ABA replay). All four SQL guards are mandatory.
+     * A signed inventory snapshot requires protected movement history, an
+     * immutable attestation row, and the immutable owner-event writer. This
+     * preserves movement/evidence integrity and captures later movement
+     * snapshots without treating those events as legal-title authority.
+     * Both attested-movement guards, both evidence guards, the event writer,
+     * both event-source guards, and both event-row guards are mandatory.
      *
      * cPanel/shared-hosting users without MySQL TRIGGER/SUPER privileges may
      * install the site, but legal-title certification must fail closed.
@@ -238,7 +240,36 @@ final class InventoryLegalTitleAttestationVerifier
                     ->where('sql', 'like', '%RAISE(ABORT%')
                     ->count();
 
-                return $movements === 2 && $attestations === 2;
+                $eventWriter = DB::table('sqlite_master')
+                    ->where('type', 'trigger')
+                    ->where('tbl_name', 'stock_movements')
+                    ->where('name', 'p110_owner_event_after_movement_insert')
+                    ->where('sql', 'like', '%enterprise_inventory_owner_movement_events%')
+                    ->count();
+
+                $eventSourceGuards = DB::table('sqlite_master')
+                    ->where('type', 'trigger')
+                    ->where('tbl_name', 'stock_movements')
+                    ->whereIn('name', [
+                        'p110_owner_event_movement_no_delete',
+                        'p110_owner_event_movement_no_update',
+                    ])
+                    ->where('sql', 'like', '%enterprise_inventory_owner_movement_events%')
+                    ->where('sql', 'like', '%RAISE(ABORT%')
+                    ->count();
+
+                $ownerEvents = DB::table('sqlite_master')
+                    ->where('type', 'trigger')
+                    ->where('tbl_name', 'enterprise_inventory_owner_movement_events')
+                    ->whereIn('name', [
+                        'p110_owner_event_no_delete',
+                        'p110_owner_event_no_update',
+                    ])
+                    ->where('sql', 'like', '%RAISE(ABORT%')
+                    ->count();
+
+                return $movements === 2 && $attestations === 2
+                    && $eventWriter === 1 && $eventSourceGuards === 2 && $ownerEvents === 2;
             }
 
             if (in_array($driver, ['mysql', 'mariadb'], true)) {
@@ -272,7 +303,62 @@ final class InventoryLegalTitleAttestationVerifier
                     ->where('ACTION_STATEMENT', 'like', '%SIGNAL%')
                     ->count();
 
-                return $movements === 2 && $attestations === 2;
+                $eventWriter = DB::table('information_schema.TRIGGERS')
+                    ->where('TRIGGER_SCHEMA', $schema)
+                    ->where('EVENT_OBJECT_TABLE', 'stock_movements')
+                    ->where('TRIGGER_NAME', 'p110_owner_event_after_movement_insert')
+                    ->where('ACTION_TIMING', 'AFTER')
+                    ->where('EVENT_MANIPULATION', 'INSERT')
+                    ->where('ACTION_STATEMENT', 'like', '%enterprise_inventory_owner_movement_events%')
+                    ->count();
+
+                $eventSourceGuards = DB::table('information_schema.TRIGGERS')
+                    ->where('TRIGGER_SCHEMA', $schema)
+                    ->where('EVENT_OBJECT_TABLE', 'stock_movements')
+                    ->where('ACTION_TIMING', 'BEFORE')
+                    ->whereRaw(
+                        '((TRIGGER_NAME = ? AND EVENT_MANIPULATION = ?) OR (TRIGGER_NAME = ? AND EVENT_MANIPULATION = ?))',
+                        [
+                            'p110_owner_event_movement_no_delete', 'DELETE',
+                            'p110_owner_event_movement_no_update', 'UPDATE',
+                        ],
+                    )
+                    ->where('ACTION_STATEMENT', 'like', '%enterprise_inventory_owner_movement_events%')
+                    ->where('ACTION_STATEMENT', 'like', '%SIGNAL%')
+                    ->count();
+
+                $ownerEvents = DB::table('information_schema.TRIGGERS')
+                    ->where('TRIGGER_SCHEMA', $schema)
+                    ->where('EVENT_OBJECT_TABLE', 'enterprise_inventory_owner_movement_events')
+                    ->where('ACTION_TIMING', 'BEFORE')
+                    ->whereRaw(
+                        '((TRIGGER_NAME = ? AND EVENT_MANIPULATION = ?) OR (TRIGGER_NAME = ? AND EVENT_MANIPULATION = ?))',
+                        [
+                            'p110_owner_event_no_delete', 'DELETE',
+                            'p110_owner_event_no_update', 'UPDATE',
+                        ],
+                    )
+                    ->where('ACTION_STATEMENT', 'like', '%SIGNAL%')
+                    ->count();
+
+                // Trigger-level atomicity depends on transactional source and
+                // snapshot tables. A non-InnoDB writer would otherwise be
+                // able to commit a movement without its event on rollback.
+                $transactionalTables = DB::table('information_schema.TABLES')
+                    ->where('TABLE_SCHEMA', $schema)
+                    ->whereIn('TABLE_NAME', [
+                        'stock_movements',
+                        'inventories',
+                        'enterprise_inventory_owner_positions',
+                        'enterprise_inventory_title_attestations',
+                        'enterprise_inventory_owner_movement_events',
+                    ])
+                    ->where('ENGINE', 'InnoDB')
+                    ->count();
+
+                return $movements === 2 && $attestations === 2
+                    && $eventWriter === 1 && $eventSourceGuards === 2 && $ownerEvents === 2
+                    && $transactionalTables === 5;
             }
         } catch (Throwable) {
             // Missing SQL metadata privileges, incomplete DDL or unsupported

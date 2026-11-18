@@ -137,6 +137,271 @@ final class V2InventoryOwnerProvenanceTest extends TestCase
         $this->assertTrue($guards->invoke($verifier));
     }
 
+    public function test_canonical_movement_records_immutable_owner_snapshot_atomically(): void
+    {
+        $this->seed(CoreReferenceSeeder::class);
+        $stock = $this->stock('OWNER-MOVEMENT-EVENT');
+        $now = now();
+        $ownerPositionId = (int) DB::table('enterprise_inventory_owner_positions')->insertGetId([
+            'inventory_id' => $stock['inventory_id'],
+            'owner_key' => 'UNKNOWN',
+            'owner_kind' => 'UNKNOWN',
+            'supplier_id' => null,
+            'quantity' => '10.000',
+            'reserved_quantity' => '3.000',
+            'source_inventory_updated_at' => DB::table('inventories')
+                ->where('id', $stock['inventory_id'])->value('updated_at'),
+            'created_at' => $now,
+            'updated_at' => $now,
+        ]);
+
+        $movement = [
+            'inventory_id' => $stock['inventory_id'],
+            'store_id' => $stock['store_id'],
+            'user_id' => null,
+            'type' => 'p110_owner_event_test',
+            'quantity' => '0.125',
+            'reference_type' => 'p110-owner-event-test',
+            'reference_id' => 1,
+            'created_at' => $now,
+            'updated_at' => $now,
+        ];
+        $journalCount = DB::table('enterprise_finance_journals')->count();
+        $journalLineCount = DB::table('enterprise_finance_journal_lines')->count();
+        $auditCount = DB::table('audit_logs')->count();
+        $inventoryBefore = (array) DB::table('inventories')->where('id', $stock['inventory_id'])->first();
+        $positionBefore = (array) DB::table('enterprise_inventory_owner_positions')
+            ->where('id', $ownerPositionId)->first();
+
+        $movementId = (int) DB::table('stock_movements')->insertGetId($movement);
+        $event = DB::table('enterprise_inventory_owner_movement_events')
+            ->where('source_stock_movement_id', $movementId)->first();
+
+        $this->assertNotNull($event);
+        $this->assertSame($movementId, (int) $event->source_stock_movement_id);
+        $this->assertSame($stock['inventory_id'], (int) $event->inventory_id);
+        $this->assertSame('p110_owner_event_test', $event->movement_type);
+        $this->assertSame('0.125', number_format((float) $event->movement_quantity, 3, '.', ''));
+        $this->assertSame(1, (int) $event->owner_position_count);
+        $this->assertSame('UNKNOWN', $event->owner_snapshot_state);
+        $this->assertSame($ownerPositionId, (int) $event->owner_position_id);
+        $this->assertSame('UNKNOWN', $event->owner_key);
+        $this->assertSame('UNKNOWN', $event->owner_kind);
+        $this->assertNull($event->supplier_id);
+        $this->assertNull($event->observed_attestation_id);
+        $this->assertNull($event->observed_trusted_key_id);
+        $this->assertSame('10.000', number_format((float) $event->canonical_quantity_after, 3, '.', ''));
+        $this->assertSame('3.000', number_format((float) $event->canonical_reserved_quantity_after, 3, '.', ''));
+        $driver = DB::connection()->getDriverName();
+        if ($driver === 'sqlite') {
+            $this->assertCount(0, DB::select('PRAGMA foreign_key_list("enterprise_inventory_owner_movement_events")'));
+        } elseif (in_array($driver, ['mysql', 'mariadb'], true)) {
+            $this->assertSame(0, DB::table('information_schema.KEY_COLUMN_USAGE')
+                ->where('TABLE_SCHEMA', DB::connection()->getDatabaseName())
+                ->where('TABLE_NAME', 'enterprise_inventory_owner_movement_events')
+                ->whereNotNull('REFERENCED_TABLE_NAME')
+                ->count());
+        }
+        $this->assertSame($inventoryBefore, (array) DB::table('inventories')->where('id', $stock['inventory_id'])->first());
+        $this->assertSame($positionBefore, (array) DB::table('enterprise_inventory_owner_positions')
+            ->where('id', $ownerPositionId)->first());
+        $this->assertSame($journalCount, DB::table('enterprise_finance_journals')->count());
+        $this->assertSame($journalLineCount, DB::table('enterprise_finance_journal_lines')->count());
+        $this->assertSame($auditCount, DB::table('audit_logs')->count());
+
+        // Neither the immutable event nor a real source movement can be
+        // rewritten after the canonical insert. Reversals remain new inserts.
+        foreach ([
+            fn () => DB::table('enterprise_inventory_owner_movement_events')
+                ->where('source_stock_movement_id', $movementId)->update(['movement_type' => 'tampered']),
+            fn () => DB::table('enterprise_inventory_owner_movement_events')
+                ->where('source_stock_movement_id', $movementId)->delete(),
+            fn () => DB::table('stock_movements')->where('id', $movementId)->update(['quantity' => '9.999']),
+            fn () => DB::table('stock_movements')->where('id', $movementId)->delete(),
+        ] as $forbiddenMutation) {
+            try {
+                $forbiddenMutation();
+                $this->fail('P110 owner movement event and source snapshots must reject rewrites.');
+            } catch (QueryException $exception) {
+                $this->assertNotEmpty($exception->getMessage());
+            }
+        }
+        $this->assertDatabaseHas('stock_movements', ['id' => $movementId, 'quantity' => '0.125']);
+        $this->assertDatabaseHas('enterprise_inventory_owner_movement_events', [
+            'source_stock_movement_id' => $movementId,
+            'movement_type' => 'p110_owner_event_test',
+            'owner_snapshot_state' => 'UNKNOWN',
+        ]);
+        $duplicateEvent = (array) $event;
+        unset($duplicateEvent['id']);
+        try {
+            DB::table('enterprise_inventory_owner_movement_events')->insert($duplicateEvent);
+            $this->fail('One source movement cannot create a duplicate owner event.');
+        } catch (QueryException $exception) {
+            $this->assertNotEmpty($exception->getMessage());
+        }
+        $this->assertSame(1, DB::table('enterprise_inventory_owner_movement_events')
+            ->where('source_stock_movement_id', $movementId)->count());
+
+        $reversal = $movement;
+        $reversal['type'] = 'p110_owner_event_reversal';
+        $reversal['reference_type'] = 'p110-owner-event-reversal';
+        $reversal['reference_id'] = 2;
+        $reversal['quantity'] = '0.125';
+        $reversalId = (int) DB::table('stock_movements')->insertGetId($reversal);
+        $this->assertSame(1, DB::table('enterprise_inventory_owner_movement_events')
+            ->where('source_stock_movement_id', $reversalId)->count());
+
+        $noPositionStock = $this->stock('OWNER-EVENT-NO-POSITION');
+        $noPositionMovement = $movement;
+        $noPositionMovement['inventory_id'] = $noPositionStock['inventory_id'];
+        $noPositionMovement['store_id'] = $noPositionStock['store_id'];
+        $noPositionMovement['type'] = 'p110_owner_event_no_position';
+        $noPositionMovement['reference_id'] = 6;
+        $noPositionMovementId = (int) DB::table('stock_movements')->insertGetId($noPositionMovement);
+        $noPositionEvent = DB::table('enterprise_inventory_owner_movement_events')
+            ->where('source_stock_movement_id', $noPositionMovementId)->firstOrFail();
+        $this->assertSame(0, (int) $noPositionEvent->owner_position_count);
+        $this->assertSame('NO_OWNER_POSITION', $noPositionEvent->owner_snapshot_state);
+        $this->assertNull($noPositionEvent->owner_position_id);
+        $this->assertNull($noPositionEvent->owner_key);
+        $this->assertNull($noPositionEvent->supplier_id);
+
+        $multiplePositionStock = $this->stock('OWNER-EVENT-MULTIPLE-POSITIONS');
+        $multiplePositionInventory = DB::table('inventories')
+            ->where('id', $multiplePositionStock['inventory_id'])->firstOrFail();
+        foreach ([['UNKNOWN', 'UNKNOWN', 5], ['FOODEX', 'FOODEX', 5]] as [$ownerKey, $ownerKind, $quantity]) {
+            DB::table('enterprise_inventory_owner_positions')->insert([
+                'inventory_id' => $multiplePositionStock['inventory_id'],
+                'owner_key' => $ownerKey,
+                'owner_kind' => $ownerKind,
+                'supplier_id' => null,
+                'quantity' => $quantity,
+                'reserved_quantity' => 0,
+                'source_inventory_updated_at' => $multiplePositionInventory->updated_at,
+                'created_at' => $now,
+                'updated_at' => $now,
+            ]);
+        }
+        $multiplePositionMovement = $movement;
+        $multiplePositionMovement['inventory_id'] = $multiplePositionStock['inventory_id'];
+        $multiplePositionMovement['store_id'] = $multiplePositionStock['store_id'];
+        $multiplePositionMovement['type'] = 'p110_owner_event_multiple_positions';
+        $multiplePositionMovement['reference_id'] = 7;
+        $multiplePositionMovementId = (int) DB::table('stock_movements')->insertGetId($multiplePositionMovement);
+        $multiplePositionEvent = DB::table('enterprise_inventory_owner_movement_events')
+            ->where('source_stock_movement_id', $multiplePositionMovementId)->firstOrFail();
+        $this->assertSame(2, (int) $multiplePositionEvent->owner_position_count);
+        $this->assertSame('MULTIPLE_OWNER_POSITIONS', $multiplePositionEvent->owner_snapshot_state);
+        $this->assertNull($multiplePositionEvent->owner_position_id);
+        $this->assertNull($multiplePositionEvent->owner_key);
+        $this->assertNull($multiplePositionEvent->supplier_id);
+
+        $movementCountBeforeRollback = DB::table('stock_movements')
+            ->where('inventory_id', $stock['inventory_id'])->count();
+        $eventCountBeforeRollback = DB::table('enterprise_inventory_owner_movement_events')
+            ->where('inventory_id', $stock['inventory_id'])->count();
+        try {
+            DB::transaction(function () use ($movement, $stock): void {
+                $rollbackMovement = $movement;
+                $rollbackMovement['type'] = 'p110_owner_event_rolled_back';
+                $rollbackMovement['reference_type'] = 'p110-owner-event-rollback';
+                $rollbackMovement['reference_id'] = 3;
+                $rollbackMovementId = (int) DB::table('stock_movements')->insertGetId($rollbackMovement);
+                $this->assertSame(1, DB::table('enterprise_inventory_owner_movement_events')
+                    ->where('source_stock_movement_id', $rollbackMovementId)->count());
+                throw new \RuntimeException('rollback P110 owner event fixture');
+            });
+            $this->fail('Movement and owner event must share the posting transaction.');
+        } catch (\RuntimeException $exception) {
+            $this->assertSame('rollback P110 owner event fixture', $exception->getMessage());
+        }
+        $this->assertSame($movementCountBeforeRollback, DB::table('stock_movements')
+            ->where('inventory_id', $stock['inventory_id'])->count());
+        $this->assertSame($eventCountBeforeRollback, DB::table('enterprise_inventory_owner_movement_events')
+            ->where('inventory_id', $stock['inventory_id'])->count());
+
+        $movementCountBeforeBadInventory = DB::table('stock_movements')->count();
+        $eventCountBeforeBadInventory = DB::table('enterprise_inventory_owner_movement_events')->count();
+        try {
+            DB::table('stock_movements')->insert([
+                ...$movement,
+                'inventory_id' => PHP_INT_MAX,
+            ]);
+            $this->fail('A movement without a canonical inventory FK must fail closed.');
+        } catch (QueryException $exception) {
+            $this->assertNotEmpty($exception->getMessage());
+        }
+        $this->assertSame($movementCountBeforeBadInventory, DB::table('stock_movements')->count());
+        $this->assertSame($eventCountBeforeBadInventory, DB::table('enterprise_inventory_owner_movement_events')->count());
+
+        // Repository-owned synthetic rows remain disposable and are excluded
+        // by both explicit demo markers without weakening real event guards.
+        $demoSeedMovement = $movement;
+        $demoSeedMovement['type'] = 'demo_seed';
+        $demoSeedMovement['reference_type'] = 'demo_seed';
+        $demoSeedMovement['reference_id'] = 4;
+        $demoSeedId = (int) DB::table('stock_movements')->insertGetId($demoSeedMovement);
+        $this->assertSame(0, DB::table('enterprise_inventory_owner_movement_events')
+            ->where('source_stock_movement_id', $demoSeedId)->count());
+        DB::table('stock_movements')->where('id', $demoSeedId)->delete();
+
+        $demoStock = $this->stock('OWNER-EVENT-DEMO-CLEANUP');
+        DB::table('stores')->where('id', $demoStock['store_id'])
+            ->update(['code' => 'FOODEX-DEMO-B2C-OWNER-EVENT']);
+        $demoInventoryMovement = $movement;
+        $demoInventoryMovement['inventory_id'] = $demoStock['inventory_id'];
+        $demoInventoryMovement['store_id'] = $demoStock['store_id'];
+        $demoInventoryMovement['type'] = 'demo_inventory_preview';
+        $demoInventoryMovement['reference_type'] = 'demo_preview';
+        $demoInventoryMovement['reference_id'] = 5;
+        $demoInventoryMovementId = (int) DB::table('stock_movements')->insertGetId($demoInventoryMovement);
+        $this->assertSame(0, DB::table('enterprise_inventory_owner_movement_events')
+            ->where('source_stock_movement_id', $demoInventoryMovementId)->count());
+        DB::table('stock_movements')->where('id', $demoInventoryMovementId)->delete();
+        DB::table('inventories')->where('id', $demoStock['inventory_id'])->delete();
+
+        $migration = require database_path('migrations/2026_11_18_130000_create_enterprise_inventory_owner_movement_events.php');
+        try {
+            $migration->down();
+            $this->fail('The event ledger migration must not delete recorded event snapshots.');
+        } catch (\RuntimeException $exception) {
+            $this->assertStringContainsString('preserved', $exception->getMessage());
+        }
+        $this->assertTrue(Schema::hasTable('enterprise_inventory_owner_movement_events'));
+        $this->assertDatabaseHas('enterprise_inventory_owner_movement_events', [
+            'source_stock_movement_id' => $movementId,
+        ]);
+    }
+
+    public function test_missing_owner_event_trigger_disables_title_certification(): void
+    {
+        if (DB::connection()->getDriverName() !== 'sqlite') {
+            $this->markTestSkipped('Trigger disappearance is safely exercised through isolated SQLite DDL.');
+        }
+
+        $verifier = app(InventoryLegalTitleAttestationVerifier::class);
+        $guards = new \ReflectionMethod(InventoryLegalTitleAttestationVerifier::class, 'hasProtectedStockMovementHistory');
+        $this->assertTrue($guards->invoke($verifier));
+
+        $migration = require database_path('migrations/2026_11_18_130000_create_enterprise_inventory_owner_movement_events.php');
+        foreach ([
+            'p110_owner_event_after_movement_insert',
+            'p110_owner_event_movement_no_update',
+            'p110_owner_event_movement_no_delete',
+            'p110_owner_event_no_update',
+            'p110_owner_event_no_delete',
+        ] as $missingTrigger) {
+            DB::unprepared('DROP TRIGGER IF EXISTS '.$missingTrigger);
+            try {
+                $this->assertFalse($guards->invoke($verifier), 'Missing '.$missingTrigger.' must fail title certification closed.');
+            } finally {
+                $migration->up();
+            }
+            $this->assertTrue($guards->invoke($verifier));
+        }
+    }
+
     public function test_inventory_deletion_cannot_cascade_erase_legal_owner_claims(): void
     {
         $this->seed(CoreReferenceSeeder::class);
