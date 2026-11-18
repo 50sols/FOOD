@@ -8,11 +8,22 @@ use App\Models\User;
 use App\Models\WhatsAppConnectionProfile;
 use Database\Seeders\CoreReferenceSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Testing\TestResponse;
 use Tests\TestCase;
 
 final class V2WhatsAppSettingsReadinessTabsTest extends TestCase
 {
     use RefreshDatabase;
+
+    private function assertSharedPageTabRail(TestResponse $response): void
+    {
+        $html = $response->getContent();
+        $this->assertSame(1, preg_match('/<nav class="foodex-tabs foodex-tabs--horizontal"[^>]*>(.*?)<\/nav>/s', $html, $matches));
+        $this->assertSame(1, preg_match_all('/aria-current="page"/', $matches[1]));
+        $this->assertStringNotContainsString('style="flex-wrap:nowrap;overflow-x:auto;white-space:nowrap"', $matches[0]);
+        $this->assertStringContainsString('.foodex-tabs.foodex-tabs--horizontal{min-width:0;max-width:100%;flex-wrap:nowrap;overflow-x:auto;', $html);
+        $this->assertStringContainsString('.foodex-tabs.foodex-tabs--horizontal > a:focus-visible', $html);
+    }
 
     protected function setUp(): void
     {
@@ -35,6 +46,7 @@ final class V2WhatsAppSettingsReadinessTabsTest extends TestCase
             $base = route('admin.whatsapp.connections.index');
 
             $response = $this->actingAs($actor)->get($base);
+            $this->assertSharedPageTabRail($response);
             $response->assertOk()->assertSee($heading)->assertSee('dir="'.$direction.'"', false)
                 ->assertSee('data-whatsapp-panel="profiles"', false)
                 ->assertDontSee('data-whatsapp-panel="create"', false)
@@ -46,12 +58,14 @@ final class V2WhatsAppSettingsReadinessTabsTest extends TestCase
             // Inactive tabs are not merely CSS-hidden: the server must not
             // include their forms or sensitive state in the returned HTML.
             $newProfile = $this->actingAs($actor)->get(route('admin.whatsapp.connections.index', ['tab' => 'create']));
+            $this->assertSharedPageTabRail($newProfile);
             $newProfile->assertOk()->assertSee('name="name"', false)
                 ->assertSee('data-whatsapp-panel="create"', false)
                 ->assertDontSee('data-whatsapp-panel="profiles"', false)
                 ->assertDontSee('data-whatsapp-panel="health"', false);
 
             $health = $this->actingAs($actor)->get(route('admin.whatsapp.connections.index', ['tab' => 'health']));
+            $this->assertSharedPageTabRail($health);
             $health->assertOk()->assertSee('data-whatsapp-panel="health"', false)
                 ->assertDontSee('data-whatsapp-panel="profiles"', false)
                 ->assertDontSee('data-whatsapp-panel="create"', false)
@@ -109,6 +123,7 @@ final class V2WhatsAppSettingsReadinessTabsTest extends TestCase
         foreach (['en' => 'ltr', 'ar' => 'rtl'] as $locale => $direction) {
             $actor = $this->superAdmin($locale);
             $readiness = $this->actingAs($actor)->get(route('admin.whatsapp.index'));
+            $this->assertSharedPageTabRail($readiness);
             $readiness->assertOk()->assertSee('dir="'.$direction.'"', false)
                 ->assertSee('data-whatsapp-panel="readiness"', false);
             $readiness->assertDontSee('data-whatsapp-panel="controls"', false)
@@ -120,6 +135,7 @@ final class V2WhatsAppSettingsReadinessTabsTest extends TestCase
                 ->assertDontSee('name="action"', false);
 
             $controls = $this->actingAs($actor)->get(route('admin.whatsapp.index', ['tab' => 'controls']));
+            $this->assertSharedPageTabRail($controls);
             $controls->assertOk();
             if (str_contains($controls->getContent(), 'data-whatsapp-panel="controls"')) {
                 $controls->assertDontSee('data-whatsapp-panel="readiness"', false);
