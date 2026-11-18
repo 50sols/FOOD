@@ -70,7 +70,11 @@ final class InventoryOwnershipRuleService
         if ($documentId !== null) {
             abort_unless($supplierId !== null
                 && DB::table('enterprise_supplier_documents')->where('id', $documentId)
-                    ->where('supplier_id', $supplierId)->exists(), 404);
+                    ->where('supplier_id', $supplierId)
+                    ->where(function ($scope): void {
+                        $scope->whereNull('expires_at')
+                            ->orWhereDate('expires_at', '>=', now()->toDateString());
+                    })->exists(), 404);
         }
         if ($data['initial_owner_kind'] !== 'SUPPLIER' && $supplierId !== null) {
             throw ValidationException::withMessages(['supplier_id' => ['Supplier scope requires supplier-owned title intent.']]);
@@ -288,7 +292,11 @@ final class InventoryOwnershipRuleService
 
         if ($documentId !== null && ($supplierId === null
             || ! DB::table('enterprise_supplier_documents')->where('id', $documentId)
-                ->where('supplier_id', $supplierId)->exists())) {
+                ->where('supplier_id', $supplierId)
+                ->where(function ($scope): void {
+                    $scope->whereNull('expires_at')
+                        ->orWhereDate('expires_at', '>=', now()->toDateString());
+                })->exists())) {
             return false;
         }
 
