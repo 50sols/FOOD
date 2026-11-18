@@ -88,6 +88,7 @@ final class FinanceWorkbenchController extends Controller
     {
         $actor = $this->actor($request);
         abort_unless($this->modules->isEnabled(FinanceFoundationService::MODULE), 403);
+        $this->assertWholesaleSelection($request);
 
         // Do not expose Finance context choices to operational roles lacking
         // Finance read permission. Authorize before enterprise scope resolution
@@ -97,22 +98,6 @@ final class FinanceWorkbenchController extends Controller
             $assignedContexts,
             fn (array $option): bool => $this->financeAccess->canRead($actor, (int) $option['id']),
         ));
-
-        // A Retail store assigned through an actual store-scoped role but
-        // denied Finance is forbidden (403). Global Wholesale roles enumerate
-        // B2B contexts without store assignment: preserve their 404 when denied.
-        // Never resolve a denied store's enterprise data scope or borrow access
-        // from the user's other authorized Retail store.
-        $requestedStoreId = (int) $request->input('store_id', 0);
-        $assignedRetailStoreIds = array_column(
-            array_filter($assignedContexts, static fn (array $option): bool => $option['channel'] === 'b2c'),
-            'id',
-        );
-        if ($requestedStoreId > 0
-            && in_array($requestedStoreId, $assignedRetailStoreIds, true)
-            && ! in_array($requestedStoreId, array_column($contexts, 'id'), true)) {
-            abort(403);
-        }
 
         if ($contexts === []) {
             // Only a privileged platform operator with an actual platform
@@ -1072,6 +1057,10 @@ final class FinanceWorkbenchController extends Controller
                 ->where('company_id', $scope->companyId)
                 ->where('legal_entity_id', $scope->legalEntityId)
                 ->when($context->isRetail(), fn ($query) => $query->where('store_id', $context->requiresStore()))
+                ->when($context->isWholesale(), fn ($query) => $query->whereIn('store_id', DB::table('stores as store')
+                    ->join('store_types as type', 'type.id', '=', 'store.store_type_id')
+                    ->where('type.code', 'B2B')
+                    ->select('store.id')))
                 ->whereKey((int) $validated['settlement_document_id'])
                 ->firstOrFail();
 
@@ -1389,41 +1378,25 @@ final class FinanceWorkbenchController extends Controller
      */
     private function contextOptions(User $actor): array
     {
-        $retailIds = $this->tenants->retailStoreIds($actor);
-        $canWholesale = $this->navigation->canAccess($actor, 'b2b');
-
-        if (! $canWholesale && $retailIds === []) {
+        if (! $this->navigation->canAccess($actor, 'b2b')) {
             return [];
         }
 
-        $query = DB::table('stores as store')
+        return DB::table('stores as store')
             ->join('store_types as type', 'type.id', '=', 'store.store_type_id')
             ->where('store.is_active', true)
-            ->where(function ($scope) use ($canWholesale, $retailIds): void {
-                if ($canWholesale) {
-                    $scope->where('type.code', 'B2B');
-                }
-
-                if ($retailIds !== []) {
-                    $method = $canWholesale ? 'orWhere' : 'where';
-                    $scope->{$method}(function ($retail) use ($retailIds): void {
-                        $retail->where('type.code', 'B2C')
-                            ->whereIn('store.id', $retailIds);
-                    });
-                }
-            })
+            ->where('type.code', 'B2B')
             ->select(['store.id', 'store.code', 'store.name', 'type.code as channel'])
             ->orderBy('type.code')
             ->orderBy('store.code')
             ->limit(100)
-            ->get();
-
-        return $query->map(static fn ($store): array => [
-            'id' => (int) $store->id,
-            'code' => (string) $store->code,
-            'name' => (string) $store->name,
-            'channel' => strtolower((string) $store->channel),
-        ])->values()->all();
+            ->get()
+            ->map(static fn ($store): array => [
+                'id' => (int) $store->id,
+                'code' => (string) $store->code,
+                'name' => (string) $store->name,
+                'channel' => strtolower((string) $store->channel),
+            ])->values()->all();
     }
 
     /**
@@ -1456,16 +1429,38 @@ final class FinanceWorkbenchController extends Controller
      */
     private function resolveContext(Request $request, User $actor, array $selected): ResolvedTenantContext
     {
-        if ($selected['channel'] === 'b2b') {
-            return $this->tenants->wholesale($actor, $selected['id']);
+        abort_unless($selected['channel'] === 'b2b', 404);
+
+        return $this->tenants->wholesale($actor, $selected['id']);
+    }
+
+    /**
+     * ERP Finance accepts only an explicit Wholesale store context. This also
+     * protects the platform-only setup page from acting as a Retail context
+     * fallback when a caller supplies a B2C store ID or code.
+     */
+    private function assertWholesaleSelection(Request $request): void
+    {
+        $storeId = $request->integer('store_id');
+        $storeCode = trim((string) $request->input('store_code', ''));
+
+        if ($storeId > 0) {
+            $isWholesale = DB::table('stores as store')
+                ->join('store_types as type', 'type.id', '=', 'store.store_type_id')
+                ->where('store.id', $storeId)
+                ->where('type.code', 'B2B')
+                ->exists();
+            abort_unless($isWholesale, 404);
         }
 
-        return $this->tenants->retail(
-            $actor,
-            $selected['id'],
-            $actor->hasRole('SUPER_ADMIN'),
-            $request,
-        );
+        if ($storeCode !== '') {
+            $isWholesale = DB::table('stores as store')
+                ->join('store_types as type', 'type.id', '=', 'store.store_type_id')
+                ->where('store.code', $storeCode)
+                ->where('type.code', 'B2B')
+                ->exists();
+            abort_unless($isWholesale, 404);
+        }
     }
 
     /** @return array{User, ResolvedTenantContext} */
@@ -1473,6 +1468,7 @@ final class FinanceWorkbenchController extends Controller
     {
         $actor = $this->actor($request);
         abort_unless($this->modules->isEnabled(FinanceFoundationService::MODULE), 403);
+        $this->assertWholesaleSelection($request);
 
         $contexts = $this->contextOptions($actor);
         $selected = $this->selectedContextOption($request, $contexts);

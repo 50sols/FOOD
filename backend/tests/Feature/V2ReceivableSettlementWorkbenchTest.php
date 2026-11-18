@@ -173,7 +173,7 @@ final class V2ReceivableSettlementWorkbenchTest extends TestCase
 
     public function test_bilingual_ar_draft_refuses_unverified_collection_posting_without_journal(): void
     {
-        $fixture = $this->fixture('P303-SETTLEMENT');
+        $fixture = $this->fixture('P303-SETTLEMENT', wholesale: true);
         $maker = $fixture['maker'];
         $poster = $fixture['poster'];
         $store = $fixture['store'];
@@ -270,9 +270,9 @@ final class V2ReceivableSettlementWorkbenchTest extends TestCase
 
     public function test_receivable_account_cannot_be_its_own_settlement_account_without_financial_mutation(): void
     {
-        $fixture = $this->fixture('P303-SELF-NET');
+        $fixture = $this->fixture('P303-SELF-NET', wholesale: true);
         $receivables = app(AccountsReceivableService::class);
-        $context = app(TenantContextResolver::class)->retail($fixture['maker'], $fixture['store']->id);
+        $context = app(TenantContextResolver::class)->wholesale($fixture['maker'], $fixture['store']->id);
         $document = $fixture['document'];
         $payload = [
             'idempotency_key' => 'p303-selfnet-rejected',
@@ -503,11 +503,11 @@ final class V2ReceivableSettlementWorkbenchTest extends TestCase
 
     public function test_posted_legacy_allocation_cannot_be_replayed_as_verified_collection(): void
     {
-        $fixture = $this->fixture('P303-POSTED-REPLAY');
+        $fixture = $this->fixture('P303-POSTED-REPLAY', wholesale: true);
         $tenants = app(TenantContextResolver::class);
         $ar = app(AccountsReceivableService::class);
-        $makerContext = $tenants->retail($fixture['maker'], $fixture['store']->id);
-        $posterContext = $tenants->retail($fixture['poster'], $fixture['store']->id);
+        $makerContext = $tenants->wholesale($fixture['maker'], $fixture['store']->id);
+        $posterContext = $tenants->wholesale($fixture['poster'], $fixture['store']->id);
         $allocation = $ar->createAllocation($fixture['maker'], $makerContext, $fixture['document']->id, [
             'idempotency_key' => 'p303-posted-replay',
             'allocation_date' => '2027-01-12',
@@ -546,7 +546,7 @@ final class V2ReceivableSettlementWorkbenchTest extends TestCase
 
     public function test_direct_http_denies_cross_store_and_over_allocation_without_financial_mutation(): void
     {
-        $fixture = $this->fixture('P303-BOUNDARY');
+        $fixture = $this->fixture('P303-BOUNDARY', wholesale: true);
         $store = $fixture['store'];
         $document = $fixture['document'];
         $maker = $fixture['maker'];
@@ -583,7 +583,7 @@ final class V2ReceivableSettlementWorkbenchTest extends TestCase
         $this->assertDatabaseCount('enterprise_finance_journals', 1);
     }
 
-    public function test_retail_store_cannot_settle_sibling_store_document_in_the_same_legal_entity(): void
+    public function test_retail_service_scope_remains_isolated_from_sibling_store_documents(): void
     {
         $fixture = $this->fixture('P303-ONE-STORE');
         $sibling = $this->retailStore('P303-SIBLING');
@@ -627,48 +627,11 @@ final class V2ReceivableSettlementWorkbenchTest extends TestCase
         $this->assertSame('posted', $postedSiblingAllocation->status);
         $postedSiblingJournalId = $postedSiblingAllocation->journal_id;
 
-        $current = $fixture['maker'];
-        $currentStoreId = $fixture['store']->id;
-        $this->actingAs($current)
-            ->get(route('admin.erp.finance.index', ['store_id' => $currentStoreId, 'tab' => 'receivables']))
-            ->assertOk()
-            ->assertDontSee($foreignDocument->document_number);
-        $this->actingAs($current)
-            ->get(route('admin.erp.finance.index', [
-                'store_id' => $currentStoreId,
-                'tab' => 'receivables',
-                'settlement_document_id' => $foreignDocument->id,
-            ]))
-            ->assertNotFound();
-
-        $this->actingAs($current)->post(
-            route('admin.erp.finance.receivables.settlements.store', $foreignDocument->id),
-            [
-                'store_id' => $currentStoreId,
-                'idempotency_key' => 'p303-cross-store-allocation',
-                'allocation_date' => '2027-01-12',
-                'amount' => '1.000',
-                'settlement_account_id' => $fixture['cash_account_id'],
-            ],
-        )->assertNotFound();
-
-        $this->actingAs($current)->post(
-            route('admin.erp.finance.receivables.settlements.post', $foreignAllocation->id),
-            ['store_id' => $currentStoreId],
-        )->assertNotFound();
-
-        // The legitimate sibling-store poster already committed this legacy
-        // allocation. A foreign-store HTTP attempt must not alter its status,
-        // journal link or consume an additional receipt.
+        // The ERP route itself now excludes Retail. These assertions preserve
+        // the canonical non-ERP Retail service's own-store isolation contract.
         $this->assertSame('posted', $foreignAllocation->fresh()->status);
         $this->assertSame($postedSiblingJournalId, $foreignAllocation->fresh()->journal_id);
-        $this->assertDatabaseMissing('enterprise_ar_allocations', [
-            'ar_document_id' => $foreignDocument->id,
-            'idempotency_key' => 'p303-cross-store-allocation',
-        ]);
-
-        // The controller already denies this posted ID. Direct service calls
-        // must also reject cross-store posted replays before returning status.
+        $current = $fixture['maker'];
         $this->expectException(ModelNotFoundException::class);
         $ar->postAllocation($current, $currentContext, $foreignAllocation->id);
     }
@@ -831,13 +794,13 @@ final class V2ReceivableSettlementWorkbenchTest extends TestCase
 
     public function test_typed_collection_receipt_link_is_transactional_unique_and_never_posts_unauthorized_gl(): void
     {
-        $fixture = $this->fixture('P303-COLLECTION-LINK');
+        $fixture = $this->fixture('P303-COLLECTION-LINK', wholesale: true);
         $store = $fixture['store'];
         $document = $fixture['document'];
         $maker = $fixture['maker'];
         $poster = $fixture['poster'];
-        $context = app(TenantContextResolver::class)->retail($maker, $store->id);
-        $posterContext = app(TenantContextResolver::class)->retail($poster, $store->id);
+        $context = app(TenantContextResolver::class)->wholesale($maker, $store->id);
+        $posterContext = app(TenantContextResolver::class)->wholesale($poster, $store->id);
 
         $invoiceId = DB::table('invoices')->insertGetId([
             'invoice_number' => 'P303-COLLECTION-INVOICE',
@@ -854,7 +817,7 @@ final class V2ReceivableSettlementWorkbenchTest extends TestCase
         $document->forceFill(['source_invoice_id' => $invoiceId])->save();
 
         $account = CollectionAccount::query()->create([
-            'actor_type' => 'driver',
+            'actor_type' => 'van_rep',
             'actor_id' => $maker->id,
             'store_id' => $store->id,
             'currency' => 'KWD',
@@ -866,7 +829,7 @@ final class V2ReceivableSettlementWorkbenchTest extends TestCase
             'p303-proven-receipt-1',
             30.0,
             'KWD',
-            'driver_app',
+            'van_app',
             [['invoice_id' => $invoiceId, 'amount' => 30.0]],
         );
         $sourceId = (int) DB::table('collection_allocations')
@@ -950,7 +913,7 @@ final class V2ReceivableSettlementWorkbenchTest extends TestCase
 
     public function test_bilingual_finance_receipt_picker_only_lists_canonical_invoice_allocations_and_persists_typed_source(): void
     {
-        $fixture = $this->fixture('P303-RECEIPT-UI');
+        $fixture = $this->fixture('P303-RECEIPT-UI', wholesale: true);
         $store = $fixture['store'];
         $document = $fixture['document'];
         $maker = $fixture['maker'];
@@ -977,7 +940,7 @@ final class V2ReceivableSettlementWorkbenchTest extends TestCase
         ]);
         $document->forceFill(['source_invoice_id' => $invoiceId])->save();
         $account = CollectionAccount::query()->create([
-            'actor_type' => 'driver',
+            'actor_type' => 'van_rep',
             'actor_id' => $maker->id,
             'store_id' => $store->id,
             'currency' => 'KWD',
@@ -986,11 +949,11 @@ final class V2ReceivableSettlementWorkbenchTest extends TestCase
         $custody = app(CollectionCustodyService::class);
         $receipt = $custody->collect(
             $account, $maker, 'p303-receipt-ui-own', 30.0, 'KWD',
-            'driver_app', [['invoice_id' => $invoiceId, 'amount' => 30.0]],
+            'van_app', [['invoice_id' => $invoiceId, 'amount' => 30.0]],
         );
         $foreignReceipt = $custody->collect(
             $account, $maker, 'p303-receipt-ui-foreign', 12.0, 'KWD',
-            'driver_app', [['invoice_id' => $foreignInvoiceId, 'amount' => 12.0]],
+            'van_app', [['invoice_id' => $foreignInvoiceId, 'amount' => 12.0]],
         );
         $sourceId = (int) DB::table('collection_allocations')
             ->where('collection_transaction_id', $receipt->id)->value('id');
@@ -1014,10 +977,10 @@ final class V2ReceivableSettlementWorkbenchTest extends TestCase
                 ->assertDontSee(__('finance_workbench.receivables.linked_receipt', ['date' => $receipt->id], $locale));
         }
 
-        // A forged Van-origin collection on a Retail Driver wallet must
+        // A forged Driver-origin collection on a Wholesale Van wallet must
         // never be offered in the existing bilingual Finance receipt picker.
         DB::table('collection_transactions')->where('id', $receipt->id)
-            ->update(['source' => 'van_app']);
+            ->update(['source' => 'driver_app']);
         foreach (['en', 'ar'] as $locale) {
             $maker->forceFill(['locale' => $locale])->save();
             $this->actingAs($maker->fresh())->get(route('admin.erp.finance.index', [
@@ -1028,7 +991,7 @@ final class V2ReceivableSettlementWorkbenchTest extends TestCase
                 ->assertDontSee('<option value="'.$sourceId.'" data-collection-receipt="true">', false);
         }
         DB::table('collection_transactions')->where('id', $receipt->id)
-            ->update(['source' => 'driver_app']);
+            ->update(['source' => 'van_app']);
 
         // The existing AR/EN selector must not present a payment whose
         // amount exceeds the posted collection by a single KWD mill.
@@ -1085,11 +1048,11 @@ final class V2ReceivableSettlementWorkbenchTest extends TestCase
 
     public function test_replaying_typed_receipt_draft_revalidates_revoked_source_without_extra_financial_posting(): void
     {
-        $fixture = $this->fixture('P303-REPLAY-REVOKED');
+        $fixture = $this->fixture('P303-REPLAY-REVOKED', wholesale: true);
         $store = $fixture['store'];
         $document = $fixture['document'];
         $maker = $fixture['maker'];
-        $context = app(TenantContextResolver::class)->retail($maker, $store->id);
+        $context = app(TenantContextResolver::class)->wholesale($maker, $store->id);
         $invoiceId = DB::table('invoices')->insertGetId([
             'invoice_number' => 'P303-REPLAY-REVOKED-INVOICE',
             'store_id' => $store->id,
@@ -1102,7 +1065,7 @@ final class V2ReceivableSettlementWorkbenchTest extends TestCase
         ]);
         $document->forceFill(['source_invoice_id' => $invoiceId])->save();
         $account = CollectionAccount::query()->create([
-            'actor_type' => 'driver',
+            'actor_type' => 'van_rep',
             'actor_id' => $maker->id,
             'store_id' => $store->id,
             'currency' => 'KWD',
@@ -1114,7 +1077,7 @@ final class V2ReceivableSettlementWorkbenchTest extends TestCase
             'p303-replay-revoked-collection',
             30.0,
             'KWD',
-            'driver_app',
+            'van_app',
             [['invoice_id' => $invoiceId, 'amount' => 30.0]],
         );
         $sourceId = (int) DB::table('collection_allocations')
@@ -1171,7 +1134,7 @@ final class V2ReceivableSettlementWorkbenchTest extends TestCase
         // A formerly valid receipt must fail idempotent source replay after
         // the transaction origin changes to the wrong fulfillment channel.
         DB::table('collection_transactions')->where('id', $transaction->id)
-            ->update(['source' => 'van_app']);
+            ->update(['source' => 'driver_app']);
         $assertRevoked();
         foreach (['en', 'ar'] as $locale) {
             $maker->forceFill(['locale' => $locale])->save();
@@ -1183,7 +1146,7 @@ final class V2ReceivableSettlementWorkbenchTest extends TestCase
             ]);
         }
         DB::table('collection_transactions')->where('id', $transaction->id)
-            ->update(['source' => 'driver_app']);
+            ->update(['source' => 'van_app']);
 
         // Both values are valid 3-decimal amounts, but a mismatch of one
         // KWD mill must revoke a previously accepted source on replay.
@@ -1334,15 +1297,15 @@ final class V2ReceivableSettlementWorkbenchTest extends TestCase
 
     public function test_collection_account_mapping_requires_independent_finance_checker_and_never_posts_cash_ar(): void
     {
-        $fixture = $this->fixture('P303-MAPPING');
+        $fixture = $this->fixture('P303-MAPPING', wholesale: true);
         $store = $fixture['store'];
         $maker = $fixture['maker'];
         $checker = $fixture['poster'];
-        $context = app(TenantContextResolver::class)->retail($maker, $store->id);
+        $context = app(TenantContextResolver::class)->wholesale($maker, $store->id);
         $scope = $context->enterpriseScope;
         $this->assertNotNull($scope);
 
-        $role = Role::query()->where('code', 'B2C_STORE_ADMIN')->firstOrFail();
+        $role = Role::query()->where('code', 'B2B_ADMIN')->firstOrFail();
         $permission = Permission::query()->firstOrCreate(
             ['code' => 'finance.approve'], ['name' => 'Finance Approve'],
         );
@@ -1372,17 +1335,9 @@ final class V2ReceivableSettlementWorkbenchTest extends TestCase
                 ->assertDontSee('id="p303-collector-wallet"', false);
         }
 
-        $driverId = DB::table('drivers')->insertGetId([
-            'user_id' => $maker->id,
-            'driver_type' => 'delivery',
-            'is_available' => true,
-            'is_active' => true,
-            'created_at' => now(),
-            'updated_at' => now(),
-        ]);
         $wallet = CollectionAccount::query()->create([
-            'actor_type' => 'driver',
-            'actor_id' => $driverId,
+            'actor_type' => 'van_rep',
+            'actor_id' => $maker->id,
             'store_id' => $store->id,
             'currency' => 'KWD',
             'status' => 'active',
@@ -1436,10 +1391,10 @@ final class V2ReceivableSettlementWorkbenchTest extends TestCase
         ])->assertSessionHasErrors('collection_account_id');
         $wallet->forceFill(['status' => 'active'])->save();
 
-        $foreign = $this->retailStore('P303-MAP-TEST-FOREIGN');
+        $foreign = $this->wholesaleStore('P303-MAP-TEST-FOREIGN');
         $foreignWallet = CollectionAccount::query()->create([
-            'actor_type' => 'driver',
-            'actor_id' => $driverId,
+            'actor_type' => 'van_rep',
+            'actor_id' => $maker->id,
             'store_id' => $foreign->id,
             'currency' => 'KWD',
             'status' => 'active',
@@ -1825,20 +1780,81 @@ final class V2ReceivableSettlementWorkbenchTest extends TestCase
         $this->assertDatabaseCount('enterprise_ar_allocations', 0);
     }
 
-    /** @return array{store:Store,maker:User,poster:User,document:EnterpriseAccountsReceivableDocument,cash_account_id:int} */
-    private function fixture(string $prefix): array
+    public function test_wholesale_ar_queries_and_writes_exclude_retail_stores_in_a_shared_legal_entity(): void
     {
-        $store = $this->retailStore($prefix);
-        $role = Role::query()->where('code', 'B2C_STORE_ADMIN')->firstOrFail();
+        $wholesale = $this->fixture('P303-AR-B2B', wholesale: true);
+        $retail = $this->fixture('P303-AR-B2C');
+        $context = app(TenantContextResolver::class)->wholesale(
+            $wholesale['maker'],
+            $wholesale['store']->id,
+        );
+        $scope = $context->enterpriseScope;
+        $this->assertNotNull($scope);
+
+        // Model the mixed-channel edge case: Retail's operational store scope
+        // shares the exact enterprise organization/company/legal entity with
+        // Wholesale, so legal-entity filtering alone would leak the document.
+        $retailBusinessUnitId = (int) DB::table('enterprise_store_scopes')
+            ->where('store_id', $retail['store']->id)
+            ->value('business_unit_id');
+        DB::table('enterprise_business_units')->where('id', $retailBusinessUnitId)->update([
+            'organization_id' => $scope->organizationId,
+            'company_id' => $scope->companyId,
+            'legal_entity_id' => $scope->legalEntityId,
+        ]);
+        $retailDocument = $retail['document']->forceFill([
+            'organization_id' => $scope->organizationId,
+            'company_id' => $scope->companyId,
+            'legal_entity_id' => $scope->legalEntityId,
+        ]);
+        $retailDocument->save();
+
+        $documents = app(AccountsReceivableService::class)->paginate($wholesale['maker'], $context);
+        $ids = $documents->getCollection()->modelKeys();
+        $this->assertContains($wholesale['document']->id, $ids);
+        $this->assertNotContains($retailDocument->id, $ids);
+
+        try {
+            app(AccountsReceivableService::class)->createDraft($wholesale['maker'], $context, [
+                'idempotency_key' => 'p303-b2b-rejects-b2c-store',
+                'store_id' => $retail['store']->id,
+                'customer_id' => $wholesale['document']->customer_id,
+                'entry_date' => '2027-01-05',
+                'due_date' => '2027-02-05',
+                'amount' => '10.000',
+                'currency_code' => 'KWD',
+                'receivable_account_id' => $wholesale['document']->receivable_account_id,
+                'offset_account_id' => $wholesale['document']->offset_account_id,
+            ]);
+            $this->fail('Wholesale AR must reject a Retail store even when its legal entity is shared.');
+        } catch (HttpException $exception) {
+            $this->assertSame(404, $exception->getStatusCode());
+        }
+
+        $this->assertDatabaseMissing('enterprise_ar_documents', [
+            'idempotency_key' => 'p303-b2b-rejects-b2c-store',
+        ]);
+    }
+
+    /** @return array{store:Store,maker:User,poster:User,document:EnterpriseAccountsReceivableDocument,cash_account_id:int} */
+    private function fixture(string $prefix, bool $wholesale = false): array
+    {
+        $store = $wholesale ? $this->wholesaleStore($prefix) : $this->retailStore($prefix);
+        $role = Role::query()->where('code', $wholesale ? 'B2B_ADMIN' : 'B2C_STORE_ADMIN')->firstOrFail();
         foreach (['finance.view', 'finance.manage', 'finance.post'] as $code) {
             $permission = Permission::query()->firstOrCreate(['code' => $code], ['name' => $code]);
             $role->permissions()->syncWithoutDetaching([$permission->id]);
         }
 
-        $maker = $this->userForStore($store, $prefix.'-MAKER');
-        $poster = $this->userForStore($store, $prefix.'-POSTER');
-        $context = app(TenantContextResolver::class)->retail($maker, $store->id);
-        $posterContext = app(TenantContextResolver::class)->retail($poster, $store->id);
+        $maker = $this->userForStore($store, $prefix.'-MAKER', $wholesale);
+        $poster = $this->userForStore($store, $prefix.'-POSTER', $wholesale);
+        $tenants = app(TenantContextResolver::class);
+        $context = $wholesale
+            ? $tenants->wholesale($maker, $store->id)
+            : $tenants->retail($maker, $store->id);
+        $posterContext = $wholesale
+            ? $tenants->wholesale($poster, $store->id)
+            : $tenants->retail($poster, $store->id);
         $this->enableFinance($maker, $context);
 
         $finance = app(FinanceFoundationService::class);
@@ -1905,9 +1921,23 @@ final class V2ReceivableSettlementWorkbenchTest extends TestCase
         return $store;
     }
 
-    private function userForStore(Store $store, string $code): User
+    private function wholesaleStore(string $code): Store
     {
-        $role = Role::query()->where('code', 'B2C_STORE_ADMIN')->firstOrFail();
+        $typeId = (int) DB::table('store_types')->where('code', 'B2B')->value('id');
+        $store = Store::query()->create([
+            'store_type_id' => $typeId,
+            'code' => $code,
+            'name' => $code,
+            'is_active' => true,
+        ]);
+        app(OrganizationHierarchyService::class)->ensureDefaultScopeForStore($store);
+
+        return $store;
+    }
+
+    private function userForStore(Store $store, string $code, bool $wholesale = false): User
+    {
+        $role = Role::query()->where('code', $wholesale ? 'B2B_ADMIN' : 'B2C_STORE_ADMIN')->firstOrFail();
         /** @var User $user */
         $user = User::factory()->create([
             'email' => strtolower($code).'@example.test',
@@ -1915,13 +1945,17 @@ final class V2ReceivableSettlementWorkbenchTest extends TestCase
             'locale' => 'en',
         ]);
         $this->grantPlatformErpAccess($user);
-        DB::table('user_store_roles')->insert([
-            'user_id' => $user->id,
-            'store_id' => $store->id,
-            'role_id' => $role->id,
-            'created_at' => now(),
-            'updated_at' => now(),
-        ]);
+        if ($wholesale) {
+            $user->roles()->attach($role->id);
+        } else {
+            DB::table('user_store_roles')->insert([
+                'user_id' => $user->id,
+                'store_id' => $store->id,
+                'role_id' => $role->id,
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+        }
 
         return $user;
     }

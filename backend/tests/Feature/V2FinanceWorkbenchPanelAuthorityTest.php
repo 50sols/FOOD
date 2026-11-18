@@ -170,7 +170,7 @@ final class V2FinanceWorkbenchPanelAuthorityTest extends TestCase
     public function test_ar_ap_reader_without_gl_entitlement_sees_no_journal_navigation(): void
     {
         [$viewer, $store] = $this->authorizedViewer('FIN-P303-UX-NO-GL');
-        $context = app(TenantContextResolver::class)->retail($viewer, $store->id);
+        $context = app(TenantContextResolver::class)->wholesale($viewer, $store->id);
         $scope = $context->enterpriseScope;
         $this->assertNotNull($scope);
 
@@ -215,7 +215,7 @@ final class V2FinanceWorkbenchPanelAuthorityTest extends TestCase
     public function test_ar_only_authorized_reader_gets_no_payables_or_gl_navigation_or_ledger_data(): void
     {
         [$reader, $store] = $this->authorizedViewer('FIN-P303-UX-AR-ONLY');
-        $context = app(TenantContextResolver::class)->retail($reader, $store->id);
+        $context = app(TenantContextResolver::class)->wholesale($reader, $store->id);
         $scope = $context->enterpriseScope;
         $this->assertNotNull($scope);
 
@@ -301,21 +301,13 @@ final class V2FinanceWorkbenchPanelAuthorityTest extends TestCase
         );
     }
 
-    /** @return array{User, Store} */
-    private function authorizedViewer(string $code): array
+    public function test_retail_store_is_not_a_finance_erp_context_even_with_finance_permission(): void
     {
-        $store = $this->createStore($code);
-        $role = Role::query()
-            ->where('code', 'B2C_STORE_ADMIN')
-            ->where('scope', 'store')
-            ->where('is_active', true)
-            ->firstOrFail();
-        $permission = Permission::query()->firstOrCreate(
-            ['code' => 'finance.view'],
-            ['name' => 'finance.view'],
-        );
-        $role->permissions()->syncWithoutDetaching([$permission->id]);
-
+        $store = $this->createRetailStore('FIN-P303-RETAIL-BLOCKED');
+        $role = Role::query()->where('code', 'B2C_STORE_ADMIN')->firstOrFail();
+        $role->permissions()->syncWithoutDetaching([
+            Permission::query()->firstOrCreate(['code' => 'finance.view'], ['name' => 'finance.view'])->id,
+        ]);
         $actor = User::factory()->create(['is_active' => true, 'locale' => 'en']);
         $this->grantPlatformErpAccess($actor);
         DB::table('user_store_roles')->insert([
@@ -326,7 +318,28 @@ final class V2FinanceWorkbenchPanelAuthorityTest extends TestCase
             'updated_at' => now(),
         ]);
 
-        $context = app(TenantContextResolver::class)->retail($actor, $store->id);
+        $this->actingAs($actor)->get(route('admin.erp.finance.index', [
+            'store_id' => $store->id,
+            'tab' => 'receivables',
+        ]))->assertNotFound();
+    }
+
+    /** @return array{User, Store} */
+    private function authorizedViewer(string $code): array
+    {
+        $store = $this->createStore($code);
+        $role = Role::query()->where('code', 'B2B_ADMIN')->firstOrFail();
+        $permission = Permission::query()->firstOrCreate(
+            ['code' => 'finance.view'],
+            ['name' => 'finance.view'],
+        );
+        $role->permissions()->syncWithoutDetaching([$permission->id]);
+
+        $actor = User::factory()->create(['is_active' => true, 'locale' => 'en']);
+        $this->grantPlatformErpAccess($actor);
+        $actor->roles()->attach($role->id);
+
+        $context = app(TenantContextResolver::class)->wholesale($actor, $store->id);
         $scope = $context->enterpriseScope;
         $this->assertNotNull($scope);
 
@@ -354,6 +367,19 @@ final class V2FinanceWorkbenchPanelAuthorityTest extends TestCase
     }
 
     private function createStore(string $code): Store
+    {
+        $store = Store::query()->create([
+            'store_type_id' => (int) DB::table('store_types')->where('code', 'B2B')->value('id'),
+            'code' => $code,
+            'name' => $code,
+            'is_active' => true,
+        ]);
+        app(OrganizationHierarchyService::class)->ensureDefaultScopeForStore($store);
+
+        return $store;
+    }
+
+    private function createRetailStore(string $code): Store
     {
         $store = Store::query()->create([
             'store_type_id' => (int) DB::table('store_types')->where('code', 'B2C')->value('id'),

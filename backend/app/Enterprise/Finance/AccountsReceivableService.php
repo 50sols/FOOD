@@ -131,6 +131,9 @@ final class AccountsReceivableService
         ])->validate();
 
         $this->assertStoreInScope($scope, (int) $data['store_id']);
+        if ($context->isWholesale()) {
+            $this->assertStoreChannel((int) $data['store_id'], 'B2B');
+        }
         // A Retail operator cannot create an AR document in a sibling store,
         // even when both stores map to the same enterprise legal entity.
         if ($context->isRetail()) {
@@ -972,7 +975,25 @@ final class AccountsReceivableService
             ->where('organization_id', $scope->organizationId)
             ->where('company_id', $scope->companyId)
             ->where('legal_entity_id', $scope->legalEntityId)
-            ->when($context->isRetail(), fn (Builder $query): Builder => $query->where('store_id', $context->requiresStore()));
+            ->when($context->isRetail(), fn (Builder $query): Builder => $query->where('store_id', $context->requiresStore()))
+            ->when(
+                $context->isWholesale(),
+                fn (Builder $query): Builder => $query->whereIn('store_id', DB::table('stores as store')
+                    ->join('store_types as type', 'type.id', '=', 'store.store_type_id')
+                    ->where('type.code', 'B2B')
+                    ->select('store.id')),
+            );
+    }
+
+    private function assertStoreChannel(int $storeId, string $channel): void
+    {
+        $exists = DB::table('stores as store')
+            ->join('store_types as type', 'type.id', '=', 'store.store_type_id')
+            ->where('store.id', $storeId)
+            ->where('type.code', $channel)
+            ->exists();
+
+        abort_unless($exists, 404);
     }
 
     private function assertStoreInScope(
