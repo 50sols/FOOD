@@ -66,6 +66,28 @@ final class V2Customer360TabHistoryContextTest extends TestCase
             $this->assertStringContainsString("activate(available ? requested : 'finance');", $html);
             $this->assertStringContainsString("window.location.hash !== '#'+name", $html);
 
+            // Visual keyboard arrows follow the rendered tab direction, not a
+            // hardcoded LTR index order. Keep Home/End and browser history.
+            $this->assertStringContainsString("const isRtl = document.documentElement.dir === 'rtl';", $html);
+            $this->assertStringContainsString(
+                "event.key === 'ArrowLeft' ? (isRtl ? 1 : -1) : (isRtl ? -1 : 1)",
+                $html,
+            );
+            $this->assertStringContainsString(
+                'next = Math.max(0, Math.min(tabs.length - 1, index + direction));',
+                $html,
+            );
+            $this->assertStringContainsString("if (event.key === 'Home') next = 0;", $html);
+            $this->assertStringContainsString("else if (event.key === 'End') next = tabs.length - 1;", $html);
+            $this->assertStringContainsString('tabs[next].focus();', $html);
+            $this->assertStringContainsString("tab.setAttribute('aria-selected', active ? 'true' : 'false');", $html);
+            $this->assertStringContainsString('tab.tabIndex = active ? 0 : -1;', $html);
+            $this->assertStringContainsString('panel.hidden = !active;', $html);
+            $this->assertStringNotContainsString(
+                "else if (event.key === 'ArrowLeft') next = Math.max(0, index - 1);",
+                $html,
+            );
+
             // The existing statement/date and finance subflow are not replaced
             // by invented History/Credit routes or new client-side data sources.
             $response->assertViewHas('statementFilters', fn (mixed $filters): bool => is_array($filters)
