@@ -102,19 +102,22 @@ final class V2OrganizationSetupGuidanceTest extends TestCase
 
         $this->assertSame(1, substr_count($html, 'name="name" value="Uncommitted Company"'));
         $this->assertSame(1, substr_count($html, 'name="code" value="../invalid"'));
+        $this->assertSame(1, substr_count($html, 'name="is_active" value="1" checked'));
+        $this->assertDatabaseMissing('enterprise_companies', ['name' => 'Uncommitted Company']);
     }
 
     public function test_failed_edit_save_restores_values_only_to_edit_form(): void
     {
         $admin = $this->actor('SUPER_ADMIN', 'en');
         $organization = EnterpriseOrganization::query()->where('code', 'foodex_platform')->firstOrFail();
+        $originalName = $organization->name;
         $showUrl = route('admin.enterprise-organizations.show', $organization);
 
         $this->actingAs($admin)->from($showUrl)
             ->patch(route('admin.enterprise-organizations.update', $organization), [
                 'name' => 'Uncommitted Organization Rename',
                 'code' => '../invalid',
-                'is_active' => '1',
+                'is_active' => '0',
                 '_setup_form' => 'edit',
             ])->assertRedirect($showUrl)
             ->assertSessionHasErrors('code');
@@ -123,6 +126,8 @@ final class V2OrganizationSetupGuidanceTest extends TestCase
 
         $this->assertSame(1, substr_count($html, 'name="name" value="Uncommitted Organization Rename"'));
         $this->assertSame(1, substr_count($html, 'name="code" value="../invalid"'));
+        $this->assertSame(1, substr_count($html, 'name="is_active" value="1" checked'));
+        $this->assertSame($originalName, $organization->fresh()->name);
     }
 
     public function test_non_admin_cannot_test_or_save_organization_inputs(): void
