@@ -134,8 +134,8 @@ void main() {
   });
 
   testWidgets(
-    'entry route renders the C13 business login without Marketplace bypass',
-    (tester) async {
+      'entry route renders the C13 business login without Marketplace bypass',
+      (tester) async {
     await tester.pumpWidget(
       const FoodexCustomerApp(initialRoute: '/entry'),
     );
