@@ -150,8 +150,10 @@ no main, version promotion, ZIP release or production deployment.
   `finance.ar.read/manage` duty boundary; this adds no post, approval, GL/AP,
   Retail, B2C or generic B2B authority.
 - The dedicated feature test now covers known opening-balance/credit-term reads,
-  an unknown read with an explicit fixture entitlement, a valid manage pair,
-  unknown mutation denial and mismatched read/manage permission pairs.
+  denial of an unknown read capability under the Finance manifest, a valid
+  manage pair, unknown mutation denial and mismatched read/manage permission
+  pairs. The entitlement manager itself rejects capabilities absent from the
+  manifest, so the test fixture grants only declared Finance capabilities.
 - **Exact integration dependency remains BLOCKED on #2633 / PR #3309:** the
   standalone AR entry path needs coordinated changes to
   `backend/app/Http/Controllers/Admin/FinanceWorkbenchController.php`
@@ -159,10 +161,20 @@ no main, version promotion, ZIP release or production deployment.
   `backend/app/Support/AdminNavigation.php` (B2B context admission and Finance
   item projection), and the shared Finance routes/views/AR service. These are
   outside #2696's three-file fence and are owned by the original #2633 PR.
-  The #2633 issue is OPEN/handoff-ready and its PR remains DRAFT; no explicit
-  file/hunk handoff has been granted. Do not widen B2B global roles to bridge
-  this gap. The in-fence service policy is not a positive standalone HTTP or
-  navigation journey.
+  The #2633 issue is OPEN with `worker:active`; PR #3309 is OPEN/DRAFT at
+  `fca26d17c5a4fce6c3f73c9b04f0061062874304` and its current diff owns these
+  shared paths. No explicit file/hunk handoff has been granted to #2696. Do not
+  widen B2B global roles to bridge this gap. The in-fence service policy is not
+  a positive standalone HTTP or navigation journey.
+- **Confirmed read-surface gap from the HIGH-risk review:**
+  `FinanceWorkbenchController::accessMatrix()` still builds Foundation, GL,
+  AP and related read flags from broad `finance.view` plus entitlements; it
+  does not call `FinanceWorkbenchAccess::canReadCapability()`. A mixed
+  `AR_OFFICER` + `FINANCE` actor with those entitlements can therefore still
+  receive non-AR tab/read access through the shared Workbench. The existing
+  regression proves a direct GL POST is denied, but does not prove GL/AP/
+  Foundation GET denial. This defect is in the #2633-owned controller path,
+  remains blocked by that file fence, and keeps #2696 SOURCE_INCOMPLETE.
 - Exact pre-edit head `f4c754aa555e5d9323acf6f60cfe17a114080645` Required CI
   #44274079743 was terminal FAILURE: backend tests and MySQL/Redis succeeded;
   the C13 login evidence gate and Operational #734 transition contract failed

@@ -202,7 +202,6 @@ final class V2ArOfficerAuthorizationContractTest extends TestCase
                 'finance.opening_balances.read',
                 'finance.credit_terms.read',
                 'finance.credit_terms.manage',
-                'finance.unknown.read',
             ],
         );
 
