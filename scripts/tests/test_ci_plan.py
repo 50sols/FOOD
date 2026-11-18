@@ -238,6 +238,7 @@ class CiPlanTest(unittest.TestCase):
     def test_reviewed_v2_qa_documents_route_to_minimum_relevant_areas(self):
         routes={
             "docs/v2/qa/3960-erp-center-horizontal-tabs.md":{"backend","dashboard_ui"},
+            "docs/v2/qa/4007-treasury-page-tab-rail.md":{"backend","dashboard_ui"},
             "docs/v2/qa/4000-archived-active-role-authority.md":{"backend"},
             "docs/v2/qa/2732-wholesale-financial-parity.md":{"backend","customer"},
             "docs/v2/qa/2845-erp-entitlement-maker-checker-boundaries.md":{"backend"},
