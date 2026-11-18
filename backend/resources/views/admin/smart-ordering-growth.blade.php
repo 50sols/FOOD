@@ -6,7 +6,7 @@
 @include('admin._brand-components')
 @include('admin._settings-page-polish')
 <style>
-.rg-tabs{flex-wrap:nowrap;overflow-x:auto;max-width:100%;scrollbar-width:thin}.foodex-admin-main [data-growth-panel][hidden]{display:none!important}.rg-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,330px),1fr));gap:16px}.rg-form{display:grid;gap:10px}.rg-form label{display:grid;gap:5px}.rg-table{width:100%;border-collapse:collapse}.rg-table th,.rg-table td{padding:9px;border-bottom:1px solid var(--foodex-border);text-align:start}.rg-wrap{overflow:auto}.rg-code{font-family:ui-monospace,monospace;word-break:break-all}.rg-kpis{display:grid;grid-template-columns:repeat(var(--foodex-card-columns,6),minmax(120px,1fr));gap:10px}.rg-kpi{border:1px solid var(--foodex-border);border-radius:12px;padding:12px}.rg-kpi strong{display:block;font-size:1.25rem}@media(max-width:767px){.rg-kpis{grid-template-columns:1fr 1fr}.rg-table{min-width:680px}}
+.foodex-admin-main [data-growth-panel][hidden]{display:none!important}.rg-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,330px),1fr));gap:16px}.rg-form{display:grid;gap:10px}.rg-form label{display:grid;gap:5px}.rg-table{width:100%;border-collapse:collapse}.rg-table th,.rg-table td{padding:9px;border-bottom:1px solid var(--foodex-border);text-align:start}.rg-wrap{overflow:auto}.rg-code{font-family:ui-monospace,monospace;word-break:break-all}.rg-kpis{display:grid;grid-template-columns:repeat(var(--foodex-card-columns,6),minmax(120px,1fr));gap:10px}.rg-kpi{border:1px solid var(--foodex-border);border-radius:12px;padding:12px}.rg-kpi strong{display:block;font-size:1.25rem}@media(max-width:767px){.rg-kpis{grid-template-columns:1fr 1fr}.rg-table{min-width:680px}}
 </style>
 </head>
 <body>
@@ -24,7 +24,7 @@ $growthTabs = ['gift_cards', 'lifecycle', 'franchise', 'analytics', 'accounting'
 $requestedGrowthTab = request()->query('tab');
 $activeGrowthTab = is_string($requestedGrowthTab) && in_array($requestedGrowthTab, $growthTabs, true) ? $requestedGrowthTab : 'gift_cards';
 @endphp
-<nav class="foodex-tabs rg-tabs" aria-label="{{ __('restaurant_growth.title') }}" data-growth-tabs>
+<nav class="foodex-tabs foodex-tabs--horizontal" aria-label="{{ __('restaurant_growth.title') }}" data-growth-tabs>
 @foreach($growthTabs as $growthTab)
 <a class="foodex-tab {{ $activeGrowthTab === $growthTab ? 'active' : '' }}" id="growth-tab-{{ $growthTab }}" data-growth-tab="{{ $growthTab }}" href="{{ route('admin.smart-ordering.growth.index', ['site' => $site, 'tab' => $growthTab] + (request()->boolean('support_access') ? ['support_access' => 1, 'store_id' => $site->store_id] : [])) }}" @if($activeGrowthTab === $growthTab) aria-current="page" @endif>{{ __('restaurant_growth.'.$growthTab) }}</a>
 @endforeach
