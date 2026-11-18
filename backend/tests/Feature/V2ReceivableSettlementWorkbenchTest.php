@@ -568,7 +568,7 @@ final class V2ReceivableSettlementWorkbenchTest extends TestCase
                 'allocation_date' => '2027-01-12',
                 'amount' => '1.000',
                 'settlement_account_id' => $fixture['cash_account_id'],
-            ])->assertForbidden();
+            ])->assertNotFound();
 
         $this->actingAs($maker)
             ->post(route('admin.erp.finance.receivables.settlements.store', $document->id), [
