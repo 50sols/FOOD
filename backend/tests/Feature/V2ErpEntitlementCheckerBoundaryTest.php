@@ -3118,6 +3118,209 @@ final class V2ErpEntitlementCheckerBoundaryTest extends TestCase
         $this->assertSame(1, DB::table('enterprise_suppliers')->where('code', $legal['code'])->count());
     }
 
+    public function test_purchase_request_three_decimal_precision_create_edit_submit_and_replay_are_atomic(): void
+    {
+        $this->app['env'] = 'production';
+        $csrfToken = 'p111-purchase-request-precision-csrf';
+        $this->withSession(['_token' => $csrfToken])->withHeader('X-CSRF-TOKEN', $csrfToken);
+
+        $store = $this->wholesaleStore();
+        $owner = $this->actor('SUPER_ADMIN');
+        $maker = $this->actor('PROCUREMENT_BUYER');
+        app(EnterpriseModuleAdministration::class)->perform('procurement', 'enable', $owner);
+        app(ModuleEntitlementManager::class)->set(
+            'procurement', EntitlementScope::platform(), true, null, $owner,
+        );
+        $context = app(TenantContextResolver::class)->wholesale($maker, $store->id);
+        $supplier = app(SupplierDirectory::class)->create($maker, $context, [
+            'scope_type' => 'store',
+            'code' => 'P111-PRECISION-LEGAL-SUPPLIER',
+            'name_en' => 'P111 Precision Legal Supplier',
+            'tax_registration_number' => 'TAX-P111-PRECISION',
+            'commercial_registration_number' => 'CR-P111-PRECISION',
+        ]);
+
+        $lines = [[
+            'item_code' => 'P111-PRECISION-SKU',
+            'description' => 'Three decimal procurement unit',
+            'quantity' => '2.125',
+            'unit' => 'case',
+            'estimated_unit_cost' => '123.456',
+        ], [
+            'item_code' => 'P111-PRECISION-SKU-2',
+            'description' => 'Smallest three decimal procurement unit',
+            'quantity' => '0.001',
+            'unit' => 'box',
+            'estimated_unit_cost' => '0.001',
+        ]];
+        $payload = [
+            'store_id' => $store->id,
+            'supplier_id' => $supplier->id,
+            'idempotency_key' => '5e19dfbb-34a4-4c83-8c32-150e6a222118',
+            'currency_code' => 'KWD',
+            'reason' => 'P111 three decimal precision source fixture',
+            'lines' => $lines,
+            // Caller-provided financial/identity claims are not PR authority.
+            'unit_price' => '0.0001',
+            'tax_amount' => '999999.999',
+            'credit_limit' => '999999.999',
+            'created_by' => $owner->id,
+            'company_id' => 999999,
+            'user_id' => $owner->id,
+        ];
+
+        $requestsBefore = DB::table('enterprise_purchase_requests')->count();
+        $linesBefore = DB::table('enterprise_purchase_request_lines')->count();
+        $auditBefore = DB::table('audit_logs')->count();
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            $maker->forceFill(['locale' => $locale])->save();
+
+            foreach ([
+                ['lines.0.quantity', 'quantity', '2.1251'],
+                ['lines.0.estimated_unit_cost', 'estimated_unit_cost', '123.4567'],
+            ] as [$errorKey, $attribute, $unrepresentable]) {
+                $invalid = $payload;
+                $invalid['lines'][0][$attribute] = $unrepresentable;
+                $this->actingAs($maker->fresh())->post(route('admin.erp.procurement.requests.store'), $invalid)
+                    ->assertSessionHasErrors($errorKey);
+            }
+
+            // Flat single-line form and service callers must not bypass the
+            // 3-decimal contract applied to the multi-line API shape.
+            $flat = [
+                ...$payload,
+                'item_code' => 'P111-PRECISION-FLAT',
+                'description' => 'Unrepresentable flat line',
+                'quantity' => '0.0009',
+                'unit' => 'case',
+                'estimated_unit_cost' => '0.0009',
+            ];
+            unset($flat['lines']);
+            $this->actingAs($maker->fresh())->post(route('admin.erp.procurement.requests.store'), $flat)
+                ->assertSessionHasErrors(['quantity', 'estimated_unit_cost']);
+        }
+        $this->assertSame($requestsBefore, DB::table('enterprise_purchase_requests')->count());
+        $this->assertSame($linesBefore, DB::table('enterprise_purchase_request_lines')->count());
+        $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+
+        // The service is independently validated, including for future
+        // non-HTTP callers. No database mutation is made by this exception.
+        try {
+            app(PurchaseRequestManager::class)->create($maker->fresh(), $context, [
+                'supplier_id' => $supplier->id,
+                'currency_code' => 'KWD',
+                'lines' => [[
+                    'description' => 'Direct service overprecision',
+                    'quantity' => '1.0001',
+                    'unit' => 'case',
+                    'estimated_unit_cost' => '1.0001',
+                ]],
+            ]);
+            $this->fail('Service must reject precision not representable by DECIMAL(14,3) and DECIMAL(18,3).');
+        } catch (\Illuminate\Validation\ValidationException $exception) {
+            $this->assertArrayHasKey('lines.0.quantity', $exception->errors());
+            $this->assertArrayHasKey('lines.0.estimated_unit_cost', $exception->errors());
+        }
+        $this->assertSame($requestsBefore, DB::table('enterprise_purchase_requests')->count());
+        $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+
+        $this->actingAs($maker->fresh())->post(route('admin.erp.procurement.requests.store'), $payload)
+            ->assertRedirect()->assertSessionHas('status');
+        $request = DB::table('enterprise_purchase_requests')
+            ->where('reason', $payload['reason'])->first();
+        $this->assertNotNull($request);
+        $this->assertSame('draft', $request->status);
+        $this->assertSame($maker->id, (int) $request->created_by);
+        $this->assertSame($store->id, (int) $request->store_id);
+        $this->assertSame($context->enterpriseScope->companyId, (int) $request->company_id);
+        $this->assertSame($supplier->id, (int) $request->supplier_id);
+        $persisted = DB::table('enterprise_purchase_request_lines')
+            ->where('purchase_request_id', $request->id)->orderBy('line_no')->get();
+        $this->assertCount(2, $persisted);
+        $this->assertSame('2.125', (string) $persisted[0]->quantity);
+        $this->assertSame('123.456', (string) $persisted[0]->estimated_unit_cost);
+        $this->assertSame('case', $persisted[0]->unit);
+        $this->assertSame('0.001', (string) $persisted[1]->quantity);
+        $this->assertSame('0.001', (string) $persisted[1]->estimated_unit_cost);
+        $this->assertSame('box', $persisted[1]->unit);
+        $this->assertSame(1, DB::table('audit_logs')->where('event', 'enterprise.purchase_request.created')
+            ->where('auditable_id', $request->id)->count());
+
+        $auditAfterCreate = DB::table('audit_logs')->count();
+        $this->actingAs($maker->fresh())->post(route('admin.erp.procurement.requests.store'), $payload)
+            ->assertRedirect();
+        $this->assertSame(1, DB::table('enterprise_purchase_requests')
+            ->where('idempotency_key', $payload['idempotency_key'])
+            ->where('store_id', $store->id)->where('created_by', $maker->id)->count());
+        $this->assertSame($auditAfterCreate, DB::table('audit_logs')->count());
+
+        $edit = [
+            ...$payload,
+            'purchase_request_id' => $request->id,
+            'reason' => 'P111 valid exact draft edit',
+            'lines' => [[
+                'item_code' => 'P111-PRECISION-EDIT-SKU',
+                'description' => 'Edited exact cost and unit',
+                'quantity' => '3.125',
+                'unit' => 'box',
+                'estimated_unit_cost' => '99.999',
+            ]],
+        ];
+        $this->actingAs($maker->fresh())->post(route('admin.erp.procurement.requests.store'), $edit)
+            ->assertRedirect()->assertSessionHas('status');
+        $auditAfterEdit = DB::table('audit_logs')->count();
+        $this->assertDatabaseHas('enterprise_purchase_requests', [
+            'id' => $request->id, 'status' => 'draft', 'reason' => 'P111 valid exact draft edit',
+        ]);
+        $this->assertDatabaseHas('enterprise_purchase_request_lines', [
+            'purchase_request_id' => $request->id, 'item_code' => 'P111-PRECISION-EDIT-SKU',
+            'quantity' => '3.125', 'unit' => 'box', 'estimated_unit_cost' => '99.999',
+        ]);
+        $this->assertSame(1, DB::table('audit_logs')->where('event', 'enterprise.purchase_request.updated')
+            ->where('auditable_id', $request->id)->count());
+
+        foreach ([
+            ['lines.0.quantity', 'quantity', '3.1251'],
+            ['lines.0.estimated_unit_cost', 'estimated_unit_cost', '99.9991'],
+        ] as [$errorKey, $attribute, $invalidValue]) {
+            $invalid = $edit;
+            $invalid['lines'][0][$attribute] = $invalidValue;
+            $this->actingAs($maker->fresh())->post(route('admin.erp.procurement.requests.store'), $invalid)
+                ->assertSessionHasErrors($errorKey);
+        }
+        $this->assertDatabaseHas('enterprise_purchase_request_lines', [
+            'purchase_request_id' => $request->id, 'item_code' => 'P111-PRECISION-EDIT-SKU',
+            'quantity' => '3.125', 'estimated_unit_cost' => '99.999',
+        ]);
+        $this->assertSame($auditAfterEdit, DB::table('audit_logs')->count());
+        $this->actingAs($maker->fresh())->post(route('admin.erp.procurement.requests.store'), $edit)
+            ->assertRedirect();
+        $this->assertSame($auditAfterEdit, DB::table('audit_logs')->count());
+
+        foreach (['ar', 'en'] as $locale) {
+            $maker->forceFill(['locale' => $locale])->save();
+            $this->actingAs($maker->fresh())->post(route('admin.erp.procurement.requests.submit', $request->id), [
+                'store_id' => $store->id,
+                'submitted_by' => $owner->id,
+                'status' => 'approved',
+            ])->assertRedirect();
+        }
+        $this->assertDatabaseHas('enterprise_purchase_requests', [
+            'id' => $request->id, 'status' => 'submitted', 'submitted_by' => $maker->id,
+        ]);
+        $this->assertSame(1, DB::table('audit_logs')->where('event', 'enterprise.purchase_request.submitted')
+            ->where('auditable_id', $request->id)->count());
+        $this->assertSame($auditAfterEdit + 1, DB::table('audit_logs')->count());
+
+        $this->actingAs($maker->fresh())->post(route('admin.erp.procurement.requests.store'), $edit)
+            ->assertForbidden();
+        $this->assertSame($auditAfterEdit + 1, DB::table('audit_logs')->count());
+        $this->assertDatabaseHas('enterprise_purchase_request_lines', [
+            'purchase_request_id' => $request->id, 'quantity' => '3.125', 'estimated_unit_cost' => '99.999',
+        ]);
+    }
+
     public function test_purchase_request_http_create_submit_replay_and_forged_supplier_price_credit_actor_are_scoped_and_audited(): void
     {
         $storeA = $this->wholesaleStore();
