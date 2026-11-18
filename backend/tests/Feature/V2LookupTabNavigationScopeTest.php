@@ -72,6 +72,41 @@ final class V2LookupTabNavigationScopeTest extends TestCase
         $this->assertSame($before, $this->recordCounts());
     }
 
+    public function test_super_admin_scope_filter_stays_in_allowed_lookup_page_tab_links(): void
+    {
+        $store = $this->store('V2-4024-LOOKUP-GLOBAL');
+        $actor = $this->globalActor();
+        $before = $this->recordCounts();
+
+        foreach (['brands', 'units'] as $type) {
+            $response = $this->actingAs($actor)->get(route('admin.lookups.index', [
+                'type' => $type,
+                'store_id' => $store,
+                'scope' => 'store',
+                'q' => 'Local%',
+                'status' => 'inactive',
+            ]))->assertOk()->assertViewHas('type', $type);
+
+            $html = html_entity_decode($response->getContent(), ENT_QUOTES | ENT_HTML5, 'UTF-8');
+            $this->assertSame(1, preg_match(
+                '/<nav class="tabs"[^>]*data-v2-lookup-tabs[^>]*>(.*?)<\\/nav>/s',
+                $html,
+                $nav,
+            ));
+            $links = $this->navQueries($nav[1]);
+            $this->assertCount(2, $links);
+            foreach (['brands', 'units'] as $candidate) {
+                $this->assertSame((string) $store, $links[$candidate]['store_id'] ?? null);
+                $this->assertSame('store', $links[$candidate]['scope'] ?? null);
+                $this->assertSame('Local%', $links[$candidate]['q'] ?? null);
+                $this->assertSame('inactive', $links[$candidate]['status'] ?? null);
+                $this->assertArrayNotHasKey('support_access', $links[$candidate]);
+            }
+        }
+
+        $this->assertSame($before, $this->recordCounts());
+    }
+
     public function test_system_lookup_five_tabs_keep_validated_search_status_and_active_page(): void
     {
         $actor = $this->globalActor();
