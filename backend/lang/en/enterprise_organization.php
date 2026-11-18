@@ -1,6 +1,7 @@
 <?php
 
 return [
+    'default_routing_identity_protected' => 'This is a system routing identity created by initial installation. Its code and active status cannot be changed because unassigned stores depend on it. You may safely edit its display name; verify the legal entity separately.',
     'setup_title' => 'Setup readiness — business hierarchy',
     'setup_unverified' => 'UNVERIFIED — Saving a name or code records a hierarchy entry; it does not verify company registration, tax status, inventory title, or finance readiness. Have the responsible operator validate official records before enabling dependent ERP workflows.',
     'setup_purpose' => 'Purpose: select the authorized organization, company, legal entity and business unit that own ERP activity and store assignments.',
