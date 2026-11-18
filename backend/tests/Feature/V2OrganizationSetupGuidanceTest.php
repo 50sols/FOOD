@@ -8,6 +8,7 @@ use App\Models\EnterpriseOrganization;
 use App\Models\Role;
 use App\Models\Store;
 use App\Models\User;
+use App\Services\EnterpriseOrganizationAdministration;
 use Database\Seeders\CoreReferenceSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
@@ -210,7 +211,7 @@ final class V2OrganizationSetupGuidanceTest extends TestCase
             ->where('code', OrganizationHierarchyService::DEFAULT_ORGANIZATION)->firstOrFail();
 
         $this->expectException(ValidationException::class);
-        app(\App\Services\EnterpriseOrganizationAdministration::class)->updateOrganization(
+        app(EnterpriseOrganizationAdministration::class)->updateOrganization(
             $organization,
             ['code' => 'unprotected_code', 'name' => $organization->name, 'is_active' => true],
             $admin,
