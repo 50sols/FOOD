@@ -2427,6 +2427,57 @@ final class V2ErpEntitlementCheckerBoundaryTest extends TestCase
         $this->assertNotNull($order);
         $this->assertSame('draft', $order->status);
         $permission = Permission::query()->where('code', 'procurement.purchase_orders.issue')->firstOrFail();
+
+        // A user with Manager + Buyer + Approver GLOBAL assignments must not
+        // use those roles to overrule a narrower STORE-specific issue DENY.
+        // A sibling B2B store is genuinely reachable for read operations,
+        // so its issue refusal proves permission precedence, not a bad tenant.
+        $sibling = Store::query()->create([
+            'store_type_id' => $store->store_type_id,
+            'code' => 'P111-MULTIROLE-SIBLING-B2B',
+            'name' => 'P111 multirole sibling store',
+            'is_active' => true,
+        ]);
+        app(OrganizationHierarchyService::class)->ensureDefaultScopeForStore($sibling);
+        foreach (['PROCUREMENT_MANAGER', 'PROCUREMENT_BUYER', 'PROCUREMENT_APPROVER'] as $code) {
+            $this->assertDatabaseHas('role_user', [
+                'user_id' => $maker->id,
+                'role_id' => Role::query()->where('code', $code)->firstOrFail()->id,
+            ]);
+        }
+        DB::table('user_permission_overrides')->insert([
+            'user_id' => $maker->id,
+            'permission_id' => $permission->id,
+            'scope_key' => 'store:'.$sibling->id,
+            'store_id' => $sibling->id,
+            'effect' => 'deny',
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        $maker->forceFill(['has_permission_overrides' => true])->save();
+        $this->assertTrue($maker->fresh()->hasPermission('procurement.purchase_orders.issue', $store->id));
+        $this->assertFalse($maker->fresh()->hasPermission('procurement.purchase_orders.issue', $sibling->id));
+        $auditBeforeScopedDenial = DB::table('audit_logs')->count();
+        foreach (['ar' => 'rtl', 'en' => 'ltr'] as $locale => $direction) {
+            app()->setLocale($locale);
+            $maker->forceFill(['locale' => $locale])->save();
+            $this->actingAs($maker->fresh())->get(route('admin.erp.procurement.index', [
+                'store_id' => $sibling->id,
+                'tab' => 'orders',
+            ]))->assertOk()->assertSee('dir="'.$direction.'"', false);
+            $this->actingAs($maker->fresh())->post(route('admin.erp.procurement.orders.issue', $order->id), [
+                'store_id' => $sibling->id,
+            ])->assertForbidden();
+        }
+        $this->assertDatabaseHas('enterprise_purchase_orders', [
+            'id' => $order->id,
+            'status' => 'draft',
+            'issued_by' => null,
+        ]);
+        $this->assertSame($auditBeforeScopedDenial, DB::table('audit_logs')->count());
+
+        // A later GLOBAL DENY must also defeat all three role grants in the
+        // original Store A, without affecting the independent checker's path.
         DB::table('user_permission_overrides')->insert([
             'user_id' => $maker->id,
             'permission_id' => $permission->id,
