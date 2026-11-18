@@ -191,6 +191,46 @@ final class V2EnterpriseBiIndependentPageTabsTest extends TestCase
         $this->assertSame($before, $this->businessCounts());
     }
 
+    public function test_switching_to_sibling_workspaces_does_not_repeat_report_execution(): void
+    {
+        [$actor, $store] = $this->authorizedStoreActor();
+        $params = [
+            'bi_tab' => 'reports',
+            'run' => '1',
+            'report' => 'orders.summary',
+            'scope' => 'store:'.$store->id,
+            'from' => now()->subDay()->toDateString(),
+            'to' => now()->toDateString(),
+            'page' => 2,
+        ];
+
+        $html = $this->actingAs($actor)
+            ->get(route('admin.erp.bi', $params))
+            ->assertOk()
+            ->getContent();
+
+        foreach (['reports' => true, 'exports' => false, 'schedules' => false] as $tab => $keepRun) {
+            $this->assertSame(
+                1,
+                preg_match(
+                    '/<a\\b[^>]*data-bi-workspace-link="'.preg_quote($tab, '/').'"[^>]*href="([^"]+)"/s',
+                    $html,
+                    $match,
+                ),
+            );
+            $href = html_entity_decode($match[1], ENT_QUOTES | ENT_HTML5);
+            parse_str((string) parse_url($href, PHP_URL_QUERY), $query);
+            $this->assertSame('orders.summary', $query['report'] ?? null);
+            $this->assertSame('store:'.$store->id, $query['scope'] ?? null);
+            $this->assertSame($params['from'], $query['from'] ?? null);
+            $this->assertSame($params['to'], $query['to'] ?? null);
+            $this->assertSame($keepRun ? '1' : null, $query['run'] ?? null);
+            if ($keepRun) {
+                $this->assertSame('2', $query['page'] ?? null);
+            }
+        }
+    }
+
     public function test_schedule_post_preserves_selected_workspace_on_success_and_validation_error(): void
     {
         [$actor, $store] = $this->authorizedStoreActor();

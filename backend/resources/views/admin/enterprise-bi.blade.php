@@ -59,9 +59,15 @@
 @endphp
 <nav class="foodex-tabs bi-workspace-tabs" aria-label="{{ __('enterprise_bi_ui.title') }}" data-bi-workspace-tabs>
     @foreach($biAllowedTabs as $key => $label)
+        @php
+            $biLinkQuery = request()->except('bi_tab');
+            if ($key !== 'reports') {
+                unset($biLinkQuery['run']);
+            }
+        @endphp
         <a id="bi-tab-{{ $key }}" class="foodex-tab {{ $biTab === $key ? 'active' : '' }}"
            data-bi-workspace-link="{{ $key }}"
-           href="{{ route('admin.erp.bi', array_merge(request()->except('bi_tab'), ['bi_tab' => $key])) }}"
+           href="{{ route('admin.erp.bi', array_merge($biLinkQuery, ['bi_tab' => $key])) }}"
            @if($biTab === $key) aria-current="page" @endif>{{ $label }}</a>
     @endforeach
 </nav>
