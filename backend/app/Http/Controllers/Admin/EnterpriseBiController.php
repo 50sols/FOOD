@@ -192,7 +192,8 @@ final class EnterpriseBiController extends Controller
         // hidden tabs must not run reports or dashboard analytics.
         $requestedTab = $request->query('bi_tab', $request->has('report') ? 'reports' : 'overview');
         $biTab = is_string($requestedTab) && in_array($requestedTab, ['overview', 'reports', 'exports', 'schedules'], true)
-            ? $requestedTab : 'overview';
+            ? $requestedTab
+            : 'overview';
 
         $catalog = collect($this->catalog($actor, $registry, $access));
         $selectedCode = trim((string) $request->query('report', ''));
