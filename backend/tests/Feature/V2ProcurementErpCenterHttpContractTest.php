@@ -3,10 +3,10 @@
 namespace Tests\Feature;
 
 use App\Enterprise\Entitlements\EntitlementScope;
+use App\Enterprise\Entitlements\ModuleEntitlementManager;
 use App\Enterprise\Health\ModuleHealthCheck;
 use App\Enterprise\Health\ModuleHealthProbe;
 use App\Enterprise\Health\ModuleHealthService;
-use App\Enterprise\Entitlements\ModuleEntitlementManager;
 use App\Enterprise\Modules\ModuleOperationalReadiness;
 use App\Enterprise\Modules\ModuleRegistry;
 use App\Enterprise\Organization\OrganizationHierarchyService;
