@@ -55,9 +55,9 @@ $lookupTabQuery = array_filter([
 @if($isSuperAdmin)<div class="notice">{{ $ar?'تنبيه: تعديل بيانات نطاق متجر تجزئة يتطلب تفعيل «الدعم الصريح» داخل نفس الإجراء. هذا يحافظ على عزل المتاجر ويسجل عملية الدعم.':'Note: Retail store-scoped changes require Explicit support access on the same action. This preserves tenant isolation and audits the support operation.' }}</div>@endif
 
 <div class="lookup-tab-row">
-<nav class="tabs" aria-label="{{ $ar?'العلامات والوحدات':'Brands and units' }}" data-v2-lookup-tabs>
-<a class="tab {{ $type==='brands'?'active':'' }}" href="{{ route('admin.lookups.index',array_merge($lookupTabQuery,['type'=>'brands'])) }}" @if($type==='brands') aria-current="page" @endif>{{ $ar?'العلامات التجارية':'Brands' }}</a>
-<a class="tab {{ $type==='units'?'active':'' }}" href="{{ route('admin.lookups.index',array_merge($lookupTabQuery,['type'=>'units'])) }}" @if($type==='units') aria-current="page" @endif>{{ $ar?'وحدات القياس':'Units of Measure' }}</a>
+<nav class="tabs" aria-label="{{ __('lookup_tabs.catalog.title') }}" data-v2-lookup-tabs>
+<a class="tab {{ $type==='brands'?'active':'' }}" href="{{ route('admin.lookups.index',array_merge($lookupTabQuery,['type'=>'brands'])) }}" @if($type==='brands') aria-current="page" @endif>{{ __('lookup_tabs.catalog.brands') }}</a>
+<a class="tab {{ $type==='units'?'active':'' }}" href="{{ route('admin.lookups.index',array_merge($lookupTabQuery,['type'=>'units'])) }}" @if($type==='units') aria-current="page" @endif>{{ __('lookup_tabs.catalog.units') }}</a>
 </nav>
 @if($manageableScopes!==[])
 <button class="btn primary lookup-add-btn" type="button" data-lookup-modal-open>＋ {{ $createLabel }}</button>

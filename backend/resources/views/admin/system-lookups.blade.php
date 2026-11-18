@@ -58,12 +58,12 @@ $systemLookupTabQuery = array_filter([
 @endif
 
 <section class="card">
-<nav class="tabs" aria-label="{{ $ar ? 'القيم المرجعية' : 'System lookups' }}" data-v2-system-lookup-tabs>
-<a class="tab {{ $typeKey === 'payment-operation-types' ? 'active' : '' }}" href="{{ route('admin.operations.lookups.index', array_merge($systemLookupTabQuery, ['type' => 'payment-operation-types'])) }}" @if($typeKey === 'payment-operation-types') aria-current="page" @endif>{{ $ar ? 'أنواع عمليات الدفع' : 'Payment operation types' }}</a>
-<a class="tab {{ $typeKey === 'payment-methods' ? 'active' : '' }}" href="{{ route('admin.operations.lookups.index', array_merge($systemLookupTabQuery, ['type' => 'payment-methods'])) }}" @if($typeKey === 'payment-methods') aria-current="page" @endif>{{ $ar ? 'طرق الدفع' : 'Payment methods' }}</a>
-<a class="tab {{ $typeKey === 'pricing-tiers' ? 'active' : '' }}" href="{{ route('admin.operations.lookups.index', array_merge($systemLookupTabQuery, ['type' => 'pricing-tiers'])) }}" @if($typeKey === 'pricing-tiers') aria-current="page" @endif>{{ $ar ? 'شرائح التسعير' : 'Pricing tiers' }}</a>
-<a class="tab {{ $typeKey === 'order-statuses' ? 'active' : '' }}" href="{{ route('admin.operations.lookups.index', array_merge($systemLookupTabQuery, ['type' => 'order-statuses'])) }}" @if($typeKey === 'order-statuses') aria-current="page" @endif>{{ $ar ? 'حالات الطلب' : 'Order statuses' }}</a>
-<a class="tab {{ $typeKey === 'failed-delivery-reasons' ? 'active' : '' }}" href="{{ route('admin.operations.lookups.index', array_merge($systemLookupTabQuery, ['type' => 'failed-delivery-reasons'])) }}" @if($typeKey === 'failed-delivery-reasons') aria-current="page" @endif>{{ $ar ? 'أسباب تعذر التوصيل' : 'Failed-delivery reasons' }}</a>
+<nav class="tabs" aria-label="{{ __('lookup_tabs.system.title') }}" data-v2-system-lookup-tabs>
+<a class="tab {{ $typeKey === 'payment-operation-types' ? 'active' : '' }}" href="{{ route('admin.operations.lookups.index', array_merge($systemLookupTabQuery, ['type' => 'payment-operation-types'])) }}" @if($typeKey === 'payment-operation-types') aria-current="page" @endif>{{ __('lookup_tabs.system.payment_operation_types') }}</a>
+<a class="tab {{ $typeKey === 'payment-methods' ? 'active' : '' }}" href="{{ route('admin.operations.lookups.index', array_merge($systemLookupTabQuery, ['type' => 'payment-methods'])) }}" @if($typeKey === 'payment-methods') aria-current="page" @endif>{{ __('lookup_tabs.system.payment_methods') }}</a>
+<a class="tab {{ $typeKey === 'pricing-tiers' ? 'active' : '' }}" href="{{ route('admin.operations.lookups.index', array_merge($systemLookupTabQuery, ['type' => 'pricing-tiers'])) }}" @if($typeKey === 'pricing-tiers') aria-current="page" @endif>{{ __('lookup_tabs.system.pricing_tiers') }}</a>
+<a class="tab {{ $typeKey === 'order-statuses' ? 'active' : '' }}" href="{{ route('admin.operations.lookups.index', array_merge($systemLookupTabQuery, ['type' => 'order-statuses'])) }}" @if($typeKey === 'order-statuses') aria-current="page" @endif>{{ __('lookup_tabs.system.order_statuses') }}</a>
+<a class="tab {{ $typeKey === 'failed-delivery-reasons' ? 'active' : '' }}" href="{{ route('admin.operations.lookups.index', array_merge($systemLookupTabQuery, ['type' => 'failed-delivery-reasons'])) }}" @if($typeKey === 'failed-delivery-reasons') aria-current="page" @endif>{{ __('lookup_tabs.system.failed_delivery_reasons') }}</a>
 </nav>
 </section>
 

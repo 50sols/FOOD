@@ -15,6 +15,7 @@
 | `SystemLookupController.php` | Strict raw GET `type` string gate before existing five-value `typeKey()` allowlist; unknown scalar remains HTTP 404 | no Price Tier model/priority/POST/policy change |
 | `lookup-management.blade.php` | Existing two links carry server-normalized `q,status,scope,store_id`; never page cursors / `support_access`; one current link; contained horizontal/44px/focus | no new Sidebar or create/update form changes |
 | `system-lookups.blade.php` | Existing five links carry server-normalized `q,status` only; one current link; same contained horizontal accessibility | no pricing calculations, data edits, or new page |
+| `backend/lang/ar/lookup_tabs.php` and `backend/lang/en/lookup_tabs.php` | New bilingual labels for changed tab links; no inline language branches in modified navigation lines | no change to pricing/value labels outside existing tabs |
 | `V2LookupTabNavigationScopeTest.php` | New isolated Laravel HTTP regression: bilingual valid 2+5 tabs, query parsing, malicious nested `type[]` HTTP 404, foreign Retail store HTTP 404, roleless HTTP 403, read-only row/audit counts, legacy unknown scalar behavior | no shared source test takeover |
 - Existing Catalog Products six-tab conversion #3950/PR #3971 is merged and untouched. `CommercialDashboardController.php` and its Blade are owned by #2559/PR #3326; Wholesale pricing and B2B mode owned by #2706/PR #3995. Neither updated here.
 - No public API, Flutter/Customer/Driver/Van source changed; deployed API compatibility and B2B=VAN ONLY / B2C=DRIVER ONLY remain unchanged.
