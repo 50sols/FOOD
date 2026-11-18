@@ -80,6 +80,9 @@ final class V2Customer360TabHistoryContextTest extends TestCase
             $this->assertStringContainsString("if (event.key === 'Home') next = 0;", $html);
             $this->assertStringContainsString("else if (event.key === 'End') next = tabs.length - 1;", $html);
             $this->assertStringContainsString('tabs[next].focus();', $html);
+            $this->assertStringContainsString("tab.setAttribute('aria-selected', active ? 'true' : 'false');", $html);
+            $this->assertStringContainsString('tab.tabIndex = active ? 0 : -1;', $html);
+            $this->assertStringContainsString('panel.hidden = !active;', $html);
             $this->assertStringNotContainsString(
                 "else if (event.key === 'ArrowLeft') next = Math.max(0, index - 1);",
                 $html,
