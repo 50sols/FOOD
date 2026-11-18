@@ -48,7 +48,7 @@ final class InventoryLegalTitleAttestationVerifier
         if (! isset($position->id) || ! isset($position->certified_by)
             || ! isset($position->source_inventory_updated_at)
             || $this->legalScopeForStore($storeId) === null
-            || ! $this->hasProtectedStockMovementHistory()) {
+            || ! $this->hasProtectedStockMovementHistory((int) $inventory->id)) {
             // Store/warehouse existence alone is not a legal entity identity.
             return false;
         }
@@ -208,12 +208,13 @@ final class InventoryLegalTitleAttestationVerifier
      * preserves movement/evidence integrity and captures later movement
      * snapshots without treating those events as legal-title authority.
      * Both attested-movement guards, both evidence guards, the event writer,
-     * both event-source guards, and both event-row guards are mandatory.
+     * both event-source guards, both event-row guards, and complete event
+     * coverage for this inventory are mandatory.
      *
      * cPanel/shared-hosting users without MySQL TRIGGER/SUPER privileges may
      * install the site, but legal-title certification must fail closed.
      */
-    private function hasProtectedStockMovementHistory(): bool
+    private function hasProtectedStockMovementHistory(?int $inventoryId = null): bool
     {
         try {
             $driver = DB::connection()->getDriverName();
@@ -269,7 +270,8 @@ final class InventoryLegalTitleAttestationVerifier
                     ->count();
 
                 return $movements === 2 && $attestations === 2
-                    && $eventWriter === 1 && $eventSourceGuards === 2 && $ownerEvents === 2;
+                    && $eventWriter === 1 && $eventSourceGuards === 2 && $ownerEvents === 2
+                    && $this->hasCompleteOwnerMovementEventCoverage($inventoryId);
             }
 
             if (in_array($driver, ['mysql', 'mariadb'], true)) {
@@ -358,7 +360,8 @@ final class InventoryLegalTitleAttestationVerifier
 
                 return $movements === 2 && $attestations === 2
                     && $eventWriter === 1 && $eventSourceGuards === 2 && $ownerEvents === 2
-                    && $transactionalTables === 5;
+                    && $transactionalTables === 5
+                    && $this->hasCompleteOwnerMovementEventCoverage($inventoryId);
             }
         } catch (Throwable) {
             // Missing SQL metadata privileges, incomplete DDL or unsupported
@@ -367,6 +370,40 @@ final class InventoryLegalTitleAttestationVerifier
         }
 
         return false;
+    }
+
+    /**
+     * Existing non-demo movements without event-time snapshots cannot be
+     * reconstructed safely, so their inventory remains uncertified.
+     */
+    private function hasCompleteOwnerMovementEventCoverage(?int $inventoryId): bool
+    {
+        $unrecorded = DB::table('stock_movements as movement')
+            ->leftJoin(
+                'enterprise_inventory_owner_movement_events as owner_event',
+                'owner_event.source_stock_movement_id',
+                '=',
+                'movement.id',
+            )
+            ->leftJoin('inventories as inventory', 'inventory.id', '=', 'movement.inventory_id')
+            ->leftJoin('warehouses as warehouse', 'warehouse.id', '=', 'inventory.warehouse_id')
+            ->leftJoin('stores as store', 'store.id', '=', 'warehouse.store_id')
+            ->where(function ($query): void {
+                $query->whereNull('owner_event.source_stock_movement_id')
+                    ->orWhereColumn('owner_event.inventory_id', '<>', 'movement.inventory_id');
+            })
+            ->where(function ($query): void {
+                $query->whereNull('movement.reference_type')
+                    ->orWhere('movement.reference_type', '<>', 'demo_seed')
+                    ->orWhereNull('store.code')
+                    ->orWhere('store.code', 'not like', 'FOODEX-DEMO-B2C-%');
+            });
+
+        if ($inventoryId !== null) {
+            $unrecorded->where('movement.inventory_id', $inventoryId);
+        }
+
+        return ! $unrecorded->exists();
     }
 
     /**

@@ -70,9 +70,9 @@ return new class extends Migration
                 $table->char('observed_attestation_revision_sha256', 64)->nullable();
                 $table->char('observed_attestation_document_sha256', 64)->nullable();
 
-                $table->decimal('canonical_quantity_after', 14, 3);
-                $table->decimal('canonical_reserved_quantity_after', 14, 3);
-                $table->timestamp('canonical_inventory_updated_at')->nullable();
+                $table->decimal('observed_inventory_quantity', 14, 3);
+                $table->decimal('observed_inventory_reserved_quantity', 14, 3);
+                $table->timestamp('observed_inventory_updated_at')->nullable();
                 $table->timestamp('recorded_at')->useCurrent();
 
                 $table->unique('source_stock_movement_id', 'eio_event_source_movement_uq');
@@ -132,30 +132,29 @@ BEGIN
     DECLARE v_trusted_key_id VARCHAR(64) DEFAULT NULL;
     DECLARE v_attestation_revision_sha256 CHAR(64) DEFAULT NULL;
     DECLARE v_attestation_document_sha256 CHAR(64) DEFAULT NULL;
-    DECLARE v_canonical_quantity DECIMAL(14, 3) DEFAULT NULL;
-    DECLARE v_canonical_reserved_quantity DECIMAL(14, 3) DEFAULT NULL;
-    DECLARE v_canonical_updated_at TIMESTAMP NULL DEFAULT NULL;
+    DECLARE v_observed_inventory_quantity DECIMAL(14, 3) DEFAULT NULL;
+    DECLARE v_observed_inventory_reserved_quantity DECIMAL(14, 3) DEFAULT NULL;
+    DECLARE v_observed_inventory_updated_at TIMESTAMP NULL DEFAULT NULL;
 
-    -- `demo_seed` and FOODEX-DEMO store codes are repository-controlled
-    -- synthetic markers. Keep disposable fixtures outside the owner ledger.
-    IF NEW.reference_type IS NULL OR NEW.reference_type <> 'demo_seed' THEN
-        SELECT COUNT(*) INTO v_inventory_count
-        FROM inventories
-        WHERE id = NEW.inventory_id;
+    SELECT COUNT(*) INTO v_inventory_count
+    FROM inventories
+    WHERE id = NEW.inventory_id;
 
-        IF v_inventory_count <> 1 THEN
-            SIGNAL SQLSTATE '45000'
-                SET MESSAGE_TEXT = 'Cannot record P110 owner event without canonical inventory';
-        END IF;
+    IF v_inventory_count <> 1 THEN
+        SIGNAL SQLSTATE '45000'
+            SET MESSAGE_TEXT = 'Cannot record P110 owner event without canonical inventory';
+    END IF;
 
-        SELECT COUNT(*) INTO v_demo_inventory_count
-        FROM inventories AS inventory
-        INNER JOIN warehouses AS warehouse ON warehouse.id = inventory.warehouse_id
-        INNER JOIN stores AS store ON store.id = warehouse.store_id
-        WHERE inventory.id = NEW.inventory_id
-            AND store.code LIKE 'FOODEX-DEMO-B2C-%';
+    SELECT COUNT(*) INTO v_demo_inventory_count
+    FROM inventories AS inventory
+    INNER JOIN warehouses AS warehouse ON warehouse.id = inventory.warehouse_id
+    INNER JOIN stores AS store ON store.id = warehouse.store_id
+    WHERE inventory.id = NEW.inventory_id
+        AND store.code LIKE 'FOODEX-DEMO-B2C-%';
 
-        IF v_demo_inventory_count = 0 THEN
+    -- Exclude only the repository-seeded movement in a verified disposable
+    -- demo store. A live-store `demo_seed` reference is still an owner event.
+    IF v_demo_inventory_count = 0 OR NEW.reference_type IS NULL OR NEW.reference_type <> 'demo_seed' THEN
         SELECT COUNT(*), MIN(id)
         INTO v_owner_position_count, v_owner_position_id
         FROM enterprise_inventory_owner_positions
@@ -189,7 +188,7 @@ BEGIN
         END IF;
 
         SELECT quantity, reserved_quantity, updated_at
-        INTO v_canonical_quantity, v_canonical_reserved_quantity, v_canonical_updated_at
+        INTO v_observed_inventory_quantity, v_observed_inventory_reserved_quantity, v_observed_inventory_updated_at
         FROM inventories
         WHERE id = NEW.inventory_id;
 
@@ -200,7 +199,7 @@ BEGIN
             owner_quantity, owner_reserved_quantity, owner_source_inventory_updated_at,
             observed_attestation_id, observed_trusted_key_id,
             observed_attestation_revision_sha256, observed_attestation_document_sha256,
-            canonical_quantity_after, canonical_reserved_quantity_after, canonical_inventory_updated_at,
+            observed_inventory_quantity, observed_inventory_reserved_quantity, observed_inventory_updated_at,
             recorded_at
         ) VALUES (
             NEW.id, NEW.inventory_id, NEW.store_id, NEW.user_id,
@@ -209,10 +208,9 @@ BEGIN
             v_owner_quantity, v_owner_reserved_quantity, v_owner_source_updated_at,
             v_attestation_id, v_trusted_key_id,
             v_attestation_revision_sha256, v_attestation_document_sha256,
-            v_canonical_quantity, v_canonical_reserved_quantity, v_canonical_updated_at,
+            v_observed_inventory_quantity, v_observed_inventory_reserved_quantity, v_observed_inventory_updated_at,
             CURRENT_TIMESTAMP
         );
-        END IF;
     END IF;
 END
 SQL);
@@ -241,7 +239,11 @@ BEGIN
     IF EXISTS (
         SELECT 1
         FROM enterprise_inventory_owner_movement_events AS owner_event
+        INNER JOIN inventories AS inventory ON inventory.id = OLD.inventory_id
+        LEFT JOIN warehouses AS warehouse ON warehouse.id = inventory.warehouse_id
+        LEFT JOIN stores AS store ON store.id = warehouse.store_id
         WHERE owner_event.source_stock_movement_id = OLD.id
+            AND (store.code IS NULL OR store.code NOT LIKE 'FOODEX-DEMO-B2C-%')
     ) THEN
         SIGNAL SQLSTATE '45000'
             SET MESSAGE_TEXT = 'Canonical stock movement snapshots are append-only';
@@ -296,7 +298,7 @@ CREATE TRIGGER p110_owner_event_after_movement_insert
 AFTER INSERT ON stock_movements
 FOR EACH ROW
 WHEN (NEW.reference_type IS NULL OR NEW.reference_type <> 'demo_seed')
-AND NOT EXISTS (
+OR NOT EXISTS (
     SELECT 1
     FROM inventories AS inventory
     INNER JOIN warehouses AS warehouse ON warehouse.id = inventory.warehouse_id
@@ -312,7 +314,7 @@ BEGIN
         owner_quantity, owner_reserved_quantity, owner_source_inventory_updated_at,
         observed_attestation_id, observed_trusted_key_id,
         observed_attestation_revision_sha256, observed_attestation_document_sha256,
-        canonical_quantity_after, canonical_reserved_quantity_after, canonical_inventory_updated_at,
+        observed_inventory_quantity, observed_inventory_reserved_quantity, observed_inventory_updated_at,
         recorded_at
     )
     SELECT
@@ -381,6 +383,14 @@ WHEN EXISTS (
     SELECT 1
     FROM enterprise_inventory_owner_movement_events AS owner_event
     WHERE owner_event.source_stock_movement_id = OLD.id
+)
+AND NOT EXISTS (
+    SELECT 1
+    FROM inventories AS inventory
+    INNER JOIN warehouses AS warehouse ON warehouse.id = inventory.warehouse_id
+    INNER JOIN stores AS store ON store.id = warehouse.store_id
+    WHERE inventory.id = OLD.inventory_id
+        AND store.code LIKE 'FOODEX-DEMO-B2C-%'
 )
 BEGIN
     SELECT RAISE(ABORT, 'Canonical stock movement snapshots are append-only');

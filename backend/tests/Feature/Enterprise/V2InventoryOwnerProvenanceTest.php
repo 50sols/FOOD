@@ -190,8 +190,8 @@ final class V2InventoryOwnerProvenanceTest extends TestCase
         $this->assertNull($event->supplier_id);
         $this->assertNull($event->observed_attestation_id);
         $this->assertNull($event->observed_trusted_key_id);
-        $this->assertSame('10.000', number_format((float) $event->canonical_quantity_after, 3, '.', ''));
-        $this->assertSame('3.000', number_format((float) $event->canonical_reserved_quantity_after, 3, '.', ''));
+        $this->assertSame('10.000', number_format((float) $event->observed_inventory_quantity, 3, '.', ''));
+        $this->assertSame('3.000', number_format((float) $event->observed_inventory_reserved_quantity, 3, '.', ''));
         $driver = DB::connection()->getDriverName();
         if ($driver === 'sqlite') {
             $this->assertCount(0, DB::select('PRAGMA foreign_key_list("enterprise_inventory_owner_movement_events")'));
@@ -302,7 +302,7 @@ final class V2InventoryOwnerProvenanceTest extends TestCase
         $eventCountBeforeRollback = DB::table('enterprise_inventory_owner_movement_events')
             ->where('inventory_id', $stock['inventory_id'])->count();
         try {
-            DB::transaction(function () use ($movement, $stock): void {
+            DB::transaction(function () use ($movement): void {
                 $rollbackMovement = $movement;
                 $rollbackMovement['type'] = 'p110_owner_event_rolled_back';
                 $rollbackMovement['reference_type'] = 'p110-owner-event-rollback';
@@ -335,17 +335,24 @@ final class V2InventoryOwnerProvenanceTest extends TestCase
         $this->assertSame($movementCountBeforeBadInventory, DB::table('stock_movements')->count());
         $this->assertSame($eventCountBeforeBadInventory, DB::table('enterprise_inventory_owner_movement_events')->count());
 
-        // Repository-owned synthetic rows remain disposable and are excluded
-        // by both explicit demo markers without weakening real event guards.
+        // A demo_seed marker on a normal store is not enough to suppress an
+        // event or weaken its source guard.
         $demoSeedMovement = $movement;
         $demoSeedMovement['type'] = 'demo_seed';
         $demoSeedMovement['reference_type'] = 'demo_seed';
         $demoSeedMovement['reference_id'] = 4;
         $demoSeedId = (int) DB::table('stock_movements')->insertGetId($demoSeedMovement);
-        $this->assertSame(0, DB::table('enterprise_inventory_owner_movement_events')
+        $this->assertSame(1, DB::table('enterprise_inventory_owner_movement_events')
             ->where('source_stock_movement_id', $demoSeedId)->count());
-        DB::table('stock_movements')->where('id', $demoSeedId)->delete();
+        try {
+            DB::table('stock_movements')->where('id', $demoSeedId)->delete();
+            $this->fail('A live-store movement cannot evade its immutable event with a demo_seed reference.');
+        } catch (QueryException $exception) {
+            $this->assertNotEmpty($exception->getMessage());
+        }
 
+        // DemoDataManager's verified synthetic store can still be cleared.
+        // Non-seed movement events survive both source deletion and inventory cleanup.
         $demoStock = $this->stock('OWNER-EVENT-DEMO-CLEANUP');
         DB::table('stores')->where('id', $demoStock['store_id'])
             ->update(['code' => 'FOODEX-DEMO-B2C-OWNER-EVENT']);
@@ -356,10 +363,27 @@ final class V2InventoryOwnerProvenanceTest extends TestCase
         $demoInventoryMovement['reference_type'] = 'demo_preview';
         $demoInventoryMovement['reference_id'] = 5;
         $demoInventoryMovementId = (int) DB::table('stock_movements')->insertGetId($demoInventoryMovement);
-        $this->assertSame(0, DB::table('enterprise_inventory_owner_movement_events')
+        $this->assertSame(1, DB::table('enterprise_inventory_owner_movement_events')
             ->where('source_stock_movement_id', $demoInventoryMovementId)->count());
         DB::table('stock_movements')->where('id', $demoInventoryMovementId)->delete();
+        $this->assertDatabaseHas('enterprise_inventory_owner_movement_events', [
+            'source_stock_movement_id' => $demoInventoryMovementId,
+            'inventory_id' => $demoStock['inventory_id'],
+        ]);
+
+        $demoSeedInventoryMovement = $demoInventoryMovement;
+        $demoSeedInventoryMovement['type'] = 'seed_opening_balance';
+        $demoSeedInventoryMovement['reference_type'] = 'demo_seed';
+        $demoSeedInventoryMovement['reference_id'] = 8;
+        $demoSeedInventoryMovementId = (int) DB::table('stock_movements')->insertGetId($demoSeedInventoryMovement);
+        $this->assertSame(0, DB::table('enterprise_inventory_owner_movement_events')
+            ->where('source_stock_movement_id', $demoSeedInventoryMovementId)->count());
+        DB::table('stock_movements')->where('id', $demoSeedInventoryMovementId)->delete();
         DB::table('inventories')->where('id', $demoStock['inventory_id'])->delete();
+        $this->assertDatabaseHas('enterprise_inventory_owner_movement_events', [
+            'source_stock_movement_id' => $demoInventoryMovementId,
+            'inventory_id' => $demoStock['inventory_id'],
+        ]);
 
         $migration = require database_path('migrations/2026_11_18_130000_create_enterprise_inventory_owner_movement_events.php');
         try {
@@ -400,6 +424,46 @@ final class V2InventoryOwnerProvenanceTest extends TestCase
             }
             $this->assertTrue($guards->invoke($verifier));
         }
+    }
+
+    public function test_missing_event_for_real_movement_keeps_title_uncertified_after_trigger_restore(): void
+    {
+        if (DB::connection()->getDriverName() !== 'sqlite') {
+            $this->markTestSkipped('Missing-event recovery is isolated to SQLite DDL in this fixture.');
+        }
+
+        $this->seed(CoreReferenceSeeder::class);
+        $stock = $this->stock('OWNER-EVENT-MISSING-ROW');
+        $movement = [
+            'inventory_id' => $stock['inventory_id'],
+            'store_id' => $stock['store_id'],
+            'type' => 'p110_owner_event_unrecorded',
+            'quantity' => '0.125',
+            'reference_type' => 'p110-owner-event-unrecorded',
+            'reference_id' => 1,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ];
+        $migration = require database_path('migrations/2026_11_18_130000_create_enterprise_inventory_owner_movement_events.php');
+        DB::unprepared('DROP TRIGGER IF EXISTS p110_owner_event_after_movement_insert');
+        try {
+            $movementId = (int) DB::table('stock_movements')->insertGetId($movement);
+            $this->assertDatabaseMissing('enterprise_inventory_owner_movement_events', [
+                'source_stock_movement_id' => $movementId,
+            ]);
+        } finally {
+            $migration->up();
+        }
+        $this->assertSame(1, DB::table('sqlite_master')
+            ->where('type', 'trigger')
+            ->where('name', 'p110_owner_event_after_movement_insert')
+            ->count());
+        $this->assertDatabaseMissing('enterprise_inventory_owner_movement_events', [
+            'source_stock_movement_id' => $movementId,
+        ]);
+        $verifier = app(InventoryLegalTitleAttestationVerifier::class);
+        $guards = new \ReflectionMethod(InventoryLegalTitleAttestationVerifier::class, 'hasProtectedStockMovementHistory');
+        $this->assertFalse($guards->invoke($verifier), 'An existing non-demo movement with no event must remain uncertified after trigger recovery.');
     }
 
     public function test_inventory_deletion_cannot_cascade_erase_legal_owner_claims(): void

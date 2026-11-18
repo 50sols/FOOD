@@ -180,7 +180,7 @@ final class EnterprisePurchaseReturnFoundationTest extends TestCase
             ->where('source_stock_movement_id', $returnMovement->id)->firstOrFail();
         $this->assertSame('UNKNOWN', $returnEvent->owner_snapshot_state);
         $this->assertSame('0.875', number_format((float) $returnEvent->owner_quantity, 3, '.', ''));
-        $this->assertSame('0.875', number_format((float) $returnEvent->canonical_quantity_after, 3, '.', ''));
+        $this->assertSame('0.875', number_format((float) $returnEvent->observed_inventory_quantity, 3, '.', ''));
         $this->assertSame('-0.625', number_format((float) $returnEvent->movement_quantity, 3, '.', ''));
         $this->assertSame(1, DB::table('enterprise_inventory_owner_movement_events')
             ->where('source_stock_movement_id', $returnMovement->id)->count(), 'Return replay must not append a duplicate event.');
