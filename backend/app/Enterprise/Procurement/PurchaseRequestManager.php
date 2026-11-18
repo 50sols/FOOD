@@ -474,7 +474,7 @@ final class PurchaseRequestManager
     private function replaceLines(EnterprisePurchaseRequest $request, array $lines): void
     {
         $request->lines()->delete();
-        foreach (array_values($lines) as $index => $line) {
+        foreach ($lines as $index => $line) {
             $request->lines()->create([
                 'line_no' => $index + 1,
                 'item_code' => $line['item_code'] ?? null,
@@ -515,12 +515,16 @@ final class PurchaseRequestManager
     /** @param array<string, mixed> $data */
     private function requestMatchesPayload(EnterprisePurchaseRequest $request, array $data): bool
     {
+        $storedNeededBy = $request->getRawOriginal('needed_by');
+        $storedNeededBy = $storedNeededBy === null
+            ? null
+            : Carbon::parse((string) $storedNeededBy)->toDateString();
+
         if (
             ($request->supplier_id === null ? null : (int) $request->supplier_id)
                 !== (isset($data['supplier_id']) ? (int) $data['supplier_id'] : null)
             || strtoupper((string) $request->currency_code) !== strtoupper((string) $data['currency_code'])
-            || $request->needed_by?->toDateString()
-                !== (empty($data['needed_by']) ? null : Carbon::parse($data['needed_by'])->toDateString())
+            || $storedNeededBy !== (empty($data['needed_by']) ? null : Carbon::parse($data['needed_by'])->toDateString())
             || $request->reason !== ($data['reason'] ?? null)
             || $request->notes !== ($data['notes'] ?? null)
             || $request->lines->count() !== count($data['lines'])
