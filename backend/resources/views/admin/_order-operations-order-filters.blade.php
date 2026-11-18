@@ -13,30 +13,39 @@
     }
 @endphp
 <style id="order-operations-order-filter-style">
-.order-grid-filter-controls{display:flex;align-items:center;justify-content:flex-end;gap:5px;min-width:0;white-space:nowrap}
-.order-grid-filter-form{display:flex;align-items:center;gap:5px;min-width:0;padding:3px;border:1px solid var(--foodex-border);border-radius:12px;background:var(--foodex-surface);box-shadow:0 4px 14px rgba(15,23,42,.035)}
-.order-grid-filter-form input,.order-grid-filter-form select{height:34px!important;min-height:34px!important;border-radius:8px!important;padding-inline:8px!important;font-size:.66rem!important;background:var(--foodex-surface)!important}
+.order-grid-filter-controls{display:flex;align-items:center;justify-content:flex-end;gap:5px;min-width:0;max-width:100%;white-space:nowrap}
+.order-grid-filter-form{display:flex;flex:1 1 auto;align-items:center;gap:5px;min-width:0;max-width:100%;padding:3px;border:1px solid var(--foodex-border);border-radius:12px;background:var(--foodex-surface);box-shadow:0 4px 14px rgba(15,23,42,.035)}
+/* One contained, keyboard-scrollable row; no filter is hidden by viewport width. */
+.order-grid-filter-primary{display:flex;flex:1 1 auto;align-items:center;gap:5px;min-width:0;max-width:100%;overflow-x:auto;overflow-y:hidden;overscroll-behavior-inline:contain;scrollbar-width:thin}
+.order-grid-filter-primary>label{flex:0 0 auto}
+.order-grid-filter-form input,.order-grid-filter-form select{height:44px!important;min-height:44px!important;border-radius:8px!important;padding-inline:8px!important;font-size:.875rem!important;background:var(--foodex-surface)!important}
 .order-grid-filter-form input[name="order_number"]{width:132px}
 .order-grid-filter-form select[name="status"]{width:118px}
 .order-grid-filter-form select[name="driver_id"]{width:120px}
-.order-grid-filter-form .foodex-filter-action,.order-grid-filter-form .foodex-action-secondary,.order-grid-new-order{height:34px!important;min-height:34px!important;padding-inline:10px!important;border-radius:8px!important;font-size:.66rem!important;line-height:1!important}
+.order-grid-filter-form .foodex-filter-action,.order-grid-filter-form .foodex-action-secondary,.order-grid-new-order{height:44px!important;min-height:44px!important;padding-inline:10px!important;border-radius:8px!important;font-size:.875rem!important;line-height:1!important}
 .order-grid-filter-label{position:absolute!important;width:1px!important;height:1px!important;padding:0!important;margin:-1px!important;overflow:hidden!important;clip:rect(0,0,0,0)!important;white-space:nowrap!important;border:0!important}
 .order-grid-filter-more{position:relative}
-.order-grid-filter-more>summary{list-style:none;width:34px;height:34px;display:grid;place-items:center;border:1px solid var(--foodex-border);border-radius:8px;background:var(--foodex-surface);color:var(--foodex-green-dark);cursor:pointer;font-weight:900}
+.order-grid-filter-more>summary{list-style:none;width:44px;height:44px;display:grid;place-items:center;border:1px solid var(--foodex-border);border-radius:8px;background:var(--foodex-surface);color:var(--foodex-green-dark);cursor:pointer;font-weight:900}
 .order-grid-filter-more>summary::-webkit-details-marker{display:none}
 .order-grid-filter-popover{position:absolute;z-index:12050;top:calc(100% + 7px);inset-inline-end:0;width:min(90vw,430px);display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:7px;padding:10px;border:1px solid var(--foodex-border);border-radius:13px;background:var(--foodex-surface);box-shadow:0 16px 42px rgba(15,23,42,.16)}
 .order-grid-filter-popover label{display:grid;gap:4px;font-size:.68rem;font-weight:800}
 .order-grid-filter-popover input,.order-grid-filter-popover select{width:100%}
-.order-grid-new-order{white-space:nowrap}
-@media(max-width:1350px){
-    .order-grid-filter-form select[name="driver_id"]{display:none}
-}
-@media(max-width:1100px){
-    .order-grid-filter-form input[name="order_number"],.order-grid-filter-form select[name="status"]{display:none}
+.order-grid-new-order{flex:0 0 auto;white-space:nowrap}
+/* The parent Orders toolbar uses flex:0 0 auto below 1180px; constrain this
+   filter slot rather than allowing its intrinsic input widths to spill outside. */
+@media(max-width:1180px){
+    .order-workspace-filter-slot:has([data-order-grid-filter-controls]){flex:0 1 60%;max-width:60%;min-width:0}
 }
 @media(max-width:767px){
+    .order-workspace-bar:has([data-order-grid-filter-controls]){flex-wrap:wrap}
+    .order-workspace-bar:has([data-order-grid-filter-controls]) .order-workspace-tabs{flex:1 1 100%;max-width:100%}
+    .order-workspace-filter-slot:has([data-order-grid-filter-controls]){flex:1 1 100%;width:100%;max-width:100%;min-width:0;margin-inline-start:0}
+    .order-grid-filter-controls{width:100%;flex-wrap:wrap;justify-content:flex-end}
+    .order-grid-filter-form{order:2;flex:1 1 100%;width:100%}
+    .order-grid-new-order{order:1}
     .order-grid-filter-controls{gap:4px}
     .order-grid-filter-form{padding:2px}
+    .order-grid-filter-primary input,.order-grid-filter-primary select,.order-grid-filter-popover input,.order-grid-filter-popover select{font-size:1rem!important}
     .order-grid-filter-popover{position:fixed;top:96px;inset-inline:12px;width:auto}
     .order-grid-new-order{padding-inline:8px!important}
 }
@@ -53,6 +62,7 @@
         @endif
         <input type="hidden" name="action_required" value="{{ ($selectedActionRequired ?? false) ? 1 : 0 }}">
 
+        <div class="order-grid-filter-primary" data-order-primary-filters role="group" tabindex="0" aria-label="{{ $isAr ? 'فلاتر الطلبات الأساسية' : 'Primary order filters' }}">
         <label>
             <span class="order-grid-filter-label">{{ __('order_operations.filters.order_number') }}</span>
             <input type="search"
@@ -82,8 +92,8 @@
             </select>
         </label>
 
-        <label>
-            <span class="order-gr="submit">{{ __('order_operations.filters.apply') }}</button>
+        </div>
+        <button class="foodex-filter-action" type="submit">{{ __('order_operations.filters.apply') }}</button>
         <a class="foodex-action-secondary button secondary"
            data-order-filter-reset-context href="{{ route('admin.operations.orders.index', $orderFilterReset) }}#order-tab-orders"
            aria-label="{{ __('order_operations.filters.reset') }}"

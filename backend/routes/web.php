@@ -929,6 +929,8 @@ Route::prefix('admin')
         Route::post('/security/users', [SecurityController::class, 'storeUser'])->middleware('throttle:20,1')->name('security.users.store');
         Route::patch('/security/users/{user}/profile', [SecurityController::class, 'updateUserProfile'])->middleware('throttle:20,1')->name('security.users.profile');
         Route::patch('/security/users/{user}/status', [SecurityController::class, 'updateUserStatus'])->name('security.users.status');
+        Route::patch('/security/users/{user}/archive', [SecurityController::class, 'archiveUser'])->middleware('throttle:10,1')->name('security.users.archive');
+        Route::delete('/security/users/{user}', [SecurityController::class, 'destroyUser'])->middleware('throttle:6,1')->name('security.users.destroy');
         Route::put('/security/users/{user}/roles', [SecurityController::class, 'updateUserRoles'])->name('security.users.roles');
         Route::put('/security/users/{user}/permissions', [SecurityController::class, 'updateUserPermissions'])->name('security.users.permissions');
         Route::delete('/security/users/{user}/mfa', [SecurityController::class, 'resetUserMfa'])->middleware('throttle:20,1')->name('security.users.mfa.reset');

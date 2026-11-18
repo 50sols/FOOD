@@ -114,8 +114,11 @@ final class V2ArchivedIdentityAccessRetentionTest extends TestCase
             ]),
         );
 
-        $this->getJson('/api/v1/profile')->assertUnauthorized();
-        $this->getJson('/api/v1/invoices')->assertUnauthorized();
+        // Authenticated-but-disabled accounts are rejected by active-user middleware (403).
+        $this->getJson('/api/v1/profile')->assertForbidden();
+        $this->getJson('/api/v1/invoices')->assertForbidden();
+        $this->getJson('/api/v1/invoices/'.$invoice->id)->assertForbidden();
+        $this->get('/api/v1/invoices/'.$invoice->id.'/download')->assertForbidden();
         $this->postJson('/api/v1/auth/login', [
             'email' => $user->email,
             'password' => 'V2RetentionPassword!',
@@ -154,7 +157,7 @@ final class V2ArchivedIdentityAccessRetentionTest extends TestCase
                 ]),
             );
             Sanctum::actingAs($user);
-            $this->getJson($endpoint)->assertUnauthorized();
+            $this->getJson($endpoint)->assertForbidden();
             $this->assertDatabaseHas('users', ['id' => $user->id, 'is_active' => 0]);
         }
     }
