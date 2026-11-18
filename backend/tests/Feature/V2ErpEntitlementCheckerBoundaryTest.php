@@ -2723,6 +2723,75 @@ final class V2ErpEntitlementCheckerBoundaryTest extends TestCase
         $this->assertSame($auditBefore, DB::table('audit_logs')->count());
     }
 
+    public function test_every_canonical_tab_hides_and_forbids_explicit_role_permission_deny_without_side_effects(): void
+    {
+        $store = $this->wholesaleStore();
+        $owner = $this->actor('SUPER_ADMIN');
+        app(EnterpriseModuleAdministration::class)->perform('procurement', 'enable', $owner);
+        app(ModuleEntitlementManager::class)->set(
+            'procurement', EntitlementScope::platform(), true, null, $owner,
+        );
+
+        $tabsConstant = (new \ReflectionClass(EnterpriseProcurementController::class))
+            ->getReflectionConstant('TABS');
+        $this->assertInstanceOf(\ReflectionClassConstant::class, $tabsConstant);
+        $tabPermissions = $tabsConstant->getValue();
+        $covered = [];
+        $auditBefore = DB::table('audit_logs')->count();
+        $requestsBefore = DB::table('enterprise_purchase_requests')->count();
+
+        foreach (array_unique(array_values($tabPermissions)) as $deniedPermission) {
+            $actor = $this->actor('PROCUREMENT_MANAGER');
+            $this->assertTrue($actor->hasPermission($deniedPermission, $store->id));
+            DB::table('user_permission_overrides')->insert([
+                'user_id' => $actor->id,
+                'permission_id' => Permission::query()->where('code', $deniedPermission)->firstOrFail()->id,
+                'scope_key' => 'global',
+                'store_id' => null,
+                'effect' => 'deny',
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+            $actor->forceFill(['has_permission_overrides' => true])->save();
+            $this->assertFalse($actor->fresh()->hasPermission($deniedPermission, $store->id));
+
+            // Keep another genuinely authorized tab visible; a user with one
+            // denied permission must not be treated as entirely unauthenticated.
+            $allowedTab = $deniedPermission === 'procurement.purchase_requests.view'
+                ? 'suppliers' : 'requests';
+            $this->assertTrue($actor->fresh()->hasPermission($tabPermissions[$allowedTab], $store->id));
+
+            foreach (['ar' => 'rtl', 'en' => 'ltr'] as $locale => $direction) {
+                app()->setLocale($locale);
+                $actor->forceFill(['locale' => $locale])->save();
+                $allowed = $this->actingAs($actor->fresh())->get(route('admin.erp.procurement.index', [
+                    'store_id' => $store->id,
+                    'tab' => $allowedTab,
+                ]))->assertOk()->assertSee('dir="'.$direction.'"', false);
+                $visible = collect($allowed->viewData('tabs'))->pluck('key')->all();
+                $this->assertContains($allowedTab, $visible);
+
+                foreach ($tabPermissions as $tab => $permission) {
+                    if ($permission !== $deniedPermission) {
+                        continue;
+                    }
+                    $covered[] = $tab;
+                    $this->assertNotContains($tab, $visible, $locale.':'.$tab);
+                    $allowed->assertDontSee('data-procurement-tab="'.$tab.'"', false);
+                    $this->actingAs($actor->fresh())->get(route('admin.erp.procurement.index', [
+                        'store_id' => $store->id,
+                        'tab' => $tab,
+                    ]))->assertForbidden();
+                }
+            }
+        }
+
+        // Every real Controller::TABS entry was covered in both locales.
+        $this->assertEqualsCanonicalizing(array_keys($tabPermissions), array_unique($covered));
+        $this->assertSame($requestsBefore, DB::table('enterprise_purchase_requests')->count());
+        $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+    }
+
     public function test_procurement_denied_tabs_are_hidden_and_direct_get_denied_while_unknown_tab_is_404(): void
     {
         $store = $this->wholesaleStore();
