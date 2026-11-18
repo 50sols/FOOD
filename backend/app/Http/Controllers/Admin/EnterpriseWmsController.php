@@ -44,6 +44,27 @@ final class EnterpriseWmsController extends Controller
         'reports',
     ];
 
+    /**
+     * Warehouse transfers are warehouse-to-warehouse only. Unrecognized Van
+     * identity/target metadata must not silently pass as a successful Van load.
+     * The real physical custody lifecycle is a separate P258 acceptance gate.
+     *
+     * @var array<string, array<int, string>>
+     */
+    private const UNSUPPORTED_VAN_TRANSFER_FIELDS = [
+        'van_id' => ['missing'],
+        'source_van_id' => ['missing'],
+        'target_van_id' => ['missing'],
+        'destination_van_id' => ['missing'],
+        'van_assignment_id' => ['missing'],
+        'van_trip_id' => ['missing'],
+        'van_load_id' => ['missing'],
+        'source_type' => ['missing'],
+        'target_type' => ['missing'],
+        'destination_type' => ['missing'],
+        'metadata' => ['missing'],
+    ];
+
     public function __construct(
         private readonly WarehouseScope $warehouseScope,
         private readonly WarehouseTransferService $transfers,
@@ -225,10 +246,36 @@ final class EnterpriseWmsController extends Controller
         ]));
     }
 
+    /**
+     * Strict warehouse-only request contract: extra top-level input is never
+     * interpreted as physical Van cargo or quietly ignored. In particular,
+     * wrappers such as payload[van_id] are forbidden, not just known vanId
+     * aliases. Keep CSRF and method-spoof fields from the existing forms.
+     *
+     * @param  list<string>  $allowedFields
+     * @return array<string, array<int, string>>
+     */
+    private function vanTransferMissingRules(Request $request, array $allowedFields): array
+    {
+        $rules = self::UNSUPPORTED_VAN_TRANSFER_FIELDS;
+        $allowed = array_fill_keys([...$allowedFields, '_token', '_method'], true);
+
+        foreach (array_keys($request->all()) as $field) {
+            if (! is_string($field) || ! isset($allowed[$field])) {
+                $rules[$field] = ['missing'];
+            }
+        }
+
+        return $rules;
+    }
+
     public function createTransfer(Request $request): RedirectResponse
     {
         $actor = $this->actor($request);
+        // P258: a warehouse-to-warehouse transfer cannot load a van.
+        // Reject a forged van target until the dedicated van-stock lifecycle exists.
         $data = $request->validate([
+            ...$this->vanTransferMissingRules($request, ['store_id', 'source_warehouse_id', 'target_warehouse_id', 'product_id', 'quantity', 'request_key']),
             'store_id' => ['required', 'integer', 'min:1'],
             'source_warehouse_id' => ['required', 'integer', 'min:1'],
             'target_warehouse_id' => ['required', 'integer', 'different:source_warehouse_id'],
@@ -253,7 +300,11 @@ final class EnterpriseWmsController extends Controller
     public function dispatchTransfer(Request $request, int $transfer): RedirectResponse
     {
         $actor = $this->actor($request);
-        $data = $request->validate(['store_id' => ['required', 'integer', 'min:1']]);
+        // P258: normal warehouse transfer transitions never authorize van stock loading.
+        $data = $request->validate([
+            ...$this->vanTransferMissingRules($request, ['store_id']),
+            'store_id' => ['required', 'integer', 'min:1'],
+        ]);
         $this->assertStore($actor, (int) $data['store_id'], 'inventory.manage');
         $this->transfers->dispatch($actor, $transfer);
         $this->locations->captureTransfer($actor, $transfer);
@@ -265,7 +316,11 @@ final class EnterpriseWmsController extends Controller
     public function receiveTransfer(Request $request, int $transfer): RedirectResponse
     {
         $actor = $this->actor($request);
-        $data = $request->validate(['store_id' => ['required', 'integer', 'min:1']]);
+        // P258: normal warehouse transfer transitions never authorize van stock loading.
+        $data = $request->validate([
+            ...$this->vanTransferMissingRules($request, ['store_id']),
+            'store_id' => ['required', 'integer', 'min:1'],
+        ]);
         $this->assertStore($actor, (int) $data['store_id'], 'inventory.manage');
         $this->transfers->receive($actor, $transfer);
         $this->locations->captureTransfer($actor, $transfer);

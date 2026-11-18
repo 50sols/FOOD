@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -12,8 +13,11 @@ import 'package:foodex_customer_app/core/api/wholesale_commerce_api.dart';
 import 'package:foodex_customer_app/core/auth/customer_session.dart';
 import 'package:foodex_customer_app/core/config/customer_app_release.dart';
 import 'package:foodex_customer_app/core/diagnostics/customer_diagnostics.dart';
+import 'package:foodex_customer_app/core/localization/app_translations.dart';
+import 'package:foodex_customer_app/core/routing/customer_routes.dart';
 import 'package:foodex_customer_app/core/routing/customer_pending_action.dart';
 import 'package:foodex_customer_app/core/theme/customer_ui_v3_tokens.dart';
+import 'package:foodex_customer_app/features/b2b/b2b_journey_screen.dart';
 import 'package:foodex_customer_app/features/storefront/wholesale_multistore_screens.dart';
 
 Future<void> _scrollUntilBuilt(
@@ -35,6 +39,654 @@ Future<void> _pumpCustomerFrames(WidgetTester tester) async {
 
 void main() {
   const b2b = CustomerSession.authenticated(CustomerChannel.b2b);
+
+  for (final locale in const <Locale>[Locale('ar'), Locale('en')]) {
+    testWidgets(
+      'MOB-C03 statement revocation clears cached ledger and pending export ${locale.languageCode}',
+      (tester) async {
+        tester.view.physicalSize = const Size(390, 844);
+        tester.view.devicePixelRatio = 1;
+        addTearDown(() {
+          tester.view.resetPhysicalSize();
+          tester.view.resetDevicePixelRatio();
+        });
+        final api = _ReauthStatementB2bApi();
+        await tester.pumpWidget(
+          MaterialApp(
+            locale: locale,
+            builder: (context, child) => Directionality(
+              textDirection: locale.languageCode == 'ar'
+                  ? TextDirection.rtl
+                  : TextDirection.ltr,
+              child: child!,
+            ),
+            home: AppTranslations(
+              locale: locale,
+              overrides: const <String, String>{},
+              child: B2bJourneyScreen(
+                definition: const CustomerRouteDefinition(
+                  pattern: CustomerRoutePaths.b2bAccountStatement,
+                  label: 'B2B statement',
+                  channel: CustomerChannel.b2b,
+                  requiresAuth: true,
+                ),
+                location: '/b2b/account-statement?store_id=7',
+                actionApi: _FakeCustomerActionApi(),
+                api: api,
+              ),
+            ),
+          ),
+        );
+        await _pumpCustomerFrames(tester);
+        expect(api.reads, 1);
+        expect(find.textContaining('49.875 KWD'), findsWidgets);
+        final export = find.byKey(const ValueKey('b2b-statement-export-pdf'));
+        await tester.ensureVisible(export);
+        await tester.tap(export);
+        await tester.pump();
+        expect(api.downloads, 1);
+        expect(tester.widget<FilledButton>(export).onPressed, isNull);
+
+        // All-time deliberately keeps the same store/period request path.
+        // A 403 here must invalidate last-good, not display stale ledger.
+        final allTime = find.byKey(
+          const ValueKey('b2b-statement-preset-all'),
+        );
+        await tester.ensureVisible(allTime);
+        await tester.tap(allTime);
+        await _pumpCustomerFrames(tester);
+        expect(api.reads, 2);
+        final denial = find.byKey(const ValueKey('b2b-forbidden'));
+        expect(denial, findsOneWidget);
+        expect(find.byKey(const ValueKey('b2b-statement-data')), findsNothing);
+        expect(find.textContaining('49.875 KWD'), findsNothing);
+        expect(
+          Directionality.of(tester.element(denial)),
+          locale.languageCode == 'ar' ? TextDirection.rtl : TextDirection.ltr,
+        );
+
+        api.pending.complete(_DeferredStatementExportApi.document());
+        await tester.pump();
+        expect(find.byType(SnackBar), findsNothing);
+
+        await tester.tap(find.byKey(const ValueKey('b2b-error-retry')));
+        await _pumpCustomerFrames(tester);
+        expect(api.reads, 3);
+        expect(find.textContaining('10.125 KWD'), findsWidgets);
+        expect(tester.takeException(), isNull);
+      },
+    );
+  }
+
+  for (final locale in const <Locale>[Locale('ar'), Locale('en')]) {
+    for (final detail in const <bool>[false, true]) {
+      for (final denialStatus in const <int>[401, 403, 404]) {
+        testWidgets(
+          'MOB-C03 ${detail ? 'detail' : 'list'} drops cached finance on '
+          '$denialStatus ${locale.languageCode}',
+          (tester) async {
+            tester.view.physicalSize = const Size(390, 844);
+            tester.view.devicePixelRatio = 1;
+            addTearDown(() {
+              tester.view.resetPhysicalSize();
+              tester.view.resetDevicePixelRatio();
+            });
+            final api = _ReauthInvoiceB2bApi(denialStatus);
+            await tester.pumpWidget(
+              MaterialApp(
+                locale: locale,
+                builder: (context, child) => Directionality(
+                  textDirection: locale.languageCode == 'ar'
+                      ? TextDirection.rtl
+                      : TextDirection.ltr,
+                  child: child!,
+                ),
+                home: AppTranslations(
+                  locale: locale,
+                  overrides: const <String, String>{},
+                  child: B2bJourneyScreen(
+                    definition: CustomerRouteDefinition(
+                      pattern: detail
+                          ? CustomerRoutePaths.b2bInvoiceDetails
+                          : CustomerRoutePaths.b2bInvoices,
+                      label: 'B2B invoice',
+                      channel: CustomerChannel.b2b,
+                      requiresAuth: true,
+                    ),
+                    location: detail
+                        ? '/b2b/invoices/31?store_id=7'
+                        : '/b2b/invoices?store_id=7',
+                    actionApi: _FakeCustomerActionApi(),
+                    api: api,
+                  ),
+                ),
+              ),
+            );
+            await _pumpCustomerFrames(tester);
+            expect(api.calls, 1);
+            expect(find.textContaining('INV-31'), findsWidgets);
+
+            if (detail) {
+              tester.binding.handleAppLifecycleStateChanged(
+                AppLifecycleState.resumed,
+              );
+            } else {
+              await tester.tap(
+                find.byKey(const ValueKey('b2b-invoices-refresh')),
+              );
+            }
+            // Deliver a revoked HTTP response only after the replacement
+            // FutureBuilder has subscribed to the refreshed request.
+            await tester.pump();
+            api.reject();
+            await _pumpCustomerFrames(tester);
+            expect(api.calls, 2);
+            expect(find.textContaining('INV-31'), findsNothing);
+            expect(
+              find.byKey(ValueKey(
+                denialStatus == 403 ? 'b2b-forbidden' : 'b2b-error',
+              )),
+              findsOneWidget,
+            );
+            expect(
+              Directionality.of(tester.element(find.byKey(ValueKey(
+                denialStatus == 403 ? 'b2b-forbidden' : 'b2b-error',
+              )))),
+              locale.languageCode == 'ar'
+                  ? TextDirection.rtl
+                  : TextDirection.ltr,
+            );
+            expect(find.byKey(const ValueKey('b2b-invoice-detail-pdf')),
+                findsNothing);
+            expect(
+                find.byKey(const ValueKey('b2b-invoice-pdf-31')), findsNothing);
+
+            await tester.tap(
+              find.byKey(const ValueKey('b2b-error-retry')),
+            );
+            await _pumpCustomerFrames(tester);
+            expect(api.calls, 3);
+            expect(find.textContaining('INV-REVALIDATED-31'), findsWidgets);
+            expect(tester.takeException(), isNull);
+          },
+        );
+      }
+    }
+  }
+
+  for (final locale in const <Locale>[Locale('ar'), Locale('en')]) {
+    for (final detail in const <bool>[false, true]) {
+      testWidgets(
+        'MOB-C03 ${detail ? 'detail' : 'list'} PDF cannot cross Customer '
+        'store/session scope ${locale.languageCode}',
+        (tester) async {
+          tester.view.physicalSize = const Size(390, 844);
+          tester.view.devicePixelRatio = 1;
+          addTearDown(() {
+            tester.view.resetPhysicalSize();
+            tester.view.resetDevicePixelRatio();
+          });
+
+          final api = _DeferredInvoicePdfApi();
+          final actionApi = _FakeCustomerActionApi();
+          Widget scoped(int storeId, int invoiceId) => MaterialApp(
+                locale: locale,
+                builder: (context, child) => Directionality(
+                  textDirection: locale.languageCode == 'ar'
+                      ? TextDirection.rtl
+                      : TextDirection.ltr,
+                  child: child!,
+                ),
+                home: AppTranslations(
+                  locale: locale,
+                  overrides: const <String, String>{},
+                  child: B2bJourneyScreen(
+                    definition: CustomerRouteDefinition(
+                      pattern: detail
+                          ? CustomerRoutePaths.b2bInvoiceDetails
+                          : CustomerRoutePaths.b2bInvoices,
+                      label: 'B2B invoices',
+                      channel: CustomerChannel.b2b,
+                      requiresAuth: true,
+                    ),
+                    location: detail
+                        ? '/b2b/invoices/$invoiceId?store_id=$storeId'
+                        : '/b2b/invoices?store_id=$storeId',
+                    actionApi: actionApi,
+                    api: api,
+                  ),
+                ),
+              );
+
+          await tester.pumpWidget(scoped(7, 31));
+          await _pumpCustomerFrames(tester);
+          final oldButton = detail
+              ? find.byKey(const ValueKey('b2b-invoice-detail-pdf'))
+              : find.byKey(const ValueKey('b2b-invoice-pdf-31'));
+          await tester.ensureVisible(oldButton);
+          expect(
+              Directionality.of(tester.element(oldButton)),
+              locale.languageCode == 'ar'
+                  ? TextDirection.rtl
+                  : TextDirection.ltr);
+          await tester.tap(oldButton);
+          await tester.pump();
+          expect(api.downloadPaths, hasLength(1));
+          expect(api.downloadPaths[0], contains('store_id=7'));
+          expect(api.downloadPaths[0], contains('/invoices/31/download'));
+
+          // Same mounted route element and API, but a newly authorized
+          // invoice/store: an old download may never be shared or keep
+          // the next session's download action locked.
+          await tester.pumpWidget(scoped(9, 91));
+          await _pumpCustomerFrames(tester);
+          final nextButton = detail
+              ? find.byKey(const ValueKey('b2b-invoice-detail-pdf'))
+              : find.byKey(const ValueKey('b2b-invoice-pdf-91'));
+          await tester.ensureVisible(nextButton);
+          final nextAction = tester.widget<ButtonStyleButton>(nextButton);
+          expect(nextAction.onPressed, isNotNull);
+          await tester.tap(nextButton);
+          await tester.pump();
+          expect(api.downloadPaths, hasLength(2));
+          expect(api.downloadPaths[1], contains('store_id=9'));
+          expect(api.downloadPaths[1], contains('/invoices/91/download'));
+          expect(
+              tester.widget<ButtonStyleButton>(nextButton).onPressed, isNull);
+
+          // The old completed bytes must not trigger the OS share sheet;
+          // an old finally must not re-enable the still-pending new export.
+          api.pending[0]
+              .complete(Uint8List.fromList(const [37, 80, 68, 70, 45]));
+          await tester.pump();
+          expect(
+              tester.widget<ButtonStyleButton>(nextButton).onPressed, isNull);
+          expect(find.byType(SnackBar), findsNothing);
+
+          await tester.pumpWidget(const SizedBox());
+          api.pending[1]
+              .complete(Uint8List.fromList(const [37, 80, 68, 70, 45]));
+          await tester.pump();
+          expect(tester.takeException(), isNull);
+        },
+      );
+    }
+  }
+
+  for (final locale in const <Locale>[Locale('ar'), Locale('en')]) {
+    testWidgets(
+      'MOB-C03 statement hides previous store and discards late responses '
+      '${locale.languageCode}',
+      (tester) async {
+        tester.view.physicalSize = const Size(390, 844);
+        tester.view.devicePixelRatio = 1;
+        addTearDown(() {
+          tester.view.resetPhysicalSize();
+          tester.view.resetDevicePixelRatio();
+        });
+
+        final api = _DeferredScopedB2bReadbackApi();
+        final actionApi = _FakeCustomerActionApi();
+        Widget scoped(String storeId) => MaterialApp(
+              locale: locale,
+              home: AppTranslations(
+                locale: locale,
+                overrides: const <String, String>{},
+                child: B2bJourneyScreen(
+                  definition: const CustomerRouteDefinition(
+                    pattern: CustomerRoutePaths.b2bAccountStatement,
+                    label: 'B2B account statement',
+                    channel: CustomerChannel.b2b,
+                    requiresAuth: true,
+                  ),
+                  location: '/b2b/account-statement?store_id=$storeId',
+                  actionApi: actionApi,
+                  api: api,
+                ),
+              ),
+            );
+        Map<String, Object?> statement(num balance) => {
+              'data': {
+                'currency': 'EGP',
+                'opening_balance': balance,
+                'period_debits': 0,
+                'period_credits': 0,
+                'closing_balance': balance,
+                'balance': balance,
+                'transactions': <Object?>[],
+                'pagination': {'current_page': 1, 'last_page': 1},
+              },
+            };
+
+        await tester.pumpWidget(scoped('7'));
+        await tester.pump();
+        expect(api.paths, hasLength(1));
+        expect(api.paths.single, contains('store_id=7'));
+        api.replies[0].complete(statement(100));
+        await _pumpCustomerFrames(tester);
+        expect(find.textContaining('100.00 EGP'), findsWidgets);
+
+        final monthly = find.byKey(
+          const ValueKey('b2b-statement-preset-month'),
+        );
+        await tester.ensureVisible(monthly);
+        await tester.tap(monthly);
+        await tester.pump();
+        expect(api.paths, hasLength(2));
+        expect(api.paths[1], contains('store_id=7'));
+
+        await tester.pumpWidget(scoped('9'));
+        await tester.pump();
+        expect(api.paths, hasLength(3));
+        expect(api.paths[2], contains('store_id=9'));
+        expect(find.textContaining('100.00 EGP'), findsNothing);
+        expect(find.byKey(const ValueKey('b2b-loading')), findsOneWidget);
+
+        api.replies[2].complete(statement(20));
+        await _pumpCustomerFrames(tester);
+        expect(find.textContaining('20.00 EGP'), findsWidgets);
+
+        // The old store-7 refresh completes after the store-9 result.
+        api.replies[1].complete(statement(900));
+        await _pumpCustomerFrames(tester);
+        expect(find.textContaining('20.00 EGP'), findsWidgets);
+        expect(find.textContaining('900.00 EGP'), findsNothing);
+        expect(tester.takeException(), isNull);
+      },
+    );
+  }
+
+  for (final locale in const <Locale>[Locale('ar'), Locale('en')]) {
+    testWidgets(
+      'MOB-C03 export cannot share an old store or unlock a new export '
+      '${locale.languageCode}',
+      (tester) async {
+        tester.view.physicalSize = const Size(390, 844);
+        tester.view.devicePixelRatio = 1;
+        addTearDown(() {
+          tester.view.resetPhysicalSize();
+          tester.view.resetDevicePixelRatio();
+        });
+
+        final api = _DeferredStatementExportApi();
+        final actionApi = _FakeCustomerActionApi();
+        Widget scoped(String storeId) => MaterialApp(
+              locale: locale,
+              home: AppTranslations(
+                locale: locale,
+                overrides: const <String, String>{},
+                child: B2bJourneyScreen(
+                  definition: const CustomerRouteDefinition(
+                    pattern: CustomerRoutePaths.b2bAccountStatement,
+                    label: 'B2B account statement',
+                    channel: CustomerChannel.b2b,
+                    requiresAuth: true,
+                  ),
+                  location: '/b2b/account-statement?store_id=$storeId',
+                  actionApi: actionApi,
+                  api: api,
+                ),
+              ),
+            );
+
+        await tester.pumpWidget(scoped('7'));
+        await _pumpCustomerFrames(tester);
+        final pdf = find.byKey(const ValueKey('b2b-statement-export-pdf'));
+        await tester.ensureVisible(pdf);
+        await tester.tap(pdf);
+        await tester.pump();
+        expect(api.downloadPaths, hasLength(1));
+        expect(api.downloadPaths.single, contains('store_id=7'));
+        expect(tester.widget<FilledButton>(pdf).onPressed, isNull);
+
+        // The user changes the authorized store before the old download
+        // finishes. The next store must be immediately usable.
+        await tester.pumpWidget(scoped('9'));
+        await _pumpCustomerFrames(tester);
+        expect(api.readPaths.last, contains('store_id=9'));
+        await tester.ensureVisible(pdf);
+        expect(tester.widget<FilledButton>(pdf).onPressed, isNotNull);
+        await tester.tap(pdf);
+        await tester.pump();
+        expect(api.downloadPaths, hasLength(2));
+        expect(api.downloadPaths.last, contains('store_id=9'));
+        expect(tester.widget<FilledButton>(pdf).onPressed, isNull);
+
+        // A late store-7 PDF must neither share into the new session nor
+        // reset the busy state for an in-flight store-9 export.
+        api.pending[0].complete(_DeferredStatementExportApi.document());
+        await tester.pump();
+        expect(tester.widget<FilledButton>(pdf).onPressed, isNull);
+        expect(find.byType(SnackBar), findsNothing);
+
+        await tester.pumpWidget(const SizedBox());
+        api.pending[1].complete(_DeferredStatementExportApi.document());
+        await tester.pump();
+        expect(tester.takeException(), isNull);
+      },
+    );
+  }
+
+  for (final locale in const <Locale>[Locale('ar'), Locale('en')]) {
+    testWidgets(
+      'MOB-C03 purchase report isolates store and period responses '
+      '${locale.languageCode}',
+      (tester) async {
+        tester.view.physicalSize = const Size(390, 844);
+        tester.view.devicePixelRatio = 1;
+        addTearDown(() {
+          tester.view.resetPhysicalSize();
+          tester.view.resetDevicePixelRatio();
+        });
+
+        final api = _DeferredPurchaseReportB2bApi();
+        final actionApi = _FakeCustomerActionApi();
+        Widget scoped(String storeId) => MaterialApp(
+              locale: locale,
+              home: AppTranslations(
+                locale: locale,
+                overrides: const <String, String>{},
+                child: B2bJourneyScreen(
+                  definition: const CustomerRouteDefinition(
+                    pattern: CustomerRoutePaths.b2bPurchaseReports,
+                    label: 'B2B purchase report',
+                    channel: CustomerChannel.b2b,
+                    requiresAuth: true,
+                  ),
+                  location: '/b2b/reports/purchases?store_id=$storeId',
+                  actionApi: actionApi,
+                  api: api,
+                ),
+              ),
+            );
+
+        Map<String, Object?> report(num total) => {
+              'currency': 'KWD',
+              'summary': {
+                'total_purchases': total,
+                'average_order_value': total,
+                'order_count': 1,
+                'invoice_count': 1,
+              },
+              'data': <Object?>[],
+              'categories': <Object?>[],
+              'orders': <Object?>[],
+              'meta': {'page': 1, 'per_page': 5, 'has_more': false},
+            };
+
+        await tester.pumpWidget(scoped('7'));
+        await tester.pump();
+        expect(api.paths, hasLength(1));
+        expect(api.paths.single, contains('store_id=7'));
+        api.replies[0].complete(report(100.125));
+        await _pumpCustomerFrames(tester);
+        expect(find.textContaining('100.125 KWD'), findsWidgets);
+
+        final period = find.byKey(
+          const ValueKey('b2b-purchases-current-period'),
+        );
+        await tester.ensureVisible(period);
+        await tester.tap(period);
+        await tester.pump();
+        expect(api.paths, hasLength(2));
+        expect(api.paths[1], contains('store_id=7'));
+        expect(api.paths[1], contains('from='));
+
+        // The previously confirmed store is never reusable under store 9.
+        await tester.pumpWidget(scoped('9'));
+        await tester.pump();
+        expect(api.paths, hasLength(3));
+        expect(api.paths[2], contains('store_id=9'));
+        expect(find.textContaining('100.125 KWD'), findsNothing);
+        expect(find.byKey(const ValueKey('b2b-loading')), findsOneWidget);
+
+        api.replies[2].complete(report(20.375));
+        await _pumpCustomerFrames(tester);
+        expect(find.textContaining('20.375 KWD'), findsWidgets);
+
+        // Old store-7 financial data may finish after store-9 was displayed.
+        api.replies[1].complete(report(900.125));
+        await _pumpCustomerFrames(tester);
+        expect(find.textContaining('20.375 KWD'), findsWidgets);
+        expect(find.textContaining('900.125 KWD'), findsNothing);
+
+        // Only a retry of this exact scoped report may retain last-good.
+        final refresh = find.byKey(
+          const ValueKey('b2b-purchases-refresh'),
+        );
+        await tester.ensureVisible(refresh);
+        await tester.tap(refresh);
+        await tester.pump();
+        expect(api.paths, hasLength(4));
+        expect(api.paths[3], contains('store_id=9'));
+        api.replies[3].completeError(
+          const B2bApiException('http_503', statusCode: 503),
+        );
+        await _pumpCustomerFrames(tester);
+        expect(
+          find.byKey(const ValueKey('b2b-purchases-stale')),
+          findsOneWidget,
+        );
+        expect(find.textContaining('20.375 KWD'), findsWidgets);
+        expect(tester.takeException(), isNull);
+      },
+    );
+
+    testWidgets(
+      'MOB-C03 purchase report never fabricates nonfinite money '
+      '${locale.languageCode}',
+      (tester) async {
+        final api = _FakeB2bApi({
+          'currency': 'KWD',
+          'summary': {
+            'total_purchases': 'NaN',
+            'average_order_value': 20.375,
+            'order_count': 1,
+            'invoice_count': 1,
+          },
+          'data': [
+            {'period': '2026-09-01', 'purchase_total': 'Infinity'},
+          ],
+          'categories': [
+            {
+              'category_name': 'Rice',
+              'purchase_total': null,
+              'percentage': 'NaN',
+            },
+          ],
+          'orders': <Object?>[],
+          'meta': {'page': 1, 'per_page': 5, 'has_more': false},
+        });
+
+        await tester.pumpWidget(
+          FoodexCustomerApp(
+            session: b2b,
+            initialRoute: '/b2b/reports/purchases?store_id=7',
+            b2bApi: api,
+            locale: locale,
+          ),
+        );
+        await _pumpCustomerFrames(tester);
+
+        expect(api.lastPath, contains('store_id=7'));
+        expect(
+          find.byKey(const ValueKey('b2b-purchases-summary')),
+          findsOneWidget,
+        );
+        expect(find.textContaining('20.375 KWD'), findsWidgets);
+        expect(find.textContaining('NaN KWD'), findsNothing);
+        expect(find.textContaining('Infinity KWD'), findsNothing);
+        expect(find.textContaining('0.000 KWD'), findsNothing);
+        expect(find.textContaining('— · —'), findsWidgets);
+        expect(
+          Directionality.of(
+            tester.element(
+              find.byKey(const ValueKey('b2b-purchases-summary')),
+            ),
+          ),
+          locale.languageCode == 'ar' ? TextDirection.rtl : TextDirection.ltr,
+        );
+        expect(tester.takeException(), isNull);
+      },
+    );
+  }
+
+  testWidgets(
+    'MOB-C03 invoices clear last-good rows when the authorized store changes',
+    (tester) async {
+      final api = _DeferredScopedB2bReadbackApi();
+      final actionApi = _FakeCustomerActionApi();
+      Widget scoped(String storeId) => MaterialApp(
+            home: AppTranslations(
+              locale: const Locale('ar'),
+              overrides: const <String, String>{},
+              child: B2bJourneyScreen(
+                definition: const CustomerRouteDefinition(
+                  pattern: CustomerRoutePaths.b2bInvoices,
+                  label: 'B2B invoices',
+                  channel: CustomerChannel.b2b,
+                  requiresAuth: true,
+                ),
+                location: '/b2b/invoices?store_id=$storeId',
+                actionApi: actionApi,
+                api: api,
+              ),
+            ),
+          );
+      Map<String, Object?> invoices(String label) => {
+            'data': [
+              {
+                'id': label == 'INV-S7' ? 7 : 9,
+                'invoice_number': label,
+                'display_invoice_number': label,
+                'status': 'issued',
+                'total': 42.0,
+                'currency': 'EGP',
+              },
+            ],
+            'pagination': {'current_page': 1, 'last_page': 1},
+          };
+
+      await tester.pumpWidget(scoped('7'));
+      await tester.pump();
+      expect(api.paths.single, contains('store_id=7'));
+      api.replies[0].complete(invoices('INV-S7'));
+      await _pumpCustomerFrames(tester);
+      expect(find.textContaining('INV-S7'), findsWidgets);
+
+      await tester.pumpWidget(scoped('9'));
+      await tester.pump();
+      expect(api.paths, hasLength(2));
+      expect(api.paths[1], contains('store_id=9'));
+      expect(find.textContaining('INV-S7'), findsNothing);
+
+      api.replies[1].complete(invoices('INV-S9'));
+      await _pumpCustomerFrames(tester);
+      expect(find.textContaining('INV-S9'), findsWidgets);
+      expect(find.textContaining('INV-S7'), findsNothing);
+      expect(tester.takeException(), isNull);
+    },
+  );
 
   testWidgets(
     'B2B unauthenticated protected route hides internal redirect details',
@@ -186,10 +838,10 @@ void main() {
         'account': {'id': 3, 'company_name': 'Buyer Co', 'status': 'active'},
         'finance': {
           'currency': 'KWD',
-          'balance': 10,
-          'balance_direction': 'customer_owes_company',
+          'balance': 35,
+          'balance_direction': 'company_owes_customer',
           'credit_limit': 500,
-          'available_credit_line': 490,
+          'available_credit_line': 500,
           'customer_credit_balance': 35,
           'open_amount': 10,
           'overdue_amount': 2,
@@ -494,6 +1146,210 @@ void main() {
     },
   );
 
+  for (final locale in const <Locale>[Locale('ar'), Locale('en')]) {
+    testWidgets(
+      'B2B dashboard rejects non-finite money without masking valid payments in ${locale.languageCode}',
+      (tester) async {
+        final api = _FakeB2bApi({
+          'customer': {'name': 'Buyer'},
+          'account': {'company_name': 'Buyer Co', 'status': 'active'},
+          'finance': {
+            'currency': 'KWD',
+            'balance': 0,
+            'balance_direction': 'settled',
+            'customer_credit_balance': double.nan,
+            'open_amount': double.infinity,
+            'overdue_amount': double.nan,
+          },
+          'operations': {
+            'purchases_this_month': 'NaN',
+            'payments_this_month': 12.5,
+            'invoice_count': 1,
+            'order_count': 1,
+            'active_orders': 0,
+          },
+          'purchase_total': 'Infinity',
+          'freshness': {
+            'generated_at': DateTime.now().toUtc().toIso8601String(),
+            'stale': false,
+          },
+        });
+
+        await tester.pumpWidget(
+          FoodexCustomerApp(
+            session: b2b,
+            locale: locale,
+            initialRoute: '/b2b/dashboard',
+            b2bApi: api,
+          ),
+        );
+        await _pumpCustomerFrames(tester);
+
+        for (final key in const [
+          'credit-balance',
+          'purchase-value',
+          'open-invoices',
+          'overdue',
+          'purchases-month',
+        ]) {
+          expect(
+            find.descendant(
+              of: find.byKey(ValueKey('b2b-dashboard-$key')),
+              matching: find.text('—'),
+            ),
+            findsOneWidget,
+            reason: '$key must not display a non-finite monetary amount',
+          );
+        }
+        expect(
+          find.descendant(
+            of: find.byKey(const ValueKey('b2b-dashboard-payments-month')),
+            matching: find.text('12.500 KWD'),
+          ),
+          findsOneWidget,
+        );
+        expect(find.textContaining('NaN'), findsNothing);
+        expect(find.textContaining('Infinity'), findsNothing);
+        expect(
+          Directionality.of(
+            tester.element(find.byKey(const ValueKey('b2b-dashboard-data'))),
+          ),
+          locale.languageCode == 'ar' ? TextDirection.rtl : TextDirection.ltr,
+        );
+        expect(
+          api.paths.where((path) => path.startsWith('/api/v1/b2b/dashboard')),
+          hasLength(1),
+        );
+      },
+    );
+  }
+
+  for (final locale in const <Locale>[Locale('ar'), Locale('en')]) {
+    testWidgets(
+      'MOB-C03 dashboard denies mismatched signed credit currency in ${locale.languageCode}',
+      (tester) async {
+        final api = _FakeB2bApi({
+          'customer': {'name': 'Buyer'},
+          'account': {'company_name': 'Buyer Co', 'status': 'active'},
+          'finance': {
+            'currency': 'KWD',
+            'balance': 20,
+            'balance_direction': 'company_owes_customer',
+            'customer_credit_balance': 20,
+            'open_amount': 0,
+            'overdue_amount': 0,
+          },
+          'operations': {
+            'purchases_this_month': 0,
+            'payments_this_month': 0,
+            'invoice_count': 0,
+            'order_count': 0,
+            'active_orders': 0,
+          },
+          'currency': 'USD',
+          'purchase_total': 10,
+          'freshness': {
+            'generated_at': DateTime.now().toUtc().toIso8601String(),
+            'stale': false,
+          },
+        });
+        await tester.pumpWidget(FoodexCustomerApp(
+          session: b2b,
+          locale: locale,
+          initialRoute: '/b2b/dashboard',
+          b2bApi: api,
+        ));
+        await _pumpCustomerFrames(tester);
+        expect(
+          find.descendant(
+            of: find.byKey(const ValueKey('b2b-dashboard-credit-balance')),
+            matching: find.text('—'),
+          ),
+          findsOneWidget,
+        );
+        expect(
+          find.descendant(
+            of: find.byKey(const ValueKey('b2b-dashboard-credit-balance')),
+            matching: find.text('20.000 KWD'),
+          ),
+          findsNothing,
+        );
+      },
+    );
+  }
+
+  for (final locale in const <Locale>[Locale('ar'), Locale('en')]) {
+    testWidgets(
+      'B2B dashboard rejects forged credit on signed customer debt in ${locale.languageCode}',
+      (tester) async {
+        final api = _FakeB2bApi({
+          'customer': {'name': 'Buyer'},
+          'account': {'company_name': 'Buyer Co', 'status': 'active'},
+          'finance': {
+            'currency': 'KWD',
+            'balance': -20,
+            'balance_direction': 'customer_owes_company',
+            'customer_credit_balance': 20,
+            'open_amount': 20,
+            'overdue_amount': 0,
+          },
+          'operations': {
+            'purchases_this_month': 90,
+            'payments_this_month': 10,
+            'invoice_count': 1,
+            'order_count': 1,
+            'active_orders': 0,
+          },
+          'purchase_total': 90,
+          'freshness': {
+            'generated_at': DateTime.now().toUtc().toIso8601String(),
+            'stale': false,
+          },
+        });
+        await tester.pumpWidget(
+          FoodexCustomerApp(
+            session: b2b,
+            locale: locale,
+            initialRoute: '/b2b/dashboard?store_id=7',
+            b2bApi: api,
+          ),
+        );
+        await _pumpCustomerFrames(tester);
+        expect(
+          find.descendant(
+            of: find.byKey(const ValueKey('b2b-dashboard-credit-balance')),
+            matching: find.text('—'),
+          ),
+          findsOneWidget,
+        );
+        expect(
+          find.descendant(
+            of: find.byKey(const ValueKey('b2b-dashboard-open-invoices')),
+            matching: find.text('20.000 KWD'),
+          ),
+          findsOneWidget,
+        );
+        expect(
+          find.descendant(
+            of: find.byKey(const ValueKey('b2b-dashboard-payments-month')),
+            matching: find.text('10.000 KWD'),
+          ),
+          findsOneWidget,
+        );
+        expect(
+          Directionality.of(
+            tester.element(find.byKey(const ValueKey('b2b-dashboard-data'))),
+          ),
+          locale.languageCode == 'ar' ? TextDirection.rtl : TextDirection.ltr,
+        );
+        expect(
+          api.paths.where((path) => path.startsWith('/api/v1/b2b/dashboard')),
+          hasLength(1),
+        );
+      },
+    );
+  }
+
   testWidgets('B2B dashboard shows credit direction in English LTR', (
     tester,
   ) async {
@@ -502,7 +1358,7 @@ void main() {
       'account': {'company_name': 'Buyer Co', 'status': 'active'},
       'finance': {
         'currency': 'KWD',
-        'balance': -20,
+        'balance': 20,
         'balance_direction': 'company_owes_customer',
         'credit_limit': 500,
         'available_credit_line': 500,
@@ -522,6 +1378,7 @@ void main() {
         'stale': false,
       },
       'purchase_total': 88,
+      'currency': 'KWD',
     });
 
     await tester.pumpWidget(
@@ -556,8 +1413,142 @@ void main() {
     expect(find.text('Active orders'), findsOneWidget);
   });
 
-  testWidgets('B2B More keeps the compact hub without inline account sections',
-      (
+  for (final locale in const <Locale>[Locale('ar'), Locale('en')]) {
+    testWidgets(
+      'B2B rejects a contradictory signed credit snapshot in ${locale.languageCode}',
+      (tester) async {
+        final api = _PathB2bApi({
+          '/api/v1/profile': {
+            'customer': {'id': 19, 'type': 'b2b', 'name': 'Buyer'},
+            'business_account': {
+              'id': 27,
+              'company_name': 'Buyer Co',
+              'status': 'active',
+            },
+          },
+          '/api/v1/b2b/account-summary?store_id=7': {
+            'data': {
+              'currency': 'KWD',
+              'balance': 125,
+              'balance_direction': 'customer_owes_company',
+              'credit_limit': 1000,
+              'available_credit_line': 875,
+              'purchasing_power': 875,
+            },
+          },
+        });
+
+        await tester.pumpWidget(
+          FoodexCustomerApp(
+            session: const CustomerSession.authenticated(
+              CustomerChannel.b2b,
+              accessToken: 'token',
+              platformWide: true,
+            ),
+            locale: locale,
+            initialRoute: '/b2b/profile?channel=wholesale&store_id=7',
+            b2bApi: api,
+          ),
+        );
+        await _pumpCustomerFrames(tester);
+
+        final invalid = find.byKey(
+          const ValueKey('b2b-finance-summary-invalid'),
+        );
+        expect(invalid, findsOneWidget);
+        expect(
+          find.descendant(
+            of: invalid,
+            matching: find.text(
+              locale.languageCode == 'ar'
+                  ? 'تعذر تحميل البيانات. حاول مرة أخرى.'
+                  : 'Unable to load data. Please try again.',
+            ),
+          ),
+          findsOneWidget,
+        );
+        expect(
+          Directionality.of(tester.element(invalid)),
+          locale.languageCode == 'ar' ? TextDirection.rtl : TextDirection.ltr,
+        );
+        expect(find.text('0.000 KWD'), findsNothing);
+      },
+    );
+  }
+
+  for (final locale in const <Locale>[Locale('ar'), Locale('en')]) {
+    for (final invalidField in const <String>[
+      'total_purchases',
+      'outstanding_receivable',
+    ]) {
+      testWidgets(
+        'B2B More fails closed on malformed $invalidField in ${locale.languageCode}',
+        (tester) async {
+          final finance = <String, Object?>{
+            'currency': 'KWD',
+            'balance': -125.0,
+            'balance_direction': 'customer_owes_company',
+            'total_purchases': 400.0,
+            'total_debits': 420.0,
+            'outstanding_receivable': 125.0,
+            'credit_limit': 1000.0,
+            'available_credit_line': 875.0,
+            'purchasing_power': 875.0,
+          };
+          finance[invalidField] =
+              invalidField == 'total_purchases' ? 'invalid-price' : double.nan;
+          final api = _PathB2bApi({
+            '/api/v1/profile': {
+              'customer': {'id': 19, 'type': 'b2b', 'name': 'Buyer'},
+              'business_account': {
+                'id': 27,
+                'company_name': 'Buyer Co',
+                'status': 'active',
+              },
+            },
+            '/api/v1/b2b/account-summary?store_id=7': {'data': finance},
+          });
+
+          await tester.pumpWidget(
+            FoodexCustomerApp(
+              session: const CustomerSession.authenticated(
+                CustomerChannel.b2b,
+                accessToken: 'token',
+                platformWide: true,
+              ),
+              locale: locale,
+              initialRoute: '/b2b/profile?channel=wholesale&store_id=7',
+              b2bApi: api,
+            ),
+          );
+          await _pumpCustomerFrames(tester);
+
+          final invalid = find.byKey(
+            const ValueKey('b2b-finance-summary-invalid'),
+          );
+          expect(invalid, findsOneWidget);
+          expect(
+            find.descendant(
+              of: invalid,
+              matching: find.text(
+                locale.languageCode == 'ar'
+                    ? 'تعذر تحميل البيانات. حاول مرة أخرى.'
+                    : 'Unable to load data. Please try again.',
+              ),
+            ),
+            findsOneWidget,
+          );
+          expect(find.text('0.000 KWD'), findsNothing);
+          expect(
+            Directionality.of(tester.element(invalid)),
+            locale.languageCode == 'ar' ? TextDirection.rtl : TextDirection.ltr,
+          );
+        },
+      );
+    }
+  }
+
+  testWidgets('B2B profile is the complete visible account and finance hub', (
     tester,
   ) async {
     final api = _PathB2bApi({
@@ -584,7 +1575,7 @@ void main() {
       '/api/v1/b2b/account-summary?store_id=7': {
         'data': {
           'currency': 'KWD',
-          'balance': 125.0,
+          'balance': -125.0,
           'balance_direction': 'customer_owes_company',
           'total_debits': 420.0,
           'total_purchases': 400.0,
@@ -622,9 +1613,12 @@ void main() {
     expect(find.text('إجمالي مديونيتك'), findsOneWidget);
     expect(find.text('125.000 KWD'), findsOneWidget);
     expect(find.text('الحساب المالي'), findsNothing);
-    expect(find.text('1000.000 KWD'), findsNothing);
-    expect(find.text('875.000 KWD'), findsNothing);
-    expect(find.text('كشف الحساب'), findsNothing);
+    expect(find.text('1000.000 KWD'), findsOneWidget);
+    expect(find.text('875.000 KWD'), findsNWidgets(2));
+    expect(
+      find.byKey(const ValueKey('b2b-profile-open-statement')),
+      findsOneWidget,
+    );
     expect(find.text('تقرير المشتريات'), findsOneWidget);
     expect(find.text('العناوين'), findsOneWidget);
     expect(find.text('الإشعارات'), findsNothing);
@@ -652,6 +1646,80 @@ void main() {
     expect(find.byKey(const ValueKey('b2b-more-app-version')), findsOneWidget);
     expect(find.text('الإصدار $customerAppVersion'), findsOneWidget);
     expect(find.text('company_name'), findsNothing);
+  });
+
+  testWidgets('B2B profile finance hub is English and left-to-right', (
+    tester,
+  ) async {
+    final api = _PathB2bApi({
+      '/api/v1/profile': {
+        'name': 'Buyer One',
+        'email': 'buyer@example.test',
+        'locale': 'en',
+        'customer': {
+          'id': 19,
+          'type': 'b2b',
+          'name': 'Buyer One',
+          'phone': '55512345',
+          'email': 'buyer@example.test',
+        },
+        'business_account': {
+          'id': 27,
+          'company_name': 'Acme Foods',
+          'status': 'active',
+          'tax_number': 'TAX-872',
+        },
+        'addresses': const <Object>[],
+        'favorites': const <Object>[],
+      },
+      '/api/v1/b2b/account-summary?store_id=7': {
+        'data': {
+          'currency': 'KWD',
+          'balance': -125.0,
+          'balance_direction': 'customer_owes_company',
+          'total_debits': 420.0,
+          'total_purchases': 400.0,
+          'outstanding_receivable': 125.0,
+          'credit_limit': 1000.0,
+          'available_credit_line': 875.0,
+          'purchasing_power': 875.0,
+        },
+      },
+    });
+
+    await tester.pumpWidget(
+      FoodexCustomerApp(
+        session: const CustomerSession.authenticated(
+          CustomerChannel.b2b,
+          accessToken: 'token',
+          platformWide: true,
+        ),
+        locale: const Locale('en'),
+        initialRoute: '/b2b/profile?channel=wholesale&store_id=7',
+        b2bApi: api,
+      ),
+    );
+    await _pumpCustomerFrames(tester);
+
+    final financeHub = find.byKey(const ValueKey('b2b-account-hub'));
+    expect(financeHub, findsOneWidget);
+    expect(
+      Directionality.of(tester.element(financeHub)),
+      TextDirection.ltr,
+    );
+    expect(find.text('Financial account summary'), findsOneWidget);
+    expect(find.text('Total purchases'), findsOneWidget);
+    expect(find.text('Total outstanding debt'), findsOneWidget);
+    expect(find.text('Current balance'), findsOneWidget);
+    expect(find.text('Credit limit'), findsOneWidget);
+    expect(find.text('Available credit'), findsOneWidget);
+    expect(find.text('Available purchasing power'), findsOneWidget);
+    expect(find.text('1000.000 KWD'), findsOneWidget);
+    expect(find.text('875.000 KWD'), findsNWidgets(2));
+    expect(
+      find.byKey(const ValueKey('b2b-profile-open-statement')),
+      findsOneWidget,
+    );
   });
 
   testWidgets(
@@ -2193,6 +3261,11 @@ void main() {
         findsOneWidget,
       );
       expect(find.text('FDX-B2B-4'), findsOneWidget);
+      // A complete, same-currency server confirmation keeps real totals.
+      expect(
+        find.byKey(const ValueKey('b2b-order-receipt-amounts-unverified')),
+        findsNothing,
+      );
       expect(api.lastPath, isNot('/api/v1/b2b/orders/4'));
 
       await tester.ensureVisible(
@@ -2215,6 +3288,245 @@ void main() {
       expect(find.text('/orders/4/track'), findsNothing);
     },
   );
+
+  // MOB-C03: a successful order identifier does not attest currency or
+  // monetary totals. Never manufacture a KWD/zero-value receipt in the UI.
+  for (final language in <String>['ar', 'en']) {
+    for (final scenario in <Map<String, Object?>>[
+      {
+        'name': 'missing currency',
+        'order': <String, Object?>{
+          'id': 4,
+          'order_number': 'FDX-B2B-4',
+          'subtotal': 25.5,
+          'grand_total': 25.5,
+        },
+      },
+      {
+        'name': 'conflicting currency',
+        'order': <String, Object?>{
+          'id': 4,
+          'order_number': 'FDX-B2B-4',
+          'currency': 'USD',
+          'subtotal': 25.5,
+          'grand_total': 25.5,
+        },
+      },
+      {
+        'name': 'unverified total',
+        'order': <String, Object?>{
+          'id': 4,
+          'order_number': 'FDX-B2B-4',
+          'currency': 'KWD',
+          'subtotal': 25.5,
+          'grand_total': 'not-a-number',
+        },
+      },
+    ]) {
+      testWidgets(
+        'MOB-C03 confirmation hides unverified receipt money ${scenario['name']} $language',
+        (tester) async {
+          tester.view.physicalSize = const Size(900, 1900);
+          tester.view.devicePixelRatio = 1;
+          addTearDown(() {
+            tester.view.resetPhysicalSize();
+            tester.view.resetDevicePixelRatio();
+          });
+          await tester.pumpWidget(FoodexCustomerApp(
+            session: b2b,
+            locale: Locale(language),
+            initialRoute: '/b2b/checkout?store=7',
+            b2bApi: _FakeB2bApi(const <String, Object?>{'id': 4}),
+            storefrontApi: const _CheckoutStorefrontApi(),
+            wholesaleCommerceApi: _FakeWholesaleCommerceApi(scenario['order']),
+          ));
+          await _pumpCustomerFrames(tester);
+          final submit = find.byKey(const ValueKey('b2b-checkout-submit'));
+          await tester.scrollUntilVisible(
+            submit,
+            300,
+            scrollable: find
+                .descendant(
+                  of: find.byKey(const ValueKey('b2b-checkout-data')),
+                  matching: find.byType(Scrollable),
+                )
+                .first,
+          );
+          await tester.tap(submit);
+          await _pumpCustomerFrames(tester);
+
+          expect(
+            find.byKey(const ValueKey('customer-order-success')),
+            findsOneWidget,
+          );
+          expect(find.text('FDX-B2B-4'), findsOneWidget);
+          expect(
+            find.byKey(
+              const ValueKey('b2b-order-receipt-amounts-unverified'),
+            ),
+            findsOneWidget,
+          );
+        },
+      );
+    }
+  }
+
+  for (final language in const <String>['ar', 'en']) {
+    testWidgets(
+      'MOB-C03 checkout key reuses identical retry but rotates changed payment/cart $language',
+      (tester) async {
+        tester.view.physicalSize = const Size(900, 1900);
+        tester.view.devicePixelRatio = 1;
+        addTearDown(() {
+          tester.view.resetPhysicalSize();
+          tester.view.resetDevicePixelRatio();
+        });
+
+        final commerce = _RetryIntentWholesaleCommerceApi(cartValue: {
+          'store_id': 7,
+          'currency': 'EGP',
+          'minimum_order_egp': 0.0,
+          'subtotal': 100.0,
+          'has_unavailable_items': false,
+          'quote': {'grand_total': 100.0, 'currency': 'EGP'},
+          'items': [
+            {
+              'id': 31,
+              'product': {'id': 301, 'name': 'Wholesale item', 'sku': 'WS-301'},
+              'quantity': 1.0,
+              'unit_price_snapshot': 100.0,
+              'line_total': 100.0,
+              'is_available': true,
+              'minimum_order_quantity': 1.0,
+              'ordering_increment': 1.0,
+            }
+          ],
+        });
+        final storefront = _C13CheckoutStorefrontApi({
+          'store_id': 7,
+          'currency': 'EGP',
+          'minimum_order_egp': 0.0,
+          'addresses': [
+            {'id': 1, 'label': 'Warehouse', 'line1': 'Street 1'}
+          ],
+          'payment_methods': ['cash_on_delivery', 'account_credit'],
+          'purchasing_power': 300.0,
+        });
+        await tester.pumpWidget(FoodexCustomerApp(
+          session: b2b,
+          locale: Locale(language),
+          initialRoute: '/b2b/checkout?store_id=7',
+          storefrontApi: storefront,
+          wholesaleCommerceApi: commerce,
+        ));
+        await _pumpCustomerFrames(tester);
+
+        Future<void> attempt() async {
+          final submit = find.byKey(const ValueKey('b2b-checkout-submit'));
+          await tester.ensureVisible(submit);
+          await tester.tap(submit);
+          await _pumpCustomerFrames(tester);
+          expect(find.byType(AlertDialog), findsOneWidget);
+          await tester.tap(find.text(language == 'ar' ? 'حسنًا' : 'OK'));
+          await _pumpCustomerFrames(tester);
+        }
+
+        final noteField = find.byWidgetPredicate((widget) =>
+            widget is TextField &&
+            widget.minLines == 3 &&
+            widget.maxLines == 4);
+        await tester.ensureVisible(noteField);
+        final initialCartItem =
+            (commerce.cartValue['items'] as List).first as Map;
+        initialCartItem.remove('sku');
+        (initialCartItem['product'] as Map).remove('sku');
+        initialCartItem['name'] = 'Wholesale item';
+
+        // A successful server order may be hidden behind an ambiguous 503.
+        // Retrying the identical intent must replay the same key.
+        await attempt();
+        // The actual HTTP client omits whitespace-only notes, and the same
+        // server quantity may be serialized as 1 or "1.000".
+        await tester.enterText(noteField, '   ');
+        await tester.pump();
+        final currentItems = commerce.cartValue['items'] as List;
+        (currentItems.first as Map)['quantity'] = '1.000';
+        (currentItems.first as Map)['name'] = 'منتج جملة';
+        tester.binding
+            .handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+        await _pumpCustomerFrames(tester);
+        await attempt();
+        expect(commerce.checkoutKeys, hasLength(2));
+        expect(commerce.checkoutKeys[0], commerce.checkoutKeys[1]);
+        expect(commerce.checkoutKeys[0].length, greaterThanOrEqualTo(16));
+
+        // A nonblank note is trimmed by HttpWholesaleCommerceApi before it
+        // reaches the backend. Whitespace-only surrounding text is therefore
+        // not a distinct idempotency intent.
+        await tester.enterText(noteField, 'Warehouse note ');
+        await tester.pump();
+        await attempt();
+        expect(commerce.checkoutKeys, hasLength(3));
+        final noteIntentKey = commerce.checkoutKeys[2];
+        expect(noteIntentKey, isNot(commerce.checkoutKeys[0]));
+        await tester.enterText(noteField, 'Warehouse note');
+        await tester.pump();
+        await attempt();
+        expect(commerce.checkoutKeys, hasLength(4));
+        expect(commerce.checkoutKeys[3], noteIntentKey);
+
+        // A -> B -> A must recover A's original key. Otherwise a previously
+        // created order whose response was lost could be posted a second time.
+        await tester.enterText(noteField, '');
+        await tester.pump();
+        await attempt();
+        expect(commerce.checkoutKeys, hasLength(5));
+        expect(commerce.checkoutKeys[4], commerce.checkoutKeys[0]);
+
+        // Backend request hash includes payment_method; changing it creates
+        // a distinct request, and returning to the original method must reuse
+        // the original key for that original request.
+        await tester.tap(find.byType(DropdownButtonFormField<String>));
+        await tester.pump();
+        await tester.tap(find
+            .text(language == 'ar' ? 'الرصيد الائتماني' : 'Account credit')
+            .last);
+        await _pumpCustomerFrames(tester);
+        await attempt();
+        expect(commerce.checkoutPayments.last, 'account_credit');
+        expect(commerce.checkoutKeys, hasLength(6));
+        expect(commerce.checkoutKeys[5], isNot(commerce.checkoutKeys[0]));
+
+        await tester.tap(find.byType(DropdownButtonFormField<String>));
+        await tester.pump();
+        await tester.tap(find
+            .text(language == 'ar' ? 'الدفع عند الاستلام' : 'Cash on delivery')
+            .last);
+        await _pumpCustomerFrames(tester);
+        await attempt();
+        expect(commerce.checkoutPayments.last, 'cash_on_delivery');
+        expect(commerce.checkoutKeys, hasLength(7));
+        expect(commerce.checkoutKeys[6], commerce.checkoutKeys[0]);
+
+        // A different cart is a new purchase intent even if the customer's
+        // delivery address and payment method have not changed.
+        final items = commerce.cartValue['items'] as List;
+        (items.first as Map)['quantity'] = 2.0;
+        (items.first as Map)['line_total'] = 200.0;
+        commerce.cartValue['subtotal'] = 200.0;
+        commerce.cartValue['quote'] = {
+          'grand_total': 200.0,
+          'currency': 'EGP',
+        };
+        tester.binding
+            .handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+        await _pumpCustomerFrames(tester);
+        await attempt();
+        expect(commerce.checkoutKeys, hasLength(8));
+        expect(commerce.checkoutKeys[7], isNot(commerce.checkoutKeys[0]));
+      },
+    );
+  }
 
   testWidgets('B2B checkout rejects missing authoritative order reference', (
     tester,
@@ -2597,6 +3909,465 @@ void main() {
       expect(submit.onTap, isNull);
     },
   );
+
+  // MOB-C03: unverified financial totals may never enable a Customer checkout.
+  for (final locale in [const Locale('ar'), const Locale('en')]) {
+    final cases = <Map<String, Object?>>[
+      {
+        'name': 'nonfinite total',
+        'total': double.nan,
+        'power': 100.0,
+        'method': 'cash_on_delivery',
+        'blocked': true
+      },
+      {
+        'name': 'missing signed quote grand total',
+        'total': null,
+        'power': 100.0,
+        'method': 'cash_on_delivery',
+        'blocked': true
+      },
+      {
+        'name': 'missing credit',
+        'total': 25.0,
+        'power': null,
+        'method': 'account_credit',
+        'blocked': true
+      },
+      {
+        'name': 'nonfinite credit',
+        'total': 25.0,
+        'power': double.nan,
+        'method': 'account_credit',
+        'blocked': true
+      },
+      {
+        'name': 'valid credit',
+        'total': 25.0,
+        'power': 100.0,
+        'method': 'account_credit',
+        'blocked': false
+      },
+      {
+        'name': 'quote currency differs from cart',
+        'total': 25.0,
+        'power': 100.0,
+        'method': 'cash_on_delivery',
+        'quoteCurrency': 'USD',
+        'blocked': true
+      },
+      {
+        'name': 'credit currency differs from cart',
+        'total': 25.0,
+        'power': 100.0,
+        'method': 'account_credit',
+        'creditCurrency': 'USD',
+        'blocked': true
+      },
+      {
+        'name': 'invalid signed quote currency',
+        'total': 25.0,
+        'power': 100.0,
+        'method': 'cash_on_delivery',
+        'quoteCurrency': '???',
+        'blocked': true
+      },
+      {
+        'name': 'missing EGP order minimum',
+        'total': 25.0,
+        'power': 100.0,
+        'method': 'cash_on_delivery',
+        'minimum': null,
+        'blocked': true
+      },
+      {
+        'name': 'negative EGP order minimum',
+        'total': 25.0,
+        'power': 100.0,
+        'method': 'cash_on_delivery',
+        'minimum': -1.0,
+        'blocked': true
+      },
+      {
+        'name': 'nonfinite EGP order minimum',
+        'total': 25.0,
+        'power': 100.0,
+        'method': 'cash_on_delivery',
+        'minimum': double.nan,
+        'blocked': true
+      },
+      {
+        'name': 'infinite EGP order minimum',
+        'total': 25.0,
+        'power': 100.0,
+        'method': 'cash_on_delivery',
+        'minimum': double.infinity,
+        'blocked': true
+      },
+    ];
+    for (final scenario in cases) {
+      testWidgets(
+        "MOB-C03 checkout verified money ${scenario['name']} ${locale.languageCode}",
+        (tester) async {
+          tester.view.physicalSize = const Size(900, 1900);
+          tester.view.devicePixelRatio = 1;
+          addTearDown(() {
+            tester.view.resetPhysicalSize();
+            tester.view.resetDevicePixelRatio();
+          });
+          final commerce = _C13WholesaleCommerceApi(cartValue: {
+            'store_id': 7,
+            'currency': 'EGP',
+            'minimum_order_egp':
+                scenario.containsKey('minimum') ? scenario['minimum'] : 0.0,
+            'subtotal': 25.0,
+            'has_unavailable_items': false,
+            'quote': {
+              'discount_total': 0.0,
+              'delivery_total': 0.0,
+              'tax_total': 0.0,
+              'grand_total': scenario['total'],
+              'currency': scenario['quoteCurrency'] ?? 'EGP',
+            },
+            'items': [
+              {
+                'id': 21,
+                'product': {'id': 201, 'name': 'Test Item', 'sku': 'T-201'},
+                'quantity': 1.0,
+                'unit_price_snapshot': 25.0,
+                'line_total': 25.0,
+                'is_available': true,
+                'minimum_order_quantity': 1.0,
+                'ordering_increment': 1.0,
+              },
+            ],
+          });
+          final storefront = _C13CheckoutStorefrontApi({
+            'store_id': 7,
+            'store_name': 'Wholesale Store',
+            'customer_name': 'Acme Buyer',
+            'minimum_order_egp':
+                scenario.containsKey('minimum') ? scenario['minimum'] : 0.0,
+            'addresses': [
+              {
+                'id': 1,
+                'label': 'Warehouse',
+                'line1': 'Street 1',
+                'city': 'Cairo'
+              },
+            ],
+            'payment_methods': [scenario['method']],
+            'purchasing_power': scenario['power'],
+            'currency': scenario['creditCurrency'] ?? 'EGP',
+          });
+          await tester.pumpWidget(FoodexCustomerApp(
+            session: b2b,
+            locale: locale,
+            initialRoute: '/b2b/checkout?store_id=7',
+            storefrontApi: storefront,
+            wholesaleCommerceApi: commerce,
+          ));
+          await _pumpCustomerFrames(tester);
+          final blocked = scenario['blocked'] == true;
+          expect(
+            find.byKey(const ValueKey('b2b-checkout-financial-unavailable')),
+            blocked ? findsOneWidget : findsNothing,
+          );
+          final submit = tester.widget<InkWell>(
+            find.descendant(
+              of: find.byKey(const ValueKey('b2b-checkout-submit')),
+              matching: find.byType(InkWell),
+            ),
+          );
+          expect(submit.onTap, blocked ? isNull : isNotNull);
+          expect(commerce.checkoutCalls, 0);
+        },
+      );
+    }
+  }
+
+  // MOB-C03: the latest checkout snapshot wins even when an older cart
+  // refresh completes after the latest one.
+  for (final language in <String>['ar', 'en']) {
+    testWidgets(
+      'MOB-C03 ignores out-of-order checkout cart responses $language',
+      (tester) async {
+        tester.view.physicalSize = const Size(900, 1900);
+        tester.view.devicePixelRatio = 1;
+        addTearDown(() {
+          tester.view.resetPhysicalSize();
+          tester.view.resetDevicePixelRatio();
+        });
+        final commerce = _OutOfOrderCheckoutCartApi(cartValue: {
+          'store_id': 7,
+          'currency': 'EGP',
+          'minimum_order_egp': 0.0,
+          'quote': {'grand_total': 20.0, 'currency': 'EGP'},
+          'has_unavailable_items': false,
+          'items': [
+            {
+              'id': 21,
+              'product': {'id': 201, 'name': 'Fresh item', 'sku': 'F-201'},
+              'quantity': 1.0,
+              'unit_price_snapshot': 20.0,
+              'line_total': 20.0,
+              'is_available': true,
+            }
+          ],
+        });
+        final storefront = _C13CheckoutStorefrontApi({
+          'store_id': 7,
+          'minimum_order_egp': 0.0,
+          'addresses': [
+            {'id': 1, 'label': 'Warehouse', 'line1': '1 Street'},
+          ],
+          'payment_methods': ['account_credit'],
+          'purchasing_power': 100.0,
+          'currency': 'EGP',
+        });
+        await tester.pumpWidget(FoodexCustomerApp(
+          session: b2b,
+          locale: Locale(language),
+          initialRoute: '/b2b/checkout?store_id=7',
+          storefrontApi: storefront,
+          wholesaleCommerceApi: commerce,
+        ));
+        await _pumpCustomerFrames(tester);
+        expect(commerce.cartRequests, 1);
+
+        tester.binding
+            .handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+        await _pumpCustomerFrames(tester);
+        expect(commerce.pending, hasLength(1));
+
+        tester.binding
+            .handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+        await _pumpCustomerFrames(tester);
+        expect(commerce.pending, hasLength(2));
+
+        // Current quote permits credit purchase; the older response must
+        // never replace its authoritative guard after arriving late.
+        commerce.pending[1].complete({
+          ...commerce.cartValue,
+          'quote': {'grand_total': 20.0, 'currency': 'EGP'},
+        });
+        await _pumpCustomerFrames(tester);
+        commerce.pending[0].complete({
+          ...commerce.cartValue,
+          'quote': {'grand_total': 250.0, 'currency': 'EGP'},
+        });
+        await _pumpCustomerFrames(tester);
+
+        final submit = find.byKey(const ValueKey('b2b-checkout-submit'));
+        await tester.ensureVisible(submit);
+        final action = tester.widget<InkWell>(find.descendant(
+          of: submit,
+          matching: find.byType(InkWell),
+        ));
+        expect(action.onTap, isNotNull);
+        await tester.tap(submit);
+        await tester.pump();
+        expect(commerce.checkoutCalls, 1);
+        expect(commerce.checkoutKeys, hasLength(1));
+      },
+    );
+  }
+
+  // MOB-C03: an asynchronous server quote may not silently switch the
+  // coupon a customer requested to a different confirmed promotion.
+  for (final language in <String>['ar', 'en']) {
+    testWidgets(
+      'MOB-C03 rejects mismatched server-confirmed coupon $language',
+      (tester) async {
+        tester.view.physicalSize = const Size(900, 1900);
+        tester.view.devicePixelRatio = 1;
+        addTearDown(() {
+          tester.view.resetPhysicalSize();
+          tester.view.resetDevicePixelRatio();
+        });
+        final commerce = _QuoteC13WholesaleCommerceApi(cartValue: {
+          'store_id': 7,
+          'currency': 'EGP',
+          'minimum_order_egp': 0.0,
+          'has_unavailable_items': false,
+          'quote': {'grand_total': 150.0, 'currency': 'EGP'},
+          'items': [
+            {
+              'id': 21,
+              'product': {'id': 201, 'name': 'Coupon Item', 'sku': 'CP-201'},
+              'quantity': 1.0,
+              'unit_price_snapshot': 150.0,
+              'line_total': 150.0,
+              'is_available': true,
+            }
+          ],
+        });
+        final deferredQuote = Completer<Object?>();
+        commerce.deferredQuote = deferredQuote;
+        final storefront = _C13CheckoutStorefrontApi({
+          'store_id': 7,
+          'minimum_order_egp': 0.0,
+          'addresses': [
+            {'id': 1, 'label': 'Warehouse', 'line1': '1 Street'},
+          ],
+          'payment_methods': ['account_credit'],
+          'purchasing_power': 100.0,
+          'currency': 'EGP',
+        });
+        await tester.pumpWidget(FoodexCustomerApp(
+          session: b2b,
+          locale: Locale(language),
+          initialRoute: '/b2b/checkout?store_id=7',
+          storefrontApi: storefront,
+          wholesaleCommerceApi: commerce,
+        ));
+        await _pumpCustomerFrames(tester);
+        final couponField = find.byKey(const ValueKey('b2b-checkout-coupon'));
+        await tester.ensureVisible(couponField);
+        await tester.enterText(couponField, 'SAVE');
+        await tester.pump();
+        final apply = find.byKey(const ValueKey('b2b-checkout-apply-coupon'));
+        await tester.ensureVisible(apply);
+        await tester.tap(apply);
+        await tester.pump();
+        expect(commerce.quoteCalls, 1);
+        deferredQuote.complete({
+          'grand_total': 50.0,
+          'currency': 'EGP',
+          'coupon': {'code': 'OTHER'},
+        });
+        await _pumpCustomerFrames(tester);
+
+        expect(find.byKey(const ValueKey('b2b-checkout-coupon-applied')),
+            findsNothing);
+        expect(find.byKey(const ValueKey('b2b-checkout-insufficient-credit')),
+            findsOneWidget);
+        final submit = tester.widget<InkWell>(find.descendant(
+          of: find.byKey(const ValueKey('b2b-checkout-submit')),
+          matching: find.byType(InkWell),
+        ));
+        expect(submit.onTap, isNull);
+        expect(commerce.checkoutCalls, 0);
+      },
+    );
+  }
+
+  // MOB-C03: a confirmed coupon quote must not outlive a cart refresh.
+  for (final language in <String>['ar', 'en']) {
+    testWidgets(
+      'MOB-C03 invalidates a coupon quote after resumed cart refresh $language',
+      (tester) async {
+        tester.view.physicalSize = const Size(900, 1900);
+        tester.view.devicePixelRatio = 1;
+        addTearDown(() {
+          tester.view.resetPhysicalSize();
+          tester.view.resetDevicePixelRatio();
+        });
+        final commerce = _QuoteC13WholesaleCommerceApi(cartValue: {
+          'store_id': 7,
+          'currency': 'EGP',
+          'minimum_order_egp': 0.0,
+          'has_unavailable_items': false,
+          'quote': {'grand_total': 150.0, 'currency': 'EGP'},
+          'items': [
+            {
+              'id': 21,
+              'product': {'id': 201, 'name': 'Coupon Item', 'sku': 'CP-201'},
+              'quantity': 1.0,
+              'unit_price_snapshot': 150.0,
+              'line_total': 150.0,
+              'is_available': true,
+              'minimum_order_quantity': 1.0,
+              'ordering_increment': 1.0,
+            }
+          ],
+        });
+        final storefront = _C13CheckoutStorefrontApi({
+          'store_id': 7,
+          'store_name': 'Wholesale',
+          'customer_name': 'Buyer',
+          'minimum_order_egp': 0.0,
+          'addresses': [
+            {
+              'id': 1,
+              'label': 'Warehouse',
+              'line1': '1 Street',
+              'city': 'Cairo'
+            }
+          ],
+          'payment_methods': ['account_credit'],
+          'purchasing_power': 100.0,
+          'currency': 'EGP',
+        });
+        await tester.pumpWidget(FoodexCustomerApp(
+          session: b2b,
+          locale: Locale(language),
+          initialRoute: '/b2b/checkout?store_id=7',
+          storefrontApi: storefront,
+          wholesaleCommerceApi: commerce,
+        ));
+        await _pumpCustomerFrames(tester);
+        final couponField = find.byKey(const ValueKey('b2b-checkout-coupon'));
+        await tester.ensureVisible(couponField);
+        await tester.enterText(couponField, 'SAVE');
+        await tester.pump();
+        final apply = find.byKey(const ValueKey('b2b-checkout-apply-coupon'));
+        await tester.ensureVisible(apply);
+        await tester.tap(apply);
+        await _pumpCustomerFrames(tester);
+        expect(commerce.quoteCalls, 1);
+        expect(find.byKey(const ValueKey('b2b-checkout-coupon-applied')),
+            findsOneWidget);
+        expect(find.byKey(const ValueKey('b2b-checkout-insufficient-credit')),
+            findsNothing);
+
+        // In a resumed session the backend cart can change while an old
+        // coupon quote was calculated for the previous cart revision.
+        commerce.cartValue['quote'] = {'grand_total': 250.0, 'currency': 'EGP'};
+        tester.binding
+            .handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+        await _pumpCustomerFrames(tester);
+
+        expect(find.byKey(const ValueKey('b2b-checkout-coupon-applied')),
+            findsNothing);
+        expect(find.byKey(const ValueKey('b2b-checkout-insufficient-credit')),
+            findsOneWidget);
+        final submit = tester.widget<InkWell>(find.descendant(
+          of: find.byKey(const ValueKey('b2b-checkout-submit')),
+          matching: find.byType(InkWell),
+        ));
+        expect(submit.onTap, isNull);
+        expect(commerce.checkoutCalls, 0);
+
+        // An in-flight quote from the previous cart revision must also be
+        // discarded, even when its network response arrives after refresh.
+        final deferredQuote = Completer<Object?>();
+        commerce.deferredQuote = deferredQuote;
+        await tester.ensureVisible(apply);
+        await tester.tap(apply);
+        await tester.pump();
+        expect(commerce.quoteCalls, 2);
+        commerce.cartValue['quote'] = {
+          'grand_total': 400.0,
+          'currency': 'EGP',
+        };
+        tester.binding
+            .handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+        await _pumpCustomerFrames(tester);
+        deferredQuote.complete({
+          'grand_total': 50.0,
+          'currency': 'EGP',
+          'coupon': {'code': 'SAVE'},
+        });
+        await _pumpCustomerFrames(tester);
+        expect(find.byKey(const ValueKey('b2b-checkout-coupon-applied')),
+            findsNothing);
+        expect(find.byKey(const ValueKey('b2b-checkout-insufficient-credit')),
+            findsOneWidget);
+        expect(commerce.checkoutCalls, 0);
+      },
+    );
+  }
 
   testWidgets(
     'B2B checkout is disabled below the configured minimum and accepts zero',
@@ -3018,6 +4789,91 @@ void main() {
       );
     },
   );
+
+  for (final locale in const <Locale>[Locale('ar'), Locale('en')]) {
+    testWidgets(
+      'MOB-C03 order settlement readback ignores superseded refresh in ${locale.languageCode}',
+      (tester) async {
+        final api = _DeferredOrderDetailsB2bApi();
+        Map<String, Object?> orderWithSettlement(double paid, double due) => {
+              'id': 77,
+              'order_number': 'B2B-77',
+              'status': 'out_for_delivery',
+              'grand_total': 100.0,
+              'currency': 'KWD',
+              'payment_method': 'account_credit',
+              'store': {'id': 1, 'name': 'FOODEX Wholesale'},
+              'settlement': {
+                'payment_state': 'partially_settled',
+                'paid_amount': paid,
+                'remaining_amount': due,
+              },
+              'items': const <Object>[],
+            };
+
+        await tester.pumpWidget(
+          FoodexCustomerApp(
+            session: b2b,
+            initialRoute: '/b2b/orders/77',
+            b2bApi: api,
+            locale: locale,
+          ),
+        );
+        await tester.pump();
+        expect(api.calls, 1);
+
+        api.requests[0].complete(orderWithSettlement(10, 90));
+        await _pumpCustomerFrames(tester);
+        expect(find.byKey(const ValueKey('b2b-order-detail')), findsOneWidget);
+
+        await tester.tap(find.byKey(const ValueKey('b2b-order-refresh')));
+        await tester.pump();
+        await tester.tap(find.byKey(const ValueKey('b2b-order-refresh')));
+        await tester.pump();
+        expect(api.calls, 3);
+
+        // A later verified settlement has already won the visible readback.
+        api.requests[2].complete(orderWithSettlement(60, 40));
+        await _pumpCustomerFrames(tester);
+        expect(
+          tester
+              .widget<Text>(
+                  find.byKey(const ValueKey('customer-order-paid-77')))
+              .data,
+          contains('60'),
+        );
+
+        // Network completion order is not financial event chronology.
+        api.requests[1].complete(orderWithSettlement(20, 80));
+        await _pumpCustomerFrames(tester);
+
+        // If the next request fails, retain only the latest successful
+        // response (60/40) as explicitly stale, never older 20/80.
+        await tester.tap(find.byKey(const ValueKey('b2b-order-refresh')));
+        await tester.pump();
+        expect(api.calls, 4);
+        api.requests[3].completeError(const B2bApiException('http_503'));
+        await _pumpCustomerFrames(tester);
+
+        expect(find.byKey(const ValueKey('b2b-order-detail-stale')),
+            findsOneWidget);
+        expect(
+          tester
+              .widget<Text>(
+                  find.byKey(const ValueKey('customer-order-paid-77')))
+              .data,
+          contains('60'),
+        );
+        expect(
+          tester
+              .widget<Text>(
+                  find.byKey(const ValueKey('customer-order-remaining-77')))
+              .data,
+          contains('40'),
+        );
+      },
+    );
+  }
 
   testWidgets(
     'B2B order timeline renders only authoritative events and refreshes state',
@@ -4064,6 +5920,115 @@ void main() {
     },
   );
 
+  for (final locale in const <Locale>[Locale('ar'), Locale('en')]) {
+    testWidgets(
+      'Wholesale statement rejects a false settled balance '
+      '${locale.languageCode}',
+      (tester) async {
+        final api = _FakeB2bApi({
+          'data': {
+            'currency': 'KWD',
+            'opening_balance': 100,
+            'period_debits': 20,
+            'period_credits': 10,
+            'balance': 110,
+            'closing_balance': 'NaN',
+            'transactions': <Object?>[],
+          },
+        });
+
+        await tester.pumpWidget(
+          FoodexCustomerApp(
+            session: b2b,
+            locale: locale,
+            initialRoute: '/b2b/account-statement?store_id=7',
+            b2bApi: api,
+          ),
+        );
+        await _pumpCustomerFrames(tester);
+
+        expect(find.byKey(const ValueKey('b2b-error')), findsOneWidget);
+        expect(find.byKey(const ValueKey('b2b-error-retry')), findsOneWidget);
+        expect(find.byKey(const ValueKey('b2b-statement-data')), findsNothing);
+        expect(
+          find.byKey(const ValueKey('b2b-statement-summary-closing')),
+          findsNothing,
+        );
+      },
+    );
+
+    testWidgets(
+      'Wholesale statement renders unknown rather than forged zero '
+      '${locale.languageCode}',
+      (tester) async {
+        final api = _FakeB2bApi({
+          'data': {
+            'currency': 'KWD',
+            'opening_balance': 25,
+            'period_debits': 0,
+            'period_credits': 0,
+            'balance': 25,
+            'closing_balance': 25,
+            'transactions': [
+              {
+                'id': 'payment:invalid',
+                'type': 'payment',
+                'reference': 'PAY-INVALID',
+                'debit': 'not-a-number',
+                'credit': null,
+                'running_balance': 'NaN',
+                'occurred_at': '2026-10-02T10:00:00Z',
+              },
+            ],
+            'pagination': {
+              'current_page': 1,
+              'per_page': 30,
+              'total': 1,
+              'last_page': 1,
+              'has_more': false,
+            },
+          },
+        });
+
+        await tester.pumpWidget(
+          FoodexCustomerApp(
+            session: b2b,
+            locale: locale,
+            initialRoute: '/b2b/account-statement?store_id=7',
+            b2bApi: api,
+          ),
+        );
+        await _pumpCustomerFrames(tester);
+
+        final row = find.byKey(
+          const ValueKey('b2b-statement-row-payment:invalid'),
+        );
+        expect(row, findsOneWidget);
+        final amounts = tester
+            .widgetList<Text>(
+              find.descendant(of: row, matching: find.byType(Text)),
+            )
+            .map((text) => text.data ?? '')
+            .toList(growable: false);
+        expect(
+          amounts.where((value) => value.endsWith(': —')).length,
+          greaterThanOrEqualTo(3),
+        );
+        expect(amounts.any((value) => value.contains('0.000 KWD')), isFalse);
+        expect(
+          tester
+              .widget<Text>(
+                find.byKey(
+                  const ValueKey('b2b-statement-running-payment:invalid'),
+                ),
+              )
+              .data,
+          contains('—'),
+        );
+      },
+    );
+  }
+
   testWidgets('C13 Screen 6 quick period preset reloads authoritative query', (
     tester,
   ) async {
@@ -4173,6 +6138,89 @@ void main() {
     },
   );
 
+  for (final locale in const <Locale>[Locale('ar'), Locale('en')]) {
+    testWidgets(
+      'Wholesale invoices do not fabricate paid or debt totals in ${locale.languageCode}',
+      (tester) async {
+        final api = _FakeB2bApi({
+          'data': [
+            {
+              'id': 31,
+              'invoice_number': 'INV-31',
+              'display_status': 'partially_paid',
+              'currency': 'KWD',
+              'total': 20.0,
+              'paid_amount': null,
+              'outstanding_amount': 'NaN',
+              'credit_amount': 0.0,
+              'store_id': 7,
+              'issued_at': '2026-10-01T10:00:00Z',
+            },
+          ],
+          'summary': {
+            'totals': [
+              {
+                'currency': 'KWD',
+                'total': 20.0,
+                'paid': null,
+                'outstanding': 'not-a-number',
+                'overdue': 'Infinity',
+                'credit': 0.0,
+              },
+            ],
+          },
+          'meta': {'page': 1, 'per_page': 20, 'total': 1, 'has_more': false},
+        });
+        await tester.pumpWidget(
+          FoodexCustomerApp(
+            session: b2b,
+            locale: locale,
+            initialRoute: '/b2b/invoices?store_id=7',
+            b2bApi: api,
+          ),
+        );
+        await _pumpCustomerFrames(tester);
+
+        final summary = find.byKey(
+          const ValueKey('b2b-invoices-summary-KWD'),
+        );
+        expect(summary, findsOneWidget);
+        final ar = locale.languageCode == 'ar';
+        expect(
+          find.descendant(
+            of: summary,
+            matching: find.text('${ar ? 'المدفوع' : 'Paid'}: —'),
+          ),
+          findsOneWidget,
+        );
+        expect(
+          find.descendant(
+            of: summary,
+            matching: find.text('${ar ? 'المديونية' : 'Debt'}: —'),
+          ),
+          findsOneWidget,
+        );
+        expect(
+          find.descendant(
+            of: summary,
+            matching: find.text('${ar ? 'المتأخر' : 'Overdue'}: —'),
+          ),
+          findsOneWidget,
+        );
+        final row = find.byKey(const ValueKey('b2b-invoice-paid-31'));
+        expect(row, findsOneWidget);
+        final paid = tester.widget<Text>(row);
+        expect(paid.textSpan?.toPlainText(), '${ar ? 'المدفوع' : 'Paid'}: —');
+        expect(find.text('0.000 KWD'), findsNothing);
+        expect(
+          Directionality.of(tester.element(row)),
+          ar ? TextDirection.rtl : TextDirection.ltr,
+        );
+        expect(api.lastPath, '/api/v1/b2b/invoices?store_id=7');
+      },
+    );
+  }
+
   testWidgets('B2B collections expose approved detail navigation', (
     tester,
   ) async {
@@ -4268,6 +6316,142 @@ void main() {
     expect(api.lastPath, '/api/v1/b2b/invoices/31?store_id=7');
   });
 
+  for (final locale in const <Locale>[Locale('ar'), Locale('en')]) {
+    testWidgets(
+      'MOB-C03 scoped invoice distinguishes paid, captured and unverified states in ${locale.languageCode}',
+      (tester) async {
+        tester.view.physicalSize = const Size(390, 844);
+        tester.view.devicePixelRatio = 1;
+        addTearDown(() {
+          tester.view.resetPhysicalSize();
+          tester.view.resetDevicePixelRatio();
+        });
+
+        final api = _FakeB2bApi({
+          'data': {
+            'id': 31,
+            'invoice_number': 'INV-31',
+            'display_status': 'partially_paid',
+            'currency': 'KWD',
+            'total': 80.375,
+            'paid_amount': 30.375,
+            'outstanding_amount': 50.0,
+            'credit_amount': 0.0,
+            'store_id': 7,
+            'issued_at': '2026-10-01T10:00:00Z',
+            'items': <Object?>[],
+            'payments': [
+              {
+                'id': 901,
+                'status': 'paid',
+                'method': 'account',
+                'reference': 'PAY-901',
+                'amount': 20.125,
+                'currency': 'KWD',
+                'paid_at': '2026-10-02T10:00:00Z',
+              },
+              {
+                'id': 902,
+                'status': 'captured',
+                'method': 'field_collection',
+                'reference': 'CAP-902',
+                'amount': 10.25,
+                'currency': 'KWD',
+                'paid_at': '2026-10-03T10:00:00Z',
+              },
+              {
+                'id': 903,
+                'status': 'unrecognized',
+                'method': 'field_collection',
+                'reference': 'UNKNOWN-903',
+                'amount': 'NaN',
+                'currency': 'KWD',
+                'paid_at': '2026-10-04T10:00:00Z',
+              },
+            ],
+            'ledger_entries': <Object?>[],
+          },
+          'account': {
+            'currency': 'KWD',
+            'balance': -50.0,
+            'balance_direction': 'customer_owes_company',
+          },
+        });
+
+        await tester.pumpWidget(
+          FoodexCustomerApp(
+            session: b2b,
+            locale: locale,
+            initialRoute: '/b2b/invoices/31?store_id=7',
+            b2bApi: api,
+          ),
+        );
+        await _pumpCustomerFrames(tester);
+
+        expect(api.lastPath, '/api/v1/b2b/invoices/31?store_id=7');
+        expect(
+          find.byKey(const ValueKey('b2b-invoice-detail-data')),
+          findsOneWidget,
+        );
+
+        final paid = find.byKey(
+          const ValueKey('b2b-invoice-payment-status-901'),
+        );
+        final captured = find.byKey(
+          const ValueKey('b2b-invoice-payment-status-902'),
+        );
+        final unknown = find.byKey(
+          const ValueKey('b2b-invoice-payment-status-903'),
+        );
+        final arabic = locale.languageCode == 'ar';
+        expect(paid, findsOneWidget);
+        expect(captured, findsOneWidget);
+        expect(unknown, findsOneWidget);
+        expect(
+          tester.widget<Text>(paid).data,
+          contains(arabic ? 'مدفوع' : 'Paid'),
+        );
+        expect(
+          tester.widget<Text>(captured).data,
+          contains(arabic ? 'تم التحصيل' : 'Captured'),
+        );
+        expect(
+          tester.widget<Text>(unknown).data,
+          contains(arabic ? 'غير مؤكد' : 'Unverified'),
+        );
+        expect(
+          Directionality.of(tester.element(captured)),
+          arabic ? TextDirection.rtl : TextDirection.ltr,
+        );
+        expect(
+          tester
+              .widget<Text>(
+                find.byKey(const ValueKey('b2b-invoice-payment-amount-901')),
+              )
+              .data,
+          '20.125 KWD',
+        );
+        expect(
+          tester
+              .widget<Text>(
+                find.byKey(const ValueKey('b2b-invoice-payment-amount-902')),
+              )
+              .data,
+          '10.250 KWD',
+        );
+        expect(
+          tester
+              .widget<Text>(
+                find.byKey(const ValueKey('b2b-invoice-payment-amount-903')),
+              )
+              .data,
+          '—',
+        );
+        expect(tester.takeException(), isNull);
+      },
+    );
+  }
+
   testWidgets(
     'C13 Screen 9 renders reconciled invoice detail and visible actions',
     (tester) async {
@@ -4318,6 +6502,17 @@ void main() {
               'line_total': 20.0,
               'currency': 'KWD',
             },
+            {
+              'id': 502,
+              'sku': 'WHO-502',
+              'description': 'Wrong currency item',
+              'quantity': 1.0,
+              'unit_price': 4.0,
+              'discount_total': 0.0,
+              'tax_total': 0.0,
+              'line_total': 4.0,
+              'currency': 'USD',
+            },
           ],
           'payments': [
             {
@@ -4327,6 +6522,22 @@ void main() {
               'amount': 5.0,
               'currency': 'KWD',
               'paid_at': '2026-10-02T10:00:00Z',
+            },
+            {
+              'id': 10,
+              'method': 'field_collection',
+              'reference': 'PAY-NEGATIVE',
+              'amount': -2.0,
+              'currency': 'KWD',
+              'paid_at': '2026-10-03T10:00:00Z',
+            },
+            {
+              'id': 11,
+              'method': 'field_collection',
+              'reference': 'PAY-WRONG-CURRENCY',
+              'amount': 2.0,
+              'currency': 'USD',
+              'paid_at': '2026-10-04T10:00:00Z',
             },
           ],
           'ledger_entries': [
@@ -4339,6 +6550,62 @@ void main() {
               'credit': 1.0,
               'currency': 'KWD',
               'occurred_at': '2026-10-03T10:00:00Z',
+            },
+            {
+              'id': 82,
+              'type': 'credit_note',
+              'reference': 'CN-MISSING-DEBIT',
+              'debit': null,
+              'credit': 0.0,
+              'currency': 'KWD',
+            },
+            {
+              'id': 83,
+              'type': 'credit_note',
+              'reference': 'CN-NAN-DEBIT',
+              'debit': double.nan,
+              'credit': 0.0,
+              'currency': 'KWD',
+            },
+            {
+              'id': 84,
+              'type': 'credit_note',
+              'reference': 'CN-INFINITE-DEBIT',
+              'debit': double.infinity,
+              'credit': 0.0,
+              'currency': 'KWD',
+            },
+            {
+              'id': 85,
+              'type': 'debit_note',
+              'reference': 'DN-NEGATIVE-DEBIT',
+              'debit': -1.0,
+              'credit': 0.0,
+              'currency': 'KWD',
+            },
+            {
+              'id': 86,
+              'type': 'adjustment_positive',
+              'reference': 'ADJ-BOTH-SIDES',
+              'debit': 2.0,
+              'credit': 1.0,
+              'currency': 'KWD',
+            },
+            {
+              'id': 87,
+              'type': 'credit_note',
+              'reference': 'CN-ZERO-SIDES',
+              'debit': 0.0,
+              'credit': 0.0,
+              'currency': 'KWD',
+            },
+            {
+              'id': 88,
+              'type': 'credit_note',
+              'reference': 'CN-WRONG-CURRENCY',
+              'debit': 0.0,
+              'credit': 2.0,
+              'currency': 'USD',
             },
           ],
         },
@@ -4401,9 +6668,26 @@ void main() {
         find.byKey(const ValueKey('b2b-invoice-item-501')),
         findsOneWidget,
       );
+      expect(
+        tester
+            .widget<Text>(
+              find.byKey(const ValueKey('b2b-invoice-item-amount-501')),
+            )
+            .data,
+        '20.000 KWD',
+      );
+      expect(
+        tester
+            .widget<Text>(
+              find.byKey(const ValueKey('b2b-invoice-item-amount-502')),
+            )
+            .data,
+        '—',
+      );
       expect(find.text('Wholesale item'), findsNothing);
       expect(find.textContaining('WHO-501'), findsNothing);
-      expect(find.textContaining('الكمية'), findsOneWidget);
+      expect(find.text('الكمية: 2.0'), findsOneWidget);
+      expect(find.text('الكمية: 1.0'), findsOneWidget);
       expect(find.text('الضريبة'), findsNothing);
       expect(find.text('المديونية'), findsWidgets);
       expect(
@@ -4411,8 +6695,61 @@ void main() {
         findsOneWidget,
       );
       expect(find.textContaining('PAY-31'), findsOneWidget);
+      expect(
+        tester
+            .widget<Text>(
+              find.byKey(const ValueKey('b2b-invoice-payment-amount-9')),
+            )
+            .data,
+        '5.000 KWD',
+      );
+      for (final id in <int>[10, 11]) {
+        expect(
+          tester
+              .widget<Text>(
+                find.byKey(ValueKey('b2b-invoice-payment-amount-$id')),
+              )
+              .data,
+          '—',
+        );
+      }
       expect(find.byKey(const ValueKey('b2b-invoice-ledger')), findsOneWidget);
       expect(find.textContaining('CN-31'), findsOneWidget);
+      final ledgerCard = find.byKey(const ValueKey('b2b-invoice-ledger'));
+      // The valid credit note remains authoritative; every malformed or
+      // contradictory row is unverified rather than a synthetic zero.
+      expect(
+        tester
+            .widget<Text>(
+              find.byKey(const ValueKey('b2b-invoice-ledger-amount-81')),
+            )
+            .data,
+        'دائن 1.000 KWD',
+      );
+      for (final id in <int>[82, 83, 84, 85, 86, 87, 88]) {
+        expect(
+          tester
+              .widget<Text>(
+                find.byKey(ValueKey('b2b-invoice-ledger-amount-$id')),
+              )
+              .data,
+          '—',
+        );
+      }
+      expect(
+        find.descendant(
+          of: ledgerCard,
+          matching: find.text('دائن 0.000 KWD'),
+        ),
+        findsNothing,
+      );
+      expect(
+        find.descendant(
+          of: ledgerCard,
+          matching: find.text('مدين 2.000 KWD'),
+        ),
+        findsNothing,
+      );
       expect(
         find.byKey(const ValueKey('b2b-invoice-detail-pdf')),
         findsOneWidget,
@@ -4441,6 +6778,69 @@ void main() {
       expect(find.textContaining('/api/v1/invoices/31/download'), findsNothing);
     },
   );
+
+  for (final locale in const <Locale>[Locale('ar'), Locale('en')]) {
+    for (final caseName in <String>['missing', 'contradictory']) {
+      testWidgets(
+        'MOB-C03 invoice balance fails closed for $caseName in ${locale.languageCode}',
+        (tester) async {
+          tester.view.physicalSize = const Size(900, 2000);
+          tester.view.devicePixelRatio = 1;
+          addTearDown(() {
+            tester.view.resetPhysicalSize();
+            tester.view.resetDevicePixelRatio();
+          });
+          final missing = caseName == 'missing';
+          final api = _FakeB2bApi({
+            'data': {
+              'id': 31,
+              'invoice_number': 'INV-31',
+              'currency': 'KWD',
+              'status': 'partially_paid',
+              'total': missing ? 'NaN' : 20.0,
+              'paid_amount': 5.0,
+              'outstanding_amount': missing ? null : 15.0,
+              'credit_amount': missing ? 'NaN' : 2.0,
+              'store_id': 7,
+              'items': <Object?>[],
+              'payments': <Object?>[],
+              'ledger_entries': <Object?>[],
+            },
+          });
+
+          await tester.pumpWidget(FoodexCustomerApp(
+            session: b2b,
+            locale: locale,
+            initialRoute: '/b2b/invoices/31?store_id=7',
+            b2bApi: api,
+          ));
+          await _pumpCustomerFrames(tester);
+
+          final strip = find.byKey(
+            const ValueKey('b2b-invoice-settlement-strip'),
+          );
+          expect(strip, findsOneWidget);
+          expect(
+            find.descendant(
+              of: strip,
+              matching: find.text(
+                locale.languageCode == 'ar'
+                    ? 'الرصيد غير مؤكد'
+                    : 'Unverified balance',
+              ),
+            ),
+            findsOneWidget,
+          );
+          expect(
+            find.descendant(of: strip, matching: find.text('—')),
+            findsWidgets,
+          );
+          expect(find.textContaining('NaN'), findsNothing);
+          expect(api.lastPath, '/api/v1/b2b/invoices/31?store_id=7');
+        },
+      );
+    }
+  }
 
   testWidgets('B2B remote journey renders loading and empty states', (
     tester,
@@ -4544,11 +6944,14 @@ void main() {
       'company_name': 'FOODEX Wholesale Business Account With Long Name',
       'name': 'Business Buyer',
       'currency': 'KWD',
-      'balance': 12.5,
+      'balance': -12.5,
+      'balance_direction': 'customer_owes_company',
+      'outstanding_receivable': 12.5,
       'open_amount': 12.5,
       'overdue_amount': 0,
       'credit_limit': 100,
       'available_credit_line': 87.5,
+      'purchasing_power': 87.5,
       'items_count': 2,
       'unread_count': 3,
       'data': <Object?>[],
@@ -4854,6 +7257,77 @@ class _C13WholesaleCommerceApi implements WholesaleCommerceApi {
   }
 }
 
+class _RetryIntentWholesaleCommerceApi extends _C13WholesaleCommerceApi {
+  _RetryIntentWholesaleCommerceApi({required super.cartValue});
+
+  final List<String> checkoutPayments = <String>[];
+
+  @override
+  Future<Object?> checkout({
+    required int storeId,
+    required int addressId,
+    required String paymentMethod,
+    String? requestedDeliveryDate,
+    String? note,
+    String? couponCode,
+    required String idempotencyKey,
+  }) async {
+    checkoutPayments.add(paymentMethod);
+    await super.checkout(
+      storeId: storeId,
+      addressId: addressId,
+      paymentMethod: paymentMethod,
+      requestedDeliveryDate: requestedDeliveryDate,
+      note: note,
+      couponCode: couponCode,
+      idempotencyKey: idempotencyKey,
+    );
+    throw const WholesaleCommerceException(
+      'Network response not confirmed',
+      statusCode: 503,
+    );
+  }
+}
+
+class _OutOfOrderCheckoutCartApi extends _C13WholesaleCommerceApi {
+  _OutOfOrderCheckoutCartApi({required super.cartValue});
+
+  int cartRequests = 0;
+  final pending = <Completer<Object?>>[];
+
+  @override
+  Future<Object?> cart(int storeId) async {
+    cartRequests++;
+    if (cartRequests == 1) return super.cart(storeId);
+    final request = Completer<Object?>();
+    pending.add(request);
+    return request.future;
+  }
+}
+
+class _QuoteC13WholesaleCommerceApi extends _C13WholesaleCommerceApi
+    implements WholesaleQuoteApi {
+  _QuoteC13WholesaleCommerceApi({required super.cartValue});
+
+  int quoteCalls = 0;
+  Completer<Object?>? deferredQuote;
+
+  @override
+  Future<Object?> quote({
+    required int storeId,
+    String? couponCode,
+    String? paymentMethod,
+  }) async {
+    quoteCalls++;
+    if (deferredQuote != null) return deferredQuote!.future;
+    return <String, Object?>{
+      'grand_total': 50.0,
+      'currency': 'EGP',
+      'coupon': {'code': couponCode},
+    };
+  }
+}
+
 class _CheckoutStorefrontApi implements StorefrontApi {
   const _CheckoutStorefrontApi();
 
@@ -5000,6 +7474,7 @@ class _FakeWholesaleCommerceApi implements WholesaleCommerceApi {
         'currency': 'KWD',
         'subtotal': 25.5,
         'grand_total': 25.5,
+        'quote': {'grand_total': 25.5},
         'items': [
           {'name': 'Bulk Water', 'quantity': 2},
         ],
@@ -5134,6 +7609,218 @@ class _FakeWholesaleStorefrontApi implements StorefrontApi {
       const {};
 }
 
+class _DeferredPurchaseReportB2bApi implements B2bApi {
+  final List<String> paths = <String>[];
+  final List<Completer<Object?>> replies = <Completer<Object?>>[];
+
+  @override
+  Future<Object?> get(String path) {
+    if (!path.startsWith('/api/v1/b2b/reports/purchases')) {
+      throw StateError('Unexpected purchase report route: $path');
+    }
+    paths.add(path);
+    final reply = Completer<Object?>();
+    replies.add(reply);
+    return reply.future;
+  }
+}
+
+class _ReauthInvoiceB2bApi implements B2bApi {
+  _ReauthInvoiceB2bApi(this.denialStatus);
+
+  final int denialStatus;
+  int calls = 0;
+  final Completer<Object?> _revokedResponse = Completer<Object?>();
+
+  void reject() {
+    _revokedResponse.completeError(
+      B2bApiException('not_authorized', statusCode: denialStatus),
+    );
+  }
+
+  @override
+  Future<Object?> get(String path) async {
+    calls++;
+    if (calls == 2) return _revokedResponse.future;
+    final invoice = <String, Object?>{
+      'id': 31,
+      'store_id': 7,
+      'invoice_number': calls == 1 ? 'INV-31' : 'INV-REVALIDATED-31',
+      'display_invoice_number': calls == 1 ? 'INV-31' : 'INV-REVALIDATED-31',
+      'status': 'issued',
+      'display_status': 'partially_paid',
+      'currency': 'KWD',
+      'total': 60.125,
+      'paid_amount': 20.000,
+      'outstanding_amount': 40.125,
+      'credit_amount': 0.000,
+      'items': <Object?>[],
+      'payments': <Object?>[],
+      'ledger_entries': <Object?>[],
+    };
+    if (Uri.parse(path).pathSegments.length == 5) {
+      return {'data': invoice};
+    }
+    return {
+      'data': [invoice],
+      'summary': {
+        'totals': [
+          {
+            'currency': 'KWD',
+            'total': 60.125,
+            'paid': 20.000,
+            'outstanding': 40.125,
+            'overdue': 0.000,
+            'credit': 0.000,
+          },
+        ],
+      },
+      'meta': {'page': 1, 'per_page': 20, 'total': 1, 'has_more': false},
+    };
+  }
+}
+
+class _ReauthStatementB2bApi implements B2bApi, B2bDownloadApi {
+  int reads = 0;
+  int downloads = 0;
+  final Completer<B2bDownload> pending = Completer<B2bDownload>();
+
+  @override
+  Future<Object?> get(String path) async {
+    reads++;
+    if (reads == 2) {
+      throw const B2bApiException('not_authorized', statusCode: 403);
+    }
+    final balance = reads == 1 ? -49.875 : -10.125;
+    return {
+      'data': {
+        'currency': 'KWD',
+        'balance': balance,
+        'closing_balance': balance,
+        'period_debits': 0,
+        'period_credits': 0,
+        'transactions': <Object?>[],
+        'pagination': {'current_page': 1, 'last_page': 1},
+      },
+    };
+  }
+
+  @override
+  Future<B2bDownload> download(String path) {
+    downloads++;
+    return pending.future;
+  }
+}
+
+class _DeferredInvoicePdfApi implements B2bApi, B2bDocumentApi {
+  final List<String> downloadPaths = <String>[];
+  final List<Completer<List<int>>> pending = <Completer<List<int>>>[];
+
+  @override
+  Future<Object?> get(String path) async {
+    final uri = Uri.parse(path);
+    final storeId = int.parse(uri.queryParameters['store_id'] ?? '7');
+    final invoiceId = uri.pathSegments.contains('91') || storeId == 9 ? 91 : 31;
+    final invoice = <String, Object?>{
+      'id': invoiceId,
+      'store_id': storeId,
+      'invoice_number': 'INV-$invoiceId',
+      'display_invoice_number': 'INV-$invoiceId',
+      'status': 'issued',
+      'display_status': 'partially_paid',
+      'currency': 'KWD',
+      'total': 60.125,
+      'paid_amount': 20.000,
+      'outstanding_amount': 40.125,
+      'credit_amount': 0.000,
+      'pdf_path': '/api/v1/b2b/invoices/$invoiceId/download?store_id=$storeId',
+      'items': <Object?>[],
+      'payments': <Object?>[],
+      'ledger_entries': <Object?>[],
+    };
+    if (uri.pathSegments.length == 5) {
+      return {'data': invoice};
+    }
+    return {
+      'data': [invoice],
+      'summary': {
+        'totals': [
+          {
+            'currency': 'KWD',
+            'total': 60.125,
+            'paid': 20.000,
+            'outstanding': 40.125,
+            'overdue': 0.000,
+            'credit': 0.000,
+          },
+        ],
+      },
+      'meta': {'page': 1, 'per_page': 20, 'total': 1, 'has_more': false},
+    };
+  }
+
+  @override
+  Future<List<int>> getBytes(String path) {
+    downloadPaths.add(path);
+    final result = Completer<List<int>>();
+    pending.add(result);
+    return result.future;
+  }
+}
+
+class _DeferredStatementExportApi implements B2bApi, B2bDownloadApi {
+  final readPaths = <String>[];
+  final downloadPaths = <String>[];
+  final pending = <Completer<B2bDownload>>[];
+
+  static B2bDownload document() => B2bDownload(
+        bytes: Uint8List.fromList(const <int>[37, 80, 68, 70, 45]),
+        mimeType: 'application/pdf',
+        filename: 'statement.pdf',
+      );
+
+  @override
+  Future<Object?> get(String path) async {
+    readPaths.add(path);
+    return {
+      'data': {
+        'currency': 'EGP',
+        'balance': -49.875,
+        'closing_balance': -49.875,
+        'period_debits': 0,
+        'period_credits': 0,
+        'transactions': <Object?>[],
+        'pagination': {'current_page': 1, 'last_page': 1},
+      },
+    };
+  }
+
+  @override
+  Future<B2bDownload> download(String path) {
+    downloadPaths.add(path);
+    final result = Completer<B2bDownload>();
+    pending.add(result);
+    return result.future;
+  }
+}
+
+class _DeferredScopedB2bReadbackApi implements B2bApi {
+  final List<String> paths = <String>[];
+  final List<Completer<Object?>> replies = <Completer<Object?>>[];
+
+  @override
+  Future<Object?> get(String path) {
+    if (!path.startsWith('/api/v1/b2b/account-statement') &&
+        !path.startsWith('/api/v1/b2b/invoices')) {
+      throw StateError('Unexpected B2B financial readback path: $path');
+    }
+    paths.add(path);
+    final reply = Completer<Object?>();
+    replies.add(reply);
+    return reply.future;
+  }
+}
+
 class _FakeB2bApi implements B2bApi {
   _FakeB2bApi(this.value);
   final Object? value;
@@ -5177,6 +7864,21 @@ class _PathB2bApi implements B2bApi {
   Future<Object?> get(String path) async {
     lastPath = path;
     return responses[path];
+  }
+}
+
+class _DeferredOrderDetailsB2bApi implements B2bApi {
+  final List<Completer<Object?>> requests = <Completer<Object?>>[];
+  int get calls => requests.length;
+
+  @override
+  Future<Object?> get(String path) {
+    if (path != '/api/v1/b2b/orders/77') {
+      throw StateError('Unexpected partial collection readback route: $path');
+    }
+    final completer = Completer<Object?>();
+    requests.add(completer);
+    return completer.future;
   }
 }
 

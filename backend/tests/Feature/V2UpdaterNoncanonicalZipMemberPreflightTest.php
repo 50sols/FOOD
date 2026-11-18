@@ -60,7 +60,6 @@ final class V2UpdaterNoncanonicalZipMemberPreflightTest extends TestCase
             ' '.$this->releaseName.'/target.txt',
             $this->releaseName.'/target.txt ',
             $this->releaseName.'\\target.txt',
-            "\t".$this->releaseName.'/target.txt',
         ] as $rawName) {
             $package = $this->archive([$rawName => 'synthetic payload']);
             $this->assertNoncanonicalRejected(
@@ -70,6 +69,21 @@ final class V2UpdaterNoncanonicalZipMemberPreflightTest extends TestCase
             $this->assertFileDoesNotExist($this->releaseDirectory.'/target.txt');
             $this->assertSame([], glob($this->backupDirectory.'/*') ?: []);
         }
+    }
+
+    public function test_control_byte_member_is_rejected_as_unsafe_path(): void
+    {
+        $package = $this->archive(["\t".$this->releaseName.'/target.txt' => 'synthetic payload']);
+
+        try {
+            $this->runtime()->preflight($this->manifest($package), $package);
+            $this->fail('A control-byte ZIP member must fail before updater mutations.');
+        } catch (RuntimeException $exception) {
+            $this->assertSame('Update archive contains an unsafe path.', $exception->getMessage());
+        }
+
+        $this->assertFileDoesNotExist($this->releaseDirectory.'/target.txt');
+        $this->assertSame([], glob($this->backupDirectory.'/*') ?: []);
     }
 
     public function test_backup_and_extract_refuse_noncanonical_name_before_touching_valid_first_target(): void

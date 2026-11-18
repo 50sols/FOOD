@@ -60,6 +60,7 @@ class User extends Authenticatable
                     ->where('roles.code', 'SUPER_ADMIN')
                     ->orWhere('roles.code', 'PLATFORM_OWNER'))
                 ->where('roles.is_active', true)
+                ->whereNull('roles.archived_at')
                 ->where('roles.scope', 'global')
                 ->pluck('roles.code');
 
@@ -83,6 +84,7 @@ class User extends Authenticatable
             return $this->roles()
                 ->where('roles.code', $roleCode)
                 ->where('roles.is_active', true)
+                ->whereNull('roles.archived_at')
                 ->where('roles.scope', 'global')
                 ->exists();
         }
@@ -98,6 +100,7 @@ class User extends Authenticatable
                 ->whereHas('role', fn ($query) => $query
                     ->where('code', $roleCode)
                     ->where('is_active', true)
+                    ->whereNull('archived_at')
                     ->where('scope', 'store'))
                 ->exists();
         }
@@ -107,6 +110,7 @@ class User extends Authenticatable
         return $this->roles()
             ->where('roles.code', $roleCode)
             ->where('roles.is_active', true)
+            ->whereNull('roles.archived_at')
             ->where('roles.scope', 'global')
             ->where('roles.code', '!=', 'PLATFORM_OWNER')
             ->whereIn('roles.code', $allowedGlobalRoles)
@@ -127,6 +131,7 @@ class User extends Authenticatable
             && $this->roles()
                 ->where('roles.code', 'PLATFORM_OWNER')
                 ->where('roles.is_active', true)
+                ->whereNull('roles.archived_at')
                 ->where('roles.scope', 'global')
                 ->exists()
             && Schema::hasTable('platform_owner_registry')
@@ -200,6 +205,7 @@ class User extends Authenticatable
         if ($storeId === null) {
             return $this->roles()
                 ->where('roles.is_active', true)
+                ->whereNull('roles.archived_at')
                 ->where('roles.scope', 'global')
                 ->where('roles.code', '!=', 'PLATFORM_OWNER')
                 ->whereHas('permissions', fn ($query) => $query->where('code', $permissionCode))
@@ -217,6 +223,7 @@ class User extends Authenticatable
                 ->where('store_id', $storeId)
                 ->whereHas('role', fn ($query) => $query
                     ->where('is_active', true)
+                    ->whereNull('archived_at')
                     ->where('scope', 'store')
                     ->whereHas('permissions', fn ($permissions) => $permissions->where('code', $permissionCode)))
                 ->with('role:id,code')
@@ -235,6 +242,7 @@ class User extends Authenticatable
 
         return $this->roles()
             ->where('roles.is_active', true)
+            ->whereNull('roles.archived_at')
             ->where('roles.scope', 'global')
             ->whereIn('roles.code', $allowedGlobalRoles)
             ->whereHas('permissions', fn ($query) => $query->where('code', $permissionCode))
@@ -251,6 +259,7 @@ class User extends Authenticatable
 
         $global = $this->roles()
             ->where('roles.is_active', true)
+            ->whereNull('roles.archived_at')
             ->where('roles.scope', 'global')
             ->where('roles.code', '!=', 'PLATFORM_OWNER');
 
@@ -277,6 +286,7 @@ class User extends Authenticatable
                     ->with('role.permissions:id,code')
                     ->get()
                     ->filter(fn (UserStoreRole $assignment): bool => (bool) $assignment->role->is_active
+                        && $assignment->role->archived_at === null
                         && $assignment->role->scope === 'store'
                         && $catalog->roleContributesPermissions((string) $assignment->role->code, $storeId))
                     ->flatMap(fn (UserStoreRole $assignment) => $assignment->role->permissions->pluck('code')),
@@ -410,6 +420,7 @@ class User extends Authenticatable
     {
         $roleCodes = $this->roles()
             ->where('roles.is_active', true)
+            ->whereNull('roles.archived_at')
             ->where('roles.scope', 'global')
             ->pluck('roles.code')
             ->map(static fn ($value): string => (string) $value);
@@ -480,6 +491,7 @@ class User extends Authenticatable
             ->where('store_id', $storeId)
             ->whereHas('role', fn ($query) => $query
                 ->where('is_active', true)
+                ->whereNull('archived_at')
                 ->where('scope', 'store'))
             ->exists()) {
             return true;
@@ -501,6 +513,7 @@ class User extends Authenticatable
 
         return $this->roles()
             ->where('roles.is_active', true)
+            ->whereNull('roles.archived_at')
             ->where('roles.scope', 'global')
             ->whereIn('roles.code', $allowedGlobalRoles)
             ->exists();
@@ -553,6 +566,7 @@ class User extends Authenticatable
             'is_platform_customer' => 'boolean',
             'has_permission_overrides' => 'boolean',
             'deactivated_at' => 'datetime',
+            'archived_at' => 'datetime',
             'last_seen_at' => 'datetime',
         ];
     }

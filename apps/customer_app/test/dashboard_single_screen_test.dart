@@ -24,11 +24,10 @@ Map<String, Object?> dashboardResponse({bool second = false}) => {
       'account': {'company_name': second ? 'شركة ثانية' : 'شركة الأغذية'},
       'finance': {
         'currency': second ? 'USD' : 'KWD',
-        'balance': second ? -200 : 1234.5,
-        'balance_direction':
-            second ? 'company_owes_customer' : 'customer_owes_company',
+        'balance': second ? 200 : 1234.5,
+        'balance_direction': 'company_owes_customer',
         'credit_limit': second ? 7000 : 5000,
-        'available_credit_line': second ? 7000 : 3765.5,
+        'available_credit_line': second ? 7000 : 5000,
         'customer_credit_balance': second ? 200 : 1234.5,
         'open_amount': second ? 0 : 1234.5,
         'overdue_amount': second ? 0 : 123,
