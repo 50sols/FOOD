@@ -187,13 +187,20 @@ final class EnterpriseBiController extends Controller
         );
         abort_unless($actor->isPlatformOwner() || $this->hasBiEntitlement($actor), 403);
 
+        // The Blade already renders one independent BI workspace at a time.
+        // Resolve that same GET selection before evaluating any read models;
+        // hidden tabs must not run reports or dashboard analytics.
+        $requestedTab = $request->query('bi_tab', $request->has('report') ? 'reports' : 'overview');
+        $biTab = is_string($requestedTab) && in_array($requestedTab, ['overview', 'reports', 'exports', 'schedules'], true)
+            ? $requestedTab : 'overview';
+
         $catalog = collect($this->catalog($actor, $registry, $access));
         $selectedCode = trim((string) $request->query('report', ''));
         $selected = $catalog->firstWhere('code', $selectedCode)
             ?? $catalog->firstWhere('available', true)
             ?? $catalog->first();
 
-        $run = $request->boolean('run');
+        $run = $biTab === 'reports' && $request->boolean('run');
         $result = null;
         $rows = [];
         $runError = null;
@@ -240,11 +247,12 @@ final class EnterpriseBiController extends Controller
             'result' => $result,
             'rows' => $rows,
             'runError' => $runError,
-            'overview' => $workspace->overview($actor, $catalog->all(), $request, $selection),
+            'overview' => $biTab === 'overview'
+                ? $workspace->overview($actor, $catalog->all(), $request, $selection) : null,
             'canSchedule' => $actor->hasRole('SUPER_ADMIN') || $actor->hasPermission('reports.export'),
-            'exports' => $this->recentExports($actor),
-            'schedules' => $this->recentSchedules($actor),
-            'exceptions' => $this->exceptionSummary($actor),
+            'exports' => $biTab === 'exports' ? $this->recentExports($actor) : [],
+            'schedules' => $biTab === 'schedules' ? $this->recentSchedules($actor) : [],
+            'exceptions' => $biTab === 'exports' ? $this->exceptionSummary($actor) : null,
             'legacyReportsUrl' => Route::has('admin.reports.index') ? route('admin.reports.index') : null,
         ]);
     }
