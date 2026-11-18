@@ -69,6 +69,26 @@ final class FinanceWorkbenchAccess
         return false;
     }
 
+    /**
+     * A Finance tab or GET must be authorized for its exact capability, not
+     * merely by the shared finance.view role grant. This is also the authority
+     * used by a future AR-only controller/tab projection: an AR_OFFICER holding
+     * a second Finance role never inherits GL/AP/Foundation disclosure.
+     */
+    public function canReadCapability(User $actor, int $storeId, string $capability): bool
+    {
+        if (! in_array($capability, self::READ_CAPABILITIES, true)
+            || ! $this->canRead($actor, $storeId)) {
+            return false;
+        }
+
+        if ($actor->hasRole('AR_OFFICER') && $capability !== 'finance.ar.read') {
+            return false;
+        }
+
+        return $this->allowsAtStore($storeId, $capability);
+    }
+
     public function canPerform(User $actor, int $storeId, string $permission, string $capability): bool
     {
         // P127 fail-closed duty boundary: finance.manage is shared with GL,
