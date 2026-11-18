@@ -53,7 +53,8 @@ final class AdministrationHubController extends Controller
             'canAssistantSettings' => $user->hasRole('SUPER_ADMIN')
                 || $user->hasPermission('settings.view')
                 || $user->hasPermission('settings.manage'),
-            'canSystemUpdate' => Gate::forUser($user)->allows('system.update'),
+            'canSystemUpdate' => $user->is_active && $user->hasRole('SUPER_ADMIN')
+                && Gate::forUser($user)->allows('system.update'),
             'mobileReleaseVersion' => $mobileReleaseVersion,
             'mobileReleaseArtifacts' => collect($this->mobileArtifacts->statusPayload($mobileReleaseVersion))->keyBy('app'),
         ]);

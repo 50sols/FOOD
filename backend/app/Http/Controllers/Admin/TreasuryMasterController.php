@@ -47,6 +47,15 @@ final class TreasuryMasterController extends Controller
         $viewStoreIds = $this->tenantScope->allowedStoreIds($actor, 'finance.view');
         abort_if($viewStoreIds === [], 403);
 
+        // GET parameters may only open the editor belonging to the visible tab.
+        // Never resolve an unrelated bank/cashbox record from a hidden tab.
+        $tab = (string) ($filters['tab'] ?? 'cashboxes');
+        $cashboxEditor = isset($filters['edit_cashbox']) || ($filters['create'] ?? null) === 'cashbox';
+        $bankEditor = isset($filters['edit_bank_account']) || ($filters['create'] ?? null) === 'bank_account';
+        abort_if(($cashboxEditor && $tab !== 'cashboxes') || ($bankEditor && $tab !== 'bank_accounts'), 404);
+        abort_if(($cashboxEditor && $bankEditor)
+            || (isset($filters['create']) && (isset($filters['edit_cashbox']) || isset($filters['edit_bank_account']))), 404);
+
         $manageStoreIds = $this->tenantScope->allowedStoreIds($actor, 'finance.manage');
         $requestedStoreId = isset($filters['store_id']) ? (int) $filters['store_id'] : null;
         if ($requestedStoreId !== null) {
@@ -78,12 +87,14 @@ final class TreasuryMasterController extends Controller
         $editingCashbox = isset($filters['edit_cashbox'])
             ? EnterpriseCashbox::query()
                 ->whereIn('store_id', $manageStoreIds)
+                ->when($requestedStoreId !== null, fn (Builder $query) => $query->where('store_id', $requestedStoreId))
                 ->findOrFail((int) $filters['edit_cashbox'])
             : null;
 
         $editingBankAccount = isset($filters['edit_bank_account'])
             ? EnterpriseBankAccount::query()
                 ->whereIn('store_id', $manageStoreIds)
+                ->when($requestedStoreId !== null, fn (Builder $query) => $query->where('store_id', $requestedStoreId))
                 ->findOrFail((int) $filters['edit_bank_account'])
             : null;
 
@@ -93,7 +104,7 @@ final class TreasuryMasterController extends Controller
             'navContext' => 'treasury_master',
             'filters' => [
                 ...$filters,
-                'tab' => (string) ($filters['tab'] ?? 'cashboxes'),
+                'tab' => $tab,
                 'status' => $status,
                 'per_page' => $perPage,
             ],
@@ -112,6 +123,7 @@ final class TreasuryMasterController extends Controller
         $actor = $this->actor($request);
         $data = $this->validatedMaster($request);
         $context = $this->contextForStore($actor, (int) $data['store_id']);
+        $redirectParams = $this->masterRedirectParams($request, 'cashboxes', (int) $data['store_id']);
         $code = $this->normalizedCode((string) $data['code']);
 
         $this->assertCodeAvailable('enterprise_cashboxes', $context['company_id'], (int) $data['store_id'], $code);
@@ -131,7 +143,7 @@ final class TreasuryMasterController extends Controller
             );
         });
 
-        return redirect()->route('admin.treasury.master.index', ['tab' => 'cashboxes'])
+        return redirect()->route('admin.treasury.master.index', $redirectParams)
             ->with('status', __('treasury.messages.cashbox_saved'));
     }
 
@@ -142,6 +154,7 @@ final class TreasuryMasterController extends Controller
         $model = EnterpriseCashbox::query()->whereIn('store_id', $allowed)->findOrFail($cashbox);
         $data = $this->validatedMaster($request);
         $context = $this->contextForStore($actor, (int) $data['store_id']);
+        $redirectParams = $this->masterRedirectParams($request, 'cashboxes', (int) $data['store_id']);
         $code = $this->normalizedCode((string) $data['code']);
 
         $this->assertCodeAvailable('enterprise_cashboxes', $context['company_id'], (int) $data['store_id'], $code, $model->getKey());
@@ -161,7 +174,7 @@ final class TreasuryMasterController extends Controller
             );
         });
 
-        return redirect()->route('admin.treasury.master.index', ['tab' => 'cashboxes'])
+        return redirect()->route('admin.treasury.master.index', $redirectParams)
             ->with('status', __('treasury.messages.cashbox_saved'));
     }
 
@@ -170,6 +183,7 @@ final class TreasuryMasterController extends Controller
         $actor = $this->actor($request);
         $data = $this->validatedBankAccount($request, true);
         $context = $this->contextForStore($actor, (int) $data['store_id']);
+        $redirectParams = $this->masterRedirectParams($request, 'bank_accounts', (int) $data['store_id']);
         $code = $this->normalizedCode((string) $data['code']);
 
         $this->assertCodeAvailable('enterprise_bank_accounts', $context['company_id'], (int) $data['store_id'], $code);
@@ -194,7 +208,7 @@ final class TreasuryMasterController extends Controller
             );
         });
 
-        return redirect()->route('admin.treasury.master.index', ['tab' => 'bank_accounts'])
+        return redirect()->route('admin.treasury.master.index', $redirectParams)
             ->with('status', __('treasury.messages.bank_account_saved'));
     }
 
@@ -205,6 +219,7 @@ final class TreasuryMasterController extends Controller
         $model = EnterpriseBankAccount::query()->whereIn('store_id', $allowed)->findOrFail($bankAccount);
         $data = $this->validatedBankAccount($request, false);
         $context = $this->contextForStore($actor, (int) $data['store_id']);
+        $redirectParams = $this->masterRedirectParams($request, 'bank_accounts', (int) $data['store_id']);
         $code = $this->normalizedCode((string) $data['code']);
 
         $this->assertCodeAvailable('enterprise_bank_accounts', $context['company_id'], (int) $data['store_id'], $code, $model->getKey());
@@ -236,8 +251,22 @@ final class TreasuryMasterController extends Controller
             );
         });
 
-        return redirect()->route('admin.treasury.master.index', ['tab' => 'bank_accounts'])
+        return redirect()->route('admin.treasury.master.index', $redirectParams)
             ->with('status', __('treasury.messages.bank_account_saved'));
+    }
+
+    /** @return array{tab: string, store_id?: int} */
+    private function masterRedirectParams(Request $request, string $tab, int $storeId): array
+    {
+        // Only the existing selected-store UI opts in. Legacy direct POSTs keep
+        // their original tab-only redirect; this never authorizes a store.
+        $context = $request->validate([
+            'preserve_store_context' => ['sometimes', 'boolean'],
+        ]);
+
+        return (bool) ($context['preserve_store_context'] ?? false)
+            ? ['tab' => $tab, 'store_id' => $storeId]
+            : ['tab' => $tab];
     }
 
     /** @return array<string, mixed> */

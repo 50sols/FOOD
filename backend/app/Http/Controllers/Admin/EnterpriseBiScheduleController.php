@@ -9,6 +9,8 @@ use App\Enterprise\Reporting\ReportRegistry;
 use App\Enterprise\Reporting\ScheduledReportManager;
 use App\Http\Controllers\Controller;
 use App\Models\User;
+use App\Services\OperationalTenantScope;
+use App\Support\AdminNavigation;
 use Carbon\CarbonImmutable;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
@@ -18,6 +20,11 @@ use Illuminate\Validation\ValidationException;
 
 final class EnterpriseBiScheduleController extends Controller
 {
+    public function __construct(
+        private readonly AdminNavigation $navigation,
+        private readonly OperationalTenantScope $tenantScope,
+    ) {}
+
     public function store(
         Request $request,
         ReportRegistry $reports,
@@ -45,6 +52,7 @@ final class EnterpriseBiScheduleController extends Controller
 
         $report = $reports->require((string) $validated['report']);
         $scope = new EntitlementScope((string) $validated['scope_type'], (int) $validated['scope_id']);
+        $this->assertDashboardScope($actor, $scope);
         abort_unless($access->allowsExport($actor, $report, $scope), 403);
 
         $query = ReportQuery::fromArray($report, [
@@ -112,6 +120,7 @@ final class EnterpriseBiScheduleController extends Controller
 
         $report = $reports->require((string) $row->report_code);
         $scope = new EntitlementScope((string) $row->scope_type, $row->scope_id === null ? null : (int) $row->scope_id);
+        $this->assertDashboardScope($actor, $scope);
         abort_unless($access->allowsExport($actor, $report, $scope), 403);
 
         $nextRun = CarbonImmutable::parse((string) $validated['next_run_at']);
@@ -134,11 +143,50 @@ final class EnterpriseBiScheduleController extends Controller
         return back()->with('status', __('enterprise_bi_ui.schedule_saved'));
     }
 
+    /** Only scopes visible in the canonical BI report picker may be scheduled. */
+    private function assertDashboardScope(User $actor, EntitlementScope $scope): void
+    {
+        $allowedStoreIds = $this->tenantScope->allowedStoreIds($actor, 'reports.view');
+
+        if ($scope->type === EntitlementScope::STORE) {
+            abort_unless($scope->id !== null && in_array($scope->id, $allowedStoreIds, true), 403);
+
+            return;
+        }
+
+        if ($scope->type === EntitlementScope::LEGAL_ENTITY) {
+            $entity = DB::table('enterprise_legal_entities as entity')
+                ->where('entity.id', $scope->id)
+                ->where('entity.is_active', true)
+                ->when(! $actor->hasRole('SUPER_ADMIN'), function ($query) use ($allowedStoreIds): void {
+                    $query->whereExists(function ($scoped) use ($allowedStoreIds): void {
+                        $scoped->selectRaw('1')
+                            ->from('enterprise_business_units as unit')
+                            ->join('enterprise_store_scopes as store_scope', 'store_scope.business_unit_id', '=', 'unit.id')
+                            ->whereColumn('unit.legal_entity_id', 'entity.id')
+                            ->whereIn('store_scope.store_id', $allowedStoreIds);
+                    });
+                });
+
+            abort_unless($scope->id !== null && $entity->exists(), 403);
+
+            return;
+        }
+
+        abort(403);
+    }
+
     private function actor(Request $request): User
     {
         $actor = $request->user();
         abort_unless($actor instanceof User && $actor->is_active, 403);
         abort_unless($actor->hasRole('SUPER_ADMIN') || $actor->hasPermission('reports.export'), 403);
+        // Direct schedule routes must not admit a principal denied by BI GET.
+        abort_unless(
+            $this->navigation->canAccessPlatformErp($actor)
+                && ! $this->navigation->usesCustomerServiceDashboardProfile($actor),
+            403,
+        );
 
         return $actor;
     }

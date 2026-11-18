@@ -20,9 +20,10 @@
         .so-settings-summary-item{min-width:0;padding:9px 11px;border:1px solid var(--foodex-border);border-radius:13px;background:var(--foodex-surface);display:grid;gap:4px}
         .so-settings-summary-item span{color:var(--foodex-muted);font-size:.61rem;font-weight:800}.so-settings-summary-item strong{font-size:.82rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
         .so-settings-summary-item[data-tone="green"]{border-top:3px solid var(--foodex-palette-16a34a)}.so-settings-summary-item[data-tone="orange"]{border-top:3px solid var(--foodex-palette-f97316)}.so-settings-summary-item[data-tone="blue"]{border-top:3px solid var(--foodex-palette-2563eb)}.so-settings-summary-item[data-tone="violet"]{border-top:3px solid var(--foodex-palette-7c3aed)}
-        .so-settings-tabs{display:flex;align-items:center;gap:6px;overflow-x:auto;padding:2px 0 3px;scrollbar-width:thin}
-        .so-settings-tab{display:inline-flex;align-items:center;justify-content:center;min-height:38px;padding:0 14px;border:1px solid var(--foodex-border);border-radius:999px;background:var(--foodex-surface);color:var(--foodex-muted);font-size:.73rem;font-weight:900;white-space:nowrap;cursor:pointer;transition:.18s ease}
+        .so-settings-tabs{display:flex;align-items:center;flex-wrap:nowrap;gap:6px;min-width:0;max-width:100%;overflow-x:auto;padding:4px 2px 6px;scrollbar-width:thin;scroll-padding-inline:8px}
+        .so-settings-tab{display:inline-flex;align-items:center;justify-content:center;flex:0 0 auto;min-height:44px;padding:0 14px;border:1px solid var(--foodex-border);border-radius:999px;background:var(--foodex-surface);color:var(--foodex-muted);font-size:.73rem;font-weight:900;white-space:nowrap;cursor:pointer;transition:.18s ease}
         .so-settings-tab:hover{border-color:var(--foodex-palette-b9d8c1);color:var(--foodex-green-dark);transform:translateY(-1px)}
+        .so-settings-tab:focus-visible{outline:3px solid var(--foodex-action-green);outline-offset:2px;scroll-margin-inline:8px}
         .so-settings-tab[aria-selected="true"]{border-color:var(--foodex-action-green);background:var(--foodex-action-green);color:#fff;box-shadow:0 6px 18px rgba(21,138,58,.14)}
         .so-settings-panel{display:grid;gap:7px;min-width:0}.so-settings-panel[hidden]{display:none!important}
         .so-settings-panel>.panel,.so-settings-panel>.foodex-card,.so-settings-panel>.foodex-module-overview{margin:0!important}
@@ -45,7 +46,7 @@
         .so-settings-panel[data-so-settings-panel="site"] .foodex-form{gap:8px}
 
         @media(max-width:1100px){.so-settings-summary{grid-template-columns:repeat(2,minmax(0,1fr))}.so-quick-links{grid-template-columns:repeat(2,minmax(0,1fr))}}
-        @media(max-width:700px){.so-settings-head{align-items:flex-start}.so-settings-head p{white-space:normal}.so-settings-head-actions{display:none}.so-settings-summary{grid-template-columns:1fr 1fr}.so-settings-tab{min-height:35px;padding-inline:11px}.so-quick-links{grid-template-columns:1fr}}
+        @media(max-width:700px){.so-settings-head{align-items:flex-start}.so-settings-head p{white-space:normal}.so-settings-head-actions{display:none}.so-settings-summary{grid-template-columns:1fr 1fr}.so-settings-tab{min-height:44px;padding-inline:11px}.so-quick-links{grid-template-columns:1fr}}
         @media(prefers-reduced-motion:reduce){.so-settings-tab{transition:none}.so-settings-tab:hover{transform:none}}
 
     </style>
@@ -91,12 +92,12 @@
                 </div>
             </div>
 
-            <nav class="so-settings-tabs" role="tablist" aria-label="{{ $isAr ? 'أقسام الإعدادات' : 'Settings sections' }}" data-so-settings-tabs data-default-tab="overview">
-                <button class="so-settings-tab" type="button" role="tab" aria-selected="true" data-so-settings-tab="overview">{{ $isAr ? 'الملخص' : 'Overview' }}</button>
-                <button class="so-settings-tab" type="button" role="tab" aria-selected="false" data-so-settings-tab="launch">{{ $isAr ? 'التجهيز والإطلاق' : 'Setup & launch' }}</button>
-                <button class="so-settings-tab" type="button" role="tab" aria-selected="false" data-so-settings-tab="site">{{ $isAr ? 'التشغيل والموقع' : 'Runtime & site' }}</button>
-                <button class="so-settings-tab" type="button" role="tab" aria-selected="false" data-so-settings-tab="content">{{ $isAr ? 'المحتوى' : 'Content' }}</button>
-                <button class="so-settings-tab" type="button" role="tab" aria-selected="false" data-so-settings-tab="modules">{{ $isAr ? 'الصلاحيات والنشر' : 'Modules & publish' }}</button>
+            <nav class="so-settings-tabs" role="tablist" aria-orientation="horizontal" aria-label="{{ $isAr ? 'أقسام الإعدادات' : 'Settings sections' }}" data-so-settings-tabs data-default-tab="overview">
+                <button class="so-settings-tab" type="button" role="tab" id="so-settings-tab-overview" aria-controls="so-settings-panel-overview" aria-selected="true" tabindex="0" data-so-settings-tab="overview">{{ $isAr ? 'الملخص' : 'Overview' }}</button>
+                <button class="so-settings-tab" type="button" role="tab" id="so-settings-tab-launch" aria-controls="so-settings-panel-launch" aria-selected="false" tabindex="-1" data-so-settings-tab="launch">{{ $isAr ? 'التجهيز والإطلاق' : 'Setup & launch' }}</button>
+                <button class="so-settings-tab" type="button" role="tab" id="so-settings-tab-site" aria-controls="so-settings-panel-site" aria-selected="false" tabindex="-1" data-so-settings-tab="site">{{ $isAr ? 'التشغيل والموقع' : 'Runtime & site' }}</button>
+                <button class="so-settings-tab" type="button" role="tab" id="so-settings-tab-content" aria-controls="so-settings-panel-content" aria-selected="false" tabindex="-1" data-so-settings-tab="content">{{ $isAr ? 'المحتوى' : 'Content' }}</button>
+                <button class="so-settings-tab" type="button" role="tab" id="so-settings-tab-modules" aria-controls="so-settings-panel-modules" aria-selected="false" tabindex="-1" data-so-settings-tab="modules">{{ $isAr ? 'الصلاحيات والنشر' : 'Modules & publish' }}</button>
             </nav>
 
             @if(session('status'))<p class="foodex-alert success" role="status">{{ session('status') }}</p>@endif
@@ -153,7 +154,7 @@
             $maxTrendOrders = max(1, (int) collect($ovTrend)->max('orders'));
             $statusTotal = max(1, array_sum(array_map('intval', $ovOrderStatus)));
         ?>
-        <section class="so-settings-panel" data-so-settings-panel="overview">
+        <section class="so-settings-panel" id="so-settings-panel-overview" role="tabpanel" aria-labelledby="so-settings-tab-overview" tabindex="0" data-so-settings-panel="overview">
 
         <section class="foodex-module-overview" data-foodex-module-overview data-restaurant-operations-overview>
             <div class="foodex-page-toolbar">
@@ -309,11 +310,11 @@
         </div>
         </section>
 
-        <section class="so-settings-panel" data-so-settings-panel="launch" hidden>
+        <section class="so-settings-panel" id="so-settings-panel-launch" role="tabpanel" aria-labelledby="so-settings-tab-launch" tabindex="0" data-so-settings-panel="launch" hidden>
             @include('admin._restaurant-onboarding',['restaurantOnboardingCompact'=>true])
         </section>
 
-        <section class="so-settings-panel" data-so-settings-panel="site" hidden>
+        <section class="so-settings-panel" id="so-settings-panel-site" role="tabpanel" aria-labelledby="so-settings-tab-site" tabindex="0" data-so-settings-panel="site" hidden>
         <section class="panel">
             <form class="foodex-form" method="get" action="{{ route('admin.smart-ordering.index') }}">
                 @if($supportAccess)<input type="hidden" name="support_access" value="1">@endif
@@ -364,11 +365,11 @@
 
         </section>
 
-        <section class="so-settings-panel" data-so-settings-panel="content" hidden>
+        <section class="so-settings-panel" id="so-settings-panel-content" role="tabpanel" aria-labelledby="so-settings-tab-content" tabindex="0" data-so-settings-panel="content" hidden>
             @include('admin._smart-ordering-content-editor',['restaurantContentCompact'=>true])
         </section>
 
-        <section class="so-settings-panel" data-so-settings-panel="modules" hidden>
+        <section class="so-settings-panel" id="so-settings-panel-modules" role="tabpanel" aria-labelledby="so-settings-tab-modules" tabindex="0" data-so-settings-panel="modules" hidden>
 
         <section class="panel">
             <h2>{{ __('smart_ordering.entitlements') }}</h2>
@@ -446,6 +447,27 @@
             };
 
             buttons.forEach((button) => button.addEventListener('click', () => activate(button.dataset.soSettingsTab)));
+            // WAI-ARIA automatic tab activation: arrow navigation updates the
+            // focused tab, selected tab and visible panel together. Forms and
+            // the independent setup/publish wizard retain native key handling.
+            tabs.addEventListener('keydown', (event) => {
+                if (!buttons.includes(event.target)) return;
+
+                const current = buttons.indexOf(event.target);
+                const rtl = window.getComputedStyle(tabs).direction === 'rtl';
+                let next = current;
+                if (event.key === 'Home') next = 0;
+                else if (event.key === 'End') next = buttons.length - 1;
+                else if (event.key === 'ArrowRight') next = (current + (rtl ? -1 : 1) + buttons.length) % buttons.length;
+                else if (event.key === 'ArrowLeft') next = (current + (rtl ? 1 : -1) + buttons.length) % buttons.length;
+                else return; // Native Enter/Space click; do not intercept forms.
+
+                event.preventDefault();
+                const destination = buttons[next];
+                activate(destination.dataset.soSettingsTab);
+                destination.focus();
+                destination.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+            });
             activate(defaultTab, false);
         })();
         </script>

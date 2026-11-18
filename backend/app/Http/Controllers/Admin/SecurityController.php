@@ -55,6 +55,13 @@ final class SecurityController extends Controller
                 'storeRoleAssignments.role.permissions:id,code',
             ]);
         }
+        // The existing page tabs and filters are presentation context only.
+        // Reject array query shapes before any string/int cast or identity lookup.
+        // Gate::authorize('security.view') above remains the sole access authority.
+        foreach (['q', 'status', 'assignment', 'section', 'deletion_preview'] as $filter) {
+            abort_unless(! $request->has($filter) || is_string($request->query($filter)), 404);
+        }
+
         $search = trim((string) $request->query('q', ''));
         $literalSearch = '%'.str_replace(['!', '%', '_'], ['!!', '!%', '!_'], $search).'%';
         $status = (string) $request->query('status', 'all');

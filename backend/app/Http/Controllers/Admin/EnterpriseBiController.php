@@ -378,8 +378,15 @@ final class EnterpriseBiController extends Controller
     {
         $definition = $selected['definition'];
         $scopeOptions = collect($selected['scope_options']);
-        $scopeKey = trim((string) $request->query('scope', ''));
-        $scopeOption = $scopeOptions->firstWhere('key', $scopeKey) ?? $scopeOptions->first();
+        // An explicitly requested scope must never silently resolve to a
+        // different authorized store/entity (Store B -> Store A).
+        $requestedScope = $request->query('scope');
+        abort_unless($requestedScope === null || is_string($requestedScope), 403);
+        $scopeKey = trim($requestedScope ?? '');
+        $scopeOption = $scopeKey === ''
+            ? $scopeOptions->first()
+            : $scopeOptions->firstWhere('key', $scopeKey);
+        abort_unless($scopeKey === '' || is_array($scopeOption), 403);
 
         $breakdown = trim((string) $request->query('breakdown', ''));
         if (! array_key_exists($breakdown, $selected['breakdowns'])) {

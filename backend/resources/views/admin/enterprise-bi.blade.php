@@ -20,6 +20,10 @@
 .bi-schedule-form{display:grid;grid-template-columns:2fr 1fr 1fr auto;gap:10px;align-items:end;margin-top:12px}.bi-schedule-form label{display:grid;gap:5px;font-weight:700}
 @media(max-width:1100px){.bi-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.bi-form{grid-template-columns:repeat(3,minmax(0,1fr))}.bi-overview-filters{grid-template-columns:repeat(3,minmax(0,1fr))}}
 @media(max-width:767px){.bi-grid,.bi-status-grid,.bi-analytics-grid,.bi-builder-options{grid-template-columns:1fr}.bi-form,.bi-overview-filters,.bi-schedule-form{grid-template-columns:1fr}.bi-form .wide{grid-column:auto}.bi-form button{width:100%}.bi-list-row{grid-template-columns:1fr}.bi-table{min-width:620px}.bi-viz-row{grid-template-columns:1fr}.bi-check-grid{grid-template-columns:1fr}}
+ .bi-workspace-tabs{display:flex;flex-wrap:nowrap;gap:8px;max-width:100%;overflow-x:auto;overscroll-behavior-inline:contain;scrollbar-width:thin}
+.bi-workspace-tabs .foodex-tab{flex:0 0 auto;display:inline-flex;align-items:center;min-height:44px;white-space:nowrap}
+.bi-workspace-tabs .foodex-tab:focus-visible{outline:3px solid var(--foodex-green);outline-offset:2px}
+.bi-status-grid > article:only-child{grid-column:1/-1}
 </style>
 </head>
 <body>
@@ -40,7 +44,41 @@
 </div>
 
 <div class="bi-shell">
-@include('admin._enterprise-bi-overview',['overview'=>$overview])
+@php
+    // Presentation-only selection: the existing BI controller and module/readiness guards
+    // remain the sole authority for report data, tenant scope, and scheduled exports.
+    $biRequestedTab = request()->query('bi_tab', request()->has('report') ? 'reports' : 'overview');
+    $biAllowedTabs = [
+        'overview' => __('enterprise_bi_ui.overview.title'),
+        'reports' => __('enterprise_bi_ui.catalog_title'),
+        'exports' => __('enterprise_bi_ui.exports_title'),
+        'schedules' => __('enterprise_bi_ui.schedules_title'),
+    ];
+    $biTab = is_string($biRequestedTab) && array_key_exists($biRequestedTab, $biAllowedTabs)
+        ? $biRequestedTab : 'overview';
+@endphp
+<nav class="foodex-tabs bi-workspace-tabs" aria-label="{{ __('enterprise_bi_ui.title') }}" data-bi-workspace-tabs>
+    @foreach($biAllowedTabs as $key => $label)
+        @php
+            $biLinkQuery = request()->except('bi_tab');
+            if ($key !== 'reports') {
+                unset($biLinkQuery['run']);
+            }
+        @endphp
+        <a id="bi-tab-{{ $key }}" class="foodex-tab {{ $biTab === $key ? 'active' : '' }}"
+           data-bi-workspace-link="{{ $key }}"
+           href="{{ route('admin.erp.bi', array_merge($biLinkQuery, ['bi_tab' => $key])) }}"
+           @if($biTab === $key) aria-current="page" @endif>{{ $label }}</a>
+    @endforeach
+</nav>
+@if($biTab === 'overview')
+<div id="bi-panel-overview" data-bi-workspace-panel="overview" role="region" aria-labelledby="bi-tab-overview">
+    @include('admin._enterprise-bi-overview',['overview'=>$overview])
+</div>
+@endif
+
+@if($biTab === 'reports')
+<div id="bi-panel-reports" data-bi-workspace-panel="reports" role="region" aria-labelledby="bi-tab-reports">
 <section class="foodex-card bi-panel">
     <div class="bi-head">
         <div><h2>{{ __('enterprise_bi_ui.catalog_title') }}</h2><p class="bi-muted">{{ __('enterprise_bi_ui.catalog_help') }}</p></div>
@@ -52,7 +90,7 @@
             <h3>{{ $item['title'] }}</h3>
             <p class="bi-muted">{{ $item['description'] }}</p>
             @if($item['available'])
-            <a class="foodex-action-secondary button secondary" href="{{ route('admin.erp.bi',['report'=>$item['code']]) }}">{{ __('enterprise_bi_ui.builder_title') }}</a>
+            <a class="foodex-action-secondary button secondary" href="{{ route('admin.erp.bi',['report'=>$item['code'],'bi_tab'=>'reports']) }}">{{ __('enterprise_bi_ui.builder_title') }}</a>
             @endif
         </article>
         @endforeach
@@ -67,6 +105,7 @@
     @if($selected['available'])
     <form method="get" action="{{ route('admin.erp.bi') }}" class="bi-form" data-bi-run-form style="margin-top:14px">
         <input type="hidden" name="run" value="1">
+        <input type="hidden" name="bi_tab" value="reports">
         <label>{{ __('enterprise_bi_ui.report') }}
             <select name="report" data-bi-report>
                 @foreach($catalog as $item)
@@ -167,8 +206,13 @@
     </div>
 </section>
 @endif
+</div>
+@endif
 
+@if($biTab === 'exports' || $biTab === 'schedules')
+<div id="bi-panel-{{ $biTab }}" data-bi-workspace-panel="{{ $biTab }}" role="region" aria-labelledby="bi-tab-{{ $biTab }}">
 <section class="bi-status-grid">
+@if($biTab === 'exports')
 <article class="foodex-card bi-panel">
     <div class="bi-head"><div><h2>{{ __('enterprise_bi_ui.exports_title') }}</h2><p class="bi-muted">{{ __('enterprise_bi_ui.exports_help') }}</p></div></div>
     <div class="bi-list" style="margin-top:12px">
@@ -182,7 +226,9 @@
     @endforelse
     </div>
 </article>
+@endif
 
+@if($biTab === 'schedules')
 <article class="foodex-card bi-panel">
     <div class="bi-head"><div><h2>{{ __('enterprise_bi_ui.schedules_title') }}</h2><p class="bi-muted">{{ __('enterprise_bi_ui.schedules_help') }}</p></div></div>
     @if($canSchedule && $selected && $selected['available'] && $selection && $selection['scope'] instanceof \App\Enterprise\Entitlements\EntitlementScope)
@@ -225,8 +271,10 @@
     @endforelse
     </div>
 </article>
+@endif
 </section>
 
+@if($biTab === 'exports')
 <section class="foodex-card bi-panel">
     <div class="bi-head">
         <div><h2>{{ __('enterprise_bi_ui.exceptions_title') }}</h2><p class="bi-muted">{{ __('enterprise_bi_ui.exceptions_help') }}</p></div>
@@ -237,10 +285,24 @@
         <div class="foodex-card bi-card"><strong>{{ __('enterprise_bi_ui.failed_schedules') }}</strong><span class="bi-metric">{{ $exceptions['failed_schedules'] }}</span></div>
     </div>
 </section>
+@endif
+</div>
+@endif
 </div>
 </main>
 </div>
 <script>
+// The executive snapshot has its own GET form in the existing overview partial.
+// Keep its selected page workspace across date/store/currency refreshes without
+// changing the source filters or the shared partial owned by the parent gate.
+const biOverviewForm = document.querySelector('[data-enterprise-bi-overview] [data-foodex-module-filters]');
+if (biOverviewForm && !biOverviewForm.querySelector('[name="bi_tab"]')) {
+ const tab = document.createElement('input');
+ tab.type = 'hidden';
+ tab.name = 'bi_tab';
+ tab.value = 'overview';
+ biOverviewForm.append(tab);
+}
 document.querySelector('[data-bi-run-form]')?.addEventListener('submit',function(){
  const button=this.querySelector('[data-bi-run-button]');
  if(!button)return;
