@@ -15,7 +15,7 @@ html[dir=ltr] .page aside{grid-column:1;direction:ltr;border-left:0;border-right
 html[dir=ltr] .page main{grid-column:2;direction:ltr}
 .header{display:flex;justify-content:space-between;gap:16px;align-items:flex-start;margin-bottom:18px}.header h1{margin:0 0 6px}.muted{color:var(--foodex-muted)}
 .card{background:var(--foodex-surface);border:1px solid var(--foodex-border);border-radius:var(--foodex-radius-card);padding:16px;box-shadow:var(--foodex-shadow-sm);margin-bottom:16px}
-.tabs{display:flex;gap:8px;overflow:auto;padding-bottom:4px}.tab{white-space:nowrap;padding:10px 14px;border:1px solid var(--foodex-border);border-radius:10px;text-decoration:none;color:inherit;background:#fff}.tab.active{background:var(--foodex-action-green);color:#fff;border-color:var(--foodex-action-green)}
+.tabs{display:flex;gap:8px;max-width:100%;min-width:0;flex-wrap:nowrap;overflow-x:auto;padding-bottom:4px}.tab{display:inline-flex;align-items:center;flex:0 0 auto;min-height:44px;box-sizing:border-box;white-space:nowrap;padding:10px 14px;border:1px solid var(--foodex-border);border-radius:10px;text-decoration:none;color:inherit;background:#fff}.tab.active{background:var(--foodex-action-green);color:#fff;border-color:var(--foodex-action-green)}.tabs .tab:focus-visible{outline:2px solid var(--foodex-action-green);outline-offset:2px}
 .toolbar,.form-grid,.actions{display:flex;gap:10px;flex-wrap:wrap;align-items:end}.form-grid label,.toolbar label{display:grid;gap:5px;font-size:12px;font-weight:700}
 input,select{border:1px solid var(--foodex-border);border-radius:9px;padding:9px;background:#fff;font:inherit;min-width:140px}.wide{min-width:220px}
 .btn{border:1px solid var(--foodex-border);background:#fff;border-radius:9px;padding:9px 12px;text-decoration:none;color:inherit;cursor:pointer;font:inherit}.btn.primary{background:var(--foodex-action-green);color:#fff;border-color:var(--foodex-action-green)}
@@ -28,7 +28,13 @@ input,select{border:1px solid var(--foodex-border);border-radius:9px;padding:9px
 </style>
 </head>
 <body>
-@php($ar = app()->getLocale() === 'ar')
+@php
+$ar = app()->getLocale() === 'ar';
+$systemLookupTabQuery = array_filter([
+    'q' => $filters['q'] ?? null,
+    'status' => in_array($filters['status'] ?? '', ['active', 'inactive'], true) ? $filters['status'] : null,
+], static fn ($value): bool => $value !== null && $value !== '');
+@endphp
 <div class="page">
 <aside>
 @include('admin._sidebar', ['navContext' => 'system_lookups'])
@@ -52,12 +58,12 @@ input,select{border:1px solid var(--foodex-border);border-radius:9px;padding:9px
 @endif
 
 <section class="card">
-<nav class="tabs">
-<a class="tab {{ $typeKey === 'payment-operation-types' ? 'active' : '' }}" href="{{ route('admin.operations.lookups.index', ['type' => 'payment-operation-types']) }}">{{ $ar ? 'أنواع عمليات الدفع' : 'Payment operation types' }}</a>
-<a class="tab {{ $typeKey === 'payment-methods' ? 'active' : '' }}" href="{{ route('admin.operations.lookups.index', ['type' => 'payment-methods']) }}">{{ $ar ? 'طرق الدفع' : 'Payment methods' }}</a>
-<a class="tab {{ $typeKey === 'pricing-tiers' ? 'active' : '' }}" href="{{ route('admin.operations.lookups.index', ['type' => 'pricing-tiers']) }}">{{ $ar ? 'شرائح التسعير' : 'Pricing tiers' }}</a>
-<a class="tab {{ $typeKey === 'order-statuses' ? 'active' : '' }}" href="{{ route('admin.operations.lookups.index', ['type' => 'order-statuses']) }}">{{ $ar ? 'حالات الطلب' : 'Order statuses' }}</a>
-<a class="tab {{ $typeKey === 'failed-delivery-reasons' ? 'active' : '' }}" href="{{ route('admin.operations.lookups.index', ['type' => 'failed-delivery-reasons']) }}">{{ $ar ? 'أسباب تعذر التوصيل' : 'Failed-delivery reasons' }}</a>
+<nav class="tabs" aria-label="{{ $ar ? 'القيم المرجعية' : 'System lookups' }}" data-v2-system-lookup-tabs>
+<a class="tab {{ $typeKey === 'payment-operation-types' ? 'active' : '' }}" href="{{ route('admin.operations.lookups.index', array_merge($systemLookupTabQuery, ['type' => 'payment-operation-types'])) }}" @if($typeKey === 'payment-operation-types') aria-current="page" @endif>{{ $ar ? 'أنواع عمليات الدفع' : 'Payment operation types' }}</a>
+<a class="tab {{ $typeKey === 'payment-methods' ? 'active' : '' }}" href="{{ route('admin.operations.lookups.index', array_merge($systemLookupTabQuery, ['type' => 'payment-methods'])) }}" @if($typeKey === 'payment-methods') aria-current="page" @endif>{{ $ar ? 'طرق الدفع' : 'Payment methods' }}</a>
+<a class="tab {{ $typeKey === 'pricing-tiers' ? 'active' : '' }}" href="{{ route('admin.operations.lookups.index', array_merge($systemLookupTabQuery, ['type' => 'pricing-tiers'])) }}" @if($typeKey === 'pricing-tiers') aria-current="page" @endif>{{ $ar ? 'شرائح التسعير' : 'Pricing tiers' }}</a>
+<a class="tab {{ $typeKey === 'order-statuses' ? 'active' : '' }}" href="{{ route('admin.operations.lookups.index', array_merge($systemLookupTabQuery, ['type' => 'order-statuses'])) }}" @if($typeKey === 'order-statuses') aria-current="page" @endif>{{ $ar ? 'حالات الطلب' : 'Order statuses' }}</a>
+<a class="tab {{ $typeKey === 'failed-delivery-reasons' ? 'active' : '' }}" href="{{ route('admin.operations.lookups.index', array_merge($systemLookupTabQuery, ['type' => 'failed-delivery-reasons'])) }}" @if($typeKey === 'failed-delivery-reasons') aria-current="page" @endif>{{ $ar ? 'أسباب تعذر التوصيل' : 'Failed-delivery reasons' }}</a>
 </nav>
 </section>
 
