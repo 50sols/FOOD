@@ -121,7 +121,7 @@ final class V2ArAgingFullLedgerPaginationTest extends TestCase
 
         // Separate legal-entity/store rows cannot enter the current actor's
         // paginated detail or currency/bucket aggregates.
-        $foreign = $this->retailStore('AR-AGING-FOREIGN');
+        $foreign = $this->retailStore('AR-AGING-FOREIGN', 'B2C');
         $foreignHierarchy = app(OrganizationHierarchyService::class)->scopeForStore($foreign->id);
         $this->assertNotNull($foreignHierarchy);
         $foreignScope = EnterpriseDataScope::fromHierarchy($foreignHierarchy);
@@ -230,10 +230,10 @@ final class V2ArAgingFullLedgerPaginationTest extends TestCase
         return [$actor, $store, app(TenantContextResolver::class)->wholesale($actor, $store->id)];
     }
 
-    private function retailStore(string $code): Store
+    private function retailStore(string $code, string $channel = 'B2B'): Store
     {
         $store = Store::query()->create([
-            'store_type_id' => DB::table('store_types')->where('code', 'B2B')->value('id'),
+            'store_type_id' => DB::table('store_types')->where('code', $channel)->value('id'),
             'code' => $code,
             'name' => $code,
             'is_active' => true,
