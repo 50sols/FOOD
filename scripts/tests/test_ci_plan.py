@@ -240,6 +240,7 @@ class CiPlanTest(unittest.TestCase):
             "docs/v2/qa/3960-erp-center-horizontal-tabs.md":{"backend","dashboard_ui"},
             "docs/v2/qa/3951-enterprise-bi-page-tabs-authority.md":{"backend","dashboard_ui"},
             "docs/v2/qa/4026-orders-analytics-filter-touch.md":{"backend","dashboard_ui"},
+            "docs/v2/qa/4028-customer360-list-return-context.md":{"backend","dashboard_ui"},
             "docs/v2/qa/4007-treasury-page-tab-rail.md":{"backend","dashboard_ui"},
             "docs/v2/qa/4000-archived-active-role-authority.md":{"backend"},
             "docs/v2/qa/2732-wholesale-financial-parity.md":{"backend","customer"},
@@ -254,6 +255,42 @@ class CiPlanTest(unittest.TestCase):
                 self.assertNotIn("c13_integrated_e2e",actual)
                 self.assertNotIn("operational_completion_e2e",actual)
                 self.assertEqual("customer" not in expected,plan["backend_dashboard_only"])
+
+    def test_reviewed_4028_customer360_qa_keeps_dashboard_only_and_fails_closed_for_unknown(self):
+        """#4038 / #4028: only the reviewed Customer 360 QA note is classified."""
+        paths = [
+            "backend/app/Http/Controllers/Admin/Customer360Controller.php",
+            "backend/lang/ar/customer_360.php",
+            "backend/lang/en/customer_360.php",
+            "backend/resources/views/admin/customer-360-index.blade.php",
+            "backend/resources/views/admin/customer-360-show.blade.php",
+            "backend/tests/Feature/V2Customer360DirectoryReturnContextTest.php",
+            "docs/v2/qa/4028-customer360-list-return-context.md",
+        ]
+        branch = "fix/4028-v2-customer360-directory-return-context"
+        plan = module.resolve(self.config, paths, branch)
+        self.assertEqual([], plan["unclassified_paths"])
+        self.assertEqual(
+            {"backend", "dashboard_ui"},
+            {area for area, active in plan["areas"].items() if active},
+        )
+        self.assertTrue(plan["backend_dashboard_only"])
+        for area in ("customer", "driver", "van", "mobile_ui", "c13_integrated_e2e", "operational_completion_e2e"):
+            self.assertFalse(plan["areas"][area], area)
+
+        unknown = "docs/v2/qa/4028-customer360-list-return-context-unreviewed.md"
+        unsafe = module.resolve(self.config, [unknown], branch)
+        self.assertEqual([unknown], unsafe["unclassified_paths"])
+        self.assertFalse(unsafe["backend_dashboard_only"])
+        for area in self.config["areas"]:
+            self.assertTrue(unsafe["areas"][area], area)
+
+        for e2e_branch, expected_gate in (
+            ("test/873-c13-integrated-e2e", "c13_integrated_e2e"),
+            ("test/9999-operational-completion-e2e", "operational_completion_e2e"),
+        ):
+            dedicated = module.resolve(self.config, paths, e2e_branch)
+            self.assertTrue(dedicated["areas"][expected_gate])
 
     def test_reviewed_4026_analytics_filter_qa_does_not_trigger_unrelated_integrated_gates(self):
         """G003: QA evidence must preserve actual Laravel gates, not invoke unrelated C13/#734."""
