@@ -849,7 +849,7 @@ class UnifiedOrderOperationsTest extends TestCase
         $this->assertStringContainsString('name="to"', $headerFilter);
         $this->assertStringContainsString('order-header-new-order', $headerFilter);
         $this->assertStringContainsString('.order-header-filter{display:flex', $headerFilter);
-        $this->assertStringContainsString('height:34px!important', $headerFilter);
+        $this->assertStringContainsString('height:44px!important;min-height:44px!important', $headerFilter);
     }
 
     public function test_order_grid_is_fixed_to_ten_rows_per_page(): void
