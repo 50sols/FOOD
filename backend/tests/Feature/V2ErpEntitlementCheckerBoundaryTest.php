@@ -499,6 +499,139 @@ final class V2ErpEntitlementCheckerBoundaryTest extends TestCase
         $this->assertSame($auditBeforeDeny, DB::table('audit_logs')->count());
     }
 
+    public function test_business_unit_branch_entitlement_allows_its_store_and_deny_overrides_platform_allow(): void
+    {
+        $hierarchy = app(OrganizationHierarchyService::class);
+        $primary = $this->storeInDefaultCompany('B2B', 'P111_BRANCH_PRIMARY');
+        $primaryScope = $hierarchy->scopeForStore($primary->id);
+        $this->assertIsArray($primaryScope);
+
+        $siblingUnit = EnterpriseBusinessUnit::query()->create([
+            'legal_entity_id' => $primaryScope['legal_entity_id'],
+            'code' => 'P111_BRANCH_SIBLING_UNIT',
+            'name' => 'P111 sibling branch',
+            'is_active' => true,
+        ]);
+        $sibling = $this->storeInBusinessUnit('B2B', 'P111_BRANCH_SIBLING', $siblingUnit);
+        $siblingScope = $hierarchy->scopeForStore($sibling->id);
+        $this->assertIsArray($siblingScope);
+        $this->assertSame($primaryScope['company_id'], $siblingScope['company_id']);
+        $this->assertSame($primaryScope['legal_entity_id'], $siblingScope['legal_entity_id']);
+        $this->assertNotSame($primaryScope['business_unit_id'], $siblingScope['business_unit_id']);
+
+        $owner = $this->actor('SUPER_ADMIN');
+        app(EnterpriseModuleAdministration::class)->perform('procurement', 'enable', $owner);
+        $entitlements = app(ModuleEntitlementManager::class);
+        $entitlements->set('procurement', EntitlementScope::platform(), false, null, $owner);
+        $entitlements->set(
+            'procurement',
+            new EntitlementScope(EntitlementScope::BUSINESS_UNIT, $primaryScope['business_unit_id']),
+            true,
+            null,
+            $owner,
+        );
+        $entitlements->set(
+            'procurement',
+            new EntitlementScope(EntitlementScope::BUSINESS_UNIT, $siblingScope['business_unit_id']),
+            false,
+            null,
+            $owner,
+        );
+
+        $this->actingAs($owner)->get(route('admin.erp.procurement.index', [
+            'store_id' => $primary->id,
+            'tab' => 'requests',
+        ]))->assertOk()->assertViewHas('selectedStoreId', $primary->id);
+
+        $entitlements->set('procurement', EntitlementScope::platform(), true, null, $owner);
+        $requestsBefore = DB::table('enterprise_purchase_requests')->count();
+        $auditBefore = DB::table('audit_logs')->count();
+        $this->actingAs($owner)->get(route('admin.erp.procurement.index', [
+            'store_id' => $sibling->id,
+            'tab' => 'requests',
+        ]))->assertForbidden();
+        $this->actingAs($owner)->post(route('admin.erp.procurement.requests.store'), [
+            'store_id' => $sibling->id,
+            'currency_code' => 'KWD',
+            'reason' => 'P111 sibling branch denial',
+            'description' => 'Branch-denied request must not persist',
+            'quantity' => '1.000',
+            'unit' => 'case',
+        ])->assertForbidden();
+
+        $this->assertSame($requestsBefore, DB::table('enterprise_purchase_requests')->count());
+        $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+    }
+
+    public function test_legal_entity_entitlement_allows_its_store_and_foreign_entity_deny_overrides_platform_allow(): void
+    {
+        $hierarchy = app(OrganizationHierarchyService::class);
+        $primary = $this->storeInDefaultCompany('B2B', 'P111_ENTITY_PRIMARY');
+        $primaryScope = $hierarchy->scopeForStore($primary->id);
+        $this->assertIsArray($primaryScope);
+
+        $foreignEntity = EnterpriseLegalEntity::query()->create([
+            'company_id' => $primaryScope['company_id'],
+            'code' => 'P111_ENTITY_SIBLING',
+            'name' => 'P111 sibling legal entity',
+            'is_active' => true,
+        ]);
+        $foreignUnit = EnterpriseBusinessUnit::query()->create([
+            'legal_entity_id' => $foreignEntity->id,
+            'code' => 'P111_ENTITY_SIBLING_UNIT',
+            'name' => 'P111 sibling entity branch',
+            'is_active' => true,
+        ]);
+        $sibling = $this->storeInBusinessUnit('B2B', 'P111_ENTITY_SIBLING_STORE', $foreignUnit);
+        $siblingScope = $hierarchy->scopeForStore($sibling->id);
+        $this->assertIsArray($siblingScope);
+        $this->assertSame($primaryScope['company_id'], $siblingScope['company_id']);
+        $this->assertNotSame($primaryScope['legal_entity_id'], $siblingScope['legal_entity_id']);
+
+        $owner = $this->actor('SUPER_ADMIN');
+        app(EnterpriseModuleAdministration::class)->perform('procurement', 'enable', $owner);
+        $entitlements = app(ModuleEntitlementManager::class);
+        $entitlements->set('procurement', EntitlementScope::platform(), false, null, $owner);
+        $entitlements->set(
+            'procurement',
+            new EntitlementScope(EntitlementScope::LEGAL_ENTITY, $primaryScope['legal_entity_id']),
+            true,
+            null,
+            $owner,
+        );
+        $entitlements->set(
+            'procurement',
+            new EntitlementScope(EntitlementScope::LEGAL_ENTITY, $siblingScope['legal_entity_id']),
+            false,
+            null,
+            $owner,
+        );
+
+        $this->actingAs($owner)->get(route('admin.erp.procurement.index', [
+            'store_id' => $primary->id,
+            'tab' => 'requests',
+        ]))->assertOk()->assertViewHas('selectedStoreId', $primary->id);
+
+        $entitlements->set('procurement', EntitlementScope::platform(), true, null, $owner);
+        $requestsBefore = DB::table('enterprise_purchase_requests')->count();
+        $auditBefore = DB::table('audit_logs')->count();
+        $this->actingAs($owner)->get(route('admin.erp.procurement.index', [
+            'store_id' => $sibling->id,
+            'tab' => 'requests',
+        ]))->assertForbidden();
+        $this->actingAs($owner)->post(route('admin.erp.procurement.requests.store'), [
+            'store_id' => $sibling->id,
+            'currency_code' => 'KWD',
+            'reason' => 'P111 sibling legal entity denial',
+            'description' => 'Entity-denied request must not persist',
+            'quantity' => '1.000',
+            'unit' => 'case',
+        ])->assertForbidden();
+
+        $this->assertSame($requestsBefore, DB::table('enterprise_purchase_requests')->count());
+        $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+    }
+
     public function test_company_scoped_finance_http_grant_and_foreign_deny_override_platform_without_writes(): void
     {
         [$primary, $primaryScope, $foreign, $foreignScope] = $this->companyScopedStores('B2B', 'P111_FINANCE');
@@ -525,7 +658,8 @@ final class V2ErpEntitlementCheckerBoundaryTest extends TestCase
         $this->actingAs($actor->fresh())
             ->get(route('admin.erp.finance.index', ['store_id' => $primary->id, 'tab' => 'payables']))
             ->assertOk()
-            ->assertViewHas('selectedStoreId', $primary->id);
+            ->assertViewHas('selectedContext', fn ($context): bool => is_array($context)
+                && (int) ($context['id'] ?? 0) === (int) $primary->id);
 
         // The foreign-company DENY remains authoritative after a broad grant.
         $entitlements->set('finance', EntitlementScope::platform(), true, null, $actor);
@@ -614,6 +748,76 @@ final class V2ErpEntitlementCheckerBoundaryTest extends TestCase
         $this->assertDatabaseHas('enterprise_cashboxes', ['id' => $primaryCashbox->id, 'store_id' => $primary->id]);
     }
 
+    public function test_company_scoped_treasury_payment_requires_an_independent_checker(): void
+    {
+        $store = $this->storeInDefaultCompany('B2C', 'P111_TREASURY_SOD');
+        $scope = app(OrganizationHierarchyService::class)->scopeForStore($store->id);
+        $this->assertIsArray($scope);
+
+        $owner = $this->actor('SUPER_ADMIN');
+        $this->enableAndCertifyModule('treasury', $owner);
+        $role = Role::query()->where('code', 'RETAIL_FINANCE')->firstOrFail();
+        $maker = User::factory()->create(['is_active' => true, 'locale' => 'en']);
+        $checker = User::factory()->create(['is_active' => true, 'locale' => 'en']);
+        foreach ([$maker, $checker] as $actor) {
+            $this->grantPlatformErpAccess($actor);
+            DB::table('user_store_roles')->insert([
+                'user_id' => $actor->id,
+                'store_id' => $store->id,
+                'role_id' => $role->id,
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+        }
+        $entitlements = app(ModuleEntitlementManager::class);
+        $entitlements->set('treasury', EntitlementScope::platform(), false, null, $owner);
+        $entitlements->set(
+            'treasury',
+            new EntitlementScope(EntitlementScope::COMPANY, $scope['company_id']),
+            true,
+            ['treasury.payments.read', 'treasury.payments.manage', 'treasury.payments.approve'],
+            $owner,
+        );
+        $cashbox = $this->cashboxFor($store, 'P111_TREASURY_SOD_CASHBOX');
+        $payload = [
+            'store_id' => $store->id,
+            '_operation_key' => 'P111-TREASURY-SOD-001',
+            'target_key' => 'cashbox:'.$cashbox->id,
+            'amount' => '11.250',
+            'value_date' => '2026-11-18',
+            'reference' => 'P111-TREASURY-SOD-001',
+            'beneficiary' => 'P111 company-scoped maker checker',
+        ];
+        $redirect = route('admin.erp.treasury.index', ['tab' => 'payments', 'store_id' => $store->id]);
+
+        $this->actingAs($maker)->post(route('admin.erp.treasury.payments.store'), $payload)
+            ->assertRedirect($redirect);
+        $payment = DB::table('enterprise_treasury_payments')
+            ->where('reference', 'P111-TREASURY-SOD-001')
+            ->first();
+        $this->assertNotNull($payment);
+        $this->assertSame('draft', $payment->status);
+        $this->assertSame((int) $maker->id, (int) $payment->requested_by);
+
+        $postRoute = route('admin.erp.treasury.payments.post', ['payment' => $payment->id]);
+        $auditBeforeSelfApproval = DB::table('audit_logs')->count();
+        $this->actingAs($maker)->post($postRoute, ['store_id' => $store->id])
+            ->assertSessionHasErrors('approver');
+        $this->assertSame('draft', DB::table('enterprise_treasury_payments')->where('id', $payment->id)->value('status'));
+        $this->assertSame($auditBeforeSelfApproval, DB::table('audit_logs')->count());
+
+        $this->actingAs($checker)->post($postRoute, ['store_id' => $store->id])->assertRedirect($redirect);
+        $this->assertDatabaseHas('enterprise_treasury_payments', [
+            'id' => $payment->id,
+            'status' => 'posted',
+            'posted_by' => $checker->id,
+        ]);
+        $this->assertSame(1, DB::table('audit_logs')
+            ->where('event', 'enterprise.treasury.payment_posted')
+            ->where('auditable_id', $payment->id)
+            ->count());
+    }
+
     public function test_company_scoped_wms_http_grant_and_foreign_deny_override_platform_without_writes(): void
     {
         [$primary, $primaryScope, $foreign, $foreignScope] = $this->companyScopedStores('B2C', 'P111_WMS');
@@ -670,7 +874,7 @@ final class V2ErpEntitlementCheckerBoundaryTest extends TestCase
                 'warehouse_id' => $primaryStock['warehouse_id'],
             ]))
             ->assertOk()
-            ->assertViewHas('selectedStoreId', $primary->id)
+            ->assertViewHas('storeId', $primary->id)
             ->assertViewHas('canManageAdjustments', true);
 
         // WMS intentionally hides a denied warehouse scope with 404.
@@ -3801,6 +4005,22 @@ final class V2ErpEntitlementCheckerBoundaryTest extends TestCase
             'is_active' => true,
         ]);
         app(OrganizationHierarchyService::class)->ensureDefaultScopeForStore($store);
+
+        return $store;
+    }
+
+    private function storeInBusinessUnit(
+        string $channel,
+        string $code,
+        EnterpriseBusinessUnit $businessUnit,
+    ): Store {
+        $store = Store::query()->create([
+            'store_type_id' => (int) DB::table('store_types')->where('code', strtoupper($channel))->value('id'),
+            'code' => $code,
+            'name' => $code,
+            'is_active' => true,
+        ]);
+        app(OrganizationHierarchyService::class)->assignStore($store, $businessUnit);
 
         return $store;
     }
