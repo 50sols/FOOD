@@ -30,7 +30,10 @@ final class V2OrganizationSetupGuidanceTest extends TestCase
             'name' => 'Example Company',
             'is_active' => '1',
             '_setup_test' => '1',
-        ])->assertRedirect()->assertSessionHas('status', __('enterprise_organization.setup_test_passed'));
+        ])->assertRedirect()
+            ->assertSessionHas('status', __('enterprise_organization.setup_test_passed'))
+            ->assertSessionHas('_old_input.name', 'Example Company')
+            ->assertSessionMissing('_old_input.password');
 
         $this->assertDatabaseMissing('enterprise_organizations', ['code' => 'example_company']);
         $this->assertSame($before, DB::table('audit_logs')->count());
@@ -47,7 +50,9 @@ final class V2OrganizationSetupGuidanceTest extends TestCase
             'code' => $organization->code,
             'is_active' => '0',
             '_setup_test' => '1',
-        ])->assertRedirect()->assertSessionHas('status', __('enterprise_organization.setup_test_passed'));
+        ])->assertRedirect()
+            ->assertSessionHas('status', __('enterprise_organization.setup_test_passed'))
+            ->assertSessionHas('_old_input.name', 'Unpersisted Preview');
 
         $this->assertSame($organization->name, $organization->fresh()->name);
         $this->assertTrue((bool) $organization->fresh()->is_active);
