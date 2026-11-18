@@ -36,7 +36,6 @@ $ar=app()->getLocale()==='ar';
 $scopeLabels=['global'=>$ar?'عام للمنصة':'Platform global','b2b'=>$ar?'الجملة B2B':'Wholesale / B2B','store'=>$ar?'متجر تجزئة':'Retail store'];
 $createLabel=$type==='brands'?($ar?'إضافة علامة تجارية جديدة':'Add new brand'):($ar?'إضافة وحدة قياس جديدة':'Add new unit');
 $createDescription=$type==='brands'?($ar?'أدخل بيانات العلامة وصورتها وحدد نطاق استخدامها.':'Enter brand details, image, and business scope.'):($ar?'أدخل بيانات وحدة القياس وحدد نطاق استخدامها.':'Enter unit details and business scope.');
-@php
 $lookupTabQuery = array_filter([
     'q' => $filters['q'] ?? null,
     'status' => in_array($filters['status'] ?? '', ['active', 'inactive'], true) ? $filters['status'] : null,
