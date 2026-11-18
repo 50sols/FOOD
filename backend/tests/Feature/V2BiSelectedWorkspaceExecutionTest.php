@@ -102,20 +102,20 @@ final class V2BiSelectedWorkspaceExecutionTest extends TestCase
                     preg_match_all('/data-bi-workspace-panel="(?:overview|reports|exports|schedules)"/', $response->getContent()),
                 );
 
-                $response->assertViewHas('overview', $tab === 'overview'
-                    ? fn (mixed $value): bool => is_array($value) && isset($value['analytics'])
-                    : null);
+                $response->assertViewHas('overview', fn (mixed $value): bool => $tab === 'overview'
+                    ? is_array($value) && isset($value['analytics'])
+                    : $value === null);
                 $response->assertViewHas('exports', []);
                 $response->assertViewHas('schedules', []);
-                $response->assertViewHas('exceptions', $tab === 'exports'
-                    ? fn (mixed $value): bool => is_array($value) && array_key_exists('failed_exports', $value)
-                    : null);
+                $response->assertViewHas('exceptions', fn (mixed $value): bool => $tab === 'exports'
+                    ? is_array($value) && array_key_exists('failed_exports', $value)
+                    : $value === null);
 
                 if ($tab === 'reports') {
                     $response->assertViewHas('result', fn (mixed $value): bool => is_array($value))
                         ->assertSee('12.000');
                 } else {
-                    $response->assertViewHas('result', null)
+                    $response->assertViewHas('result', fn (mixed $value): bool => $value === null)
                         ->assertViewHas('rows', []);
                 }
 
@@ -137,7 +137,7 @@ final class V2BiSelectedWorkspaceExecutionTest extends TestCase
             ->get(route('admin.erp.bi', ['report' => 'orders.summary', 'scope' => 'store:'.$store->id]))
             ->assertOk()
             ->assertSee('data-bi-workspace-panel="reports"', false)
-            ->assertViewHas('overview', null);
+            ->assertViewHas('overview', fn (mixed $value): bool => $value === null);
 
         $this->actingAs($actor)
             ->get(route('admin.erp.bi', ['report' => 'orders.summary', 'bi_tab' => 'wrong-tab']))
@@ -150,7 +150,7 @@ final class V2BiSelectedWorkspaceExecutionTest extends TestCase
             ->get('/admin/erp/bi?bi_tab%5B%5D=reports&report=orders.summary')
             ->assertOk()
             ->assertSee('data-bi-workspace-panel="overview"', false)
-            ->assertViewHas('result', null);
+            ->assertViewHas('result', fn (mixed $value): bool => $value === null);
     }
 
     public function test_hidden_tab_run_does_not_override_cross_store_or_role_module_denial(): void
@@ -225,7 +225,7 @@ final class V2BiSelectedWorkspaceExecutionTest extends TestCase
         app(ModuleEntitlementManager::class)->set(
             'enterprise_bi',
             new EntitlementScope(EntitlementScope::STORE, $store->id),
-            str_contains($code, 'FOREIGN') ? false : true,
+            ! str_contains($code, 'FOREIGN'),
             ['reports.read', 'reports.export'],
         );
 
