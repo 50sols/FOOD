@@ -13,6 +13,7 @@ use App\Enterprise\Procurement\PurchaseRequestManager;
 use App\Enterprise\Procurement\SupplierDirectory;
 use App\Models\Catalog;
 use App\Models\EnterpriseBusinessUnit;
+use App\Models\EnterpriseCashbox;
 use App\Models\EnterpriseCompany;
 use App\Models\EnterpriseLegalEntity;
 use App\Models\Permission;
@@ -496,6 +497,211 @@ final class V2ErpEntitlementCheckerBoundaryTest extends TestCase
 
         $this->assertSame($requestCount, DB::table('enterprise_purchase_requests')->count());
         $this->assertSame($auditBeforeDeny, DB::table('audit_logs')->count());
+    }
+
+    public function test_company_scoped_finance_http_grant_and_foreign_deny_override_platform_without_writes(): void
+    {
+        [$primary, $primaryScope, $foreign, $foreignScope] = $this->companyScopedStores('B2B', 'P111_FINANCE');
+        $actor = $this->financeActor();
+        $this->enableAndCertifyModule('finance', $actor);
+
+        $entitlements = app(ModuleEntitlementManager::class);
+        $entitlements->set('finance', EntitlementScope::platform(), false, null, $actor);
+        $entitlements->set(
+            'finance',
+            new EntitlementScope(EntitlementScope::COMPANY, $primaryScope['company_id']),
+            true,
+            ['finance.foundation.read', 'finance.ap.read', 'finance.foundation.manage'],
+            $actor,
+        );
+        $entitlements->set(
+            'finance',
+            new EntitlementScope(EntitlementScope::COMPANY, $foreignScope['company_id']),
+            false,
+            null,
+            $actor,
+        );
+
+        $this->actingAs($actor->fresh())
+            ->get(route('admin.erp.finance.index', ['store_id' => $primary->id, 'tab' => 'payables']))
+            ->assertOk()
+            ->assertViewHas('selectedStoreId', $primary->id);
+
+        // The foreign-company DENY remains authoritative after a broad grant.
+        $entitlements->set('finance', EntitlementScope::platform(), true, null, $actor);
+        $accountsBefore = DB::table('enterprise_finance_accounts')->count();
+        $auditBefore = DB::table('audit_logs')->count();
+        $this->actingAs($actor->fresh())
+            ->get(route('admin.erp.finance.index', ['store_id' => $foreign->id, 'tab' => 'payables']))
+            ->assertForbidden();
+        $this->actingAs($actor->fresh())
+            ->post(route('admin.erp.finance.accounts.store'), [
+                'store_id' => $foreign->id,
+                'code' => 'P111-FINANCE-COMPANY-DENIED',
+                'name' => 'Denied foreign-company account',
+                'type' => 'asset',
+                'normal_balance' => 'debit',
+            ])
+            ->assertForbidden();
+
+        $this->assertSame($accountsBefore, DB::table('enterprise_finance_accounts')->count());
+        $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+    }
+
+    public function test_company_scoped_treasury_http_grant_and_foreign_deny_override_platform_without_writes(): void
+    {
+        [$primary, $primaryScope, $foreign, $foreignScope] = $this->companyScopedStores('B2C', 'P111_TREASURY');
+        $actor = User::factory()->create(['is_active' => true, 'locale' => 'en']);
+        $this->grantPlatformErpAccess($actor);
+        $retailFinance = Role::query()->where('code', 'RETAIL_FINANCE')->firstOrFail();
+        foreach ([$primary, $foreign] as $store) {
+            DB::table('user_store_roles')->insert([
+                'user_id' => $actor->id,
+                'store_id' => $store->id,
+                'role_id' => $retailFinance->id,
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+        }
+        $this->enableAndCertifyModule('treasury', $actor);
+        $primaryCashbox = $this->cashboxFor($primary, 'P111_TREASURY_PRIMARY');
+        $foreignCashbox = $this->cashboxFor($foreign, 'P111_TREASURY_FOREIGN');
+
+        $entitlements = app(ModuleEntitlementManager::class);
+        $entitlements->set('treasury', EntitlementScope::platform(), false, null, $actor);
+        $entitlements->set(
+            'treasury',
+            new EntitlementScope(EntitlementScope::COMPANY, $primaryScope['company_id']),
+            true,
+            ['treasury.payments.read', 'treasury.payments.manage'],
+            $actor,
+        );
+        $entitlements->set(
+            'treasury',
+            new EntitlementScope(EntitlementScope::COMPANY, $foreignScope['company_id']),
+            false,
+            null,
+            $actor,
+        );
+
+        $this->actingAs($actor->fresh())
+            ->get(route('admin.erp.treasury.index', ['store_id' => $primary->id, 'tab' => 'payments']))
+            ->assertOk()
+            ->assertViewHas('selectedStoreId', $primary->id)
+            ->assertViewHas('canManagePayment', true);
+
+        // The foreign-company DENY remains authoritative after a broad grant.
+        $entitlements->set('treasury', EntitlementScope::platform(), true, null, $actor);
+        $paymentsBefore = DB::table('enterprise_treasury_payments')->count();
+        $auditBefore = DB::table('audit_logs')->count();
+        $this->actingAs($actor->fresh())
+            ->get(route('admin.erp.treasury.index', ['store_id' => $foreign->id, 'tab' => 'payments']))
+            ->assertForbidden();
+        $this->actingAs($actor->fresh())
+            ->post(route('admin.erp.treasury.payments.store'), [
+                'store_id' => $foreign->id,
+                '_operation_key' => 'P111-TREASURY-FOREIGN-DENY',
+                'target_key' => 'cashbox:'.$foreignCashbox->id,
+                'amount' => '7.500',
+                'value_date' => '2026-11-18',
+                'reference' => 'P111-TREASURY-FOREIGN-DENY',
+                'beneficiary' => 'Denied foreign-company payment',
+            ])
+            ->assertForbidden();
+
+        $this->assertSame($paymentsBefore, DB::table('enterprise_treasury_payments')->count());
+        $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+        $this->assertDatabaseHas('enterprise_cashboxes', ['id' => $primaryCashbox->id, 'store_id' => $primary->id]);
+    }
+
+    public function test_company_scoped_wms_http_grant_and_foreign_deny_override_platform_without_writes(): void
+    {
+        [$primary, $primaryScope, $foreign, $foreignScope] = $this->companyScopedStores('B2C', 'P111_WMS');
+        $actor = User::factory()->create(['is_active' => true, 'locale' => 'en']);
+        $this->grantPlatformErpAccess($actor);
+        $retailInventory = Role::query()->where('code', 'RETAIL_INVENTORY')->firstOrFail();
+        foreach ([$primary, $foreign] as $store) {
+            DB::table('user_store_roles')->insert([
+                'user_id' => $actor->id,
+                'store_id' => $store->id,
+                'role_id' => $retailInventory->id,
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+        }
+        $this->enableAndCertifyModule('inventory_wms', $actor);
+        $unitId = (int) DB::table('units')->insertGetId([
+            'store_id' => null,
+            'scope' => 'global',
+            'scope_key' => 'global',
+            'code' => 'P111-WMS-COMPANY-EACH',
+            'name' => 'Each',
+            'name_ar' => 'قطعة',
+            'name_en' => 'Each',
+            'decimal_places' => 3,
+            'is_active' => true,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        $primaryStock = $this->wmsStockFor($primary, $unitId, 'P111_WMS_PRIMARY');
+        $foreignStock = $this->wmsStockFor($foreign, $unitId, 'P111_WMS_FOREIGN');
+
+        $entitlements = app(ModuleEntitlementManager::class);
+        $entitlements->set('inventory_wms', EntitlementScope::platform(), false, null, $actor);
+        $entitlements->set(
+            'inventory_wms',
+            new EntitlementScope(EntitlementScope::COMPANY, $primaryScope['company_id']),
+            true,
+            null,
+            $actor,
+        );
+        $entitlements->set(
+            'inventory_wms',
+            new EntitlementScope(EntitlementScope::COMPANY, $foreignScope['company_id']),
+            false,
+            null,
+            $actor,
+        );
+
+        $this->actingAs($actor->fresh())
+            ->get(route('admin.erp.wms.index', [
+                'tab' => 'adjustments',
+                'store_id' => $primary->id,
+                'warehouse_id' => $primaryStock['warehouse_id'],
+            ]))
+            ->assertOk()
+            ->assertViewHas('selectedStoreId', $primary->id)
+            ->assertViewHas('canManageAdjustments', true);
+
+        // WMS intentionally hides a denied warehouse scope with 404.
+        $entitlements->set('inventory_wms', EntitlementScope::platform(), true, null, $actor);
+        $movementsBefore = DB::table('stock_movements')->count();
+        $auditBefore = DB::table('audit_logs')->count();
+        $foreignInventoryBefore = DB::table('inventories')
+            ->where('id', $foreignStock['inventory_id'])->value('quantity');
+        $this->actingAs($actor->fresh())
+            ->get(route('admin.erp.wms.index', [
+                'tab' => 'adjustments',
+                'store_id' => $foreign->id,
+                'warehouse_id' => $foreignStock['warehouse_id'],
+            ]))
+            ->assertNotFound();
+        $this->actingAs($actor->fresh())
+            ->post(route('admin.erp.wms.adjustments.store'), [
+                'store_id' => $foreign->id,
+                'warehouse_id' => $foreignStock['warehouse_id'],
+                'product_id' => $foreignStock['product_id'],
+                'quantity_delta' => -2,
+                'classification' => 'damage',
+                'reason' => 'Denied foreign-company adjustment',
+                'request_key' => 'P111-WMS-FOREIGN-DENY',
+            ])
+            ->assertNotFound();
+
+        $this->assertSame($movementsBefore, DB::table('stock_movements')->count());
+        $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+        $this->assertSame($foreignInventoryBefore, DB::table('inventories')
+            ->where('id', $foreignStock['inventory_id'])->value('quantity'));
     }
 
     public function test_historical_unmatched_invoice_get_keeps_pending_row_without_creating_or_approving_review_in_ar_en(): void
@@ -3566,6 +3772,152 @@ final class V2ErpEntitlementCheckerBoundaryTest extends TestCase
             ->where('inventory_id', $inventory->id)
             ->where('type', 'purchase_receipt')->count());
         $this->assertSame($auditBeforeOver, DB::table('audit_logs')->count());
+    }
+
+    /**
+     * @return array{Store, array<string, int>, Store, array<string, int>}
+     */
+    private function companyScopedStores(string $channel, string $prefix): array
+    {
+        $hierarchy = app(OrganizationHierarchyService::class);
+        $primary = $this->storeInDefaultCompany($channel, $prefix.'_PRIMARY');
+        $primaryScope = $hierarchy->scopeForStore($primary->id);
+        $this->assertIsArray($primaryScope);
+
+        $foreign = $this->storeInForeignCompany($primary, $channel, $prefix.'_FOREIGN');
+        $foreignScope = $hierarchy->scopeForStore($foreign->id);
+        $this->assertIsArray($foreignScope);
+        $this->assertNotSame($primaryScope['company_id'], $foreignScope['company_id']);
+
+        return [$primary, $primaryScope, $foreign, $foreignScope];
+    }
+
+    private function storeInDefaultCompany(string $channel, string $code): Store
+    {
+        $store = Store::query()->create([
+            'store_type_id' => (int) DB::table('store_types')->where('code', strtoupper($channel))->value('id'),
+            'code' => $code,
+            'name' => $code,
+            'is_active' => true,
+        ]);
+        app(OrganizationHierarchyService::class)->ensureDefaultScopeForStore($store);
+
+        return $store;
+    }
+
+    private function storeInForeignCompany(Store $reference, string $channel, string $code): Store
+    {
+        $hierarchy = app(OrganizationHierarchyService::class);
+        $referenceScope = $hierarchy->scopeForStore($reference->id);
+        $this->assertIsArray($referenceScope);
+
+        $store = Store::query()->create([
+            'store_type_id' => (int) DB::table('store_types')->where('code', strtoupper($channel))->value('id'),
+            'code' => $code,
+            'name' => $code,
+            'is_active' => true,
+        ]);
+        $company = EnterpriseCompany::query()->create([
+            'organization_id' => $referenceScope['organization_id'],
+            'code' => $code.'_COMPANY',
+            'name' => $code.' company',
+            'is_active' => true,
+        ]);
+        $legalEntity = EnterpriseLegalEntity::query()->create([
+            'company_id' => $company->id,
+            'code' => $code.'_ENTITY',
+            'name' => $code.' legal entity',
+            'is_active' => true,
+        ]);
+        $businessUnit = EnterpriseBusinessUnit::query()->create([
+            'legal_entity_id' => $legalEntity->id,
+            'code' => $code.'_UNIT',
+            'name' => $code.' business unit',
+            'is_active' => true,
+        ]);
+        $hierarchy->assignStore($store, $businessUnit);
+
+        return $store;
+    }
+
+    private function enableAndCertifyModule(string $module, User $actor): void
+    {
+        $registry = app(ModuleRegistry::class);
+        config()->set(
+            'enterprise_module_readiness.certified_versions.'.$module,
+            $registry->manifest($module)->version,
+        );
+        app(EnterpriseModuleAdministration::class)->perform($module, 'enable', $actor);
+    }
+
+    private function financeActor(): User
+    {
+        $actor = User::factory()->create(['is_active' => true, 'locale' => 'en']);
+        $this->grantPlatformErpAccess($actor);
+        $role = Role::query()->where('code', 'FINANCE')->where('scope', 'global')->firstOrFail();
+        $role->permissions()->syncWithoutDetaching(
+            Permission::query()->whereIn('code', ['finance.view', 'finance.manage'])->pluck('id'),
+        );
+        $actor->roles()->syncWithoutDetaching([$role->id]);
+
+        return $actor->fresh();
+    }
+
+    private function cashboxFor(Store $store, string $code): EnterpriseCashbox
+    {
+        $scope = app(OrganizationHierarchyService::class)->scopeForStore($store->id);
+        $this->assertIsArray($scope);
+
+        return EnterpriseCashbox::query()->create([
+            'company_id' => $scope['company_id'],
+            'store_id' => $store->id,
+            'code' => $code,
+            'name' => $code.' cashbox',
+            'currency_code' => 'KWD',
+            'operator_visibility' => EnterpriseCashbox::VISIBILITY_STORE,
+            'approval_visibility' => EnterpriseCashbox::VISIBILITY_STORE,
+            'is_active' => true,
+        ]);
+    }
+
+    /** @return array{warehouse_id: int, product_id: int, inventory_id: int} */
+    private function wmsStockFor(Store $store, int $unitId, string $suffix): array
+    {
+        $catalog = Catalog::query()->create([
+            'store_id' => $store->id,
+            'channel' => 'b2c',
+            'code' => strtolower($suffix),
+            'name' => $suffix.' catalog',
+            'is_active' => true,
+            'is_migration_quarantine' => false,
+        ]);
+        $product = Product::query()->create([
+            'catalog_id' => $catalog->id,
+            'unit_id' => $unitId,
+            'sku' => $suffix.'-SKU',
+            'name' => $suffix.' product',
+            'is_active' => true,
+        ]);
+        $warehouse = Warehouse::query()->create([
+            'store_id' => $store->id,
+            'code' => $suffix.'-WH',
+            'name' => $suffix.' warehouse',
+            'is_active' => true,
+        ]);
+        $inventoryId = (int) DB::table('inventories')->insertGetId([
+            'warehouse_id' => $warehouse->id,
+            'product_id' => $product->id,
+            'quantity' => 10,
+            'reserved_quantity' => 2,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        return [
+            'warehouse_id' => (int) $warehouse->id,
+            'product_id' => (int) $product->id,
+            'inventory_id' => $inventoryId,
+        ];
     }
 
     private function wholesaleStore(): Store
