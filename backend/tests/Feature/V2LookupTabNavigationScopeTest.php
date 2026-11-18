@@ -89,7 +89,7 @@ final class V2LookupTabNavigationScopeTest extends TestCase
 
             $html = html_entity_decode($response->getContent(), ENT_QUOTES | ENT_HTML5, 'UTF-8');
             $this->assertSame(1, preg_match(
-                '/<nav class="tabs"[^>]*data-v2-lookup-tabs[^>]*>(.*?)<\\/nav>/s',
+                '/<nav class="tabs"[^>]*data-v2-lookup-tabs[^>]*>(.*?)<\/nav>/s',
                 $html,
                 $nav,
             ));
