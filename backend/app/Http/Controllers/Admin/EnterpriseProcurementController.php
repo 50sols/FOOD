@@ -826,7 +826,7 @@ final class EnterpriseProcurementController extends Controller
         $requiredPermissions = is_string($routeName) ? (self::ACTION_PERMISSIONS[$routeName] ?? null) : null;
         // Unknown endpoints must not inherit the broad Procurement role as
         // authority for mutations, exports or private document downloads.
-        abort_unless(is_array($requiredPermissions) && $requiredPermissions !== [], 403);
+        abort_unless(is_array($requiredPermissions), 403);
         [$context, , $storeId] = $this->context($request, $actor, $requiredPermissions);
 
         return [$actor, $context, $storeId];
