@@ -3192,7 +3192,7 @@ final class V2ErpEntitlementCheckerBoundaryTest extends TestCase
                 ...$payload,
                 'item_code' => 'P111-PRECISION-FLAT',
                 'description' => 'Unrepresentable flat line',
-                'quantity' => '0.0009',
+                'quantity' => '2.1251',
                 'unit' => 'case',
                 'estimated_unit_cost' => '0.0009',
             ];
