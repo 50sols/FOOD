@@ -93,7 +93,7 @@ final class V2OrganizationSetupGuidanceTest extends TestCase
             ->assertSee('dir="ltr"', false)
             ->assertSee('data-v2-organization-setup-readiness="unverified"', false)
             ->assertSee('Test inputs (no save)')
-            ->assertSee('Where to get the value', false);
+            ->assertSee('Source: use the organization', false);
 
         $admin->forceFill(['locale' => 'ar'])->save();
         $this->actingAs($admin->fresh())->get(route('admin.enterprise-organizations.index'))
