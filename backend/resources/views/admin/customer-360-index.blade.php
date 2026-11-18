@@ -124,7 +124,7 @@
                                 <td data-label="{{ __('customer_360.records.orders') }}"><div class="c360-kpi"><strong>{{ number_format($row['orders_count']) }}</strong><small>{{ \App\Support\DisplayNumber::money($row['orders_total'], 'EGP') }} EGP</small></div></td>
                                 <td data-label="{{ __('customer_360.records.invoices') }}"><div class="c360-kpi"><strong>{{ number_format($row['invoices_count']) }}</strong><small>{{ \App\Support\DisplayNumber::money($row['invoices_total'], 'EGP') }} EGP</small></div></td>
                                 <td data-label="{{ $ar?'التسجيل':'Registered' }}">{{ optional($row['registered_at'])->format('Y-m-d H:i') ?: '-' }}</td>
-                                <td><a class="foodex-action-primary" href="{{ $row['url'] }}">{{ $ar?'فتح 360':'Open 360' }}</a></td>
+                                <td><a class="foodex-action-primary" href="{{ route('admin.customer-360.show', array_merge(['platformCustomer'=>$row['id']], $listReturnContext)) }}">{{ $ar?'فتح 360':'Open 360' }}</a></td>
                             </tr>
                         @endforeach
                         </tbody>
