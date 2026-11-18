@@ -241,7 +241,8 @@ final class V2FinanceWorkbenchPanelAuthorityTest extends TestCase
                 'date_to' => '2026-12-31',
             ]))->assertOk()
                 ->assertSee('dir="'.$direction.'"', false)
-                ->assertSee('data-finance-subpanel="documents"', false);
+                ->assertSee('data-finance-subpanel="documents"', false)
+                ->assertViewHas('data', static fn (array $data): bool => ($data['periods'] ?? null) instanceof \Illuminate\Support\Collection);
 
             $markup = html_entity_decode($response->getContent(), ENT_QUOTES | ENT_HTML5, 'UTF-8');
             $this->assertSame(1, preg_match('/<nav class="finance-tabs"[^>]*>(.*?)<\/nav>/s', $markup, $nav));

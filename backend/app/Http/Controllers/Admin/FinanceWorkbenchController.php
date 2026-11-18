@@ -162,6 +162,10 @@ final class FinanceWorkbenchController extends Controller
             'statements' => $this->statementData($request, $actor, $context),
             'reports' => $this->reportData($request, $actor, $context),
         };
+        // Keep the Blade view contract stable on every authorized tab. AR/AP
+        // only readers do not have foundation access, so this fallback must
+        // remain empty and must not query fiscal periods without entitlement.
+        $data['periods'] ??= collect();
 
         if ($request->query->has('download')) {
             abort_unless($request->query('download') === 'csv' && in_array($tab, ['reports', 'statements'], true), 404);
