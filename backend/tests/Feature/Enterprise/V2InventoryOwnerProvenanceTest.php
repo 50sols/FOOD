@@ -1393,12 +1393,22 @@ final class V2InventoryOwnerProvenanceTest extends TestCase
         $foreignWarehouseId = (int) DB::table('inventories')
             ->where('id', $foreign['inventory_id'])->value('warehouse_id');
         $service = app(InventoryOwnershipRuleService::class);
+        $documentId = (int) DB::table('enterprise_supplier_documents')->insertGetId([
+            'supplier_id' => $supplierId,
+            'category' => 'CONSIGNMENT_AGREEMENT',
+            'title' => 'Supplier policy reference (not a signed title certificate)',
+            'reference' => 'P110-REVOCATION-EVIDENCE',
+            'expires_at' => now()->addDays(10)->toDateString(),
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
 
         $draft = $service->propose($maker, [
             'store_id' => $stock['store_id'],
             'channel' => 'B2C',
             'supplier_id' => $supplierId,
             'warehouse_id' => $warehouseId,
+            'supplier_document_id' => $documentId,
             'initial_owner_kind' => 'SUPPLIER',
             'title_transfer_trigger' => 'CONTRACT_EVENT',
             'required_evidence_classes' => ['CONSIGNMENT_AGREEMENT'],
@@ -1437,6 +1447,20 @@ final class V2InventoryOwnerProvenanceTest extends TestCase
 
         DB::table('warehouses')->where('id', $warehouseId)
             ->update(['is_active' => true]);
+        DB::table('enterprise_supplier_documents')->where('id', $documentId)
+            ->update(['expires_at' => now()->subDay()->toDateString()]);
+        try {
+            $service->review($checker, (int) $draft->id, true);
+            $this->fail('An expired supplier document must not authorize policy approval.');
+        } catch (HttpException $exception) {
+            $this->assertSame(409, $exception->getStatusCode());
+        }
+        $this->assertDatabaseHas('enterprise_inventory_ownership_rule_revisions', [
+            'id' => $draft->id, 'status' => 'DRAFT', 'reviewed_by' => null,
+        ]);
+
+        DB::table('enterprise_supplier_documents')->where('id', $documentId)
+            ->update(['expires_at' => now()->addDays(10)->toDateString()]);
         $approved = $service->review($checker, (int) $draft->id, true);
         $this->assertSame('APPROVED_RULE', $approved->status);
 
@@ -1453,7 +1477,17 @@ final class V2InventoryOwnerProvenanceTest extends TestCase
         $this->assertFalse($revoked['certified']);
 
         DB::table('enterprise_suppliers')->where('id', $supplierId)
-            ->update(['status' => 'active', 'store_id' => $foreign['store_id']]);
+            ->update(['status' => 'active']);
+        DB::table('enterprise_supplier_documents')->where('id', $documentId)
+            ->update(['expires_at' => now()->subDay()->toDateString()]);
+        $expired = $service->advisoryFor($checker, $stock['store_id'], 'B2C', $supplierId, $warehouseId);
+        $this->assertNull($expired['policy']);
+        $this->assertFalse($expired['certified']);
+
+        DB::table('enterprise_supplier_documents')->where('id', $documentId)
+            ->update(['expires_at' => now()->addDays(10)->toDateString()]);
+        DB::table('enterprise_suppliers')->where('id', $supplierId)
+            ->update(['store_id' => $foreign['store_id']]);
         $foreignScoped = $service->advisoryFor(
             $checker, $stock['store_id'], 'B2C', $supplierId, $warehouseId,
         );
