@@ -83,6 +83,21 @@ final class V2OrdersAnalyticsFilterTouchTargetsTest extends TestCase
                     $this->assertStringContainsString('value="2026-11-01"', $form);
                     $this->assertStringContainsString('value="2026-11-15"', $form);
                     $this->assertStringContainsString((string) $storeId, $form);
+
+                    // Reset must stay on the authorized Orders Analytics URL,
+                    // without carrying stale dates or changing the channel.
+                    $this->assertSame(1, preg_match(
+                        '/<a\\b[^>]*href="([^"]+#order-tab-analytics)"[^>]*>/s',
+                        $form,
+                        $reset,
+                    ));
+                    $resetUrl = $reset[1];
+                    parse_str((string) parse_url($resetUrl, PHP_URL_QUERY), $resetQuery);
+                    $this->assertSame($channel, $resetQuery['channel'] ?? null);
+                    $this->assertSame('0', $resetQuery['action_required'] ?? null);
+                    $this->assertSame((string) $storeId, (string) ($resetQuery['store_id'] ?? null));
+                    $this->assertArrayNotHasKey('from', $resetQuery);
+                    $this->assertArrayNotHasKey('to', $resetQuery);
                 }
 
                 $this->assertStringContainsString('data-order-tabs', $html);
