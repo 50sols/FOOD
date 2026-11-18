@@ -598,14 +598,14 @@ final class EnterpriseProcurementController extends Controller
             'lines' => ['sometimes', 'required', 'array', 'min:1', 'max:100'],
             'lines.*.item_code' => ['nullable', 'string', 'max:96'],
             'lines.*.description' => ['required_with:lines', 'string', 'max:255'],
-            'lines.*.quantity' => ['required_with:lines', 'numeric', 'min:0.001', 'max:999999999'],
+            'lines.*.quantity' => ['required_with:lines', 'numeric', 'decimal:0,3', 'min:0.001', 'max:999999999'],
             'lines.*.unit' => ['required_with:lines', 'string', 'max:32'],
-            'lines.*.estimated_unit_cost' => ['nullable', 'numeric', 'min:0', 'max:999999999'],
+            'lines.*.estimated_unit_cost' => ['nullable', 'numeric', 'decimal:0,3', 'min:0', 'max:999999999'],
             'item_code' => ['nullable', 'string', 'max:96'],
             'description' => ['required_without:lines', 'string', 'max:255'],
-            'quantity' => ['required_without:lines', 'numeric', 'min:0.001', 'max:999999999'],
+            'quantity' => ['required_without:lines', 'numeric', 'decimal:0,3', 'min:0.001', 'max:999999999'],
             'unit' => ['required_without:lines', 'string', 'max:32'],
-            'estimated_unit_cost' => ['nullable', 'numeric', 'min:0'],
+            'estimated_unit_cost' => ['nullable', 'numeric', 'decimal:0,3', 'min:0', 'max:999999999'],
         ]);
 
         $lines = isset($payload['lines'])
