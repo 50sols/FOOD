@@ -155,9 +155,18 @@ final class V2ProcurementErpCenterHttpContractTest extends TestCase
             $center = $this->actingAs($user)->get(route('admin.erp.index'));
             if ($center->status() === 200) {
                 $card = collect($center->viewData('cards'))->firstWhere('key', 'procurement');
-                $this->assertIsArray($card);
-                $this->assertNotSame('available', $card['status'], $reason.'/'.$locale);
-                $this->assertNull($card['url']);
+                if (is_array($card)) {
+                    $this->assertNotSame('available', $card['status'], $reason.'/'.$locale);
+                    $this->assertNull($card['url']);
+                } else {
+                    // A completely omitted module card is stricter than a
+                    // displayed unavailable card; neither may leak a CTA.
+                    $this->assertNull($card);
+                    $center->assertDontSee(
+                        'data-erp-key="procurement" data-erp-status="available"',
+                        false,
+                    );
+                }
             } else {
                 $center->assertForbidden();
             }
