@@ -784,7 +784,36 @@ final class EnterpriseProcurementController extends Controller
         // Preserve the existing legacy-unenrolled policy contract, but once
         // Procurement entitlements are configured, the selected STORE lineage
         // (including explicit DENY over Platform ALLOW) is authoritative.
-        return ! $hasEntitlementPolicy || $this->entitlements->allows(
+        if (! $hasEntitlementPolicy) {
+            return true;
+        }
+
+        // With no enterprise store hierarchy there is no valid inherited
+        // lineage to resolve. Honor a direct store decision first, then the
+        // platform decision so an authorized Wholesale store reaches the
+        // existing 409 setup response instead of being mislabeled as denied.
+        // An explicit store DENY remains authoritative in this fallback.
+        $scopeExists = DB::table('enterprise_store_scopes')
+            ->where('store_id', $storeId)
+            ->exists();
+
+        if (! $scopeExists) {
+            $storeDecision = DB::table('enterprise_module_entitlements')
+                ->where('module_code', 'procurement')
+                ->where('scope_key', 'store:'.$storeId)
+                ->value('is_enabled');
+
+            if ($storeDecision !== null) {
+                return (bool) $storeDecision;
+            }
+
+            return (bool) DB::table('enterprise_module_entitlements')
+                ->where('module_code', 'procurement')
+                ->where('scope_key', EntitlementScope::platform()->key())
+                ->value('is_enabled');
+        }
+
+        return $this->entitlements->allows(
             'procurement',
             new EntitlementScope(EntitlementScope::STORE, $storeId),
         );
