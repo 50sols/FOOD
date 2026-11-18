@@ -4,6 +4,7 @@ namespace Tests\Feature;
 
 use App\Enterprise\Entitlements\EntitlementScope;
 use App\Enterprise\Entitlements\ModuleEntitlementManager;
+use App\Enterprise\Health\DatabaseHealthProbe;
 use App\Enterprise\Health\ModuleHealthCheck;
 use App\Enterprise\Health\ModuleHealthProbe;
 use App\Enterprise\Health\ModuleHealthService;
@@ -416,6 +417,54 @@ final class V2ProcurementErpCenterHttpContractTest extends TestCase
         // read-only degraded health probe.
         $this->assertSame('unhealthy', $this->readiness());
         $this->assertTrue($admin->fresh()->hasRole('SUPER_ADMIN'));
+    }
+
+    public function test_missing_manifest_required_database_probe_degrades_card_and_blocks_http_even_when_signed(): void
+    {
+        $store = $this->wholesaleStore('P135-HTTP-MISSING-HEALTH-PROBE');
+        $this->enableAndEntitle($store);
+        $manager = $this->userWithRole('PROCUREMENT_MANAGER');
+        $url = route('admin.erp.procurement.index', [
+            'store_id' => $store->id, 'tab' => 'suppliers',
+        ]);
+        $configured = config('enterprise_module_health.probes.procurement');
+
+        $this->assertIsArray($configured);
+        $this->assertContains(DatabaseHealthProbe::class, $configured);
+        $this->assertContains('database', app(ModuleRegistry::class)->manifest('procurement')->healthChecks);
+        $this->assertSame('ready', $this->readiness());
+        $this->actingAs($manager->fresh())->get($url)->assertOk();
+
+        // The exact signed manifest continues to require 'database'. A
+        // misconfigured empty probe list must NOT count as HEALTHY/readiness.
+        config()->set('enterprise_module_health.probes.procurement', []);
+        app()->forgetInstance(ModuleHealthService::class);
+        app()->forgetInstance(ModuleOperationalReadiness::class);
+        $this->assertSame('unhealthy', $this->readiness());
+
+        foreach (['ar' => 'rtl', 'en' => 'ltr'] as $locale => $direction) {
+            app()->setLocale($locale);
+            $manager->forceFill(['locale' => $locale])->save();
+            $actor = $manager->fresh();
+            $auditBefore = DB::table('audit_logs')->count();
+            $center = $this->actingAs($actor)->get(route('admin.erp.index'));
+            $center->assertOk()->assertSee('dir="'.$direction.'"', false);
+            $card = collect($center->viewData('cards'))->firstWhere('key', 'procurement');
+            $this->assertIsArray($card);
+            $this->assertSame('degraded', $card['status']);
+            $this->assertSame('unhealthy', $card['denial_reason']);
+            $this->assertNull($card['url']);
+            $this->actingAs($actor)->get($url)->assertForbidden();
+            $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+        }
+
+        // Only the disposable PHPUnit config is repaired. The production
+        // version certification/trust maps are never populated by this test.
+        config()->set('enterprise_module_health.probes.procurement', $configured);
+        app()->forgetInstance(ModuleHealthService::class);
+        app()->forgetInstance(ModuleOperationalReadiness::class);
+        $this->assertSame('ready', $this->readiness());
+        $this->actingAs($manager->fresh())->get($url)->assertOk();
     }
 
     private function assertProcurementHttpUnavailable(User $actor, string $workbenchUrl): void
