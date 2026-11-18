@@ -31,7 +31,7 @@
                 $activeTab = 'readiness';
             }
         @endphp
-        <nav class="foodex-tabs" style="flex-wrap:nowrap;overflow-x:auto;white-space:nowrap" aria-label="{{ __('whatsapp.connections.section_navigation') }}">
+        <nav class="foodex-tabs foodex-tabs--horizontal" aria-label="{{ __('whatsapp.connections.section_navigation') }}">
             <a class="foodex-tab {{ $activeTab === 'readiness' ? 'active' : '' }}" href="{{ route('admin.whatsapp.index', ['tab' => 'readiness']) }}" @if($activeTab === 'readiness') aria-current="page" @endif>{{ __('whatsapp.readiness') }}</a>
             @if($state->available)
             <a class="foodex-tab {{ $activeTab === 'controls' ? 'active' : '' }}" href="{{ route('admin.whatsapp.index', ['tab' => 'controls']) }}" @if($activeTab === 'controls') aria-current="page" @endif>{{ __('whatsapp.capabilities') }}</a>
