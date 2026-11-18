@@ -7,7 +7,7 @@ return [
     'setup_purpose' => 'Purpose: select the authorized organization, company, legal entity and business unit that own ERP activity and store assignments.',
     'setup_source' => 'Source: use the organization\'s approved registration and internal legal/company structure. Legal and tax identifiers must be validated against official records outside this form; never enter a placeholder as a certified value.',
     'setup_name_help' => 'Use the approved business display name from your registration or internal hierarchy (example: Example Trading Company). Required; maximum 255 characters.',
-    'setup_code_help' => 'Choose a stable, scoped business code from the approved master-data register (example: EXAMPLE_TRADING). Required; starts with a letter; letters, digits, underscore and hyphen only; maximum 100 characters. Uniqueness is enforced on Save/Test.',
+    'setup_code_help' => 'Choose a stable, scoped business code from the approved master-data register (example: EXAMPLE_TRADING). Required; starts with a letter; letters, digits, underscore and hyphen only; maximum 100 characters. Uniqueness is enforced on Save/Test. Installer-reserved routing codes must remain unchanged; display names remain editable.',
     'setup_active_help' => 'Active enables this hierarchy record for permitted workflows; uncheck until its business scope has been verified. New records default to Active, not certified.',
     'setup_access_help' => 'Access: platform.manage permission. Save is audited by the existing Organization service. Test Inputs runs the same server validation and RBAC without persisting; it does not verify official legal/tax data or grant financial approval.',
     'setup_test' => 'Test inputs (no save)',
