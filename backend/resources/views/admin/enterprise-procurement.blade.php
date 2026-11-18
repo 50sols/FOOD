@@ -118,6 +118,25 @@ $detailContext=array_merge(
 @if($detail)
 <section class="foodex-card erp-detail"><h2>{{ app()->getLocale()==='ar' && $detail['supplier']->name_ar ? $detail['supplier']->name_ar : $detail['supplier']->name_en }}</h2>
 <div class="erp-detail-grid"><div><small>{{ __('enterprise_procurement.code') }}</small><strong>{{ $detail['supplier']->code }}</strong></div><div><small>{{ __('enterprise_procurement.status') }}</small><strong>{{ $statusLabel($detail['supplier']->status) }}</strong></div><div><small>{{ __('enterprise_procurement.payment_terms') }}</small><strong>{{ $detail['supplier']->payment_terms_days ?? '—' }}</strong></div><div><small>{{ __('enterprise_procurement.tax_number') }}</small><strong>{{ $detail['supplier']->tax_registration_number ?: '—' }}</strong></div></div>
+@if($can['supplier_manage'])
+<h3>{{ __('enterprise_procurement.edit_supplier') }}</h3>
+<form method="post" action="{{ route('admin.erp.procurement.suppliers.store') }}" class="erp-form">@csrf
+<input type="hidden" name="store_id" value="{{ $selectedStoreId }}"><input type="hidden" name="supplier_id" value="{{ $detail['supplier']->id }}">
+<label>{{ __('enterprise_procurement.scope') }}<select name="scope_type" required>@foreach(['store'=>__('enterprise_procurement.store_scope'),'company'=>__('enterprise_procurement.company_scope')] as $scopeType=>$scopeLabel)<option value="{{ $scopeType }}" @selected(old('scope_type', $detail['supplier']->scope_type)===$scopeType)>{{ $scopeLabel }}</option>@endforeach</select></label>
+<label>{{ __('enterprise_procurement.code') }}<input name="code" value="{{ old('code', $detail['supplier']->code) }}" required maxlength="64" pattern="[A-Za-z0-9][A-Za-z0-9._-]*"></label>
+<label>{{ __('enterprise_procurement.name_en') }}<input name="name_en" value="{{ old('name_en', $detail['supplier']->name_en) }}" required maxlength="190"></label> {{-- localization-gate: allow form field name identifies persisted bilingual attribute; visible label is translated --}}
+<label>{{ __('enterprise_procurement.name_ar') }}<input name="name_ar" value="{{ old('name_ar', $detail['supplier']->name_ar) }}" maxlength="190" dir="rtl"></label> {{-- localization-gate: allow form field name identifies persisted bilingual attribute; visible label is translated --}}
+<label>{{ __('enterprise_procurement.contact') }}<input name="contact_name" value="{{ old('contact_name', $detail['supplier']->contact_name) }}" maxlength="190"></label>
+<label>{{ __('enterprise_procurement.email') }}<input type="email" name="email" value="{{ old('email', $detail['supplier']->email) }}" maxlength="190"></label>
+<label>{{ __('enterprise_procurement.phone') }}<input name="phone" value="{{ old('phone', $detail['supplier']->phone) }}" maxlength="64"></label>
+<label>{{ __('enterprise_procurement.tax_number') }}<input name="tax_registration_number" value="{{ old('tax_registration_number', $detail['supplier']->tax_registration_number) }}" maxlength="96"></label>
+<label>{{ __('enterprise_procurement.commercial_number') }}<input name="commercial_registration_number" value="{{ old('commercial_registration_number', $detail['supplier']->commercial_registration_number) }}" maxlength="96"></label>
+<label>{{ __('enterprise_procurement.business_type') }}<input name="business_type" value="{{ old('business_type', $detail['supplier']->business_type) }}" maxlength="96"></label>
+<label>{{ __('enterprise_procurement.payment_terms') }}<input type="number" name="payment_terms_days" value="{{ old('payment_terms_days', $detail['supplier']->payment_terms_days) }}" min="0" max="3650"></label>
+<label class="span-all">{{ __('enterprise_procurement.notes') }}<textarea name="notes" maxlength="4000">{{ old('notes', $detail['supplier']->notes) }}</textarea></label>
+<div class="erp-actions span-all"><button class="foodex-primary" type="submit">{{ __('enterprise_procurement.save_supplier') }}</button></div>
+</form>
+@endif
 <h3>{{ __('enterprise_procurement.documents') }}</h3><div class="erp-lines">@forelse($detail['documents'] as $document)<div class="erp-line"><strong>{{ $document->title }}</strong><span>{{ $document->category }}</span><span>{{ $document->reference ?: '—' }}</span><span>{{ $document->expires_at ?: '—' }}</span></div>@empty<p class="erp-lookup-hint">{{ __('enterprise_procurement.empty') }}</p>@endforelse</div>
 <h3>{{ __('enterprise_procurement.activity') }}</h3><div class="erp-lines">@forelse($detail['activity'] as $event)<div class="erp-line"><strong>{{ $event->event }}</strong><span>{{ $event->created_at }}</span><span>—</span><span>—</span></div>@empty<p class="erp-lookup-hint">{{ __('enterprise_procurement.empty') }}</p>@endforelse</div>
 </section>@endif

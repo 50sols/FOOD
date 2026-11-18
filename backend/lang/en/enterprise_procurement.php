@@ -81,6 +81,8 @@ return [
     'email' => 'Email',
     'phone' => 'Phone',
     'new_supplier' => 'New supplier',
+    'edit_supplier' => 'Edit supplier details',
+    'save_supplier' => 'Save supplier details',
     'new_request' => 'New purchase request',
     'request_line' => 'Request line',
     'receipt_from_order' => 'Receive issued purchase order',
@@ -267,6 +269,7 @@ return [
     ],
     'flash' => [
         'supplier_created' => 'Supplier created.',
+        'supplier_updated' => 'Supplier details updated.',
         'supplier_archived' => 'Supplier archived.',
         'supplier_governance_updated' => 'Supplier governance updated.',
         'rfq_created' => 'RFQ created.',

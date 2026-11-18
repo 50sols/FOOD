@@ -610,6 +610,58 @@ final class V2ErpEntitlementCheckerBoundaryTest extends TestCase
         $this->assertSame($before + 1, DB::table('enterprise_suppliers')->count());
     }
 
+    public function test_existing_procurement_dashboard_http_contract_is_localized_read_only_and_store_denied(): void
+    {
+        $store = $this->wholesaleStore();
+        $owner = $this->actor('SUPER_ADMIN');
+        app(EnterpriseModuleAdministration::class)->perform('procurement', 'enable', $owner);
+        $entitlements = app(ModuleEntitlementManager::class);
+        $entitlements->set('procurement', EntitlementScope::platform(), true, null, $owner);
+
+        $from = now()->subDays(7)->toDateString();
+        $to = now()->toDateString();
+        $auditBefore = DB::table('audit_logs')->count();
+        foreach (['ar' => 'rtl', 'en' => 'ltr'] as $locale => $direction) {
+            app()->setLocale($locale);
+            $owner->forceFill(['locale' => $locale])->save();
+            $response = $this->actingAs($owner->fresh())->get(route('admin.erp.procurement.index', [
+                'store_id' => $store->id,
+                'tab' => 'overview',
+                'from' => $from,
+                'to' => $to,
+            ]));
+            $response->assertOk()
+                ->assertSee('dir="'.$direction.'"', false)
+                ->assertSee('data-foodex-module-overview', false);
+
+            $dashboard = $response->viewData('dashboard');
+            $this->assertSame($from, $dashboard['selected_from']);
+            $this->assertSame($to, $dashboard['selected_to']);
+            $this->assertSame('current', $dashboard['state']);
+            $this->assertArrayHasKey('open_requests', collect($dashboard['kpis'])->keyBy('key')->all());
+            $this->assertArrayHasKey('supplier_performance', $dashboard['charts']);
+            $this->assertSame(
+                ['b2b'],
+                collect($response->viewData('storeOptions'))->pluck('channel')->unique()->values()->all(),
+            );
+            $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+        }
+
+        $entitlements->set(
+            'procurement',
+            new EntitlementScope(EntitlementScope::STORE, $store->id),
+            false,
+            null,
+            $owner,
+        );
+        $auditBeforeDeniedGet = DB::table('audit_logs')->count();
+        $this->actingAs($owner->fresh())->get(route('admin.erp.procurement.index', [
+            'store_id' => $store->id,
+            'tab' => 'overview',
+        ]))->assertForbidden();
+        $this->assertSame($auditBeforeDeniedGet, DB::table('audit_logs')->count());
+    }
+
     public function test_procurement_reports_and_csv_export_respect_store_entitlement_and_do_not_leak_sibling_orders(): void
     {
         $primary = $this->wholesaleStore();
@@ -1981,7 +2033,7 @@ final class V2ErpEntitlementCheckerBoundaryTest extends TestCase
         $this->assertSame($auditBefore, DB::table('audit_logs')->count());
     }
 
-    public function test_supplier_legal_identity_create_service_edit_and_http_archive_respect_company_store_scope_and_audit(): void
+    public function test_supplier_legal_identity_create_and_edit_http_and_archive_respect_company_store_scope_and_audit(): void
     {
         $storeA = $this->wholesaleStore();
         $storeB = Store::query()->create([
@@ -1999,7 +2051,6 @@ final class V2ErpEntitlementCheckerBoundaryTest extends TestCase
         );
 
         $contextA = app(TenantContextResolver::class)->wholesale($buyer, $storeA->id);
-        $contextB = app(TenantContextResolver::class)->wholesale($buyer, $storeB->id);
         $legal = [
             'store_id' => $storeA->id,
             'scope_type' => 'store',
@@ -2029,17 +2080,34 @@ final class V2ErpEntitlementCheckerBoundaryTest extends TestCase
             ->where('auditable_id', $supplier->id)
             ->count());
 
-        // The existing domain update is real; an independent HTTP edit route
-        // has not been certified in P111 and must not be invented here.
-        $updated = app(SupplierDirectory::class)->update($buyer, $contextA, (int) $supplier->id, [
+        // Supplier edits reuse the existing authorized collection POST; the
+        // explicit ID selects a scoped edit and never falls back to creation.
+        $editPayload = [
+            'store_id' => $storeA->id,
+            'supplier_id' => $supplier->id,
+            'scope_type' => 'store',
+            'code' => $legal['code'],
             'name_en' => 'P111 Updated Legal Supplier',
+            'name_ar' => $legal['name_ar'],
             'tax_registration_number' => 'TAX-P111-002',
+            'commercial_registration_number' => $legal['commercial_registration_number'],
             'payment_terms_days' => 45,
-        ]);
+        ];
+        $this->actingAs($buyer)->post(route('admin.erp.procurement.suppliers.store'), [
+            ...$editPayload,
+            'company_id' => 999999,
+            'organization_id' => 999999,
+            'created_by' => $owner->id,
+            'updated_by' => $owner->id,
+        ])->assertRedirect()->assertSessionHas('status', __('enterprise_procurement.flash.supplier_updated'));
+
+        $updated = DB::table('enterprise_suppliers')->where('id', $supplier->id)->first();
         $this->assertSame('P111 Updated Legal Supplier', $updated->name_en);
         $this->assertSame('TAX-P111-002', $updated->tax_registration_number);
         $this->assertSame('CR-P111-001', $updated->commercial_registration_number);
         $this->assertSame((int) $storeA->id, (int) $updated->store_id);
+        $this->assertSame($contextA->enterpriseScope->companyId, (int) $updated->company_id);
+        $this->assertSame($contextA->enterpriseScope->organizationId, (int) $updated->organization_id);
         $this->assertSame($buyer->id, (int) $updated->updated_by);
         $this->assertSame(1, DB::table('audit_logs')
             ->where('event', 'enterprise.supplier.updated')
@@ -2047,6 +2115,29 @@ final class V2ErpEntitlementCheckerBoundaryTest extends TestCase
             ->count());
 
         $auditAfterLegalUpdate = DB::table('audit_logs')->count();
+        $this->actingAs($buyer->fresh())->post(route('admin.erp.procurement.suppliers.store'), $editPayload)
+            ->assertRedirect();
+        $this->actingAs($buyer->fresh())->post(route('admin.erp.procurement.suppliers.store'), [
+            ...$editPayload,
+            'store_id' => $storeB->id,
+            'name_en' => 'Foreign edit must not apply',
+        ])->assertNotFound();
+        $this->actingAs($buyer->fresh())->post(route('admin.erp.procurement.suppliers.store'), [
+            ...$editPayload,
+            'supplier_id' => 999999,
+            'code' => 'P111-MISSING-SUPPLIER-EDIT',
+        ])->assertNotFound();
+        $this->assertSame($auditAfterLegalUpdate, DB::table('audit_logs')->count());
+        $this->assertDatabaseMissing('enterprise_suppliers', [
+            'code' => 'P111-MISSING-SUPPLIER-EDIT',
+        ]);
+        $this->assertDatabaseHas('enterprise_suppliers', [
+            'id' => $supplier->id,
+            'name_en' => 'P111 Updated Legal Supplier',
+            'updated_by' => $buyer->id,
+            'store_id' => $storeA->id,
+        ]);
+
         foreach (['ar' => 'rtl', 'en' => 'ltr'] as $locale => $direction) {
             $buyer->forceFill(['locale' => $locale])->save();
             $this->actingAs($buyer->fresh())->get(route('admin.erp.procurement.index', [
@@ -2054,7 +2145,9 @@ final class V2ErpEntitlementCheckerBoundaryTest extends TestCase
                 'tab' => 'suppliers',
                 'supplier' => $supplier->id,
             ]))->assertOk()->assertSee('dir="'.$direction.'"', false)
-                ->assertSee('TAX-P111-002');
+                ->assertSee('TAX-P111-002')
+                ->assertSee(__('enterprise_procurement.edit_supplier'))
+                ->assertSee('name="supplier_id"', false);
 
             // Global Buyer role can navigate B2B B, but the record is
             // explicitly store-owned and must never become visible there.

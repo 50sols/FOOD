@@ -481,9 +481,11 @@ final class EnterpriseProcurementController extends Controller
     public function storeSupplier(Request $request): RedirectResponse
     {
         [$actor, $context, $storeId] = $this->mutationContext($request);
-        $action = $request->validate([
+        $actionPayload = $request->validate([
             'setup_action' => ['nullable', 'in:save,test'],
-        ])['setup_action'] ?? 'save';
+            'supplier_id' => ['sometimes', 'required', 'integer', 'min:1', 'prohibited_if:setup_action,test'],
+        ]);
+        $action = $actionPayload['setup_action'] ?? 'save';
         $attributes = $request->only([
             'scope_type', 'code', 'name_en', 'name_ar', 'contact_name', 'email', 'phone',
             'tax_registration_number', 'commercial_registration_number', 'business_type',
@@ -495,6 +497,18 @@ final class EnterpriseProcurementController extends Controller
 
             return $this->backTo('suppliers', $storeId)
                 ->with('status', __('supplier_setup_help.test_passed'));
+        }
+
+        if (isset($actionPayload['supplier_id'])) {
+            $supplier = $this->suppliers->update(
+                $actor,
+                $context,
+                (int) $actionPayload['supplier_id'],
+                $attributes,
+            );
+
+            return $this->backTo('suppliers', $storeId, ['supplier' => $supplier->id])
+                ->with('status', __('enterprise_procurement.flash.supplier_updated'));
         }
 
         $supplier = $this->suppliers->create($actor, $context, $attributes);
