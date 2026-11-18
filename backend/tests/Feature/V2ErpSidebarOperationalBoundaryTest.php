@@ -159,7 +159,6 @@ final class V2ErpSidebarOperationalBoundaryTest extends TestCase
         }
     }
 
-
     public function test_platform_allow_cannot_override_explicit_wholesale_store_entitlement_deny(): void
     {
         $actor = $this->superAdmin('v2-erp-store-deny@example.test');
