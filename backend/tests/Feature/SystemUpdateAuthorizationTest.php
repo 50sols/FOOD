@@ -198,12 +198,12 @@ class SystemUpdateAuthorizationTest extends TestCase
                     ->get('/admin/settings/system-update')
                     ->assertOk()
                     ->assertSee('dir="'.$direction.'"', false)
-                    ->assertSee(__('admin.system_update_host.title', [], $locale))
-                    ->assertSee(__('admin.system_update_host.action_required', [], $locale))
+                    ->assertSee(__('update_host_readiness.title', [], $locale))
+                    ->assertSee(__('update_host_readiness.action_required', [], $locale))
                     ->assertSee(__('update_signed_manifest.signature_caveat', [], $locale))
                     ->assertSee(__('update_signed_manifest.host_key_missing', [], $locale))
                     ->assertSee(__('update_signed_manifest.manifest_label', [], $locale))
-                    ->assertSee(__('admin.system_update_host.manual_verification', [], $locale))
+                    ->assertSee(__('update_host_readiness.manual_verification', [], $locale))
                     ->assertSee(__('update_host_readiness.checks.sodium_signature.label', [], $locale))
                     ->assertSee(__('update_host_readiness.checks.sodium_signature.help', [], $locale))
                     ->assertSee(__('update_host_readiness.checks.upload_temporary.label', [], $locale))
@@ -225,6 +225,12 @@ class SystemUpdateAuthorizationTest extends TestCase
                     )
                     ->assertSee('data-host-requirement="backup_directory" data-host-status="host-action-required"', false)
                     ->assertSee('data-host-requirement="update_lock" data-host-status="host-action-required"', false);
+
+                foreach (['zip_extension', 'app_storage', 'cache', 'update_upload', 'update_lock', 'backup_directory', 'release_directory'] as $check) {
+                    $response
+                        ->assertSee(__('update_host_readiness.checks.'.$check.'.label', [], $locale))
+                        ->assertSee(__('update_host_readiness.checks.'.$check.'.help', [], $locale));
+                }
 
                 $this->assertStringNotContainsString($directory, (string) $response->getContent());
             }
@@ -281,7 +287,7 @@ class SystemUpdateAuthorizationTest extends TestCase
             ->assertOk()
             ->assertSee('data-host-requirement="backup_directory" data-host-status="precheck-ok"', false)
             ->assertSee('data-host-requirement="update_lock" data-host-status="precheck-ok"', false)
-            ->assertSee(__('admin.system_update_host.precheck_ok'));
+            ->assertSee(__('update_host_readiness.precheck_ok'));
 
         $this->assertDirectoryDoesNotExist($directory);
     }

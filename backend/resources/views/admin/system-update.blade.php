@@ -94,23 +94,22 @@
     @endif
 
     <section class="foodex-card system-runtime-card" aria-labelledby="update-host-readiness-title" data-update-host-readiness>
-        <h2 id="update-host-readiness-title">{{ __('admin.system_update_host.title') }}</h2>
-        <p>{{ __('admin.system_update_host.description') }}</p>
+        <h2 id="update-host-readiness-title">{{ __('update_host_readiness.title') }}</h2>
+        <p>{{ __('update_host_readiness.description') }}</p>
         @php($hostingFailures = array_keys(array_filter($hostingChecks, static fn (bool $ready): bool => ! $ready)))
         <div class="foodex-alert {{ $hostingFailures !== [] ? 'warning' : 'info' }}" role="{{ $hostingFailures !== [] ? 'alert' : 'note' }}">
-            {{ __('admin.system_update_host.'.($hostingFailures !== [] ? 'action_required' : 'filesystem_precheck_only')) }}
+            {{ __('update_host_readiness.'.($hostingFailures !== [] ? 'action_required' : 'filesystem_precheck_only')) }}
         </div>
         <div class="system-runtime-panels">
             @foreach($hostingChecks as $key => $ready)
-                @php($hostTranslation = in_array($key, ['sodium_signature', 'upload_temporary', 'process_execution', 'backup_cli_tools'], true) ? 'update_host_readiness' : 'admin.system_update_host')
                 <div class="foodex-alert {{ $ready ? 'info' : 'warning' }}" data-host-requirement="{{ $key }}" data-host-status="{{ $ready ? 'precheck-ok' : 'host-action-required' }}">
-                    <strong>{{ __($hostTranslation.'.checks.'.$key.'.label') }}</strong>
-                    <p>{{ __('admin.system_update_host.'.($ready ? 'precheck_ok' : 'host_action_required')) }}</p>
-                    <p>{{ __($hostTranslation.'.checks.'.$key.'.help') }}</p>
+                    <strong>{{ __('update_host_readiness.checks.'.$key.'.label') }}</strong>
+                    <p>{{ __('update_host_readiness.'.($ready ? 'precheck_ok' : 'host_action_required')) }}</p>
+                    <p>{{ __('update_host_readiness.checks.'.$key.'.help') }}</p>
                 </div>
             @endforeach
         </div>
-        <p class="foodex-alert info" role="note">{{ __('admin.system_update_host.manual_verification') }}</p>
+        <p class="foodex-alert info" role="note">{{ __('update_host_readiness.manual_verification') }}</p>
         <p class="foodex-alert warning" role="note">{{ __('update_signed_manifest.signature_caveat') }}</p>
     </section>
 
