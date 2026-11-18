@@ -105,7 +105,7 @@ final class V2WholesaleErpNavigationSequenceTest extends TestCase
             // ERP Center's local bootstrap enables disposable test modules
             // and their platform entitlements before projecting the Sidebar.
             $response = $this->actingAs($actor)
-                ->get(route('admin.erp.index'))
+                ->get(route('admin.erp.index', ['tab' => 'modules']))
                 ->assertOk()
                 ->assertSee('dir="'.$direction.'"', false);
 
