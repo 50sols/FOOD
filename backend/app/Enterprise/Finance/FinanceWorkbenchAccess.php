@@ -78,7 +78,8 @@ final class FinanceWorkbenchAccess
      */
     public function canReadCapability(User $actor, int $storeId, string $capability): bool
     {
-        if (! in_array($capability, self::READ_CAPABILITIES, true)
+        if (! str_starts_with($capability, 'finance.')
+            || ! str_ends_with($capability, '.read')
             || ! $this->canRead($actor, $storeId)) {
             return false;
         }
