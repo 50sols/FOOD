@@ -47,7 +47,8 @@ final class FinanceWorkbenchAccess
 
     public function canRead(User $actor, int $storeId): bool
     {
-        if (! $actor->is_active || ! $actor->hasPermission('finance.view', $storeId)) {
+        if (! $actor->is_active
+            || ! $this->hasFinancePermissionAtStore($actor, $storeId, 'finance.view')) {
             return false;
         }
 
@@ -101,8 +102,33 @@ final class FinanceWorkbenchAccess
         }
 
         return $actor->is_active
-            && $actor->hasPermission($permission, $storeId)
+            && $this->hasFinancePermissionAtStore($actor, $storeId, $permission)
             && $this->allowsAtStore($storeId, $capability);
+    }
+
+    /**
+     * A standalone AR_OFFICER is deliberately excluded from the broad B2B
+     * global-role allowlist. That should not erase its actual Receivables duty.
+     * Accept the canonical global Finance permission only for this active
+     * wholesale duty and only if neither a global nor store DENY applies.
+     * This method never grants the actor any generic B2B, GL, AP, Treasury,
+     * Retail or platform scope. Finance module and legal entity/store
+     * entitlements are checked separately at the action capability boundary.
+     */
+    private function hasFinancePermissionAtStore(User $actor, int $storeId, string $permission): bool
+    {
+        if ($actor->hasPermission($permission, $storeId)) {
+            return true;
+        }
+
+        if (! $actor->hasRole('AR_OFFICER')
+            || ! in_array($permission, ['finance.view', 'finance.manage'], true)
+            || ! $this->isWholesaleStore($storeId)
+            || ! $actor->hasPermission($permission)) {
+            return false;
+        }
+
+        return ($actor->permissionOverrideEffects($storeId)[$permission] ?? null) !== 'deny';
     }
 
     /**
