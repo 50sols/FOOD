@@ -8,13 +8,14 @@ use App\Models\User;
 use App\Models\WhatsAppConnectionProfile;
 use Database\Seeders\CoreReferenceSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Testing\TestResponse;
 use Tests\TestCase;
 
 final class V2WhatsAppSettingsReadinessTabsTest extends TestCase
 {
     use RefreshDatabase;
 
-    private function assertSharedPageTabRail(\Illuminate\Testing\TestResponse $response): void
+    private function assertSharedPageTabRail(TestResponse $response): void
     {
         $html = $response->getContent();
         $this->assertSame(1, preg_match('/<nav class="foodex-tabs foodex-tabs--horizontal"[^>]*>(.*?)<\/nav>/s', $html, $matches));
