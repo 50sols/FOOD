@@ -1644,6 +1644,7 @@ final class V2InventoryOwnerProvenanceTest extends TestCase
         $details = openssl_pkey_get_details($privateKey);
         $this->assertIsArray($details);
         config()->set('enterprise_inventory_title.trusted_public_keys.test-supplier-issuer', $details['key']);
+        config()->set('enterprise_inventory_title.revoked_key_ids', []);
 
         $attestation = (object) [
             'document_kind' => 'CONSIGNMENT_AGREEMENT',
@@ -1681,6 +1682,55 @@ final class V2InventoryOwnerProvenanceTest extends TestCase
         $this->assertTrue($certified['certified']);
         $this->assertSame('SUPPLIER', $certified['positions'][0]['owner_kind']);
         $this->assertSame($supplierId, $certified['positions'][0]['supplier_id']);
+
+        // Revocation is tied to the exact signer ID in this verified
+        // attestation. An unrelated revoked ID leaves the valid signature
+        // usable, while revoking its signer fails closed without any write.
+        config()->set('enterprise_inventory_title.revoked_key_ids', ['other-test-issuer']);
+        $unrelatedKeyRevocation = $read->snapshot($actor, $stock['inventory_id']);
+        $this->assertSame('CERTIFIED', $unrelatedKeyRevocation['state']);
+        $this->assertTrue($unrelatedKeyRevocation['certified']);
+
+        $positionBeforeRevocation = (array) DB::table('enterprise_inventory_owner_positions')
+            ->where('id', $position->id)->first();
+        $positionCountBeforeRevocation = DB::table('enterprise_inventory_owner_positions')
+            ->where('inventory_id', $stock['inventory_id'])->count();
+        $attestationBeforeRevocation = (array) DB::table('enterprise_inventory_title_attestations')
+            ->where('owner_position_id', $position->id)->first();
+        $attestationCountBeforeRevocation = DB::table('enterprise_inventory_title_attestations')
+            ->where('owner_position_id', $position->id)->count();
+        $movementsBeforeRevocation = DB::table('stock_movements')
+            ->where('inventory_id', $stock['inventory_id'])->count();
+        $journalsBeforeRevocation = DB::table('enterprise_finance_journals')->count();
+        $journalLinesBeforeRevocation = DB::table('enterprise_finance_journal_lines')->count();
+        $auditBeforeRevocation = DB::table('audit_logs')->count();
+
+        config()->set('enterprise_inventory_title.revoked_key_ids', ['test-supplier-issuer']);
+        $revokedKey = $read->snapshot($actor, $stock['inventory_id']);
+        $this->assertSame('UNVERIFIED', $revokedKey['state']);
+        $this->assertFalse($revokedKey['certified']);
+        $this->assertFalse($revokedKey['positions'][0]['certified']);
+        $this->assertSame($positionBeforeRevocation, (array) DB::table('enterprise_inventory_owner_positions')
+            ->where('id', $position->id)->first());
+        $this->assertSame($positionCountBeforeRevocation, DB::table('enterprise_inventory_owner_positions')
+            ->where('inventory_id', $stock['inventory_id'])->count());
+        $this->assertSame($attestationBeforeRevocation, (array) DB::table('enterprise_inventory_title_attestations')
+            ->where('owner_position_id', $position->id)->first());
+        $this->assertSame($attestationCountBeforeRevocation, DB::table('enterprise_inventory_title_attestations')
+            ->where('owner_position_id', $position->id)->count());
+        $this->assertSame($movementsBeforeRevocation, DB::table('stock_movements')
+            ->where('inventory_id', $stock['inventory_id'])->count());
+        $this->assertSame($journalsBeforeRevocation, DB::table('enterprise_finance_journals')->count());
+        $this->assertSame($journalLinesBeforeRevocation, DB::table('enterprise_finance_journal_lines')->count());
+        $this->assertSame($auditBeforeRevocation, DB::table('audit_logs')->count());
+
+        config()->set('enterprise_inventory_title.revoked_key_ids', 'test-supplier-issuer');
+        $malformedRevocation = $read->snapshot($actor, $stock['inventory_id']);
+        $this->assertSame('UNVERIFIED', $malformedRevocation['state']);
+        $this->assertFalse($malformedRevocation['certified']);
+
+        config()->set('enterprise_inventory_title.revoked_key_ids', []);
+        $this->assertSame('CERTIFIED', $read->snapshot($actor, $stock['inventory_id'])['state']);
 
         // A signed checker ID cannot override current RBAC or disabled-user
         // status. These read decisions must never mutate the stored proof.

@@ -106,6 +106,23 @@ final class InventoryLegalTitleAttestationVerifier
             return false;
         }
 
+        // Revocation is keyed by the exact trusted signer ID carried by this
+        // attestation. A malformed revocation source must never make a stored
+        // signature more trusted than the configured authority intended.
+        $revokedKeyIds = config('enterprise_inventory_title.revoked_key_ids', []);
+        if (! is_array($revokedKeyIds) || ! array_is_list($revokedKeyIds)) {
+            return false;
+        }
+        foreach ($revokedKeyIds as $revokedKeyId) {
+            if (! is_string($revokedKeyId)
+                || preg_match('/\A[a-zA-Z0-9_-]{1,64}\z/D', $revokedKeyId) !== 1) {
+                return false;
+            }
+        }
+        if (in_array($keyId, $revokedKeyIds, true)) {
+            return false;
+        }
+
         // Reject traversal and symlink aliases, including the private document
         // directory itself. A digest of user-provided text is not document proof.
         $disk = Storage::disk('local');
