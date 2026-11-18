@@ -6,6 +6,7 @@ use App\Models\User;
 use App\Services\B2bDashboardService;
 use App\Services\B2cDashboardService;
 use Database\Seeders\DashboardDemoSeeder;
+use Illuminate\Database\Events\QueryExecuted;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Tests\TestCase;
@@ -100,6 +101,12 @@ class DashboardDateRangeTest extends TestCase
         $storeId = (int) DB::table('stores')->where('code', 'FOODEX-DEMO-B2C')->value('id');
         $today = now('Asia/Kuwait')->startOfDay();
         $from = $today->copy()->subDays(35);
+        $dailySeriesQueries = 0;
+        DB::listen(static function (QueryExecuted $query) use (&$dailySeriesQueries): void {
+            if (str_contains(strtolower($query->sql), ' as local_day')) {
+                $dailySeriesQueries++;
+            }
+        });
 
         $dashboard = app(B2bDashboardService::class)->build(
             $user,
@@ -112,6 +119,87 @@ class DashboardDateRangeTest extends TestCase
         $this->assertSame($today->toDateString(), $dashboard['selected_to']);
         $this->assertSame(36, $dashboard['range_days']);
         $this->assertCount(36, $dashboard['series']);
+        $this->assertSame(1, $dailySeriesQueries);
+    }
+
+    public function test_b2b_dashboard_daily_series_preserves_local_day_values_and_store_scope(): void
+    {
+        $this->seed(DashboardDemoSeeder::class);
+
+        $user = User::query()->where('email', 'admin.demo@foodex.test')->firstOrFail();
+        $storeId = (int) DB::table('stores')->where('code', 'FOODEX-DEMO-B2C')->value('id');
+        $otherStoreId = (int) DB::table('stores')->insertGetId([
+            'store_type_id' => (int) DB::table('stores')->where('id', $storeId)->value('store_type_id'),
+            'business_profile' => 'RETAIL_STORE',
+            'code' => 'SERIES-OUT-OF-SCOPE',
+            'name' => 'Unrelated Store',
+            'is_active' => true,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        $customerId = (int) DB::table('customers')->value('id');
+        $b2bCustomerId = (int) DB::table('b2b_customers')->insertGetId([
+            'name' => 'Daily Series Wholesale Customer',
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        // All timestamps are UTC: 21:00 UTC is midnight of the next Kuwait day.
+        // Excluded rows cover neighbouring dates, another store, B2C and missing B2B identity.
+        $orders = [
+            ['SER-OUT-BEFORE', 'b2b', 'delivered', 99.0, '2026-09-10 20:59:59', $storeId, $b2bCustomerId],
+            ['SER-DAY-1', 'b2b', 'delivered', 12.345, '2026-09-10 21:00:00', $storeId, $b2bCustomerId],
+            ['SER-DAY-1-REFUND', 'b2b', 'refunded', 9.0, '2026-09-11 20:59:59', $storeId, $b2bCustomerId],
+            ['SER-DAY-2-CANCEL', 'b2b', 'cancelled', 5.0, '2026-09-11 21:00:00', $storeId, $b2bCustomerId],
+            ['SER-DAY-2', 'b2b', 'delivered', 7.005, '2026-09-12 20:59:59', $storeId, $b2bCustomerId],
+            ['SER-DAY-3', 'b2b', 'delivered', 8.5, '2026-09-12 21:00:00', $storeId, $b2bCustomerId],
+            ['SER-OTHER-CHANNEL', 'b2c', 'delivered', 100.0, '2026-09-12 12:00:00', $storeId, $b2bCustomerId],
+            ['SER-OTHER-STORE', 'b2b', 'delivered', 200.0, '2026-09-11 12:00:00', $otherStoreId, $b2bCustomerId],
+            ['SER-MISSING-B2B', 'b2b', 'delivered', 300.0, '2026-09-11 12:00:00', $storeId, null],
+            ['SER-OUT-AFTER', 'b2b', 'delivered', 400.0, '2026-09-14 21:00:00', $storeId, $b2bCustomerId],
+        ];
+
+        foreach ($orders as [$reference, $channel, $status, $amount, $createdAt, $orderStoreId, $orderB2bId]) {
+            DB::table('orders')->insert([
+                'store_id' => $orderStoreId,
+                'customer_id' => $customerId,
+                'b2b_customer_id' => $orderB2bId,
+                'order_number' => $reference,
+                'channel' => $channel,
+                'status' => $status,
+                'currency' => 'EGP',
+                'subtotal' => $amount,
+                'discount_total' => 0,
+                'delivery_total' => 0,
+                'grand_total' => $amount,
+                'created_at' => $createdAt,
+                'updated_at' => $createdAt,
+            ]);
+        }
+
+        $dashboard = app(B2bDashboardService::class)->build(
+            $user,
+            [$storeId],
+            '2026-09-11',
+            '2026-09-14',
+        );
+
+        $this->assertSame([
+            ['date' => '2026-09-11', 'label' => '11/09', 'orders' => 2],
+            ['date' => '2026-09-12', 'label' => '12/09', 'orders' => 2],
+            ['date' => '2026-09-13', 'label' => '13/09', 'orders' => 1],
+            ['date' => '2026-09-14', 'label' => '14/09', 'orders' => 0],
+        ], array_map(static fn (array $day): array => [
+            'date' => $day['date'],
+            'label' => $day['label'],
+            'orders' => $day['orders'],
+        ], $dashboard['series']));
+        $this->assertEqualsWithDelta(12.345, $dashboard['series'][0]['revenue'], 0.00001);
+        $this->assertEqualsWithDelta(7.005, $dashboard['series'][1]['revenue'], 0.00001);
+        $this->assertEqualsWithDelta(8.5, $dashboard['series'][2]['revenue'], 0.00001);
+        $this->assertSame(0.0, $dashboard['series'][3]['revenue']);
+        $this->assertSame(5, $dashboard['kpis']['orders']['value']);
+        $this->assertEqualsWithDelta(27.85, $dashboard['kpis']['sales']['value'], 0.00001);
     }
 
     public function test_dashboard_rejects_ranges_longer_than_31_days(): void

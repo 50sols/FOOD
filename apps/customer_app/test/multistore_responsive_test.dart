@@ -1,5 +1,7 @@
 // ignore_for_file: deprecated_member_use, prefer_interpolation_to_compose_strings
 
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:foodex_customer_app/app.dart';
@@ -76,6 +78,100 @@ void main() {
     );
   }
 
+  // MOB-C03 price labels are display-only; never turn a malformed API price
+  // into a genuine zero or invent any quote/credit decision in Flutter.
+  final priceScenarios = <({
+    String name,
+    List<Object?> amounts,
+    List<String> labels,
+  })>[
+    (
+      name: 'valid prices and genuine zero',
+      amounts: <Object?>[0, 12.625, '1.2'],
+      labels: <String>['0 EGP', '13 EGP', '1 EGP'],
+    ),
+    (
+      name: 'missing malformed and NaN',
+      amounts: <Object?>[null, 'not-a-price', double.nan],
+      labels: <String>['—', '—', '—'],
+    ),
+    (
+      name: 'infinite negative and forged string',
+      amounts: <Object?>[double.infinity, -5, '-Infinity'],
+      labels: <String>['—', '—', '—'],
+    ),
+  ];
+
+  for (final language in const <String>['ar', 'en']) {
+    for (final scenario in priceScenarios) {
+      testWidgets(
+        'MOB-C03 wholesale home price truthfulness ${scenario.name} $language',
+        (tester) async {
+          await tester.binding.setSurfaceSize(const Size(390, 844));
+          addTearDown(() => tester.binding.setSurfaceSize(null));
+
+          final rows = <Map<String, dynamic>>[
+            for (var index = 0; index < scenario.amounts.length; index++)
+              <String, dynamic>{
+                'id': 901 + index,
+                'name': 'Wholesale product ${index + 1}',
+                'sku': 'WHOLESALE-PRICE-${index + 1}',
+                'currency': 'EGP',
+                'available_quantity': 10,
+                if (scenario.amounts[index] != null)
+                  'account_price': scenario.amounts[index],
+              },
+          ];
+          final api = _PriceBadgeB2bApi(rows);
+
+          await tester.pumpWidget(
+            FoodexCustomerApp(
+              locale: Locale(language),
+              initialRoute: '/b2b/home?store_id=70',
+              session: const CustomerSession.authenticated(
+                CustomerChannel.b2b,
+                accessToken: 'scoped-price-test-token',
+                b2bRetailStoreId: 7,
+              ),
+              b2cCatalogApi: const _ResponsiveCatalogApi(),
+              b2cAccountApi: const _ResponsiveAccountApi(),
+              actionApi: const _ResponsiveActionApi(),
+              b2bApi: api,
+              storefrontApi: const _PriceBadgeStorefrontApi(),
+              wholesaleCommerceApi: const _ResponsiveWholesaleApi(),
+            ),
+          );
+          // The wholesale Home has a continuously animated ticker. Drive a
+          // bounded set of frames to resolve the remote product cards instead
+          // of waiting indefinitely for every animation to settle.
+          for (var frame = 0; frame < 30; frame++) {
+            await tester.pump(const Duration(milliseconds: 50));
+          }
+
+          expect(
+              api.productPaths, contains('/api/v1/b2b/products?store_id=70'));
+          for (var index = 0; index < scenario.labels.length; index++) {
+            final badge = find.byKey(
+              ValueKey('wholesale-product-price-${901 + index}'),
+            );
+            expect(badge, findsOneWidget);
+            final labelFinder = find.descendant(
+              of: badge,
+              matching: find.byType(Text),
+            );
+            expect(
+                tester.widget<Text>(labelFinder).data, scenario.labels[index]);
+            expect(
+              Directionality.of(tester.element(badge)),
+              language == 'ar' ? TextDirection.rtl : TextDirection.ltr,
+            );
+          }
+          expect(tester.takeException(), isNull);
+        },
+      );
+    }
+  }
+
   const orderReferenceDevices = <Size>[
     Size(320, 568),
     Size(360, 800),
@@ -114,10 +210,14 @@ void main() {
         await tester.pumpAndSettle();
 
         expect(find.byKey(const ValueKey('b2b-orders-screen')), findsOneWidget);
-        expect(find.byKey(const ValueKey('b2b-orders-refresh')), findsOneWidget);
-        expect(find.byKey(const ValueKey('b2b-order-row-1001')), findsOneWidget);
-        expect(find.byKey(const ValueKey('b2b-order-receipt-1001')), findsOneWidget);
-        expect(find.byKey(const ValueKey('customer-persistent-footer')), findsOneWidget);
+        expect(
+            find.byKey(const ValueKey('b2b-orders-refresh')), findsOneWidget);
+        expect(
+            find.byKey(const ValueKey('b2b-order-row-1001')), findsOneWidget);
+        expect(find.byKey(const ValueKey('b2b-order-receipt-1001')),
+            findsOneWidget);
+        expect(find.byKey(const ValueKey('customer-persistent-footer')),
+            findsOneWidget);
 
         const filterKeys = <String>[
           'all',
@@ -126,23 +226,302 @@ void main() {
           'out_for_delivery',
           'delivered',
         ];
-        final firstTop = tester.getTopLeft(
-          find.byKey(const ValueKey('b2b-orders-filter-all')),
-        ).dy;
+        final firstTop = tester
+            .getTopLeft(
+              find.byKey(const ValueKey('b2b-orders-filter-all')),
+            )
+            .dy;
         for (final filter in filterKeys) {
           final finder = find.byKey(ValueKey('b2b-orders-filter-' + filter));
           expect(finder, findsOneWidget);
           expect(tester.getTopLeft(finder).dy, closeTo(firstTop, .5));
         }
 
-        final cardWidth =
-            tester.getSize(find.byKey(const ValueKey('b2b-order-row-1001'))).width;
+        final cardWidth = tester
+            .getSize(find.byKey(const ValueKey('b2b-order-row-1001')))
+            .width;
         expect(cardWidth, lessThanOrEqualTo(device.width - 20));
         expect(tester.takeException(), isNull);
       },
     );
   }
 
+  for (final language in const <String>['ar', 'en']) {
+    testWidgets(
+      'MOB-C03 checkout ignores an obsolete failed coupon quote in $language',
+      (tester) async {
+        await tester.binding.setSurfaceSize(const Size(390, 844));
+        addTearDown(() => tester.binding.setSurfaceSize(null));
+        final api = _DelayedQuoteWholesaleApi();
+        await tester.pumpWidget(
+          FoodexCustomerApp(
+            locale: Locale(language),
+            initialRoute: '/b2b/checkout?store_id=70',
+            session: const CustomerSession.authenticated(
+              CustomerChannel.b2b,
+              accessToken: 'scoped-checkout-token',
+              b2bRetailStoreId: 7,
+            ),
+            b2cCatalogApi: const _ResponsiveCatalogApi(),
+            b2cAccountApi: const _ResponsiveAccountApi(),
+            actionApi: const _ResponsiveActionApi(),
+            b2bApi: const _ResponsiveB2bApi(),
+            storefrontApi: const _ResponsiveStorefrontApi(),
+            wholesaleCommerceApi: api,
+          ),
+        );
+        // Checkout includes a continuously animated loading surface: use a
+        // bounded frame budget rather than waiting for animations to settle.
+        for (var frame = 0; frame < 20; frame++) {
+          await tester.pump(const Duration(milliseconds: 50));
+        }
+        final field = find.byKey(const ValueKey('b2b-checkout-coupon'));
+        final apply = find.byKey(const ValueKey('b2b-checkout-apply-coupon'));
+        await tester.ensureVisible(field);
+        await tester.enterText(field, 'OLD');
+        tester.testTextInput.hide();
+        await tester.pump();
+        await tester.ensureVisible(apply);
+        await tester.pump();
+        expect(tester.widget<FilledButton>(apply).onPressed, isNotNull);
+        await tester.tap(apply);
+        await tester.pump();
+        expect(api.pendingQuotes, hasLength(1));
+        expect(api.couponCodes, ['OLD']);
+
+        // Editing intent while the earlier server request is still pending
+        // must not let its later error appear in this new checkout context.
+        await tester.enterText(field, 'NEW');
+        api.pendingQuotes.first.completeError(
+          StateError('obsolete quote must not appear in the new intent'),
+        );
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 100));
+        expect(find.byKey(const ValueKey('b2b-checkout-coupon-applied')),
+            findsNothing);
+        expect(tester.widget<FilledButton>(apply).onPressed, isNotNull);
+        expect(tester.takeException(), isNull);
+
+        await tester.tap(apply);
+        await tester.pump();
+        expect(api.pendingQuotes, hasLength(2));
+        expect(api.couponCodes, ['OLD', 'NEW']);
+        api.pendingQuotes.last.complete({
+          'data': {
+            'coupon': {'code': 'NEW'},
+            'currency': 'EGP',
+            'grand_total': 60.125,
+          },
+        });
+        for (var frame = 0; frame < 10; frame++) {
+          await tester.pump(const Duration(milliseconds: 50));
+        }
+        final applied =
+            find.byKey(const ValueKey('b2b-checkout-coupon-applied'));
+        expect(applied, findsOneWidget);
+        expect(find.textContaining('NEW'), findsWidgets);
+        expect(tester.takeException(), isNull);
+      },
+    );
+  }
+
+  for (final language in const <String>['ar', 'en']) {
+    testWidgets(
+      'MOB-C03 ambiguous checkout POST preserves coupon and retry key in $language',
+      (tester) async {
+        await tester.binding.setSurfaceSize(const Size(390, 844));
+        addTearDown(() => tester.binding.setSurfaceSize(null));
+        final api = _AmbiguousCheckoutWholesaleApi();
+        await tester.pumpWidget(
+          FoodexCustomerApp(
+            locale: Locale(language),
+            initialRoute: '/b2b/checkout?store_id=70',
+            session: const CustomerSession.authenticated(
+              CustomerChannel.b2b,
+              accessToken: 'scoped-replay-token',
+              b2bRetailStoreId: 7,
+            ),
+            b2cCatalogApi: const _ResponsiveCatalogApi(),
+            b2cAccountApi: const _ResponsiveAccountApi(),
+            actionApi: const _ResponsiveActionApi(),
+            b2bApi: const _ResponsiveB2bApi(),
+            storefrontApi: const _ResponsiveStorefrontApi(),
+            wholesaleCommerceApi: api,
+          ),
+        );
+        for (var frame = 0; frame < 20; frame++) {
+          await tester.pump(const Duration(milliseconds: 50));
+        }
+        final coupon = find.byKey(const ValueKey('b2b-checkout-coupon'));
+        final apply = find.byKey(const ValueKey('b2b-checkout-apply-coupon'));
+        await tester.ensureVisible(coupon);
+        await tester.enterText(coupon, 'SAVE');
+        tester.testTextInput.hide();
+        await tester.pump();
+        await tester.ensureVisible(apply);
+        await tester.pump();
+        await tester.tap(apply);
+        await tester.pump();
+        expect(find.byKey(const ValueKey('b2b-checkout-coupon-applied')),
+            findsOneWidget);
+
+        final submit = find.byKey(const ValueKey('b2b-checkout-submit'));
+        await tester.ensureVisible(submit);
+        await tester.pump();
+        await tester.tap(submit);
+        for (var frame = 0; frame < 5; frame++) {
+          await tester.pump(const Duration(milliseconds: 50));
+        }
+        expect(api.checkoutKeys, hasLength(1));
+        expect(api.checkoutCoupons, ['SAVE']);
+        expect(api.checkoutStores, [70]);
+        // A lost POST response is not evidence the server rejected the order.
+        // Never issue a second POST automatically or clear the accepted quote.
+        expect(find.text(language == 'ar' ? 'حسنًا' : 'OK'), findsOneWidget);
+        await tester.tap(find.text(language == 'ar' ? 'حسنًا' : 'OK'));
+        await tester.pump();
+        expect(api.checkoutKeys, hasLength(1));
+        expect(find.byKey(const ValueKey('b2b-checkout-data')), findsOneWidget);
+        expect(find.byKey(const ValueKey('b2b-checkout-coupon-applied')),
+            findsOneWidget);
+        expect(tester.takeException(), isNull);
+
+        await tester.ensureVisible(submit);
+        await tester.tap(submit);
+        for (var frame = 0; frame < 5; frame++) {
+          await tester.pump(const Duration(milliseconds: 50));
+        }
+        expect(api.checkoutKeys, hasLength(2));
+        expect(api.checkoutKeys[1], api.checkoutKeys[0]);
+        expect(api.checkoutCoupons, ['SAVE', 'SAVE']);
+        expect(api.checkoutStores, [70, 70]);
+        expect(tester.takeException(), isNull);
+      },
+    );
+  }
+}
+
+class _AmbiguousCheckoutWholesaleApi extends _DelayedQuoteWholesaleApi {
+  final checkoutKeys = <String>[];
+  final checkoutCoupons = <String?>[];
+  final checkoutStores = <int>[];
+
+  @override
+  Future<Object?> quote({
+    required int storeId,
+    String? couponCode,
+    String? paymentMethod,
+  }) async {
+    if (storeId != 70) throw StateError('foreign store quote');
+    return {
+      'data': {
+        'store_id': storeId,
+        'channel': 'b2b',
+        'currency': 'EGP',
+        'coupon': {'code': couponCode},
+        'grand_total': 75.125,
+      },
+    };
+  }
+
+  @override
+  Future<Object?> checkout({
+    required int storeId,
+    required int addressId,
+    required String paymentMethod,
+    String? requestedDeliveryDate,
+    String? note,
+    String? couponCode,
+    required String idempotencyKey,
+  }) async {
+    checkoutKeys.add(idempotencyKey);
+    checkoutCoupons.add(couponCode);
+    checkoutStores.add(storeId);
+    if (checkoutKeys.length == 1) {
+      throw const WholesaleCommerceException('Checkout response lost');
+    }
+    return {
+      'id': 9001,
+      'store_id': storeId,
+      'channel': 'b2b',
+      'currency': 'EGP',
+      'grand_total': 75.125,
+    };
+  }
+}
+
+class _DelayedQuoteWholesaleApi extends _ResponsiveWholesaleApi
+    implements WholesaleQuoteApi {
+  final pendingQuotes = <Completer<Object?>>[];
+  final couponCodes = <String?>[];
+
+  @override
+  Future<Object?> quote({
+    required int storeId,
+    String? couponCode,
+    String? paymentMethod,
+  }) {
+    if (storeId != 70) {
+      throw StateError('unexpected store scope');
+    }
+    couponCodes.add(couponCode);
+    final pending = Completer<Object?>();
+    pendingQuotes.add(pending);
+    return pending.future;
+  }
+
+  @override
+  Future<Object?> cart(int storeId) async => {
+        'store_id': storeId,
+        'channel': 'b2b',
+        'currency': 'EGP',
+        'minimum_order_egp': 0,
+        'quote': {'grand_total': 80.125, 'currency': 'EGP'},
+        'items': [
+          {
+            'id': 1,
+            'product_id': 44,
+            'quantity': 5,
+            'unit_price': 16.025,
+          },
+        ],
+      };
+}
+
+class _PriceBadgeStorefrontApi extends _ResponsiveStorefrontApi {
+  const _PriceBadgeStorefrontApi();
+
+  @override
+  Future<Map<String, dynamic>> wholesaleHome(int storeId) async {
+    final home = await super.wholesaleHome(storeId);
+    return {
+      ...home,
+      'sections': [
+        {
+          'type': 'product_grid',
+          'title_ar': 'المنتجات',
+          'title_en': 'Products',
+          'sort_order': 10,
+        },
+      ],
+    };
+  }
+}
+
+class _PriceBadgeB2bApi extends _ResponsiveB2bApi {
+  _PriceBadgeB2bApi(this.rows);
+
+  final List<Map<String, dynamic>> rows;
+  final List<String> productPaths = [];
+
+  @override
+  Future<Object?> get(String path) async {
+    if (path.startsWith('/api/v1/b2b/products?')) {
+      productPaths.add(path);
+      return {'data': rows};
+    }
+    return super.get(path);
+  }
 }
 
 class _ResponsiveCatalogApi implements B2cCatalogApi {
@@ -435,14 +814,12 @@ class _ResponsiveAccountApi implements B2cAccountApi {
   const _ResponsiveAccountApi();
 
   @override
-  dynamic noSuchMethod(Invocation invocation) =>
-      Future<Object?>.value(null);
+  dynamic noSuchMethod(Invocation invocation) => Future<Object?>.value(null);
 }
 
 class _ResponsiveActionApi implements CustomerActionApi {
   const _ResponsiveActionApi();
 
   @override
-  dynamic noSuchMethod(Invocation invocation) =>
-      Future<Object?>.value({});
+  dynamic noSuchMethod(Invocation invocation) => Future<Object?>.value({});
 }

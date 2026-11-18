@@ -891,7 +891,7 @@ body{margin:0;background:var(--foodex-background);color:var(--foodex-ink)}
             panel.hidden = !active;
         });
 
-        if (updateHash) history.replaceState(null, '', '#'+name);
+        if (updateHash && window.location.hash !== '#'+name) window.history.pushState(window.history.state, '', '#'+name);
         target.scrollIntoView({block:'nearest', inline:'nearest'});
     };
 
@@ -903,15 +903,27 @@ body{margin:0;background:var(--foodex-background);color:var(--foodex-ink)}
             let next = index;
             if (event.key === 'Home') next = 0;
             else if (event.key === 'End') next = tabs.length - 1;
-            else if (event.key === 'ArrowLeft') next = Math.max(0, index - 1);
-            else next = Math.min(tabs.length - 1, index + 1);
+            else {
+                // Arrow keys follow the visual tab order in both LTR and RTL.
+                const isRtl = document.documentElement.dir === 'rtl';
+                const direction = event.key === 'ArrowLeft' ? (isRtl ? 1 : -1) : (isRtl ? -1 : 1);
+                next = Math.max(0, Math.min(tabs.length - 1, index + direction));
+            }
             tabs[next].focus();
             activate(tabs[next].dataset.c360Tab, true);
         });
     });
 
-    const requested = location.hash.replace('#','');
-    activate(['finance','identity','service','addresses','stores','orders','invoices','statement','reports'].includes(requested) ? requested : 'finance');
+    const restoreTabFromUrl = () => {
+        // The current record and its query filters remain unchanged; only the
+        // existing, actually rendered tab may be selected from a URL fragment.
+        const requested = window.location.hash.slice(1);
+        const available = tabs.some((tab) => tab.dataset.c360Tab === requested);
+        activate(available ? requested : 'finance');
+    };
+    window.addEventListener('popstate', restoreTabFromUrl);
+    window.addEventListener('hashchange', restoreTabFromUrl);
+    restoreTabFromUrl();
 })();
 </script>
 </body>

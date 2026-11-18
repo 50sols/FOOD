@@ -297,16 +297,18 @@ final class WhatsAppCampaignTest extends TestCase
         $this->assertSame(1, $overview['notification_campaigns']['total']);
 
         $this->actingAs($admin)
-            ->get(route('admin.whatsapp-campaigns.index'))
+            ->get(route('admin.whatsapp-campaigns.index', ['workspace_tab' => 'overview']))
             ->assertOk()
             ->assertSee('Messaging operations overview')
             ->assertSee('provider-confirmed only')
+            ->assertDontSee('id="wa-template-registry"', false)
+            ->assertDontSee('id="wa-campaign-list"', false)
             ->assertSee('dir="ltr"', false)
             ->assertSee('foodex-module-overview', false);
 
         $admin->forceFill(['locale' => 'ar'])->save();
         $this->actingAs($admin)
-            ->get(route('admin.whatsapp-campaigns.index'))
+            ->get(route('admin.whatsapp-campaigns.index', ['workspace_tab' => 'overview']))
             ->assertOk()
             ->assertSee('نظرة تشغيلية موحّدة للرسائل')
             ->assertSee('dir="rtl"', false);

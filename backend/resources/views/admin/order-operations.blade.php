@@ -16,11 +16,11 @@ body{margin:0}.shell{display:grid;grid-template-columns:minmax(0,1fr) 240px;min-
 .order-kpi-item[data-tone="green"]{--order-kpi-accent:var(--foodex-palette-158a3a);--order-kpi-soft:var(--foodex-palette-eaf7ef)}.order-kpi-item[data-tone="blue"]{--order-kpi-accent:var(--foodex-palette-2563eb);--order-kpi-soft:var(--foodex-palette-eff6ff)}.order-kpi-item[data-tone="violet"]{--order-kpi-accent:var(--foodex-palette-7c3aed);--order-kpi-soft:var(--foodex-palette-f5f3ff)}.order-kpi-item[data-tone="orange"]{--order-kpi-accent:var(--foodex-palette-ea580c);--order-kpi-soft:var(--foodex-palette-fff7ed)}.order-kpi-item[data-tone="red"]{--order-kpi-accent:var(--foodex-palette-dc2626);--order-kpi-soft:var(--foodex-palette-fef2f2)}.order-kpi-item[data-tone="amber"]{--order-kpi-accent:var(--foodex-palette-b45309);--order-kpi-soft:var(--foodex-palette-fffbeb)}.order-kpi-item[data-tone="cyan"]{--order-kpi-accent:var(--foodex-palette-0e7490);--order-kpi-soft:var(--foodex-palette-ecfeff)}.order-kpi-item[data-tone="rose"]{--order-kpi-accent:var(--foodex-palette-be123c);--order-kpi-soft:var(--foodex-palette-fff1f2)}
 @keyframes orderKpiEdge{from{background-position:0 0}to{background-position:180% 0}}
 .filters{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:6px;padding:8px;margin-bottom:6px}.filters label{display:grid;gap:5px;font-weight:700;font-size:.8rem}
-.status-tabs{display:flex;gap:6px;overflow:auto;padding:2px 0 6px;margin-bottom:0}.status-tab{display:inline-flex;align-items:center;gap:7px;white-space:nowrap;padding:9px 12px;border:1px solid var(--foodex-border);border-radius:999px;text-decoration:none;color:inherit;background:var(--foodex-surface,#fff);font-weight:800}.status-tab[aria-current="page"]{outline:2px solid currentColor}.status-tab-count{display:inline-flex;min-width:24px;height:24px;align-items:center;justify-content:center;border-radius:999px;background:rgba(0,0,0,.06);font-size:.78rem}
+.status-tabs{display:flex;gap:6px;overflow:auto;padding:2px 0 6px;margin-bottom:0}.status-tab{display:inline-flex;align-items:center;gap:7px;white-space:nowrap;min-height:44px;box-sizing:border-box;padding:9px 12px;border:1px solid var(--foodex-border);border-radius:999px;text-decoration:none;color:inherit;background:var(--foodex-surface,#fff);font-weight:800}.status-tab[aria-current="page"]{outline:2px solid currentColor}.status-tab-count{display:inline-flex;min-width:24px;height:24px;align-items:center;justify-content:center;border-radius:999px;background:rgba(0,0,0,.06);font-size:.78rem}
 .order-workspace-bar{display:flex;align-items:center;justify-content:space-between;gap:6px;min-width:0;margin:0 0 6px}
 .order-workspace-tabs{display:flex;align-items:center;justify-content:flex-start;gap:6px;min-width:0;margin:0;overflow-x:auto;overflow-y:hidden;padding:2px;scrollbar-width:thin;flex:0 1 auto}
 .order-workspace-filter-slot{display:flex;align-items:center;justify-content:flex-end;min-width:0;margin-inline-start:auto;flex:0 1 auto}
-.order-workspace-tab{display:inline-flex;align-items:center;justify-content:center;gap:8px;min-height:42px;padding:0 18px;border:1px solid var(--foodex-border);border-radius:999px;background:var(--foodex-surface);color:var(--foodex-muted);font-size:.78rem;font-weight:900;white-space:nowrap;cursor:pointer;box-shadow:0 4px 14px rgba(15,23,42,.035);transition:background .16s ease,color .16s ease,border-color .16s ease,transform .16s ease}
+.order-workspace-tab{display:inline-flex;align-items:center;justify-content:center;gap:8px;min-height:44px;padding:0 18px;border:1px solid var(--foodex-border);border-radius:999px;background:var(--foodex-surface);color:var(--foodex-muted);font-size:.78rem;font-weight:900;white-space:nowrap;cursor:pointer;box-shadow:0 4px 14px rgba(15,23,42,.035);transition:background .16s ease,color .16s ease,border-color .16s ease,transform .16s ease}
 .order-workspace-tab:hover{transform:translateY(-1px);border-color:var(--foodex-palette-b8d9c2);color:var(--foodex-green-dark)}
 .order-workspace-tab[aria-selected="true"]{border-color:var(--foodex-action-green);background:var(--foodex-action-green);color:#fff;box-shadow:0 8px 22px rgba(21,138,58,.16)}
 .order-workspace-tab-count{display:inline-flex;align-items:center;justify-content:center;min-width:24px;height:24px;padding:0 7px;border-radius:999px;background:var(--foodex-palette-dbeafe);color:var(--foodex-palette-1d4ed8);font-size:.68rem;font-weight:900;font-variant-numeric:tabular-nums}
@@ -29,8 +29,9 @@ body{margin:0}.shell{display:grid;grid-template-columns:minmax(0,1fr) 240px;min-
 .foodex-module-overview{display:grid;gap:6px}
 .order-tab-panel[data-order-panel="analytics"]{display:grid;gap:6px}
 .order-analytics-tabs{display:flex;align-items:center;gap:5px;overflow-x:auto;padding:0 0 2px;margin:0;scrollbar-width:thin}
-.order-analytics-subtab{min-height:34px;padding:0 13px;border:1px solid var(--foodex-border);border-radius:999px;background:var(--foodex-surface);color:var(--foodex-muted);font-size:.7rem;font-weight:900;white-space:nowrap;cursor:pointer;transition:background .22s ease,color .22s ease,border-color .22s ease,transform .22s ease}
+.order-analytics-subtab{min-height:44px;padding:0 13px;border:1px solid var(--foodex-border);border-radius:999px;background:var(--foodex-surface);color:var(--foodex-muted);font-size:.7rem;font-weight:900;white-space:nowrap;cursor:pointer;transition:background .22s ease,color .22s ease,border-color .22s ease,transform .22s ease}
 .order-analytics-subtab:hover{transform:translateY(-1px);border-color:var(--foodex-palette-bfd5c6);color:var(--foodex-green-dark)}
+.order-workspace-tab:focus-visible,.order-analytics-subtab:focus-visible{outline:2px solid var(--foodex-action-green);outline-offset:2px}
 .order-analytics-subtab[aria-selected="true"]{border-color:var(--foodex-palette-146c36);background:var(--foodex-palette-eaf7ef);color:var(--foodex-palette-146c36);box-shadow:inset 0 0 0 1px rgba(20,108,54,.08)}
 [data-analytics-group][hidden]{display:none!important}
 .foodex-module-panels,.sales-ops-chart-grid{gap:6px!important;margin:0!important;align-items:stretch}
@@ -114,7 +115,7 @@ html[dir="rtl"] .sales-ops-ranked-bars b{transform-origin:right center}html[dir=
 @media(max-width:1500px) and (min-width:1001px){.shell{grid-template-columns:minmax(0,1fr) 210px}.main{padding:16px 14px}.sidebar{padding:14px}.filters{grid-template-columns:repeat(3,minmax(0,1fr));padding:12px;gap:8px}.ops-table{font-size:.72rem}.ops-table th,.ops-table td{padding:7px 4px}.dispatch-warning{padding:5px 6px}.dispatch-meta{font-size:.7rem}.row-actions summary{width:30px;height:30px;font-size:18px}.row-action-menu{width:280px}}
 @media(max-width:1180px){.order-workspace-bar{align-items:center}.order-workspace-tabs{flex:1 1 auto}.order-workspace-filter-slot{flex:0 0 auto}}
 @media(max-width:1000px){.shell{grid-template-columns:1fr}.sidebar{grid-row:1}.main{grid-row:2;padding:16px}.filters{grid-template-columns:1fr 1fr}.table-wrap{overflow-x:auto}.ops-table{min-width:980px;table-layout:auto}.sales-ops-chart-grid{grid-template-columns:1fr}.order-kpi-card{grid-template-columns:repeat(auto-fit,minmax(140px,1fr))}}
-@media(max-width:700px){.order-workspace-bar{gap:5px}.order-workspace-tab{min-height:36px;padding-inline:11px}.order-workspace-tabs,.order-analytics-tabs{gap:4px}.order-analytics-subtab{min-height:32px;padding-inline:10px}.order-kpi-card{grid-template-columns:repeat(2,minmax(0,1fr));grid-auto-rows:minmax(108px,auto)}.order-kpi-item{min-height:108px}.sales-ops-exceptions{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:700px){.order-workspace-bar{gap:5px}.order-workspace-tab{min-height:44px;padding-inline:11px}.order-workspace-tabs,.order-analytics-tabs{gap:4px}.order-analytics-subtab{min-height:44px;padding-inline:10px}.order-kpi-card{grid-template-columns:repeat(2,minmax(0,1fr));grid-auto-rows:minmax(108px,auto)}.order-kpi-item{min-height:108px}.sales-ops-exceptions{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media(max-width:600px){.filters{grid-template-columns:1fr}.sales-ops-ranked-bars a{grid-template-columns:1fr auto}.sales-ops-ranked-bars i{grid-column:1/-1}}
 @media(max-width:380px){.order-kpi-card,.sales-ops-exceptions{grid-template-columns:1fr}.order-kpi-item{min-height:102px}}
 @media(prefers-reduced-motion:reduce){.order-kpi-card::before,.order-tab-panel.charts-animate .sales-ops-bar-link,.order-tab-panel.charts-animate .sales-ops-ranked-bars b,.order-tab-panel.charts-animate [data-foodex-module-chart]{animation:none}.order-kpi-item,.order-workspace-tab,.order-analytics-subtab{transition:none}.order-kpi-item:hover,.order-workspace-tab:hover,.order-analytics-subtab:hover{transform:none}.sales-ops-bar-link{transform:none;opacity:1}.sales-ops-ranked-bars b{transform:none}}
@@ -220,11 +221,17 @@ $dashboardVisible = (bool) ($dashboardVisible ?? false);
             <button class="order-workspace-tab"
                     type="button"
                     role="tab"
+                    id="order-tab-analytics"
+                    aria-controls="order-tabpanel-analytics"
+                    tabindex="-1"
                     aria-selected="false"
                     data-order-tab="analytics">{{ $isAr ? 'التحليلات' : 'Analytics' }}</button>
             <button class="order-workspace-tab"
                     type="button"
                     role="tab"
+                    id="order-tab-orders"
+                    aria-controls="order-tabpanel-orders"
+                    tabindex="0"
                     aria-selected="true"
                     data-order-tab="orders">{{ $isAr ? 'الطلبات' : 'Orders' }} <span class="order-workspace-tab-count">{{ number_format((int)$statusTotal) }}</span></button>
         </nav>
@@ -238,16 +245,16 @@ $dashboardVisible = (bool) ($dashboardVisible ?? false);
         </div>
     </div>
 
-    <div class="order-tab-panel" role="tabpanel" data-order-panel="analytics" hidden>
+    <div class="order-tab-panel" role="tabpanel" id="order-tabpanel-analytics" aria-labelledby="order-tab-analytics" data-order-panel="analytics" hidden>
     <nav class="order-analytics-tabs"
          role="tablist"
          aria-label="{{ $isAr ? 'أقسام التحليلات' : 'Analytics sections' }}"
          data-order-analytics-tabs
          data-default-analytics-tab="performance">
-        <button class="order-analytics-subtab" type="button" role="tab" aria-selected="true" data-analytics-tab="performance">{{ $isAr ? 'الأداء' : 'Performance' }}</button>
-        <button class="order-analytics-subtab" type="button" role="tab" aria-selected="false" data-analytics-tab="operations">{{ $isAr ? 'التشغيل' : 'Operations' }}</button>
-        <button class="order-analytics-subtab" type="button" role="tab" aria-selected="false" data-analytics-tab="channels">{{ $isAr ? 'القنوات والدفع' : 'Channels & Payment' }}</button>
-        <button class="order-analytics-subtab" type="button" role="tab" aria-selected="false" data-analytics-tab="commerce">{{ $isAr ? 'العملاء والمنتجات' : 'Customers & Products' }}</button>
+        <button class="order-analytics-subtab" type="button" role="tab" tabindex="0" aria-selected="true" data-analytics-tab="performance">{{ $isAr ? 'الأداء' : 'Performance' }}</button>
+        <button class="order-analytics-subtab" type="button" role="tab" tabindex="-1" aria-selected="false" data-analytics-tab="operations">{{ $isAr ? 'التشغيل' : 'Operations' }}</button>
+        <button class="order-analytics-subtab" type="button" role="tab" tabindex="-1" aria-selected="false" data-analytics-tab="channels">{{ $isAr ? 'القنوات والدفع' : 'Channels & Payment' }}</button>
+        <button class="order-analytics-subtab" type="button" role="tab" tabindex="-1" aria-selected="false" data-analytics-tab="commerce">{{ $isAr ? 'العملاء والمنتجات' : 'Customers & Products' }}</button>
     </nav>
     <div class="foodex-module-panels">
         <article class="foodex-viz-card foodex-module-chart" data-foodex-module-chart data-analytics-group="performance" aria-labelledby="sales-trend-title">
@@ -369,7 +376,7 @@ $dashboardVisible = (bool) ($dashboardVisible ?? false);
          aria-label="{{ $isAr ? 'أقسام إدارة الطلبات' : 'Order management sections' }}"
          data-order-tabs
          data-default-tab="orders">
-        <button class="order-workspace-tab" type="button" role="tab" aria-selected="true" data-order-tab="orders">{{ $isAr ? 'الطلبات' : 'Orders' }} <span class="order-workspace-tab-count">{{ number_format((int)$orders->total()) }}</span></button>
+        <button class="order-workspace-tab" type="button" role="tab" id="order-tab-orders" aria-controls="order-tabpanel-orders" tabindex="0" aria-selected="true" data-order-tab="orders">{{ $isAr ? 'الطلبات' : 'Orders' }} <span class="order-workspace-tab-count">{{ number_format((int)$orders->total()) }}</span></button>
     </nav>
     <div class="order-workspace-filter-slot" data-order-workspace-filter>
         <div data-order-filter-mode="orders">
@@ -379,7 +386,7 @@ $dashboardVisible = (bool) ($dashboardVisible ?? false);
 </div>
 <?php endif; ?>
 
-<div class="order-tab-panel" role="tabpanel" data-order-panel="orders">
+<div class="order-tab-panel" role="tabpanel" id="order-tabpanel-orders" aria-labelledby="order-tab-orders" data-order-panel="orders">
 @if($canViewApprovedDiscounts)
 <nav class="status-tabs" data-v2-approved-discounts-nav aria-label="{{ __('customer_service_discount.pending_review') }}">
     <a class="status-tab" data-v2-pending-discounts-tab href="{{ route('admin.operations.orders.index', array_merge(request()->except(['order', 'page', 'approved_discount_page', 'status', 'exception', 'dispatch_status']), ['channel' => $selectedChannel, 'discount_view' => 'pending', 'action_required' => 0])) }}#order-tab-orders" @if($pendingDiscountsMode) aria-current="page" @endif>{{ __('customer_service_discount.pending_review') }}</a>
@@ -658,7 +665,7 @@ $dashboardVisible = (bool) ($dashboardVisible ?? false);
                 <select name="dispatch_target" required data-order-inline-picker-select data-initial-value="{{ $dispatchInitial }}" aria-label="{{ $rowWithDriver ? ($row['channel']==='b2b' ? ($isAr ? 'سحب وتحويل إلى فان' : 'Transfer legacy driver order to Van') : ($isAr ? 'سحب وتحويل الطلب لسائق آخر' : 'Withdraw and transfer order to another driver')) : ($row['channel']==='b2b' ? ($isAr ? 'اختر فان' : 'Choose Van') : __('order_operations.dispatch.choose_driver')) }}" @disabled(!$row['can_dispatch'])>
                     <option value="">{{ $rowWithDriver ? ($row['channel']==='b2b' ? ($isAr ? 'سحب وتحويل إلى فان' : 'Transfer legacy driver order to Van') : ($isAr ? 'سحب وتحويل الطلب لسائق آخر' : 'Withdraw and transfer order to another driver')) : ($row['channel']==='b2b' ? ($isAr ? 'اختر فان' : 'Choose Van') : __('order_operations.dispatch.choose_driver')) }}</option>
                     @foreach($drivers as $driver)
-                        @if((int)$driver->store_id===(int)$row['store_id'] && strtolower((string)$driver->driver_type)===$row['channel'] && (!$rowWithDriver || (int)$driver->id!==$rowCurrentDriverId))
+                        @if($row['channel']==='b2c' && (int)$driver->store_id===(int)$row['store_id'] && strtolower((string)$driver->driver_type)==='b2c' && (!$rowWithDriver || (int)$driver->id!==$rowCurrentDriverId))
                             <option value="driver:{{ $driver->id }}" @selected(!$rowWithDriver && $dispatchInitial===('driver:'.$driver->id))>{{ $isAr ? 'سائق' : 'Driver' }} · {{ $driver->name ?: __('order_operations.filters.unnamed_driver') }}</option>
                         @endif
                     @endforeach
@@ -1084,6 +1091,23 @@ $dashboardVisible = (bool) ($dashboardVisible ?? false);
         button.addEventListener('click', () => activate(button.dataset.orderTab));
     });
 
+    // ARIA tabs: one tab stop; Arrow/Home/End select and focus without
+    // submitting an order, changing routing, or touching server filters.
+    tabs.addEventListener('keydown', (event) => {
+        if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+        const current = buttons.indexOf(document.activeElement);
+        if (current < 0) return;
+        event.preventDefault();
+        const rtl = document.documentElement.dir === 'rtl';
+        const delta = event.key === 'ArrowRight' ? (rtl ? -1 : 1) : (rtl ? 1 : -1);
+        const next = event.key === 'Home' ? 0
+            : event.key === 'End' ? buttons.length - 1
+            : (current + delta + buttons.length) % buttons.length;
+        const target = buttons[next];
+        activate(target.dataset.orderTab);
+        target.focus();
+    });
+
     activate(hashTab && available.has(hashTab) ? hashTab : defaultTab, false);
 })();
 
@@ -1126,6 +1150,21 @@ $dashboardVisible = (bool) ($dashboardVisible ?? false);
 
     buttons.forEach((button) => {
         button.addEventListener('click', () => activate(button.dataset.analyticsTab));
+    });
+
+    tabs.addEventListener('keydown', (event) => {
+        if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+        const current = buttons.indexOf(document.activeElement);
+        if (current < 0) return;
+        event.preventDefault();
+        const rtl = document.documentElement.dir === 'rtl';
+        const delta = event.key === 'ArrowRight' ? (rtl ? -1 : 1) : (rtl ? 1 : -1);
+        const next = event.key === 'Home' ? 0
+            : event.key === 'End' ? buttons.length - 1
+            : (current + delta + buttons.length) % buttons.length;
+        const target = buttons[next];
+        activate(target.dataset.analyticsTab);
+        target.focus();
     });
 
     activate(defaultTab);

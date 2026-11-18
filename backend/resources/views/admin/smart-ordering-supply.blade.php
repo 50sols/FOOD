@@ -18,6 +18,9 @@
         .si-actions{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
         .si-muted{opacity:.72}
         .si-form{display:grid;gap:12px}
+        .si-tabs{display:flex;flex-wrap:nowrap;overflow-x:auto;max-width:100%;min-width:0;overscroll-behavior-inline:contain;scrollbar-width:thin}
+        .si-tabs .foodex-tab{flex:0 0 auto;white-space:nowrap;min-height:44px}
+        .si-grid>.panel{min-width:0}
         .si-form label{display:grid;gap:6px}
         .si-danger{border:1px solid var(--foodex-red);color:var(--foodex-red);background:transparent;border-radius:10px;padding:8px 12px}
     </style>
@@ -33,7 +36,31 @@
     };
     $itemIndex = collect($menuItems)->keyBy('public_id');
     $displayRecommendations = array_slice($recommendations['rows'], 0, 500);
-    $supportAccess = (bool) request()->integer('support_access');
+    // Use the controller-authorized support mode; query input never grants support privileges.
+    $supportAccess = (bool) ($supportAccess ?? false);
+    $supplyTabs = [
+        'overview' => __('smart_ordering_supply.coverage_title'),
+        'mapping' => __('smart_ordering_supply.mappings_title'),
+        'stock' => __('smart_ordering_supply.stock_title'),
+        'waste' => __('smart_ordering_supply.waste_title'),
+        'cost' => __('smart_ordering_supply.recipe_cost_title'),
+        'analysis' => __('smart_ordering_supply.consumption_title'),
+        'reorder' => __('smart_ordering_supply.reorder_title'),
+    ];
+    $requestedSupplyTab = request()->query('tab');
+    $activeSupplyTab = is_string($requestedSupplyTab) && array_key_exists($requestedSupplyTab, $supplyTabs)
+        ? $requestedSupplyTab : 'overview';
+    $supplyTabQuery = ['from' => $from->toDateString(), 'to' => $to->toDateString()];
+    if ($branchId !== null) $supplyTabQuery['branch_id'] = $branchId;
+    if ($supportAccess) $supplyTabQuery['support_access'] = 1;
+    $supplySearch = request()->query('q');
+    if (is_string($supplySearch) && $supplySearch !== '') $supplyTabQuery['q'] = $supplySearch;
+    $supplyActor = auth()->user();
+    $canManageSupply = $supplyActor->hasRole('SUPER_ADMIN')
+        ? ($supportAccess && $supplyActor->hasPermission('smart_ordering.manage', (int) $site->store_id))
+        : app(\App\Domain\RestaurantSaaS\RestaurantSaasStoreAccess::class)->canNavigateToStore(
+            $supplyActor, (int) $site->store_id, 'smart_ordering.manage'
+        );
 @endphp
 <div class="foodex-admin-layout" data-foodex-mobile-web-page="smart-ordering-supply">
     <aside class="sidebar">
@@ -62,6 +89,8 @@
             <h2>{{ __('smart_ordering_supply.period_scope') }}</h2>
             <form class="si-grid" method="get" action="{{ route('admin.smart-ordering.supply.index',$site) }}">
                 @if($supportAccess)<input type="hidden" name="support_access" value="1">@endif
+                <input type="hidden" name="tab" value="{{ $activeSupplyTab }}">
+                @if(isset($supplyTabQuery['q']))<input type="hidden" name="q" value="{{ $supplyTabQuery['q'] }}">@endif
                 <label>{{ __('smart_ordering_supply.from') }}<input class="foodex-control" type="date" name="from" value="{{ $from->toDateString() }}"></label>
                 <label>{{ __('smart_ordering_supply.to') }}<input class="foodex-control" type="date" name="to" value="{{ $to->toDateString() }}"></label>
                 <label>{{ __('smart_ordering_supply.branch') }}
@@ -76,6 +105,15 @@
             </form>
         </section>
 
+        <nav class="foodex-tabs si-tabs" aria-label="{{ __('smart_ordering_supply.title') }}">
+            @foreach($supplyTabs as $tabKey => $tabLabel)
+                <a class="foodex-tab {{ $activeSupplyTab === $tabKey ? 'active' : '' }}"
+                   href="{{ route('admin.smart-ordering.supply.index', ['site' => $site->getKey(), ...$supplyTabQuery, 'tab' => $tabKey]) }}"
+                   @if($activeSupplyTab === $tabKey) aria-current="page" @endif>{{ $tabLabel }}</a>
+            @endforeach
+        </nav>
+
+@if($activeSupplyTab === 'overview')
         <section class="panel">
             <h2>{{ __('smart_ordering_supply.coverage_title') }}</h2>
             <div class="si-kpis">
@@ -85,11 +123,15 @@
                 <div class="si-kpi"><span>{{ __('smart_ordering_supply.confidence') }}</span><strong>{{ strtoupper($consumption['confidence']) }}</strong></div>
             </div>
         </section>
+@endif
 
+@if(in_array($activeSupplyTab, ['mapping', 'stock'], true))
         <div class="si-grid">
+@if($activeSupplyTab === 'mapping')
             <section class="panel">
                 <h2>{{ __('smart_ordering_supply.mapping_title') }}</h2>
                 <p class="si-muted">{{ __('smart_ordering_supply.mapping_help') }}</p>
+                @if($canManageSupply)
                 <form class="si-form" method="post" action="{{ route('admin.smart-ordering.supply.mappings.store',$site) }}">
                     @csrf
                     @if($supportAccess)<input type="hidden" name="support_access" value="1">@endif
@@ -133,11 +175,14 @@
                     </div>
                     <button class="primary" type="submit">{{ __('smart_ordering_supply.save_mapping') }}</button>
                 </form>
+                @endif
             </section>
-
+@endif
+@if($activeSupplyTab === 'stock')
             <section class="panel">
                 <h2>{{ __('smart_ordering_supply.stock_title') }}</h2>
                 <p class="si-muted">{{ __('smart_ordering_supply.stock_help') }}</p>
+                @if($canManageSupply)
                 <form class="si-form" method="post" action="{{ route('admin.smart-ordering.supply.stock',$site) }}">
                     @csrf @method('PUT')
                     @if($supportAccess)<input type="hidden" name="support_access" value="1">@endif
@@ -157,13 +202,18 @@
                     <label>{{ __('smart_ordering_supply.counted_at') }}<input class="foodex-control" type="datetime-local" name="counted_at" value="{{ now('Asia/Kuwait')->format('Y-m-d\TH:i') }}" required></label>
                     <button class="primary" type="submit">{{ __('smart_ordering_supply.save_authoritative_stock') }}</button>
                 </form>
+                @endif
             </section>
+@endif
         </div>
+@endif
 
+@if($activeSupplyTab === 'waste')
         <div class="si-grid">
             <section class="panel">
                 <h2>{{ __('smart_ordering_supply.waste_title') }}</h2>
                 <p class="si-muted">{{ __('smart_ordering_supply.waste_help') }}</p>
+                @if($canManageSupply)
                 <form class="si-form" method="post" action="{{ route('admin.smart-ordering.supply.waste',$site) }}">
                     @csrf
                     @if($supportAccess)<input type="hidden" name="support_access" value="1">@endif
@@ -183,6 +233,7 @@
                     <label>{{ __('smart_ordering_supply.occurred_at') }}<input class="foodex-control" type="datetime-local" name="occurred_at" value="{{ now('Asia/Kuwait')->format('Y-m-d\TH:i') }}" required></label>
                     <button class="primary" type="submit">{{ __('smart_ordering_supply.record_waste') }}</button>
                 </form>
+                @endif
             </section>
 
             <section class="panel">
@@ -203,7 +254,9 @@
                 </table></div>
             </section>
         </div>
+@endif
 
+@if($activeSupplyTab === 'mapping')
         <section class="panel">
             <h2>{{ __('smart_ordering_supply.mappings_title') }}</h2>
             <div class="si-table-wrap"><table class="si-table" data-pagination-exempt="bounded-500-analysis-snapshot">
@@ -219,7 +272,7 @@
                         <td>{{ number_format($mapping['waste_factor']*100,2) }}%</td>
                         <td>{{ $mapping['effective_from'] }} → {{ $mapping['effective_to'] ?: '∞' }}<br><span class="si-badge">{{ $mapping['is_active'] ? __('smart_ordering_supply.active') : __('smart_ordering_supply.historical') }}</span></td>
                         <td>
-                            @if($mapping['is_active'])
+                            @if($canManageSupply && $mapping['is_active'])
                             <form method="post" action="{{ route('admin.smart-ordering.supply.mappings.deactivate',[$site,$mapping['public_id']]) }}">@csrf @if($supportAccess)<input type="hidden" name="support_access" value="1">@endif<button class="si-danger" type="submit">{{ __('smart_ordering_supply.end_mapping') }}</button></form>
                             @endif
                         </td>
@@ -230,7 +283,9 @@
                 </tbody>
             </table></div>
         </section>
+@endif
 
+@if($activeSupplyTab === 'cost')
         <section class="panel">
             <h2>{{ __('smart_ordering_supply.recipe_cost_title') }}</h2>
             <p class="si-muted">{{ __('smart_ordering_supply.recipe_cost_help') }}</p>
@@ -257,7 +312,9 @@
                 </tbody>
             </table></div>
         </section>
+@endif
 
+@if($activeSupplyTab === 'stock')
         <div class="si-grid">
             <section class="panel">
                 <h2>{{ __('smart_ordering_supply.stock_history_title') }}</h2>
@@ -304,7 +361,9 @@
                 </table></div>
             </section>
         </div>
+@endif
 
+@if($activeSupplyTab === 'analysis')
         <section class="panel">
             <h2>{{ __('smart_ordering_supply.consumption_title') }}</h2>
             <div class="si-table-wrap"><table class="si-table" data-pagination-exempt="bounded-500-analysis-snapshot">
@@ -329,14 +388,20 @@
                 </tbody>
             </table></div>
         </section>
+@endif
 
+@if($activeSupplyTab === 'reorder')
         <section class="panel">
             <h2>{{ __('smart_ordering_supply.reorder_title') }}</h2>
             <p class="si-muted">{{ __('smart_ordering_supply.reorder_help') }}</p>
+            @if($canManageSupply)
             <form method="post" action="{{ route('admin.smart-ordering.supply.draft',$site) }}">
                 @csrf
                 @if($supportAccess)<input type="hidden" name="support_access" value="1">@endif
                 @if($branchId)<input type="hidden" name="branch_id" value="{{ $branchId }}">@endif
+            @else
+            <div>
+            @endif
                 <div class="si-table-wrap"><table class="si-table" data-pagination-exempt="bounded-500-analysis-snapshot">
                     <thead><tr><th>{{ __('smart_ordering_supply.foodex_sku') }}</th><th>{{ __('smart_ordering_supply.state') }}</th><th>{{ __('smart_ordering_supply.basis') }}</th><th>{{ __('smart_ordering_supply.live_price') }}</th><th>{{ __('smart_ordering_supply.foodex_available') }}</th><th>{{ __('smart_ordering_supply.suggested_quantity') }}</th><th>{{ __('smart_ordering_supply.cost') }}</th><th></th></tr></thead>
                     <tbody>
@@ -351,29 +416,37 @@
                             <td>{{ $row['current_price'] === null ? '—' : number_format($row['current_price'],3) }}</td>
                             <td>{{ number_format($row['foodex_available_quantity'],3) }}</td>
                             <td>
-                                @if($row['is_executable'])
+                                @if($canManageSupply && $row['is_executable'])
                                     <input class="foodex-control" style="min-width:110px" type="number" step="{{ max(0.001,(float)$row['ordering_increment']) }}" min="{{ $row['minimum_quantity'] }}" max="{{ $row['recommended_quantity'] }}" name="quantities[{{ $row['foodex_product_id'] }}]" value="{{ $row['recommended_quantity'] }}">
                                 @else
                                     {{ number_format($row['recommended_quantity'],3) }}
                                 @endif
                             </td>
                             <td>{{ $row['estimated_cost'] === null ? '—' : number_format($row['estimated_cost'],3) }}</td>
-                            <td><button class="si-danger" form="dismiss-{{ $row['foodex_product_id'] }}" type="submit">{{ __('smart_ordering_supply.dismiss_7d') }}</button></td>
+                            <td>@if($canManageSupply)<button class="si-danger" form="dismiss-{{ $row['foodex_product_id'] }}" type="submit">{{ __('smart_ordering_supply.dismiss_7d') }}</button>@endif</td>
                         </tr>
                     @empty<tr><td colspan="8">{{ __('smart_ordering_supply.no_recommendations') }}</td></tr>@endforelse
                     </tbody>
                 </table></div>
-                @if(collect($displayRecommendations)->contains(fn($row)=>$row['is_executable']))
+                @if($canManageSupply && collect($displayRecommendations)->contains(fn($row)=>$row['is_executable']))
                     <button class="primary" type="submit">{{ __('smart_ordering_supply.create_draft') }}</button>
                 @endif
+            @if($canManageSupply)
             </form>
+            @else
+            </div>
+            @endif
+            @if($canManageSupply)
             @foreach($displayRecommendations as $row)
                 <form id="dismiss-{{ $row['foodex_product_id'] }}" method="post" action="{{ route('admin.smart-ordering.supply.dismiss',[$site,$row['foodex_product_id']]) }}" style="display:none">
                     @csrf<input type="hidden" name="days" value="7">@if($supportAccess)<input type="hidden" name="support_access" value="1">@endif @if($branchId)<input type="hidden" name="branch_id" value="{{ $branchId }}">@endif
                 </form>
             @endforeach
+            @endif
         </section>
+@endif
 
+@if($activeSupplyTab === 'overview')
         <div class="si-grid">
             <section class="panel">
                 <h2>{{ __('smart_ordering_supply.commercial_title') }}</h2>
@@ -397,6 +470,7 @@
                 @endforelse
             </section>
         </div>
+@endif
     </main>
 </div>
 </body>

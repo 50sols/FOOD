@@ -32,7 +32,7 @@ This file records recurring structural hazards and reusable lessons. It is **not
 
 ## K-008 — Local/remote CI routing can drift
 **Risk:** The worker can validate one set of apps/tests locally while Required CI selects another set remotely.
-**Guard:** `.ci/ci-map.json` is the single routing authority; both local preflight and Required CI use `scripts/ci-plan.py`, with drift regression tests.
+**Guard:** `.ci/ci-map.json` is the single routing authority; both local preflight and Required CI use `scripts/ci-plan.py`, with drift regression tests. PR paths use `git diff base...head` so commits that exist only on an advanced base branch are excluded. Route only content-reviewed QA documents to relevant areas; unknown paths remain fail-closed.
 
 ## K-009 — Test network/toolchain nondeterminism can create false red
 **Risk:** Unit/widget tests or mutable CI tools may depend on external network availability or silently change behavior between pushes.
