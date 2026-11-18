@@ -64,6 +64,12 @@ final class V2EnterpriseBiIndependentPageTabsTest extends TestCase
                 $html = $response->getContent();
                 $this->assertSame(1, preg_match_all('/data-bi-workspace-panel="(overview|reports|exports|schedules)"/', $html));
                 $this->assertSame(4, preg_match_all('/data-bi-workspace-link="(overview|reports|exports|schedules)"/', $html));
+                $this->assertSame(1, preg_match('/<nav\\b[^>]*data-bi-workspace-tabs[^>]*>.*?<\\/nav>/s', $html, $navigation));
+                $this->assertSame(1, substr_count($navigation[0], 'aria-current="page"'));
+                $this->assertStringNotContainsString('role="tab"', $navigation[0]);
+                $this->assertStringContainsString('flex-wrap:nowrap;', $html);
+                $this->assertStringContainsString('min-height:44px;', $html);
+                $this->assertStringContainsString(':focus-visible', $html);
 
                 foreach ($panels as $other) {
                     if ($selected !== $other) {
@@ -146,6 +152,37 @@ final class V2EnterpriseBiIndependentPageTabsTest extends TestCase
         config()->set('enterprise_module_readiness.certified_versions.enterprise_bi', null);
         $response = $this->actingAs($actor)->get(route('admin.erp.bi', ['bi_tab' => 'reports']));
         $this->assertContains($response->status(), [403, 404]);
+    }
+
+    public function test_tab_query_cannot_select_a_foreign_bi_store(): void
+    {
+        [, $assignedStore] = $this->authorizedStoreActor();
+        $foreignStore = $this->store('BI-TABS-3951-FOREIGN');
+        $actor = User::factory()->create(['is_active' => true, 'locale' => 'en']);
+        $actor->roles()->attach(Role::query()->where('code', 'BUSINESS_ANALYST')->firstOrFail());
+        DB::table('user_store_roles')->insert([
+            'user_id' => $actor->id,
+            'store_id' => $assignedStore->id,
+            'role_id' => Role::query()->where('code', 'RETAIL_OPERATIONS')->firstOrFail()->id,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        app(ModuleEntitlementManager::class)->set(
+            'enterprise_bi',
+            new EntitlementScope(EntitlementScope::STORE, $foreignStore->id),
+            true,
+            ['reports.read', 'reports.export'],
+        );
+        $before = $this->businessCounts();
+
+        $this->actingAs($actor)
+            ->get(route('admin.erp.bi', [
+                'bi_tab' => 'exports',
+                'scope' => 'store:'.$foreignStore->id,
+            ]))
+            ->assertForbidden();
+
+        $this->assertSame($before, $this->businessCounts());
     }
 
     public function test_schedule_post_preserves_selected_workspace_on_success_and_validation_error(): void
