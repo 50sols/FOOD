@@ -159,6 +159,11 @@ final class InventoryOwnershipRuleService
                 return $rule;
             }
             if ($approve) {
+                // Proposal-time supplier/warehouse/document validation cannot be
+                // trusted at approval time: references may have been revoked or
+                // moved to another company/store while awaiting the checker.
+                abort_unless($this->referencesStillValid($rule), 409);
+
                 // Serialize approvals for a store before checking competing
                 // approved policies; concurrent reviewers must not both win.
                 DB::table('stores')->where('id', $rule->store_id)->lockForUpdate()->first();
@@ -195,6 +200,14 @@ final class InventoryOwnershipRuleService
     public function advisoryFor(User $actor, int $storeId, string $channel, ?int $supplierId, ?int $warehouseId): array
     {
         $this->authorize($actor, $storeId, 'inventory.view');
+        // Do not issue even non-certifying guidance for a foreign, deleted or
+        // disabled warehouse. The client cannot designate an arbitrary store's
+        // warehouse as the context for this store's title policy.
+        if ($warehouseId !== null) {
+            abort_unless(DB::table('warehouses')->where('id', $warehouseId)
+                ->where('store_id', $storeId)->where('is_active', true)->exists(), 404);
+        }
+
         // A store's legal entity can change after a rule was approved.
         // Never serve a previous company's policy as current title guidance.
         $this->assertChannel($storeId, $channel);
@@ -221,12 +234,65 @@ final class InventoryOwnershipRuleService
             'specificity' => ($r->supplier_id !== null ? 2 : 0) + ($r->warehouse_id !== null ? 1 : 0),
         ])->sortByDesc('specificity')->values();
         $first = $ranked->first();
+        // A previously approved rule is not authoritative advice after its
+        // supplier, warehouse or source-document scope is revoked. Fail closed
+        // rather than silently falling back to a less specific policy: the
+        // checker must re-evaluate the explicit business scope first.
+        if ($first !== null && ! $this->referencesStillValid($first['rule'])) {
+            return ['state' => 'UNKNOWN', 'certified' => false, 'policy' => null];
+        }
+
         $ambiguous = $first !== null && $ranked->count() > 1
             && $ranked[1]['specificity'] === $first['specificity']
             && $ranked[1]['rule']->rule_uuid !== $first['rule']->rule_uuid;
 
         return ['state' => $ambiguous ? 'CONFLICT' : 'UNKNOWN', 'certified' => false,
             'policy' => $ambiguous ? null : ($first['rule'] ?? null)];
+    }
+
+    /**
+     * Re-check mutable references after the DRAFT was created and before any
+     * approved guidance is surfaced. This is a policy-scope check, never
+     * evidence of legal title, stock valuation or an ownership transfer.
+     */
+    private function referencesStillValid(object $rule): bool
+    {
+        $storeId = (int) $rule->store_id;
+        $supplierId = $rule->supplier_id === null ? null : (int) $rule->supplier_id;
+        $warehouseId = $rule->warehouse_id === null ? null : (int) $rule->warehouse_id;
+        $documentId = $rule->supplier_document_id === null ? null : (int) $rule->supplier_document_id;
+
+        if (((string) $rule->initial_owner_kind === 'SUPPLIER') !== ($supplierId !== null)) {
+            return false;
+        }
+
+        if ($supplierId !== null && ! DB::table('enterprise_suppliers')
+            ->where('id', $supplierId)
+            ->where('company_id', (int) $rule->company_id)
+            ->where('status', 'active')
+            ->where(function ($scope) use ($storeId): void {
+                $scope->where(function ($company): void {
+                    $company->where('scope_type', 'company')->whereNull('store_id');
+                })->orWhere(function ($store) use ($storeId): void {
+                    $store->where('scope_type', 'store')->where('store_id', $storeId);
+                });
+            })->exists()) {
+            return false;
+        }
+
+        if ($warehouseId !== null && ! DB::table('warehouses')
+            ->where('id', $warehouseId)->where('store_id', $storeId)
+            ->where('is_active', true)->exists()) {
+            return false;
+        }
+
+        if ($documentId !== null && ($supplierId === null
+            || ! DB::table('enterprise_supplier_documents')->where('id', $documentId)
+                ->where('supplier_id', $supplierId)->exists())) {
+            return false;
+        }
+
+        return true;
     }
 
     private function authorize(User $actor, int $storeId, string $permission): void
