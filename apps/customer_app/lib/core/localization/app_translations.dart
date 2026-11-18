@@ -593,6 +593,7 @@ class AppTranslations extends InheritedWidget {
     'b2b.invoices.subtitle': 'فواتير حساب الأعمال',
     'b2b.invoice.title': 'تفاصيل الفاتورة',
     'b2b.invoice.debt': 'المديونية',
+    'b2b.invoice.balance_unverified': 'الرصيد غير مؤكد',
     'b2b.invoice.status.due': 'مستحقة',
     'b2b.invoice.status.partially_settled': 'مسددة جزئيًا',
     'b2b.invoice.status.settled': 'مسددة',
@@ -756,6 +757,8 @@ class AppTranslations extends InheritedWidget {
     'b2b.checkout.purchasing_power': 'القوة الشرائية المتاحة',
     'b2b.checkout.insufficient_credit':
         'القوة الشرائية الحالية لا تكفي لإجمالي الطلب. اختر طريقة دفع أخرى أو خفّض قيمة السلة.',
+    'b2b.checkout.financial_unavailable':
+        'تعذر التحقق من إجمالي الطلب أو الائتمان. حدّث بيانات السلة وأعد المحاولة.',
     'b2b.checkout.review': 'المراجعة النهائية',
     'b2b.checkout.order_summary': 'ملخص الطلب',
     'b2b.checkout.product': 'منتج',
@@ -773,6 +776,9 @@ class AppTranslations extends InheritedWidget {
     'b2b.profile.financial': 'الحساب المالي',
     'b2b.profile.orders': 'طلباتي',
     'b2b.profile.purchases_report': 'تقرير المشتريات',
+    'b2b.profile.financial_summary': 'ملخص الحساب المالي',
+    'b2b.profile.total_purchases': 'إجمالي مشترياتك',
+    'b2b.profile.total_debt': 'إجمالي مديونيتك',
     'b2b.profile.notifications': 'الإشعارات',
     'b2b.profile.addresses': 'العناوين',
     'b2b.profile.language': 'اللغة',
@@ -1394,6 +1400,7 @@ class AppTranslations extends InheritedWidget {
     'b2b.invoices.subtitle': 'Business account invoices',
     'b2b.invoice.title': 'Invoice details',
     'b2b.invoice.debt': 'Debt',
+    'b2b.invoice.balance_unverified': 'Unverified balance',
     'b2b.invoice.status.due': 'Due',
     'b2b.invoice.status.partially_settled': 'Partially settled',
     'b2b.invoice.status.settled': 'Settled',
@@ -1561,6 +1568,8 @@ class AppTranslations extends InheritedWidget {
     'b2b.checkout.purchasing_power': 'Available purchasing power',
     'b2b.checkout.insufficient_credit':
         'Current purchasing power does not cover the order total. Choose another payment method or reduce the cart.',
+    'b2b.checkout.financial_unavailable':
+        'Unable to verify order total or credit. Refresh the cart and try again.',
     'b2b.checkout.review': 'Final review',
     'b2b.checkout.order_summary': 'Order summary',
     'b2b.checkout.product': 'Product',
@@ -1578,6 +1587,9 @@ class AppTranslations extends InheritedWidget {
     'b2b.profile.financial': 'Financial account',
     'b2b.profile.orders': 'My orders',
     'b2b.profile.purchases_report': 'Purchases report',
+    'b2b.profile.financial_summary': 'Financial account summary',
+    'b2b.profile.total_purchases': 'Total purchases',
+    'b2b.profile.total_debt': 'Total outstanding debt',
     'b2b.profile.notifications': 'Notifications',
     'b2b.profile.addresses': 'Addresses',
     'b2b.profile.language': 'Language',

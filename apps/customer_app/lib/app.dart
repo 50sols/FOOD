@@ -638,6 +638,7 @@ class _FoodexCustomerAppState extends State<FoodexCustomerApp>
                     baseUrl: baseUrl,
                     token: token,
                     retailStoreContextId: _session.b2bRetailStoreId,
+                    locale: _locale.languageCode,
                     client: _sessionHttpClient,
                   ));
     final b2cCatalogApi = preview != null
@@ -697,6 +698,7 @@ class _FoodexCustomerAppState extends State<FoodexCustomerApp>
                     baseUrl: baseUrl,
                     token: token,
                     retailStoreContextId: _session.b2bRetailStoreId,
+                    locale: _locale.languageCode,
                     client: _sessionHttpClient,
                   ));
 

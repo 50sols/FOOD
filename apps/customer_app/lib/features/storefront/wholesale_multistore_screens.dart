@@ -1,6 +1,7 @@
 // ignore_for_file: prefer_interpolation_to_compose_strings, deprecated_member_use
 
 import 'dart:async';
+import 'dart:convert';
 import 'dart:math' as math;
 import 'dart:ui' as ui;
 
@@ -2496,9 +2497,19 @@ class _WholesaleProductCardState extends State<_WholesaleProductCard> {
         ? (row['promotion'] as Map)['name']?.toString().trim()
         : row['promotion_name']?.toString().trim();
     final amount = row['account_price'] ?? row['unit_price'] ?? row['price'];
-    final priceLabel = widget.homeWholeNumberPrice
-        ? '${doubleValue(amount, 0).toStringAsFixed(0)} $currency'
-        : money(amount, currency: currency);
+    // A missing or malformed server price is unknown, not a genuine zero.
+    // Display validation only: the quote/checkout API owns final pricing.
+    final displayAmount = amount is num
+        ? amount.toDouble()
+        : amount is String
+            ? double.tryParse(amount.trim())
+            : null;
+    final priceLabel =
+        displayAmount == null || !displayAmount.isFinite || displayAmount < 0
+            ? '—'
+            : widget.homeWholeNumberPrice
+                ? '${displayAmount.toStringAsFixed(0)} $currency'
+                : money(displayAmount, currency: currency);
     final twoColumns = widget.gridColumns == 2;
     final singleColumn = widget.gridColumns == 1;
     final imageHeight = singleColumn ? 176.0 : (twoColumns ? 126.0 : 96.0);
@@ -6233,11 +6244,33 @@ class _WholesaleCartDesignScreenState extends State<WholesaleCartDesignScreen>
         final target = _queuedQuantities.remove(id);
         if (target == null) break;
 
-        final value = await api.updateItem(id, target);
+        final scopedStoreId = storeId;
+        final value = api is WholesaleStoreScopedCartMutationApi
+            ? await (api as WholesaleStoreScopedCartMutationApi)
+                .updateItemForStore(scopedStoreId, id, target)
+            : await api.updateItem(id, target);
         if (!mounted) return;
 
-        if (value is Map) {
+        if (value is Map &&
+            (value.containsKey('store_id') || value.containsKey('channel'))) {
           final authoritative = Map<String, dynamic>.from(value);
+          // Legacy adapters returning only item acknowledgement fall through
+          // to authoritative GET; a claimed cart must match the active store.
+          // Do not show an unrelated cart after a store/session switch or a
+          // contradictory legacy adapter response. Never infer money locally.
+          // Non-HTTP legacy adapters may omit channel on a store-bound cart.
+          // The HTTP adapter separately requires the canonical B2B channel;
+          // explicit B2C or foreign-store snapshots always fail closed.
+          if (storeId != scopedStoreId ||
+              authoritative['store_id'] != scopedStoreId ||
+              (authoritative['channel'] != null &&
+                  authoritative['channel'] != 'b2b')) {
+            throw WholesaleCommerceException(
+              Localizations.localeOf(context).languageCode == 'en'
+                  ? 'The cart belongs to a different store. Refresh and try again.'
+                  : 'السلة تخص متجرًا مختلفًا. حدّث الصفحة وحاول مرة أخرى.',
+            );
+          }
           setState(() {
             _cartOverride = authoritative;
             final optimistic = _optimisticQuantities[id];
@@ -6618,6 +6651,39 @@ class _CartLine extends StatelessWidget {
   }
 }
 
+// A quote or credit amount cannot be compared across different currencies.
+// Missing quote/credit currency inherits the canonical cart currency; explicit
+// contradictory or malformed currency evidence must block submission.
+bool _checkoutCurrenciesConsistent(
+  Map<String, dynamic> cart,
+  Map<String, dynamic> quote,
+  Map<String, dynamic> options,
+) {
+  final rawCartCurrency = cart['currency'];
+  if (rawCartCurrency is! String) return false;
+  final currency = rawCartCurrency.trim().toUpperCase();
+  if (!RegExp(r'^[A-Z]{3}$').hasMatch(currency)) return false;
+
+  for (final reported in <Object?>[quote['currency'], options['currency']]) {
+    if (reported == null) continue;
+    if (reported is! String || reported.trim().toUpperCase() != currency) {
+      return false;
+    }
+  }
+  return true;
+}
+
+// Only finite, nonnegative server-owned money may authorize checkout UI.
+double? _verifiedCheckoutMoney(Object? value) {
+  if (value is bool) return null;
+  final parsed = value is num
+      ? value.toDouble()
+      : value is String
+          ? double.tryParse(value.trim())
+          : null;
+  return parsed != null && parsed.isFinite && parsed >= 0 ? parsed : null;
+}
+
 double _wholesaleMinimumRemaining(
   Map<String, dynamic> cart, {
   Map<String, dynamic>? quoteOverride,
@@ -6829,14 +6895,17 @@ class _WholesaleWaveCheckoutButton extends StatefulWidget {
 class _WholesaleWaveCheckoutButtonState
     extends State<_WholesaleWaveCheckoutButton>
     with SingleTickerProviderStateMixin {
-  late final AnimationController _waves = AnimationController(
-    vsync: this,
-    duration: const Duration(milliseconds: 1800),
-  );
+  late final AnimationController _waves;
 
   @override
   void initState() {
     super.initState();
+    // Initialize even when confirmation is disabled; dispose must never
+    // lazily create a ticker after the widget has been deactivated.
+    _waves = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 1800),
+    );
     if (widget.enabled) _waves.repeat();
   }
 
@@ -6974,7 +7043,8 @@ class _WholesaleCheckoutDesignScreenState
     extends State<WholesaleCheckoutDesignScreen> with WidgetsBindingObserver {
   late int storeId = wholesaleStoreId(widget.location);
   late Future<_CheckoutPayload> future = _load();
-  late final String idempotencyKey;
+  final Map<String, String> _checkoutIdempotencyKeys = <String, String>{};
+  int _checkoutKeySerial = 0;
   int? addressId;
   String? paymentMethod;
   bool submitting = false;
@@ -6982,6 +7052,7 @@ class _WholesaleCheckoutDesignScreenState
   String? appliedCouponCode;
   Map<String, dynamic>? appliedQuote;
   _CheckoutPayload? _latestCheckoutPayload;
+  int _checkoutDataRevision = 0;
   Map<String, dynamic>? createdOrder;
   final note = TextEditingController();
   final coupon = TextEditingController();
@@ -6990,10 +7061,6 @@ class _WholesaleCheckoutDesignScreenState
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    idempotencyKey = 'fdx-b2b-' +
-        DateTime.now().microsecondsSinceEpoch.toString() +
-        '-' +
-        math.Random().nextInt(1 << 32).toString();
   }
 
   @override
@@ -7013,6 +7080,63 @@ class _WholesaleCheckoutDesignScreenState
     super.dispose();
   }
 
+  String _newCheckoutIdempotencyKey() =>
+      'fdx-b2b-' +
+      DateTime.now().microsecondsSinceEpoch.toString() +
+      '-' +
+      (_checkoutKeySerial++).toString() +
+      '-' +
+      math.Random().nextInt(1 << 32).toString();
+
+  String _checkoutIntent(_CheckoutPayload payload) {
+    // The server binds a key to the checkout request fields. Include a
+    // canonical representation of the cart as well: an old successful key
+    // must not replay its old order after a distinct cart is submitted.
+    // Sorting stable item identities avoids rotating keys just because a
+    // fresh GET returned the same cart rows in a different order.
+    final itemIdentities = mapRows(payload.cart['items']).map((item) {
+      final product = item['product'];
+      final itemId = item['id'];
+      final productId =
+          item['product_id'] ?? (product is Map ? product['id'] : null);
+      final hasStableIdentity = itemId != null || productId != null;
+      final sku = item['sku'] ?? (product is Map ? product['sku'] : null);
+      final fallbackIdentity = hasStableIdentity
+          ? ''
+          : (sku?.toString().trim().isNotEmpty == true
+              ? sku.toString().trim()
+              : (item['name'] ??
+                      (product is Map ? product['name'] : null) ??
+                      '')
+                  .toString());
+      final quantity = item['quantity'];
+      // A server may render the same quantity as 1 or "1.000".
+      // Normalize that representation before comparing retry intent.
+      final quantityNumber = quantity is num
+          ? quantity.toDouble()
+          : double.tryParse(quantity?.toString() ?? '');
+      return jsonEncode(<String>[
+        (itemId ?? '').toString(),
+        (productId ?? '').toString(),
+        fallbackIdentity,
+        (item['selling_unit_code'] ?? '').toString(),
+        quantityNumber?.toString() ?? (quantity ?? '').toString(),
+      ]);
+    }).toList()
+      ..sort();
+
+    return jsonEncode(<Object?>[
+      storeId,
+      addressId,
+      paymentMethod,
+      // The HTTP client trims non-empty notes and omits blank notes.
+      // Fingerprint the exact normalized value the server receives.
+      note.text.trim().isEmpty ? null : note.text.trim(),
+      appliedCouponCode,
+      itemIdentities,
+    ]);
+  }
+
   Future<void> _openAddressBook() async {
     await Navigator.of(context).pushNamed(
       Uri(
@@ -7030,6 +7154,15 @@ class _WholesaleCheckoutDesignScreenState
   }
 
   Future<_CheckoutPayload> _load() async {
+    // A coupon quote is valid only for the cart revision it was quoted for.
+    // Refreshing checkout must require a new server quote, never reuse the
+    // previous discount or account-credit calculation.
+    final requestRevision = ++_checkoutDataRevision;
+    // An earlier response must not provide the validation snapshot for a
+    // later checkout, even when its network request completes last.
+    _latestCheckoutPayload = null;
+    appliedCouponCode = null;
+    appliedQuote = null;
     if (storeId <= 0) {
       storeId = await resolveWholesaleStoreId(
         location: widget.location,
@@ -7053,7 +7186,9 @@ class _WholesaleCheckoutDesignScreenState
         : <String, dynamic>{};
 
     final payload = _CheckoutPayload(options: options, cart: cart);
-    _latestCheckoutPayload = payload;
+    if (requestRevision == _checkoutDataRevision) {
+      _latestCheckoutPayload = payload;
+    }
     return payload;
   }
 
@@ -7098,13 +7233,15 @@ class _WholesaleCheckoutDesignScreenState
       return;
     }
     final WholesaleQuoteApi quoteApi = commerceApi as WholesaleQuoteApi;
+    final dataRevision = _checkoutDataRevision;
+    final requestedPaymentMethod = paymentMethod;
 
     setState(() => applyingCoupon = true);
     try {
       final raw = await quoteApi.quote(
         storeId: storeId,
         couponCode: code,
-        paymentMethod: paymentMethod,
+        paymentMethod: requestedPaymentMethod,
       );
       final next = _quoteMap(raw);
       if (next.isEmpty) {
@@ -7113,11 +7250,26 @@ class _WholesaleCheckoutDesignScreenState
         );
       }
       if (!mounted) return;
+      // A response for a stale cart, edited code or changed payment method
+      // cannot become an accepted financial quote after an async boundary.
+      if (dataRevision != _checkoutDataRevision ||
+          requestedPaymentMethod != paymentMethod ||
+          code != _normalizedCoupon) {
+        setState(() => applyingCoupon = false);
+        return;
+      }
       final couponData = next['coupon'];
       final confirmedCode = couponData is Map &&
               couponData['code']?.toString().trim().isNotEmpty == true
           ? couponData['code'].toString().trim().toUpperCase()
           : code;
+      // A quote for another promotion must not replace the coupon explicitly
+      // requested by the buyer or enable credit using an unrelated discount.
+      if (confirmedCode != code) {
+        throw const WholesaleCommerceException(
+          'Coupon quote did not confirm the requested coupon.',
+        );
+      }
       coupon.value = coupon.value.copyWith(
         text: confirmedCode,
         selection: TextSelection.collapsed(offset: confirmedCode.length),
@@ -7129,6 +7281,15 @@ class _WholesaleCheckoutDesignScreenState
       });
     } catch (error) {
       if (!mounted) return;
+      // A failed quote for an obsolete cart, payment choice or edited coupon
+      // cannot report an error into the current checkout intent. Leave the
+      // new server-owned quote untouched and allow a fresh explicit request.
+      if (dataRevision != _checkoutDataRevision ||
+          requestedPaymentMethod != paymentMethod ||
+          code != _normalizedCoupon) {
+        setState(() => applyingCoupon = false);
+        return;
+      }
       setState(() {
         appliedCouponCode = null;
         appliedQuote = null;
@@ -7148,12 +7309,30 @@ class _WholesaleCheckoutDesignScreenState
     }
 
     final payload = _latestCheckoutPayload;
-    if (payload != null) {
-      final minimum = doubleValue(
-        payload.options['minimum_order_egp'] ??
-            payload.cart['minimum_order_egp'],
-        1500,
-      );
+    if (payload == null) return;
+
+    final cartQuote = payload.cart['quote'] is Map
+        ? Map<String, dynamic>.from(payload.cart['quote'] as Map)
+        : <String, dynamic>{};
+    final quote = appliedQuote ?? cartQuote;
+    if (!_checkoutCurrenciesConsistent(payload.cart, quote, payload.options)) {
+      return;
+    }
+    final verifiedGrandTotal = _verifiedCheckoutMoney(quote['grand_total']);
+    if (verifiedGrandTotal == null) return;
+    if (paymentMethod == 'account_credit') {
+      final power = _verifiedCheckoutMoney(payload.options['purchasing_power']);
+      if (power == null || verifiedGrandTotal > power + .0001) return;
+    }
+    // Never replace a malformed server-owned minimum with the legacy
+    // fallback when deciding whether a Wholesale order can be submitted.
+    final minimum = _verifiedCheckoutMoney(
+      payload.options['minimum_order_egp'] ?? payload.cart['minimum_order_egp'],
+    );
+    final cartCurrency =
+        (payload.cart['currency'] as String).trim().toUpperCase();
+    if (cartCurrency == 'EGP' && minimum == null) return;
+    if (minimum != null) {
       final remaining = _wholesaleMinimumRemaining(
         payload.cart,
         quoteOverride: appliedQuote,
@@ -7168,6 +7347,17 @@ class _WholesaleCheckoutDesignScreenState
         return;
       }
     }
+
+    // Cache one key for every checkout intent seen during this screen's
+    // lifetime. A network timeout may hide a successful order creation; if
+    // the buyer edits the intent and later returns to the original values,
+    // replaying that original key is essential to prevent a duplicate order.
+    // The server remains authoritative for payload validation and replay.
+    final checkoutIntent = _checkoutIntent(payload);
+    final idempotencyKey = _checkoutIdempotencyKeys.putIfAbsent(
+      checkoutIntent,
+      _newCheckoutIdempotencyKey,
+    );
 
     setState(() => submitting = true);
     try {
@@ -7194,12 +7384,13 @@ class _WholesaleCheckoutDesignScreenState
     } catch (error) {
       if (!mounted) return;
       setState(() => submitting = false);
+      // A checkout POST can commit on the server even when its response is
+      // lost. Do not reload the cart or discard the authorized coupon quote:
+      // that would silently rotate the next explicit retry to a new intent
+      // and could create a duplicate order. Keep the original intent and
+      // idempotency key; the server resolves a replay or rejects a changed
+      // cart with 409. Never issue an automatic second POST.
       await showOperationalError(context, error);
-      if (mounted) {
-        setState(() {
-          future = _load();
-        });
-      }
     }
   }
 
@@ -7225,10 +7416,19 @@ class _WholesaleCheckoutDesignScreenState
                   final ar =
                       Localizations.localeOf(context).languageCode == 'ar';
                   final orderId = intValue(success['id']);
-                  final currency =
-                      success['currency']?.toString().trim().isNotEmpty == true
-                          ? success['currency'].toString()
-                          : 'KWD';
+                  // The order ID proves creation, not its accounting
+                  // denomination. Never show synthetic KWD for an absent or
+                  // contradictory server-confirmed receipt currency.
+                  final receiptCurrency = success['currency'];
+                  final cartCurrency = _latestCheckoutPayload?.cart['currency'];
+                  final currency = receiptCurrency is String &&
+                          cartCurrency is String &&
+                          RegExp(r'^[A-Z]{3}$')
+                              .hasMatch(receiptCurrency.trim().toUpperCase()) &&
+                          receiptCurrency.trim().toUpperCase() ==
+                              cartCurrency.trim().toUpperCase()
+                      ? receiptCurrency.trim().toUpperCase()
+                      : null;
                   final reference = success['order_number']
                               ?.toString()
                               .trim()
@@ -7242,10 +7442,14 @@ class _WholesaleCheckoutDesignScreenState
                               true
                           ? success['display_order_number'].toString().trim()
                           : '#$orderId');
-                  final subtotal = doubleValue(success['subtotal'], 0);
-                  final discount = doubleValue(success['discount_total'], 0);
-                  final delivery = doubleValue(success['delivery_total'], 0);
-                  final total = doubleValue(success['grand_total'], 0);
+                  final subtotal = _verifiedCheckoutMoney(success['subtotal']);
+                  final discount =
+                      _verifiedCheckoutMoney(success['discount_total']);
+                  final delivery =
+                      _verifiedCheckoutMoney(success['delivery_total']);
+                  final total = _verifiedCheckoutMoney(success['grand_total']);
+                  final verifiedReceiptMoney =
+                      currency != null && total != null;
 
                   return CustomerOrderSuccessPanel(
                     title: ar ? 'تم تأكيد طلبك' : 'Order confirmed',
@@ -7275,33 +7479,52 @@ class _WholesaleCheckoutDesignScreenState
                         },
                       ).toString(),
                     ),
-                    summary: CustomerCheckoutTotalsCard(
-                      rows: [
-                        CustomerCheckoutTotalRow(
-                          label:
-                              ar ? 'السعر قبل الخصم' : 'Price before discount',
-                          value: foodexMoneyText(subtotal, currency),
-                          valueColor: CustomerUiColors.wholesalePositiveValue,
-                        ),
-                        if (discount > 0)
-                          CustomerCheckoutTotalRow(
-                            label: ar ? 'الخصم' : 'Discount',
-                            value: '-${foodexMoneyText(discount, currency)}',
-                            valueColor: CustomerUiColors.wholesaleNegativeValue,
+                    summary: verifiedReceiptMoney
+                        ? CustomerCheckoutTotalsCard(
+                            rows: [
+                              if (subtotal != null)
+                                CustomerCheckoutTotalRow(
+                                  label: ar
+                                      ? 'السعر قبل الخصم'
+                                      : 'Price before discount',
+                                  value: foodexMoneyText(subtotal, currency),
+                                  valueColor:
+                                      CustomerUiColors.wholesalePositiveValue,
+                                ),
+                              if (discount != null && discount > 0)
+                                CustomerCheckoutTotalRow(
+                                  label: ar ? 'الخصم' : 'Discount',
+                                  value:
+                                      '-${foodexMoneyText(discount, currency)}',
+                                  valueColor:
+                                      CustomerUiColors.wholesaleNegativeValue,
+                                ),
+                              if (delivery != null && delivery > 0)
+                                CustomerCheckoutTotalRow(
+                                  label: ar ? 'التوصيل' : 'Delivery',
+                                  value: foodexMoneyText(delivery, currency),
+                                ),
+                              CustomerCheckoutTotalRow(
+                                label: ar ? 'السعر النهائي' : 'Final price',
+                                value: foodexMoneyText(total, currency),
+                                emphasized: true,
+                                valueColor:
+                                    CustomerUiColors.wholesaleFinalValue,
+                              ),
+                            ],
+                          )
+                        : Padding(
+                            padding: const EdgeInsets.all(12),
+                            child: Text(
+                              ar
+                                  ? 'تم تأكيد الطلب، لكن تفاصيل المبالغ غير موثقة في الاستجابة. راجع تفاصيل الطلب.'
+                                  : 'Order confirmed, but monetary totals were not verified in the response. View order details.',
+                              key: const ValueKey(
+                                'b2b-order-receipt-amounts-unverified',
+                              ),
+                              textAlign: TextAlign.center,
+                            ),
                           ),
-                        if (delivery > 0)
-                          CustomerCheckoutTotalRow(
-                            label: ar ? 'التوصيل' : 'Delivery',
-                            value: foodexMoneyText(delivery, currency),
-                          ),
-                        CustomerCheckoutTotalRow(
-                          label: ar ? 'السعر النهائي' : 'Final price',
-                          value: foodexMoneyText(total, currency),
-                          emphasized: true,
-                          valueColor: CustomerUiColors.wholesaleFinalValue,
-                        ),
-                      ],
-                    ),
                   );
                 }
 
@@ -7336,14 +7559,14 @@ class _WholesaleCheckoutDesignScreenState
                     ? Map<String, dynamic>.from(cart['quote'] as Map)
                     : <String, dynamic>{};
                 final effectiveQuote = appliedQuote ?? cartQuote;
-                final grandTotal = doubleValue(
-                  effectiveQuote['grand_total'] ??
-                      cart['grand_total'] ??
-                      cart['subtotal'],
-                  0,
-                );
+                final currencyConsistent =
+                    _checkoutCurrenciesConsistent(cart, effectiveQuote, data);
+                // A cart subtotal is not an authoritative final quote:
+                // it excludes possible discounts, taxes and delivery charges.
+                final grandTotal =
+                    _verifiedCheckoutMoney(effectiveQuote['grand_total']);
                 final purchasingPower =
-                    doubleValue(data['purchasing_power'], 0);
+                    _verifiedCheckoutMoney(data['purchasing_power']);
                 final hasUnavailable = cart['has_unavailable_items'] == true ||
                     items.any((item) => item['is_available'] == false);
 
@@ -7370,16 +7593,31 @@ class _WholesaleCheckoutDesignScreenState
                   }
                 }
 
-                final minimum = doubleValue(
+                // The EGP minimum is a server-owned commercial policy:
+                // an invalid/missing value must not enable checkout.
+                final minimum = _verifiedCheckoutMoney(
                   data['minimum_order_egp'] ?? cart['minimum_order_egp'],
-                  1500,
                 );
-                final minimumMissing = _wholesaleMinimumRemaining(
-                  cart,
-                  quoteOverride: appliedQuote,
-                  minimumOverride: minimum,
-                );
+                final quoteCurrency = currencyConsistent
+                    ? (cart['currency'] as String).trim().toUpperCase()
+                    : null;
+                final minimumUnavailable = quoteCurrency == null ||
+                    (quoteCurrency == 'EGP' && minimum == null);
+                final minimumMissing = minimumUnavailable
+                    ? 0.0
+                    : _wholesaleMinimumRemaining(
+                        cart,
+                        quoteOverride: appliedQuote,
+                        minimumOverride: minimum,
+                      );
+                final financialUnavailable = !currencyConsistent ||
+                    grandTotal == null ||
+                    minimumUnavailable ||
+                    (paymentMethod == 'account_credit' &&
+                        purchasingPower == null);
                 final creditInsufficient = paymentMethod == 'account_credit' &&
+                    grandTotal != null &&
+                    purchasingPower != null &&
                     grandTotal > purchasingPower + .0001;
                 final couponReady = _normalizedCoupon.isEmpty ||
                     appliedCouponCode == _normalizedCoupon;
@@ -7391,6 +7629,7 @@ class _WholesaleCheckoutDesignScreenState
                     paymentMethod != null &&
                     couponReady &&
                     !creditInsufficient &&
+                    !financialUnavailable &&
                     !submitting;
 
                 return ListView(
@@ -7469,6 +7708,7 @@ class _WholesaleCheckoutDesignScreenState
                     ],
                     const SizedBox(height: 12),
                     DropdownButtonFormField<String>(
+                      isExpanded: true,
                       value: paymentMethod,
                       decoration: InputDecoration(
                         labelText: context.tr('b2b.checkout.payment_method'),
@@ -7488,6 +7728,18 @@ class _WholesaleCheckoutDesignScreenState
                         appliedQuote = null;
                       }),
                     ),
+                    if (financialUnavailable)
+                      FoodexErrorState(
+                        key: const ValueKey(
+                            'b2b-checkout-financial-unavailable'),
+                        message:
+                            context.tr('b2b.checkout.financial_unavailable'),
+                        onRetry: () => setState(() {
+                          appliedCouponCode = null;
+                          appliedQuote = null;
+                          future = _load();
+                        }),
+                      ),
                     if (creditInsufficient) ...[
                       const SizedBox(height: 8),
                       Text(
@@ -7579,10 +7831,11 @@ class _WholesaleCheckoutDesignScreenState
                           : _paymentLabel(context, paymentMethod!),
                     ),
                     const SizedBox(height: 12),
-                    _CheckoutSummary(
-                      cart: cart,
-                      quoteOverride: appliedQuote,
-                    ),
+                    if (!financialUnavailable)
+                      _CheckoutSummary(
+                        cart: cart,
+                        quoteOverride: appliedQuote,
+                      ),
                     if (minimumMissing > 0.0001) ...[
                       const SizedBox(height: 9),
                       Text(
@@ -8514,6 +8767,7 @@ class _WholesaleOrderDetailsDesignScreenState
     with WidgetsBindingObserver {
   late final int orderId = _orderId(widget.location);
   Map<String, dynamic>? _lastOrder;
+  int _latestOrderReadRevision = 0;
   late Future<Object?> future = _load();
 
   static int _orderId(String location) {
@@ -8543,6 +8797,10 @@ class _WholesaleOrderDetailsDesignScreenState
   }
 
   Future<Object?> _load() async {
+    // An earlier network request may resolve after a newer settlement read.
+    // FutureBuilder ignores its visual result but its cache side-effect must
+    // not undo the latest verified paid / remaining amounts.
+    final revision = ++_latestOrderReadRevision;
     if (orderId <= 0 || widget.api == null) {
       return null;
     }
@@ -8553,12 +8811,15 @@ class _WholesaleOrderDetailsDesignScreenState
       );
       if (raw is Map) {
         final order = Map<String, dynamic>.from(raw);
-        _lastOrder = order;
+        if (mounted && revision == _latestOrderReadRevision) {
+          _lastOrder = order;
+        }
         return order;
       }
       return raw;
     } catch (_) {
-      if (_lastOrder != null) {
+      // Never return an obsolete cached result from a superseded request.
+      if (revision == _latestOrderReadRevision && _lastOrder != null) {
         return <String, dynamic>{..._lastOrder!, '__stale': true};
       }
       rethrow;
