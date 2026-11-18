@@ -1358,6 +1358,130 @@ final class V2InventoryOwnerProvenanceTest extends TestCase
         $this->assertSame(1, DB::table('enterprise_inventory_ownership_rule_revisions')->count());
     }
 
+    public function test_owner_rule_review_and_advisory_fail_closed_after_reference_revocation(): void
+    {
+        $this->seed(CoreReferenceSeeder::class);
+        $stock = $this->stock('POLICY-REVOCATION');
+        $foreign = $this->stock('POLICY-FOREIGN-WAREHOUSE');
+        DB::table('enterprise_store_scopes')->insert([
+            'store_id' => $stock['store_id'],
+            'business_unit_id' => DB::table('enterprise_business_units')->value('id'),
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $role = Role::query()->where('code', 'SUPER_ADMIN')->firstOrFail();
+        $maker = User::query()->create([
+            'name' => 'Revocation Policy Maker',
+            'email' => 'p110-revocation-maker@example.test',
+            'password' => 'password',
+            'is_active' => true,
+        ]);
+        $checker = User::query()->create([
+            'name' => 'Revocation Policy Checker',
+            'email' => 'p110-revocation-checker@example.test',
+            'password' => 'password',
+            'is_active' => true,
+        ]);
+        foreach ([$maker, $checker] as $user) {
+            DB::table('role_user')->insert(['user_id' => $user->id, 'role_id' => $role->id]);
+        }
+
+        $supplierId = $this->supplier($stock['store_id']);
+        $warehouseId = (int) DB::table('inventories')
+            ->where('id', $stock['inventory_id'])->value('warehouse_id');
+        $foreignWarehouseId = (int) DB::table('inventories')
+            ->where('id', $foreign['inventory_id'])->value('warehouse_id');
+        $service = app(InventoryOwnershipRuleService::class);
+
+        $draft = $service->propose($maker, [
+            'store_id' => $stock['store_id'],
+            'channel' => 'B2C',
+            'supplier_id' => $supplierId,
+            'warehouse_id' => $warehouseId,
+            'initial_owner_kind' => 'SUPPLIER',
+            'title_transfer_trigger' => 'CONTRACT_EVENT',
+            'required_evidence_classes' => ['CONSIGNMENT_AGREEMENT'],
+            'checker_permission' => 'inventory_ownership_rules.review',
+            'effective_at' => now()->addDays(2)->startOfDay()->toDateTimeString(),
+            'request_uuid' => (string) Str::uuid(),
+        ]);
+
+        // A proposal validated yesterday is not evidence that its supplier
+        // or warehouse is still authorized at independent review time.
+        DB::table('enterprise_suppliers')->where('id', $supplierId)
+            ->update(['status' => 'inactive']);
+        try {
+            $service->review($checker, (int) $draft->id, true);
+            $this->fail('A revoked supplier must not receive policy approval.');
+        } catch (HttpException $exception) {
+            $this->assertSame(409, $exception->getStatusCode());
+        }
+        $this->assertDatabaseHas('enterprise_inventory_ownership_rule_revisions', [
+            'id' => $draft->id, 'status' => 'DRAFT', 'reviewed_by' => null,
+        ]);
+
+        DB::table('enterprise_suppliers')->where('id', $supplierId)
+            ->update(['status' => 'active']);
+        DB::table('warehouses')->where('id', $warehouseId)
+            ->update(['is_active' => false]);
+        try {
+            $service->review($checker, (int) $draft->id, true);
+            $this->fail('An inactive warehouse must not receive policy approval.');
+        } catch (HttpException $exception) {
+            $this->assertSame(409, $exception->getStatusCode());
+        }
+        $this->assertDatabaseHas('enterprise_inventory_ownership_rule_revisions', [
+            'id' => $draft->id, 'status' => 'DRAFT', 'reviewed_by' => null,
+        ]);
+
+        DB::table('warehouses')->where('id', $warehouseId)
+            ->update(['is_active' => true]);
+        $approved = $service->review($checker, (int) $draft->id, true);
+        $this->assertSame('APPROVED_RULE', $approved->status);
+
+        $this->travelTo(now()->addDays(3));
+        $valid = $service->advisoryFor($checker, $stock['store_id'], 'B2C', $supplierId, $warehouseId);
+        $this->assertSame($approved->id, $valid['policy']->id);
+        $this->assertFalse($valid['certified']);
+
+        DB::table('enterprise_suppliers')->where('id', $supplierId)
+            ->update(['status' => 'inactive']);
+        $revoked = $service->advisoryFor($checker, $stock['store_id'], 'B2C', $supplierId, $warehouseId);
+        $this->assertNull($revoked['policy']);
+        $this->assertSame('UNKNOWN', $revoked['state']);
+        $this->assertFalse($revoked['certified']);
+
+        DB::table('enterprise_suppliers')->where('id', $supplierId)
+            ->update(['status' => 'active', 'store_id' => $foreign['store_id']]);
+        $foreignScoped = $service->advisoryFor(
+            $checker, $stock['store_id'], 'B2C', $supplierId, $warehouseId,
+        );
+        $this->assertNull($foreignScoped['policy']);
+
+        DB::table('enterprise_suppliers')->where('id', $supplierId)
+            ->update(['store_id' => $stock['store_id']]);
+        try {
+            $service->advisoryFor(
+                $checker, $stock['store_id'], 'B2C', $supplierId, $foreignWarehouseId,
+            );
+            $this->fail('Foreign warehouse context must not return policy guidance.');
+        } catch (HttpException $exception) {
+            $this->assertSame(404, $exception->getStatusCode());
+        }
+
+        $restored = $service->advisoryFor($checker, $stock['store_id'], 'B2C', $supplierId, $warehouseId);
+        $this->assertSame($approved->id, $restored['policy']->id);
+        $this->assertFalse($restored['certified']);
+        $this->travelBack();
+
+        // A policy's approval is never a title certificate or stock posting.
+        $this->assertSame('UNKNOWN', app(InventoryOwnerProvenanceReadService::class)
+            ->snapshot($this->inventoryActor($stock['store_id']), $stock['inventory_id'])['state']);
+        $this->assertSame(0, DB::table('stock_movements')
+            ->where('inventory_id', $stock['inventory_id'])->count());
+    }
+
     public function test_owner_policy_request_uuid_index_uses_mysql_safe_identifier(): void
     {
         $this->seed(CoreReferenceSeeder::class);
