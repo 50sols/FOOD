@@ -883,6 +883,19 @@ final class AccountsReceivableService
                 $context->isRetail(),
                 fn (QueryBuilder $query) => $query->where('document.store_id', $scope->storeId),
             )
+            // Finance is a shared legal-entity ledger, but the ERP AR aging
+            // surface is Wholesale-only. Keep Retail documents out even when
+            // both channels map to the same legal entity.
+            ->when(
+                $context->isWholesale(),
+                fn (QueryBuilder $query) => $query->whereIn(
+                    'document.store_id',
+                    DB::table('stores as store')
+                        ->join('store_types as type', 'type.id', '=', 'store.store_type_id')
+                        ->where('type.code', 'B2B')
+                        ->select('store.id'),
+                ),
+            )
             ->where('document.status', 'posted')
             ->when(
                 $customerId !== null,

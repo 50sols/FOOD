@@ -1814,6 +1814,15 @@ final class V2ReceivableSettlementWorkbenchTest extends TestCase
         $this->assertContains($wholesale['document']->id, $ids);
         $this->assertNotContains($retailDocument->id, $ids);
 
+        $aging = app(AccountsReceivableService::class)->paginateAging($wholesale['maker'], $context);
+        $agingIds = $aging->getCollection()->pluck('id')->map(static fn ($id): int => (int) $id)->all();
+        $this->assertContains((int) $wholesale['document']->id, $agingIds);
+        $this->assertNotContains((int) $retailDocument->id, $agingIds);
+
+        $agingTotals = app(AccountsReceivableService::class)->agingTotals($wholesale['maker'], $context);
+        $this->assertSame(1, (int) $agingTotals->sum('document_count'));
+        $this->assertSame(100.0, (float) $agingTotals->sum('outstanding_amount'));
+
         try {
             app(AccountsReceivableService::class)->createDraft($wholesale['maker'], $context, [
                 'idempotency_key' => 'p303-b2b-rejects-b2c-store',
