@@ -298,7 +298,7 @@ final class V2ErpEntitlementCheckerBoundaryTest extends TestCase
         $this->assertSame($auditBefore, DB::table('audit_logs')->count());
     }
 
-    public function test_global_supplier_deny_and_unrelated_retail_assignment_reject_direct_http_before_setup_conflict(): void
+    public function test_global_supplier_deny_and_retail_assignment_do_not_cross_store_or_channel(): void
     {
         $wholesale = $this->wholesaleStore();
         $sibling = Store::query()->create([
@@ -314,8 +314,7 @@ final class V2ErpEntitlementCheckerBoundaryTest extends TestCase
             'name' => 'P111 unrelated Retail',
             'is_active' => true,
         ]);
-        // No ERP hierarchy is created for this Retail store: an unrelated
-        // Retail Finance assignment must receive 403, not a misleading 409.
+        app(OrganizationHierarchyService::class)->ensureDefaultScopeForStore($retail);
         $admin = $this->actor('SUPER_ADMIN');
         $buyer = $this->actor('PROCUREMENT_BUYER');
         $buyer->storeRoleAssignments()->create([
@@ -323,25 +322,36 @@ final class V2ErpEntitlementCheckerBoundaryTest extends TestCase
             'role_id' => Role::query()->where('code', 'RETAIL_FINANCE')->firstOrFail()->id,
         ]);
         app(EnterpriseModuleAdministration::class)->perform('procurement', 'enable', $admin);
-        app(ModuleEntitlementManager::class)->set(
+        $entitlements = app(ModuleEntitlementManager::class);
+        $entitlements->set(
             'procurement', EntitlementScope::platform(), true, null, $admin,
         );
+        $retailScope = new EntitlementScope(EntitlementScope::STORE, $retail->id);
+        $entitlements->set('procurement', $retailScope, true, null, $admin);
 
-        // ERP must never expose a Retail store context, including to a
-        // platform administrator with a valid Procurement entitlement.
+        // Preserve both existing channel contexts for a platform administrator;
+        // store-level DENY still overrides the broader platform ALLOW.
         $adminPage = $this->actingAs($admin)->get(route('admin.erp.procurement.index', [
             'store_id' => $wholesale->id,
             'tab' => 'requests',
         ]));
         $adminPage->assertOk();
-        $this->assertSame(
-            ['b2b'],
-            collect($adminPage->viewData('storeOptions'))->pluck('channel')->unique()->values()->all(),
-        );
+        $channels = collect($adminPage->viewData('storeOptions'))->pluck('channel')->unique()->values()->all();
+        $this->assertContains('b2b', $channels);
+        $this->assertContains('b2c', $channels);
+        $this->actingAs($admin)->get(route('admin.erp.procurement.index', [
+            'store_id' => $retail->id,
+            'tab' => 'requests',
+        ]))->assertOk()->assertViewHas('selectedStoreId', $retail->id);
+
+        $entitlements->set('procurement', $retailScope, false, null, $admin);
+        $auditBeforeRetailDeny = DB::table('audit_logs')->count();
         $this->actingAs($admin)->get(route('admin.erp.procurement.index', [
             'store_id' => $retail->id,
             'tab' => 'requests',
         ]))->assertForbidden();
+        $this->assertSame($auditBeforeRetailDeny, DB::table('audit_logs')->count());
+        $entitlements->set('procurement', $retailScope, true, null, $admin);
 
         foreach (['procurement.suppliers.view', 'procurement.suppliers.manage'] as $code) {
             $permission = Permission::query()->where('code', $code)->firstOrFail();
@@ -853,7 +863,7 @@ final class V2ErpEntitlementCheckerBoundaryTest extends TestCase
             foreach ($actors as $role => $actor) {
                 $actor->forceFill(['locale' => $locale])->save();
                 $user = $actor->fresh();
-                $page = $this->actingAs($user)->get(route('admin.erp.index'));
+                $page = $this->actingAs($user)->get(route('admin.erp.index', ['tab' => 'modules']));
                 $page->assertOk()->assertSee('dir="'.$direction.'"', false);
                 $card = collect($page->viewData('cards'))->firstWhere('key', 'procurement');
                 $this->assertIsArray($card, $role);
