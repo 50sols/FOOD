@@ -1878,6 +1878,70 @@ final class V2ErpEntitlementCheckerBoundaryTest extends TestCase
         ]);
     }
 
+    public function test_forged_retail_without_enterprise_hierarchy_is_403_before_setup_409_in_both_locales(): void
+    {
+        $this->app['env'] = 'production';
+        $csrfToken = 'p111-forged-retail-no-hierarchy-csrf';
+        $this->withSession(['_token' => $csrfToken])->withHeader('X-CSRF-TOKEN', $csrfToken);
+
+        $wholesale = $this->wholesaleStore();
+        $retail = Store::query()->create([
+            'store_type_id' => (int) DB::table('store_types')->where('code', 'B2C')->value('id'),
+            'code' => 'P111-FORGED-RETAIL-NO-HIERARCHY',
+            'name' => 'P111 forged Retail without enterprise scope',
+            'is_active' => true,
+        ]);
+        // Deliberately leave the Retail hierarchy unconfigured. Its missing
+        // setup must not turn an authorization DENY into HTTP 409.
+        $this->assertDatabaseMissing('enterprise_store_scopes', ['store_id' => $retail->id]);
+        $owner = $this->actor('SUPER_ADMIN');
+        $buyer = $this->actor('PROCUREMENT_BUYER');
+        $buyer->storeRoleAssignments()->create([
+            'store_id' => $retail->id,
+            'role_id' => Role::query()->where('code', 'RETAIL_FINANCE')->firstOrFail()->id,
+        ]);
+
+        app(EnterpriseModuleAdministration::class)->perform('procurement', 'enable', $owner);
+        app(ModuleEntitlementManager::class)->set(
+            'procurement', EntitlementScope::platform(), true, null, $owner,
+        );
+
+        $this->assertFalse($buyer->fresh()->hasPermission('procurement.purchase_requests.view', $retail->id));
+        $this->actingAs($buyer->fresh())->get(route('admin.erp.procurement.index', [
+            'store_id' => $wholesale->id,
+            'tab' => 'requests',
+        ]))->assertOk();
+
+        $requestsBefore = DB::table('enterprise_purchase_requests')->count();
+        $auditBefore = DB::table('audit_logs')->count();
+        $reason = 'P111 forged Retail must not reach missing-hierarchy 409';
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            $buyer->forceFill(['locale' => $locale])->save();
+
+            $this->actingAs($buyer->fresh())->get(route('admin.erp.procurement.index', [
+                'store_id' => $retail->id,
+                'tab' => 'requests',
+            ]))->assertForbidden();
+
+            $this->actingAs($buyer->fresh())->post(route('admin.erp.procurement.requests.store'), [
+                'store_id' => $retail->id,
+                'currency_code' => 'KWD',
+                'reason' => $reason,
+                'item_code' => 'P111-FORGED-RETAIL-NO-HIERARCHY',
+                'description' => 'Retail forgery cannot become a setup warning',
+                'quantity' => '1.000',
+                'unit' => 'case',
+                'estimated_unit_cost' => '1.000',
+            ])->assertForbidden();
+        }
+
+        $this->assertSame($requestsBefore, DB::table('enterprise_purchase_requests')->count());
+        $this->assertDatabaseMissing('enterprise_purchase_requests', ['reason' => $reason]);
+        $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+    }
+
     public function test_authorized_b2b_store_without_enterprise_hierarchy_returns_409_after_authority_checks(): void
     {
         $this->app['env'] = 'production';
