@@ -131,8 +131,20 @@ final class SystemUpdateController extends Controller
         }
 
         $fileName = 'update-'.bin2hex(random_bytes(12)).'.zip';
-        $upload->move($directory, $fileName);
         $packagePath = $directory.'/'.$fileName;
+
+        try {
+            $upload->move($directory, $fileName);
+        } catch (Throwable) {
+            // On shared hosting a move may fail after writing part of the ZIP.
+            // Never expose raw filesystem paths or leave a partial executable
+            // package in private staging when no update has been started.
+            @unlink($packagePath);
+
+            return redirect()
+                ->route('admin.system-update.index')
+                ->withErrors(['update' => __('update_signed_manifest.upload_staging_unavailable')]);
+        }
 
         try {
             $manifest = $signed->manifest;
