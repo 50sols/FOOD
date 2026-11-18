@@ -1868,15 +1868,15 @@ final class V2ReceivableSettlementWorkbenchTest extends TestCase
 
         $finance = app(FinanceFoundationService::class);
         $receivable = $finance->createAccount($maker, $context, [
-            'code' => '1200', 'name' => 'Accounts Receivable',
+            'code' => '1200-'.$prefix, 'name' => 'Accounts Receivable',
             'type' => 'asset', 'normal_balance' => 'debit', 'allow_posting' => true,
         ]);
         $revenue = $finance->createAccount($maker, $context, [
-            'code' => '4000', 'name' => 'Sales Revenue',
+            'code' => '4000-'.$prefix, 'name' => 'Sales Revenue',
             'type' => 'revenue', 'normal_balance' => 'credit', 'allow_posting' => true,
         ]);
         $cash = $finance->createAccount($maker, $context, [
-            'code' => '1100', 'name' => 'Cash',
+            'code' => '1100-'.$prefix, 'name' => 'Cash',
             'type' => 'asset', 'normal_balance' => 'debit', 'allow_posting' => true,
         ]);
         $year = $finance->createFiscalYear($maker, $context, [
