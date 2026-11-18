@@ -5,8 +5,8 @@ namespace Tests\Feature;
 use App\Enterprise\Organization\OrganizationHierarchyService;
 use App\Models\EnterpriseBusinessUnit;
 use App\Models\EnterpriseOrganization;
-use App\Models\Store;
 use App\Models\Role;
+use App\Models\Store;
 use App\Models\User;
 use Database\Seeders\CoreReferenceSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -52,7 +52,7 @@ final class V2OrganizationSetupGuidanceTest extends TestCase
         $this->actingAs($admin)->patch(route('admin.enterprise-organizations.update', $organization), [
             'name' => 'Unpersisted Preview',
             'code' => $organization->code,
-            'is_active' => '0',
+            'is_active' => '1',
             '_setup_test' => '1',
         ])->assertRedirect()
             ->assertSessionHas('status', __('enterprise_organization.setup_test_passed'))
@@ -188,7 +188,7 @@ final class V2OrganizationSetupGuidanceTest extends TestCase
             'is_active' => '1',
         ])->assertRedirect();
 
-        $typeId = DB::table('store_types')->where('code', 'b2b')->value('id');
+        $typeId = DB::table('store_types')->where('code', 'B2B')->value('id');
         $this->assertNotNull($typeId);
         $store = Store::query()->create([
             'store_type_id' => $typeId,
@@ -210,7 +210,7 @@ final class V2OrganizationSetupGuidanceTest extends TestCase
             ->where('code', OrganizationHierarchyService::DEFAULT_ORGANIZATION)->firstOrFail();
 
         $this->expectException(ValidationException::class);
-        app(\\App\\Services\\EnterpriseOrganizationAdministration::class)->updateOrganization(
+        app(\App\Services\EnterpriseOrganizationAdministration::class)->updateOrganization(
             $organization,
             ['code' => 'unprotected_code', 'name' => $organization->name, 'is_active' => true],
             $admin,
