@@ -2941,6 +2941,124 @@ final class V2ErpEntitlementCheckerBoundaryTest extends TestCase
         $this->assertSame($auditBefore, DB::table('audit_logs')->count());
     }
 
+    public function test_foreign_company_supplier_legal_identity_never_crosses_procurement_http_store_scope(): void
+    {
+        $storeA = $this->wholesaleStore();
+        $storeB = Store::query()->create([
+            'store_type_id' => $storeA->store_type_id,
+            'code' => 'P111-SUPPLIER-FOREIGN-COMPANY-B',
+            'name' => 'P111 Foreign Company B2B Store',
+            'is_active' => true,
+        ]);
+        $hierarchy = app(OrganizationHierarchyService::class);
+        $scopeA = $hierarchy->scopeForStore($storeA->id);
+        $this->assertIsArray($scopeA);
+        $foreignCompany = EnterpriseCompany::query()->create([
+            'organization_id' => $scopeA['organization_id'],
+            'code' => 'P111_SUPPLIER_FOREIGN_COMPANY',
+            'name' => 'P111 Supplier Foreign Legal Company',
+            'is_active' => true,
+        ]);
+        $foreignEntity = EnterpriseLegalEntity::query()->create([
+            'company_id' => $foreignCompany->id,
+            'code' => 'P111_SUPPLIER_FOREIGN_ENTITY',
+            'name' => 'P111 Supplier Foreign Legal Entity',
+            'is_active' => true,
+        ]);
+        $foreignUnit = EnterpriseBusinessUnit::query()->create([
+            'legal_entity_id' => $foreignEntity->id,
+            'code' => 'P111_SUPPLIER_FOREIGN_UNIT',
+            'name' => 'P111 Supplier Foreign Business Unit',
+            'is_active' => true,
+        ]);
+        $hierarchy->assignStore($storeB, $foreignUnit);
+        $scopeB = $hierarchy->scopeForStore($storeB->id);
+        $this->assertIsArray($scopeB);
+        $this->assertNotSame($scopeA['company_id'], $scopeB['company_id']);
+
+        $owner = $this->actor('SUPER_ADMIN');
+        $buyer = $this->actor('PROCUREMENT_BUYER');
+        app(EnterpriseModuleAdministration::class)->perform('procurement', 'enable', $owner);
+        app(ModuleEntitlementManager::class)->set(
+            'procurement', EntitlementScope::platform(), true, null, $owner,
+        );
+
+        $foreign = app(SupplierDirectory::class)->create(
+            $buyer,
+            app(TenantContextResolver::class)->wholesale($buyer, $storeB->id),
+            [
+                'scope_type' => 'company',
+                'code' => 'P111-FOREIGN-COMPANY-LEGAL-SUP',
+                'name_en' => 'P111 Foreign Company Legal Supplier',
+                'name_ar' => 'مورد تابع لشركة أخرى',
+                'tax_registration_number' => 'TAX-P111-FOREIGN-COMPANY',
+                'commercial_registration_number' => 'CR-P111-FOREIGN-COMPANY',
+            ],
+        );
+        $this->assertSame($scopeB['company_id'], (int) $foreign->company_id);
+        $this->assertNull($foreign->store_id);
+        $this->assertSame('TAX-P111-FOREIGN-COMPANY', $foreign->tax_registration_number);
+        $this->assertSame('CR-P111-FOREIGN-COMPANY', $foreign->commercial_registration_number);
+        $countBefore = DB::table('enterprise_purchase_requests')->count();
+        $supplierCountBefore = DB::table('enterprise_suppliers')->count();
+        $auditBefore = DB::table('audit_logs')->count();
+
+        foreach (['ar' => 'rtl', 'en' => 'ltr'] as $locale => $direction) {
+            app()->setLocale($locale);
+            $buyer->forceFill(['locale' => $locale])->save();
+
+            // The same genuine global Buyer can view the supplier within
+            // Company B, but cannot reuse that supplier ID in Company A.
+            $this->actingAs($buyer->fresh())->get(route('admin.erp.procurement.index', [
+                'store_id' => $storeB->id, 'tab' => 'suppliers', 'supplier' => $foreign->id,
+            ]))->assertOk()->assertSee('dir="'.$direction.'"', false)
+                ->assertSee('TAX-P111-FOREIGN-COMPANY');
+
+            $this->actingAs($buyer->fresh())->get(route('admin.erp.procurement.index', [
+                'store_id' => $storeA->id, 'tab' => 'suppliers', 'supplier' => $foreign->id,
+            ]))->assertNotFound();
+
+            $this->actingAs($buyer->fresh())->post(route('admin.erp.procurement.suppliers.store'), [
+                'store_id' => $storeA->id,
+                'supplier_id' => $foreign->id,
+                'scope_type' => 'company',
+                'name_en' => 'Foreign company edit must never apply',
+                'tax_registration_number' => 'TAX-FORGED-FOREIGN-EDIT',
+                'company_id' => $foreignCompany->id,
+                'updated_by' => $owner->id,
+            ])->assertNotFound();
+
+            $this->actingAs($buyer->fresh())->post(
+                route('admin.erp.procurement.suppliers.archive', $foreign->id),
+                ['store_id' => $storeA->id, 'company_id' => $foreignCompany->id],
+            )->assertNotFound();
+
+            $this->actingAs($buyer->fresh())->post(route('admin.erp.procurement.requests.store'), [
+                'store_id' => $storeA->id,
+                'supplier_id' => $foreign->id,
+                'currency_code' => 'KWD',
+                'reason' => 'P111 foreign company supplier must not create request',
+                'description' => 'No cross-company procurement request',
+                'quantity' => '1.125',
+                'unit' => 'case',
+                'estimated_unit_cost' => '1.999',
+                'company_id' => $foreignCompany->id,
+                'created_by' => $owner->id,
+            ])->assertNotFound();
+        }
+
+        $this->assertDatabaseHas('enterprise_suppliers', [
+            'id' => $foreign->id,
+            'company_id' => $foreignCompany->id,
+            'store_id' => null,
+            'status' => 'active',
+            'tax_registration_number' => 'TAX-P111-FOREIGN-COMPANY',
+        ]);
+        $this->assertSame($supplierCountBefore, DB::table('enterprise_suppliers')->count());
+        $this->assertSame($countBefore, DB::table('enterprise_purchase_requests')->count());
+        $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+    }
+
     public function test_supplier_legal_identity_create_and_edit_http_and_archive_respect_company_store_scope_and_audit(): void
     {
         $storeA = $this->wholesaleStore();
