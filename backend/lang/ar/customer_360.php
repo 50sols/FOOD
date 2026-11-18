@@ -5,6 +5,7 @@ return [
     'customers' => 'العملاء',
     'customer_list' => 'قائمة العملاء',
     'back_to_list' => 'عودة إلى القائمة',
+    'open_customer_360' => 'فتح 360',
     'active' => 'نشط',
     'inactive' => 'غير نشط',
     'sections' => 'أقسام تفاصيل العميل',
