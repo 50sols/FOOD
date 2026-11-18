@@ -1,5 +1,5 @@
 from __future__ import annotations
-import importlib.util, sys, unittest
+import importlib.util, subprocess, sys, tempfile, unittest
 from pathlib import Path
 
 ROOT=Path(__file__).resolve().parents[2]
@@ -144,7 +144,12 @@ class CiPlanTest(unittest.TestCase):
                 for area in required: self.assertTrue(plan["areas"][area],area)
                 for area in forbidden: self.assertFalse(plan["areas"][area],area)
                 if name=="ci-configuration": self.assertFalse(plan["backend_dashboard_only"])
-        for malformed in ("unknown/path.txt","../backend/app/Services/Finance.php",""):
+        for malformed in (
+            "unknown/path.txt",
+            "docs/v2/qa/unreviewed-security-contract.md",
+            "../backend/app/Services/Finance.php",
+            "",
+        ):
             with self.subTest(scenario="malformed-or-unknown",path=malformed):
                 plan=module.resolve(self.config,[malformed],"fix/4013-composer-ci-cache")
                 self.assertEqual([malformed],plan["unclassified_paths"])
@@ -158,4 +163,121 @@ class CiPlanTest(unittest.TestCase):
         self.assertEqual(3,workflow.count("if [[ ! -f vendor/autoload.php ]]; then"))
         self.assertEqual(3,workflow.count("composer install --no-interaction --prefer-dist --no-progress"))
         self.assertNotIn("restore-keys:",workflow.split("- name: Cache installed Composer dependencies",1)[1].split("- name:",1)[0])
+
+    @staticmethod
+    def _git(repo:Path,*args:str)->str:
+        return subprocess.check_output(
+            ["git","-C",str(repo),*args],
+            text=True,
+            stderr=subprocess.PIPE,
+        ).strip()
+
+    def _init_test_repo(self,repo:Path)->None:
+        self._git(repo,"init","--quiet")
+        self._git(repo,"config","user.name","CI planner regression")
+        self._git(repo,"config","user.email","ci-planner@example.invalid")
+
+    def test_changed_files_matches_merge_base_for_outdated_and_rebased_pull_requests(self):
+        previous_root=module.ROOT
+        try:
+            with tempfile.TemporaryDirectory() as directory:
+                repo=Path(directory)
+                self._init_test_repo(repo)
+                (repo/"common.txt").write_text("common\n",encoding="utf-8")
+                self._git(repo,"add","common.txt")
+                self._git(repo,"commit","-m","common base")
+                self._git(repo,"branch","-m","integration")
+                self._git(repo,"switch","-c","pull-request")
+                (repo/"pull-request.txt").write_text("pr change\n",encoding="utf-8")
+                self._git(repo,"add","pull-request.txt")
+                self._git(repo,"commit","-m","pull request change")
+                head=self._git(repo,"rev-parse","HEAD")
+
+                self._git(repo,"switch","integration")
+                (repo/"base-only.txt").write_text("target branch change\n",encoding="utf-8")
+                self._git(repo,"add","base-only.txt")
+                self._git(repo,"commit","-m","advance integration")
+                advanced_base=self._git(repo,"rev-parse","HEAD")
+                module.ROOT=repo
+
+                legacy=module.git("diff","--name-only",advanced_base,head).splitlines()
+                self.assertEqual(["base-only.txt","pull-request.txt"],sorted(legacy))
+                self.assertEqual(["pull-request.txt"],module.changed_files(advanced_base,head))
+
+                self._git(repo,"switch","pull-request")
+                self._git(repo,"rebase","integration")
+                rebased_head=self._git(repo,"rev-parse","HEAD")
+                self.assertEqual(["pull-request.txt"],module.changed_files(advanced_base,rebased_head))
+        finally:
+            module.ROOT=previous_root
+
+    def test_changed_files_fails_closed_when_no_merge_base_exists(self):
+        previous_root=module.ROOT
+        try:
+            with tempfile.TemporaryDirectory() as directory:
+                repo=Path(directory)
+                self._init_test_repo(repo)
+                (repo/"base.txt").write_text("first root\n",encoding="utf-8")
+                self._git(repo,"add","base.txt")
+                self._git(repo,"commit","-m","first root")
+                base=self._git(repo,"rev-parse","HEAD")
+
+                self._git(repo,"switch","--orphan","unrelated")
+                (repo/"base.txt").unlink(missing_ok=True)
+                (repo/"unrelated.txt").write_text("unrelated root\n",encoding="utf-8")
+                self._git(repo,"add","--all")
+                self._git(repo,"commit","-m","unrelated root")
+                head=self._git(repo,"rev-parse","HEAD")
+                module.ROOT=repo
+
+                with self.assertRaisesRegex(ValueError,"Cannot compute merge-base diff"):
+                    module.changed_files(base,head)
+        finally:
+            module.ROOT=previous_root
+
+    def test_reviewed_v2_qa_documents_route_to_minimum_relevant_areas(self):
+        routes={
+            "docs/v2/qa/3960-erp-center-horizontal-tabs.md":{"backend","dashboard_ui"},
+            "docs/v2/qa/4007-treasury-page-tab-rail.md":{"backend","dashboard_ui"},
+            "docs/v2/qa/4000-archived-active-role-authority.md":{"backend"},
+            "docs/v2/qa/2732-wholesale-financial-parity.md":{"backend","customer"},
+            "docs/v2/qa/2845-erp-entitlement-maker-checker-boundaries.md":{"backend"},
+        }
+        for path,expected in routes.items():
+            with self.subTest(path=path):
+                plan=module.resolve(self.config,[path],"ci/4016-ci-merge-base-routing")
+                actual={area for area,enabled in plan["areas"].items() if enabled}
+                self.assertEqual([],plan["unclassified_paths"])
+                self.assertEqual(expected,actual)
+                self.assertNotIn("c13_integrated_e2e",actual)
+                self.assertNotIn("operational_completion_e2e",actual)
+                self.assertEqual("customer" not in expected,plan["backend_dashboard_only"])
+
+    def test_c13_and_operational_gates_keep_their_existing_branch_scope(self):
+        ordinary=module.resolve(
+            self.config,
+            ["apps/customer_app/test/b2b_journey_test.dart","docs/v2/qa/2732-wholesale-financial-parity.md"],
+            "feat/2732-v2-customer-wholesale-commerce-parity",
+        )
+        self.assertFalse(ordinary["areas"]["c13_integrated_e2e"])
+        self.assertFalse(ordinary["areas"]["operational_completion_e2e"])
+
+        c13=module.resolve(self.config,[],"test/873-c13-integrated-e2e")
+        self.assertTrue(c13["areas"]["c13_integrated_e2e"])
+        self.assertTrue(c13["areas"]["operational_completion_e2e"])
+
+    def test_known_issue_notes_route_to_policy_without_widening_unknown_paths(self):
+        known=module.resolve(self.config,[".ai/KNOWN_ISSUES.md"],"ci/4016-ci-merge-base-routing")
+        self.assertEqual([],known["unclassified_paths"])
+        self.assertEqual({"policy"},{area for area,enabled in known["areas"].items() if enabled})
+
+        unknown=module.resolve(
+            self.config,
+            ["docs/v2/qa/unreviewed-security-contract.md"],
+            "ci/4016-ci-merge-base-routing",
+        )
+        self.assertEqual(["docs/v2/qa/unreviewed-security-contract.md"],unknown["unclassified_paths"])
+        for area in self.config["areas"]:
+            self.assertTrue(unknown["areas"][area],area)
+
 if __name__=="__main__": unittest.main()
