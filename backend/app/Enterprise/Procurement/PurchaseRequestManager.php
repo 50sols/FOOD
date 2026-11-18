@@ -613,9 +613,9 @@ final class PurchaseRequestManager
             'lines' => ['required', 'array', 'min:1', 'max:100'],
             'lines.*.item_code' => ['nullable', 'string', 'max:96'],
             'lines.*.description' => ['required', 'string', 'max:255'],
-            'lines.*.quantity' => ['required', 'numeric', 'min:0.001', 'max:999999999'],
+            'lines.*.quantity' => ['required', 'numeric', 'decimal:0,3', 'min:0.001', 'max:999999999'],
             'lines.*.unit' => ['required', 'string', 'max:32'],
-            'lines.*.estimated_unit_cost' => ['nullable', 'numeric', 'min:0', 'max:999999999'],
+            'lines.*.estimated_unit_cost' => ['nullable', 'numeric', 'decimal:0,3', 'min:0', 'max:999999999'],
         ])->validate();
         $data['lines'] = array_values($data['lines']);
 
