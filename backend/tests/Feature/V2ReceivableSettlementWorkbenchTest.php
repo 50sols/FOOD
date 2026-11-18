@@ -1880,11 +1880,11 @@ final class V2ReceivableSettlementWorkbenchTest extends TestCase
             'type' => 'asset', 'normal_balance' => 'debit', 'allow_posting' => true,
         ]);
         $year = $finance->createFiscalYear($maker, $context, [
-            'code' => 'FY2027', 'name' => 'Fiscal year 2027',
+            'code' => 'FY2027-'.$prefix, 'name' => 'Fiscal year 2027',
             'starts_on' => '2027-01-01', 'ends_on' => '2027-12-31',
         ]);
         $finance->createFiscalPeriod($maker, $context, $year->id, [
-            'sequence' => 1, 'code' => 'P01', 'name' => 'January 2027',
+            'sequence' => 1, 'code' => 'P01-'.$prefix, 'name' => 'January 2027',
             'starts_on' => '2027-01-01', 'ends_on' => '2027-01-31',
         ]);
 
