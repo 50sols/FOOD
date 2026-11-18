@@ -833,7 +833,7 @@ final class EnterpriseProcurementController extends Controller
     }
 
     /**
-     * @param list<string> $requiredPermissions
+     * @param  list<string>  $requiredPermissions
      * @return array{ResolvedTenantContext,list<array{id:int,name:string,code:string,channel:string}>,int}
      */
     private function context(Request $request, User $actor, array $requiredPermissions = []): array
@@ -884,7 +884,7 @@ final class EnterpriseProcurementController extends Controller
     }
 
     /**
-     * @param list<string> $requiredPermissions
+     * @param  list<string>  $requiredPermissions
      */
     private function hasRequiredPermissions(User $actor, int $storeId, array $requiredPermissions): bool
     {
