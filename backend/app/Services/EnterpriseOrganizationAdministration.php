@@ -144,7 +144,7 @@ final class EnterpriseOrganizationAdministration
             return;
         }
 
-        if (isset($data['code']) && $data['code'] !== $model->code) {
+        if (isset($data['code']) && $data['code'] !== (string) $model->getAttribute('code')) {
             throw ValidationException::withMessages([
                 'code' => [__('enterprise_organization.default_routing_identity_protected')],
             ]);
