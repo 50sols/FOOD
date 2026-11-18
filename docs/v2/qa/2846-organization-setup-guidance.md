@@ -16,10 +16,11 @@
 - Customer pricing/credit, suppliers, WMS title and Finance mapping remain owned by #2706/#2845/#2844/#2633 and linked original PRs. No overlapping edits.
 
 ## Acceptance and security
-- The current page shows field purpose, source, safe sample, validation limits, default, permission, explicit UNVERIFIED readiness in AR/EN; same form Save/Test with no route duplication.
+- The current page shows field purpose, source, safe sample, validation limits, default, permission, explicit UNVERIFIED readiness in AR/EN; same form Save/Test with no route duplication. A failed Save restores attempted values only to its create or edit form, and a successful Test preserves that form context.
 - Server RBAC is checked before validating Test/Save, never inferred from hidden UI.
 - Confirm positive Test returns localized status without inserts/updates/audit, and Save continues its existing behavior.
 - Confirm negative unauthorized access, invalid / duplicate code, protected default routing code/deactivation denial on both Test/Save and direct service, proper locale direction and help. Positive name-edit and new-store default-scope regression must use disposable fixture only, without reseeding live data.
+- Text inputs, action links, and buttons keep 44px minimum control height; the page retains keyboard focus indication and wrapped action buttons.
 - Test is a **field validation preview only**: hierarchy service can still reject an update for active-child/inactive-parent business constraints. Such a rejected Save must stay rejected, not become certified by a successful preview.
 - Do not mark any company/tax/legal record READY merely because the hierarchy form was saved.
 - Manual responsive verification: 320, 360, 390, 412, 430, 768, 1024, 1280+; AR RTL/EN LTR; keyboard focus and wrapped buttons.

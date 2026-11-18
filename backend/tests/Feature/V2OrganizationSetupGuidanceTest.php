@@ -34,10 +34,12 @@ final class V2OrganizationSetupGuidanceTest extends TestCase
             'code' => 'example_company',
             'name' => 'Example Company',
             'is_active' => '1',
+            '_setup_form' => 'create',
             '_setup_test' => '1',
         ])->assertRedirect()
             ->assertSessionHas('status', __('enterprise_organization.setup_test_passed'))
             ->assertSessionHas('_old_input.name', 'Example Company')
+            ->assertSessionHas('_old_input._setup_form', 'create')
             ->assertSessionMissing('_old_input.password');
 
         $this->assertDatabaseMissing('enterprise_organizations', ['code' => 'example_company']);
@@ -54,10 +56,12 @@ final class V2OrganizationSetupGuidanceTest extends TestCase
             'name' => 'Unpersisted Preview',
             'code' => $organization->code,
             'is_active' => '1',
-            '_setup_test' => '1',
+            '_setup_form' => 'edit',
+            '_setup_test' => 'edit',
         ])->assertRedirect()
             ->assertSessionHas('status', __('enterprise_organization.setup_test_passed'))
-            ->assertSessionHas('_old_input.name', 'Unpersisted Preview');
+            ->assertSessionHas('_old_input.name', 'Unpersisted Preview')
+            ->assertSessionHas('_old_input._setup_form', 'edit');
 
         $this->assertSame($organization->name, $organization->fresh()->name);
         $this->assertTrue((bool) $organization->fresh()->is_active);
@@ -77,6 +81,48 @@ final class V2OrganizationSetupGuidanceTest extends TestCase
 
         $this->assertDatabaseMissing('enterprise_organizations', ['name' => 'Invalid']);
         $this->assertDatabaseMissing('enterprise_organizations', ['name' => 'Duplicate']);
+    }
+
+    public function test_failed_create_save_restores_values_only_to_create_form(): void
+    {
+        $admin = $this->actor('SUPER_ADMIN', 'en');
+        $organization = EnterpriseOrganization::query()->where('code', 'foodex_platform')->firstOrFail();
+        $showUrl = route('admin.enterprise-organizations.show', $organization);
+
+        $this->actingAs($admin)->from($showUrl)
+            ->post(route('admin.enterprise-companies.store', $organization), [
+                'name' => 'Uncommitted Company',
+                'code' => '../invalid',
+                'is_active' => '0',
+                '_setup_form' => 'create',
+            ])->assertRedirect($showUrl)
+            ->assertSessionHasErrors('code');
+
+        $html = $this->actingAs($admin)->get($showUrl)->assertOk()->getContent();
+
+        $this->assertSame(1, substr_count($html, 'name="name" value="Uncommitted Company"'));
+        $this->assertSame(1, substr_count($html, 'name="code" value="../invalid"'));
+    }
+
+    public function test_failed_edit_save_restores_values_only_to_edit_form(): void
+    {
+        $admin = $this->actor('SUPER_ADMIN', 'en');
+        $organization = EnterpriseOrganization::query()->where('code', 'foodex_platform')->firstOrFail();
+        $showUrl = route('admin.enterprise-organizations.show', $organization);
+
+        $this->actingAs($admin)->from($showUrl)
+            ->patch(route('admin.enterprise-organizations.update', $organization), [
+                'name' => 'Uncommitted Organization Rename',
+                'code' => '../invalid',
+                'is_active' => '1',
+                '_setup_form' => 'edit',
+            ])->assertRedirect($showUrl)
+            ->assertSessionHasErrors('code');
+
+        $html = $this->actingAs($admin)->get($showUrl)->assertOk()->getContent();
+
+        $this->assertSame(1, substr_count($html, 'name="name" value="Uncommitted Organization Rename"'));
+        $this->assertSame(1, substr_count($html, 'name="code" value="../invalid"'));
     }
 
     public function test_non_admin_cannot_test_or_save_organization_inputs(): void
@@ -125,6 +171,7 @@ final class V2OrganizationSetupGuidanceTest extends TestCase
                 'code' => 'changed_platform_code',
                 'name' => 'Corrected Organization Display Name',
                 'is_active' => '1',
+                '_setup_form' => 'edit',
             ];
             if ($preview) {
                 $payload['_setup_test'] = 'edit';
@@ -159,6 +206,7 @@ final class V2OrganizationSetupGuidanceTest extends TestCase
                 'name' => 'Renamed Business Unit',
                 'code' => 'different_unit_code',
                 'is_active' => '1',
+                '_setup_form' => 'edit',
             ];
             if ($preview) {
                 $payload['_setup_test'] = 'edit';

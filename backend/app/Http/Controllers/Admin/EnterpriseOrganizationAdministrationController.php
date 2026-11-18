@@ -123,7 +123,7 @@ final class EnterpriseOrganizationAdministrationController extends Controller
         $actor = $this->platformAdmin($request);
         $data = $this->validatedRecord($request, Rule::unique('enterprise_organizations', 'code'));
         if ($request->has('_setup_test')) {
-            return back()->withInput($request->only(['name', 'code', 'is_active', '_setup_test']))
+            return back()->withInput($request->only(['name', 'code', 'is_active', '_setup_test', '_setup_form']))
                 ->with('status', __('enterprise_organization.setup_test_passed'));
         }
 
@@ -138,7 +138,7 @@ final class EnterpriseOrganizationAdministrationController extends Controller
         $data = $this->validatedRecord($request, Rule::unique('enterprise_organizations', 'code')->ignore($organization->id));
         $this->administration->assertDefaultRoutingIdentityPreserved($organization, $data);
         if ($request->has('_setup_test')) {
-            return back()->withInput($request->only(['name', 'code', 'is_active', '_setup_test']))
+            return back()->withInput($request->only(['name', 'code', 'is_active', '_setup_test', '_setup_form']))
                 ->with('status', __('enterprise_organization.setup_test_passed'));
         }
 
@@ -155,7 +155,7 @@ final class EnterpriseOrganizationAdministrationController extends Controller
             Rule::unique('enterprise_companies', 'code')->where('organization_id', $organization->id),
         );
         if ($request->has('_setup_test')) {
-            return back()->withInput($request->only(['name', 'code', 'is_active', '_setup_test']))
+            return back()->withInput($request->only(['name', 'code', 'is_active', '_setup_test', '_setup_form']))
                 ->with('status', __('enterprise_organization.setup_test_passed'));
         }
 
@@ -172,7 +172,7 @@ final class EnterpriseOrganizationAdministrationController extends Controller
             Rule::unique('enterprise_companies', 'code')->where('organization_id', $company->organization_id)->ignore($company->id),
         );
         if ($request->has('_setup_test')) {
-            return back()->withInput($request->only(['name', 'code', 'is_active', '_setup_test']))
+            return back()->withInput($request->only(['name', 'code', 'is_active', '_setup_test', '_setup_form']))
                 ->with('status', __('enterprise_organization.setup_test_passed'));
         }
 
@@ -189,7 +189,7 @@ final class EnterpriseOrganizationAdministrationController extends Controller
             Rule::unique('enterprise_legal_entities', 'code')->where('company_id', $company->id),
         );
         if ($request->has('_setup_test')) {
-            return back()->withInput($request->only(['name', 'code', 'is_active', '_setup_test']))
+            return back()->withInput($request->only(['name', 'code', 'is_active', '_setup_test', '_setup_form']))
                 ->with('status', __('enterprise_organization.setup_test_passed'));
         }
 
@@ -206,7 +206,7 @@ final class EnterpriseOrganizationAdministrationController extends Controller
             Rule::unique('enterprise_legal_entities', 'code')->where('company_id', $legalEntity->company_id)->ignore($legalEntity->id),
         );
         if ($request->has('_setup_test')) {
-            return back()->withInput($request->only(['name', 'code', 'is_active', '_setup_test']))
+            return back()->withInput($request->only(['name', 'code', 'is_active', '_setup_test', '_setup_form']))
                 ->with('status', __('enterprise_organization.setup_test_passed'));
         }
 
@@ -223,7 +223,7 @@ final class EnterpriseOrganizationAdministrationController extends Controller
             Rule::unique('enterprise_business_units', 'code')->where('legal_entity_id', $legalEntity->id),
         );
         if ($request->has('_setup_test')) {
-            return back()->withInput($request->only(['name', 'code', 'is_active', '_setup_test']))
+            return back()->withInput($request->only(['name', 'code', 'is_active', '_setup_test', '_setup_form']))
                 ->with('status', __('enterprise_organization.setup_test_passed'));
         }
 
@@ -241,7 +241,7 @@ final class EnterpriseOrganizationAdministrationController extends Controller
         );
         $this->administration->assertDefaultRoutingIdentityPreserved($businessUnit, $data);
         if ($request->has('_setup_test')) {
-            return back()->withInput($request->only(['name', 'code', 'is_active', '_setup_test']))
+            return back()->withInput($request->only(['name', 'code', 'is_active', '_setup_test', '_setup_form']))
                 ->with('status', __('enterprise_organization.setup_test_passed'));
         }
 
