@@ -411,6 +411,93 @@ final class V2ErpEntitlementCheckerBoundaryTest extends TestCase
         $this->assertSame($auditBefore, DB::table('audit_logs')->count());
     }
 
+    public function test_company_entitlement_inherits_to_authorized_store_and_foreign_company_deny_overrides_platform_allow(): void
+    {
+        $wholesale = $this->wholesaleStore();
+        $hierarchy = app(OrganizationHierarchyService::class);
+        $wholesaleScope = $hierarchy->scopeForStore($wholesale->id);
+        $this->assertIsArray($wholesaleScope);
+
+        $retail = Store::query()->create([
+            'store_type_id' => (int) DB::table('store_types')->where('code', 'B2C')->value('id'),
+            'code' => 'P111-COMPANY-DENY-RETAIL',
+            'name' => 'P111 Company-Denied Retail',
+            'is_active' => true,
+        ]);
+        $foreignCompany = EnterpriseCompany::query()->create([
+            'organization_id' => $wholesaleScope['organization_id'],
+            'code' => 'P111_COMPANY_DENY_RETAIL',
+            'name' => 'P111 Company-Denied Retail',
+            'is_active' => true,
+        ]);
+        $foreignEntity = EnterpriseLegalEntity::query()->create([
+            'company_id' => $foreignCompany->id,
+            'code' => 'P111_COMPANY_DENY_RETAIL_ENTITY',
+            'name' => 'P111 Company-Denied Retail Entity',
+            'is_active' => true,
+        ]);
+        $foreignUnit = EnterpriseBusinessUnit::query()->create([
+            'legal_entity_id' => $foreignEntity->id,
+            'code' => 'P111_COMPANY_DENY_RETAIL_UNIT',
+            'name' => 'P111 Company-Denied Retail Unit',
+            'is_active' => true,
+        ]);
+        $hierarchy->assignStore($retail, $foreignUnit);
+        $retailScope = $hierarchy->scopeForStore($retail->id);
+        $this->assertIsArray($retailScope);
+        $this->assertNotSame($wholesaleScope['company_id'], $retailScope['company_id']);
+
+        $owner = $this->actor('SUPER_ADMIN');
+        app(EnterpriseModuleAdministration::class)->perform('procurement', 'enable', $owner);
+        $entitlements = app(ModuleEntitlementManager::class);
+        $entitlements->set('procurement', EntitlementScope::platform(), false, null, $owner);
+        $entitlements->set(
+            'procurement',
+            new EntitlementScope(EntitlementScope::COMPANY, $wholesaleScope['company_id']),
+            true,
+            null,
+            $owner,
+        );
+        $entitlements->set(
+            'procurement',
+            new EntitlementScope(EntitlementScope::COMPANY, $retailScope['company_id']),
+            false,
+            null,
+            $owner,
+        );
+
+        $allowedPage = $this->actingAs($owner)->get(route('admin.erp.procurement.index', [
+            'store_id' => $wholesale->id,
+            'tab' => 'requests',
+        ]));
+        $allowedPage->assertOk()->assertViewHas('selectedStoreId', $wholesale->id);
+        $this->assertNotContains(
+            $retail->id,
+            collect($allowedPage->viewData('storeOptions'))->pluck('id')->all(),
+        );
+
+        // Once the broad platform grant is added, the foreign company DENY
+        // remains the first matching decision in that store's hierarchy.
+        $entitlements->set('procurement', EntitlementScope::platform(), true, null, $owner);
+        $requestCount = DB::table('enterprise_purchase_requests')->count();
+        $auditBeforeDeny = DB::table('audit_logs')->count();
+        $this->actingAs($owner)->get(route('admin.erp.procurement.index', [
+            'store_id' => $retail->id,
+            'tab' => 'requests',
+        ]))->assertForbidden();
+        $this->actingAs($owner)->post(route('admin.erp.procurement.requests.store'), [
+            'store_id' => $retail->id,
+            'currency_code' => 'KWD',
+            'reason' => 'P111 foreign company entitlement denial',
+            'description' => 'Company-denied request must not persist',
+            'quantity' => '1.000',
+            'unit' => 'case',
+        ])->assertForbidden();
+
+        $this->assertSame($requestCount, DB::table('enterprise_purchase_requests')->count());
+        $this->assertSame($auditBeforeDeny, DB::table('audit_logs')->count());
+    }
+
     public function test_historical_unmatched_invoice_get_keeps_pending_row_without_creating_or_approving_review_in_ar_en(): void
     {
         // An imported/legacy invoice can have no match-review row. A GET must
