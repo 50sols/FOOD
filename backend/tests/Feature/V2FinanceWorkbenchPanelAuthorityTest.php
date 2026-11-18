@@ -257,7 +257,7 @@ final class V2FinanceWorkbenchPanelAuthorityTest extends TestCase
             'tab' => 'receivables',
             'finance_panel' => 'settlements',
             'settlement_document_id' => $foreignDocumentId,
-        ]))->assertForbidden();
+        ]))->assertNotFound();
 
         $this->assertSame($financialRowsBefore, [
             DB::table('enterprise_finance_journals')->count(),
