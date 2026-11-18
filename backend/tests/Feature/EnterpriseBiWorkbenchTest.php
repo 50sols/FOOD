@@ -119,14 +119,36 @@ final class EnterpriseBiWorkbenchTest extends TestCase
             'updated_at' => now(),
         ]);
 
+        // G009 renders exactly one server-selected BI workspace per authorized request.
+        // Check the persisted failed export and exceptions within the exports workspace,
+        // not by rendering unrelated panels in the default executive overview.
         $this->actingAs($actor)
-            ->get(route('admin.erp.bi'))
+            ->get(route('admin.erp.bi', [
+                'bi_tab' => 'exports',
+                'scope' => 'store:'.$store->id,
+            ]))
             ->assertOk()
+            ->assertSee('data-bi-workspace-panel="exports"', false)
+            ->assertDontSee('data-bi-workspace-panel="overview"', false)
+            ->assertDontSee('data-bi-workspace-panel="schedules"', false)
             ->assertSee(__('enterprise_bi_ui.exports_title'))
-            ->assertSee(__('enterprise_bi_ui.schedules_title'))
             ->assertSee(__('enterprise_bi_ui.failed_exports'))
             ->assertSee(__('enterprise_bi_ui.failed_schedules'))
-            ->assertSee('5001')
+            ->assertSee('5001');
+
+        // The separately authorized schedules workspace must retain its real
+        // persisted interval, without exposing the inactive exports workspace.
+        $this->actingAs($actor)
+            ->get(route('admin.erp.bi', [
+                'bi_tab' => 'schedules',
+                'scope' => 'store:'.$store->id,
+            ]))
+            ->assertOk()
+            ->assertSee('data-bi-workspace-panel="schedules"', false)
+            ->assertDontSee('data-bi-workspace-panel="overview"', false)
+            ->assertDontSee('data-bi-workspace-panel="exports"', false)
+            ->assertDontSee(__('enterprise_bi_ui.failed_exports'))
+            ->assertSee(__('enterprise_bi_ui.schedules_title'))
             ->assertSee('1440');
     }
 
