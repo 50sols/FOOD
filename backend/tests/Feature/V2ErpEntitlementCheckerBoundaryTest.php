@@ -11,6 +11,7 @@ use App\Enterprise\Procurement\PurchaseInvoiceHandoffManager;
 use App\Enterprise\Procurement\PurchaseOrderManager;
 use App\Enterprise\Procurement\PurchaseRequestManager;
 use App\Enterprise\Procurement\SupplierDirectory;
+use App\Http\Controllers\Admin\EnterpriseProcurementController;
 use App\Models\Catalog;
 use App\Models\EnterpriseBusinessUnit;
 use App\Models\EnterpriseCashbox;
@@ -30,6 +31,7 @@ use Database\Seeders\CoreReferenceSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Pagination\LengthAwarePaginator;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Route;
 use Tests\Support\SyntheticErpWorkflowEvidence;
 use Tests\TestCase;
 
@@ -2052,13 +2054,13 @@ final class V2ErpEntitlementCheckerBoundaryTest extends TestCase
     {
         // Future routes must fail closed until their service-level permissions
         // are deliberately mapped at the canonical Procurement controller.
-        $constant = (new \ReflectionClass(\App\Http\Controllers\Admin\EnterpriseProcurementController::class))
+        $constant = (new \ReflectionClass(EnterpriseProcurementController::class))
             ->getReflectionConstant('ACTION_PERMISSIONS');
         $this->assertInstanceOf(\ReflectionClassConstant::class, $constant);
         $mapped = array_keys($constant->getValue());
         sort($mapped);
 
-        $registered = collect(array_keys(\Illuminate\Support\Facades\Route::getRoutes()->getRoutesByName()))
+        $registered = collect(array_keys(Route::getRoutes()->getRoutesByName()))
             ->filter(static fn (string $name): bool => str_starts_with($name, 'admin.erp.procurement.')
                 && $name !== 'admin.erp.procurement.index')
             ->sort()
