@@ -861,7 +861,7 @@ final class V2ErpEntitlementCheckerBoundaryTest extends TestCase
                 $this->assertSame('uncertified', $card['denial_reason'], $role);
                 $this->assertNull($card['url'], $role);
                 $this->assertSame('healthy', $card['health'], 'Health alone must not certify '.$role);
-                $page->assertSee(
+                $page->assertSeeText(
                     __('admin.erp_center.denial_reasons.uncertified', [], $locale),
                 );
 
@@ -2506,8 +2506,11 @@ final class V2ErpEntitlementCheckerBoundaryTest extends TestCase
             'status' => 'draft',
             'reason' => 'P111 request draft edited',
             'notes' => 'Edited before submission',
-            'needed_by' => '2026-12-05',
         ]);
+        $storedNeededBy = DB::table('enterprise_purchase_requests')
+            ->where('id', $request->id)
+            ->value('needed_by');
+        $this->assertSame('2026-12-05', substr((string) $storedNeededBy, 0, 10));
         $this->assertDatabaseHas('enterprise_purchase_request_lines', [
             'purchase_request_id' => $request->id,
             'item_code' => 'P111-EDIT-NEW',

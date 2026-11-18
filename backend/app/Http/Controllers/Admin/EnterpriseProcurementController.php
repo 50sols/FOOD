@@ -770,15 +770,13 @@ final class EnterpriseProcurementController extends Controller
     /** @return array{ResolvedTenantContext,list<array{id:int,name:string,code:string,channel:string}>,int} */
     private function context(Request $request, User $actor): array
     {
-        // A tenant assignment is not an ERP authorization grant. Derive both
-        // the selected store and the visible chooser from effective permission
-        // and the same hierarchical entitlement used by direct HTTP actions.
-        // ERP workspaces are wholesale-only. Retail stores are not a selectable
-        // tenant context in Procurement, even for platform administrators.
-        $candidates = array_values(array_filter(
-            $this->storeOptions($actor),
-            static fn (array $option): bool => $option['channel'] === 'b2b',
-        ));
+        // A tenant assignment is not an ERP authorization grant. Preserve the
+        // existing B2B and B2C Procurement contexts, then derive both the
+        // selected store and visible chooser from effective channel-aware
+        // permission and the same hierarchical entitlement used by direct HTTP
+        // actions. The store-specific authorization below prevents channel,
+        // company or store assignments from crossing into another tenant.
+        $candidates = $this->storeOptions($actor);
         abort_if($candidates === [], 403);
 
         $hasEntitlementPolicy = DB::table('enterprise_module_entitlements')
@@ -805,10 +803,12 @@ final class EnterpriseProcurementController extends Controller
         abort_unless(is_array($selected), 403);
         $storeId = (int) $selected['id'];
 
-        // Tenant resolution remains authoritative for company/legal-entity
-        // scope. Only a genuinely permitted store with missing hierarchy may
-        // surface a setup conflict (409); authorization denial is always 403.
-        $context = $this->tenants->wholesale($actor, $storeId);
+        // Tenant resolution remains authoritative for company/legal-entity and
+        // channel scope. Retail support access retains its existing audited
+        // entry path; assigned Retail users stay constrained to their store.
+        $context = $selected['channel'] === 'b2c'
+            ? $this->tenants->retail($actor, $storeId, $actor->hasRole('SUPER_ADMIN'), $request)
+            : $this->tenants->wholesale($actor, $storeId);
 
         abort_if($context->enterpriseScope === null, 409, 'Enterprise data scope is required.');
 
