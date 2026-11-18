@@ -23,6 +23,36 @@ final class FinanceWorkbenchAccess
         'finance.gl.read',
         'finance.ar.read',
         'finance.ap.read',
+        'finance.opening_balances.read',
+        'finance.credit_terms.read',
+    ];
+
+    /**
+     * Canonical permission required for each Finance capability. Keeping this
+     * mapping at the service boundary prevents a caller from pairing a weaker
+     * permission (such as finance.view) with a mutation capability.
+     *
+     * @var array<string, string>
+     */
+    private const PERMISSION_BY_CAPABILITY = [
+        'finance.foundation.read' => 'finance.view',
+        'finance.foundation.manage' => 'finance.manage',
+        'finance.gl.read' => 'finance.view',
+        'finance.gl.manage' => 'finance.manage',
+        'finance.gl.post' => 'finance.post',
+        'finance.opening_balances.read' => 'finance.view',
+        'finance.opening_balances.manage' => 'finance.manage',
+        'finance.opening_balances.post' => 'finance.post',
+        'finance.ar.read' => 'finance.view',
+        'finance.ar.manage' => 'finance.manage',
+        'finance.ar.post' => 'finance.post',
+        'finance.ap.read' => 'finance.view',
+        'finance.ap.manage' => 'finance.manage',
+        'finance.ap.post' => 'finance.post',
+        'finance.credit_terms.read' => 'finance.view',
+        'finance.credit_terms.manage' => 'finance.manage',
+        'finance.approvals.manage' => 'finance.manage',
+        'finance.approvals.approve' => 'finance.approve',
     ];
 
     /**
@@ -78,8 +108,7 @@ final class FinanceWorkbenchAccess
      */
     public function canReadCapability(User $actor, int $storeId, string $capability): bool
     {
-        if (! str_starts_with($capability, 'finance.')
-            || ! str_ends_with($capability, '.read')
+        if (! in_array($capability, self::READ_CAPABILITIES, true)
             || ! $this->canRead($actor, $storeId)) {
             return false;
         }
@@ -93,6 +122,10 @@ final class FinanceWorkbenchAccess
 
     public function canPerform(User $actor, int $storeId, string $permission, string $capability): bool
     {
+        if ((self::PERMISSION_BY_CAPABILITY[$capability] ?? null) !== $permission) {
+            return false;
+        }
+
         // P127 fail-closed duty boundary: finance.manage is shared with GL,
         // credit terms and Treasury, while AR_OFFICER is authorized for AR only.
         // Other role grants must not silently enlarge its Finance duties.

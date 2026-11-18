@@ -135,3 +135,42 @@ no main, version promotion, ZIP release or production deployment.
 - Latest source commit before this documentation: `956436ff8bcfdf71c3fbae8f9d510d63dc08e3b7`. Required CI, Repository Policy and V2 Isolation for that source were IN_PROGRESS when inspected; after this document change they are **superseded**, and only the new final HEAD's terminal workflow checks may be used for integration.
 - The shared `FinanceWorkbenchController`, `AdminNavigation`, `TenantContextResolver`, routes/views and `AccountsReceivableService` remain outside this issue's exclusive file fence because #2633 original PR #3309 independently edits the Finance controller/nav/routes and carries its own authorization/settlement risk. Coordination: #2633 comment #6974002112. Need an explicit source/hunk handoff or accepted upstream integration to wire AR-only B2B selection, Finance HTTP `accessMatrix` through the same capability authority and authorized localized navigation **without** broad B2B admission. Then test real AR positive HTTP, denied GL/AP tab GETs for mixed roles, same-store/foreign-store/retail/explicit-deny, maker/checker, idempotent audited AR actions and positive/negative accessibility.
 - **Source complete: NO. Technical review: HIGH risk / pending full PASS. Merge: BLOCKED** until above. This checkpoint is not a waiver for red/missing CI or production/human UAT. Keep #2696 and master #2503 OPEN; no main/releases/deployment.
+
+## 2026-11-18 — Capability-pair hardening and shared route/nav handoff (NOT final acceptance)
+
+- `FinanceWorkbenchAccess::canReadCapability` now accepts only the manifest's
+  six known read capabilities. Unknown `finance.*.read` strings fail closed,
+  even if a bad entitlement row exists. The shared read-capability set includes
+  opening balances and credit terms as well as Foundation, GL, AR and AP.
+- `FinanceWorkbenchAccess::canPerform` now validates each capability against
+  its canonical permission (`finance.view`, `finance.manage`, `finance.post` or
+  `finance.approve`) before checking actor, store, channel and entitlement.
+  For example, `finance.view` cannot authorize `finance.ar.manage`, and an
+  unknown capability is denied. AR_OFFICER remains limited to the existing
+  `finance.ar.read/manage` duty boundary; this adds no post, approval, GL/AP,
+  Retail, B2C or generic B2B authority.
+- The dedicated feature test now covers known opening-balance/credit-term reads,
+  an unknown read with an explicit fixture entitlement, a valid manage pair,
+  unknown mutation denial and mismatched read/manage permission pairs.
+- **Exact integration dependency remains BLOCKED on #2633 / PR #3309:** the
+  standalone AR entry path needs coordinated changes to
+  `backend/app/Http/Controllers/Admin/FinanceWorkbenchController.php`
+  (`contextOptions()` and `accessMatrix()`),
+  `backend/app/Support/AdminNavigation.php` (B2B context admission and Finance
+  item projection), and the shared Finance routes/views/AR service. These are
+  outside #2696's three-file fence and are owned by the original #2633 PR.
+  The #2633 issue is OPEN/handoff-ready and its PR remains DRAFT; no explicit
+  file/hunk handoff has been granted. Do not widen B2B global roles to bridge
+  this gap. The in-fence service policy is not a positive standalone HTTP or
+  navigation journey.
+- Exact pre-edit head `f4c754aa555e5d9323acf6f60cfe17a114080645` Required CI
+  #44274079743 was terminal FAILURE: backend tests and MySQL/Redis succeeded;
+  the C13 login evidence gate and Operational #734 transition contract failed
+  in other owners' files. #2706 actively owns the Operations isolation test;
+  neither failing test is in the #2696 fence. This patch does not claim a CI
+  result for its new head until the exact-head run is terminal.
+- **Source complete: NO. Merge: BLOCKED.** Keep #2696 OPEN and PR #3221
+  DRAFT until the shared route/nav handoff, standalone AR positive HTTP path,
+  tab-level deny coverage, cross-company/store/channel checks, SoD and audited
+  AR action evidence are complete, and the final HIGH-risk review and required
+  exact-head checks pass.

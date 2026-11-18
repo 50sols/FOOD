@@ -195,7 +195,15 @@ final class V2ArOfficerAuthorizationContractTest extends TestCase
             FinanceFoundationService::MODULE,
             new EntitlementScope(EntitlementScope::LEGAL_ENTITY, (int) $scope['legal_entity_id']),
             true,
-            ['finance.ar.read', 'finance.ar.manage', 'finance.gl.read'],
+            [
+                'finance.ar.read',
+                'finance.ar.manage',
+                'finance.gl.read',
+                'finance.opening_balances.read',
+                'finance.credit_terms.read',
+                'finance.credit_terms.manage',
+                'finance.unknown.read',
+            ],
         );
 
         $retailFinance = Role::query()->where('code', 'RETAIL_FINANCE')->firstOrFail();
@@ -221,6 +229,24 @@ final class V2ArOfficerAuthorizationContractTest extends TestCase
         $this->assertTrue($actor->hasPermission('finance.manage', $store->id));
         $this->assertTrue($retailOnly->hasPermission('finance.view', $store->id));
         $this->assertTrue($access->canRead($retailOnly, $store->id));
+        $this->assertTrue($access->canReadCapability(
+            $retailOnly, $store->id, 'finance.opening_balances.read',
+        ));
+        $this->assertTrue($access->canReadCapability(
+            $retailOnly, $store->id, 'finance.credit_terms.read',
+        ));
+        $this->assertFalse($access->canReadCapability(
+            $retailOnly, $store->id, 'finance.unknown.read',
+        ));
+        $this->assertTrue($access->canPerform(
+            $retailOnly, $store->id, 'finance.manage', 'finance.credit_terms.manage',
+        ));
+        $this->assertFalse($access->canPerform(
+            $retailOnly, $store->id, 'finance.view', 'finance.ar.manage',
+        ));
+        $this->assertFalse($access->canPerform(
+            $retailOnly, $store->id, 'finance.manage', 'finance.unknown.manage',
+        ));
         $this->assertFalse($access->canRead($actor, $store->id));
         $this->assertFalse($access->canPerform(
             $actor, $store->id, 'finance.manage', 'finance.ar.manage',
@@ -353,6 +379,12 @@ final class V2ArOfficerAuthorizationContractTest extends TestCase
         $this->assertTrue($access->canRead($actor, $store->id));
         $this->assertTrue($access->canReadCapability($actor, $store->id, 'finance.ar.read'));
         $this->assertTrue($access->canPerform($actor, $store->id, 'finance.manage', 'finance.ar.manage'));
+        $this->assertFalse($access->canPerform(
+            $actor, $store->id, 'finance.view', 'finance.ar.manage',
+        ));
+        $this->assertFalse($access->canPerform(
+            $actor, $store->id, 'finance.manage', 'finance.ar.read',
+        ));
         foreach (['finance.foundation.read', 'finance.gl.read', 'finance.ap.read'] as $capability) {
             $this->assertFalse($access->canReadCapability($actor, $store->id, $capability));
         }
