@@ -6,6 +6,9 @@
 @include('admin._brand-components')
 <style>
 .erp-procurement{display:grid;gap:16px}.erp-context{display:flex;gap:12px;align-items:end;justify-content:space-between;flex-wrap:wrap}.erp-context form{display:flex;gap:8px;align-items:end;flex-wrap:wrap}.erp-context label,.erp-filters label,.erp-form label{display:grid;gap:5px;font-weight:700;font-size:.82rem}.erp-filters,.erp-form{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px;padding:14px}.erp-form .span-2{grid-column:span 2}.erp-form .span-all{grid-column:1/-1}.erp-table-wrap{overflow:auto}.erp-actions{display:flex;gap:6px;flex-wrap:wrap}.erp-actions form{display:inline}.erp-link{display:inline-flex;min-height:38px;align-items:center;padding:0 10px;border-radius:9px;border:1px solid var(--foodex-border);text-decoration:none;font-weight:800}.erp-danger{color:var(--foodex-danger-text)}.erp-detail{display:grid;gap:12px;padding:16px}.erp-detail-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px}.erp-detail-grid>div{padding:10px;border:1px solid var(--foodex-border);border-radius:10px}.erp-lines{display:grid;gap:8px}.erp-line{display:grid;grid-template-columns:minmax(160px,2fr) repeat(3,minmax(90px,1fr));gap:8px;padding:10px;border:1px solid var(--foodex-border);border-radius:10px}.erp-line--five{grid-template-columns:minmax(160px,2fr) repeat(4,minmax(90px,1fr))}.erp-aging{display:grid;grid-template-columns:repeat(auto-fit,minmax(145px,1fr));gap:10px}.erp-aging>div{padding:14px}.erp-aging strong{display:block;font-size:1.2rem;margin-top:5px}.erp-inline-note{color:var(--foodex-muted);font-size:.82rem}.erp-create{margin:0}.erp-create summary{cursor:pointer;font-weight:900;color:var(--foodex-green-dark);padding:10px 0}.erp-create[open] summary{margin-bottom:8px}.erp-status{white-space:nowrap}.erp-table td,.erp-table th{vertical-align:top}.erp-ref{white-space:nowrap;font-weight:900}.erp-lookup-hint{margin:0;color:var(--foodex-muted)}
+.erp-procurement .erp-procurement-tabs{display:flex;flex-wrap:nowrap;min-width:0;max-width:100%;overflow-x:auto;overscroll-behavior-inline:contain;scrollbar-width:thin}
+.erp-procurement .erp-procurement-tabs>a{flex:0 0 auto;white-space:nowrap;min-height:44px}
+.erp-procurement .erp-procurement-tabs>a:focus-visible{outline:2px solid var(--foodex-green);outline-offset:2px}
 @media(max-width:767px){.erp-form .span-2{grid-column:1/-1}.erp-line{grid-template-columns:1fr}.erp-actions{min-width:180px}}
 </style>
 </head>
@@ -48,9 +51,9 @@ $base=['store_id'=>$selectedStoreId,'tab'=>$activeTab];
 @if(session('status'))<div class="foodex-state" role="status">{{ session('status') }}</div>@endif
 @if($errors->any())<div class="foodex-state" role="alert"><ul>@foreach($errors->all() as $error)<li>{{ $error }}</li>@endforeach</ul></div>@endif
 
-<nav class="foodex-tabs" aria-label="{{ __('enterprise_procurement.title') }}">
+<nav class="foodex-tabs erp-procurement-tabs" aria-label="{{ __('enterprise_procurement.title') }}" data-procurement-tabs>
 @foreach($tabs as $tab)
-<a href="{{ route('admin.erp.procurement.index',['tab'=>$tab['key'],'store_id'=>$selectedStoreId]) }}" class="{{ $activeTab===$tab['key']?'active':'' }}" @if($activeTab===$tab['key']) aria-current="page" @endif>{{ $tab['label'] }}</a>
+<a data-procurement-tab="{{ $tab['key'] }}" href="{{ route('admin.erp.procurement.index',['tab'=>$tab['key'],'store_id'=>$selectedStoreId]) }}" class="{{ $activeTab===$tab['key']?'active':'' }}" @if($activeTab===$tab['key']) aria-current="page" @endif>{{ $tab['label'] }}</a>
 @endforeach
 </nav>
 
@@ -220,6 +223,9 @@ $base=['store_id'=>$selectedStoreId,'tab'=>$activeTab];
 @endif
 @endif
 
-@if($rows && method_exists($rows,'links'))<div>{{ $rows->links() }}</div>@endif
+{{-- The RFQ, Contracts and 3-way Match tabs already render their scoped paginator in the existing completion partial. --}}
+@if($rows && method_exists($rows,'links') && !in_array($activeTab,['rfqs','contracts','matches'],true))
+<div data-procurement-footer-pagination>{{ $rows->withQueryString()->links() }}</div>
+@endif
 </main></div>
 </body></html>

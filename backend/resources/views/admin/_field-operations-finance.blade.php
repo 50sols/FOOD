@@ -28,6 +28,30 @@
 @endphp
 
 <section class="foodex-ops-shell" data-field-finance-operations>
+    <style>
+        /* Keep the four independently authorized finance workspaces on one rail.
+           Local to this fragment; do not change shared tabs or operational maps. */
+        [data-field-finance-operations] .fieldops-finance-tabs {
+            display: flex;
+            flex-wrap: nowrap;
+            max-width: 100%;
+            min-width: 0;
+            overflow-x: auto;
+            overscroll-behavior-inline: contain;
+            scrollbar-width: thin;
+        }
+        [data-field-finance-operations] .fieldops-finance-tabs > a {
+            display: inline-flex;
+            flex: 0 0 auto;
+            align-items: center;
+            white-space: nowrap;
+            min-height: 44px;
+        }
+        [data-field-finance-operations] .fieldops-finance-tabs > a:focus-visible {
+            outline: 2px solid var(--foodex-green);
+            outline-offset: -2px;
+        }
+    </style>
     <div class="toolbar">
         <div>
             <strong>{{ app()->getLocale()==='ar'?'التحصيل والعهدة والتوريد':'Collections, custody & remittance' }}</strong>
@@ -37,7 +61,7 @@
         </div>
     </div>
 
-    <nav class="foodex-tabs" aria-label="{{ app()->getLocale()==='ar'?'تبويبات عمليات المالية':'Finance operations tabs' }}">
+    <nav class="foodex-tabs fieldops-finance-tabs" data-field-finance-tabs aria-label="{{ app()->getLocale()==='ar'?'تبويبات عمليات المالية':'Finance operations tabs' }}">
         @foreach($opsTabs as $key=>$label)
             <a
                 href="{{ route($opsRouteName, array_merge($opsRouteParams, $opsBaseQuery, ['ops_tab'=>$key])) }}"

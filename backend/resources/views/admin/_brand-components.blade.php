@@ -108,6 +108,10 @@
     .foodex-alert-error,[role="alert"].foodex-state{background:var(--foodex-orange-soft);border-color:#ffd0a6;color:#9a4b0b}
     .foodex-empty-state{min-height:140px;display:grid;place-items:center;text-align:center;padding:var(--foodex-space-6);border:1px dashed var(--foodex-border);border-radius:var(--foodex-radius-md);background:#fbfcfd;color:var(--foodex-muted)}
     .foodex-tabs{display:flex;flex-wrap:wrap;gap:var(--foodex-space-2);border-bottom:1px solid var(--foodex-border);margin-bottom:var(--foodex-space-4)}
+    /* Opt-in single-row rail for sibling PAGE_TAB links. Base .foodex-tabs remains unchanged. */
+    .foodex-tabs.foodex-tabs--horizontal{min-width:0;max-width:100%;flex-wrap:nowrap;overflow-x:auto;overscroll-behavior-inline:contain;-webkit-overflow-scrolling:touch;scrollbar-width:thin;padding:4px}
+    .foodex-tabs.foodex-tabs--horizontal > a,.foodex-tabs.foodex-tabs--horizontal > .foodex-tab{flex:0 0 auto;white-space:nowrap}
+    .foodex-tabs.foodex-tabs--horizontal > a:focus-visible,.foodex-tabs.foodex-tabs--horizontal > .foodex-tab:focus-visible{outline:2px solid var(--foodex-green);outline-offset:2px}
     .foodex-tabs a,.foodex-tab{min-height:var(--foodex-touch-target);display:inline-flex;align-items:center;padding:0 var(--foodex-space-3);border-bottom:2px solid transparent;color:var(--foodex-muted);text-decoration:none;font-weight:var(--foodex-font-weight-medium)}
     .foodex-tabs a.active,.foodex-tab.active{border-color:var(--foodex-green);color:var(--foodex-green-dark)}
     .foodex-modal-backdrop{position:fixed;inset:0;z-index:80;display:grid;place-items:center;padding:var(--foodex-space-4);background:rgba(23,32,51,.42)}

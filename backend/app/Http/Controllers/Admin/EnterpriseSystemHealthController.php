@@ -44,6 +44,12 @@ final class EnterpriseSystemHealthController extends Controller
         abort_unless($actor instanceof User, 401);
         Gate::forUser($actor)->authorize('platform.manage');
 
+        // Read-only health is broader than privileged update and dataset recovery.
+        // Project the existing HTTP actor requirements without granting permissions.
+        $canOpenUpdateCenter = $actor->is_active && $actor->hasRole('SUPER_ADMIN')
+            && Gate::forUser($actor)->allows('system.update');
+        $canOpenDatasetRecovery = $actor->is_active && $actor->hasRole('SUPER_ADMIN');
+
         [$from, $to] = $this->period($request);
         $reports = $this->health->all();
         $modules = $this->catalog->all()->map(function ($manifest) use ($reports): array {
@@ -84,7 +90,7 @@ final class EnterpriseSystemHealthController extends Controller
             ->latest('id')
             ->limit(24)
             ->get();
-        $backupRows = $this->backupRows($updates, $snapshot);
+        $backupRows = $this->backupRows($updates, $snapshot, $canOpenUpdateCenter, $canOpenDatasetRecovery);
         $lastBackup = collect($backupRows)
             ->filter(static fn (array $row): bool => ($row['successful'] ?? false) === true
                 && is_string($row['created_at'] ?? null)
@@ -168,7 +174,7 @@ final class EnterpriseSystemHealthController extends Controller
                         : __('system_admin.states.current'),
                 ],
                 'last_refresh' => optional($latestUpdate?->finished_at)->toIso8601String() ?: $now,
-                'drilldown_url' => route('admin.system-update.index'),
+                'drilldown_url' => $canOpenUpdateCenter ? route('admin.system-update.index') : '#update-history',
             ],
             [
                 'label' => __('system_admin.kpis.pending_migrations'),
@@ -180,7 +186,7 @@ final class EnterpriseSystemHealthController extends Controller
                         : ($pendingMigrations > 0 ? __('system_admin.states.degraded') : __('system_admin.states.healthy')),
                 ],
                 'last_refresh' => $now,
-                'drilldown_url' => route('admin.system-update.index'),
+                'drilldown_url' => $canOpenUpdateCenter ? route('admin.system-update.index') : '#update-history',
             ],
             [
                 'label' => __('system_admin.kpis.storage'),
@@ -203,6 +209,8 @@ final class EnterpriseSystemHealthController extends Controller
 
         return view('admin.enterprise-system-health', [
             'user' => $actor,
+            'canOpenUpdateCenter' => $canOpenUpdateCenter,
+            'canOpenDatasetRecovery' => $canOpenDatasetRecovery,
             'navGroups' => $this->navigation->groupsFor($actor),
             'navContext' => 'administration_hub',
             'modules' => $modules,
@@ -446,7 +454,7 @@ final class EnterpriseSystemHealthController extends Controller
      * @param  array<string,mixed>  $snapshot
      * @return list<array<string,mixed>>
      */
-    private function backupRows(Collection $updates, array $snapshot): array
+    private function backupRows(Collection $updates, array $snapshot, bool $canOpenUpdateCenter, bool $canOpenDatasetRecovery): array
     {
         $rows = [];
 
@@ -466,7 +474,7 @@ final class EnterpriseSystemHealthController extends Controller
                 'retention' => __('system_admin.retention.snapshot'),
                 'reason' => (string) ($snapshot['restore_reason'] ?? $snapshot['snapshot_reason'] ?? 'prelaunch_protection'),
                 'origin' => trim(((string) ($snapshot['source_release'] ?? '')).' → '.((string) ($snapshot['target_release'] ?? ''))) ?: __('system_admin.labels.snapshot'),
-                'url' => route('admin.production-dataset-switch.index'),
+                'url' => $canOpenDatasetRecovery ? route('admin.production-dataset-switch.index') : '#backup-history',
             ];
         }
 
@@ -500,7 +508,7 @@ final class EnterpriseSystemHealthController extends Controller
                 'retention' => __('system_admin.retention.update'),
                 'reason' => $update->operation_reason ?: 'system_update',
                 'origin' => ($update->from_version ?: '—').' → '.$update->to_version,
-                'url' => route('admin.system-update.index', ['page' => 1]),
+                'url' => $canOpenUpdateCenter ? route('admin.system-update.index', ['page' => 1]) : '#update-history',
             ];
         }
 

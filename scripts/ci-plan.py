@@ -7,7 +7,7 @@ ROOT=Path(__file__).resolve().parents[1]
 CONFIG_PATH=ROOT/".ci"/"ci-map.json"
 
 def git(*args:str)->str:
-    return subprocess.check_output(["git","-C",str(ROOT),*args],text=True)
+    return subprocess.check_output(["git","-C",str(ROOT),*args],text=True,stderr=subprocess.PIPE)
 
 def load_config()->dict:
     return json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
@@ -41,16 +41,35 @@ def changed_files(base:str,head:str)->list[str]:
         tracked=git("diff","--name-only",base).splitlines()
         untracked=git("ls-files","--others","--exclude-standard").splitlines()
         return sorted(set(x for x in tracked+untracked if x))
-    return [x for x in git("diff","--name-only",base,head).splitlines() if x]
+    # Match GitHub's PR file set; two-tree diffs also include base-only commits
+    # when an outdated pull request and its target branch have diverged.
+    merge_base_diff=f"{base}...{head}"
+    try:
+        names=git("diff","--name-only",merge_base_diff).splitlines()
+    except subprocess.CalledProcessError as exc:
+        reason=(exc.stderr or "").strip()
+        raise ValueError(f"Cannot compute merge-base diff {merge_base_diff}: {reason}") from exc
+    return [x for x in names if x]
 
 def resolve(config:dict,paths:list[str],branch:str="")->dict:
     areas={name:any(re.search(spec["path_regex"],p) for p in paths) for name,spec in config["areas"].items()}
     direct_areas=dict(areas)
     expansions=[]; branch_rules=[]
+    matched_paths=set()
+    for path in paths:
+        if any(re.search(spec["path_regex"],path) for spec in config["areas"].values()):
+            matched_paths.add(path)
     for item in config.get("expansions",[]):
-        if any(re.search(item["path_regex"],p) for p in paths):
+        matching=[p for p in paths if re.search(item["path_regex"],p)]
+        if matching:
+            matched_paths.update(matching)
             expansions.append(item["id"])
             for area in item.get("enable",[]): areas[area]=True
+    unclassified_paths=sorted(set(paths)-matched_paths)
+    if unclassified_paths:
+        # An unknown path cannot safely be treated as a docs-only change. Run
+        # every declared validation area and keep platform jobs enabled.
+        for area in areas: areas[area]=True
     for item in config.get("branch_rules",[]):
         if branch and re.search(item["branch_regex"],branch):
             branch_rules.append(item["id"])
@@ -67,6 +86,10 @@ def resolve(config:dict,paths:list[str],branch:str="")->dict:
         areas.get(name,False) and not direct_areas.get(name,False)
         for name in mobile_areas
     ) and bool(branch_rules)
+    force_mobile_validation=bool(unclassified_paths) or any(
+        item.get("force_mobile_validation",False) and item["id"] in expansions
+        for item in config.get("expansions",[])
+    )
     # Expansions such as release-contract may request cross-surface validation,
     # but they must not force platform builds when no mobile app/shared dependency
     # changed. Explicit convergence branch rules still restore those lanes.
@@ -75,8 +98,9 @@ def resolve(config:dict,paths:list[str],branch:str="")->dict:
         and bool(areas.get("backend") or areas.get("dashboard_ui"))
         and not direct_mobile
         and not explicit_mobile_branch
+        and not force_mobile_validation
     )
-    return {"schema_version":1,"branch":branch,"changed_files":paths,"areas":areas,"backend_dashboard_only":backend_dashboard_only,"expansions":expansions,"branch_rules":branch_rules,"focused_rules":focused_rules,"focused_tests":focused}
+    return {"schema_version":1,"branch":branch,"changed_files":paths,"areas":areas,"unclassified_paths":unclassified_paths,"backend_dashboard_only":backend_dashboard_only,"expansions":expansions,"branch_rules":branch_rules,"focused_rules":focused_rules,"focused_tests":focused}
 
 def emit(plan:dict,fh)->None:
     for name,value in plan["areas"].items(): fh.write(f"{name}={'true' if value else 'false'}\n")

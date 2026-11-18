@@ -21,7 +21,7 @@ final class V2SidebarHierarchyDisclosureCuesTest extends TestCase
         $this->seed(CoreReferenceSeeder::class);
     }
 
-    public function test_group_disclosures_are_visible_localized_and_native_in_both_directions(): void
+    public function test_group_disclosures_use_only_chevrons_and_native_keyboard_control_in_both_directions(): void
     {
         $user = $this->globalUser('B2B_ADMIN');
 
@@ -38,10 +38,10 @@ final class V2SidebarHierarchyDisclosureCuesTest extends TestCase
             $this->assertGreaterThan(0, $count);
             $this->assertSame($count, substr_count($html, 'class="foodex-nav-disclosure"'));
             $this->assertSame($count, substr_count($html, 'class="foodex-nav-chevron"'));
-            $this->assertSame($count, substr_count($html, 'class="foodex-nav-disclosure-expand"'));
-            $this->assertSame($count, substr_count($html, 'class="foodex-nav-disclosure-collapse"'));
-            $this->assertStringContainsString(__('sidebar_admin.expand_group'), $html);
-            $this->assertStringContainsString(__('sidebar_admin.collapse_group'), $html);
+            $this->assertStringNotContainsString('class="foodex-nav-disclosure-expand"', $html);
+            $this->assertStringNotContainsString('class="foodex-nav-disclosure-collapse"', $html);
+            $this->assertStringNotContainsString('> '.__('sidebar_admin.expand_group').' <', $html);
+            $this->assertStringNotContainsString('> '.__('sidebar_admin.collapse_group').' <', $html);
             $this->assertStringContainsString('summary:focus-visible', $html);
             $this->assertStringContainsString('summary{list-style:none;cursor:pointer;min-height:46px', $html);
             $this->assertStringContainsString('details class="foodex-nav-group', $html);

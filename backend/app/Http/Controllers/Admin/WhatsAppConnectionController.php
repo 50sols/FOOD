@@ -45,20 +45,27 @@ final class WhatsAppConnectionController extends Controller
     {
         $actor = $this->actor($request);
         abort_unless($actor->hasPermission('whatsapp.settings'), 403);
-        $attributes = $this->connectionInput($request);
-        $secrets = $request->validate([
-            'credential_secret' => ['nullable', 'string', 'max:10000'],
-            'webhook_verify_token' => ['nullable', 'string', 'max:10000'],
-            'webhook_signing_secret' => ['nullable', 'string', 'max:10000'],
-        ]);
 
-        $manager->create(
-            $actor,
-            $attributes,
-            isset($secrets['credential_secret']) ? (string) $secrets['credential_secret'] : null,
-            isset($secrets['webhook_verify_token']) ? (string) $secrets['webhook_verify_token'] : null,
-            isset($secrets['webhook_signing_secret']) ? (string) $secrets['webhook_signing_secret'] : null,
-        );
+        try {
+            $attributes = $this->connectionInput($request);
+            $secrets = $request->validate([
+                'credential_secret' => ['nullable', 'string', 'max:10000'],
+                'webhook_verify_token' => ['nullable', 'string', 'max:10000'],
+                'webhook_signing_secret' => ['nullable', 'string', 'max:10000'],
+            ]);
+
+            $manager->create(
+                $actor,
+                $attributes,
+                isset($secrets['credential_secret']) ? (string) $secrets['credential_secret'] : null,
+                isset($secrets['webhook_verify_token']) ? (string) $secrets['webhook_verify_token'] : null,
+                isset($secrets['webhook_signing_secret']) ? (string) $secrets['webhook_signing_secret'] : null,
+            );
+        } catch (ValidationException $exception) {
+            // Validation returns to the existing Create panel. Never flash a
+            // credential or legacy raw metadata into the user's session.
+            return $this->validationBack($request, $exception, 'create');
+        }
 
         return $this->back(__('whatsapp.connections.created'));
     }
@@ -70,7 +77,14 @@ final class WhatsAppConnectionController extends Controller
     ): RedirectResponse {
         $actor = $this->actor($request);
         abort_unless($actor->hasPermission('whatsapp.settings'), 403);
-        $manager->update($actor, $profile, $this->connectionInput($request));
+
+        try {
+            $manager->update($actor, $profile, $this->connectionInput($request));
+        } catch (ValidationException $exception) {
+            // Edit failures retain the saved-profiles view without replaying
+            // untrusted legacy JSON metadata in session flash data.
+            return $this->validationBack($request, $exception, 'profiles');
+        }
 
         return $this->back(__('whatsapp.connections.updated'));
     }
@@ -81,18 +95,25 @@ final class WhatsAppConnectionController extends Controller
         ConnectionProfileManager $manager,
     ): RedirectResponse {
         $actor = $this->actor($request);
-        $data = $request->validate([
-            'credential_secret' => ['nullable', 'string', 'max:10000'],
-            'webhook_verify_token' => ['nullable', 'string', 'max:10000'],
-            'webhook_signing_secret' => ['nullable', 'string', 'max:10000'],
-        ]);
-        $manager->replaceCredential(
-            $actor,
-            $profile,
-            isset($data['credential_secret']) ? (string) $data['credential_secret'] : null,
-            isset($data['webhook_verify_token']) ? (string) $data['webhook_verify_token'] : null,
-            isset($data['webhook_signing_secret']) ? (string) $data['webhook_signing_secret'] : null,
-        );
+
+        try {
+            $data = $request->validate([
+                'credential_secret' => ['nullable', 'string', 'max:10000'],
+                'webhook_verify_token' => ['nullable', 'string', 'max:10000'],
+                'webhook_signing_secret' => ['nullable', 'string', 'max:10000'],
+            ]);
+            $manager->replaceCredential(
+                $actor,
+                $profile,
+                isset($data['credential_secret']) ? (string) $data['credential_secret'] : null,
+                isset($data['webhook_verify_token']) ? (string) $data['webhook_verify_token'] : null,
+                isset($data['webhook_signing_secret']) ? (string) $data['webhook_signing_secret'] : null,
+            );
+        } catch (ValidationException $exception) {
+            // A rejected rotation must not persist even temporarily in flashed
+            // old input or send the operator to an unrelated page.
+            return $this->validationBack($request, $exception, 'profiles');
+        }
 
         return $this->back(__('whatsapp.connections.credential_replaced'));
     }
@@ -141,13 +162,20 @@ final class WhatsAppConnectionController extends Controller
             );
             $health->outboundSucceeded($profile);
         } catch (Throwable $exception) {
-            $health->providerError($profile, $exception->getMessage());
+            // The health message is rendered to every whatsapp.view reader,
+            // so never persist provider text that may contain a token or recipient.
+            $health->providerError($profile, __('whatsapp.connections.test_send_failed'));
 
-            throw ValidationException::withMessages([
-                'recipient' => [app()->getLocale() === 'ar'
-                    ? 'فشل إرسال رسالة واتساب التجريبية: '.$exception->getMessage()
-                    : 'WhatsApp test message failed: '.$exception->getMessage()],
-            ]);
+            // The provider's error may contain credential or recipient data.
+            // Persist only the generic health status above; it is rendered to
+            // whatsapp.view readers as well as returned in the current form.
+            return $this->validationBack(
+                $request,
+                ValidationException::withMessages([
+                    'recipient' => [__('whatsapp.connections.test_send_failed')],
+                ]),
+                'profiles',
+            );
         }
 
         $audit->record(
@@ -220,8 +248,12 @@ final class WhatsAppConnectionController extends Controller
             'webhook_metadata' => ['nullable', 'string', 'max:10000', 'json'],
         ]);
 
-        $data['provider_metadata'] = $this->decodedJson($data['provider_metadata'] ?? null);
-        $data['webhook_metadata'] = $this->decodedJson($data['webhook_metadata'] ?? null);
+        if (array_key_exists('provider_metadata', $data)) {
+            $data['provider_metadata'] = $this->decodedJson($data['provider_metadata']);
+        }
+        if (array_key_exists('webhook_metadata', $data)) {
+            $data['webhook_metadata'] = $this->decodedJson($data['webhook_metadata']);
+        }
 
         return $data;
     }
@@ -298,6 +330,37 @@ final class WhatsAppConnectionController extends Controller
         $visible = min(4, max(0, strlen($number) - 1));
 
         return str_repeat('*', max(0, strlen($number) - $visible)).substr($number, -$visible);
+    }
+
+    /**
+     * Render existing settings validation errors without persisting supplied
+     * provider secrets or metadata. Only public scalar Create fields may be
+     * restored, and invalid array inputs never enter Blade old() values.
+     */
+    private function validationBack(Request $request, ValidationException $exception, string $tab): RedirectResponse
+    {
+        $safeInput = [];
+
+        if ($tab === 'create') {
+            foreach ([
+                'name' => 120,
+                'display_phone_number' => 32,
+                'normalized_phone_number' => 24,
+                'provider_type' => 40,
+                'provider_phone_number_id' => 128,
+                'provider_account_id' => 128,
+                'provider_app_id' => 128,
+            ] as $field => $maxLength) {
+                $value = $request->input($field);
+                if (is_string($value)) {
+                    $safeInput[$field] = mb_substr($value, 0, $maxLength);
+                }
+            }
+        }
+
+        return redirect()->route('admin.whatsapp.connections.index', ['tab' => $tab])
+            ->withErrors($exception->errors())
+            ->withInput($safeInput);
     }
 
     private function back(string $message): RedirectResponse

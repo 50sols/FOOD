@@ -33,6 +33,8 @@ Prefer/reuse:
 
 Tabs select sibling functions inside the current business domain. On narrow layouts they use horizontal overflow rather than broken multi-row wrapping.
 
+For an already authorized, independently revisitable **PAGE_TAB** rail that must stay on one row at *all* breakpoints, reuse `class="foodex-tabs foodex-tabs--horizontal"` on the existing `<nav>` and `foodex-tab` on its native GET links. The modifier is implemented by the existing `admin._brand-components` CSS; it adds contained horizontal scrolling, unwrapped 44px-or-larger links, and visible keyboard focus without a new JavaScript tab framework or page-local duplicate CSS. Keep server-authoritative allowlisted tab selection, exactly one `aria-current="page"`, scoped GET query/context and active rendered data. Inherit the document's RTL/LTR. Do not use PAGE_TAB for sequential wizards, security steps, or display-format toggles. Existing Action Center `.action-tabs` pill styling is independent and should not be mechanically replaced.
+
 ### Cards / surface
 Prefer/reuse the existing FOODEX card/panel patterns from `_brand-components.blade.php` and the nearest production page. Do not introduce a page-local Bootstrap visual language.
 

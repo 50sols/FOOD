@@ -771,6 +771,17 @@ final class LaravelUpdateRuntime implements UpdateRuntime
                 throw new RuntimeException('Update archive contains an unreadable entry name.');
             }
 
+            // Stream lookup uses the decoded name. Require agreement with the stored name.
+            if ($archive->getNameIndex($index, ZipArchive::FL_ENC_RAW) !== $name) {
+                throw new RuntimeException('Update archive contains an unsafe path.');
+            }
+
+            // Validate every entry path, including directory-only members, before
+            // metadata checks or any later backup/extraction work.
+            $isDirectory = str_ends_with($name, '/');
+            $targetName = $isDirectory ? substr($name, 0, -1) : $name;
+            $relativePath = $this->safeRelativePath($targetName);
+
             $operatingSystem = 0;
             $attributes = 0;
             if ($archive->getExternalAttributesIndex($index, $operatingSystem, $attributes)
@@ -791,10 +802,6 @@ final class LaravelUpdateRuntime implements UpdateRuntime
                 }
             }
 
-            if (str_ends_with($name, '/')) {
-                continue;
-            }
-
             $stat = $archive->statIndex($index);
             $memberBytes = is_array($stat) ? $stat['size'] : null;
             if (! is_int($memberBytes) || $memberBytes < 0) {
@@ -812,12 +819,11 @@ final class LaravelUpdateRuntime implements UpdateRuntime
             // Two different ZIP member names can normalize to the same live
             // target (e.g. forward/backslash aliases). Never silently choose
             // one member while backup and extraction may read another.
-            $relativePath = $this->safeRelativePath($name);
             // A pair of distinct ZIP paths can resolve to one live file on
             // case-insensitive cPanel/Windows/macOS filesystems. Backups and
             // extraction must agree on one deterministic target per member.
-            $foldedPath = mb_strtolower($relativePath, 'UTF-8');
-            if (isset($seen[$foldedPath])) {
+            $foldedPath = strtolower($relativePath);
+            if (! $isDirectory && isset($seen[$foldedPath])) {
                 throw new RuntimeException('Update archive contains duplicate release target paths.');
             }
 
@@ -825,14 +831,14 @@ final class LaravelUpdateRuntime implements UpdateRuntime
             // security regressions, then refuse a single noncanonical member.
             // The extractor opens ZIP streams using $relativePath, which may
             // not exist in an archive with padded or backslash-aliased names.
-            if ($name !== $relativePath) {
+            if ($targetName !== $relativePath) {
                 throw new RuntimeException('Update archive contains a non-canonical path.');
             }
 
             // A file cannot also be an ancestor directory of another archive
             // member (including via a case alias). Refuse both ZIP entry orders
             // before maintenance, file backup, or any release mutation.
-            if (isset($requiredDirectories[$foldedPath])) {
+            if (($isDirectory && isset($seen[$foldedPath])) || (! $isDirectory && isset($requiredDirectories[$foldedPath]))) {
                 throw new RuntimeException('Update archive contains a file/directory target conflict.');
             }
 
@@ -845,6 +851,12 @@ final class LaravelUpdateRuntime implements UpdateRuntime
                 }
 
                 $requiredDirectories[$parent] = true;
+            }
+
+            if ($isDirectory) {
+                $requiredDirectories[$foldedPath] = true;
+
+                continue;
             }
 
             $seen[$foldedPath] = true;
@@ -870,6 +882,11 @@ final class LaravelUpdateRuntime implements UpdateRuntime
 
     private function safeRelativePath(string $path): string
     {
+        // Require portable target names before trimming or separator normalization.
+        if (preg_match('/[^\\x20-\\x7E]/', $path) !== 0) {
+            throw new RuntimeException('Update archive contains an unsafe path.');
+        }
+
         $normalized = str_replace('\\', '/', trim($path));
 
         if ($normalized === ''
@@ -981,7 +998,6 @@ final class LaravelUpdateRuntime implements UpdateRuntime
 
             return;
         }
-
         if (preg_match('#^(assets|brand|demo|preview)/#', $relativePath) === 1) {
             // Supported shared-host deployments may serve the release root
             // directly while Laravel remains under backend/. The update bundle
