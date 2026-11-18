@@ -17,7 +17,7 @@ html[dir=ltr] .lookup-layout main{grid-column:2;direction:ltr}
 .toolbar,.form-grid,.inline-form{display:flex;flex-wrap:wrap;gap:10px;align-items:end}.form-grid label,.inline-form label{display:grid;gap:5px;font-size:12px;font-weight:700}
 input,select{border:1px solid var(--foodex-border);border-radius:9px;padding:9px;background:#fff;font:inherit;min-width:130px}.wide{min-width:210px}
 .btn{border:1px solid var(--foodex-border);background:#fff;border-radius:9px;padding:9px 12px;text-decoration:none;color:inherit;cursor:pointer;font:inherit}.btn.primary,.tab.active{background:var(--foodex-action-green);color:#fff;border-color:var(--foodex-action-green)}.btn.danger{color:var(--foodex-danger-text)}
-.lookup-tab-row{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:16px}.tabs{display:flex;gap:8px;margin:0}.tab{padding:9px 14px;border:1px solid var(--foodex-border);border-radius:10px;text-decoration:none;color:inherit;background:#fff}
+.lookup-tab-row{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:16px}.tabs{display:flex;gap:8px;margin:0;max-width:100%;min-width:0;overflow-x:auto;flex-wrap:nowrap}.tab{display:inline-flex;align-items:center;flex:0 0 auto;min-height:44px;box-sizing:border-box;white-space:nowrap;padding:9px 14px;border:1px solid var(--foodex-border);border-radius:10px;text-decoration:none;color:inherit;background:#fff}.lookup-tab-row .tab:focus-visible{outline:2px solid var(--foodex-action-green);outline-offset:2px}
 .notice{padding:10px 12px;border-radius:10px;margin-bottom:12px}.ok{background:var(--foodex-green-soft);color:var(--foodex-green-dark)}.err{background:#fff1f0;color:var(--foodex-danger-text)}
 .table-wrap{overflow:auto}.table{width:100%;border-collapse:collapse;min-width:1040px}.table th,.table td{padding:10px;border-bottom:1px solid var(--foodex-border);text-align:start;vertical-align:top}.table th{background:var(--foodex-background)}
 .badge{display:inline-flex;border-radius:999px;padding:4px 8px;font-size:11px;background:#eef2f6}.badge.on{background:var(--foodex-green-soft);color:var(--foodex-green-dark)}.badge.off{background:#f2f4f7;color:#667085}
@@ -36,6 +36,12 @@ $ar=app()->getLocale()==='ar';
 $scopeLabels=['global'=>$ar?'عام للمنصة':'Platform global','b2b'=>$ar?'الجملة B2B':'Wholesale / B2B','store'=>$ar?'متجر تجزئة':'Retail store'];
 $createLabel=$type==='brands'?($ar?'إضافة علامة تجارية جديدة':'Add new brand'):($ar?'إضافة وحدة قياس جديدة':'Add new unit');
 $createDescription=$type==='brands'?($ar?'أدخل بيانات العلامة وصورتها وحدد نطاق استخدامها.':'Enter brand details, image, and business scope.'):($ar?'أدخل بيانات وحدة القياس وحدد نطاق استخدامها.':'Enter unit details and business scope.');
+$lookupTabQuery = array_filter([
+    'q' => $filters['q'] ?? null,
+    'status' => in_array($filters['status'] ?? '', ['active', 'inactive'], true) ? $filters['status'] : null,
+    'scope' => $isSuperAdmin && in_array($filters['scope'] ?? '', ['global', 'b2b', 'store'], true) ? $filters['scope'] : null,
+    'store_id' => $filters['store_id'] ?? null,
+], static fn ($value): bool => $value !== null && $value !== '');
 @endphp
 <div class="lookup-layout">
 <aside>@include('admin._sidebar',['navContext'=>'lookup_management'])</aside>
@@ -48,9 +54,9 @@ $createDescription=$type==='brands'?($ar?'أدخل بيانات العلامة �
 @if($isSuperAdmin)<div class="notice">{{ $ar?'تنبيه: تعديل بيانات نطاق متجر تجزئة يتطلب تفعيل «الدعم الصريح» داخل نفس الإجراء. هذا يحافظ على عزل المتاجر ويسجل عملية الدعم.':'Note: Retail store-scoped changes require Explicit support access on the same action. This preserves tenant isolation and audits the support operation.' }}</div>@endif
 
 <div class="lookup-tab-row">
-<nav class="tabs">
-<a class="tab {{ $type==='brands'?'active':'' }}" href="{{ route('admin.lookups.index',['type'=>'brands']) }}">{{ $ar?'العلامات التجارية':'Brands' }}</a>
-<a class="tab {{ $type==='units'?'active':'' }}" href="{{ route('admin.lookups.index',['type'=>'units']) }}">{{ $ar?'وحدات القياس':'Units of Measure' }}</a>
+<nav class="tabs" aria-label="{{ __('lookup_tabs.catalog.title') }}" data-v2-lookup-tabs>
+<a class="tab {{ $type==='brands'?'active':'' }}" href="{{ route('admin.lookups.index',array_merge($lookupTabQuery,['type'=>'brands'])) }}" @if($type==='brands') aria-current="page" @endif>{{ __('lookup_tabs.catalog.brands') }}</a>
+<a class="tab {{ $type==='units'?'active':'' }}" href="{{ route('admin.lookups.index',array_merge($lookupTabQuery,['type'=>'units'])) }}" @if($type==='units') aria-current="page" @endif>{{ __('lookup_tabs.catalog.units') }}</a>
 </nav>
 @if($manageableScopes!==[])
 <button class="btn primary lookup-add-btn" type="button" data-lookup-modal-open>＋ {{ $createLabel }}</button>
