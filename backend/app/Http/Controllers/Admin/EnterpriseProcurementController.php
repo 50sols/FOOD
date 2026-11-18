@@ -721,7 +721,12 @@ final class EnterpriseProcurementController extends Controller
         // A tenant assignment is not an ERP authorization grant. Derive both
         // the selected store and the visible chooser from effective permission
         // and the same hierarchical entitlement used by direct HTTP actions.
-        $candidates = $this->storeOptions($actor);
+        // ERP workspaces are wholesale-only. Retail stores are not a selectable
+        // tenant context in Procurement, even for platform administrators.
+        $candidates = array_values(array_filter(
+            $this->storeOptions($actor),
+            static fn (array $option): bool => $option['channel'] === 'b2b',
+        ));
         abort_if($candidates === [], 403);
 
         $hasEntitlementPolicy = DB::table('enterprise_module_entitlements')
@@ -751,9 +756,7 @@ final class EnterpriseProcurementController extends Controller
         // Tenant resolution remains authoritative for company/legal-entity
         // scope. Only a genuinely permitted store with missing hierarchy may
         // surface a setup conflict (409); authorization denial is always 403.
-        $context = $selected['channel'] === 'b2c'
-            ? $this->tenants->retail($actor, $storeId, $actor->hasRole('SUPER_ADMIN'), $request)
-            : $this->tenants->wholesale($actor, $storeId);
+        $context = $this->tenants->wholesale($actor, $storeId);
 
         abort_if($context->enterpriseScope === null, 409, 'Enterprise data scope is required.');
 

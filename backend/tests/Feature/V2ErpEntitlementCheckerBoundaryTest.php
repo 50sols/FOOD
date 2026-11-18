@@ -326,6 +326,22 @@ final class V2ErpEntitlementCheckerBoundaryTest extends TestCase
             'procurement', EntitlementScope::platform(), true, null, $admin,
         );
 
+        // ERP must never expose a Retail store context, including to a
+        // platform administrator with a valid Procurement entitlement.
+        $adminPage = $this->actingAs($admin)->get(route('admin.erp.procurement.index', [
+            'store_id' => $wholesale->id,
+            'tab' => 'requests',
+        ]));
+        $adminPage->assertOk();
+        $this->assertSame(
+            ['b2b'],
+            collect($adminPage->viewData('storeOptions'))->pluck('channel')->unique()->values()->all(),
+        );
+        $this->actingAs($admin)->get(route('admin.erp.procurement.index', [
+            'store_id' => $retail->id,
+            'tab' => 'requests',
+        ]))->assertForbidden();
+
         foreach (['procurement.suppliers.view', 'procurement.suppliers.manage'] as $code) {
             $permission = Permission::query()->where('code', $code)->firstOrFail();
             foreach ([
