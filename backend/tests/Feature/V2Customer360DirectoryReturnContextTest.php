@@ -125,7 +125,7 @@ final class V2Customer360DirectoryReturnContextTest extends TestCase
         $this->assertStringContainsString('data-c360-tab="invoices"', $html);
         $this->assertStringContainsString('data-c360-tab="statement"', $html);
         $this->assertStringContainsString("window.history.pushState(window.history.state, '', '#'+name)", $html);
-        $this->assertStringContainsString('name="list_page" value="3"', $this->statementFormSource());
+        $this->assertStringContainsString('name="{{ $contextName }}" value="{{ $contextValue }}"', $this->statementFormSource());
 
         $this->assertSame($before, $this->businessCounts());
     }
