@@ -27,6 +27,7 @@ use App\Support\AdminNavigation;
 use App\Support\TenantContextResolver;
 use Database\Seeders\CoreReferenceSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Pagination\LengthAwarePaginator;
 use Illuminate\Support\Facades\DB;
 use Tests\Support\SyntheticErpWorkflowEvidence;
 use Tests\TestCase;
@@ -1838,7 +1839,7 @@ final class V2ErpEntitlementCheckerBoundaryTest extends TestCase
                 $response->assertSee('name="tab" value="'.$tab.'"', false);
                 $response->assertSee('name="store_id" value="'.$store->id.'"', false);
                 $rows = $response->viewData('rows');
-                $this->assertInstanceOf(\Illuminate\Pagination\LengthAwarePaginator::class, $rows);
+                $this->assertInstanceOf(LengthAwarePaginator::class, $rows);
                 parse_str((string) parse_url($rows->url(2), PHP_URL_QUERY), $query);
                 $this->assertSame($tab, $query['tab'] ?? null);
                 $this->assertSame((string) $store->id, (string) ($query['store_id'] ?? ''));
