@@ -82,7 +82,7 @@ class AdminNavigation
         $isSuperAdmin = $this->isSuperAdmin($user);
         $hideRetailWorkspaces = $isSuperAdmin && ! $user->isPlatformOwner();
         $canAccessPlatformErp = $this->canAccessPlatformErp($user);
-        $canAccessWholesaleErp = $canAccessPlatformErp && $this->canAccess($user, 'b2b');
+        $canAccessWholesaleErp = $canAccessPlatformErp && isset($channels['b2b']);
         $canAccessPlatformNavigation = $canAccessPlatformErp;
         // Avoid repeating global Super Admin role queries for an already-authorized platform actor.
         $canAccessWorkspaces = $canAccessPlatformNavigation
