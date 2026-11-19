@@ -156,6 +156,12 @@ final class V2FinanceWorkbenchPanelAuthorityTest extends TestCase
             foreach ([
                 ['store_id' => $other->id, 'store_code' => $store->code],
                 ['store_id' => $store->id, 'store_code' => $other->code],
+                ['store_id' => 'not-a-store', 'store_code' => $store->code],
+                ['store_id' => '0', 'store_code' => $store->code],
+                ['store_id' => (string) $store->id.'.5', 'store_code' => $store->code],
+                ['store_id' => '99999999999999999999999', 'store_code' => $store->code],
+                ['store_id' => [$store->id], 'store_code' => $store->code],
+                ['store_id' => $store->id, 'store_code' => [$store->code]],
             ] as $selectors) {
                 $this->actingAs($actor->fresh())
                     ->get(route('admin.erp.finance.index', $selectors + ['tab' => 'receivables']))
