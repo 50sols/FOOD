@@ -1416,11 +1416,12 @@ final class FinanceWorkbenchController extends Controller
             return null;
         }
 
+        // When both selectors are supplied, they must identify the SAME
+        // authorized context. A valid code must never override a forged or
+        // stale store_id (or vice versa) and silently switch the ledger scope.
         foreach ($contexts as $context) {
-            if ($storeId > 0 && $context['id'] === $storeId) {
-                return $context;
-            }
-            if ($storeCode !== '' && strcasecmp($context['code'], $storeCode) === 0) {
+            if (($storeId < 1 || $context['id'] === $storeId)
+                && ($storeCode === '' || strcasecmp($context['code'], $storeCode) === 0)) {
                 return $context;
             }
         }
