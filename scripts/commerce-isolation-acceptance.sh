@@ -32,7 +32,14 @@ require_text backend/tests/Feature/PlatformCustomerMarketplaceTest.php   'test_r
 
 # Lane C/E — authoritative B2B/B2C ownership, operations isolation and Wholesale order timeline.
 require_text backend/tests/Feature/OrderOperationsIsolationTest.php   'test_super_admin_operational_inbox_defaults_to_wholesale_and_requires_explicit_retail_channel'
-require_text backend/tests/Feature/OrderOperationsIsolationTest.php   'test_retail_admin_cannot_operate_foreign_order_but_can_transition_own_order'
+# The actual authorized Retail transition is pending -> cancelled. The test
+# verifies the foreign-store 404 + unchanged order, the owner's successful
+# cancellation, and its immutable pending-to-cancelled status history. An
+# independent contract proves inactive statuses / illegal jumps are rejected.
+require_text backend/tests/Feature/OrderOperationsIsolationTest.php   'test_retail_admin_cannot_operate_foreign_order_but_can_cancel_own_new_order'
+require_text backend/tests/Feature/OrderOperationsIsolationTest.php   "'from_status' => 'pending'"
+require_text backend/tests/Feature/OrderOperationsIsolationTest.php   "'to_status' => 'cancelled'"
+require_text backend/tests/Feature/OrderOperationsIsolationTest.php   'test_dashboard_rejects_inactive_lookup_status_and_illegal_lifecycle_jump'
 require_text backend/tests/Feature/OrderDomainTest.php   'test_b2b_order_detail_exposes_authoritative_customer_safe_delivery_timeline'
 require_text apps/customer_app/test/b2b_journey_test.dart   'B2B wholesale orders list renders seller state and opens exact detail'
 require_text apps/customer_app/test/b2b_journey_test.dart   'B2B order timeline renders only authoritative events and refreshes state'
