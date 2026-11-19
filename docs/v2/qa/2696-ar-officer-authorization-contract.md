@@ -186,3 +186,12 @@ no main, version promotion, ZIP release or production deployment.
   tab-level deny coverage, cross-company/store/channel checks, SoD and audited
   AR action evidence are complete, and the final HIGH-risk review and required
   exact-head checks pass.
+
+## 2026-11-20 — P2696 explicit-deny + read-before-mutation hardening (still blocked)
+
+- Original #2696 / PR #3221 / branch `test/2696-v2-ar-officer-authorization-contract`; base `Foodex_V2` only.
+- Source [c3ab055](https://github.com/walidatiyaai2025-gif/FOOD/commit/c3ab055412829340c1ae38a4ea1c5e4709c837e0): before any SUPER_ADMIN-influenced `User::hasPermission` success, an actor holding AR_OFFICER must honor an explicit global or selected-store `finance.view/manage` DENY at the `FinanceWorkbenchAccess` service boundary. An AR draft also requires an independently authorized AR read context and `finance.ar.read` entitlement; a rejected read must not leave a write-only manage path.
+- Regression [0155c8b](https://github.com/walidatiyaai2025-gif/FOOD/commit/0155c8bf60f4f3d3514fae6f7c0f7d90fb43e78d) exercises a disposable real B2B store, legal-entity AR read/manage entitlements, mixed AR_OFFICER+SUPER_ADMIN account, baseline allow, selected STORE read DENY, GLOBAL manage DENY, GLOBAL read DENY, Arabic/English, and unchanged Finance journal rows. Privileged `User::hasPermission` returns TRUE in the denial fixture, so the test prevents future bypass by accidentally removing the service-level veto. No mobile/Flutter, shared Finance controller/navigation/routes, CI workflow or production change.
+- Risk: **HIGH** (RBAC/Finance). Scope: only the original `FinanceWorkbenchAccess.php`, issue-owned `V2ArOfficerAuthorizationContractTest.php`, and this trace. Business action HTTP/maker-checker/independent direct-route authority remain dependent on original #2633/PR #3309 and unresolved #2851 SoD. No claim of code completion or ready-for-review.
+- Previous exact-head Required [#44318186709](https://github.com/walidatiyaai2025-gif/FOOD/actions/runs/44318186709) failed only outside this ownership fence: C13 Customer app navigation evidence and Operational #734 OrderOperationsIsolationTest method. Backend tests 4,341 PASS; MySQL/Redis PASS. These are neither waivable nor corrected by this service patch. New exact-head CI MUST be checked on the latest commit, not inherited from that run.
+- **SOURCE_COMPLETE: NO; TECHNICAL_REVIEW: NOT_PASS_FOR_FULL_ISSUE; MERGE/CLOSE: BLOCKED; MANUAL_ACCEPTANCE: DEFERRED_TO_V2_FINAL.** No main, release, live DB, tag or production action.
