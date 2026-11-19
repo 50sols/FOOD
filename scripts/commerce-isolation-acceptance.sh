@@ -75,6 +75,11 @@ if grep -Fq 'skip:' apps/customer_app/test/e2e/guest_customer_journey_contract_t
 fi
 require_text apps/customer_app/test/e2e/guest_customer_journey_contract_test.dart   'authenticated multi-store and Wholesale smoke regressions stay isolated'
 
+# Verify the inventory still points at real current tests and contains
+# substantive allow/deny + lifecycle assertions. Run in both standalone
+# Operational and nested C13 invocations; missing source fails closed.
+python3 -m unittest discover -s scripts/tests -p 'test_c13_operational_gate_contract.py'
+
 echo "#734 commerce-isolation acceptance contracts: PASS"
 echo "current_version=$current_version"
 echo "next_release_identity=$next_release_identity"
