@@ -138,6 +138,45 @@ final class V2FinanceWorkbenchPanelAuthorityTest extends TestCase
         ]);
     }
 
+    public function test_conflicting_finance_store_id_and_code_cannot_switch_ledger_context(): void
+    {
+        [$actor, $store] = $this->authorizedViewer('FIN-P303-SELECTOR-OWN');
+        $other = $this->createStore('FIN-P303-SELECTOR-OTHER');
+        $before = [
+            DB::table('enterprise_finance_journals')->count(),
+            DB::table('enterprise_ar_allocations')->count(),
+        ];
+
+        foreach (['en', 'ar'] as $locale) {
+            app()->setLocale($locale);
+            $actor->forceFill(['locale' => $locale])->save();
+
+            // Each selector is a valid B2B store in this fixture, but the
+            // combined pair must never resolve to EITHER financial ledger.
+            foreach ([
+                ['store_id' => $other->id, 'store_code' => $store->code],
+                ['store_id' => $store->id, 'store_code' => $other->code],
+            ] as $selectors) {
+                $this->actingAs($actor->fresh())
+                    ->get(route('admin.erp.finance.index', $selectors + ['tab' => 'receivables']))
+                    ->assertNotFound();
+            }
+
+            $this->actingAs($actor->fresh())
+                ->get(route('admin.erp.finance.index', [
+                    'store_id' => $store->id,
+                    'store_code' => $store->code,
+                    'tab' => 'receivables',
+                ]))
+                ->assertOk();
+        }
+
+        $this->assertSame($before, [
+            DB::table('enterprise_finance_journals')->count(),
+            DB::table('enterprise_ar_allocations')->count(),
+        ]);
+    }
+
     public function test_panels_cannot_change_store_or_bypass_finance_access_or_module_lifecycle(): void
     {
         [$actor, $store] = $this->authorizedViewer('FIN-P303-UX-ALLOW');
