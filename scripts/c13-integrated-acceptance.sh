@@ -97,17 +97,18 @@ require_text "$pricing" "test_checkout_reprices_live_price_and_historical_snapsh
 require_text "$pricing" "test_wholesale_order_keeps_tier_and_price_snapshot_after_tier_changes"
 
 # Canonical launch order and discoverable Wholesale navigation.
-require_text "$navigation" "entry route renders the C13 business login without Marketplace bypass"
-require_text "$navigation" "successful C13 login lands on Screen 2 dashboard"
-require_text "$journey" "B2B dashboard Store icon resolves principal Wholesale and opens canonical home"
-require_text "$footer" "Wholesale footer has four destinations and Shopping opens Wholesale home"
+require_text "$navigation" "entry route renders unified login without Marketplace bypass"
+require_text "$navigation" "successful non-merchant login lands on canonical Wholesale Home"
+require_text "$journey" "Wholesale shopping resolves principal store on first open without store id"
+require_text "$footer" "Wholesale footer keeps Home visible and Shopping opens Wholesale products"
 require_text "$marketplace" "signed-in marketplace keeps store switcher open and management routes follow origin store"
 require_text "$marketplace" "stale owned Retail context is rejected by marketplace header and footer"
-require_text "$profile_screen" "Wholesale / Retail"
+require_text "$profile_screen" "Wholesale B2B"
+require_text "$profile_screen" "Retail B2C"
 
 # Customer-Service remains authoritative for B2B approval/dispatch. After the Van cutover,
 # B2B fulfillment is Van-only and must never fall back to Driver assignment.
-require_text "$dashboard_orders" "test_b2b_dashboard_order_uses_approved_customer_tier_price_and_minimum_quantity"
+require_text "$dashboard_orders" "test_b2b_dashboard_order_uses_approved_customer_tier_price_and_finalizes_on_assignment"
 require_text "$dashboard_orders" "test_b2b_rejection_reverses_checkout_settlement_once_without_touching_manual_ledger"
 require_text "$manual_dispatch" "test_customer_service_can_assign_b2b_van_idempotently_initialize_execution_state_and_clear"
 require_text "$driver_lifecycle" "test_b2b_order_cannot_be_assigned_to_driver_after_van_cutover"
