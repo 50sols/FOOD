@@ -1787,7 +1787,16 @@ final class V2ErpEntitlementCheckerBoundaryTest extends TestCase
             app()->setLocale($locale);
             $buyer->forceFill(['locale' => $locale])->save();
 
-            foreach ([0, -1, 'not-a-store'] as $invalidStoreId) {
+            // "Ngarbage", fractional/exponent notation and nested form/query
+            // arrays must not be coerced into a valid tenant store ID.
+            foreach ([
+                0, -1, 'not-a-store',
+                $store->id.'garbage',
+                $store->id.'.0',
+                $store->id.'e0',
+                [$store->id],
+                ['id' => $store->id],
+            ] as $invalidStoreId) {
                 $this->actingAs($buyer->fresh())->get(route('admin.erp.procurement.index', [
                     'store_id' => $invalidStoreId,
                     'tab' => 'requests',
