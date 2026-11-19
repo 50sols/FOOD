@@ -172,9 +172,13 @@ final class V2FinanceWorkbenchPanelAuthorityTest extends TestCase
                 ->get(route('admin.erp.finance.index', [
                     'store_id' => $store->id,
                     'store_code' => $store->code,
-                    'tab' => 'receivables',
+                    'tab' => 'overview',
                 ]))
-                ->assertOk();
+                ->assertOk()
+                ->assertViewHas(
+                    'selectedContext',
+                    fn (array $selected): bool => $selected['id'] === $store->id,
+                );
         }
 
         $this->assertSame($before, [
