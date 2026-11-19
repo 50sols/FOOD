@@ -523,6 +523,102 @@ final class V2ArOfficerAuthorizationContractTest extends TestCase
         ));
     }
 
+    public function test_ar_and_super_admin_overlap_cannot_bypass_explicit_denies_or_keep_write_only_ar(): void
+    {
+        $this->enableFinance();
+        $actor = $this->officer();
+        $actor->roles()->attach(Role::query()->where('code', 'SUPER_ADMIN')->firstOrFail());
+
+        $store = Store::query()->create([
+            'store_type_id' => (int) DB::table('store_types')->where('code', 'B2B')->value('id'),
+            'code' => 'V2-AR-SUPER-EXPLICIT-DENY',
+            'name' => 'AR mixed Super Admin explicit DENY store',
+            'is_active' => true,
+        ]);
+        $hierarchy = app(OrganizationHierarchyService::class);
+        $hierarchy->ensureDefaultScopeForStore($store);
+        $scope = $hierarchy->scopeForStore($store->id);
+        $this->assertNotNull($scope);
+
+        app(ModuleEntitlementManager::class)->set(
+            FinanceFoundationService::MODULE,
+            new EntitlementScope(EntitlementScope::LEGAL_ENTITY, (int) $scope['legal_entity_id']),
+            true,
+            ['finance.ar.read', 'finance.ar.manage'],
+        );
+
+        $access = app(FinanceWorkbenchAccess::class);
+        $actor = $actor->fresh();
+        $this->assertTrue($access->canRead($actor, $store->id));
+        $this->assertTrue($access->canPerform(
+            $actor, $store->id, 'finance.manage', 'finance.ar.manage',
+        ));
+        $journalCount = DB::table('enterprise_finance_journals')->count();
+
+        // The shared User permission helper grants SUPER_ADMIN before looking
+        // at overrides. The AR duty boundary must deny the same request.
+        DB::table('user_permission_overrides')->insert([
+            'user_id' => $actor->id,
+            'permission_id' => Permission::query()->where('code', 'finance.view')->firstOrFail()->id,
+            'scope_key' => 'store:'.$store->id,
+            'store_id' => $store->id,
+            'effect' => 'deny',
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        $actor->forceFill(['has_permission_overrides' => true])->save();
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            $actor->forceFill(['locale' => $locale])->save();
+            $principal = $actor->fresh();
+            $this->assertTrue($principal->hasPermission('finance.view', $store->id));
+            $this->assertFalse($access->canRead($principal, $store->id));
+            $this->assertFalse($access->canReadCapability(
+                $principal, $store->id, 'finance.ar.read',
+            ));
+            $this->assertFalse($access->canPerform(
+                $principal, $store->id, 'finance.manage', 'finance.ar.manage',
+            ));
+        }
+
+        // Removing the store DENY restores the original legal authorization,
+        // while a GLOBAL manage DENY blocks only AR drafts, not AR reads.
+        DB::table('user_permission_overrides')->where('user_id', $actor->id)->delete();
+        $this->assertTrue($access->canRead($actor->fresh(), $store->id));
+
+        DB::table('user_permission_overrides')->insert([
+            'user_id' => $actor->id,
+            'permission_id' => Permission::query()->where('code', 'finance.manage')->firstOrFail()->id,
+            'scope_key' => 'global',
+            'store_id' => null,
+            'effect' => 'deny',
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        $this->assertTrue($actor->fresh()->hasPermission('finance.manage', $store->id));
+        $this->assertTrue($access->canRead($actor->fresh(), $store->id));
+        $this->assertFalse($access->canPerform(
+            $actor->fresh(), $store->id, 'finance.manage', 'finance.ar.manage',
+        ));
+
+        // A further GLOBAL read DENY revokes the entire AR read/draft duty.
+        DB::table('user_permission_overrides')->insert([
+            'user_id' => $actor->id,
+            'permission_id' => Permission::query()->where('code', 'finance.view')->firstOrFail()->id,
+            'scope_key' => 'global',
+            'store_id' => null,
+            'effect' => 'deny',
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        $this->assertFalse($access->canRead($actor->fresh(), $store->id));
+        $this->assertFalse($access->canPerform(
+            $actor->fresh(), $store->id, 'finance.manage', 'finance.ar.manage',
+        ));
+        $this->assertSame($journalCount, DB::table('enterprise_finance_journals')->count());
+    }
+
     private function officer(): User
     {
         $actor = User::factory()->create(['locale' => 'en', 'is_active' => true]);
