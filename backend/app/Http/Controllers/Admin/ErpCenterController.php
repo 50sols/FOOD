@@ -496,8 +496,22 @@ final class ErpCenterController extends Controller
             default => [],
         };
 
+        // User::hasPermission() grants SUPER_ADMIN before processing per-user
+        // overrides. A visible ERP destination must nevertheless honor an
+        // explicit GLOBAL/STORE DENY for the concrete operational permission,
+        // just like the issue-owned Procurement HTTP authority contract.
+        $overrideEffectsByStore = [];
+        $checkSuperAdminDenials = $actor->has_permission_overrides && $actor->hasRole('SUPER_ADMIN');
+
         foreach ($permissions as $permission) {
             foreach (app(OperationalTenantScope::class)->allowedStoreIds($actor, $permission, 'b2b') as $storeId) {
+                if ($checkSuperAdminDenials) {
+                    $overrideEffectsByStore[$storeId] ??= $actor->permissionOverrideEffects($storeId);
+                    if (($overrideEffectsByStore[$storeId][$permission] ?? null) === 'deny') {
+                        continue;
+                    }
+                }
+
                 // Treasury chooses the same first read-capable tab as the
                 // existing Sidebar. A broad module grant alone is not a
                 // usable tab; the read capability must match the exact store.
