@@ -1890,6 +1890,90 @@ final class V2ErpEntitlementCheckerBoundaryTest extends TestCase
         ]);
     }
 
+    public function test_super_admin_explicit_global_and_store_permission_denies_override_procurement_actions_in_ar_en(): void
+    {
+        // The canonical User::hasPermission() grants SUPER_ADMIN implicitly.
+        // Selected Procurement business actions must still honor explicit
+        // user-specific GLOBAL and STORE deny overrides at their HTTP guard.
+        $this->app['env'] = 'production';
+        $csrfToken = 'p111-admin-deny-csrf';
+        $this->withSession(['_token' => $csrfToken])->withHeader('X-CSRF-TOKEN', $csrfToken);
+
+        $store = $this->wholesaleStore();
+        $owner = $this->actor('SUPER_ADMIN');
+        app(EnterpriseModuleAdministration::class)->perform('procurement', 'enable', $owner);
+        app(ModuleEntitlementManager::class)->set(
+            'procurement', EntitlementScope::platform(), true, null, $owner,
+        );
+
+        $this->actingAs($owner)->get(route('admin.erp.procurement.index', [
+            'store_id' => $store->id,
+            'tab' => 'suppliers',
+        ]))->assertOk();
+
+        foreach ([
+            ['permission' => 'procurement.suppliers.view', 'scope_key' => 'global', 'store_id' => null],
+            ['permission' => 'procurement.suppliers.manage', 'scope_key' => 'global', 'store_id' => null],
+            ['permission' => 'procurement.purchase_requests.manage', 'scope_key' => 'store:'.$store->id, 'store_id' => $store->id],
+        ] as $deny) {
+            DB::table('user_permission_overrides')->insert([
+                'user_id' => $owner->id,
+                'permission_id' => Permission::query()->where('code', $deny['permission'])->firstOrFail()->id,
+                'scope_key' => $deny['scope_key'],
+                'store_id' => $deny['store_id'],
+                'effect' => 'deny',
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+        }
+        $owner->forceFill(['has_permission_overrides' => true])->save();
+
+        $supplierCount = DB::table('enterprise_suppliers')->count();
+        $requestCount = DB::table('enterprise_purchase_requests')->count();
+        $auditCount = DB::table('audit_logs')->count();
+
+        foreach (['ar' => 'rtl', 'en' => 'ltr'] as $locale => $direction) {
+            app()->setLocale($locale);
+            $owner->forceFill(['locale' => $locale])->save();
+            $admin = $owner->fresh();
+
+            // A permitted read remains usable, while denied tabs disappear.
+            $allowed = $this->actingAs($admin)->get(route('admin.erp.procurement.index', [
+                'store_id' => $store->id,
+                'tab' => 'requests',
+            ]))->assertOk()->assertSee('dir="'.$direction.'"', false);
+            $visible = collect($allowed->viewData('tabs'))->pluck('key')->all();
+            $this->assertContains('requests', $visible);
+            $this->assertNotContains('suppliers', $visible);
+            $this->assertNotContains('overview', $visible);
+
+            $this->actingAs($admin)->get(route('admin.erp.procurement.index', [
+                'store_id' => $store->id,
+                'tab' => 'suppliers',
+            ]))->assertForbidden();
+            $this->actingAs($admin)->post(route('admin.erp.procurement.suppliers.store'), [
+                'store_id' => $store->id,
+                'scope_type' => 'store',
+                'code' => 'P111-ADMIN-DENIED-SUPPLIER',
+                'name_en' => 'Must not be created',
+            ])->assertForbidden();
+            $this->actingAs($admin)->post(route('admin.erp.procurement.requests.store'), [
+                'store_id' => $store->id,
+                'currency_code' => 'KWD',
+                'reason' => 'P111 denied Admin mutation must not persist',
+                'item_code' => 'P111-DENIED-ADMIN-REQ',
+                'description' => 'No Admin override bypass',
+                'quantity' => '1.000',
+                'unit' => 'case',
+                'estimated_unit_cost' => '1.000',
+            ])->assertForbidden();
+        }
+
+        $this->assertSame($supplierCount, DB::table('enterprise_suppliers')->count());
+        $this->assertSame($requestCount, DB::table('enterprise_purchase_requests')->count());
+        $this->assertSame($auditCount, DB::table('audit_logs')->count());
+    }
+
     public function test_forged_retail_without_enterprise_hierarchy_is_403_before_setup_409_in_both_locales(): void
     {
         $this->app['env'] = 'production';
