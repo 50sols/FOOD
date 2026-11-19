@@ -1482,7 +1482,10 @@ final class FinanceWorkbenchController extends Controller
             abort_unless(preg_match('/^[1-9][0-9]*$/D', $text) === 1, 404);
 
             $id = filter_var($text, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
-            abort_if($id === false, 404);
+            if ($id === false) {
+                abort(404);
+            }
+
             $storeId = $id;
         }
 
