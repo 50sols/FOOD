@@ -864,10 +864,21 @@ final class EnterpriseProcurementController extends Controller
         ));
         abort_if($options === [], 403);
 
-        // An explicitly supplied invalid, inaccessible or cross-channel store
-        // must never silently fall back to a different, authorized store.
-        $requested = $request->integer('store_id');
-        abort_if($request->exists('store_id') && $requested <= 0, 403);
+        // An explicitly supplied malformed or cross-channel store must never
+        // be coerced into an authorized integer ID or silently fall back.
+        // Request::integer casts "1junk" and nonempty arrays to positive IDs.
+        $requested = 0;
+        if ($request->exists('store_id')) {
+            $rawStoreId = $request->input('store_id');
+            abort_unless(
+                is_int($rawStoreId)
+                    || (is_string($rawStoreId) && preg_match('/^[1-9][0-9]*$/D', $rawStoreId) === 1),
+                403,
+            );
+            $validatedStoreId = filter_var($rawStoreId, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
+            abort_if($validatedStoreId === false, 403);
+            $requested = (int) $validatedStoreId;
+        }
         $selected = collect($options)->firstWhere(
             'id',
             $requested > 0 ? $requested : $options[0]['id'],
