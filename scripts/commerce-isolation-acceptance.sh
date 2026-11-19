@@ -54,7 +54,11 @@ require_text backend/tests/Feature/DriverAssignmentLifecycleTest.php   'test_ret
 require_text backend/tests/Feature/DriverAssignmentLifecycleTest.php   'test_cross_channel_assignment_and_execution_are_denied'
 require_text backend/tests/Feature/DriverJourneyE2EAcceptanceTest.php   'test_dashboard_assignment_to_driver_proof_is_authoritative_notified_and_idempotent'
 require_text apps/driver_app/test/navigation_test.dart   'B2C driver cannot navigate into B2B routes'
-require_text apps/driver_app/test/navigation_test.dart   'B2B driver cannot navigate into B2C routes'
+# B2B delivery is VAN ONLY. A legacy B2B Driver login is now denied
+# entirely, including a forged B2C deep link. Keep B2C->B2B URL denial.
+require_text apps/driver_app/test/navigation_test.dart   'legacy B2B Driver session never starts an operational partition'
+require_text apps/driver_app/test/navigation_test.dart   'legacy B2B session cannot use a forged B2C delivery deep link'
+require_text backend/tests/Feature/DriverAssignmentLifecycleTest.php   'test_b2b_order_cannot_be_assigned_to_driver_after_van_cutover'
 require_text apps/driver_app/test/driver_active_journey_test.dart   'Assignment Details drives authoritative accepted pickup and delivery-start states'
 require_text apps/driver_app/test/driver_active_journey_test.dart   'new journey keeps the backend channel boundary'
 require_text apps/driver_app/test/driver_new_only_wiring_test.dart   'production Driver runtime is new-only and legacy cannot be rewired'
