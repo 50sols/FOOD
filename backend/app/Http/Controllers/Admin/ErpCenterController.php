@@ -914,16 +914,14 @@ final class ErpCenterController extends Controller
                     ->whereIn('enterprise_store_scopes.store_id', $storeIds)
                     ->distinct()->pluck('enterprise_legal_entities.id')->map(static fn ($id): int => (int) $id)->all()
                 : [];
-        // A globally authorized reporting actor can read their own
-        // platform-scoped exports even before a Wholesale store is assigned.
-        // Platform entitlement never grants access to another actor's rows.
-        $platformReportAccess = $this->entitlements->allows('enterprise_bi', EntitlementScope::platform())
-            && ($actor->hasRole('SUPER_ADMIN') || $actor->hasPermission('reports.view'));
-        $biOperational = is_array($biCard)
+        // ERP reporting is exclusively Wholesale. An unscoped PLATFORM export
+        // has no authoritative channel/store owner and may contain Retail
+        // data, so never count it in a B2B-only KPI (even for Super Admin).
+        $biOperational = $storeIds !== []
+            && is_array($biCard)
             && in_array($biCard['status'], ['available', 'degraded'], true)
             && is_string($biCard['url'])
-            && $biCard['url'] !== ''
-            && ($storeIds !== [] || $platformReportAccess);
+            && $biCard['url'] !== '';
 
         if (! $biOperational) {
             return ['available' => false, 'count' => null, 'url' => null];
@@ -937,13 +935,10 @@ final class ErpCenterController extends Controller
 
         $failedExports = $hasExports
             ? (int) DB::table('enterprise_report_exports')
-                ->where(function ($scope) use ($storeIds, $legalEntityIds, $platformReportAccess): void {
+                ->where(function ($scope) use ($storeIds, $legalEntityIds): void {
                     $scope->where(fn ($storeScope) => $storeScope->where('scope_type', 'store')->whereIn('scope_id', $storeIds));
                     if ($legalEntityIds !== []) {
                         $scope->orWhere(fn ($entityScope) => $entityScope->where('scope_type', 'legal_entity')->whereIn('scope_id', $legalEntityIds));
-                    }
-                    if ($platformReportAccess) {
-                        $scope->orWhere('scope_type', 'platform');
                     }
                 })
                 ->when(! $actor->hasRole('SUPER_ADMIN'), fn ($query) => $query->where('requested_by', $actor->id))
@@ -953,13 +948,10 @@ final class ErpCenterController extends Controller
 
         $failedSchedules = $hasSchedules
             ? (int) DB::table('enterprise_scheduled_reports')
-                ->where(function ($scope) use ($storeIds, $legalEntityIds, $platformReportAccess): void {
+                ->where(function ($scope) use ($storeIds, $legalEntityIds): void {
                     $scope->where(fn ($storeScope) => $storeScope->where('scope_type', 'store')->whereIn('scope_id', $storeIds));
                     if ($legalEntityIds !== []) {
                         $scope->orWhere(fn ($entityScope) => $entityScope->where('scope_type', 'legal_entity')->whereIn('scope_id', $legalEntityIds));
-                    }
-                    if ($platformReportAccess) {
-                        $scope->orWhere('scope_type', 'platform');
                     }
                 })
                 ->when(! $actor->hasRole('SUPER_ADMIN'), fn ($query) => $query->where('requested_by', $actor->id))
