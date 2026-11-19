@@ -1048,11 +1048,22 @@ final class EnterpriseProcurementController extends Controller
 
     private function allowed(User $actor, int $storeId, string $permission): bool
     {
-        // Archive is a revocation state even if historical role assignments
-        // remain and the legacy is_active flag has not yet been reconciled.
-        // User::hasPermission applies role, channel and explicit DENY rules.
-        return $actor->is_active && $actor->archived_at === null
-            && $actor->hasPermission($permission, $storeId);
+        // Archive is a revocation state even if historical roles remain.
+        if (! $actor->is_active || $actor->archived_at !== null) {
+            return false;
+        }
+
+        // The platform Super Admin normally has all role permissions, but an
+        // explicit per-user GLOBAL or STORE DENY must still win for a selected
+        // Procurement action/tab. User::hasPermission() intentionally grants
+        // SUPER_ADMIN before reading overrides, so enforce the override here
+        // without mutating the shared RBAC authority for other modules.
+        if ($actor->has_permission_overrides && $actor->hasRole('SUPER_ADMIN')
+            && ($actor->permissionOverrideEffects($storeId)[$permission] ?? null) === 'deny') {
+            return false;
+        }
+
+        return $actor->hasPermission($permission, $storeId);
     }
 
     /** @return array<string,bool> */
