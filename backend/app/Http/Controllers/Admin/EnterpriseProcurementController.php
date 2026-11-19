@@ -117,8 +117,12 @@ final class EnterpriseProcurementController extends Controller
         // A valid but unauthorized explicit tab must fail with 403 before a
         // missing enterprise hierarchy could incorrectly surface HTTP 409.
         $requestedTab = $request->query('tab');
+        // Laravel can normalize an explicitly blank ?tab= into null.
+        // Treat that differently from an omitted tab: an invalid selector
+        // must never silently fall back to the user's first permitted tab.
+        $hasExplicitTab = array_key_exists('tab', $request->query());
         abort_unless(
-            $requestedTab === null || (is_string($requestedTab) && array_key_exists($requestedTab, self::TABS)),
+            ! $hasExplicitTab || (is_string($requestedTab) && array_key_exists($requestedTab, self::TABS)),
             404,
         );
         $requiredPermission = is_string($requestedTab) ? self::TABS[$requestedTab] : null;
