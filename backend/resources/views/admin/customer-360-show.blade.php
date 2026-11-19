@@ -80,13 +80,13 @@ body{margin:0;background:var(--foodex-background);color:var(--foodex-ink)}
 <div>
 <h1 style="margin:0">{{ __('customer_360.title') }}</h1>
 <div class="c360-breadcrumbs">
-<a href="{{ route('admin.customer-360.index') }}">{{ __('customer_360.customers') }}</a><span>›</span>
-<a href="{{ route('admin.customer-360.index') }}">{{ __('customer_360.customer_list') }}</a><span>›</span>
+<a href="{{ $backToListUrl }}">{{ __('customer_360.customers') }}</a><span>›</span>
+<a href="{{ $backToListUrl }}">{{ __('customer_360.customer_list') }}</a><span>›</span>
 <span>{{ __('customer_360.title') }}</span>
 </div>
 </div>
 <div class="c360-actions">
-<a class="foodex-action-secondary button secondary" href="{{ route('admin.customer-360.index') }}">← {{ __('customer_360.back_to_list') }}</a>
+<a class="foodex-action-secondary button secondary" href="{{ $backToListUrl }}">← {{ __('customer_360.back_to_list') }}</a>
 </div>
 </div>
 
@@ -393,6 +393,9 @@ body{margin:0;background:var(--foodex-background);color:var(--foodex-ink)}
 <div class="c360-section-head"><div><h2>{{ __('customer_360.tabs.statement') }}</h2><p>{{ __('customer_360.statement.description') }}</p></div></div>
 @if($statement)
 <form method="get" action="{{ route('admin.customer-360.show',['platformCustomer'=>$customer->id]) }}#statement" class="c360-address-form" style="margin-bottom:16px">
+@foreach($listReturnContext as $contextName => $contextValue)
+<input type="hidden" name="{{ $contextName }}" value="{{ $contextValue }}">
+@endforeach
 <label><small>{{ __('customer_360.statement.from') }}</small><input type="date" name="statement_from" value="{{ $statementFilters['statement_from'] ?? '' }}"></label>
 <label><small>{{ __('customer_360.statement.to') }}</small><input type="date" name="statement_to" value="{{ $statementFilters['statement_to'] ?? '' }}"></label>
 <div class="wide c360-actions"><button class="foodex-action-primary" type="submit">{{ __('customer_360.statement.apply') }}</button><a class="foodex-action-secondary button secondary" href="{{ route('admin.customer-360.statement.export',['platformCustomer'=>$customer->id,'from'=>$statementFilters['statement_from'] ?? null,'to'=>$statementFilters['statement_to'] ?? null,'format'=>'pdf','locale'=>app()->getLocale()]) }}">PDF</a><a class="foodex-action-secondary button secondary" href="{{ route('admin.customer-360.statement.export',['platformCustomer'=>$customer->id,'from'=>$statementFilters['statement_from'] ?? null,'to'=>$statementFilters['statement_to'] ?? null,'format'=>'xlsx','locale'=>app()->getLocale()]) }}">{{ __('customer_360.statement.xlsx') }}</a></div>
@@ -903,8 +906,12 @@ body{margin:0;background:var(--foodex-background);color:var(--foodex-ink)}
             let next = index;
             if (event.key === 'Home') next = 0;
             else if (event.key === 'End') next = tabs.length - 1;
-            else if (event.key === 'ArrowLeft') next = Math.max(0, index - 1);
-            else next = Math.min(tabs.length - 1, index + 1);
+            else {
+                // Arrow keys follow the visual tab order in both LTR and RTL.
+                const isRtl = document.documentElement.dir === 'rtl';
+                const direction = event.key === 'ArrowLeft' ? (isRtl ? 1 : -1) : (isRtl ? -1 : 1);
+                next = Math.max(0, Math.min(tabs.length - 1, index + direction));
+            }
             tabs[next].focus();
             activate(tabs[next].dataset.c360Tab, true);
         });
