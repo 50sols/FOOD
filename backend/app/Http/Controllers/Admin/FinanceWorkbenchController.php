@@ -1409,10 +1409,9 @@ final class FinanceWorkbenchController extends Controller
      */
     private function selectedContextOption(Request $request, array $contexts): ?array
     {
-        $storeId = (int) $request->input('store_id', 0);
-        $storeCode = trim((string) $request->input('store_code', ''));
+        [$storeId, $storeCode] = $this->validatedStoreSelectors($request);
 
-        if ($storeId < 1 && $storeCode === '') {
+        if ($storeId === null && $storeCode === '') {
             return null;
         }
 
@@ -1420,7 +1419,7 @@ final class FinanceWorkbenchController extends Controller
         // authorized context. A valid code must never override a forged or
         // stale store_id (or vice versa) and silently switch the ledger scope.
         foreach ($contexts as $context) {
-            if (($storeId < 1 || $context['id'] === $storeId)
+            if (($storeId === null || $context['id'] === $storeId)
                 && ($storeCode === '' || strcasecmp($context['code'], $storeCode) === 0)) {
                 return $context;
             }
@@ -1446,10 +1445,9 @@ final class FinanceWorkbenchController extends Controller
      */
     private function assertWholesaleSelection(Request $request): void
     {
-        $storeId = $request->integer('store_id');
-        $storeCode = trim((string) $request->input('store_code', ''));
+        [$storeId, $storeCode] = $this->validatedStoreSelectors($request);
 
-        if ($storeId > 0) {
+        if ($storeId !== null) {
             $isWholesale = DB::table('stores as store')
                 ->join('store_types as type', 'type.id', '=', 'store.store_type_id')
                 ->where('store.id', $storeId)
@@ -1466,6 +1464,32 @@ final class FinanceWorkbenchController extends Controller
                 ->exists();
             abort_unless($isWholesale, 404);
         }
+    }
+
+    /**
+     * A forged context selector must never be silently coerced into an absent
+     * selector. Parse before querying a store or resolving a Finance ledger.
+     *
+     * @return array{?int, string}
+     */
+    private function validatedStoreSelectors(Request $request): array
+    {
+        $rawStoreId = $request->input('store_id');
+        $storeId = null;
+        if ($rawStoreId !== null && $rawStoreId !== '') {
+            abort_unless(is_int($rawStoreId) || is_string($rawStoreId), 404);
+            $text = (string) $rawStoreId;
+            abort_unless(preg_match('/^[1-9][0-9]*$/D', $text) === 1, 404);
+
+            $id = filter_var($text, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
+            abort_if($id === false, 404);
+            $storeId = $id;
+        }
+
+        $rawStoreCode = $request->input('store_code', '');
+        abort_unless(is_string($rawStoreCode), 404);
+
+        return [$storeId, trim($rawStoreCode)];
     }
 
     /** @return array{User, ResolvedTenantContext} */
