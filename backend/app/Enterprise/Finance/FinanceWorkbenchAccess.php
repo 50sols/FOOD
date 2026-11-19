@@ -131,7 +131,11 @@ final class FinanceWorkbenchAccess
         // Other role grants must not silently enlarge its Finance duties.
         if ($actor->hasRole('AR_OFFICER')
             && (! in_array($capability, self::AR_OFFICER_CAPABILITIES, true)
-                || ! $this->isWholesaleStore($storeId))) {
+                || ! $this->isWholesaleStore($storeId)
+                // AR draft authority requires the same readable, entitled
+                // receivables context. A finance.view DENY or revoked AR read
+                // entitlement must not leave a write-only mutation path.
+                || ($capability === 'finance.ar.manage' && ! $this->canRead($actor, $storeId)))) {
             return false;
         }
 
@@ -151,6 +155,15 @@ final class FinanceWorkbenchAccess
      */
     private function hasFinancePermissionAtStore(User $actor, int $storeId, string $permission): bool
     {
+        // A mixed AR_OFFICER + SUPER_ADMIN identity keeps the AR duty ceiling.
+        // User::hasPermission() short-circuits on SUPER_ADMIN before examining
+        // per-user overrides, so enforce explicit GLOBAL/STORE DENY *first*.
+        if ($actor->hasRole('AR_OFFICER')
+            && $actor->has_permission_overrides
+            && ($actor->permissionOverrideEffects($storeId)[$permission] ?? null) === 'deny') {
+            return false;
+        }
+
         if ($actor->hasPermission($permission, $storeId)) {
             return true;
         }
