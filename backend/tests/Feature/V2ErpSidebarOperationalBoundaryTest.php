@@ -217,6 +217,80 @@ final class V2ErpSidebarOperationalBoundaryTest extends TestCase
         }
     }
 
+    public function test_wholesale_bi_kpi_excludes_retail_and_unattributed_platform_failures(): void
+    {
+        $actor = $this->superAdmin('v2-erp-bi-channel-boundary@example.test');
+        $wholesale = Store::query()->where('code', 'V2-ERP-BOUNDARY-WHOLESALE')->firstOrFail();
+        $retail = Store::query()->create([
+            'store_type_id' => (int) DB::table('store_types')->where('code', 'B2C')->value('id'),
+            'code' => 'V2-ERP-BI-RETAIL',
+            'name' => 'Retail BI boundary fixture',
+            'is_active' => true,
+        ]);
+        app(OrganizationHierarchyService::class)->ensureDefaultScopeForStore($retail);
+
+        app(EnterpriseModuleAdministration::class)->perform('enterprise_bi', 'enable', $actor);
+        app(ModuleEntitlementManager::class)->set(
+            'enterprise_bi',
+            EntitlementScope::platform(),
+            true,
+        );
+        config()->set(
+            'enterprise_module_readiness.certified_versions.enterprise_bi',
+            app(ModuleRegistry::class)->manifest('enterprise_bi')->version,
+        );
+
+        foreach ([
+            ['store', (int) $wholesale->getKey(), 'wholesale'],
+            ['store', (int) $retail->getKey(), 'retail'],
+            ['platform', null, 'unattributed'],
+        ] as [$scopeType, $scopeId, $key]) {
+            DB::table('enterprise_report_exports')->insert([
+                'report_code' => 'orders.summary',
+                'scope_type' => $scopeType,
+                'scope_id' => $scopeId,
+                'requested_by' => $actor->getKey(),
+                'scheduled_report_id' => null,
+                'query_payload' => '{}',
+                'row_count' => 0,
+                'execution_mode' => 'queued_chunked',
+                'chunk_size' => 500,
+                'next_offset' => 0,
+                'processed_rows' => 0,
+                'chunks_completed' => 0,
+                'status' => 'failed',
+                'failure_code' => 'source_unavailable',
+                'artifact_metadata' => null,
+                'idempotency_key' => hash('sha256', 'v2-erp-bi-channel-'.$key),
+                'completed_at' => null,
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+        }
+
+        $center = $this->actingAs($actor)->get(route('admin.erp.index', ['tab' => 'snapshot']));
+        $center->assertOk();
+        $card = collect($center->viewData('cards'))->firstWhere('key', 'bi');
+        $this->assertIsArray($card);
+        $this->assertSame('available', $card['status']);
+        $kpi = collect($center->viewData('kpis'))->firstWhere('key', 'failed_reports');
+        $this->assertIsArray($kpi);
+        $this->assertTrue($kpi['available']);
+        $this->assertSame(1, $kpi['value']);
+        $this->assertSame(route('admin.erp.bi'), $kpi['url']);
+
+        // Retail-only data and a platform grant must not manufacture an ERP
+        // KPI or destination when no authorized Wholesale store remains.
+        $wholesale->update(['is_active' => false]);
+        $withoutWholesale = $this->actingAs($actor)->get(route('admin.erp.index'));
+        $withoutWholesale->assertOk();
+        $blockedKpi = collect($withoutWholesale->viewData('kpis'))->firstWhere('key', 'failed_reports');
+        $this->assertIsArray($blockedKpi);
+        $this->assertFalse($blockedKpi['available']);
+        $this->assertNull($blockedKpi['value']);
+        $this->assertNull($blockedKpi['url']);
+    }
+
     public function test_every_erp_business_route_is_covered_by_the_server_guard(): void
     {
         foreach ([
