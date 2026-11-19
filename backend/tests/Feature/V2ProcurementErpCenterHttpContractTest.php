@@ -228,6 +228,82 @@ final class V2ProcurementErpCenterHttpContractTest extends TestCase
         }
     }
 
+    public function test_explicit_super_admin_store_and_global_denies_never_advertise_procurement_workbench(): void
+    {
+        $deniedStore = $this->wholesaleStore('P135-SUPER-DENY');
+        $admin = $this->enableAndEntitle($deniedStore);
+        $viewPermissions = [
+            'procurement.suppliers.view',
+            'procurement.purchase_requests.view',
+            'procurement.purchase_orders.view',
+        ];
+
+        // Super Admin hasPermission() is intentionally privileged; the
+        // ERP Center must still respect explicit per-user STORE denial.
+        foreach ($viewPermissions as $permissionCode) {
+            DB::table('user_permission_overrides')->insert([
+                'user_id' => $admin->id,
+                'permission_id' => Permission::query()->where('code', $permissionCode)->firstOrFail()->id,
+                'scope_key' => 'store:'.$deniedStore->id,
+                'store_id' => $deniedStore->id,
+                'effect' => 'deny',
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+        }
+        $admin->forceFill(['has_permission_overrides' => true])->save();
+        $this->assertTrue($admin->fresh()->hasPermission('procurement.suppliers.view', $deniedStore->id));
+
+        foreach (['ar' => 'rtl', 'en' => 'ltr'] as $locale => $direction) {
+            app()->setLocale($locale);
+            $admin->forceFill(['locale' => $locale])->save();
+            $center = $this->actingAs($admin->fresh())->get(route('admin.erp.index'))
+                ->assertOk()->assertSee('dir="'.$direction.'"', false);
+            $card = collect($center->viewData('cards'))->firstWhere('key', 'procurement');
+            $this->assertIsArray($card);
+            $this->assertNotSame('available', $card['status']);
+            $this->assertNull($card['url']);
+        }
+
+        // An independently permitted and entitled Wholesale store is a valid
+        // alternative. The denied store must never become the selected CTA.
+        $allowedStore = $this->wholesaleStore('P135-SUPER-ALLOW');
+        app(ModuleEntitlementManager::class)->set(
+            'procurement',
+            new EntitlementScope(EntitlementScope::STORE, $allowedStore->id),
+            true,
+        );
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            $admin->forceFill(['locale' => $locale])->save();
+            $center = $this->actingAs($admin->fresh())->get(route('admin.erp.index'))->assertOk();
+            $card = collect($center->viewData('cards'))->firstWhere('key', 'procurement');
+            $this->assertIsArray($card);
+            $this->assertSame('available', $card['status']);
+            $this->assertSame(
+                route('admin.erp.procurement.index', ['store_id' => $allowedStore->id]),
+                $card['url'],
+            );
+        }
+
+        // GLOBAL DENY must take precedence even when another B2B store exists
+        // and PLATFORM-level module entitlement is present.
+        $globallyDenied = $this->userWithRole('SUPER_ADMIN');
+        $this->deny($globallyDenied, $viewPermissions);
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            $globallyDenied->forceFill(['locale' => $locale])->save();
+            $center = $this->actingAs($globallyDenied->fresh())->get(route('admin.erp.index'))->assertOk();
+            $card = collect($center->viewData('cards'))->firstWhere('key', 'procurement');
+            $this->assertIsArray($card);
+            $this->assertNotSame('available', $card['status']);
+            $this->assertNull($card['url']);
+        }
+        $this->assertDatabaseCount('enterprise_purchase_orders', 0);
+        $this->assertDatabaseCount('enterprise_goods_receipts', 0);
+    }
+
     public function test_archived_role_and_inactive_actor_revoke_both_center_and_workbench_http(): void
     {
         $store = $this->wholesaleStore('P135-HTTP-CARD-ARCHIVED');
