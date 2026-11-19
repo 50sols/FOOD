@@ -2862,7 +2862,12 @@ final class V2ErpEntitlementCheckerBoundaryTest extends TestCase
             ]))->assertNotFound();
             // Invalid scalar/array selectors are not permission scopes and
             // cannot be coerced to a fallback authorized tab.
-            foreach (['', ['requests'], ['requests', 'suppliers']] as $invalidTab) {
+            // Include the empty key explicitly: missing ?tab is an allowed
+            // default selector, but an expressly blank ?tab= must be 404.
+            $storeUrl = route('admin.erp.procurement.index', ['store_id' => $store->id]);
+            $this->actingAs($buyer->fresh())->get($storeUrl)->assertOk();
+            $this->actingAs($buyer->fresh())->get($storeUrl.'&tab=')->assertNotFound();
+            foreach ([['requests'], ['requests', 'suppliers']] as $invalidTab) {
                 $this->actingAs($buyer->fresh())->get(route('admin.erp.procurement.index', [
                     'tab' => $invalidTab,
                     'store_id' => $store->id,
