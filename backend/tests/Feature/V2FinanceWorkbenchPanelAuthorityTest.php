@@ -449,7 +449,7 @@ final class V2FinanceWorkbenchPanelAuthorityTest extends TestCase
         );
     }
 
-    public function test_retail_store_is_not_a_finance_erp_context_even_with_finance_permission(): void
+    public function test_retail_finance_requires_module_entitlement_even_with_store_permission(): void
     {
         $store = $this->createRetailStore('FIN-P303-RETAIL-BLOCKED');
         $role = Role::query()->where('code', 'B2C_STORE_ADMIN')->firstOrFail();
@@ -470,6 +470,68 @@ final class V2FinanceWorkbenchPanelAuthorityTest extends TestCase
             'store_id' => $store->id,
             'tab' => 'receivables',
         ]))->assertForbidden();
+    }
+
+    public function test_retail_finance_uses_only_entitled_assigned_store_and_denies_sibling(): void
+    {
+        $store = $this->createRetailStore('FIN-P303-RETAIL-ENTITLED');
+        $sibling = $this->createRetailStore('FIN-P303-RETAIL-SIBLING');
+        $role = Role::query()->where('code', 'B2C_STORE_ADMIN')->firstOrFail();
+        $role->permissions()->syncWithoutDetaching([
+            Permission::query()->firstOrCreate(['code' => 'finance.view'], ['name' => 'finance.view'])->id,
+        ]);
+
+        $actor = User::factory()->create(['is_active' => true, 'locale' => 'en']);
+        $this->grantPlatformErpAccess($actor);
+        DB::table('user_store_roles')->insert([
+            'user_id' => $actor->id,
+            'store_id' => $store->id,
+            'role_id' => $role->id,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $scope = app(OrganizationHierarchyService::class)->scopeForStore($store->id);
+        $this->assertNotNull($scope);
+        $registry = app(ModuleRegistry::class);
+        if (! $registry->isEnabled(FinanceFoundationService::MODULE)) {
+            $lifecycle = app(ModuleLifecycleManager::class);
+            $lifecycle->transition(FinanceFoundationService::MODULE, ModuleState::ENABLING, $actor);
+            $lifecycle->transition(FinanceFoundationService::MODULE, ModuleState::ENABLED, $actor);
+        }
+        app(ModuleEntitlementManager::class)->set(
+            FinanceFoundationService::MODULE,
+            new EntitlementScope(EntitlementScope::LEGAL_ENTITY, $scope['legal_entity_id']),
+            true,
+            ['finance.ar.read'],
+            $actor,
+        );
+
+        $before = [
+            DB::table('enterprise_finance_journals')->count(),
+            DB::table('enterprise_finance_ledger_entries')->count(),
+        ];
+
+        foreach (['en' => 'ltr', 'ar' => 'rtl'] as $locale => $direction) {
+            app()->setLocale($locale);
+            $actor->forceFill(['locale' => $locale])->save();
+
+            $response = $this->actingAs($actor->fresh())->get(route('admin.erp.finance.index', [
+                'store_id' => $store->id,
+                'tab' => 'receivables',
+            ]))->assertOk()->assertSee('dir="'.$direction.'"', false);
+            $this->assertFalse((bool) ($response->viewData('data')['legal_entity_reporting_available'] ?? false));
+
+            $this->actingAs($actor->fresh())->get(route('admin.erp.finance.index', [
+                'store_id' => $sibling->id,
+                'tab' => 'receivables',
+            ]))->assertNotFound();
+        }
+
+        $this->assertSame($before, [
+            DB::table('enterprise_finance_journals')->count(),
+            DB::table('enterprise_finance_ledger_entries')->count(),
+        ]);
     }
 
     /** @return array{User, Store} */
