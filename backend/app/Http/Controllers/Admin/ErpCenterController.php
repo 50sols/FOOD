@@ -343,10 +343,18 @@ final class ErpCenterController extends Controller
             };
 
             if ($status === 'available' && $needsOperationalStore && $operationalStoreId === null) {
-                // A healthy, certified module without an actual authorized
-                // store is still not an HTTP Workbench destination.
+                // An enabled module without a readable, authorized store is
+                // never an HTTP Workbench destination. For Treasury, a STORE
+                // grant restricted to manage-only capabilities is a missing
+                // read entitlement, not a missing store/hierarchy. Distinguish
+                // that from a valid read grant lacking an enterprise scope.
                 $status = 'not_entitled';
                 $denialReason = 'missing_scope';
+                if ($moduleCode === 'treasury'
+                    && $this->firstAuthorizedOperationalStoreId($actor, $moduleCode, false) === null
+                    && app(OperationalTenantScope::class)->allowedStoreIds($actor, 'finance.view', 'b2b') !== []) {
+                    $denialReason = 'entitlement_scope';
+                }
             }
         } elseif ($state === ModuleState::ENABLED) {
             $status = 'not_entitled';
