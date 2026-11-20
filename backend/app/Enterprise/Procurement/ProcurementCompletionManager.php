@@ -30,6 +30,9 @@ final class ProcurementCompletionManager
 
     private const MATCH_STATUSES = ['auto_approved', 'pending', 'approved', 'rejected'];
 
+    // Maximum 15 integral digits + 3 fractional digits in DECIMAL(18,3).
+    private const MAX_QUOTE_AMOUNT_MILLS = 999_999_999_999_999_999;
+
     public function __construct(
         private readonly EnterpriseScopeAuthorizer $authorizer,
         private readonly AuditLogger $audit,
@@ -903,11 +906,33 @@ final class ProcurementCompletionManager
                 DB::table('enterprise_procurement_quote_lines')->where('quote_id', $quoteId)->delete();
             }
 
-            $total = 0.0;
+            $totalMills = 0;
             foreach ($data['lines'] as $line) {
                 $rfqLine = $rfqLines->get((int) $line['rfq_line_id']);
-                $lineTotal = round((float) $rfqLine->quantity * (float) $line['unit_price'], 3);
-                $total += $lineTotal;
+
+                // Both operands are validated or stored at <= 3dp. Scaling
+                // independently fits 64-bit integers; splitting quantity
+                // prevents overflowing multiplication or lossy float totals.
+                $quantityMills = (int) round((float) $rfqLine->quantity * 1000);
+                $priceMills = (int) round((float) $line['unit_price'] * 1000);
+                $wholeQuantity = intdiv($quantityMills, 1000);
+                if ($wholeQuantity > 0
+                    && $priceMills > intdiv(self::MAX_QUOTE_AMOUNT_MILLS, $wholeQuantity)) {
+                    throw ValidationException::withMessages([
+                        'lines' => ['Quoted amount exceeds the supported 18,3 monetary range.'],
+                    ]);
+                }
+                $wholeMills = $wholeQuantity * $priceMills;
+                $fractionMills = intdiv(($quantityMills % 1000) * $priceMills + 500, 1000);
+                $lineMills = $wholeMills + $fractionMills;
+                if ($lineMills > self::MAX_QUOTE_AMOUNT_MILLS - $totalMills) {
+                    throw ValidationException::withMessages([
+                        'lines' => ['Quoted amount exceeds the supported 18,3 monetary range.'],
+                    ]);
+                }
+                $totalMills += $lineMills;
+                $lineTotal = intdiv($lineMills, 1000).'.'.str_pad((string) ($lineMills % 1000), 3, '0', STR_PAD_LEFT);
+
                 DB::table('enterprise_procurement_quote_lines')->insert([
                     'quote_id' => $quoteId,
                     'rfq_line_id' => $rfqLine->id,
@@ -923,7 +948,7 @@ final class ProcurementCompletionManager
             DB::table('enterprise_procurement_quotes')->where('id', $quoteId)->update([
                 'valid_until' => $data['valid_until'] ?? null,
                 'lead_time_days' => $data['lead_time_days'] ?? null,
-                'total_amount' => round($total, 3),
+                'total_amount' => intdiv($totalMills, 1000).'.'.str_pad((string) ($totalMills % 1000), 3, '0', STR_PAD_LEFT),
                 'notes' => $data['notes'] ?? null,
                 'submitted_at' => now(),
                 'updated_at' => now(),
