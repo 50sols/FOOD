@@ -818,6 +818,11 @@ final class ProcurementCompletionManager
         // or document metadata using that stale supplier authorization.
         $supplier = $this->eligibleInvitedSupplier($rfq, $invitation);
 
+        // The initial lifecycle preflight may also become stale during token
+        // and supplier verification. A completed suspension must suppress a
+        // public GET before historical quote/document metadata is loaded.
+        abort_unless($this->modules->isEnabled('procurement'), 404, 'Procurement module is disabled.');
+
         $lines = DB::table('enterprise_procurement_rfq_lines')
             ->where('rfq_id', $rfq->id)
             ->orderBy('line_no')
