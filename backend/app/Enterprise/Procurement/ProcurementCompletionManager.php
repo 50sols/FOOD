@@ -812,6 +812,12 @@ final class ProcurementCompletionManager
             ->first();
         abort_if($rfq === null, 410);
 
+        // The supplier may have been put on hold, disqualified or moved to
+        // another tenant AFTER the first eligibility SELECT and the final
+        // invitation-token read. A public GET must not expose existing quote
+        // or document metadata using that stale supplier authorization.
+        $supplier = $this->eligibleInvitedSupplier($rfq, $invitation);
+
         $lines = DB::table('enterprise_procurement_rfq_lines')
             ->where('rfq_id', $rfq->id)
             ->orderBy('line_no')
