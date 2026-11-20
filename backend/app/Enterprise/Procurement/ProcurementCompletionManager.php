@@ -801,6 +801,17 @@ final class ProcurementCompletionManager
         // Re-read the invitation before a guarded state transition; refuse
         // concurrent revocation rather than marking a stale token as opened.
         $invitation = $this->portalInvitation($token, true);
+
+        // Cancelling or awarding an RFQ does not revoke an already-submitted
+        // invitation. Its initial published-state SELECT can therefore become
+        // stale during a public GET. Re-check the RFQ after the final token
+        // check before exposing historical quote and document metadata.
+        $rfq = DB::table('enterprise_procurement_rfqs')
+            ->where('id', $rfq->id)
+            ->where('status', 'published')
+            ->first();
+        abort_if($rfq === null, 410);
+
         $lines = DB::table('enterprise_procurement_rfq_lines')
             ->where('rfq_id', $rfq->id)
             ->orderBy('line_no')
