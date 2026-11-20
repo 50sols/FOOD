@@ -562,6 +562,71 @@ final class V2ErpProcurementRfqReceiptFlowTest extends TestCase
         $this->assertDatabaseCount('enterprise_procurement_quote_documents', 0);
     }
 
+    public function test_public_supplier_rfq_token_cannot_read_or_requote_when_procurement_module_is_not_enabled(): void
+    {
+        $store = $this->store();
+        $maker = $this->actor('PROCUREMENT_BUYER', 'en');
+        [, , $rfqId, $quoteId, $token] = $this->quotedRequest($maker, $store);
+        $line = DB::table('enterprise_procurement_quote_lines')
+            ->where('quote_id', $quoteId)->first();
+        $invitation = DB::table('enterprise_procurement_rfq_invitations')
+            ->where('rfq_id', $rfqId)->first();
+        $this->assertNotNull($line);
+        $this->assertNotNull($invitation);
+
+        $beforeAudits = DB::table('audit_logs')
+            ->where('event', 'enterprise.procurement.quote.submitted')->count();
+        $this->assertDatabaseHas('enterprise_procurement_quotes', [
+            'id' => $quoteId, 'status' => 'submitted', 'total_amount' => '8.500',
+        ]);
+        auth()->logout();
+
+        // Real module lifecycle transitions: the supplier's anonymous bearer
+        // token must not bypass an admin suspension, maintenance or shutdown.
+        foreach ([
+            ModuleState::SUSPENDED,
+            ModuleState::MAINTENANCE,
+            ModuleState::DISABLED,
+        ] as $state) {
+            app(ModuleLifecycleManager::class)->transition('procurement', $state);
+            $this->assertSame($state, app(ModuleRegistry::class)->state('procurement'));
+
+            $this->get(route('supplier.rfq.show', ['token' => $token]))
+                ->assertNotFound();
+            $this->post(route('supplier.rfq.submit', ['token' => $token]), [
+                'lines' => [[
+                    'rfq_line_id' => $line->rfq_line_id,
+                    'unit_price' => '7.000',
+                ]],
+                'attachment' => UploadedFile::fake()->create('disabled-quote.pdf', 8, 'application/pdf'),
+            ])->assertNotFound();
+
+            $this->assertDatabaseHas('enterprise_procurement_rfq_invitations', [
+                'id' => $invitation->id,
+                'status' => 'submitted',
+                'last_accessed_at' => $invitation->last_accessed_at,
+            ]);
+            $this->assertDatabaseHas('enterprise_procurement_quotes', [
+                'id' => $quoteId, 'status' => 'submitted', 'total_amount' => '8.500',
+            ]);
+            $this->assertDatabaseHas('enterprise_procurement_quote_lines', [
+                'id' => $line->id, 'unit_price' => '4.250', 'line_total' => '8.500',
+            ]);
+            $this->assertDatabaseCount('enterprise_procurement_quote_documents', 0);
+            $this->assertSame($beforeAudits, DB::table('audit_logs')
+                ->where('event', 'enterprise.procurement.quote.submitted')->count());
+        }
+
+        // Restoring the module explicitly allows its still-valid historical
+        // supplier invitation to return, without changing the prior quote.
+        app(ModuleLifecycleManager::class)->transition('procurement', ModuleState::ENABLING);
+        app(ModuleLifecycleManager::class)->transition('procurement', ModuleState::ENABLED);
+        $this->get(route('supplier.rfq.show', ['token' => $token]))->assertOk();
+        $this->assertDatabaseHas('enterprise_procurement_quotes', [
+            'id' => $quoteId, 'status' => 'submitted', 'total_amount' => '8.500',
+        ]);
+    }
+
     public function test_submitted_supplier_portal_get_rejects_revocation_after_final_token_lookup(): void
     {
         $store = $this->store();
