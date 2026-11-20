@@ -559,7 +559,8 @@ final class V2ReceivableSettlementWorkbenchTest extends TestCase
                 'tab' => 'receivables',
                 'settlement_document_id' => $document->id,
             ]))
-            ->assertForbidden();
+            // Foreign Wholesale ledgers return 404, not a store-existence hint.
+            ->assertNotFound();
 
         $this->actingAs($actor)
             ->post(route('admin.erp.finance.receivables.settlements.store', $document->id), [
