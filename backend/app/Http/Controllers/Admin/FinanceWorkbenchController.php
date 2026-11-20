@@ -1618,12 +1618,18 @@ final class FinanceWorkbenchController extends Controller
             return false;
         }
 
-        if ($actor->hasRole('AR_OFFICER')
-            && (! in_array($capability, ['finance.ar.read', 'finance.ar.manage'], true)
-                || ($capability === 'finance.ar.read' && $permission !== 'finance.view')
-                || ($capability === 'finance.ar.manage' && ($permission !== 'finance.manage'
-                    || ! $this->financeAccess->allowsAtStore($storeId, 'finance.ar.read')))) {
-            return false;
+        if ($actor->hasRole('AR_OFFICER')) {
+            $arRead = $capability === 'finance.ar.read' && $permission === 'finance.view';
+            $arManage = $capability === 'finance.ar.manage' && $permission === 'finance.manage';
+
+            if (! $arRead && ! $arManage) {
+                return false;
+            }
+
+            // Do not allow AR drafts after its read entitlement is revoked.
+            if ($arManage && ! $this->financeAccess->allowsAtStore($storeId, 'finance.ar.read')) {
+                return false;
+            }
         }
 
         return $this->financeAccess->canPerform($actor, $storeId, $permission, $capability);
