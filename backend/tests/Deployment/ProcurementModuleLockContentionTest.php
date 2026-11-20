@@ -87,6 +87,39 @@ final class ProcurementModuleLockContentionTest extends TestCase
                 DB::rollBack();
             }
 
+            // A shutdown attempt that ROLLS BACK must not revoke a supplier's
+            // subsequent fresh authorization. This is a second independent
+            // MySQL session, not a mocked QueryExecuted interleaving.
+            $peer->beginTransaction();
+            try {
+                $abortShutdown = $peer->prepare(
+                    'UPDATE enterprise_modules SET state = ? WHERE code = ?',
+                );
+                $abortShutdown->execute([ModuleState::SUSPENDED->value, 'procurement']);
+                $this->assertSame(
+                    ModuleState::SUSPENDED->value,
+                    $peer->query("SELECT state FROM enterprise_modules WHERE code = 'procurement'")->fetchColumn(),
+                );
+            } finally {
+                $peer->rollBack();
+            }
+
+            DB::beginTransaction();
+            try {
+                $afterRollback = DB::table('enterprise_modules')
+                    ->where('code', 'procurement')
+                    ->lockForUpdate()
+                    ->first();
+                $this->assertNotNull($afterRollback);
+                $this->assertSame(
+                    ModuleState::ENABLED->value,
+                    $afterRollback->state,
+                    'A rolled-back operator shutdown must not poison the next locked authorization.',
+                );
+            } finally {
+                DB::rollBack();
+            }
+
             // Admin shutdown now wins first. The independent supplier session
             // cannot lock/approve ENABLED while SUSPENDED is uncommitted.
             $peer->beginTransaction();
@@ -122,6 +155,24 @@ final class ProcurementModuleLockContentionTest extends TestCase
                 if ($peer->inTransaction()) {
                     $peer->rollBack();
                 }
+            }
+
+            // After a COMMITTED shutdown, the next fresh supplier transaction
+            // must see SUSPENDED under its own locking read, not stale ENABLED.
+            DB::beginTransaction();
+            try {
+                $afterCommit = DB::table('enterprise_modules')
+                    ->where('code', 'procurement')
+                    ->lockForUpdate()
+                    ->first();
+                $this->assertNotNull($afterCommit);
+                $this->assertSame(
+                    ModuleState::SUSPENDED->value,
+                    $afterCommit->state,
+                    'Committed operator shutdown wins before any later supplier write.',
+                );
+            } finally {
+                DB::rollBack();
             }
 
             $this->assertSame(
