@@ -260,6 +260,37 @@ final class V2ErpProcurementRfqReceiptFlowTest extends TestCase
             ->where('event', 'enterprise.procurement.quote.submitted')->count());
     }
 
+    public function test_supplier_quote_attachment_persists_only_after_successful_audited_requote(): void
+    {
+        $store = $this->store();
+        $maker = $this->actor('PROCUREMENT_BUYER', 'en');
+        [, , $rfqId, $quoteId, $token] = $this->quotedRequest($maker, $store);
+        $sourceLineId = (int) DB::table('enterprise_procurement_quote_lines')
+            ->where('quote_id', $quoteId)->value('rfq_line_id');
+        $this->assertGreaterThan(0, $sourceLineId);
+
+        Storage::fake('local');
+        $this->post(route('supplier.rfq.submit', ['token' => $token]), [
+            'lines' => [['rfq_line_id' => $sourceLineId, 'unit_price' => '0.005']],
+            'attachment' => UploadedFile::fake()->create('signed-quote.pdf', 20, 'application/pdf'),
+        ])->assertRedirect()->assertSessionHasNoErrors();
+
+        $document = DB::table('enterprise_procurement_quote_documents')
+            ->where('quote_id', $quoteId)->first();
+        $this->assertNotNull($document);
+        $this->assertStringStartsWith('procurement/quotes/', $document->storage_path);
+        Storage::disk('local')->assertExists($document->storage_path);
+        $this->assertSame([$document->storage_path], Storage::disk('local')->allFiles('procurement/quotes'));
+        $this->assertDatabaseHas('enterprise_procurement_quotes', [
+            'id' => $quoteId, 'rfq_id' => $rfqId, 'status' => 'submitted', 'total_amount' => '0.010',
+        ]);
+        $this->assertDatabaseHas('enterprise_procurement_quote_lines', [
+            'quote_id' => $quoteId, 'unit_price' => '0.005', 'line_total' => '0.010',
+        ]);
+        $this->assertSame(2, DB::table('audit_logs')
+            ->where('event', 'enterprise.procurement.quote.submitted')->count());
+    }
+
     public function test_supplier_quote_attachment_is_deleted_when_late_audit_failure_rolls_back_requote(): void
     {
         $store = $this->store();
