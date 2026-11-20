@@ -10,6 +10,7 @@ use App\Enterprise\Modules\ModuleLifecycleManager;
 use App\Enterprise\Modules\ModuleRegistry;
 use App\Enterprise\Modules\ModuleState;
 use App\Enterprise\Organization\OrganizationHierarchyService;
+use App\Http\Controllers\Admin\FinanceWorkbenchController;
 use App\Models\Customer;
 use App\Models\Permission;
 use App\Models\Role;
@@ -18,6 +19,7 @@ use App\Models\User;
 use App\Support\TenantContextResolver;
 use Database\Seeders\CoreReferenceSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Http\Request;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Tests\TestCase;
@@ -177,7 +179,7 @@ final class V2FinanceWorkbenchPanelAuthorityTest extends TestCase
             // Probe the exact server-side chooser without weakening any
             // direct GET, mismatch, or forged-selector assertion. These
             // disposable fixture codes are not production account data.
-            $financeController = app(\App\Http\Controllers\Admin\FinanceWorkbenchController::class);
+            $financeController = app(FinanceWorkbenchController::class);
             $contextOptions = (new \ReflectionMethod($financeController, 'contextOptions'))->invoke(
                 $financeController,
                 $actor->fresh(),
@@ -194,7 +196,7 @@ final class V2FinanceWorkbenchPanelAuthorityTest extends TestCase
                 strcasecmp((string) $contextOptions[0]['code'], (string) $store->code),
                 'An exact-store context must preserve the canonical store code.',
             );
-            $request = \Illuminate\Http\Request::create(route('admin.erp.finance.index', [
+            $request = Request::create(route('admin.erp.finance.index', [
                 'store_id' => $store->id,
                 'store_code' => $store->code,
                 'tab' => 'overview',
