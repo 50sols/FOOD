@@ -174,6 +174,41 @@ final class V2FinanceWorkbenchPanelAuthorityTest extends TestCase
                 'The fixture store must pass Finance read authorization before selector matching.',
             );
 
+            // Probe the exact server-side chooser without weakening any
+            // direct GET, mismatch, or forged-selector assertion. These
+            // disposable fixture codes are not production account data.
+            $financeController = app(\App\Http\Controllers\Admin\FinanceWorkbenchController::class);
+            $contextOptions = (new \ReflectionMethod($financeController, 'contextOptions'))->invoke(
+                $financeController,
+                $actor->fresh(),
+                (int) $store->id,
+                (string) $store->code,
+            );
+            $this->assertSame(
+                [(int) $store->id],
+                array_column($contextOptions, 'id'),
+                'A selected wholesale store ID must yield exactly its own authorized context.',
+            );
+            $this->assertSame(
+                0,
+                strcasecmp((string) $contextOptions[0]['code'], (string) $store->code),
+                'An exact-store context must preserve the canonical store code.',
+            );
+            $request = \Illuminate\Http\Request::create(route('admin.erp.finance.index', [
+                'store_id' => $store->id,
+                'store_code' => $store->code,
+                'tab' => 'overview',
+            ]), 'GET');
+            $selectors = (new \ReflectionMethod($financeController, 'validatedStoreSelectors'))->invoke(
+                $financeController,
+                $request,
+            );
+            $this->assertSame(
+                [(int) $store->id, (string) $store->code],
+                $selectors,
+                'Both HTTP store selectors must survive URL construction and validation unchanged.',
+            );
+
             $response = $this->actingAs($actor->fresh())
                 ->get(route('admin.erp.finance.index', [
                     'store_id' => $store->id,
