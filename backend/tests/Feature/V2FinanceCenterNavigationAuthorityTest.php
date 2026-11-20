@@ -132,7 +132,7 @@ final class V2FinanceCenterNavigationAuthorityTest extends TestCase
             $this->assertFalse($this->hasFinanceEntry($actor));
             $this->actingAs($actor)
                 ->get(route('admin.erp.finance.index', ['store_id' => $store->id], false))
-                ->assertNotFound();
+                ->assertForbidden();
         }
     }
 
@@ -148,35 +148,28 @@ final class V2FinanceCenterNavigationAuthorityTest extends TestCase
     /** @return array{User, Store, ResolvedTenantContext} */
     private function financeReader(string $storeCode): array
     {
-        $store = $this->wholesaleStore($storeCode);
-        $role = Role::query()->where('code', 'B2B_ADMIN')->firstOrFail();
+        $store = $this->retailStore($storeCode);
+        $role = Role::query()->where('code', 'B2C_STORE_ADMIN')->where('scope', 'store')->firstOrFail();
         $view = Permission::query()->where('code', 'finance.view')->firstOrFail();
         $role->permissions()->syncWithoutDetaching([$view->id]);
 
         $actor = User::factory()->create(['is_active' => true, 'locale' => 'en']);
         $this->grantPlatformErpAccess($actor);
-        $actor->roles()->attach($role->id);
+        DB::table('user_store_roles')->insert([
+            'user_id' => $actor->id,
+            'store_id' => $store->id,
+            'role_id' => $role->id,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
 
-        return [$actor, $store, app(TenantContextResolver::class)->wholesale($actor, $store->id)];
+        return [$actor, $store, app(TenantContextResolver::class)->retail($actor, $store->id)];
     }
 
     private function retailStore(string $code): Store
     {
         $store = Store::query()->create([
             'store_type_id' => DB::table('store_types')->where('code', 'B2C')->value('id'),
-            'code' => $code,
-            'name' => $code,
-            'is_active' => true,
-        ]);
-        app(OrganizationHierarchyService::class)->ensureDefaultScopeForStore($store);
-
-        return $store;
-    }
-
-    private function wholesaleStore(string $code): Store
-    {
-        $store = Store::query()->create([
-            'store_type_id' => DB::table('store_types')->where('code', 'B2B')->value('id'),
             'code' => $code,
             'name' => $code,
             'is_active' => true,
