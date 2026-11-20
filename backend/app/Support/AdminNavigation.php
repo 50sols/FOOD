@@ -1092,15 +1092,15 @@ class AdminNavigation
         // The Treasury workbench resolves a concrete store on HTTP entry.
         // Project an actually authorized and entitled Wholesale store into the
         // existing Sidebar route instead of exposing a dead/default-store link.
-        $wholesaleTreasuryStoreId = null;
+        $treasuryStoreId = null;
         if ($moduleCode === 'treasury' && ! $user->isPlatformOwner()) {
-            $wholesaleTreasuryStoreId = $this->wholesaleTreasuryNavigationStoreId($user);
-            if ($wholesaleTreasuryStoreId !== null) {
-                $params['store_id'] = (string) $wholesaleTreasuryStoreId;
+            $treasuryStoreId = $this->treasuryNavigationStoreId($user);
+            if ($treasuryStoreId !== null) {
+                $params['store_id'] = (string) $treasuryStoreId;
 
                 // The default Treasury overview has a separate analytics
                 // capability. Link to a tab this store can actually read.
-                $scope = new EntitlementScope(EntitlementScope::STORE, $wholesaleTreasuryStoreId);
+                $scope = new EntitlementScope(EntitlementScope::STORE, $treasuryStoreId);
                 foreach ([
                     'receipts' => 'treasury.receipts.read',
                     'payments' => 'treasury.payments.read',
@@ -1135,7 +1135,9 @@ class AdminNavigation
         // previously authorized Retail Finance destination behind a B2B-only
         // menu check; FinanceWorkbenchAccess remains the actual read guard.
         $readPermission = $this->hasAnyPermissionInChannel($user, [$permission], 'b2b')
-            || ($moduleCode === 'finance' && $this->financeWorkspacesAccessible($user));
+            || ($moduleCode === 'finance' && $this->financeWorkspacesAccessible($user))
+            || ($moduleCode === 'inventory_wms' && $wmsStoreId !== null)
+            || ($moduleCode === 'treasury' && $treasuryStoreId !== null);
         if (! Route::has($route) || ! $readPermission) {
             return null;
         }
@@ -1147,7 +1149,7 @@ class AdminNavigation
             'params' => $params,
             'permission' => null,
         ];
-        if ($wholesaleTreasuryStoreId === null && $wmsStoreId === null && ! $this->enterpriseModuleAccessible($user, $moduleCode)) {
+        if ($treasuryStoreId === null && $wmsStoreId === null && ! $this->enterpriseModuleAccessible($user, $moduleCode)) {
             return null;
         }
 
@@ -1203,8 +1205,18 @@ class AdminNavigation
             return null;
         }
 
-        $storeIds = app(OperationalTenantScope::class)->allowedStoreIds($user, 'inventory.view', 'b2b');
+        // The WMS HTTP authority supports both Wholesale and exact assigned
+        // Retail inventory.view scopes. Do not silently hide a permitted B2C
+        // warehouse or pick a store with an explicit user-level DENY.
+        $storeIds = app(OperationalTenantScope::class)->allowedStoreIds($user, 'inventory.view');
         foreach ($storeIds as $storeId) {
+            $effects = $user->has_permission_overrides
+                ? $user->permissionOverrideEffects($storeId)
+                : [];
+            if (($effects['inventory.view'] ?? null) === 'deny'
+                || ! $user->hasPermission('inventory.view', $storeId)) {
+                continue;
+            }
             if ($this->enterpriseEntitlements->allows(
                 'inventory_wms',
                 new EntitlementScope(EntitlementScope::STORE, $storeId),
@@ -1328,17 +1340,31 @@ class AdminNavigation
      * an effective per-store permission, hierarchy scope and usable read
      * entitlement must all exist. In particular, explicit store DENYs win.
      */
-    private function wholesaleTreasuryNavigationStoreId(User $user): ?int
+    private function treasuryNavigationStoreId(User $user): ?int
     {
-        if (! $user->is_active || ! $this->canAccess($user, 'b2b')) {
+        if (! $user->is_active) {
             return null;
         }
 
-        $storeIds = app(OperationalTenantScope::class)
-            ->allowedStoreIds($user, 'finance.view', 'b2b');
+        // The actual Treasury chooser supports global B2B and assigned B2C
+        // stores. Candidate channel/permission scope never grants a Treasury
+        // read capability or overrides a more specific DENY.
+        $scope = app(OperationalTenantScope::class);
+        $wholesaleIds = $this->canAccess($user, 'b2b')
+            ? $scope->allowedStoreIds($user, 'finance.view', 'b2b')
+            : [];
+        $retailIds = array_values(array_intersect(
+            $this->tenantContext->retailStoreIds($user),
+            $scope->allowedStoreIds($user, 'finance.view', 'b2c'),
+        ));
+        $storeIds = array_values(array_unique(array_merge($wholesaleIds, $retailIds)));
 
         foreach ($storeIds as $storeId) {
-            if (! $user->hasPermission('finance.view', $storeId)
+            $effects = $user->has_permission_overrides
+                ? $user->permissionOverrideEffects($storeId)
+                : [];
+            if (($effects['finance.view'] ?? null) === 'deny'
+                || ! $user->hasPermission('finance.view', $storeId)
                 || app(OrganizationHierarchyService::class)->scopeForStore($storeId) === null) {
                 continue;
             }
