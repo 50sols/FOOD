@@ -83,6 +83,45 @@ final class V2OrganizationSetupGuidanceTest extends TestCase
         $this->assertDatabaseMissing('enterprise_organizations', ['name' => 'Duplicate']);
     }
 
+    public function test_business_codes_are_normalized_before_preview_and_save_uniqueness_validation(): void
+    {
+        $admin = $this->actor('SUPER_ADMIN', 'en');
+        $before = DB::table('audit_logs')->count();
+
+        // A SQLite (case-sensitive) test database must reject the same
+        // canonical code that MySQL/MariaDB generally reject via collation.
+        // Both no-write preview and actual Save use the same validation.
+        foreach ([true, false] as $preview) {
+            $payload = [
+                'code' => 'FOODEX_PLATFORM',
+                'name' => 'Rejected Case Variant',
+                'is_active' => '1',
+            ];
+            if ($preview) {
+                $payload['_setup_test'] = '1';
+            }
+
+            $this->actingAs($admin)->post(route('admin.enterprise-organizations.store'), $payload)
+                ->assertSessionHasErrors('code');
+        }
+
+        $this->assertDatabaseMissing('enterprise_organizations', ['name' => 'Rejected Case Variant']);
+        $this->assertSame($before, DB::table('audit_logs')->count());
+
+        // Legitimate uppercase input is still accepted and stored canonically.
+        $this->actingAs($admin)->post(route('admin.enterprise-organizations.store'), [
+            'code' => 'VALID_NEW_ORG',
+            'name' => 'Canonical New Organization',
+            'is_active' => '1',
+        ])->assertRedirect();
+
+        $this->assertDatabaseHas('enterprise_organizations', [
+            'code' => 'valid_new_org',
+            'name' => 'Canonical New Organization',
+        ]);
+        $this->assertSame($before + 1, DB::table('audit_logs')->count());
+    }
+
     public function test_failed_create_save_restores_values_only_to_create_form(): void
     {
         $admin = $this->actor('SUPER_ADMIN', 'en');
