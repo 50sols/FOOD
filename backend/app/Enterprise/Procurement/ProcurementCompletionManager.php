@@ -782,107 +782,115 @@ final class ProcurementCompletionManager
     /** @return array<string,mixed> */
     public function portal(string $token): array
     {
-        // Public RFQ bearer tokens never override the module lifecycle.
-        // The authenticated Procurement dashboard is already fail-closed;
-        // a suspended/disabled module must also disable public GET access.
+        // Deny anonymous bearer-token reads before touching state when the
+        // module is already disabled. A later transactional lock is still
+        // mandatory because this preflight can become stale.
         abort_unless($this->modules->isEnabled('procurement'), 404, 'Procurement module is disabled.');
 
-        // Read without side effects before validating both the RFQ and the
-        // supplier. A blocked supplier must not record an "opened" invitation.
         $invitation = $this->portalInvitation($token);
-        $rfq = DB::table('enterprise_procurement_rfqs')->where('id', $invitation->rfq_id)->firstOrFail();
-        if ($rfq->status !== 'published') {
-            abort(410);
-        }
-
-        // Publishing/awarding require active and qualified suppliers.
-        // A public token must not bypass a later supplier governance hold.
-        $supplier = $this->eligibleInvitedSupplier($rfq, $invitation);
-        // Revalidate the invitation without recording an "opened" visit yet.
-        // The RFQ, supplier and module may all have changed since preflight;
-        // rejected GETs must not touch a still-valid invited/opened token.
-        $invitation = $this->portalInvitation($token);
-
-        // Cancelling or awarding an RFQ does not revoke an already-submitted
-        // invitation. Its initial published-state SELECT can therefore become
-        // stale during a public GET. Re-check the RFQ after the final token
-        // check before exposing historical quote and document metadata.
         $rfq = DB::table('enterprise_procurement_rfqs')
-            ->where('id', $rfq->id)
-            ->where('status', 'published')
-            ->first();
-        abort_if($rfq === null, 410);
+            ->where('id', $invitation->rfq_id)
+            ->firstOrFail();
+        abort_if($rfq->status !== 'published', 410);
 
-        // The supplier may have been put on hold, disqualified or moved to
-        // another tenant AFTER the first eligibility SELECT and the final
-        // invitation-token read. A public GET must not expose existing quote
-        // or document metadata using that stale supplier authorization.
-        $supplier = $this->eligibleInvitedSupplier($rfq, $invitation);
+        // Keep the existing anonymous public GET preflight, including the
+        // second token-hash read exercised by HTTP stale-snapshot regressions.
+        // None of these unaudited reads grants final authority.
+        $this->eligibleInvitedSupplier($rfq, $invitation);
+        $invitation = $this->portalInvitation($token);
 
-        // The initial lifecycle preflight may also become stale during token
-        // and supplier verification. A completed suspension must suppress a
-        // public GET before historical quote/document metadata is loaded.
-        abort_unless($this->modules->isEnabled('procurement'), 404, 'Procurement module is disabled.');
+        // Serialize public GET authorization, its "opened" side effect and
+        // the quote/document snapshot against supplier POST, RFQ cancellation,
+        // invitation revocation and module shutdown. Match POST's exact lock
+        // order: module -> RFQ -> invitation -> supplier -> quote. Committed
+        // governance changes win before a blocked GET; GET-first snapshots
+        // complete before the competing governance transaction can commit.
+        return DB::transaction(function () use ($token, $rfq, $invitation): array {
+            $module = DB::table('enterprise_modules')
+                ->where('code', 'procurement')
+                ->lockForUpdate()
+                ->first();
+            abort_unless(
+                $module !== null && $module->state === ModuleState::ENABLED->value,
+                404,
+                'Procurement module is disabled.',
+            );
 
-        // A visible public GET is the only path allowed to mark an invitation
-        // opened. Keep the write conditional so a concurrently revoked or
-        // expired token cannot be resurrected by an earlier read snapshot.
-        if (in_array($invitation->status, ['invited', 'opened'], true)) {
-            DB::table('enterprise_procurement_rfq_invitations')
+            $rfq = DB::table('enterprise_procurement_rfqs')
+                ->where('id', $rfq->id)
+                ->lockForUpdate()
+                ->first();
+            abort_if($rfq === null || $rfq->status !== 'published', 410);
+
+            // The second preflight token SELECT may have gone stale. Recheck
+            // status, expiry and token ownership under the invitation row lock,
+            // without creating a third preflight token-hash SELECT.
+            $invitation = DB::table('enterprise_procurement_rfq_invitations')
                 ->where('id', $invitation->id)
                 ->where('rfq_id', $rfq->id)
-                ->where('token_hash', hash('sha256', $token))
-                ->whereIn('status', ['invited', 'opened'])
-                ->where('expires_at', '>', now())
-                ->update([
-                    'status' => 'opened',
-                    'last_accessed_at' => now(),
-                    'updated_at' => now(),
-                ]);
-        }
+                ->lockForUpdate()
+                ->first();
+            abort_if(
+                $invitation === null
+                    || ! hash_equals((string) $invitation->token_hash, hash('sha256', $token)),
+                404,
+            );
+            abort_if(
+                in_array($invitation->status, ['revoked', 'expired'], true)
+                    || CarbonImmutable::parse((string) $invitation->expires_at)->isPast(),
+                410,
+            );
 
-        // An update may have matched zero rows after revocation. A submitted
-        // invitation also needs a final status check even though no read-mark
-        // is performed for submitted quotes.
-        $invitation = DB::table('enterprise_procurement_rfq_invitations')
-            ->where('id', $invitation->id)
-            ->firstOrFail();
-        abort_if(
-            in_array($invitation->status, ['revoked', 'expired'], true)
-                || CarbonImmutable::parse((string) $invitation->expires_at)->isPast(),
-            410,
-        );
+            $supplier = $this->eligibleInvitedSupplier($rfq, $invitation, true);
 
-        $lines = DB::table('enterprise_procurement_rfq_lines')
-            ->where('rfq_id', $rfq->id)
-            ->orderBy('line_no')
-            ->get();
-        $existingQuote = DB::table('enterprise_procurement_quotes')
-            ->where('invitation_id', $invitation->id)
-            ->first();
-        $existingLines = $existingQuote === null
-            ? collect()
-            : DB::table('enterprise_procurement_quote_lines')
-                ->where('quote_id', $existingQuote->id)
-                ->get()
-                ->keyBy('rfq_line_id');
-        $quoteDocuments = $existingQuote === null
-            ? collect()
-            : DB::table('enterprise_procurement_quote_documents')
-                ->where('quote_id', $existingQuote->id)
-                ->orderByDesc('id')
-                ->limit(25)
+            $lines = DB::table('enterprise_procurement_rfq_lines')
+                ->where('rfq_id', $rfq->id)
+                ->orderBy('line_no')
                 ->get();
+            $existingQuote = DB::table('enterprise_procurement_quotes')
+                ->where('invitation_id', $invitation->id)
+                ->lockForUpdate()
+                ->first();
+            $existingLines = $existingQuote === null
+                ? collect()
+                : DB::table('enterprise_procurement_quote_lines')
+                    ->where('quote_id', $existingQuote->id)
+                    ->get()
+                    ->keyBy('rfq_line_id');
+            $quoteDocuments = $existingQuote === null
+                ? collect()
+                : DB::table('enterprise_procurement_quote_documents')
+                    ->where('quote_id', $existingQuote->id)
+                    ->orderByDesc('id')
+                    ->limit(25)
+                    ->get();
 
-        return compact(
-            'invitation',
-            'rfq',
-            'lines',
-            'supplier',
-            'existingQuote',
-            'existingLines',
-            'quoteDocuments',
-        );
+            // Only a fully authorized, completely read public GET may record
+            // an invitation opening. The locked invitation cannot be revoked
+            // or resurrected by another database session while this runs.
+            if (in_array($invitation->status, ['invited', 'opened'], true)) {
+                DB::table('enterprise_procurement_rfq_invitations')
+                    ->where('id', $invitation->id)
+                    ->update([
+                        'status' => 'opened',
+                        'last_accessed_at' => now(),
+                        'updated_at' => now(),
+                    ]);
+                $invitation = DB::table('enterprise_procurement_rfq_invitations')
+                    ->where('id', $invitation->id)
+                    ->firstOrFail();
+            }
+
+            return compact(
+                'invitation',
+                'rfq',
+                'lines',
+                'supplier',
+                'existingQuote',
+                'existingLines',
+                'quoteDocuments',
+            );
+        }, 3);
     }
 
     /** @param array<string,mixed> $attributes */
