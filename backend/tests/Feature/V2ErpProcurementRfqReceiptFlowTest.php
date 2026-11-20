@@ -178,6 +178,25 @@ final class V2ErpProcurementRfqReceiptFlowTest extends TestCase
         }
     }
 
+    public function test_supplier_portal_price_precision_rejects_unrepresentable_amounts_without_partial_writes(): void
+    {
+        $store = $this->store();
+        $maker = $this->actor('PROCUREMENT_BUYER', 'ar');
+
+        [, , $rfqId, $quoteId] = $this->quotedRequest($maker, $store, assertPricePrecision: true);
+
+        // The real invitation URL accepts the three-decimal retry after both
+        // rejected submissions. Neither rejected price creates a quote row.
+        $this->assertSame(1, DB::table('enterprise_procurement_quotes')
+            ->where('rfq_id', $rfqId)->count());
+        $this->assertDatabaseHas('enterprise_procurement_quotes', [
+            'id' => $quoteId, 'rfq_id' => $rfqId, 'total_amount' => '8.500',
+        ]);
+        $this->assertDatabaseCount('enterprise_purchase_orders', 0);
+        $this->assertSame(0, DB::table('audit_logs')
+            ->where('event', 'enterprise.procurement.rfq.awarded')->count());
+    }
+
     public function test_invoice_match_approved_snapshot_and_finance_outbox_reject_forged_source_and_replay(): void
     {
         $store = $this->store();
@@ -1036,7 +1055,7 @@ final class V2ErpProcurementRfqReceiptFlowTest extends TestCase
     }
 
     /** @return array{int,int,int,int} */
-    private function quotedRequest(User $maker, Store $store): array
+    private function quotedRequest(User $maker, Store $store, bool $assertPricePrecision = false): array
     {
         $code = 'P135-RFQ-SUP-'.$maker->id;
         $this->actingAs($maker)->post(route('admin.erp.procurement.suppliers.store'), [
@@ -1077,6 +1096,27 @@ final class V2ErpProcurementRfqReceiptFlowTest extends TestCase
         $this->assertSame(64, strlen($token));
         $rfqLineId = (int) DB::table('enterprise_procurement_rfq_lines')
             ->where('rfq_id', $rfqId)->value('id');
+
+        if ($assertPricePrecision) {
+            // Real supplier-token HTTP contract in BOTH locales, before any
+            // quote exists: sub-mill values cannot be silently rounded into
+            // stored quote lines or an awardable supplier commitment.
+            foreach (['ar' => '4.2509', 'en' => '4.25001'] as $locale => $invalidPrice) {
+                app()->setLocale($locale);
+                $this->post(route('supplier.rfq.submit', ['token' => $token]), [
+                    'valid_until' => now()->addDays(10)->toDateString(),
+                    'lines' => [[
+                        'rfq_line_id' => $rfqLineId, 'unit_price' => $invalidPrice,
+                    ]],
+                ])->assertRedirect()->assertSessionHasErrors('lines.0.unit_price');
+
+                $this->assertSame(0, DB::table('enterprise_procurement_quotes')
+                    ->where('rfq_id', $rfqId)->count());
+                $this->assertSame(0, DB::table('enterprise_procurement_quote_lines')
+                    ->where('rfq_line_id', $rfqLineId)->count());
+            }
+            app()->setLocale('ar');
+        }
 
         // Forged supplier and total_amount in HTTP body must never override
         // the invitation-bound supplier or service-computed quote total.
