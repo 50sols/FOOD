@@ -276,10 +276,16 @@ final class EnterpriseBiController extends Controller
             }
         }
 
-        // Preserve the separately authorized Retail reporting workspace
-        // for assigned stores; a Wholesale role does not manufacture a
-        // Retail store assignment or bypass its existing entitlement check.
+        // Retail BI requires both an assigned store and the effective
+        // reports.view permission at that same store. A still-live module
+        // entitlement must not reopen an HTTP workspace after an explicit
+        // user-level STORE or GLOBAL deny has revoked reporting access.
+        $allowedRetailStores = $this->tenantScope->allowedStoreIds($actor, 'reports.view', 'b2c');
         foreach ($this->tenantContext->retailStoreIds($actor) as $storeId) {
+            if (! in_array($storeId, $allowedRetailStores, true)) {
+                continue;
+            }
+
             if ($this->entitlements->allows(
                 'enterprise_bi',
                 new EntitlementScope(EntitlementScope::STORE, $storeId),
