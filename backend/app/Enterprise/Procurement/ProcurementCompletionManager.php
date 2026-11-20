@@ -781,6 +781,11 @@ final class ProcurementCompletionManager
     /** @return array<string,mixed> */
     public function portal(string $token): array
     {
+        // Public RFQ bearer tokens never override the module lifecycle.
+        // The authenticated Procurement dashboard is already fail-closed;
+        // a suspended/disabled module must also disable public GET access.
+        abort_unless($this->modules->isEnabled('procurement'), 404, 'Procurement module is disabled.');
+
         // Read without side effects before validating both the RFQ and the
         // supplier. A blocked supplier must not record an "opened" invitation.
         $invitation = $this->portalInvitation($token, false);
@@ -833,6 +838,10 @@ final class ProcurementCompletionManager
         array $attributes,
         ?UploadedFile $attachment = null,
     ): object {
+        // Reject public mutations before any invitation expiry touch, quote,
+        // document upload or audit write if Procurement is no longer enabled.
+        abort_unless($this->modules->isEnabled('procurement'), 404, 'Procurement module is disabled.');
+
         $invitation = $this->portalInvitation($token, false);
         $rfq = DB::table('enterprise_procurement_rfqs')->where('id', $invitation->rfq_id)->firstOrFail();
         if ($rfq->status !== 'published') {
