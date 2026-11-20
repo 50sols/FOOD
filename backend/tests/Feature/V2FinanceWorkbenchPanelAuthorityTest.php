@@ -168,17 +168,25 @@ final class V2FinanceWorkbenchPanelAuthorityTest extends TestCase
                     ->assertNotFound();
             }
 
-            $this->actingAs($actor->fresh())
+            $response = $this->actingAs($actor->fresh())
                 ->get(route('admin.erp.finance.index', [
                     'store_id' => $store->id,
                     'store_code' => $store->code,
                     'tab' => 'overview',
-                ]))
-                ->assertOk()
-                ->assertViewHas(
-                    'selectedContext',
-                    fn (array $selected): bool => $selected['id'] === $store->id,
-                );
+                ]));
+
+            if ($response->exception instanceof \Throwable) {
+                $this->fail(sprintf(
+                    'A valid matching store_id/store_code pair raised %s: %s',
+                    $response->exception::class,
+                    $response->exception->getMessage(),
+                ));
+            }
+
+            $response->assertOk()->assertViewHas(
+                'selectedContext',
+                fn (array $selected): bool => $selected['id'] === $store->id,
+            );
         }
 
         $this->assertSame($before, [
