@@ -3,6 +3,7 @@
 namespace App\Enterprise\Procurement;
 
 use App\Enterprise\Modules\ModuleRegistry;
+use App\Enterprise\Modules\ModuleState;
 use App\Enterprise\Organization\OrganizationHierarchyService;
 use App\Models\EnterpriseSupplier;
 use App\Models\User;
@@ -865,6 +866,21 @@ final class ProcurementCompletionManager
         $writtenPaths = [];
         try {
             $quote = DB::transaction(function () use ($token, $invitation, $rfq, $data, $attachment, &$writtenPaths): object {
+                // The public preflight check can become stale between HTTP
+                // validation and this transaction. Serialize the final write
+                // against ModuleLifecycleManager::transition, which locks the
+                // same enterprise_modules row. Never create a supplier quote
+                // after a completed module suspension or shutdown.
+                $module = DB::table('enterprise_modules')
+                    ->where('code', 'procurement')
+                    ->lockForUpdate()
+                    ->first();
+                abort_unless(
+                    $module !== null && $module->state === ModuleState::ENABLED->value,
+                    404,
+                    'Procurement module is disabled.',
+                );
+
                 // Lock the RFQ BEFORE its invitation and quote, matching the award
                 // and cancellation lock order. A pre-transaction read cannot
                 // authorize a supplier write after an RFQ was cancelled/awarded.
