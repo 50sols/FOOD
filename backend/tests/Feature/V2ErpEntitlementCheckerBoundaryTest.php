@@ -2405,10 +2405,18 @@ final class V2ErpEntitlementCheckerBoundaryTest extends TestCase
         // Historical role remains linked, but archive must deny actual HTTP.
         $role = Role::query()->where('code', 'PROCUREMENT_BUYER')->firstOrFail();
         $archivedRoleUser = $this->actor('PROCUREMENT_BUYER');
-        $role->forceFill(['is_active' => false, 'archived_at' => now()])->save();
+        // Archive alone must revoke the role, even when an interrupted
+        // lifecycle leaves its old is_active flag true.
+        $role->forceFill(['is_active' => true, 'archived_at' => now()])->save();
+        $this->assertTrue((bool) $role->fresh()->is_active);
+        $this->assertNotNull($role->fresh()->archived_at);
         $this->assertDatabaseHas('role_user', [
             'user_id' => $archivedRoleUser->id, 'role_id' => $role->id,
         ]);
+        // Assert the exact B2B store-chooser authority, independently of the
+        // downstream HTTP permission checks that also fail closed.
+        $this->assertSame([], (new \ReflectionMethod(EnterpriseProcurementController::class, 'storeOptions'))
+            ->invoke(app(EnterpriseProcurementController::class), $archivedRoleUser->fresh()));
         $this->assertFalse($archivedRoleUser->fresh()->hasRole('PROCUREMENT_BUYER', $store->id));
         $this->assertFalse($archivedRoleUser->fresh()->hasPermission('procurement.purchase_requests.view', $store->id));
         $inactive = $this->actor('PROCUREMENT_APPROVER');
