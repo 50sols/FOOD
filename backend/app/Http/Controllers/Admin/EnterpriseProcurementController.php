@@ -972,8 +972,12 @@ final class EnterpriseProcurementController extends Controller
     private function storeOptions(User $actor): array
     {
         $retailIds = $this->tenants->retailStoreIds($actor);
+        // An archived global role remains linked for audit, but cannot
+        // create Wholesale store choices after its authority is revoked.
+        // Keep this chooser consistent with User::hasRole/hasPermission.
         $globalWholesale = $actor->roles()
             ->where('roles.is_active', true)
+            ->whereNull('roles.archived_at')
             ->where('roles.scope', 'global')
             ->whereIn('roles.code', (array) config('admin.channels.b2b.global_roles', []))
             ->exists();
