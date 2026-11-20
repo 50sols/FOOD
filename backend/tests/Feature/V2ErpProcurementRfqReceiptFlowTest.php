@@ -640,6 +640,65 @@ final class V2ErpProcurementRfqReceiptFlowTest extends TestCase
             ->where('event', 'enterprise.procurement.quote.submitted')->count());
     }
 
+    public function test_supplier_quote_preflight_does_not_bypass_module_shutdown_before_locked_transaction(): void
+    {
+        $store = $this->store();
+        $maker = $this->actor('PROCUREMENT_BUYER', 'ar');
+        [, , $rfqId, $quoteId, $token] = $this->quotedRequest($maker, $store);
+        $quoteLine = DB::table('enterprise_procurement_quote_lines')
+            ->where('quote_id', $quoteId)->first();
+        $invitation = DB::table('enterprise_procurement_rfq_invitations')
+            ->where('rfq_id', $rfqId)->first();
+        $this->assertNotNull($quoteLine);
+        $this->assertNotNull($invitation);
+        $auditCount = DB::table('audit_logs')
+            ->where('event', 'enterprise.procurement.quote.submitted')->count();
+
+        auth()->logout();
+        Storage::fake('local');
+        $shutdown = false;
+        DB::listen(function (QueryExecuted $query) use (&$shutdown): void {
+            // Execute an actual module transition immediately AFTER the
+            // initial enabled-state SELECT has produced its old result but
+            // BEFORE submitPortalQuote enters its write transaction.
+            if ($shutdown || ! str_starts_with(strtolower(ltrim($query->sql)), 'select')
+                || ! str_contains($query->sql, 'enterprise_modules')) {
+                return;
+            }
+
+            $shutdown = true;
+            app(ModuleLifecycleManager::class)->transition(
+                'procurement',
+                ModuleState::SUSPENDED,
+            );
+        });
+
+        $this->post(route('supplier.rfq.submit', ['token' => $token]), [
+            'lines' => [[
+                'rfq_line_id' => $quoteLine->rfq_line_id,
+                'unit_price' => '7.000',
+            ]],
+            'attachment' => UploadedFile::fake()->create('stale-module.pdf', 12, 'application/pdf'),
+        ])->assertNotFound();
+
+        $this->assertTrue($shutdown, 'The module must be suspended after the initial state SELECT.');
+        $this->assertSame(ModuleState::SUSPENDED, app(ModuleRegistry::class)->state('procurement'));
+        $this->assertDatabaseHas('enterprise_procurement_rfq_invitations', [
+            'id' => $invitation->id, 'status' => 'submitted',
+            'last_accessed_at' => $invitation->last_accessed_at,
+        ]);
+        $this->assertDatabaseHas('enterprise_procurement_quotes', [
+            'id' => $quoteId, 'status' => 'submitted', 'total_amount' => '8.500',
+        ]);
+        $this->assertDatabaseHas('enterprise_procurement_quote_lines', [
+            'id' => $quoteLine->id, 'unit_price' => '4.250', 'line_total' => '8.500',
+        ]);
+        $this->assertDatabaseCount('enterprise_procurement_quote_documents', 0);
+        $this->assertSame([], Storage::disk('local')->allFiles('procurement/quotes'));
+        $this->assertSame($auditCount, DB::table('audit_logs')
+            ->where('event', 'enterprise.procurement.quote.submitted')->count());
+    }
+
     public function test_submitted_supplier_portal_get_rejects_revocation_after_final_token_lookup(): void
     {
         $store = $this->store();
