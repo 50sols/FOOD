@@ -558,6 +558,20 @@ final class ProcurementCompletionManager
         );
 
         return DB::transaction(function () use ($actor, $context, $scope, $rfqId, $quoteId): object {
+            // A successful preflight does not authorize awarding after an
+            // operator has committed Procurement SUSPENDED. Lock the exact
+            // lifecycle row BEFORE RFQ/quote, matching supplier GET/POST and
+            // ModuleLifecycleManager shutdown serialization order.
+            $module = DB::table('enterprise_modules')
+                ->where('code', 'procurement')
+                ->lockForUpdate()
+                ->first();
+            abort_unless(
+                $module !== null && $module->state === ModuleState::ENABLED->value,
+                404,
+                'Procurement module is disabled.',
+            );
+
             $rfq = $this->visibleRfq($scope, $rfqId, true);
             if ((int) $rfq->created_by === (int) $actor->id) {
                 throw ValidationException::withMessages([
