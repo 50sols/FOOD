@@ -580,6 +580,7 @@ final class V2ErpProcurementRfqReceiptFlowTest extends TestCase
             'id' => $quoteId, 'status' => 'submitted', 'total_amount' => '8.500',
         ]);
         auth()->logout();
+        Storage::fake('local');
 
         // Real module lifecycle transitions: the supplier's anonymous bearer
         // token must not bypass an admin suspension, maintenance or shutdown.
@@ -613,6 +614,7 @@ final class V2ErpProcurementRfqReceiptFlowTest extends TestCase
                 'id' => $line->id, 'unit_price' => '4.250', 'line_total' => '8.500',
             ]);
             $this->assertDatabaseCount('enterprise_procurement_quote_documents', 0);
+            $this->assertSame([], Storage::disk('local')->allFiles('procurement/quotes'));
             $this->assertSame($beforeAudits, DB::table('audit_logs')
                 ->where('event', 'enterprise.procurement.quote.submitted')->count());
         }
@@ -625,6 +627,17 @@ final class V2ErpProcurementRfqReceiptFlowTest extends TestCase
         $this->assertDatabaseHas('enterprise_procurement_quotes', [
             'id' => $quoteId, 'status' => 'submitted', 'total_amount' => '8.500',
         ]);
+        $this->post(route('supplier.rfq.submit', ['token' => $token]), [
+            'lines' => [[
+                'rfq_line_id' => $line->rfq_line_id,
+                'unit_price' => '6.000',
+            ]],
+        ])->assertRedirect()->assertSessionHasNoErrors();
+        $this->assertDatabaseHas('enterprise_procurement_quotes', [
+            'id' => $quoteId, 'status' => 'submitted', 'total_amount' => '12.000',
+        ]);
+        $this->assertSame($beforeAudits + 1, DB::table('audit_logs')
+            ->where('event', 'enterprise.procurement.quote.submitted')->count());
     }
 
     public function test_submitted_supplier_portal_get_rejects_revocation_after_final_token_lookup(): void
