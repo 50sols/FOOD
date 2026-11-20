@@ -844,6 +844,66 @@ final class V2ErpProcurementRfqReceiptFlowTest extends TestCase
         ]);
     }
 
+    public function test_submitted_supplier_portal_get_rejects_module_shutdown_after_token_lookup(): void
+    {
+        $store = $this->store();
+        $maker = $this->actor('PROCUREMENT_BUYER', 'en');
+        [, , $rfqId, $quoteId, $token] = $this->quotedRequest($maker, $store);
+        $invitation = DB::table('enterprise_procurement_rfq_invitations')
+            ->where('rfq_id', $rfqId)->first();
+        $line = DB::table('enterprise_procurement_quote_lines')
+            ->where('quote_id', $quoteId)->first();
+        $this->assertNotNull($invitation);
+        $this->assertNotNull($line);
+        $auditCount = DB::table('audit_logs')
+            ->where('event', 'enterprise.procurement.quote.submitted')->count();
+
+        auth()->logout();
+        $tokenReads = 0;
+        $shutdown = false;
+        DB::listen(function (QueryExecuted $query) use (&$tokenReads, &$shutdown): void {
+            if ($shutdown || ! str_starts_with(strtolower(ltrim($query->sql)), 'select')
+                || ! str_contains($query->sql, 'enterprise_procurement_rfq_invitations')
+                || ! str_contains($query->sql, 'token_hash')) {
+                return;
+            }
+
+            $tokenReads++;
+            if ($tokenReads !== 2) {
+                return;
+            }
+
+            // The original module preflight was ENABLED, but an operator
+            // suspends Procurement AFTER the second token SELECT, before the
+            // supplier's public GET reads historical quote/document details.
+            $shutdown = true;
+            app(ModuleLifecycleManager::class)->transition('procurement', ModuleState::SUSPENDED);
+        });
+
+        $this->get(route('supplier.rfq.show', ['token' => $token]))->assertNotFound();
+
+        $this->assertTrue($shutdown, 'Procurement must shut down after token preflight.');
+        $this->assertSame(2, $tokenReads);
+        $this->assertSame(ModuleState::SUSPENDED, app(ModuleRegistry::class)->state('procurement'));
+        $this->assertDatabaseHas('enterprise_procurement_rfq_invitations', [
+            'id' => $invitation->id, 'status' => 'submitted',
+            'last_accessed_at' => $invitation->last_accessed_at,
+        ]);
+        $this->assertDatabaseHas('enterprise_procurement_quotes', [
+            'id' => $quoteId, 'status' => 'submitted', 'total_amount' => '8.500',
+        ]);
+        $this->assertDatabaseHas('enterprise_procurement_quote_lines', [
+            'id' => $line->id, 'unit_price' => '4.250', 'line_total' => '8.500',
+        ]);
+        $this->assertDatabaseCount('enterprise_procurement_quote_documents', 0);
+        $this->assertSame($auditCount, DB::table('audit_logs')
+            ->where('event', 'enterprise.procurement.quote.submitted')->count());
+
+        app(ModuleLifecycleManager::class)->transition('procurement', ModuleState::ENABLING);
+        app(ModuleLifecycleManager::class)->transition('procurement', ModuleState::ENABLED);
+        $this->get(route('supplier.rfq.show', ['token' => $token]))->assertOk();
+    }
+
     public function test_submitted_supplier_portal_get_rejects_rfq_cancelled_after_token_lookup(): void
     {
         $store = $this->store();
