@@ -1395,6 +1395,30 @@ class AdminNavigation
             }
         }
 
+        // Enterprise BI already serves assigned Retail reporting contexts
+        // through its HTTP controller. Recover the existing matching Sidebar
+        // projection without turning a foreign-store grant into access.
+        // Keep other ERP workspaces on their independently scoped contracts.
+        if ($moduleCode === 'enterprise_bi') {
+            foreach ($this->tenantContext->retailStoreIds($user) as $storeId) {
+                $storeId = (int) $storeId;
+                $effects = $user->has_permission_overrides
+                    ? $user->permissionOverrideEffects($storeId)
+                    : [];
+                if (($effects['reports.view'] ?? null) === 'deny'
+                    || ! $user->hasPermission('reports.view', $storeId)) {
+                    continue;
+                }
+
+                if ($this->enterpriseEntitlements->allows(
+                    'enterprise_bi',
+                    new EntitlementScope(EntitlementScope::STORE, $storeId),
+                )) {
+                    return $this->enterpriseModuleAccessMemo[$memoKey] = true;
+                }
+            }
+        }
+
         return $this->enterpriseModuleAccessMemo[$memoKey] = false;
     }
 
