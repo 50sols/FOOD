@@ -198,6 +198,66 @@ final class V2ErpProcurementRfqReceiptFlowTest extends TestCase
             ->where('event', 'enterprise.procurement.rfq.awarded')->count());
     }
 
+    public function test_supplier_quote_amount_overflow_fails_without_partial_requote_then_preserves_exact_mills(): void
+    {
+        $store = $this->store();
+        $maker = $this->actor('PROCUREMENT_BUYER', 'en');
+        [, , $rfqId, $quoteId, $token] = $this->quotedRequest($maker, $store);
+        $line = DB::table('enterprise_procurement_quote_lines')
+            ->where('quote_id', $quoteId)->first();
+        $this->assertNotNull($line);
+        $originalAuditCount = DB::table('audit_logs')
+            ->where('event', 'enterprise.procurement.quote.submitted')->count();
+
+        // Both quantity and unit price independently pass their 0..999999999
+        // input constraints. Their product exceeds DECIMAL(18,3) and must
+        // never overwrite the existing legally submitted supplier quote.
+        DB::table('enterprise_procurement_rfq_lines')
+            ->where('id', $line->rfq_line_id)
+            ->update(['quantity' => '999999999.000']);
+        $this->post(route('supplier.rfq.submit', ['token' => $token]), [
+            'lines' => [[
+                'rfq_line_id' => $line->rfq_line_id,
+                'unit_price' => '999999999',
+            ]],
+        ])->assertRedirect()->assertSessionHasErrors('lines');
+
+        $this->assertDatabaseHas('enterprise_procurement_quote_lines', [
+            'id' => $line->id, 'quantity' => '2.000',
+            'unit_price' => '4.250', 'line_total' => '8.500',
+        ]);
+        $this->assertDatabaseHas('enterprise_procurement_quotes', [
+            'id' => $quoteId, 'status' => 'submitted', 'total_amount' => '8.500',
+        ]);
+        $this->assertSame(1, DB::table('enterprise_procurement_quote_lines')
+            ->where('quote_id', $quoteId)->count());
+        $this->assertSame($originalAuditCount, DB::table('audit_logs')
+            ->where('event', 'enterprise.procurement.quote.submitted')->count());
+
+        // A subsequent valid invitation-token resubmission is permitted and
+        // retains exact three-decimal currency values rather than floats.
+        DB::table('enterprise_procurement_rfq_lines')
+            ->where('id', $line->rfq_line_id)
+            ->update(['quantity' => '2.000']);
+        $this->post(route('supplier.rfq.submit', ['token' => $token]), [
+            'lines' => [[
+                'rfq_line_id' => $line->rfq_line_id,
+                'unit_price' => '0.001',
+            ]],
+        ])->assertRedirect()->assertSessionHasNoErrors();
+
+        $this->assertDatabaseHas('enterprise_procurement_quote_lines', [
+            'quote_id' => $quoteId, 'quantity' => '2.000',
+            'unit_price' => '0.001', 'line_total' => '0.002',
+        ]);
+        $this->assertDatabaseHas('enterprise_procurement_quotes', [
+            'id' => $quoteId, 'total_amount' => '0.002',
+        ]);
+        $this->assertDatabaseCount('enterprise_purchase_orders', 0);
+        $this->assertSame($originalAuditCount + 1, DB::table('audit_logs')
+            ->where('event', 'enterprise.procurement.quote.submitted')->count());
+    }
+
     public function test_supplier_quote_cannot_override_cancelled_rfq_after_pretransaction_read(): void
     {
         $store = $this->store();
