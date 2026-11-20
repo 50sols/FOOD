@@ -16,6 +16,7 @@ use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Gate;
+use Illuminate\Support\Facades\Validator;
 use Illuminate\Validation\Rule;
 
 final class EnterpriseOrganizationAdministrationController extends Controller
@@ -260,11 +261,19 @@ final class EnterpriseOrganizationAdministrationController extends Controller
 
     private function validatedRecord(Request $request, mixed $unique): array
     {
-        $validated = $request->validate([
+        // Codes are stored in lowercase. Validate uniqueness against that same
+        // canonical value so a case-sensitive database cannot accept a
+        // duplicate that Test Inputs incorrectly reports as valid.
+        $input = $request->all();
+        if (is_string($input['code'] ?? null)) {
+            $input['code'] = strtolower($input['code']);
+        }
+
+        $validated = Validator::make($input, [
             'code' => ['required', 'string', 'max:100', 'regex:/^[A-Za-z][A-Za-z0-9_-]*$/', $unique],
             'name' => ['required', 'string', 'max:255'],
             'is_active' => ['nullable', 'boolean'],
-        ]);
+        ])->validate();
 
         return [
             'code' => strtolower((string) $validated['code']),
