@@ -2477,18 +2477,24 @@ final class ProcurementCompletionManager
             abort(410);
         }
 
-        if ($touch && in_array($invitation->status, ['invited', 'opened'], true)) {
-            // A GET must never resurrect a revoked/expired supplier token.
-            // The initial SELECT may be stale after an administrator action.
-            DB::table('enterprise_procurement_rfq_invitations')
-                ->where('id', $invitation->id)
-                ->whereIn('status', ['invited', 'opened'])
-                ->where('expires_at', '>', now())
-                ->update([
-                    'status' => 'opened',
-                    'last_accessed_at' => now(),
-                    'updated_at' => now(),
-                ]);
+        if ($touch) {
+            if (in_array($invitation->status, ['invited', 'opened'], true)) {
+                // Conditional touch prevents revocation/expiration resurrection.
+                DB::table('enterprise_procurement_rfq_invitations')
+                    ->where('id', $invitation->id)
+                    ->whereIn('status', ['invited', 'opened'])
+                    ->where('expires_at', '>', now())
+                    ->update([
+                        'status' => 'opened',
+                        'last_accessed_at' => now(),
+                        'updated_at' => now(),
+                    ]);
+            }
+
+            // A previously submitted quote also has a reusable public GET
+            // token. Re-read ALL statuses after the last token-hash lookup:
+            // otherwise a simultaneous revocation after that SELECT still
+            // exposes the historical quote and its document metadata.
             $invitation = DB::table('enterprise_procurement_rfq_invitations')
                 ->where('id', $invitation->id)->firstOrFail();
             abort_if(
