@@ -36,7 +36,7 @@
                 $activeTab = 'profiles';
             }
         @endphp
-        <nav class="foodex-tabs" style="flex-wrap:nowrap;overflow-x:auto;white-space:nowrap" aria-label="{{ __('whatsapp.connections.section_navigation') }}">
+        <nav class="foodex-tabs foodex-tabs--horizontal" aria-label="{{ __('whatsapp.connections.section_navigation') }}">
             <a class="foodex-tab {{ $activeTab === 'profiles' ? 'active' : '' }}" href="{{ route('admin.whatsapp.connections.index', ['tab' => 'profiles']) }}" @if($activeTab === 'profiles') aria-current="page" @endif>{{ __('whatsapp.connections.saved_profiles') }}</a>
             <a class="foodex-tab {{ $activeTab === 'health' ? 'active' : '' }}" href="{{ route('admin.whatsapp.connections.index', ['tab' => 'health']) }}" @if($activeTab === 'health') aria-current="page" @endif>{{ __('whatsapp.connections.transport_health') }}</a>
             @if($canManage)

@@ -199,7 +199,7 @@ final class ErpCenterTest extends TestCase
         $actor = $this->userWithGlobalRole('SUPER_ADMIN', 'en', 'erp-owner@example.test');
         $this->app['env'] = 'production';
 
-        $response = $this->actingAs($actor)->get(route('admin.erp.index'));
+        $response = $this->actingAs($actor)->get(route('admin.erp.index', ['tab' => 'modules']));
 
         $response
             ->assertOk()
@@ -215,7 +215,7 @@ final class ErpCenterTest extends TestCase
         // Even local bootstrap needs a real store/legal-entity for Finance.
         $store = $this->wholesaleStore('P135-LOCAL-FINANCE-STORE');
 
-        $response = $this->actingAs($actor)->get(route('admin.erp.index'));
+        $response = $this->actingAs($actor)->get(route('admin.erp.index', ['tab' => 'modules']));
 
         $response->assertOk();
 
@@ -264,7 +264,7 @@ final class ErpCenterTest extends TestCase
             'module_code' => 'procurement',
         ]);
 
-        $response = $this->actingAs($actor)->get(route('admin.erp.index'));
+        $response = $this->actingAs($actor)->get(route('admin.erp.index', ['tab' => 'modules']));
 
         $response
             ->assertOk()
@@ -290,7 +290,7 @@ final class ErpCenterTest extends TestCase
             $actor,
         );
 
-        $response = $this->actingAs($actor)->get(route('admin.erp.index'));
+        $response = $this->actingAs($actor)->get(route('admin.erp.index', ['tab' => 'modules']));
 
         $response
             ->assertOk()
@@ -318,7 +318,7 @@ final class ErpCenterTest extends TestCase
             'capabilities' => null,
         ]);
 
-        $response = $this->actingAs($actor)->get(route('admin.erp.index'));
+        $response = $this->actingAs($actor)->get(route('admin.erp.index', ['tab' => 'modules']));
 
         $response
             ->assertOk()
@@ -343,7 +343,7 @@ final class ErpCenterTest extends TestCase
         app(EnterpriseModuleAdministration::class)->perform('procurement', 'enable', $actor);
         $this->app['env'] = 'production';
 
-        $response = $this->actingAs($actor)->get(route('admin.erp.index'));
+        $response = $this->actingAs($actor)->get(route('admin.erp.index', ['tab' => 'modules']));
 
         $response
             ->assertOk()
@@ -361,7 +361,7 @@ final class ErpCenterTest extends TestCase
         app(ModuleEntitlementManager::class)->set('procurement', EntitlementScope::platform(), true);
         config()->set('enterprise_module_readiness.certified_versions.procurement', null);
 
-        $response = $this->actingAs($actor)->get(route('admin.erp.index'));
+        $response = $this->actingAs($actor)->get(route('admin.erp.index', ['tab' => 'modules']));
         $response->assertOk();
 
         $card = collect($response->viewData('cards'))->firstWhere('key', 'procurement');
@@ -585,9 +585,9 @@ final class ErpCenterTest extends TestCase
             true,
         );
 
-        $response = $this->actingAs($actor)->get(route('admin.erp.index'));
-
-        $response
+        // G009: each independent ERP Center panel is rendered only for its selected tab.
+        $snapshot = $this->actingAs($actor)->get(route('admin.erp.index', ['tab' => 'snapshot']));
+        $snapshot
             ->assertOk()
             ->assertSee('data-erp-kpis', false)
             ->assertSee('data-erp-kpi="pending_approvals"', false)
@@ -595,13 +595,29 @@ final class ErpCenterTest extends TestCase
             ->assertSee('data-erp-kpi="open_exceptions"', false)
             ->assertSee('data-erp-kpi="failed_reports"', false)
             ->assertSee('data-erp-kpi="module_health"', false)
+            ->assertDontSee('data-erp-chart="workload"', false);
+
+        $analytics = $this->actingAs($actor)->get(route('admin.erp.index', ['tab' => 'analytics']));
+        $analytics
+            ->assertOk()
             ->assertSee('data-erp-chart="workload"', false)
             ->assertSee('data-erp-chart="states"', false)
+            ->assertSee('data-erp-work-module="procurement"', false)
+            ->assertDontSee('data-erp-kpis', false);
+
+        $followUp = $this->actingAs($actor)->get(route('admin.erp.index', ['tab' => 'follow_up']));
+        $followUp
+            ->assertOk()
             ->assertSee('data-erp-my-work', false)
             ->assertSee('data-erp-activity', false)
-            ->assertSee('data-erp-work-module="procurement"', false)
             ->assertSee(route('admin.action-center.index'), false)
-            ->assertSee(route('admin.erp.procurement.index'), false);
+            ->assertDontSee('data-erp-chart="states"', false);
+
+        $modules = $this->actingAs($actor)->get(route('admin.erp.index', ['tab' => 'modules']));
+        $modules
+            ->assertOk()
+            ->assertSee(route('admin.erp.procurement.index'), false)
+            ->assertDontSee('data-erp-my-work', false);
     }
 
     public function test_failed_report_kpi_is_unavailable_without_bi_and_scope_aware_when_bi_is_operational(): void

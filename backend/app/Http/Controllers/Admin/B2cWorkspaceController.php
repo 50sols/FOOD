@@ -92,6 +92,24 @@ class B2cWorkspaceController extends Controller
         abort_unless($user instanceof User, 401);
         abort_unless(array_key_exists($module, self::MODULE_PERMISSIONS), 404);
 
+        // An explicitly supplied Retail store selector must never be silently
+        // coerced to zero, fall back to another store, or override its alias.
+        // This applies only to the existing web GET workspace; mutations and API
+        // routes keep their canonical authorization and input contracts.
+        $explicitStoreIds = [];
+        foreach (['store_id', 'store'] as $storeQueryKey) {
+            if (! $request->query->has($storeQueryKey)) {
+                continue;
+            }
+
+            $rawStoreId = $request->query($storeQueryKey);
+            abort_unless(is_string($rawStoreId) && preg_match('/^[1-9][0-9]*$/D', $rawStoreId) === 1, 404);
+            $parsedStoreId = filter_var($rawStoreId, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
+            abort_unless($parsedStoreId !== false && (string) $parsedStoreId === $rawStoreId, 404);
+            $explicitStoreIds[] = $parsedStoreId;
+        }
+        abort_if(count(array_unique($explicitStoreIds)) > 1, 404);
+
         if ($user->hasRole('SUPER_ADMIN')
             && $request->integer('store_id') <= 0
             && $request->integer('store') <= 0) {
