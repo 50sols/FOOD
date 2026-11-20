@@ -772,6 +772,78 @@ final class V2ErpProcurementRfqReceiptFlowTest extends TestCase
             ->where('event', 'enterprise.procurement.quote.submitted')->count());
     }
 
+    public function test_submitted_supplier_portal_get_rejects_mid_request_supplier_hold_after_token_recheck(): void
+    {
+        $store = $this->store();
+        $maker = $this->actor('PROCUREMENT_BUYER', 'ar');
+        [$supplierId, , $rfqId, $quoteId, $token] = $this->quotedRequest($maker, $store);
+        $invitation = DB::table('enterprise_procurement_rfq_invitations')
+            ->where('rfq_id', $rfqId)->first();
+        $line = DB::table('enterprise_procurement_quote_lines')
+            ->where('quote_id', $quoteId)->first();
+        $this->assertNotNull($invitation);
+        $this->assertNotNull($line);
+        $this->assertSame('submitted', $invitation->status);
+        $auditCount = DB::table('audit_logs')
+            ->where('event', 'enterprise.procurement.quote.submitted')->count();
+
+        auth()->logout();
+        $tokenReads = 0;
+        $held = false;
+        DB::listen(function (QueryExecuted $query) use (&$tokenReads, &$held, $supplierId): void {
+            if (! str_starts_with(strtolower(ltrim($query->sql)), 'select')
+                || ! str_contains($query->sql, 'enterprise_procurement_rfq_invitations')
+                || ! str_contains($query->sql, 'token_hash')) {
+                return;
+            }
+
+            $tokenReads++;
+            if ($tokenReads !== 2 || $held) {
+                return;
+            }
+
+            // The first supplier eligibility read succeeded. An independent
+            // governance hold now becomes visible AFTER token SELECT #2,
+            // before the final RFQ and supplier authorization rechecks.
+            $held = true;
+            DB::table('enterprise_suppliers')->where('id', $supplierId)
+                ->update(['status' => 'on_hold']);
+        });
+
+        $this->get(route('supplier.rfq.show', ['token' => $token]))->assertStatus(410);
+
+        $this->assertTrue($held, 'Supplier hold must happen after the final invitation token read.');
+        $this->assertSame(2, $tokenReads);
+        $this->assertDatabaseHas('enterprise_suppliers', [
+            'id' => $supplierId, 'status' => 'on_hold',
+        ]);
+        $this->assertDatabaseHas('enterprise_procurement_rfqs', [
+            'id' => $rfqId, 'status' => 'published',
+        ]);
+        $this->assertDatabaseHas('enterprise_procurement_rfq_invitations', [
+            'id' => $invitation->id, 'status' => 'submitted',
+            'last_accessed_at' => $invitation->last_accessed_at,
+        ]);
+        $this->assertDatabaseHas('enterprise_procurement_quotes', [
+            'id' => $quoteId, 'status' => 'submitted', 'total_amount' => '8.500',
+        ]);
+        $this->assertDatabaseHas('enterprise_procurement_quote_lines', [
+            'id' => $line->id, 'unit_price' => '4.250', 'line_total' => '8.500',
+        ]);
+        $this->assertDatabaseCount('enterprise_procurement_quote_documents', 0);
+        $this->assertSame($auditCount, DB::table('audit_logs')
+            ->where('event', 'enterprise.procurement.quote.submitted')->count());
+
+        // An explicit admin restoration permits the unchanged original
+        // submitted quote to be read again; a rejected GET does not revoke it.
+        DB::table('enterprise_suppliers')->where('id', $supplierId)
+            ->update(['status' => 'active']);
+        $this->get(route('supplier.rfq.show', ['token' => $token]))->assertOk();
+        $this->assertDatabaseHas('enterprise_procurement_quotes', [
+            'id' => $quoteId, 'total_amount' => '8.500',
+        ]);
+    }
+
     public function test_submitted_supplier_portal_get_rejects_rfq_cancelled_after_token_lookup(): void
     {
         $store = $this->store();
