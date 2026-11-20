@@ -3,9 +3,9 @@
 namespace App\Http\Controllers\Admin;
 
 use App\Enterprise\Entitlements\EntitlementScope;
-use App\Enterprise\Finance\FinanceWorkbenchAccess;
 use App\Enterprise\Entitlements\ModuleEntitlementManager;
 use App\Enterprise\Entitlements\ModuleEntitlementResolver;
+use App\Enterprise\Finance\FinanceWorkbenchAccess;
 use App\Enterprise\Health\ModuleHealthService;
 use App\Enterprise\Modules\ModuleOperationalReadiness;
 use App\Enterprise\Modules\ModuleRegistry;
