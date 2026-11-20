@@ -176,10 +176,15 @@ final class V2FinanceWorkbenchPanelAuthorityTest extends TestCase
                 ]));
 
             if ($response->exception instanceof \Throwable) {
+                $controllerFrame = collect($response->exception->getTrace())
+                    ->first(fn (array $frame): bool => str_contains($frame['file'] ?? '', 'FinanceWorkbenchController.php'));
                 $this->fail(sprintf(
-                    'A valid matching store_id/store_code pair raised %s: %s',
+                    'A valid matching store_id/store_code pair raised %s at %s:%d; controller=%s:%s',
                     $response->exception::class,
-                    $response->exception->getMessage(),
+                    $response->exception->getFile(),
+                    $response->exception->getLine(),
+                    $controllerFrame['function'] ?? 'unknown',
+                    $controllerFrame['line'] ?? 'unknown',
                 ));
             }
 
