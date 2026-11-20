@@ -1480,7 +1480,12 @@ class AdminNavigation
      */
     private function financeWorkspacesAccessible(User $user): bool
     {
-        if (! $user->is_active) {
+        // The Finance HTTP route enforces the platform ERP admission
+        // middleware before resolving any authorized Retail/B2B ledger
+        // context. A Retail-only store role may have finance.view and a
+        // legal-entity entitlement, but cannot create a dead 403 Sidebar
+        // link without the same eligible global ERP management principal.
+        if (! $user->is_active || ! $this->canAccessPlatformErp($user)) {
             return false;
         }
 
