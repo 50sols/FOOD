@@ -77,7 +77,10 @@ final class FinanceWorkbenchAccess
 
     public function canRead(User $actor, int $storeId): bool
     {
+        // Archived identities retain roles for audit, never Finance access,
+        // even if a partial offboarding left is_active set to true.
         if (! $actor->is_active
+            || $actor->archived_at !== null
             || ! $this->hasFinancePermissionAtStore($actor, $storeId, 'finance.view')) {
             return false;
         }
@@ -140,6 +143,7 @@ final class FinanceWorkbenchAccess
         }
 
         return $actor->is_active
+            && $actor->archived_at === null
             && $this->hasFinancePermissionAtStore($actor, $storeId, $permission)
             && $this->allowsAtStore($storeId, $capability);
     }
