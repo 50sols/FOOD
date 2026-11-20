@@ -17,6 +17,7 @@ use App\Models\User;
 use App\Models\Warehouse;
 use App\Services\WholesalePrincipal;
 use Database\Seeders\CoreReferenceSeeder;
+use Illuminate\Database\Events\QueryExecuted;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Tests\Support\SyntheticErpWorkflowEvidence;
@@ -195,6 +196,94 @@ final class V2ErpProcurementRfqReceiptFlowTest extends TestCase
         $this->assertDatabaseCount('enterprise_purchase_orders', 0);
         $this->assertSame(0, DB::table('audit_logs')
             ->where('event', 'enterprise.procurement.rfq.awarded')->count());
+    }
+
+    public function test_supplier_quote_cannot_override_cancelled_rfq_after_pretransaction_read(): void
+    {
+        $store = $this->store();
+        $maker = $this->actor('PROCUREMENT_BUYER', 'ar');
+        [, , $rfqId, $quoteId, $token] = $this->quotedRequest($maker, $store);
+        $original = DB::table('enterprise_procurement_quote_lines')
+            ->where('quote_id', $quoteId)->first();
+        $this->assertNotNull($original);
+        $beforeAudits = DB::table('audit_logs')
+            ->where('event', 'enterprise.procurement.quote.submitted')->count();
+
+        // Force a genuine stale-source interleaving: a separate admin
+        // cancellation becomes visible AFTER the initial RFQ SELECT but
+        // BEFORE the supplier transaction locks and revalidates the RFQ.
+        $cancelled = false;
+        DB::listen(function (QueryExecuted $query) use ($rfqId, &$cancelled): void {
+            if ($cancelled || ! str_contains($query->sql, 'enterprise_procurement_rfqs')
+                || ! str_starts_with(strtolower(ltrim($query->sql)), 'select')) {
+                return;
+            }
+            $cancelled = true;
+            DB::table('enterprise_procurement_rfqs')->where('id', $rfqId)
+                ->update(['status' => 'cancelled']);
+        });
+
+        $this->post(route('supplier.rfq.submit', ['token' => $token]), [
+            'lines' => [['rfq_line_id' => $original->rfq_line_id, 'unit_price' => '7.000']],
+        ])->assertStatus(410);
+
+        $this->assertTrue($cancelled, 'The stale-read interleaving must actually occur.');
+        $this->assertDatabaseHas('enterprise_procurement_rfqs', ['id' => $rfqId, 'status' => 'cancelled']);
+        $this->assertDatabaseHas('enterprise_procurement_quote_lines', [
+            'id' => $original->id, 'unit_price' => '4.250', 'line_total' => '8.500',
+        ]);
+        $this->assertDatabaseHas('enterprise_procurement_quotes', [
+            'id' => $quoteId, 'status' => 'submitted', 'total_amount' => '8.500',
+        ]);
+        $this->assertSame(1, DB::table('enterprise_procurement_quotes')
+            ->where('rfq_id', $rfqId)->count());
+        $this->assertSame($beforeAudits, DB::table('audit_logs')
+            ->where('event', 'enterprise.procurement.quote.submitted')->count());
+    }
+
+    public function test_supplier_quote_cannot_revive_invitation_revoked_after_token_precheck(): void
+    {
+        $store = $this->store();
+        $maker = $this->actor('PROCUREMENT_BUYER', 'en');
+        [, , $rfqId, $quoteId, $token] = $this->quotedRequest($maker, $store);
+        $original = DB::table('enterprise_procurement_quote_lines')
+            ->where('quote_id', $quoteId)->first();
+        $this->assertNotNull($original);
+        $beforeAudits = DB::table('audit_logs')
+            ->where('event', 'enterprise.procurement.quote.submitted')->count();
+
+        // A real token_hash SELECT succeeds with the old invitation state.
+        // Revocation immediately after that first read must still deny the
+        // supplier at the transaction's locking re-check.
+        $revoked = false;
+        DB::listen(function (QueryExecuted $query) use ($token, &$revoked): void {
+            if ($revoked || ! str_contains($query->sql, 'enterprise_procurement_rfq_invitations')
+                || ! str_contains($query->sql, 'token_hash')
+                || ! str_starts_with(strtolower(ltrim($query->sql)), 'select')) {
+                return;
+            }
+            $revoked = true;
+            DB::table('enterprise_procurement_rfq_invitations')
+                ->where('token_hash', hash('sha256', $token))
+                ->update(['status' => 'revoked']);
+        });
+
+        $this->post(route('supplier.rfq.submit', ['token' => $token]), [
+            'lines' => [['rfq_line_id' => $original->rfq_line_id, 'unit_price' => '7.000']],
+        ])->assertStatus(410);
+
+        $this->assertTrue($revoked, 'The invitation revocation must actually occur.');
+        $this->assertDatabaseHas('enterprise_procurement_rfq_invitations', [
+            'rfq_id' => $rfqId, 'token_hash' => hash('sha256', $token), 'status' => 'revoked',
+        ]);
+        $this->assertDatabaseHas('enterprise_procurement_quote_lines', [
+            'id' => $original->id, 'unit_price' => '4.250', 'line_total' => '8.500',
+        ]);
+        $this->assertDatabaseHas('enterprise_procurement_quotes', [
+            'id' => $quoteId, 'status' => 'submitted', 'total_amount' => '8.500',
+        ]);
+        $this->assertSame($beforeAudits, DB::table('audit_logs')
+            ->where('event', 'enterprise.procurement.quote.submitted')->count());
     }
 
     public function test_invoice_match_approved_snapshot_and_finance_outbox_reject_forged_source_and_replay(): void
@@ -1132,7 +1221,7 @@ final class V2ErpProcurementRfqReceiptFlowTest extends TestCase
             ->where('rfq_id', $rfqId)->value('id');
         $this->assertGreaterThan(0, $quoteId);
 
-        return [$supplierId, $requestId, $rfqId, $quoteId];
+        return [$supplierId, $requestId, $rfqId, $quoteId, $token];
     }
 
     private function assertUnawarded(int $requestId, int $rfqId, mixed $beforePrice): void
