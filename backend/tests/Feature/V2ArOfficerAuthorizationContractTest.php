@@ -619,6 +619,76 @@ final class V2ArOfficerAuthorizationContractTest extends TestCase
         $this->assertSame($journalCount, DB::table('enterprise_finance_journals')->count());
     }
 
+    public function test_ar_officer_store_entitlement_overrides_legal_entity_grant_without_finance_writes(): void
+    {
+        $this->enableFinance();
+        $actor = $this->officer();
+        $store = Store::query()->create([
+            'store_type_id' => (int) DB::table('store_types')->where('code', 'B2B')->value('id'),
+            'code' => 'V2-AR-STORE-ENTITLEMENT',
+            'name' => 'Wholesale AR store-local entitlement regression',
+            'is_active' => true,
+        ]);
+        $hierarchy = app(OrganizationHierarchyService::class);
+        $hierarchy->ensureDefaultScopeForStore($store);
+        $scope = $hierarchy->scopeForStore($store->id);
+        $this->assertNotNull($scope);
+
+        $entitlements = app(ModuleEntitlementManager::class);
+        $entitlements->set(
+            FinanceFoundationService::MODULE,
+            new EntitlementScope(EntitlementScope::LEGAL_ENTITY, (int) $scope['legal_entity_id']),
+            true,
+            ['finance.ar.read', 'finance.ar.manage'],
+        );
+
+        $access = app(FinanceWorkbenchAccess::class);
+        $actor = $actor->fresh();
+        $journalCount = DB::table('enterprise_finance_journals')->count();
+
+        $this->assertTrue($actor->hasPermission('finance.view'));
+        $this->assertTrue($access->canReadCapability($actor, $store->id, 'finance.ar.read'));
+        $this->assertTrue($access->canPerform(
+            $actor, $store->id, 'finance.manage', 'finance.ar.manage',
+        ));
+
+        // A more specific store DENY must mask a valid global AR role and
+        // legal-entity allowance, without revoking that historical role.
+        $storeScope = new EntitlementScope(EntitlementScope::STORE, $store->id);
+        $entitlements->set(FinanceFoundationService::MODULE, $storeScope, false);
+        $this->assertFalse($access->canRead($actor, $store->id));
+        $this->assertFalse($access->canReadCapability($actor, $store->id, 'finance.ar.read'));
+        $this->assertFalse($access->canPerform(
+            $actor, $store->id, 'finance.manage', 'finance.ar.manage',
+        ));
+
+        // An enabled store limited to AR read must never inherit write access
+        // from the parent legal entity or the global finance.manage grant.
+        $entitlements->set(FinanceFoundationService::MODULE, $storeScope, true, [
+            'finance.ar.read',
+        ]);
+        $this->assertTrue($access->canRead($actor, $store->id));
+        $this->assertTrue($access->canReadCapability($actor, $store->id, 'finance.ar.read'));
+        $this->assertFalse($access->canPerform(
+            $actor, $store->id, 'finance.manage', 'finance.ar.manage',
+        ));
+
+        $entitlements->set(FinanceFoundationService::MODULE, $storeScope, true, [
+            'finance.ar.read', 'finance.ar.manage',
+        ]);
+        $this->assertTrue($access->canPerform(
+            $actor, $store->id, 'finance.manage', 'finance.ar.manage',
+        ));
+
+        // Removing a store from service is immediately authoritative too.
+        $store->forceFill(['is_active' => false])->save();
+        $this->assertFalse($access->canRead($actor, $store->id));
+        $this->assertFalse($access->canPerform(
+            $actor, $store->id, 'finance.manage', 'finance.ar.manage',
+        ));
+        $this->assertSame($journalCount, DB::table('enterprise_finance_journals')->count());
+    }
+
     private function officer(): User
     {
         $actor = User::factory()->create(['locale' => 'en', 'is_active' => true]);
