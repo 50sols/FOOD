@@ -977,14 +977,14 @@ final class ProcurementCompletionManager
 
                     $writtenPaths[] = $stored;
                     DB::table('enterprise_procurement_quote_documents')->insert([
-                            'quote_id' => $quoteId,
-                            'title' => Str::limit($attachment->getClientOriginalName(), 190, ''),
-                            'storage_path' => $stored,
-                            'original_name' => Str::limit($attachment->getClientOriginalName(), 255, ''),
-                            'mime_type' => $attachment->getMimeType() ?: null,
-                            'size_bytes' => (int) $attachment->getSize(),
-                            'created_at' => now(),
-                            'updated_at' => now(),
+                        'quote_id' => $quoteId,
+                        'title' => Str::limit($attachment->getClientOriginalName(), 190, ''),
+                        'storage_path' => $stored,
+                        'original_name' => Str::limit($attachment->getClientOriginalName(), 255, ''),
+                        'mime_type' => $attachment->getMimeType() ?: null,
+                        'size_bytes' => (int) $attachment->getSize(),
+                        'created_at' => now(),
+                        'updated_at' => now(),
                     ]);
                 }
 
