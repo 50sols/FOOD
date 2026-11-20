@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Admin;
 
 use App\Enterprise\Entitlements\EntitlementScope;
+use App\Enterprise\Finance\FinanceWorkbenchAccess;
 use App\Enterprise\Entitlements\ModuleEntitlementManager;
 use App\Enterprise\Entitlements\ModuleEntitlementResolver;
 use App\Enterprise\Health\ModuleHealthService;
@@ -380,6 +381,16 @@ final class ErpCenterController extends Controller
         // Workbench controller and FinanceWorkbenchAccess accept.
         if ($actionable && $moduleCode === 'finance' && $financeStoreId !== null) {
             $params['store_id'] = (string) $financeStoreId;
+            // ERP Center must link to an actual authorized Finance tab. An
+            // AR-only reader cannot render the foundation-only Overview.
+            $tab = $this->firstFinanceReadTabForStore($actor, $financeStoreId);
+            if ($tab === null) {
+                $actionable = false;
+                $status = 'not_entitled';
+                $denialReason = 'entitlement_scope';
+            } elseif ($tab !== 'overview') {
+                $params['tab'] = $tab;
+            }
         }
         if ($actionable && $needsOperationalStore && $operationalStoreId !== null) {
             $params['store_id'] = (string) $operationalStoreId;
@@ -536,6 +547,32 @@ final class ErpCenterController extends Controller
                 } catch (Throwable) {
                     // Missing or invalid hierarchy never creates a live link.
                 }
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Select the first existing Finance workbench tab with effective
+     * legal-entity plus store permission. The destination must be the same
+     * permission/capability verdict enforced by FinanceWorkbenchController.
+     */
+    private function firstFinanceReadTabForStore(User $actor, int $storeId): ?string
+    {
+        if (! $actor->hasPermission('finance.view', $storeId)) {
+            return null;
+        }
+
+        $access = app(FinanceWorkbenchAccess::class);
+        foreach ([
+            'overview' => 'finance.foundation.read',
+            'journals' => 'finance.gl.read',
+            'receivables' => 'finance.ar.read',
+            'payables' => 'finance.ap.read',
+        ] as $tab => $capability) {
+            if ($access->allowsAtStore($storeId, $capability)) {
+                return $tab;
             }
         }
 

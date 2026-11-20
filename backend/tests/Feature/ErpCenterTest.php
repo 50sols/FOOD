@@ -1421,10 +1421,12 @@ final class ErpCenterTest extends TestCase
             $this->assertSame('available', $card['status']);
             $this->assertSame(route('admin.erp.finance.index', [
                 'store_id' => $store->id,
+                'tab' => 'receivables',
             ]), $card['url']);
 
             $this->actingAs($user)->get($card['url'])
                 ->assertOk()
+                ->assertViewHas('tab', 'receivables')
                 ->assertSee('data-finance-workbench="true"', false)
                 ->assertSee('dir="'.$direction.'"', false);
             $this->actingAs($user)->get(route('admin.erp.finance.index', [
