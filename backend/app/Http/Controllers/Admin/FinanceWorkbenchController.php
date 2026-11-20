@@ -1425,6 +1425,28 @@ final class FinanceWorkbenchController extends Controller
             return [];
         }
 
+        if ($selectedStoreId !== null) {
+            $isAssignedRetailStore = in_array($selectedStoreId, $retailIds, true);
+            if (! $isAssignedRetailStore && ! $canWholesale) {
+                return [];
+            }
+
+            $store = DB::table('stores as store')
+                ->join('store_types as type', 'type.id', '=', 'store.store_type_id')
+                ->where('store.is_active', true)
+                ->where('store.id', $selectedStoreId)
+                ->where('type.code', $isAssignedRetailStore ? 'B2C' : 'B2B')
+                ->select(['store.id', 'store.code', 'store.name', 'type.code as channel'])
+                ->first();
+
+            return $store === null ? [] : [[
+                'id' => (int) $store->id,
+                'code' => (string) $store->code,
+                'name' => (string) $store->name,
+                'channel' => strtolower((string) $store->channel),
+            ]];
+        }
+
         $query = DB::table('stores as store')
             ->join('store_types as type', 'type.id', '=', 'store.store_type_id')
             ->where('store.is_active', true)
@@ -1447,9 +1469,7 @@ final class FinanceWorkbenchController extends Controller
 
         // Keep the unselected chooser bounded, while allowing a directly
         // selected, otherwise-authorized store beyond the first 100 options.
-        if ($selectedStoreId !== null) {
-            $query->where('store.id', $selectedStoreId);
-        } elseif ($selectedStoreCode !== '') {
+        if ($selectedStoreCode !== '') {
             $query->whereRaw('LOWER(store.code) = ?', [strtolower($selectedStoreCode)]);
         } else {
             $query->limit(100);
