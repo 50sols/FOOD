@@ -2456,19 +2456,35 @@ final class ProcurementCompletionManager
             abort(410);
         }
         if (CarbonImmutable::parse((string) $invitation->expires_at)->isPast()) {
+            // An expired-token read must not overwrite a concurrent admin
+            // revocation with an "expired" status.
             DB::table('enterprise_procurement_rfq_invitations')
                 ->where('id', $invitation->id)
+                ->whereNotIn('status', ['revoked', 'expired'])
+                ->where('expires_at', '<=', now())
                 ->update(['status' => 'expired', 'updated_at' => now()]);
             abort(410);
         }
 
         if ($touch && in_array($invitation->status, ['invited', 'opened'], true)) {
-            DB::table('enterprise_procurement_rfq_invitations')->where('id', $invitation->id)->update([
-                'status' => 'opened',
-                'last_accessed_at' => now(),
-                'updated_at' => now(),
-            ]);
-            $invitation = DB::table('enterprise_procurement_rfq_invitations')->where('id', $invitation->id)->firstOrFail();
+            // A GET must never resurrect a revoked/expired supplier token.
+            // The initial SELECT may be stale after an administrator action.
+            DB::table('enterprise_procurement_rfq_invitations')
+                ->where('id', $invitation->id)
+                ->whereIn('status', ['invited', 'opened'])
+                ->where('expires_at', '>', now())
+                ->update([
+                    'status' => 'opened',
+                    'last_accessed_at' => now(),
+                    'updated_at' => now(),
+                ]);
+            $invitation = DB::table('enterprise_procurement_rfq_invitations')
+                ->where('id', $invitation->id)->firstOrFail();
+            abort_if(
+                in_array($invitation->status, ['revoked', 'expired'], true)
+                    || CarbonImmutable::parse((string) $invitation->expires_at)->isPast(),
+                410,
+            );
         }
 
         return $invitation;
