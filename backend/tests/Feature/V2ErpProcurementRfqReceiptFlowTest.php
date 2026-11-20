@@ -487,6 +487,124 @@ final class V2ErpProcurementRfqReceiptFlowTest extends TestCase
             ->where('quote_id', $quoteId)->count());
     }
 
+    public function test_invited_token_does_not_record_opened_when_supplier_or_module_revoked_mid_get(): void
+    {
+        $store = $this->store();
+        $maker = $this->actor('PROCUREMENT_BUYER', 'en');
+        $code = 'P135-RFQ-INVITE-LATE-'.$maker->id;
+        $this->actingAs($maker)->post(route('admin.erp.procurement.suppliers.store'), [
+            'store_id' => $store->id, 'scope_type' => 'store', 'code' => $code,
+            'name_en' => 'Late governance invite supplier', 'name_ar' => 'مورد اختبار الدعوة',
+        ])->assertRedirect();
+        $supplierId = (int) DB::table('enterprise_suppliers')->where('code', $code)->value('id');
+        $this->assertGreaterThan(0, $supplierId);
+
+        $reason = 'P135 untouched invited token '.$maker->id;
+        $this->actingAs($maker)->post(route('admin.erp.procurement.requests.store'), [
+            'store_id' => $store->id, 'currency_code' => 'KWD', 'reason' => $reason,
+            'item_code' => 'P135-RFQ-INVITED', 'description' => 'Public invite with late hold',
+            'quantity' => 2, 'unit' => 'each', 'estimated_unit_cost' => '5.000',
+        ])->assertRedirect();
+        $requestId = (int) DB::table('enterprise_purchase_requests')
+            ->where('reason', $reason)->value('id');
+        $this->actingAs($maker)->post(route('admin.erp.procurement.requests.submit', $requestId), [
+            'store_id' => $store->id,
+        ])->assertRedirect();
+        $this->actingAs($maker)->post(route('admin.erp.procurement.rfqs.store'), [
+            'store_id' => $store->id, 'purchase_request_id' => $requestId,
+            'title' => 'P135 late supplier hold before read mark',
+            'response_due_at' => now()->addDays(5)->format('Y-m-d H:i:s'),
+        ])->assertRedirect();
+        $rfqId = (int) DB::table('enterprise_procurement_rfqs')
+            ->where('purchase_request_id', $requestId)->value('id');
+        $this->actingAs($maker)->post(route('admin.erp.procurement.rfqs.publish', $rfqId), [
+            'store_id' => $store->id, 'supplier_ids' => [$supplierId],
+        ])->assertRedirect()->assertSessionHas('procurement_portal_links');
+
+        $links = session('procurement_portal_links');
+        $this->assertCount(1, $links);
+        $token = basename((string) parse_url((string) $links[0]['url'], PHP_URL_PATH));
+        $invitation = DB::table('enterprise_procurement_rfq_invitations')
+            ->where('rfq_id', $rfqId)->first();
+        $this->assertNotNull($invitation);
+        $this->assertSame('invited', $invitation->status);
+        $accessedAt = $invitation->last_accessed_at;
+        $auditCount = DB::table('audit_logs')
+            ->where('event', 'enterprise.procurement.quote.submitted')->count();
+        auth()->logout();
+
+        $phase = 'supplier_hold';
+        $tokenReads = 0;
+        $injected = [];
+        DB::listen(function (QueryExecuted $query) use (&$phase, &$tokenReads, &$injected, $supplierId): void {
+            if (! str_starts_with(strtolower(ltrim($query->sql)), 'select')
+                || ! str_contains($query->sql, 'enterprise_procurement_rfq_invitations')
+                || ! str_contains($query->sql, 'token_hash')) {
+                return;
+            }
+
+            $tokenReads++;
+            if ($tokenReads !== 2) {
+                return;
+            }
+
+            if ($phase === 'supplier_hold') {
+                $injected[] = $phase;
+                DB::table('enterprise_suppliers')->where('id', $supplierId)
+                    ->update(['status' => 'on_hold']);
+            } elseif ($phase === 'module_suspend') {
+                $injected[] = $phase;
+                app(ModuleLifecycleManager::class)->transition('procurement', ModuleState::SUSPENDED);
+            }
+        });
+
+        // The first eligibility preflight succeeded; the supplier is held
+        // after the second token SELECT, before the final authorization.
+        $this->get(route('supplier.rfq.show', ['token' => $token]))->assertStatus(410);
+        $this->assertSame(['supplier_hold'], $injected);
+        $this->assertSame(2, $tokenReads);
+        $this->assertDatabaseHas('enterprise_procurement_rfq_invitations', [
+            'id' => $invitation->id, 'status' => 'invited', 'last_accessed_at' => $accessedAt,
+        ]);
+
+        // Restored supplier is initially eligible, but Procurement is shut
+        // down during the second token lookup. Deny without marking opened.
+        DB::table('enterprise_suppliers')->where('id', $supplierId)
+            ->update(['status' => 'active']);
+        $phase = 'module_suspend';
+        $tokenReads = 0;
+        $this->get(route('supplier.rfq.show', ['token' => $token]))->assertNotFound();
+        $this->assertSame(['supplier_hold', 'module_suspend'], $injected);
+        $this->assertSame(2, $tokenReads);
+        $this->assertSame(ModuleState::SUSPENDED, app(ModuleRegistry::class)->state('procurement'));
+        $this->assertDatabaseHas('enterprise_procurement_rfq_invitations', [
+            'id' => $invitation->id, 'status' => 'invited', 'last_accessed_at' => $accessedAt,
+        ]);
+        $this->assertDatabaseHas('enterprise_procurement_rfqs', [
+            'id' => $rfqId, 'status' => 'published',
+        ]);
+        $this->assertDatabaseCount('enterprise_procurement_quotes', 0);
+        $this->assertDatabaseCount('enterprise_procurement_quote_documents', 0);
+        $this->assertSame($auditCount, DB::table('audit_logs')
+            ->where('event', 'enterprise.procurement.quote.submitted')->count());
+
+        // Once both authorities are genuinely restored, a normal public GET
+        // still records exactly the intended opened state.
+        app(ModuleLifecycleManager::class)->transition('procurement', ModuleState::ENABLED);
+        $phase = 'none';
+        $tokenReads = 0;
+        $this->get(route('supplier.rfq.show', ['token' => $token]))->assertOk();
+        $this->assertSame(2, $tokenReads);
+        $opened = DB::table('enterprise_procurement_rfq_invitations')
+            ->where('id', $invitation->id)->first();
+        $this->assertNotNull($opened);
+        $this->assertSame('opened', $opened->status);
+        $this->assertNotNull($opened->last_accessed_at);
+        $this->assertDatabaseCount('enterprise_procurement_quotes', 0);
+        $this->assertSame($auditCount, DB::table('audit_logs')
+            ->where('event', 'enterprise.procurement.quote.submitted')->count());
+    }
+
     public function test_supplier_portal_get_never_resurrects_revoked_invitation_after_stale_token_lookup(): void
     {
         $store = $this->store();
