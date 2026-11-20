@@ -264,8 +264,21 @@ final class EnterpriseBiController extends Controller
             return true;
         }
 
-        // Store entitlements count only for currently authorized Retail stores;
-        // an unrelated store's module grant must never unlock this workspace.
+        // The Sidebar projects B2B BI links from the actor's effective
+        // reports.view store scope. Honor that same source-authorized path at
+        // the HTTP boundary; a mere foreign-store module grant is not access.
+        foreach ($this->tenantScope->allowedStoreIds($actor, 'reports.view', 'b2b') as $storeId) {
+            if ($this->entitlements->allows(
+                'enterprise_bi',
+                new EntitlementScope(EntitlementScope::STORE, $storeId),
+            )) {
+                return true;
+            }
+        }
+
+        // Preserve the separately authorized Retail reporting workspace
+        // for assigned stores; a Wholesale role does not manufacture a
+        // Retail store assignment or bypass its existing entitlement check.
         foreach ($this->tenantContext->retailStoreIds($actor) as $storeId) {
             if ($this->entitlements->allows(
                 'enterprise_bi',
