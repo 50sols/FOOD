@@ -428,6 +428,57 @@ final class V2ErpProcurementRfqReceiptFlowTest extends TestCase
             ->where('event', 'enterprise.procurement.quote.submitted')->count());
     }
 
+    public function test_supplier_hold_after_token_precheck_cannot_write_stale_quote_or_audit(): void
+    {
+        $store = $this->store();
+        $maker = $this->actor('PROCUREMENT_BUYER', 'en');
+        [$supplierId, , $rfqId, $quoteId, $token] = $this->quotedRequest($maker, $store);
+        $line = DB::table('enterprise_procurement_quote_lines')
+            ->where('quote_id', $quoteId)->first();
+        $this->assertNotNull($line);
+        $beforeAudits = DB::table('audit_logs')
+            ->where('event', 'enterprise.procurement.quote.submitted')->count();
+
+        auth()->logout();
+        $blocked = false;
+        DB::listen(function (QueryExecuted $query) use ($supplierId, &$blocked): void {
+            // The bearer-token lookup is legitimate. Procurement governance
+            // changes immediately AFTER its SELECT but BEFORE quote writes.
+            if ($blocked || ! str_starts_with(strtolower(ltrim($query->sql)), 'select')
+                || ! str_contains($query->sql, 'enterprise_procurement_rfq_invitations')
+                || ! str_contains($query->sql, 'token_hash')) {
+                return;
+            }
+
+            $blocked = true;
+            DB::table('enterprise_suppliers')
+                ->where('id', $supplierId)
+                ->update(['status' => 'on_hold']);
+        });
+
+        $this->post(route('supplier.rfq.submit', ['token' => $token]), [
+            'lines' => [['rfq_line_id' => $line->rfq_line_id, 'unit_price' => '7.000']],
+        ])->assertStatus(410);
+
+        $this->assertTrue($blocked, 'The supplier governance hold must occur after token lookup.');
+        $this->assertDatabaseHas('enterprise_suppliers', [
+            'id' => $supplierId, 'status' => 'on_hold',
+        ]);
+        $this->assertDatabaseHas('enterprise_procurement_rfqs', [
+            'id' => $rfqId, 'status' => 'published',
+        ]);
+        $this->assertDatabaseHas('enterprise_procurement_quotes', [
+            'id' => $quoteId, 'status' => 'submitted', 'total_amount' => '8.500',
+        ]);
+        $this->assertDatabaseHas('enterprise_procurement_quote_lines', [
+            'id' => $line->id, 'unit_price' => '4.250', 'line_total' => '8.500',
+        ]);
+        $this->assertSame($beforeAudits, DB::table('audit_logs')
+            ->where('event', 'enterprise.procurement.quote.submitted')->count());
+        $this->assertSame(0, DB::table('enterprise_procurement_quote_documents')
+            ->where('quote_id', $quoteId)->count());
+    }
+
     public function test_supplier_portal_get_never_resurrects_revoked_invitation_after_stale_token_lookup(): void
     {
         $store = $this->store();
