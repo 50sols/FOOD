@@ -689,6 +689,59 @@ final class V2ArOfficerAuthorizationContractTest extends TestCase
         $this->assertSame($journalCount, DB::table('enterprise_finance_journals')->count());
     }
 
+    public function test_archived_ar_officer_with_stale_active_flag_loses_finance_read_and_manage_without_erasing_roles(): void
+    {
+        $this->enableFinance();
+        $actor = $this->officer();
+        $store = Store::query()->create([
+            'store_type_id' => (int) DB::table('store_types')->where('code', 'B2B')->value('id'),
+            'code' => 'V2-AR-ARCHIVED-ACTOR',
+            'name' => 'Archived AR duty negative scope',
+            'is_active' => true,
+        ]);
+        $hierarchy = app(OrganizationHierarchyService::class);
+        $hierarchy->ensureDefaultScopeForStore($store);
+        $scope = $hierarchy->scopeForStore($store->id);
+        $this->assertNotNull($scope);
+
+        app(ModuleEntitlementManager::class)->set(
+            FinanceFoundationService::MODULE,
+            new EntitlementScope(EntitlementScope::LEGAL_ENTITY, (int) $scope['legal_entity_id']),
+            true,
+            ['finance.ar.read', 'finance.ar.manage'],
+        );
+        $access = app(FinanceWorkbenchAccess::class);
+        $this->assertTrue($access->canRead($actor, $store->id));
+        $this->assertTrue($access->canReadCapability($actor, $store->id, 'finance.ar.read'));
+        $this->assertTrue($access->canPerform(
+            $actor, $store->id, 'finance.manage', 'finance.ar.manage',
+        ));
+
+        $roleId = Role::query()->where('code', 'AR_OFFICER')->firstOrFail()->id;
+        $journalCount = DB::table('enterprise_finance_journals')->count();
+
+        // Offboarding may be interrupted after setting archive status but
+        // before deactivation. Roles must survive for audit, never authority.
+        $actor->forceFill(['archived_at' => now(), 'is_active' => true])->save();
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            $actor->forceFill(['locale' => $locale])->save();
+            $archived = $actor->fresh();
+            $this->assertTrue((bool) $archived->is_active);
+            $this->assertNotNull($archived->archived_at);
+            $this->assertFalse($access->canRead($archived, $store->id), $locale);
+            $this->assertFalse($access->canReadCapability(
+                $archived, $store->id, 'finance.ar.read',
+            ), $locale);
+            $this->assertFalse($access->canPerform(
+                $archived, $store->id, 'finance.manage', 'finance.ar.manage',
+            ), $locale);
+        }
+
+        $this->assertDatabaseHas('role_user', ['user_id' => $actor->id, 'role_id' => $roleId]);
+        $this->assertSame($journalCount, DB::table('enterprise_finance_journals')->count());
+    }
+
     private function officer(): User
     {
         $actor = User::factory()->create(['locale' => 'en', 'is_active' => true]);
