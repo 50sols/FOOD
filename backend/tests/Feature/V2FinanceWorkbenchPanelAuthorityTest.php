@@ -168,6 +168,19 @@ final class V2FinanceWorkbenchPanelAuthorityTest extends TestCase
                     ->assertNotFound();
             }
 
+            $controller = app(\App\Http\Controllers\Admin\FinanceWorkbenchController::class);
+            $contextOptions = (new \ReflectionMethod($controller, 'contextOptions'))
+                ->invoke($controller, $actor->fresh());
+            $authorizedContext = collect($contextOptions)->first(
+                fn (array $context): bool => $context['id'] === $store->id
+                    && strcasecmp($context['code'], $store->code) === 0,
+            );
+            $this->assertNotNull($authorizedContext, 'The fixture store must exist in Finance context options.');
+            $this->assertTrue(
+                app(\App\Enterprise\Finance\FinanceWorkbenchAccess::class)->canRead($actor->fresh(), $store->id),
+                'The fixture store must pass Finance read authorization before selector matching.',
+            );
+
             $response = $this->actingAs($actor->fresh())
                 ->get(route('admin.erp.finance.index', [
                     'store_id' => $store->id,
