@@ -358,11 +358,26 @@ final class V2ErpProcurementRfqReceiptFlowTest extends TestCase
         $auditCount = DB::table('audit_logs')
             ->where('event', 'enterprise.procurement.quote.submitted')->count();
 
-        // Publication was authorized while the supplier was active; it must
-        // not remain a permanent bearer-token bypass of a governance hold.
+        // Supplier portal is a public bearer-token route: validate rejection
+        // without retaining the original procurement administrator session.
+        auth()->logout();
+
+        $otherStore = Store::query()->create([
+            'store_type_id' => (int) DB::table('store_types')->where('code', 'B2B')->value('id'),
+            'code' => 'P135-RFQ-FOREIGN-SCOPE', 'name' => 'Foreign RFQ scope',
+            'is_active' => true,
+        ]);
+
+        // Publication was authorized while supplier was active/in scope; an
+        // old bearer token cannot override hold, disqualification or transfer
+        // to a different store.
         foreach ([
             ['status' => 'on_hold', 'qualification_status' => 'qualified'],
             ['status' => 'active', 'qualification_status' => 'unqualified'],
+            [
+                'status' => 'active', 'qualification_status' => 'qualified',
+                'scope_type' => 'store', 'store_id' => $otherStore->id,
+            ],
         ] as $restriction) {
             DB::table('enterprise_suppliers')->where('id', $supplierId)->update($restriction);
 
@@ -397,6 +412,7 @@ final class V2ErpProcurementRfqReceiptFlowTest extends TestCase
         // the original invitation without exposing anyone else's RFQ.
         DB::table('enterprise_suppliers')->where('id', $supplierId)->update([
             'status' => 'active', 'qualification_status' => 'qualified',
+            'scope_type' => 'store', 'store_id' => $store->id,
         ]);
         $this->get(route('supplier.rfq.show', ['token' => $token]))->assertOk();
         $this->post(route('supplier.rfq.submit', ['token' => $token]), [
