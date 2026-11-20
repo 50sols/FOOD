@@ -129,7 +129,7 @@ final class ErpCenterTest extends TestCase
 
         foreach (['ar' => 'rtl', 'en' => 'ltr'] as $locale => $direction) {
             $admin->forceFill(['locale' => $locale])->save();
-            $response = $this->actingAs($admin->fresh())->get(route('admin.erp.index'));
+            $response = $this->actingAs($admin->fresh())->get(route('admin.erp.index', ['tab' => 'modules']));
             $response->assertOk()
                 ->assertSee('dir="'.$direction.'"', false)
                 ->assertSee(__('admin.erp_center.denial_reasons.module_disabled', [], $locale));
@@ -163,7 +163,7 @@ final class ErpCenterTest extends TestCase
 
         foreach (['ar' => 'rtl', 'en' => 'ltr'] as $locale => $direction) {
             $admin->forceFill(['locale' => $locale])->save();
-            $response = $this->actingAs($admin->fresh())->get(route('admin.erp.index'));
+            $response = $this->actingAs($admin->fresh())->get(route('admin.erp.index', ['tab' => 'modules']));
             $response->assertOk()
                 ->assertSee('dir="'.$direction.'"', false)
                 ->assertSee(__('admin.erp_center.denial_reasons.unhealthy', [], $locale));
@@ -411,7 +411,7 @@ final class ErpCenterTest extends TestCase
         foreach (['ar' => 'rtl', 'en' => 'ltr'] as $locale => $direction) {
             $admin->forceFill(['locale' => $locale])->save();
             $actor = $admin->fresh();
-            $response = $this->actingAs($actor)->get(route('admin.erp.index'));
+            $response = $this->actingAs($actor)->get(route('admin.erp.index', ['tab' => 'modules']));
             $response->assertOk()
                 ->assertSee('dir="'.$direction.'"', false)
                 ->assertSee(__('admin.erp_center.denial_reasons.uncertified', [], $locale));
@@ -1518,7 +1518,7 @@ final class ErpCenterTest extends TestCase
 
         foreach (['ar' => 'rtl', 'en' => 'ltr'] as $locale => $direction) {
             $admin->forceFill(['locale' => $locale])->save();
-            $response = $this->actingAs($admin->fresh())->get(route('admin.erp.index'));
+            $response = $this->actingAs($admin->fresh())->get(route('admin.erp.index', ['tab' => 'modules']));
             $response->assertOk()
                 ->assertSee('dir="'.$direction.'"', false)
                 ->assertSee(__('admin.erp_center.denial_reasons.missing_scope', [], $locale));
@@ -1553,7 +1553,7 @@ final class ErpCenterTest extends TestCase
 
         foreach (['ar' => 'rtl', 'en' => 'ltr'] as $locale => $direction) {
             $admin->forceFill(['locale' => $locale])->save();
-            $response = $this->actingAs($admin->fresh())->get(route('admin.erp.index'));
+            $response = $this->actingAs($admin->fresh())->get(route('admin.erp.index', ['tab' => 'modules']));
             $response->assertOk()
                 ->assertSee('dir="'.$direction.'"', false)
                 ->assertSee(__('admin.erp_center.denial_reasons.missing_scope', [], $locale));
