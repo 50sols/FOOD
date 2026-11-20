@@ -18,8 +18,8 @@ use App\Models\Warehouse;
 use App\Services\WholesalePrincipal;
 use Database\Seeders\CoreReferenceSeeder;
 use Illuminate\Database\Events\QueryExecuted;
-use Illuminate\Http\UploadedFile;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
 use Tests\Support\SyntheticErpWorkflowEvidence;
@@ -272,7 +272,7 @@ final class V2ErpProcurementRfqReceiptFlowTest extends TestCase
         Storage::fake('local');
         $this->post(route('supplier.rfq.submit', ['token' => $token]), [
             'lines' => [['rfq_line_id' => $sourceLineId, 'unit_price' => '0.005']],
-            'attachment' => UploadedFile::fake()->create('signed-quote.pdf', 20, 'application/pdf'),
+            'attachment' => UploadedFile::fake()->create('supplier-quote.pdf', 20, 'application/pdf'),
         ])->assertRedirect()->assertSessionHasNoErrors();
 
         $document = DB::table('enterprise_procurement_quote_documents')
