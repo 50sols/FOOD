@@ -172,7 +172,7 @@ final class V2FinanceWorkbenchPanelAuthorityTest extends TestCase
 
             $controller = app(FinanceWorkbenchController::class);
             $contextOptions = (new \ReflectionMethod($controller, 'contextOptions'))
-                ->invoke($controller, $actor->fresh());
+                ->invoke($controller, $actor->fresh(), $store->id, $store->code);
             $authorizedContext = collect($contextOptions)->first(
                 fn (array $context): bool => $context['id'] === $store->id
                     && strcasecmp($context['code'], $store->code) === 0,

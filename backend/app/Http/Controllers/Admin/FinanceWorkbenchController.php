@@ -88,12 +88,12 @@ final class FinanceWorkbenchController extends Controller
     {
         $actor = $this->actor($request);
         abort_unless($this->modules->isEnabled(FinanceFoundationService::MODULE), 403);
-        $this->validatedStoreSelectors($request);
+        [$requestedStoreId, $requestedStoreCode] = $this->validatedStoreSelectors($request);
 
         // Do not expose Finance context choices to operational roles lacking
         // Finance read permission. Authorize before enterprise scope resolution
         // so a service-only actor receives 403, not a misleading 409.
-        $assignedContexts = $this->contextOptions($actor);
+        $assignedContexts = $this->contextOptions($actor, $requestedStoreId, $requestedStoreCode);
         $contexts = array_values(array_filter(
             $assignedContexts,
             fn (array $option): bool => $this->financeAccess->canRead($actor, (int) $option['id']),
@@ -1396,7 +1396,7 @@ final class FinanceWorkbenchController extends Controller
     /**
      * @return list<array{id:int,code:string,name:string,channel:string}>
      */
-    private function contextOptions(User $actor): array
+    private function contextOptions(User $actor, ?int $selectedStoreId = null, string $selectedStoreCode = ''): array
     {
         $retailIds = $this->tenants->retailStoreIds($actor);
         $canWholesale = $this->navigation->canAccess($actor, 'b2b');
@@ -1423,11 +1423,21 @@ final class FinanceWorkbenchController extends Controller
             })
             ->select(['store.id', 'store.code', 'store.name', 'type.code as channel'])
             ->orderBy('type.code')
-            ->orderBy('store.code')
-            ->limit(100)
-            ->get();
+            ->orderBy('store.code');
 
-        return $query->map(static fn ($store): array => [
+        // Keep the unselected chooser bounded, while allowing a directly
+        // selected, otherwise-authorized store beyond the first 100 options.
+        if ($selectedStoreId !== null) {
+            $query->where('store.id', $selectedStoreId);
+        } elseif ($selectedStoreCode !== '') {
+            $query->whereRaw('LOWER(store.code) = ?', [strtolower($selectedStoreCode)]);
+        } else {
+            $query->limit(100);
+        }
+
+        $stores = $query->get();
+
+        return $stores->map(static fn ($store): array => [
             'id' => (int) $store->id,
             'code' => (string) $store->code,
             'name' => (string) $store->name,
@@ -1511,9 +1521,9 @@ final class FinanceWorkbenchController extends Controller
     {
         $actor = $this->actor($request);
         abort_unless($this->modules->isEnabled(FinanceFoundationService::MODULE), 403);
-        $this->validatedStoreSelectors($request);
+        [$requestedStoreId, $requestedStoreCode] = $this->validatedStoreSelectors($request);
 
-        $contexts = $this->contextOptions($actor);
+        $contexts = $this->contextOptions($actor, $requestedStoreId, $requestedStoreCode);
         $selected = $this->selectedContextOption($request, $contexts);
         abort_if($selected === null, 422);
 
