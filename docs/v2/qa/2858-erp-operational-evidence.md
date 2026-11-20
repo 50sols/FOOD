@@ -451,3 +451,34 @@ This is incremental **source and test** evidence on the original P135 issue/bran
 **Remaining G0–G13 release blockers:** per-module actual HTTP/business request→review→approve→post→reverse→reconcile→report→audit; legal-title FOODEX/SUPPLIER/UNKNOWN provenance (#2844); AR/Treasury/GL source→allocation and maker/checker SoD (#2633/#2851); Procurement server authority dependency (#2845); real *two-connection* MySQL contention and rollback; source-verified external signed stage artifact provenance; module-specific actual Setup/Update ZIP/recovery with preserved tenant files/data; meaningful health/queue/scheduler probes; AR/EN responsive and owner pilot. These are **NOT waived by this narrow fix or successful CI**.
 
 **Status: G4/G7/G9 PARTIAL source hardening only; full P135 SOURCE_COMPLETE:NO, REVIEW_RISK:HIGH, TECHNICAL_REVIEW:NOT_PASS, MODULE_CERTIFICATION:NONE.** Leave `certified_versions=[]`, `trusted_public_keys=[]`, `workflow_attestations=[]`; retain original #3065 DRAFT and #2858 OPEN. No `main`, production, tag, release, or premature issue closure.
+
+
+## 2026-11-20 — Source-based G0/G2/G6 arithmetic and release acceptance reconciliation
+
+This section **supersedes stale run/dependency snapshots** in the historical P135 G0–G13 table above; it does not retroactively turn them into successful stage approvals. Reviewed live GitHub ownership + test implementation on the original #3065 branch.
+
+### G6 — exact KWD mills and non-overflowing supplier-quote persistence
+
+- Real defect: RFQ quantity and supplier unit price each passed three-decimal numeric validation, but their product and the 100-line sum could exceed the destination `enterprise_procurement_quote_lines.line_total` and `enterprise_procurement_quotes.total_amount` **DECIMAL(18,3)**. Former `float` rounding was also vulnerable to losing subunit precision at high values.
+- [22c929d9](https://github.com/walidatiyaai2025-gif/FOOD/commit/22c929d92909e52c13d8f6c8dade521ba5d35ef8): supplier portal transaction now scales accepted 3dp source quantity/price to integer mills, calculates quantity integral + fractional components without 64-bit-overflow multiplication, rejects amounts above the database's 18-digit milli limit with a validation error, and writes exact three-decimal string totals. It applies to submitted quote writes, **not** broader Finance/GL reconciliation or historical legacy rows.
+- [f7257dc8](https://github.com/walidatiyaai2025-gif/FOOD/commit/f7257dc8c46a0b3bc2cc6c6ef287aad6e0c410ce): `V2ErpProcurementRfqReceiptFlowTest::test_supplier_quote_amount_overflow_fails_without_partial_requote_then_preserves_exact_mills` exercises the actual supplier invitation HTTP route. Both individual operands `999999999.000` pass configured ceilings but product exceeds `DECIMAL(18,3)`: HTTP redirects with validation error, existing quote/line/audit remains unchanged. After restoring a normal quantity, HTTP retry of `0.001` KWD validates `2 × 0.001 = 0.002` in persisted quote line and total, with no PO. PHPUnit uses isolated synthetic module attestation; no live certificate is asserted.
+- Existing G6 dependencies remain #2844 legal stock ownership, #2633 AR→Treasury→GL, #2851 maker/checker, and independent MySQL two-writer race tests. Integer amount validation is **PARTIAL G6 evidence**, not complete G6.
+
+### Corrected G0 dependency and G2/G12 proof boundary (GitHub-verified)
+
+| Original dependency | Verified status | Consequence for #2858 |
+| --- | --- | --- |
+| #2844 legal stock title / [PR #3921](https://github.com/walidatiyaai2025-gif/FOOD/pull/3921) | ISSUE OPEN / PR DRAFT to Foodex_V2 | Live owner-title mapping and COGS provenance not certified |
+| #2845 Procurement entitlement and checker / [PR #3206](https://github.com/walidatiyaai2025-gif/FOOD/pull/3206) | OPEN / DRAFT | Direct controller/RBAC authority integrated acceptance unproven |
+| #2633 AR settlement / [PR #3309](https://github.com/walidatiyaai2025-gif/FOOD/pull/3309), #2851 finance SoD | OPEN / DRAFT where PR exists | Customer collection→Treasury→GL allocation and SoD unproven |
+| #2745 Setup ZIP / [PR #3444](https://github.com/walidatiyaai2025-gif/FOOD/pull/3444), #2746 Update ZIP / [PR #3968](https://github.com/walidatiyaai2025-gif/FOOD/pull/3968) | OPEN / DRAFT | Final signed setup and admin update ZIP and recovery gates not proven |
+| #3958 BI store/scheduled-report authorization / [PR #3959](https://github.com/walidatiyaai2025-gif/FOOD/pull/3959) | ISSUE CLOSED COMPLETED, PR MERGED to Foodex_V2 | Scoped BI authorization can be reused; five-module G0–G13 BI workflow still unproven |
+| #2632 secured guarantee / [PR #3942](https://github.com/walidatiyaai2025-gif/FOOD/pull/3942); #2602 Van trips / [PR #3332](https://github.com/walidatiyaai2025-gif/FOOD/pull/3332) | CLOSED NOT_PLANNED / PRs CLOSED UNMERGED | Deferred functions are **not** operating acceptance evidence. Do not reactivate Van/mobile scope under P135. |
+
+Source-level audit of `backend/tests/Deployment/ProductionServicesTest.php`, `MultiTenantUpgradeTest.php`, and `EnterpriseCpanelSmokeTest.php` confirms legitimate disposable-service MySQL/Redis installer/updater migration/rollback and sample historical tenant-data smoke, but `success.zip` / `failure.zip` there are **locally synthesized fixtures** rather than the signed release Setup/Update ZIP bytes. Do not claim actual shared-host one-ZIP installation, signed update authenticity, multi-module title/ledger data preservation, owner pilot, or production scheduler certainty based on those tests alone.
+
+### New exact-HEAD CI gate
+
+[Policy](https://github.com/walidatiyaai2025-gif/FOOD/actions/runs/44806997413), [V2 Isolation](https://github.com/walidatiyaai2025-gif/FOOD/actions/runs/44806997402), [Required CI](https://github.com/walidatiyaai2025-gif/FOOD/actions/runs/44806997483) started for code+test head `f7257dc8c46a0b3bc2cc6c6ef287aad6e0c410ce` and were **QUEUED** when first observed; none of those states is final success and a documentation commit supersedes that HEAD. Recheck **all** required jobs after this documentation commit on its own SHA.
+
+**Final gate status: G0 BLOCKED; G2/G12 BLOCKED; G6 PARTIAL only; G10 PENDING; G13 BLOCKED. Full SOURCE_COMPLETE:NO, TECHNICAL_REVIEW: NOT_PASS_FOR_FULL_P135, REVIEW_RISK:HIGH. Keep #3065 DRAFT, #2858 OPEN, production `certified_versions`, trusted keys and attestations empty.**
