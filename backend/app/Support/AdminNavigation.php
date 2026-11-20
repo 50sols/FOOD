@@ -1172,8 +1172,16 @@ class AdminNavigation
             'procurement.purchase_requests.view',
             'procurement.purchase_orders.view',
         ] as $permission) {
-            foreach (app(OperationalTenantScope::class)->allowedStoreIds($user, $permission, 'b2b') as $storeId) {
-                if (! $user->hasPermission($permission, $storeId)
+            // Same exact candidate scope as the Procurement HTTP chooser:
+            // global B2B stores or authorized assigned Retail stores. A store
+            // assignment alone cannot supply Procurement permission or an
+            // effective module entitlement.
+            foreach (app(OperationalTenantScope::class)->allowedStoreIds($user, $permission) as $storeId) {
+                $effects = $user->has_permission_overrides
+                    ? $user->permissionOverrideEffects($storeId)
+                    : [];
+                if (($effects[$permission] ?? null) === 'deny'
+                    || ! $user->hasPermission($permission, $storeId)
                     || ! $this->enterpriseEntitlements->allows(
                         'procurement',
                         new EntitlementScope(EntitlementScope::STORE, $storeId),
