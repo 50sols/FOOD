@@ -1130,8 +1130,13 @@ class AdminNavigation
             $params['store_id'] = (string) $wmsStoreId;
         }
 
-        if (! Route::has($route)
-            || ! $this->hasAnyPermissionInChannel($user, [$permission], 'b2b')) {
+        // Finance's canonical HTTP Workbench supports both authorized B2B
+        // contexts and assigned B2C legal-entity contexts. Do not hide a
+        // previously authorized Retail Finance destination behind a B2B-only
+        // menu check; FinanceWorkbenchAccess remains the actual read guard.
+        $readPermission = $this->hasAnyPermissionInChannel($user, [$permission], 'b2b')
+            || ($moduleCode === 'finance' && $this->financeWorkspacesAccessible($user));
+        if (! Route::has($route) || ! $readPermission) {
             return null;
         }
 
@@ -1246,17 +1251,30 @@ class AdminNavigation
             return [];
         }
 
+        $retailStoreIds = $this->tenantContext->retailStoreIds($user);
         $canWholesale = $this->canAccess($user, 'b2b');
-        if (! $canWholesale) {
+        if (! $canWholesale && $retailStoreIds === []) {
             return [];
         }
 
-        // Mirror FinanceWorkbenchController::contextOptions: do not advertise
-        // a context outside its bounded, ordered server-side chooser.
+        // Mirror FinanceWorkbenchController::contextOptions: authorized
+        // Retail Finance retains its original AR/AP navigation while global
+        // Wholesale readers remain B2B-scoped.
         $stores = DB::table('stores as store')
             ->join('store_types as type', 'type.id', '=', 'store.store_type_id')
             ->where('store.is_active', true)
-            ->where('type.code', 'B2B')
+            ->where(function ($query) use ($canWholesale, $retailStoreIds): void {
+                if ($canWholesale) {
+                    $query->where('type.code', 'B2B');
+                }
+                if ($retailStoreIds !== []) {
+                    $method = $canWholesale ? 'orWhere' : 'where';
+                    $query->{$method}(function ($retail) use ($retailStoreIds): void {
+                        $retail->where('type.code', 'B2C')
+                            ->whereIn('store.id', $retailStoreIds);
+                    });
+                }
+            })
             ->select(['store.id', 'type.code as channel'])
             ->orderBy('type.code')
             ->orderBy('store.code')
@@ -1428,7 +1446,47 @@ class AdminNavigation
      */
     private function financeWorkspacesAccessible(User $user): bool
     {
-        return $this->firstAuthorizedFinanceStoreId($user) !== null;
+        if (! $user->is_active) {
+            return false;
+        }
+
+        // The Finance HTTP chooser enumerates global B2B stores and assigned
+        // B2C stores together, then bounds its sorted result to 100. Mirror
+        // that real candidate set rather than relying on a Sidebar-only role
+        // rule or an unbounded Retail entitlement.
+        $retailIds = $this->tenantContext->retailStoreIds($user);
+        $canWholesale = $this->canAccess($user, 'b2b');
+        if (! $canWholesale && $retailIds === []) {
+            return false;
+        }
+
+        $stores = DB::table('stores as store')
+            ->join('store_types as type', 'type.id', '=', 'store.store_type_id')
+            ->where('store.is_active', true)
+            ->where(function ($query) use ($canWholesale, $retailIds): void {
+                if ($canWholesale) {
+                    $query->where('type.code', 'B2B');
+                }
+                if ($retailIds !== []) {
+                    $method = $canWholesale ? 'orWhere' : 'where';
+                    $query->{$method}(function ($retail) use ($retailIds): void {
+                        $retail->where('type.code', 'B2C')->whereIn('store.id', $retailIds);
+                    });
+                }
+            })
+            ->orderBy('type.code')
+            ->orderBy('store.code')
+            ->limit(100)
+            ->pluck('store.id');
+
+        $finance = app(FinanceWorkbenchAccess::class);
+        foreach ($stores as $storeId) {
+            if ($finance->canRead($user, (int) $storeId)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**
