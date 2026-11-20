@@ -781,19 +781,24 @@ final class ProcurementCompletionManager
     /** @return array<string,mixed> */
     public function portal(string $token): array
     {
-        $invitation = $this->portalInvitation($token, true);
+        // Read without side effects before validating both the RFQ and the
+        // supplier. A blocked supplier must not record an "opened" invitation.
+        $invitation = $this->portalInvitation($token, false);
         $rfq = DB::table('enterprise_procurement_rfqs')->where('id', $invitation->rfq_id)->firstOrFail();
         if ($rfq->status !== 'published') {
             abort(410);
         }
 
+        // Publishing/awarding require active and qualified suppliers.
+        // A public token must not bypass a later supplier governance hold.
+        $supplier = $this->eligibleInvitedSupplier($rfq, $invitation);
+        // Re-read the invitation before a guarded state transition; refuse
+        // concurrent revocation rather than marking a stale token as opened.
+        $invitation = $this->portalInvitation($token, true);
         $lines = DB::table('enterprise_procurement_rfq_lines')
             ->where('rfq_id', $rfq->id)
             ->orderBy('line_no')
             ->get();
-        // Publishing/awarding require active and qualified suppliers.
-        // A public token must not bypass a later supplier governance hold.
-        $supplier = $this->eligibleInvitedSupplier($rfq, $invitation);
         $existingQuote = DB::table('enterprise_procurement_quotes')
             ->where('invitation_id', $invitation->id)
             ->first();
