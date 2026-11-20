@@ -562,6 +562,62 @@ final class V2ErpProcurementRfqReceiptFlowTest extends TestCase
         $this->assertDatabaseCount('enterprise_procurement_quote_documents', 0);
     }
 
+    public function test_submitted_supplier_portal_get_rejects_revocation_after_final_token_lookup(): void
+    {
+        $store = $this->store();
+        $maker = $this->actor('PROCUREMENT_BUYER', 'en');
+        [, , $rfqId, $quoteId, $token] = $this->quotedRequest($maker, $store);
+        $invitation = DB::table('enterprise_procurement_rfq_invitations')
+            ->where('rfq_id', $rfqId)->first();
+        $this->assertNotNull($invitation);
+        $this->assertSame('submitted', $invitation->status);
+        $originalQuote = DB::table('enterprise_procurement_quotes')
+            ->where('id', $quoteId)->first();
+        $originalAccessedAt = $invitation->last_accessed_at;
+        $beforeAudits = DB::table('audit_logs')
+            ->where('event', 'enterprise.procurement.quote.submitted')->count();
+
+        auth()->logout();
+        $tokenReads = 0;
+        $revoked = false;
+        DB::listen(function (QueryExecuted $query) use ($invitation, &$tokenReads, &$revoked): void {
+            if (! str_starts_with(strtolower(ltrim($query->sql)), 'select')
+                || ! str_contains($query->sql, 'enterprise_procurement_rfq_invitations')
+                || ! str_contains($query->sql, 'token_hash')) {
+                return;
+            }
+
+            $tokenReads++;
+            // GET validates a token once without side effects and once for
+            // its guarded read-mark. A SUBMITTED token was previously returned
+            // without any status re-read after this second SELECT.
+            if ($tokenReads === 2) {
+                $revoked = true;
+                DB::table('enterprise_procurement_rfq_invitations')
+                    ->where('id', $invitation->id)->update(['status' => 'revoked']);
+            }
+        });
+
+        $this->get(route('supplier.rfq.show', ['token' => $token]))->assertStatus(410);
+
+        $this->assertTrue($revoked, 'Revocation must occur after the final token SELECT.');
+        $this->assertSame(2, $tokenReads);
+        $this->assertDatabaseHas('enterprise_procurement_rfq_invitations', [
+            'id' => $invitation->id,
+            'status' => 'revoked',
+            'last_accessed_at' => $originalAccessedAt,
+        ]);
+        $this->assertDatabaseHas('enterprise_procurement_quotes', [
+            'id' => $quoteId,
+            'status' => 'submitted',
+            'total_amount' => $originalQuote->total_amount,
+        ]);
+        $this->assertSame(0, DB::table('enterprise_procurement_quote_documents')
+            ->where('quote_id', $quoteId)->count());
+        $this->assertSame($beforeAudits, DB::table('audit_logs')
+            ->where('event', 'enterprise.procurement.quote.submitted')->count());
+    }
+
     public function test_supplier_quote_cannot_override_cancelled_rfq_after_pretransaction_read(): void
     {
         $store = $this->store();
