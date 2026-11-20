@@ -605,6 +605,71 @@ final class V2ErpProcurementRfqReceiptFlowTest extends TestCase
             ->where('event', 'enterprise.procurement.quote.submitted')->count());
     }
 
+    public function test_submitted_supplier_get_reads_module_rfq_invitation_supplier_and_quote_inside_one_transaction(): void
+    {
+        $store = $this->store();
+        $maker = $this->actor('PROCUREMENT_BUYER', 'en');
+        [, , $rfqId, $quoteId, $token] = $this->quotedRequest($maker, $store);
+        $invitation = DB::table('enterprise_procurement_rfq_invitations')
+            ->where('rfq_id', $rfqId)->first();
+        $this->assertNotNull($invitation);
+        $this->assertSame('submitted', $invitation->status);
+        $beforeAudits = DB::table('audit_logs')
+            ->where('event', 'enterprise.procurement.quote.submitted')->count();
+
+        // RefreshDatabase creates an outer test transaction. The GET must
+        // create an ADDITIONAL nested transaction for its own lock contract;
+        // simply checking transactionLevel > 0 would produce a false pass.
+        $baselineTransactionLevel = DB::transactionLevel();
+        $lockedReads = [];
+        $tables = [
+            'enterprise_modules',
+            'enterprise_procurement_rfqs',
+            'enterprise_procurement_rfq_invitations',
+            'enterprise_suppliers',
+            'enterprise_procurement_quotes',
+        ];
+        DB::listen(function (QueryExecuted $query) use (
+            $baselineTransactionLevel,
+            $tables,
+            &$lockedReads,
+        ): void {
+            if (DB::transactionLevel() <= $baselineTransactionLevel
+                || ! str_starts_with(strtolower(ltrim($query->sql)), 'select')) {
+                return;
+            }
+
+            foreach ($tables as $table) {
+                if (str_contains($query->sql, $table) && ! in_array($table, $lockedReads, true)) {
+                    $lockedReads[] = $table;
+                    break;
+                }
+            }
+        });
+
+        auth()->logout();
+        $this->get(route('supplier.rfq.show', ['token' => $token]))->assertOk();
+
+        $this->assertSame(
+            $tables,
+            $lockedReads,
+            'Public GET must serialize all five authorities and the quote in the POST-compatible lock order.',
+        );
+        $this->assertSame($baselineTransactionLevel, DB::transactionLevel());
+        $this->assertDatabaseHas('enterprise_procurement_rfq_invitations', [
+            'id' => $invitation->id,
+            'status' => 'submitted',
+            'last_accessed_at' => $invitation->last_accessed_at,
+        ]);
+        $this->assertDatabaseHas('enterprise_procurement_quotes', [
+            'id' => $quoteId,
+            'status' => 'submitted',
+            'total_amount' => '8.500',
+        ]);
+        $this->assertSame($beforeAudits, DB::table('audit_logs')
+            ->where('event', 'enterprise.procurement.quote.submitted')->count());
+    }
+
     public function test_supplier_portal_get_never_resurrects_revoked_invitation_after_stale_token_lookup(): void
     {
         $store = $this->store();
