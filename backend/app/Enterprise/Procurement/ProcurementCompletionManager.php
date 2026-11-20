@@ -849,160 +849,155 @@ final class ProcurementCompletionManager
         $writtenPaths = [];
         try {
             $quote = DB::transaction(function () use ($token, $invitation, $rfq, $data, $attachment, &$writtenPaths): object {
-            // Lock the RFQ BEFORE its invitation and quote, matching the award
-            // and cancellation lock order. A pre-transaction read cannot
-            // authorize a supplier write after an RFQ was cancelled/awarded.
-            $rfq = DB::table('enterprise_procurement_rfqs')
-                ->where('id', $rfq->id)
-                ->lockForUpdate()
-                ->firstOrFail();
-            abort_if($rfq->status !== 'published', 410);
+                // Lock the RFQ BEFORE its invitation and quote, matching the award
+                // and cancellation lock order. A pre-transaction read cannot
+                // authorize a supplier write after an RFQ was cancelled/awarded.
+                $rfq = DB::table('enterprise_procurement_rfqs')
+                    ->where('id', $rfq->id)
+                    ->lockForUpdate()
+                    ->firstOrFail();
+                abort_if($rfq->status !== 'published', 410);
 
-            // The public invitation may have been revoked or expired after
-            // the initial token check. Revalidate its original token/scope
-            // under the same transaction, before deleting any old quote lines.
-            $invitation = DB::table('enterprise_procurement_rfq_invitations')
-                ->where('id', $invitation->id)
-                ->where('rfq_id', $rfq->id)
-                ->where('token_hash', hash('sha256', $token))
-                ->lockForUpdate()
-                ->firstOrFail();
-            abort_if(
-                in_array($invitation->status, ['revoked', 'expired'], true)
-                    || CarbonImmutable::parse((string) $invitation->expires_at)->isPast(),
-                410,
-            );
+                // The public invitation may have been revoked or expired after
+                // the initial token check. Revalidate its original token/scope
+                // under the same transaction, before deleting any old quote lines.
+                $invitation = DB::table('enterprise_procurement_rfq_invitations')
+                    ->where('id', $invitation->id)
+                    ->where('rfq_id', $rfq->id)
+                    ->where('token_hash', hash('sha256', $token))
+                    ->lockForUpdate()
+                    ->firstOrFail();
+                abort_if(
+                    in_array($invitation->status, ['revoked', 'expired'], true)
+                        || CarbonImmutable::parse((string) $invitation->expires_at)->isPast(),
+                    410,
+                );
 
-            $rfqLines = DB::table('enterprise_procurement_rfq_lines')
-                ->where('rfq_id', $rfq->id)
-                ->orderBy('line_no')
-                ->get()
-                ->keyBy('id');
-            $submittedIds = collect($data['lines'])->pluck('rfq_line_id')->map(fn ($id): int => (int) $id);
-            if ($rfqLines->count() !== $submittedIds->unique()->count() || $submittedIds->diff($rfqLines->keys())->isNotEmpty()) {
-                throw ValidationException::withMessages([
-                    'lines' => ['Quote must provide exactly one price for every RFQ line.'],
-                ]);
-            }
-
-            $existing = DB::table('enterprise_procurement_quotes')
-                ->where('invitation_id', $invitation->id)
-                ->lockForUpdate()
-                ->first();
-            if ($existing !== null && $existing->status !== 'submitted') {
-                throw ValidationException::withMessages(['status' => ['This quote can no longer be edited.']]);
-            }
-
-            $publicId = $existing !== null ? (string) $existing->public_id : (string) Str::uuid();
-            $quoteId = $existing !== null ? (int) $existing->id : DB::table('enterprise_procurement_quotes')->insertGetId([
-                'public_id' => $publicId,
-                'quote_number' => 'QT-'.strtoupper(substr(str_replace('-', '', $publicId), 0, 12)),
-                'rfq_id' => $rfq->id,
-                'invitation_id' => $invitation->id,
-                'supplier_id' => $invitation->supplier_id,
-                'status' => 'submitted',
-                'currency_code' => $rfq->currency_code,
-                'submitted_at' => now(),
-                'created_at' => now(),
-                'updated_at' => now(),
-            ]);
-
-            if ($existing !== null) {
-                DB::table('enterprise_procurement_quote_lines')->where('quote_id', $quoteId)->delete();
-            }
-
-            $totalMills = 0;
-            foreach ($data['lines'] as $line) {
-                $rfqLine = $rfqLines->get((int) $line['rfq_line_id']);
-
-                // Both operands are validated or stored at <= 3dp. Scaling
-                // independently fits 64-bit integers; splitting quantity
-                // prevents overflowing multiplication or lossy float totals.
-                $quantityMills = (int) round((float) $rfqLine->quantity * 1000);
-                $priceMills = (int) round((float) $line['unit_price'] * 1000);
-                $wholeQuantity = intdiv($quantityMills, 1000);
-                if ($wholeQuantity > 0
-                    && $priceMills > intdiv(self::MAX_QUOTE_AMOUNT_MILLS, $wholeQuantity)) {
+                $rfqLines = DB::table('enterprise_procurement_rfq_lines')
+                    ->where('rfq_id', $rfq->id)
+                    ->orderBy('line_no')
+                    ->get()
+                    ->keyBy('id');
+                $submittedIds = collect($data['lines'])->pluck('rfq_line_id')->map(fn ($id): int => (int) $id);
+                if ($rfqLines->count() !== $submittedIds->unique()->count() || $submittedIds->diff($rfqLines->keys())->isNotEmpty()) {
                     throw ValidationException::withMessages([
-                        'lines' => ['Quoted amount exceeds the supported 18,3 monetary range.'],
+                        'lines' => ['Quote must provide exactly one price for every RFQ line.'],
                     ]);
                 }
-                $wholeMills = $wholeQuantity * $priceMills;
-                $fractionMills = intdiv(($quantityMills % 1000) * $priceMills + 500, 1000);
-                $lineMills = $wholeMills + $fractionMills;
-                if ($lineMills > self::MAX_QUOTE_AMOUNT_MILLS - $totalMills) {
-                    throw ValidationException::withMessages([
-                        'lines' => ['Quoted amount exceeds the supported 18,3 monetary range.'],
-                    ]);
-                }
-                $totalMills += $lineMills;
-                $lineTotal = intdiv($lineMills, 1000).'.'.str_pad((string) ($lineMills % 1000), 3, '0', STR_PAD_LEFT);
 
-                DB::table('enterprise_procurement_quote_lines')->insert([
-                    'quote_id' => $quoteId,
-                    'rfq_line_id' => $rfqLine->id,
-                    'quantity' => $rfqLine->quantity,
-                    'unit_price' => $line['unit_price'],
-                    'lead_time_days' => $line['lead_time_days'] ?? $data['lead_time_days'] ?? null,
-                    'line_total' => $lineTotal,
+                $existing = DB::table('enterprise_procurement_quotes')
+                    ->where('invitation_id', $invitation->id)
+                    ->lockForUpdate()
+                    ->first();
+                if ($existing !== null && $existing->status !== 'submitted') {
+                    throw ValidationException::withMessages(['status' => ['This quote can no longer be edited.']]);
+                }
+
+                $publicId = $existing !== null ? (string) $existing->public_id : (string) Str::uuid();
+                $quoteId = $existing !== null ? (int) $existing->id : DB::table('enterprise_procurement_quotes')->insertGetId([
+                    'public_id' => $publicId,
+                    'quote_number' => 'QT-'.strtoupper(substr(str_replace('-', '', $publicId), 0, 12)),
+                    'rfq_id' => $rfq->id,
+                    'invitation_id' => $invitation->id,
+                    'supplier_id' => $invitation->supplier_id,
+                    'status' => 'submitted',
+                    'currency_code' => $rfq->currency_code,
+                    'submitted_at' => now(),
                     'created_at' => now(),
                     'updated_at' => now(),
                 ]);
-            }
 
-            DB::table('enterprise_procurement_quotes')->where('id', $quoteId)->update([
-                'valid_until' => $data['valid_until'] ?? null,
-                'lead_time_days' => $data['lead_time_days'] ?? null,
-                'total_amount' => intdiv($totalMills, 1000).'.'.str_pad((string) ($totalMills % 1000), 3, '0', STR_PAD_LEFT),
-                'notes' => $data['notes'] ?? null,
-                'submitted_at' => now(),
-                'updated_at' => now(),
-            ]);
-            DB::table('enterprise_procurement_rfq_invitations')->where('id', $invitation->id)->update([
-                'status' => 'submitted',
-                'submitted_at' => now(),
-                'updated_at' => now(),
-            ]);
-
-            if ($attachment instanceof UploadedFile) {
-                $extension = strtolower((string) ($attachment->guessExtension() ?: $attachment->getClientOriginalExtension()));
-                $filename = Str::uuid()->toString().($extension !== '' ? '.'.$extension : '');
-                $directory = 'procurement/quotes/'.$publicId;
-                $stored = Storage::disk('local')->putFileAs($directory, $attachment, $filename);
-                if (! is_string($stored) || $stored === '' || ! Storage::disk('local')->exists($stored)) {
-                    throw ValidationException::withMessages([
-                        'attachment' => ['The quote attachment could not be stored safely.'],
-                    ]);
+                if ($existing !== null) {
+                    DB::table('enterprise_procurement_quote_lines')->where('quote_id', $quoteId)->delete();
                 }
 
-                $writtenPaths[] = $stored;
-                try {
-                    DB::table('enterprise_procurement_quote_documents')->insert([
+                $totalMills = 0;
+                foreach ($data['lines'] as $line) {
+                    $rfqLine = $rfqLines->get((int) $line['rfq_line_id']);
+
+                    // Both operands are validated or stored at <= 3dp. Scaling
+                    // independently fits 64-bit integers; splitting quantity
+                    // prevents overflowing multiplication or lossy float totals.
+                    $quantityMills = (int) round((float) $rfqLine->quantity * 1000);
+                    $priceMills = (int) round((float) $line['unit_price'] * 1000);
+                    $wholeQuantity = intdiv($quantityMills, 1000);
+                    if ($wholeQuantity > 0
+                        && $priceMills > intdiv(self::MAX_QUOTE_AMOUNT_MILLS, $wholeQuantity)) {
+                        throw ValidationException::withMessages([
+                            'lines' => ['Quoted amount exceeds the supported 18,3 monetary range.'],
+                        ]);
+                    }
+                    $wholeMills = $wholeQuantity * $priceMills;
+                    $fractionMills = intdiv(($quantityMills % 1000) * $priceMills + 500, 1000);
+                    $lineMills = $wholeMills + $fractionMills;
+                    if ($lineMills > self::MAX_QUOTE_AMOUNT_MILLS - $totalMills) {
+                        throw ValidationException::withMessages([
+                            'lines' => ['Quoted amount exceeds the supported 18,3 monetary range.'],
+                        ]);
+                    }
+                    $totalMills += $lineMills;
+                    $lineTotal = intdiv($lineMills, 1000).'.'.str_pad((string) ($lineMills % 1000), 3, '0', STR_PAD_LEFT);
+
+                    DB::table('enterprise_procurement_quote_lines')->insert([
                         'quote_id' => $quoteId,
-                        'title' => Str::limit($attachment->getClientOriginalName(), 190, ''),
-                        'storage_path' => $stored,
-                        'original_name' => Str::limit($attachment->getClientOriginalName(), 255, ''),
-                        'mime_type' => $attachment->getMimeType() ?: null,
-                        'size_bytes' => (int) $attachment->getSize(),
+                        'rfq_line_id' => $rfqLine->id,
+                        'quantity' => $rfqLine->quantity,
+                        'unit_price' => $line['unit_price'],
+                        'lead_time_days' => $line['lead_time_days'] ?? $data['lead_time_days'] ?? null,
+                        'line_total' => $lineTotal,
                         'created_at' => now(),
                         'updated_at' => now(),
                     ]);
-                } catch (\Throwable $exception) {
-                    Storage::disk('local')->delete($stored);
-                    throw $exception;
                 }
-            }
 
-            $quote = DB::table('enterprise_procurement_quotes')->where('id', $quoteId)->firstOrFail();
-            $this->audit->record('enterprise.procurement.quote.submitted', null, null, null, [
-                'store_id' => $rfq->store_id,
-                'rfq_id' => $rfq->id,
-                'quote_id' => $quoteId,
-                'supplier_id' => $invitation->supplier_id,
-                'total_amount' => $quote->total_amount,
-            ]);
+                DB::table('enterprise_procurement_quotes')->where('id', $quoteId)->update([
+                    'valid_until' => $data['valid_until'] ?? null,
+                    'lead_time_days' => $data['lead_time_days'] ?? null,
+                    'total_amount' => intdiv($totalMills, 1000).'.'.str_pad((string) ($totalMills % 1000), 3, '0', STR_PAD_LEFT),
+                    'notes' => $data['notes'] ?? null,
+                    'submitted_at' => now(),
+                    'updated_at' => now(),
+                ]);
+                DB::table('enterprise_procurement_rfq_invitations')->where('id', $invitation->id)->update([
+                    'status' => 'submitted',
+                    'submitted_at' => now(),
+                    'updated_at' => now(),
+                ]);
 
-            return $quote;
+                if ($attachment instanceof UploadedFile) {
+                    $extension = strtolower((string) ($attachment->guessExtension() ?: $attachment->getClientOriginalExtension()));
+                    $filename = Str::uuid()->toString().($extension !== '' ? '.'.$extension : '');
+                    $directory = 'procurement/quotes/'.$publicId;
+                    $stored = Storage::disk('local')->putFileAs($directory, $attachment, $filename);
+                    if (! is_string($stored) || $stored === '' || ! Storage::disk('local')->exists($stored)) {
+                        throw ValidationException::withMessages([
+                            'attachment' => ['The quote attachment could not be stored safely.'],
+                        ]);
+                    }
+
+                    $writtenPaths[] = $stored;
+                    DB::table('enterprise_procurement_quote_documents')->insert([
+                            'quote_id' => $quoteId,
+                            'title' => Str::limit($attachment->getClientOriginalName(), 190, ''),
+                            'storage_path' => $stored,
+                            'original_name' => Str::limit($attachment->getClientOriginalName(), 255, ''),
+                            'mime_type' => $attachment->getMimeType() ?: null,
+                            'size_bytes' => (int) $attachment->getSize(),
+                            'created_at' => now(),
+                            'updated_at' => now(),
+                    ]);
+                }
+
+                $quote = DB::table('enterprise_procurement_quotes')->where('id', $quoteId)->firstOrFail();
+                $this->audit->record('enterprise.procurement.quote.submitted', null, null, null, [
+                    'store_id' => $rfq->store_id,
+                    'rfq_id' => $rfq->id,
+                    'quote_id' => $quoteId,
+                    'supplier_id' => $invitation->supplier_id,
+                    'total_amount' => $quote->total_amount,
+                ]);
+
+                return $quote;
             }, 3);
         } catch (\Throwable $exception) {
             // Includes failures after document INSERT (audit, transaction
