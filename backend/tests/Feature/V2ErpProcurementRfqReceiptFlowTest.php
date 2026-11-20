@@ -1761,6 +1761,63 @@ final class V2ErpProcurementRfqReceiptFlowTest extends TestCase
             ->where('event', 'enterprise.goods_receipt.posted')->count());
     }
 
+    public function test_authenticated_rfq_award_locks_procurement_before_rfq_and_rejects_replay_after_shutdown(): void
+    {
+        $store = $this->store();
+        $maker = $this->actor('PROCUREMENT_BUYER', 'ar');
+        $checker = $this->actor('PROCUREMENT_MANAGER', 'en');
+        [, $requestId, $rfqId, $quoteId] = $this->quotedRequest($maker, $store);
+
+        $this->actingAs($checker)->post(route('admin.erp.procurement.requests.decision', $requestId), [
+            'store_id' => $store->id, 'decision' => 'approve',
+        ])->assertRedirect();
+
+        // RefreshDatabase owns the outer transaction. This listener records
+        // only SELECTs during awardRfq's nested transaction; it is NOT a
+        // substitute for two independent HTTP workers on MySQL.
+        $lockedReadOrder = [];
+        DB::listen(function (QueryExecuted $query) use (&$lockedReadOrder): void {
+            if (DB::connection()->transactionLevel() < 2
+                || ! str_starts_with(strtolower(ltrim($query->sql)), 'select')) {
+                return;
+            }
+
+            if (str_contains($query->sql, 'enterprise_modules')) {
+                $lockedReadOrder[] = 'module';
+            } elseif (str_contains($query->sql, 'enterprise_procurement_rfqs')) {
+                $lockedReadOrder[] = 'rfq';
+            }
+        });
+
+        $this->actingAs($checker)->post(route('admin.erp.procurement.rfqs.award', [
+            'rfq' => $rfqId, 'quote' => $quoteId,
+        ]), ['store_id' => $store->id])->assertRedirect();
+
+        $this->assertNotEmpty($lockedReadOrder);
+        $this->assertSame('module', $lockedReadOrder[0], 'Module row must be checked under the award transaction before RFQ.');
+        $this->assertContains('rfq', $lockedReadOrder);
+        $this->assertSame(1, DB::table('enterprise_purchase_orders')
+            ->where('procurement_rfq_id', $rfqId)->count());
+        $awardAudits = DB::table('audit_logs')
+            ->where('event', 'enterprise.procurement.rfq.awarded')->count();
+        $this->assertGreaterThan(0, $awardAudits);
+
+        // A subsequent operator shutdown is authoritative even for a
+        // formerly successful, idempotent award URL. No second PO or audit.
+        app(ModuleLifecycleManager::class)->transition('procurement', ModuleState::SUSPENDED);
+        $this->actingAs($checker)->post(route('admin.erp.procurement.rfqs.award', [
+            'rfq' => $rfqId, 'quote' => $quoteId,
+        ]), ['store_id' => $store->id])->assertNotFound();
+
+        $this->assertDatabaseHas('enterprise_procurement_rfqs', [
+            'id' => $rfqId, 'status' => 'awarded', 'awarded_quote_id' => $quoteId,
+        ]);
+        $this->assertSame(1, DB::table('enterprise_purchase_orders')
+            ->where('procurement_rfq_id', $rfqId)->count());
+        $this->assertSame($awardAudits, DB::table('audit_logs')
+            ->where('event', 'enterprise.procurement.rfq.awarded')->count());
+    }
+
     public function test_rfq_cannot_award_before_independent_checker_approves_without_mutating_supplier_or_price(): void
     {
         $store = $this->store();
