@@ -899,7 +899,8 @@ final class V2ErpProcurementRfqReceiptFlowTest extends TestCase
         $this->assertSame($auditCount, DB::table('audit_logs')
             ->where('event', 'enterprise.procurement.quote.submitted')->count());
 
-        app(ModuleLifecycleManager::class)->transition('procurement', ModuleState::ENABLING);
+        // SUSPENDED -> ENABLED is the canonical resumption transition.
+        // SUSPENDED -> ENABLING is explicitly illegal in ModuleState.
         app(ModuleLifecycleManager::class)->transition('procurement', ModuleState::ENABLED);
         $this->get(route('supplier.rfq.show', ['token' => $token]))->assertOk();
     }
