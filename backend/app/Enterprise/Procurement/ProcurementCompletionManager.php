@@ -835,7 +835,8 @@ final class ProcurementCompletionManager
             'notes' => ['nullable', 'string', 'max:4000'],
             'lines' => ['required', 'array', 'min:1', 'max:100'],
             'lines.*.rfq_line_id' => ['required', 'integer', 'min:1', 'distinct'],
-            'lines.*.unit_price' => ['required', 'numeric', 'min:0', 'max:999999999'],
+            // KWD and ERP amounts are persisted at 3dp; reject silent price rounding.
+            'lines.*.unit_price' => ['required', 'numeric', 'decimal:0,3', 'min:0', 'max:999999999'],
             'lines.*.lead_time_days' => ['nullable', 'integer', 'min:0', 'max:3650'],
         ])->validate();
 
