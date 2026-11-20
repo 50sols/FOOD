@@ -789,7 +789,7 @@ final class ProcurementCompletionManager
 
         // Read without side effects before validating both the RFQ and the
         // supplier. A blocked supplier must not record an "opened" invitation.
-        $invitation = $this->portalInvitation($token, false);
+        $invitation = $this->portalInvitation($token);
         $rfq = DB::table('enterprise_procurement_rfqs')->where('id', $invitation->rfq_id)->firstOrFail();
         if ($rfq->status !== 'published') {
             abort(410);
@@ -798,9 +798,10 @@ final class ProcurementCompletionManager
         // Publishing/awarding require active and qualified suppliers.
         // A public token must not bypass a later supplier governance hold.
         $supplier = $this->eligibleInvitedSupplier($rfq, $invitation);
-        // Re-read the invitation before a guarded state transition; refuse
-        // concurrent revocation rather than marking a stale token as opened.
-        $invitation = $this->portalInvitation($token, true);
+        // Revalidate the invitation without recording an "opened" visit yet.
+        // The RFQ, supplier and module may all have changed since preflight;
+        // rejected GETs must not touch a still-valid invited/opened token.
+        $invitation = $this->portalInvitation($token);
 
         // Cancelling or awarding an RFQ does not revoke an already-submitted
         // invitation. Its initial published-state SELECT can therefore become
@@ -822,6 +823,35 @@ final class ProcurementCompletionManager
         // and supplier verification. A completed suspension must suppress a
         // public GET before historical quote/document metadata is loaded.
         abort_unless($this->modules->isEnabled('procurement'), 404, 'Procurement module is disabled.');
+
+        // A visible public GET is the only path allowed to mark an invitation
+        // opened. Keep the write conditional so a concurrently revoked or
+        // expired token cannot be resurrected by an earlier read snapshot.
+        if (in_array($invitation->status, ['invited', 'opened'], true)) {
+            DB::table('enterprise_procurement_rfq_invitations')
+                ->where('id', $invitation->id)
+                ->where('rfq_id', $rfq->id)
+                ->where('token_hash', hash('sha256', $token))
+                ->whereIn('status', ['invited', 'opened'])
+                ->where('expires_at', '>', now())
+                ->update([
+                    'status' => 'opened',
+                    'last_accessed_at' => now(),
+                    'updated_at' => now(),
+                ]);
+        }
+
+        // An update may have matched zero rows after revocation. A submitted
+        // invitation also needs a final status check even though no read-mark
+        // is performed for submitted quotes.
+        $invitation = DB::table('enterprise_procurement_rfq_invitations')
+            ->where('id', $invitation->id)
+            ->firstOrFail();
+        abort_if(
+            in_array($invitation->status, ['revoked', 'expired'], true)
+                || CarbonImmutable::parse((string) $invitation->expires_at)->isPast(),
+            410,
+        );
 
         $lines = DB::table('enterprise_procurement_rfq_lines')
             ->where('rfq_id', $rfq->id)
@@ -865,7 +895,7 @@ final class ProcurementCompletionManager
         // document upload or audit write if Procurement is no longer enabled.
         abort_unless($this->modules->isEnabled('procurement'), 404, 'Procurement module is disabled.');
 
-        $invitation = $this->portalInvitation($token, false);
+        $invitation = $this->portalInvitation($token);
         $rfq = DB::table('enterprise_procurement_rfqs')->where('id', $invitation->rfq_id)->firstOrFail();
         if ($rfq->status !== 'published') {
             abort(410);
@@ -2500,7 +2530,7 @@ final class ProcurementCompletionManager
         return [$start->toDateString(), $end->toDateString()];
     }
 
-    private function portalInvitation(string $token, bool $touch): object
+    private function portalInvitation(string $token): object
     {
         if (! preg_match('/^[A-Za-z0-9]{64}$/', $token)) {
             abort(404);
@@ -2524,32 +2554,6 @@ final class ProcurementCompletionManager
             abort(410);
         }
 
-        if ($touch) {
-            if (in_array($invitation->status, ['invited', 'opened'], true)) {
-                // Conditional touch prevents revocation/expiration resurrection.
-                DB::table('enterprise_procurement_rfq_invitations')
-                    ->where('id', $invitation->id)
-                    ->whereIn('status', ['invited', 'opened'])
-                    ->where('expires_at', '>', now())
-                    ->update([
-                        'status' => 'opened',
-                        'last_accessed_at' => now(),
-                        'updated_at' => now(),
-                    ]);
-            }
-
-            // A previously submitted quote also has a reusable public GET
-            // token. Re-read ALL statuses after the last token-hash lookup:
-            // otherwise a simultaneous revocation after that SELECT still
-            // exposes the historical quote and its document metadata.
-            $invitation = DB::table('enterprise_procurement_rfq_invitations')
-                ->where('id', $invitation->id)->firstOrFail();
-            abort_if(
-                in_array($invitation->status, ['revoked', 'expired'], true)
-                    || CarbonImmutable::parse((string) $invitation->expires_at)->isPast(),
-                410,
-            );
-        }
 
         return $invitation;
     }
