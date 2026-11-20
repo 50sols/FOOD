@@ -126,7 +126,13 @@ final class FinanceWorkbenchController extends Controller
         }
 
         if (($requestedStoreId !== null || $requestedStoreCode !== '') && $contexts === []) {
-            abort(404);
+            $otherAuthorizedContexts = array_filter(
+                $this->contextOptions($actor),
+                fn (array $option): bool => $this->financeAccess->canRead($actor, (int) $option['id']),
+            );
+            if ($otherAuthorizedContexts !== []) {
+                abort(404);
+            }
         }
 
         if ($contexts === []) {

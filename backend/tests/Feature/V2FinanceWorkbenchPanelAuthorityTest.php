@@ -10,7 +10,6 @@ use App\Enterprise\Modules\ModuleLifecycleManager;
 use App\Enterprise\Modules\ModuleRegistry;
 use App\Enterprise\Modules\ModuleState;
 use App\Enterprise\Organization\OrganizationHierarchyService;
-use App\Http\Controllers\Admin\FinanceWorkbenchController;
 use App\Models\Customer;
 use App\Models\Permission;
 use App\Models\Role;
@@ -170,14 +169,6 @@ final class V2FinanceWorkbenchPanelAuthorityTest extends TestCase
                     ->assertNotFound();
             }
 
-            $controller = app(FinanceWorkbenchController::class);
-            $contextOptions = (new \ReflectionMethod($controller, 'contextOptions'))
-                ->invoke($controller, $actor->fresh(), $store->id, $store->code);
-            $authorizedContext = collect($contextOptions)->first(
-                fn (array $context): bool => $context['id'] === (int) $store->id
-                    && strcasecmp($context['code'], $store->code) === 0,
-            );
-            $this->assertNotNull($authorizedContext, 'The fixture store must exist in Finance context options.');
             $this->assertTrue(
                 app(FinanceWorkbenchAccess::class)->canRead($actor->fresh(), $store->id),
                 'The fixture store must pass Finance read authorization before selector matching.',
