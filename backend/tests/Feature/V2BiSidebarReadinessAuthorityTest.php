@@ -122,6 +122,78 @@ final class V2BiSidebarReadinessAuthorityTest extends TestCase
             ->assertForbidden();
     }
 
+    public function test_retail_bi_http_and_sidebar_revoke_access_when_assigned_store_permission_is_denied(): void
+    {
+        $this->enableBi();
+
+        $store = Store::query()->create([
+            'store_type_id' => (int) DB::table('store_types')->where('code', 'B2C')->value('id'),
+            'code' => 'V2-P312-RETAIL-DENY',
+            'name' => 'V2 P312 Retail BI',
+            'is_active' => true,
+        ]);
+        app(OrganizationHierarchyService::class)->ensureDefaultScopeForStore($store);
+
+        // Keep the global reporting role and the exact Retail module grant
+        // alive. Only the store-specific reporting permission is withdrawn.
+        $actor = User::factory()->create(['is_active' => true, 'locale' => 'en']);
+        $actor->roles()->attach(Role::query()->where('code', 'EXECUTIVE_VIEWER')->firstOrFail());
+        $retailRole = Role::query()
+            ->where('code', 'B2C_STORE_ADMIN')
+            ->where('scope', 'store')
+            ->firstOrFail();
+        $reportsPermission = Permission::query()->where('code', 'reports.view')->firstOrFail();
+        $retailRole->permissions()->syncWithoutDetaching([$reportsPermission->id]);
+
+        DB::table('user_store_roles')->insert([
+            'user_id' => $actor->id,
+            'role_id' => $retailRole->id,
+            'store_id' => $store->id,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        app(ModuleEntitlementManager::class)->set(
+            'enterprise_bi',
+            new EntitlementScope(EntitlementScope::STORE, $store->id),
+            true,
+        );
+
+        app()->forgetInstance(AdminNavigation::class);
+        $this->assertNotNull($this->biNavItem($actor->fresh()));
+        $this->actingAs($actor->fresh())->get(route('admin.erp.bi'))->assertOk();
+
+        DB::table('user_permission_overrides')->insert([
+            'user_id' => $actor->id,
+            'permission_id' => $reportsPermission->id,
+            'scope_key' => 'store:'.$store->id,
+            'store_id' => $store->id,
+            'effect' => 'deny',
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        $actor->forceFill(['has_permission_overrides' => true])->save();
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            $actor->forceFill(['locale' => $locale])->save();
+            app()->forgetInstance(AdminNavigation::class);
+
+            // Neither navigation nor a forged direct GET can use the
+            // outstanding entitlement after the user-level DENY.
+            $this->assertNull($this->biNavItem($actor->fresh()));
+            $this->actingAs($actor->fresh())
+                ->get(route('admin.erp.bi', [
+                    'bi_tab' => 'reports',
+                    'scope' => 'store:'.$store->id,
+                    'run' => 1,
+                ]))
+                ->assertForbidden();
+            $this->actingAs($actor->fresh())
+                ->get(route('admin.erp.bi'))
+                ->assertForbidden();
+        }
+    }
+
     public function test_ready_module_without_entitlement_is_denied_even_for_a_privileged_role(): void
     {
         $this->enableBi();
