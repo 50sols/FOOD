@@ -145,6 +145,16 @@ final class V2FinanceWorkbenchPanelAuthorityTest extends TestCase
     {
         [$actor, $store] = $this->authorizedViewer('FIN-P303-SELECTOR-OWN');
         $other = $this->createStore('FIN-P303-SELECTOR-OTHER');
+        $this->assertSame(
+            $store->code,
+            (string) DB::table('stores')->where('id', $store->id)->value('code'),
+            'The primary fixture store code must be persisted before selector GETs.',
+        );
+        $this->assertSame(
+            $other->code,
+            (string) DB::table('stores')->where('id', $other->id)->value('code'),
+            'The alternate fixture store code must be persisted before selector GETs.',
+        );
         $before = [
             DB::table('enterprise_finance_journals')->count(),
             DB::table('enterprise_ar_allocations')->count(),
@@ -171,6 +181,19 @@ final class V2FinanceWorkbenchPanelAuthorityTest extends TestCase
                     ->assertNotFound();
             }
 
+            // A GET that rejects a mismatched or forged store selector must
+            // never rewrite either store's identity in the database.
+            $this->assertSame(
+                $store->code,
+                (string) DB::table('stores')->where('id', $store->id)->value('code'),
+                'Denied Finance selector GETs must not mutate the primary store code.',
+            );
+            $this->assertSame(
+                $other->code,
+                (string) DB::table('stores')->where('id', $other->id)->value('code'),
+                'Denied Finance selector GETs must not mutate the alternate store code.',
+            );
+
             $this->assertTrue(
                 app(FinanceWorkbenchAccess::class)->canRead($actor->fresh(), $store->id),
                 'The fixture store must pass Finance read authorization before selector matching.',
@@ -194,7 +217,11 @@ final class V2FinanceWorkbenchPanelAuthorityTest extends TestCase
             $this->assertSame(
                 0,
                 strcasecmp((string) $contextOptions[0]['code'], (string) $store->code),
-                'An exact-store context must preserve the canonical store code.',
+                sprintf(
+                    'Exact-store context code differs: selected=%s, persisted fixture=%s.',
+                    (string) $contextOptions[0]['code'],
+                    (string) $store->code,
+                ),
             );
             $request = Request::create(route('admin.erp.finance.index', [
                 'store_id' => $store->id,
