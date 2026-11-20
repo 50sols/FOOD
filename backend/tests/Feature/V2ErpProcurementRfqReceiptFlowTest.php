@@ -357,6 +357,10 @@ final class V2ErpProcurementRfqReceiptFlowTest extends TestCase
         $this->assertNotNull($quoteLine);
         $auditCount = DB::table('audit_logs')
             ->where('event', 'enterprise.procurement.quote.submitted')->count();
+        $invitation = DB::table('enterprise_procurement_rfq_invitations')
+            ->where('rfq_id', $rfqId)->first();
+        $this->assertNotNull($invitation);
+        $this->assertSame('submitted', $invitation->status);
 
         // Supplier portal is a public bearer-token route: validate rejection
         // without retaining the original procurement administrator session.
@@ -395,6 +399,10 @@ final class V2ErpProcurementRfqReceiptFlowTest extends TestCase
             ]);
             $this->assertDatabaseHas('enterprise_procurement_rfqs', [
                 'id' => $rfqId, 'status' => 'published',
+            ]);
+            $this->assertDatabaseHas('enterprise_procurement_rfq_invitations', [
+                'id' => $invitation->id, 'status' => 'submitted',
+                'last_accessed_at' => $invitation->last_accessed_at,
             ]);
             $this->assertDatabaseHas('enterprise_procurement_quotes', [
                 'id' => $quoteId, 'status' => 'submitted', 'total_amount' => '8.500',
