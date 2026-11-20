@@ -21,6 +21,7 @@
 - Confirm positive Test returns localized status without inserts/updates/audit, and Save continues its existing behavior.
 - Confirm negative unauthorized access, invalid / duplicate code, protected default routing code/deactivation denial on both Test/Save and direct service, proper locale direction and help. Positive name-edit and new-store default-scope regression must use disposable fixture only, without reseeding live data.
 - Text inputs, action links, and buttons keep 44px minimum control height; the page retains keyboard focus indication and wrapped action buttons.
+- Canonical organization/company/legal-entity/business-unit codes are normalized to lowercase **before** the existing scoped uniqueness rule runs, for identical Save and no-write Test Inputs behavior across SQLite and MySQL/MariaDB collations. PHPUnit tests deny mixed-case duplicates with zero audit writes and allow a new uppercase code that persists only in canonical lowercase. Neither workflow grants a new route or alters existing code ownership/scope.
 - Test is a **field validation preview only**: hierarchy service can still reject an update for active-child/inactive-parent business constraints. Such a rejected Save must stay rejected, not become certified by a successful preview.
 - Do not mark any company/tax/legal record READY merely because the hierarchy form was saved.
 - Manual responsive verification: 320, 360, 390, 412, 430, 768, 1024, 1280+; AR RTL/EN LTR; keyboard focus and wrapped buttons.
