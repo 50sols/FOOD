@@ -347,6 +347,81 @@ final class V2ErpProcurementRfqReceiptFlowTest extends TestCase
             ->where('event', 'enterprise.procurement.quote.submitted')->count());
     }
 
+    public function test_supplier_portal_get_never_resurrects_revoked_invitation_after_stale_token_lookup(): void
+    {
+        $store = $this->store();
+        $maker = $this->actor('PROCUREMENT_BUYER', 'ar');
+        $code = 'P135-RFQ-GET-'.$maker->id;
+        $this->actingAs($maker)->post(route('admin.erp.procurement.suppliers.store'), [
+            'store_id' => $store->id, 'scope_type' => 'store', 'code' => $code,
+            'name_en' => 'RFQ portal access supplier', 'name_ar' => 'مورد رابط العرض',
+        ])->assertRedirect();
+        $supplierId = (int) DB::table('enterprise_suppliers')->where('code', $code)->value('id');
+
+        $reason = 'P135 portal access revocation '.$maker->id;
+        $this->actingAs($maker)->post(route('admin.erp.procurement.requests.store'), [
+            'store_id' => $store->id,
+            'currency_code' => 'KWD', 'reason' => $reason,
+            'item_code' => 'P135-RFQ-GET', 'description' => 'Portal token guarded by invitation',
+            'quantity' => 2, 'unit' => 'each', 'estimated_unit_cost' => '5.000',
+        ])->assertRedirect();
+        $requestId = (int) DB::table('enterprise_purchase_requests')->where('reason', $reason)->value('id');
+        $this->actingAs($maker)->post(route('admin.erp.procurement.requests.submit', $requestId), [
+            'store_id' => $store->id,
+        ])->assertRedirect();
+        $this->actingAs($maker)->post(route('admin.erp.procurement.rfqs.store'), [
+            'store_id' => $store->id, 'purchase_request_id' => $requestId,
+            'title' => 'P135 single-use RFQ invitation status',
+            'response_due_at' => now()->addDays(5)->format('Y-m-d H:i:s'),
+        ])->assertRedirect();
+        $rfqId = (int) DB::table('enterprise_procurement_rfqs')
+            ->where('purchase_request_id', $requestId)->value('id');
+        $this->actingAs($maker)->post(route('admin.erp.procurement.rfqs.publish', $rfqId), [
+            'store_id' => $store->id, 'supplier_ids' => [$supplierId],
+        ])->assertRedirect()->assertSessionHas('procurement_portal_links');
+
+        $links = session('procurement_portal_links');
+        $this->assertCount(1, $links);
+        $token = basename((string) parse_url((string) $links[0]['url'], PHP_URL_PATH));
+        $invitation = DB::table('enterprise_procurement_rfq_invitations')
+            ->where('rfq_id', $rfqId)->first();
+        $this->assertNotNull($invitation);
+        $this->assertSame('invited', $invitation->status);
+
+        // A legitimate initial portal GET can mark an active invitation as opened.
+        $this->get(route('supplier.rfq.show', ['token' => $token]))->assertOk();
+        $this->assertDatabaseHas('enterprise_procurement_rfq_invitations', [
+            'id' => $invitation->id, 'status' => 'opened',
+        ]);
+        $originalAccessedAt = DB::table('enterprise_procurement_rfq_invitations')
+            ->where('id', $invitation->id)->value('last_accessed_at');
+
+        // Revocation occurs AFTER GET's original token lookup but BEFORE its
+        // read-mark. Without the conditional UPDATE this resurrects the token.
+        $revoked = false;
+        DB::listen(function (QueryExecuted $query) use (&$revoked, $invitation): void {
+            if ($revoked || ! str_starts_with(strtolower(ltrim($query->sql)), 'select')
+                || ! str_contains($query->sql, 'enterprise_procurement_rfq_invitations')
+                || ! str_contains($query->sql, 'token_hash')) {
+                return;
+            }
+
+            $revoked = true;
+            DB::table('enterprise_procurement_rfq_invitations')
+                ->where('id', $invitation->id)
+                ->update(['status' => 'revoked']);
+        });
+
+        $this->get(route('supplier.rfq.show', ['token' => $token]))->assertStatus(410);
+        $this->assertTrue($revoked, 'A token lookup must actually precede the revocation.');
+        $this->assertDatabaseHas('enterprise_procurement_rfq_invitations', [
+            'id' => $invitation->id, 'status' => 'revoked',
+            'last_accessed_at' => $originalAccessedAt,
+        ]);
+        $this->assertDatabaseCount('enterprise_procurement_quotes', 0);
+        $this->assertDatabaseCount('enterprise_procurement_quote_documents', 0);
+    }
+
     public function test_supplier_quote_cannot_override_cancelled_rfq_after_pretransaction_read(): void
     {
         $store = $this->store();
