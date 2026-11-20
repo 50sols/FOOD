@@ -1419,7 +1419,12 @@ final class V2ErpEntitlementCheckerBoundaryTest extends TestCase
                 $card = collect($page->viewData('cards'))->firstWhere('key', 'procurement');
                 $this->assertIsArray($card, $role);
                 $this->assertSame('available', $card['status'], $role);
-                $this->assertSame(route('admin.erp.procurement.index'), $card['url'], $role);
+                // The ERP Center must preserve the authorized store selected by the
+                // server, rather than a storeless shortcut that can resolve
+                // to a different tenant when multiple stores are assigned.
+                $this->assertSame(route('admin.erp.procurement.index', [
+                    'store_id' => $store->id,
+                ]), $card['url'], $role);
                 $item = collect(app(AdminNavigation::class)->groupsFor($user))
                     ->flatMap(static fn (array $group): array => $group['children'])
                     ->firstWhere('key', 'erp_procurement');
