@@ -840,7 +840,31 @@ final class ProcurementCompletionManager
             'lines.*.lead_time_days' => ['nullable', 'integer', 'min:0', 'max:3650'],
         ])->validate();
 
-        return DB::transaction(function () use ($invitation, $rfq, $data, $attachment): object {
+        return DB::transaction(function () use ($token, $invitation, $rfq, $data, $attachment): object {
+            // Lock the RFQ BEFORE its invitation and quote, matching the award
+            // and cancellation lock order. A pre-transaction read cannot
+            // authorize a supplier write after an RFQ was cancelled/awarded.
+            $rfq = DB::table('enterprise_procurement_rfqs')
+                ->where('id', $rfq->id)
+                ->lockForUpdate()
+                ->firstOrFail();
+            abort_if($rfq->status !== 'published', 410);
+
+            // The public invitation may have been revoked or expired after
+            // the initial token check. Revalidate its original token/scope
+            // under the same transaction, before deleting any old quote lines.
+            $invitation = DB::table('enterprise_procurement_rfq_invitations')
+                ->where('id', $invitation->id)
+                ->where('rfq_id', $rfq->id)
+                ->where('token_hash', hash('sha256', $token))
+                ->lockForUpdate()
+                ->firstOrFail();
+            abort_if(
+                in_array($invitation->status, ['revoked', 'expired'], true)
+                    || CarbonImmutable::parse((string) $invitation->expires_at)->isPast(),
+                410,
+            );
+
             $rfqLines = DB::table('enterprise_procurement_rfq_lines')
                 ->where('rfq_id', $rfq->id)
                 ->orderBy('line_no')
