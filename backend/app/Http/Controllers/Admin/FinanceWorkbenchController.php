@@ -115,6 +115,21 @@ final class FinanceWorkbenchController extends Controller
             abort(403);
         }
 
+        if ($requestedStoreId === null && $requestedStoreCode !== '') {
+            $requestedRetail = collect($assignedContexts)->first(
+                fn (array $option): bool => $option['channel'] === 'b2c'
+                    && strcasecmp($option['code'], $requestedStoreCode) === 0,
+            );
+            if (is_array($requestedRetail)
+                && ! in_array($requestedRetail['id'], array_column($contexts, 'id'), true)) {
+                abort(403);
+            }
+        }
+
+        if (($requestedStoreId !== null || $requestedStoreCode !== '') && $contexts === []) {
+            abort(404);
+        }
+
         if ($contexts === []) {
             // Only a privileged platform operator with an actual platform
             // Finance entitlement can view the non-data setup context.

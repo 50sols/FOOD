@@ -174,7 +174,7 @@ final class V2FinanceWorkbenchPanelAuthorityTest extends TestCase
             $contextOptions = (new \ReflectionMethod($controller, 'contextOptions'))
                 ->invoke($controller, $actor->fresh(), $store->id, $store->code);
             $authorizedContext = collect($contextOptions)->first(
-                fn (array $context): bool => $context['id'] === $store->id
+                fn (array $context): bool => $context['id'] === (int) $store->id
                     && strcasecmp($context['code'], $store->code) === 0,
             );
             $this->assertNotNull($authorizedContext, 'The fixture store must exist in Finance context options.');
