@@ -657,20 +657,32 @@ final class V2ErpProcurementRfqReceiptFlowTest extends TestCase
         auth()->logout();
         Storage::fake('local');
         $shutdown = false;
-        DB::listen(function (QueryExecuted $query) use (&$shutdown): void {
-            // Execute an actual module transition immediately AFTER the
-            // initial enabled-state SELECT has produced its old result but
-            // BEFORE submitPortalQuote enters its write transaction.
-            if ($shutdown || ! str_starts_with(strtolower(ltrim($query->sql)), 'select')
+        $transitioning = false;
+        $moduleSelects = 0;
+        DB::listen(function (QueryExecuted $query) use (&$shutdown, &$transitioning, &$moduleSelects): void {
+            // Exclude SQL issued by ModuleLifecycleManager itself. Verify
+            // the quote route actually performs its second, transaction-locked
+            // module SELECT after a successful stale preflight query.
+            if ($transitioning || ! str_starts_with(strtolower(ltrim($query->sql)), 'select')
                 || ! str_contains($query->sql, 'enterprise_modules')) {
                 return;
             }
 
+            $moduleSelects++;
+            if ($shutdown) {
+                return;
+            }
+
             $shutdown = true;
-            app(ModuleLifecycleManager::class)->transition(
-                'procurement',
-                ModuleState::SUSPENDED,
-            );
+            $transitioning = true;
+            try {
+                app(ModuleLifecycleManager::class)->transition(
+                    'procurement',
+                    ModuleState::SUSPENDED,
+                );
+            } finally {
+                $transitioning = false;
+            }
         });
 
         $this->post(route('supplier.rfq.submit', ['token' => $token]), [
@@ -682,6 +694,11 @@ final class V2ErpProcurementRfqReceiptFlowTest extends TestCase
         ])->assertNotFound();
 
         $this->assertTrue($shutdown, 'The module must be suspended after the initial state SELECT.');
+        $this->assertGreaterThanOrEqual(
+            2,
+            $moduleSelects,
+            'The write transaction must independently re-check the locked module after preflight.',
+        );
         $this->assertSame(ModuleState::SUSPENDED, app(ModuleRegistry::class)->state('procurement'));
         $this->assertDatabaseHas('enterprise_procurement_rfq_invitations', [
             'id' => $invitation->id, 'status' => 'submitted',
