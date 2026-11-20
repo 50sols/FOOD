@@ -2554,7 +2554,6 @@ final class ProcurementCompletionManager
             abort(410);
         }
 
-
         return $invitation;
     }
 
