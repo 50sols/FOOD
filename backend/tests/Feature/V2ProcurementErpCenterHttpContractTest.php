@@ -66,7 +66,8 @@ final class V2ProcurementErpCenterHttpContractTest extends TestCase
                 $actor->forceFill(['locale' => $locale])->save();
                 $user = $actor->fresh();
 
-                $center = $this->actingAs($user)->get(route('admin.erp.index'));
+                // The operational cards live in the Modules tab; the default Snapshot tab intentionally does not render them.
+                $center = $this->actingAs($user)->get(route('admin.erp.index', ['tab' => 'modules']));
                 $center->assertOk()->assertSee('dir="'.$direction.'"', false);
                 $card = collect($center->viewData('cards'))->firstWhere('key', 'procurement');
 
