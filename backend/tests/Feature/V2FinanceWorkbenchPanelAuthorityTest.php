@@ -16,6 +16,7 @@ use App\Models\Permission;
 use App\Models\Role;
 use App\Models\Store;
 use App\Models\User;
+use App\Services\WholesalePrincipal;
 use App\Support\TenantContextResolver;
 use Database\Seeders\CoreReferenceSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -143,7 +144,13 @@ final class V2FinanceWorkbenchPanelAuthorityTest extends TestCase
 
     public function test_conflicting_finance_store_id_and_code_cannot_switch_ledger_context(): void
     {
+        // The canonical Wholesale principal must exist before this test's
+        // disposable B2B stores. Its legacy bootstrap may rename the first
+        // active B2B store to FOODEX-WHOLESALE when the canonical store is
+        // absent, which otherwise invalidates a stale test-only store code.
+        $principalStoreId = app(WholesalePrincipal::class)->storeId();
         [$actor, $store] = $this->authorizedViewer('FIN-P303-SELECTOR-OWN');
+        $this->assertNotSame($principalStoreId, $store->id);
         $other = $this->createStore('FIN-P303-SELECTOR-OTHER');
         $this->assertSame(
             $store->code,
