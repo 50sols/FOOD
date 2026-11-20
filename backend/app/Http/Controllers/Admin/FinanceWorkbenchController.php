@@ -1357,7 +1357,7 @@ final class FinanceWorkbenchController extends Controller
         ) && $this->financeAccess->allowsAtStore($storeId, $capability);
         // The same server-scoped Finance access verdict governs every visible tab
         // and direct HTTP mutation, including restricted combined duty roles.
-        $permitted = fn (string $permission, string $capability): bool => $this->financeAccess->canPerform(
+        $permitted = fn (string $permission, string $capability): bool => $this->canPerformFinanceAction(
             $actor, $storeId, $permission, $capability,
         );
 
@@ -1593,11 +1593,40 @@ final class FinanceWorkbenchController extends Controller
         // STORE scope. Domain services independently enforce finance SoD.
         [$permission, $capability] = $this->mutationEntitlement($request);
         abort_unless(
-            $this->financeAccess->canPerform($actor, (int) $selected['id'], $permission, $capability),
+            $this->canPerformFinanceAction($actor, (int) $selected['id'], $permission, $capability),
             403,
         );
 
         return [$actor, $context];
+    }
+
+    /**
+     * #2633 controller boundary: a second Finance role must not enlarge an
+     * AR_OFFICER's receivables duty into GL, AP, Treasury or approval actions.
+     * The shared FinanceWorkbenchAccess service still owns the effective
+     * permission and legal/store entitlement; this guard only narrows it.
+     * Reconcile with #2696's original canonical role-capability service when
+     * those original PRs are integrated.
+     */
+    private function canPerformFinanceAction(
+        User $actor,
+        int $storeId,
+        string $permission,
+        string $capability,
+    ): bool {
+        if (! $actor->is_active || $actor->archived_at !== null) {
+            return false;
+        }
+
+        if ($actor->hasRole('AR_OFFICER')
+            && (! in_array($capability, ['finance.ar.read', 'finance.ar.manage'], true)
+                || ($capability === 'finance.ar.read' && $permission !== 'finance.view')
+                || ($capability === 'finance.ar.manage' && ($permission !== 'finance.manage'
+                    || ! $this->financeAccess->allowsAtStore($storeId, 'finance.ar.read')))) {
+            return false;
+        }
+
+        return $this->financeAccess->canPerform($actor, $storeId, $permission, $capability);
     }
 
     /**
