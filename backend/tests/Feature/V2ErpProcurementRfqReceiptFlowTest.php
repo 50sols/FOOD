@@ -347,6 +347,71 @@ final class V2ErpProcurementRfqReceiptFlowTest extends TestCase
             ->where('event', 'enterprise.procurement.quote.submitted')->count());
     }
 
+    public function test_public_rfq_portal_and_quote_post_refuse_suspended_or_disqualified_supplier_without_writes(): void
+    {
+        $store = $this->store();
+        $maker = $this->actor('PROCUREMENT_BUYER', 'ar');
+        [$supplierId, $requestId, $rfqId, $quoteId, $token] = $this->quotedRequest($maker, $store);
+        $quoteLine = DB::table('enterprise_procurement_quote_lines')
+            ->where('quote_id', $quoteId)->first();
+        $this->assertNotNull($quoteLine);
+        $auditCount = DB::table('audit_logs')
+            ->where('event', 'enterprise.procurement.quote.submitted')->count();
+
+        // Publication was authorized while the supplier was active; it must
+        // not remain a permanent bearer-token bypass of a governance hold.
+        foreach ([
+            ['status' => 'on_hold', 'qualification_status' => 'qualified'],
+            ['status' => 'active', 'qualification_status' => 'unqualified'],
+        ] as $restriction) {
+            DB::table('enterprise_suppliers')->where('id', $supplierId)->update($restriction);
+
+            $this->get(route('supplier.rfq.show', ['token' => $token]))
+                ->assertStatus(410);
+            $this->post(route('supplier.rfq.submit', ['token' => $token]), [
+                'lines' => [[
+                    'rfq_line_id' => $quoteLine->rfq_line_id,
+                    'unit_price' => '7.000',
+                ]],
+            ])->assertStatus(410);
+
+            $this->assertDatabaseHas('enterprise_purchase_requests', [
+                'id' => $requestId, 'status' => 'submitted',
+            ]);
+            $this->assertDatabaseHas('enterprise_procurement_rfqs', [
+                'id' => $rfqId, 'status' => 'published',
+            ]);
+            $this->assertDatabaseHas('enterprise_procurement_quotes', [
+                'id' => $quoteId, 'status' => 'submitted', 'total_amount' => '8.500',
+            ]);
+            $this->assertDatabaseHas('enterprise_procurement_quote_lines', [
+                'id' => $quoteLine->id, 'unit_price' => '4.250', 'line_total' => '8.500',
+            ]);
+            $this->assertSame(0, DB::table('enterprise_procurement_quote_documents')
+                ->where('quote_id', $quoteId)->count());
+            $this->assertSame($auditCount, DB::table('audit_logs')
+                ->where('event', 'enterprise.procurement.quote.submitted')->count());
+        }
+
+        // An explicitly restored active and qualified supplier can reuse
+        // the original invitation without exposing anyone else's RFQ.
+        DB::table('enterprise_suppliers')->where('id', $supplierId)->update([
+            'status' => 'active', 'qualification_status' => 'qualified',
+        ]);
+        $this->get(route('supplier.rfq.show', ['token' => $token]))->assertOk();
+        $this->post(route('supplier.rfq.submit', ['token' => $token]), [
+            'lines' => [[
+                'rfq_line_id' => $quoteLine->rfq_line_id,
+                'unit_price' => '6.000',
+            ]],
+        ])->assertRedirect()->assertSessionHasNoErrors();
+        $this->assertDatabaseHas('enterprise_procurement_quotes', [
+            'id' => $quoteId, 'status' => 'submitted', 'total_amount' => '12.000',
+        ]);
+        $this->assertSame($auditCount + 1, DB::table('audit_logs')
+            ->where('event', 'enterprise.procurement.quote.submitted')->count());
+    }
+
     public function test_supplier_portal_get_never_resurrects_revoked_invitation_after_stale_token_lookup(): void
     {
         $store = $this->store();
