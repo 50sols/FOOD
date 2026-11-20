@@ -568,18 +568,32 @@ final class ErpCenterController extends Controller
      */
     private function firstFinanceReadTabForStore(User $actor, int $storeId): ?string
     {
-        if (! $actor->hasPermission('finance.view', $storeId)) {
+        if (! $actor->is_active
+            || $actor->archived_at !== null
+            || ! $actor->hasPermission('finance.view', $storeId)) {
             return null;
         }
 
         $access = app(FinanceWorkbenchAccess::class);
+        if (! $access->canRead($actor, $storeId)) {
+            return null;
+        }
+
+        // A Finance entitlement belongs to the legal store, not to every
+        // role sharing finance.view. An AR_OFFICER with an additional Finance
+        // role must never receive an ERP link to GL/Foundation/AP data.
+        // This is a restrictive projection, not a new channel or role grant.
         foreach ([
             'overview' => 'finance.foundation.read',
             'journals' => 'finance.gl.read',
             'receivables' => 'finance.ar.read',
             'payables' => 'finance.ap.read',
         ] as $tab => $capability) {
-            if ($access->allowsAtStore($storeId, $capability)) {
+            if ($actor->hasRole('AR_OFFICER') && $capability !== 'finance.ar.read') {
+                continue;
+            }
+
+            if ($access->canPerform($actor, $storeId, 'finance.view', $capability)) {
                 return $tab;
             }
         }
