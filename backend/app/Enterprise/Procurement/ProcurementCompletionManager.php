@@ -843,7 +843,12 @@ final class ProcurementCompletionManager
             'lines.*.lead_time_days' => ['nullable', 'integer', 'min:0', 'max:3650'],
         ])->validate();
 
-        return DB::transaction(function () use ($token, $invitation, $rfq, $data, $attachment): object {
+        // Database rollback does not roll back local filesystem writes.
+        // Track ALL files written across transaction retries, so a later audit
+        // failure or commit error cannot leave an orphaned supplier attachment.
+        $writtenPaths = [];
+        try {
+            $quote = DB::transaction(function () use ($token, $invitation, $rfq, $data, $attachment, &$writtenPaths): object {
             // Lock the RFQ BEFORE its invitation and quote, matching the award
             // and cancellation lock order. A pre-transaction read cannot
             // authorize a supplier write after an RFQ was cancelled/awarded.
@@ -970,6 +975,7 @@ final class ProcurementCompletionManager
                     ]);
                 }
 
+                $writtenPaths[] = $stored;
                 try {
                     DB::table('enterprise_procurement_quote_documents')->insert([
                         'quote_id' => $quoteId,
@@ -997,7 +1003,24 @@ final class ProcurementCompletionManager
             ]);
 
             return $quote;
-        }, 3);
+            }, 3);
+        } catch (\Throwable $exception) {
+            // Includes failures after document INSERT (audit, transaction
+            // commit, retries); only compensate files written by this call.
+            if ($writtenPaths !== []) {
+                Storage::disk('local')->delete($writtenPaths);
+            }
+
+            throw $exception;
+        }
+
+        // A deadlock retry may have written an attachment on an earlier
+        // rolled-back attempt. Only the final successful path is referenced.
+        if (count($writtenPaths) > 1) {
+            Storage::disk('local')->delete(array_slice($writtenPaths, 0, -1));
+        }
+
+        return $quote;
     }
 
     /**
