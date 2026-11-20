@@ -5,10 +5,12 @@ namespace Tests\Feature;
 use App\Enterprise\Entitlements\EntitlementScope;
 use App\Enterprise\Entitlements\ModuleEntitlementManager;
 use App\Enterprise\Finance\FinanceFoundationService;
+use App\Enterprise\Finance\FinanceWorkbenchAccess;
 use App\Enterprise\Modules\ModuleLifecycleManager;
 use App\Enterprise\Modules\ModuleRegistry;
 use App\Enterprise\Modules\ModuleState;
 use App\Enterprise\Organization\OrganizationHierarchyService;
+use App\Http\Controllers\Admin\FinanceWorkbenchController;
 use App\Models\Customer;
 use App\Models\Permission;
 use App\Models\Role;
@@ -168,7 +170,7 @@ final class V2FinanceWorkbenchPanelAuthorityTest extends TestCase
                     ->assertNotFound();
             }
 
-            $controller = app(\App\Http\Controllers\Admin\FinanceWorkbenchController::class);
+            $controller = app(FinanceWorkbenchController::class);
             $contextOptions = (new \ReflectionMethod($controller, 'contextOptions'))
                 ->invoke($controller, $actor->fresh());
             $authorizedContext = collect($contextOptions)->first(
@@ -177,7 +179,7 @@ final class V2FinanceWorkbenchPanelAuthorityTest extends TestCase
             );
             $this->assertNotNull($authorizedContext, 'The fixture store must exist in Finance context options.');
             $this->assertTrue(
-                app(\App\Enterprise\Finance\FinanceWorkbenchAccess::class)->canRead($actor->fresh(), $store->id),
+                app(FinanceWorkbenchAccess::class)->canRead($actor->fresh(), $store->id),
                 'The fixture store must pass Finance read authorization before selector matching.',
             );
 
