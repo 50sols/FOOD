@@ -18,8 +18,10 @@ use App\Models\Warehouse;
 use App\Services\WholesalePrincipal;
 use Database\Seeders\CoreReferenceSeeder;
 use Illuminate\Database\Events\QueryExecuted;
+use Illuminate\Http\UploadedFile;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Storage;
 use Tests\Support\SyntheticErpWorkflowEvidence;
 use Tests\TestCase;
 
@@ -255,6 +257,62 @@ final class V2ErpProcurementRfqReceiptFlowTest extends TestCase
         ]);
         $this->assertDatabaseCount('enterprise_purchase_orders', 0);
         $this->assertSame($originalAuditCount + 1, DB::table('audit_logs')
+            ->where('event', 'enterprise.procurement.quote.submitted')->count());
+    }
+
+    public function test_supplier_quote_attachment_is_deleted_when_late_audit_failure_rolls_back_requote(): void
+    {
+        $store = $this->store();
+        $maker = $this->actor('PROCUREMENT_BUYER', 'ar');
+        [, , $rfqId, $quoteId, $token] = $this->quotedRequest($maker, $store);
+        $original = DB::table('enterprise_procurement_quote_lines')
+            ->where('quote_id', $quoteId)->first();
+        $this->assertNotNull($original);
+        $this->assertDatabaseCount('enterprise_procurement_quote_documents', 0);
+        $auditCount = DB::table('audit_logs')
+            ->where('event', 'enterprise.procurement.quote.submitted')->count();
+
+        Storage::fake('local');
+        $injected = false;
+        DB::listen(function (QueryExecuted $query) use (&$injected): void {
+            // QueryExecuted fires AFTER SQL persistence. This injects an
+            // application failure after the uploaded file and quote-document
+            // row were written, before the surrounding transaction can commit.
+            if ($injected || ! str_contains(strtolower($query->sql), 'audit_logs')
+                || ! str_starts_with(strtolower(ltrim($query->sql)), 'insert')) {
+                return;
+            }
+
+            $injected = true;
+            throw new \RuntimeException('Injected quote audit persistence failure');
+        });
+
+        $this->withoutExceptionHandling();
+        try {
+            $this->post(route('supplier.rfq.submit', ['token' => $token]), [
+                'lines' => [[
+                    'rfq_line_id' => $original->rfq_line_id, 'unit_price' => '7.000',
+                ]],
+                'attachment' => UploadedFile::fake()->create('supplier.pdf', 20, 'application/pdf'),
+            ]);
+            $this->fail('Late audit failure must reject the entire supplier quote submission.');
+        } catch (\RuntimeException $exception) {
+            $this->assertSame('Injected quote audit persistence failure', $exception->getMessage());
+        }
+
+        $this->assertTrue($injected, 'The injected failure must happen after SQL audit INSERT.');
+        $this->assertSame([], Storage::disk('local')->allFiles('procurement/quotes'));
+        $this->assertDatabaseCount('enterprise_procurement_quote_documents', 0);
+        $this->assertDatabaseHas('enterprise_procurement_quote_lines', [
+            'id' => $original->id, 'quantity' => '2.000',
+            'unit_price' => '4.250', 'line_total' => '8.500',
+        ]);
+        $this->assertDatabaseHas('enterprise_procurement_quotes', [
+            'id' => $quoteId, 'status' => 'submitted', 'total_amount' => '8.500',
+        ]);
+        $this->assertSame(1, DB::table('enterprise_procurement_quotes')
+            ->where('rfq_id', $rfqId)->count());
+        $this->assertSame($auditCount, DB::table('audit_logs')
             ->where('event', 'enterprise.procurement.quote.submitted')->count());
     }
 
