@@ -772,6 +772,67 @@ final class V2ErpProcurementRfqReceiptFlowTest extends TestCase
             ->where('event', 'enterprise.procurement.quote.submitted')->count());
     }
 
+    public function test_submitted_supplier_portal_get_rejects_rfq_cancelled_after_token_lookup(): void
+    {
+        $store = $this->store();
+        $maker = $this->actor('PROCUREMENT_BUYER', 'en');
+        [, , $rfqId, $quoteId, $token] = $this->quotedRequest($maker, $store);
+        $invitation = DB::table('enterprise_procurement_rfq_invitations')
+            ->where('rfq_id', $rfqId)->first();
+        $this->assertNotNull($invitation);
+        $this->assertSame('submitted', $invitation->status);
+        $auditCount = DB::table('audit_logs')
+            ->where('event', 'enterprise.procurement.quote.submitted')->count();
+        $beforeAccess = $invitation->last_accessed_at;
+
+        auth()->logout();
+        $tokenReads = 0;
+        $cancelled = false;
+        DB::listen(function (QueryExecuted $query) use (&$tokenReads, &$cancelled, $rfqId): void {
+            if (! str_starts_with(strtolower(ltrim($query->sql)), 'select')
+                || ! str_contains($query->sql, 'enterprise_procurement_rfq_invitations')
+                || ! str_contains($query->sql, 'token_hash')) {
+                return;
+            }
+
+            $tokenReads++;
+            if ($tokenReads !== 2) {
+                return;
+            }
+
+            // The RFQ is cancelled AFTER the original published-state read,
+            // without revoking the already-SUBMITTED supplier invitation.
+            // A public GET must not render historical quote/document metadata
+            // using a stale RFQ object after final token revalidation.
+            $cancelled = true;
+            DB::table('enterprise_procurement_rfqs')
+                ->where('id', $rfqId)
+                ->update([
+                    'status' => 'cancelled',
+                    'cancelled_at' => now(),
+                    'updated_at' => now(),
+                ]);
+        });
+
+        $this->get(route('supplier.rfq.show', ['token' => $token]))->assertStatus(410);
+
+        $this->assertTrue($cancelled, 'RFQ must be cancelled after its first published-state SELECT.');
+        $this->assertSame(2, $tokenReads);
+        $this->assertDatabaseHas('enterprise_procurement_rfqs', [
+            'id' => $rfqId, 'status' => 'cancelled',
+        ]);
+        $this->assertDatabaseHas('enterprise_procurement_rfq_invitations', [
+            'id' => $invitation->id, 'status' => 'submitted',
+            'last_accessed_at' => $beforeAccess,
+        ]);
+        $this->assertDatabaseHas('enterprise_procurement_quotes', [
+            'id' => $quoteId, 'status' => 'submitted', 'total_amount' => '8.500',
+        ]);
+        $this->assertDatabaseCount('enterprise_procurement_quote_documents', 0);
+        $this->assertSame($auditCount, DB::table('audit_logs')
+            ->where('event', 'enterprise.procurement.quote.submitted')->count());
+    }
+
     public function test_supplier_quote_cannot_override_cancelled_rfq_after_pretransaction_read(): void
     {
         $store = $this->store();
