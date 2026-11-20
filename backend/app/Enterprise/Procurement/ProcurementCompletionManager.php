@@ -791,7 +791,9 @@ final class ProcurementCompletionManager
             ->where('rfq_id', $rfq->id)
             ->orderBy('line_no')
             ->get();
-        $supplier = DB::table('enterprise_suppliers')->where('id', $invitation->supplier_id)->firstOrFail();
+        // Publishing/awarding require active and qualified suppliers.
+        // A public token must not bypass a later supplier governance hold.
+        $supplier = $this->eligibleInvitedSupplier($rfq, $invitation);
         $existingQuote = DB::table('enterprise_procurement_quotes')
             ->where('invitation_id', $invitation->id)
             ->first();
@@ -872,6 +874,10 @@ final class ProcurementCompletionManager
                         || CarbonImmutable::parse((string) $invitation->expires_at)->isPast(),
                     410,
                 );
+
+                // Revalidate current supplier governance and original tenant
+                // scope under lock before quote/documents/audit mutations.
+                $this->eligibleInvitedSupplier($rfq, $invitation, true);
 
                 $rfqLines = DB::table('enterprise_procurement_rfq_lines')
                     ->where('rfq_id', $rfq->id)
@@ -2488,6 +2494,36 @@ final class ProcurementCompletionManager
         }
 
         return $invitation;
+    }
+
+    /**
+     * A supplier invitation is not independent authority to access an RFQ
+     * after the supplier is blocked, disqualified or removed from its scope.
+     */
+    private function eligibleInvitedSupplier(object $rfq, object $invitation, bool $lock = false): object
+    {
+        $query = DB::table('enterprise_suppliers')
+            ->where('id', $invitation->supplier_id)
+            ->where('organization_id', $rfq->organization_id)
+            ->where('company_id', $rfq->company_id)
+            ->where('status', 'active')
+            ->where('qualification_status', '!=', 'unqualified')
+            ->where(function ($query) use ($rfq): void {
+                $query->where('scope_type', 'company')
+                    ->orWhere(function ($store) use ($rfq): void {
+                        $store->where('scope_type', 'store')
+                            ->where('store_id', $rfq->store_id);
+                    });
+            });
+
+        if ($lock) {
+            $query->lockForUpdate();
+        }
+
+        $supplier = $query->first();
+        abort_if($supplier === null, 410);
+
+        return $supplier;
     }
 
     private function visibleRfq(EnterpriseDataScope $scope, int $rfqId, bool $lock = false): object
