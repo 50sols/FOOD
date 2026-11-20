@@ -499,6 +499,50 @@ final class V2FinanceWorkbenchPanelAuthorityTest extends TestCase
         }
     }
 
+    public function test_mixed_ar_officer_and_finance_role_cannot_read_gl_ap_or_mutate_ledger(): void
+    {
+        [$actor, $store] = $this->authorizedViewer('FIN-P303-AR-DUTY-MIX');
+        $actor->roles()->attach(Role::query()->where('code', 'AR_OFFICER')->firstOrFail()->id);
+        $journalsBefore = DB::table('enterprise_finance_journals')->count();
+        $ledgerBefore = DB::table('enterprise_finance_ledger_entries')->count();
+
+        // A second B2B role admits a Finance HTTP context; it must not
+        // expand the current AR_OFFICER duty through shared finance.view.
+        foreach (['ar' => 'rtl', 'en' => 'ltr'] as $locale => $direction) {
+            app()->setLocale($locale);
+            $actor->forceFill(['locale' => $locale])->save();
+            $user = $actor->fresh();
+
+            $this->assertTrue($user->hasRole('AR_OFFICER'));
+            $this->actingAs($user)->get(route('admin.erp.finance.index', [
+                'store_id' => $store->id,
+                'tab' => 'receivables',
+            ]))->assertOk()
+                ->assertSee('dir="'.$direction.'"', false)
+                ->assertViewHas('tab', 'receivables')
+                ->assertViewHas('access', static fn (array $access): bool => $access['ar_read']
+                    && ! $access['gl_read']
+                    && ! $access['ap_read']
+                    && ! $access['foundation_read']);
+
+            foreach (['journals', 'payables', 'accounts', 'opening_balances'] as $tab) {
+                $this->actingAs($user)->get(route('admin.erp.finance.index', [
+                    'store_id' => $store->id,
+                    'tab' => $tab,
+                ]))->assertForbidden();
+            }
+
+            $this->actingAs($user)->post(route('admin.erp.finance.journals.store'), [
+                'store_id' => $store->id,
+                'description' => 'Denied cross-role general ledger creation',
+                'idempotency_key' => 'p303-ar-duty-no-gl',
+            ])->assertForbidden();
+        }
+
+        $this->assertSame($journalsBefore, DB::table('enterprise_finance_journals')->count());
+        $this->assertSame($ledgerBefore, DB::table('enterprise_finance_ledger_entries')->count());
+    }
+
     public function test_uncertified_finance_module_does_not_render_even_an_ar_document_tab(): void
     {
         [$actor, $store] = $this->authorizedViewer('FIN-P303-UX-UNREADY');
