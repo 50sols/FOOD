@@ -71,7 +71,18 @@ final class ProcurementModuleLockContentionTest extends TestCase
                     ->first();
                 $this->assertNotNull($locked);
                 $this->assertSame(ModuleState::ENABLED->value, $locked->state);
-                $this->assertPeerNowaitBlocked($peer);
+
+                // InnoDB locking reads need an explicit transaction in each
+                // session; running peer NOWAIT in autocommit mode is not
+                // reliable proof of a competing transactional row lock.
+                $peer->beginTransaction();
+                try {
+                    $this->assertPeerNowaitBlocked($peer);
+                } finally {
+                    if ($peer->inTransaction()) {
+                        $peer->rollBack();
+                    }
+                }
             } finally {
                 DB::rollBack();
             }
