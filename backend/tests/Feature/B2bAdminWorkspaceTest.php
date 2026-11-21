@@ -195,6 +195,22 @@ class B2bAdminWorkspaceTest extends TestCase
         $this->assertSame($auditBefore, DB::table('audit_logs')->count());
         DB::table('stores')->where('id', $store)->update(['is_active' => true]);
 
+        // Price tiers remain in historical data after deactivation, but
+        // OperationalLookupService excludes them from selectable Master Data.
+        // Neither Test nor Save may resurrect pricing for a disabled tier.
+        DB::table('b2b_price_tiers')->where('id', $tier)->update(['is_active' => false]);
+        foreach (['ar', 'en'] as $locale) {
+            $admin->forceFill(['locale' => $locale])->save();
+            foreach (['test', 'save'] as $action) {
+                $this->actingAs($admin->fresh())->post('/admin/b2b/pricing', $candidate + [
+                    'setup_action' => $action,
+                ])->assertSessionHasErrors('price_tier_id');
+            }
+        }
+        $this->assertDatabaseCount('b2b_price_rules', 0);
+        $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+        DB::table('b2b_price_tiers')->where('id', $tier)->update(['is_active' => true]);
+
         $this->actingAs($admin)->post('/admin/b2b/pricing', $candidate + [
             'setup_action' => 'save',
         ])->assertRedirect()->assertSessionHasNoErrors();
