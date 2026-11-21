@@ -4,8 +4,8 @@ namespace Tests\Deployment;
 
 use App\Enterprise\Modules\ModuleRegistry;
 use App\Enterprise\Modules\ModuleState;
-use App\Services\WholesalePrincipal;
 use App\Models\User;
+use App\Services\WholesalePrincipal;
 use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
