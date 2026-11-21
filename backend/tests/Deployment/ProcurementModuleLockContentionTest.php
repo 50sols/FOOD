@@ -197,6 +197,143 @@ final class ProcurementModuleLockContentionTest extends TestCase
         }
     }
 
+    public function test_two_mysql_sessions_serialize_scoped_supplier_eligibility_and_operator_hold(): void
+    {
+        $this->assertSame('true', getenv('FOODEX_DISPOSABLE_SERVICES'));
+        $this->assertSame('mysql', DB::connection()->getDriverName());
+        $this->assertSame('foodex_acceptance', DB::connection()->getDatabaseName());
+        $this->assertSame(0, Artisan::call('migrate', ['--force' => true]));
+
+        $company = DB::table('enterprise_companies')->orderBy('id')->first();
+        $this->assertNotNull($company);
+        $supplierId = DB::table('enterprise_suppliers')->insertGetId([
+            'organization_id' => $company->organization_id,
+            'company_id' => $company->id,
+            'scope_type' => 'company',
+            'code' => 'P135-MYSQL-LOCK-'.bin2hex(random_bytes(8)),
+            'name_en' => 'Disposable supplier row lock acceptance',
+            'status' => 'active',
+            'qualification_status' => 'qualified',
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        $configuration = config('database.connections.mysql');
+        $this->assertIsArray($configuration);
+        $peer = null;
+
+        try {
+            $peer = new PDO(
+                sprintf(
+                    'mysql:host=%s;port=%d;dbname=%s;charset=utf8mb4',
+                    (string) ($configuration['host'] ?? '127.0.0.1'),
+                    (int) ($configuration['port'] ?? 3306),
+                    (string) $configuration['database'],
+                ),
+                (string) ($configuration['username'] ?? ''),
+                (string) ($configuration['password'] ?? ''),
+                [
+                    PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
+                    PDO::ATTR_EMULATE_PREPARES => false,
+                ],
+            );
+            $primaryConnectionId = (int) DB::selectOne('SELECT CONNECTION_ID() AS id')->id;
+            $peerConnectionId = (int) $peer->query('SELECT CONNECTION_ID()')->fetchColumn();
+            $this->assertGreaterThan(0, $primaryConnectionId);
+            $this->assertGreaterThan(0, $peerConnectionId);
+            $this->assertNotSame($primaryConnectionId, $peerConnectionId);
+
+            // Award's scoped supplier eligibility lock commits first: a
+            // different MySQL transaction cannot hold/disqualify this row.
+            DB::beginTransaction();
+            try {
+                $supplier = DB::table('enterprise_suppliers')
+                    ->where('id', $supplierId)
+                    ->where('organization_id', $company->organization_id)
+                    ->where('company_id', $company->id)
+                    ->where('scope_type', 'company')
+                    ->lockForUpdate()
+                    ->first();
+                $this->assertNotNull($supplier);
+                $this->assertSame('active', $supplier->status);
+                $this->assertSame('qualified', $supplier->qualification_status);
+
+                $peer->beginTransaction();
+                try {
+                    $blocked = false;
+                    try {
+                        $check = $peer->prepare(
+                            'SELECT status FROM enterprise_suppliers WHERE id = ? FOR UPDATE NOWAIT',
+                        );
+                        $check->execute([$supplierId]);
+                    } catch (PDOException $exception) {
+                        $blocked = true;
+                        $this->assertSame(3572, (int) ($exception->errorInfo[1] ?? 0));
+                    }
+                    $this->assertTrue($blocked, 'Operator must not commit a supplier hold during locked award eligibility.');
+                } finally {
+                    if ($peer->inTransaction()) {
+                        $peer->rollBack();
+                    }
+                }
+            } finally {
+                DB::rollBack();
+            }
+
+            // Operator hold now wins first. A supplier eligibility read
+            // cannot acquire the same row until the hold commits.
+            $peer->beginTransaction();
+            try {
+                $update = $peer->prepare('UPDATE enterprise_suppliers SET status = ? WHERE id = ?');
+                $update->execute(['on_hold', $supplierId]);
+
+                DB::beginTransaction();
+                try {
+                    $blocked = false;
+                    try {
+                        DB::select(
+                            'SELECT status FROM enterprise_suppliers WHERE id = ? FOR UPDATE NOWAIT',
+                            [$supplierId],
+                        );
+                    } catch (QueryException $exception) {
+                        $blocked = true;
+                        $this->assertSame(3572, (int) ($exception->errorInfo[1] ?? 0));
+                    }
+                    $this->assertTrue($blocked, 'Award must not read stale active while supplier hold is uncommitted.');
+                } finally {
+                    DB::rollBack();
+                }
+
+                $peer->commit();
+            } finally {
+                if ($peer->inTransaction()) {
+                    $peer->rollBack();
+                }
+            }
+
+            DB::beginTransaction();
+            try {
+                $afterCommit = DB::table('enterprise_suppliers')
+                    ->where('id', $supplierId)
+                    ->where('organization_id', $company->organization_id)
+                    ->where('company_id', $company->id)
+                    ->lockForUpdate()
+                    ->first();
+                $this->assertNotNull($afterCommit);
+                $this->assertSame('on_hold', $afterCommit->status);
+            } finally {
+                DB::rollBack();
+            }
+        } finally {
+            if ($peer !== null && $peer->inTransaction()) {
+                $peer->rollBack();
+            }
+            if (DB::connection()->transactionLevel() > 0) {
+                DB::rollBack();
+            }
+            DB::table('enterprise_suppliers')->where('id', $supplierId)->delete();
+        }
+    }
+
     private function assertPeerNowaitBlocked(PDO $peer): void
     {
         $blocked = false;
