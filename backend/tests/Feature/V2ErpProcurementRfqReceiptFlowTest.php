@@ -1761,6 +1761,97 @@ final class V2ErpProcurementRfqReceiptFlowTest extends TestCase
             ->where('event', 'enterprise.goods_receipt.posted')->count());
     }
 
+    public function test_rfq_creation_rechecks_module_shutdown_after_preflight_without_draft_or_audit(): void
+    {
+        $store = $this->store();
+        $maker = $this->actor('PROCUREMENT_BUYER', 'ar');
+        $reason = 'P135 RFQ create lifecycle '.$maker->id;
+        $this->actingAs($maker)->post(route('admin.erp.procurement.requests.store'), [
+            'store_id' => $store->id, 'currency_code' => 'KWD', 'reason' => $reason,
+            'item_code' => 'P135-RFQ-CREATE-LOCK', 'description' => 'Module shutdown ordering',
+            'quantity' => 2, 'unit' => 'each', 'estimated_unit_cost' => '5.000',
+        ])->assertRedirect();
+        $requestId = (int) DB::table('enterprise_purchase_requests')
+            ->where('reason', $reason)->value('id');
+        $this->assertGreaterThan(0, $requestId);
+        $this->actingAs($maker)->post(route('admin.erp.procurement.requests.submit', $requestId), [
+            'store_id' => $store->id,
+        ])->assertRedirect();
+        $this->assertDatabaseHas('enterprise_purchase_requests', [
+            'id' => $requestId, 'status' => 'submitted', 'store_id' => $store->id,
+        ]);
+
+        $createUrl = route('admin.erp.procurement.rfqs.store');
+        $postData = [
+            'store_id' => $store->id, 'purchase_request_id' => $requestId,
+            'title' => 'P135 creation after preflight',
+            'response_due_at' => now()->addDays(5)->format('Y-m-d H:i:s'),
+        ];
+        $before = DB::table('audit_logs')
+            ->where('event', 'enterprise.procurement.rfq.created')->count();
+        $pending = true;
+        $reads = [];
+        DB::listen(function (QueryExecuted $query) use (&$pending, &$reads): void {
+            if (! str_starts_with(strtolower(ltrim($query->sql)), 'select')) {
+                return;
+            }
+
+            // Interleave in the same PHP process after the initial
+            // module-enabled preflight, before draft RFQ creation begins.
+            if ($pending && str_contains($query->sql, 'enterprise_modules')) {
+                $pending = false;
+                app(ModuleLifecycleManager::class)->transition('procurement', ModuleState::SUSPENDED);
+            }
+
+            if (DB::connection()->transactionLevel() < 2) {
+                return;
+            }
+            if (str_contains($query->sql, 'enterprise_modules')) {
+                $reads[] = 'module';
+            } elseif (str_contains($query->sql, 'enterprise_purchase_requests')) {
+                $reads[] = 'request';
+            }
+        });
+
+        app()->setLocale('ar');
+        $this->actingAs($maker)->post($createUrl, $postData)->assertNotFound();
+        $this->assertFalse($pending, 'The test must actually inject a post-preflight shutdown.');
+        $this->assertSame(ModuleState::SUSPENDED, app(ModuleRegistry::class)->state('procurement'));
+        $this->assertSame('module', $reads[0] ?? null);
+        $this->assertDatabaseMissing('enterprise_procurement_rfqs', [
+            'purchase_request_id' => $requestId,
+        ]);
+        $this->assertSame($before, DB::table('audit_logs')
+            ->where('event', 'enterprise.procurement.rfq.created')->count());
+        $this->assertDatabaseHas('enterprise_purchase_requests', [
+            'id' => $requestId, 'status' => 'submitted', 'supplier_id' => null,
+        ]);
+
+        app(ModuleLifecycleManager::class)->transition('procurement', ModuleState::ENABLED);
+        app()->setLocale('en');
+        $maker->forceFill(['locale' => 'en'])->save();
+        $reads = [];
+        $this->actingAs($maker->fresh())->post($createUrl, $postData)->assertRedirect();
+        $this->assertSame(['module', 'request'], array_slice(array_values(array_unique($reads)), 0, 2));
+        $rfqId = (int) DB::table('enterprise_procurement_rfqs')
+            ->where('purchase_request_id', $requestId)->value('id');
+        $this->assertGreaterThan(0, $rfqId);
+        $this->assertDatabaseHas('enterprise_procurement_rfqs', [
+            'id' => $rfqId, 'status' => 'draft', 'store_id' => $store->id,
+        ]);
+        $this->assertSame(1, DB::table('enterprise_procurement_rfq_lines')
+            ->where('rfq_id', $rfqId)->count());
+        $this->assertSame($before + 1, DB::table('audit_logs')
+            ->where('event', 'enterprise.procurement.rfq.created')->count());
+
+        // Existing request → RFQ idempotency must remain intact.
+        $this->actingAs($maker->fresh())->post($createUrl, $postData)->assertRedirect();
+        $this->assertSame(1, DB::table('enterprise_procurement_rfqs')
+            ->where('purchase_request_id', $requestId)->count());
+        $this->assertSame($before + 1, DB::table('audit_logs')
+            ->where('event', 'enterprise.procurement.rfq.created')->count());
+    }
+
     public function test_rfq_cancel_after_module_shutdown_preflight_does_not_revoke_invitation_or_audit_then_recovers(): void
     {
         $store = $this->store();
