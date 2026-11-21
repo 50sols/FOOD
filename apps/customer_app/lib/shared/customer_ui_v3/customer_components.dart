@@ -1,0 +1,616 @@
+import 'package:flutter/material.dart';
+
+import '../../core/theme/customer_ui_v3_tokens.dart';
+
+class CustomerCurvedHeaderSurface extends StatelessWidget {
+  const CustomerCurvedHeaderSurface({
+    required this.header,
+    required this.child,
+    this.backgroundColor = CustomerUiColors.mint,
+    this.headerColor = CustomerUiColors.deepGreen,
+    this.headerPadding = const EdgeInsetsDirectional.fromSTEB(12, 6, 12, 8),
+    super.key,
+  });
+
+  final Widget header;
+  final Widget child;
+  final Color backgroundColor;
+  final Color headerColor;
+  final EdgeInsetsGeometry headerPadding;
+
+  @override
+  Widget build(BuildContext context) => ColoredBox(
+        color: backgroundColor,
+        child: Column(
+          children: [
+            DecoratedBox(
+              decoration: BoxDecoration(
+                color: headerColor,
+                borderRadius: const BorderRadius.vertical(
+                  bottom: Radius.circular(CustomerUiRadii.curvedHeader),
+                ),
+              ),
+              child: SafeArea(
+                bottom: false,
+                child: Padding(
+                  padding: headerPadding,
+                  child: header,
+                ),
+              ),
+            ),
+            Expanded(child: child),
+          ],
+        ),
+      );
+}
+
+class CustomerSearchPill extends StatelessWidget {
+  const CustomerSearchPill({
+    required this.hintText,
+    this.controller,
+    this.focusNode,
+    this.onChanged,
+    this.onSubmitted,
+    this.trailing,
+    this.enabled = true,
+    this.semanticLabel,
+    super.key,
+  });
+
+  final String hintText;
+  final TextEditingController? controller;
+  final FocusNode? focusNode;
+  final ValueChanged<String>? onChanged;
+  final ValueChanged<String>? onSubmitted;
+  final Widget? trailing;
+  final bool enabled;
+  final String? semanticLabel;
+
+  @override
+  Widget build(BuildContext context) => Semantics(
+        textField: true,
+        label: semanticLabel ?? hintText,
+        child: TextField(
+          controller: controller,
+          focusNode: focusNode,
+          enabled: enabled,
+          textInputAction: TextInputAction.search,
+          onChanged: onChanged,
+          onSubmitted: onSubmitted,
+          decoration: InputDecoration(
+            hintText: hintText,
+            prefixIcon: const Icon(Icons.search_rounded),
+            suffixIcon: trailing,
+            filled: true,
+            fillColor: CustomerUiColors.white,
+            border: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(CustomerUiRadii.pill),
+              borderSide: const BorderSide(color: CustomerUiColors.border),
+            ),
+          ),
+        ),
+      );
+}
+
+enum CustomerBadgeTone { accent, neutral, discount, success }
+
+class CustomerBadge extends StatelessWidget {
+  const CustomerBadge({
+    required this.label,
+    this.tone = CustomerBadgeTone.neutral,
+    super.key,
+  });
+
+  final String label;
+  final CustomerBadgeTone tone;
+
+  @override
+  Widget build(BuildContext context) {
+    final (background, foreground) = switch (tone) {
+      CustomerBadgeTone.accent => (
+          CustomerUiColors.limeSoft,
+          CustomerUiColors.deepGreenStrong,
+        ),
+      CustomerBadgeTone.discount => (
+          const Color(0xFFFFECEC),
+          CustomerUiColors.destructive,
+        ),
+      CustomerBadgeTone.success => (
+          const Color(0xFFE8F7EE),
+          CustomerUiColors.success,
+        ),
+      CustomerBadgeTone.neutral => (
+          CustomerUiColors.mint,
+          CustomerUiColors.inkSoft,
+        ),
+    };
+
+    return ConstrainedBox(
+      constraints: const BoxConstraints(maxWidth: 160),
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          color: background,
+          borderRadius: BorderRadius.circular(CustomerUiRadii.pill),
+        ),
+        child: Padding(
+          padding: const EdgeInsetsDirectional.fromSTEB(9, 4, 9, 4),
+          child: Text(
+            label,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            textAlign: TextAlign.center,
+            style: Theme.of(context).textTheme.labelMedium?.copyWith(
+                  color: foreground,
+                  fontWeight: FontWeight.w800,
+                ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class CustomerOutlineIconButton extends StatelessWidget {
+  const CustomerOutlineIconButton({
+    required this.icon,
+    required this.onPressed,
+    this.tooltip,
+    this.selected = false,
+    this.semanticLabel,
+    this.iconSize = 24,
+    this.selectedColor,
+    super.key,
+  });
+
+  final IconData icon;
+  final VoidCallback? onPressed;
+  final String? tooltip;
+  final bool selected;
+  final String? semanticLabel;
+  final double iconSize;
+  final Color? selectedColor;
+
+  @override
+  Widget build(BuildContext context) => Semantics(
+        button: true,
+        label: semanticLabel ?? tooltip,
+        child: DecoratedBox(
+          decoration: BoxDecoration(
+            color:
+                selected ? CustomerUiColors.limeSoft : CustomerUiColors.white,
+            borderRadius: BorderRadius.circular(CustomerUiRadii.md),
+            border: Border.all(color: CustomerUiColors.border),
+          ),
+          child: SizedBox.square(
+            dimension: 44,
+            child: IconButton(
+              tooltip: tooltip,
+              onPressed: onPressed,
+              icon: Icon(
+                icon,
+                size: iconSize,
+                color: selected
+                    ? (selectedColor ?? CustomerUiColors.deepGreenStrong)
+                    : CustomerUiColors.inkSoft,
+              ),
+            ),
+          ),
+        ),
+      );
+}
+
+class CustomerCategoryTile extends StatelessWidget {
+  const CustomerCategoryTile({
+    required this.label,
+    this.imageUrl,
+    this.fallbackIcon = Icons.category_outlined,
+    this.onTap,
+    this.selected = false,
+    super.key,
+  });
+
+  final String label;
+  final String? imageUrl;
+  final IconData fallbackIcon;
+  final VoidCallback? onTap;
+  final bool selected;
+
+  @override
+  Widget build(BuildContext context) => SizedBox(
+        width: 84,
+        child: InkWell(
+          onTap: onTap,
+          borderRadius: BorderRadius.circular(CustomerUiRadii.lg),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(vertical: CustomerUiSpacing.xs),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                AnimatedContainer(
+                  duration: CustomerUiMotion.resolve(
+                    context,
+                    CustomerUiMotion.standard,
+                  ),
+                  curve: CustomerUiMotion.standardCurve,
+                  width: 64,
+                  height: 64,
+                  padding: const EdgeInsets.all(3),
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    color: selected
+                        ? CustomerUiColors.limeSoft
+                        : CustomerUiColors.white,
+                    border: Border.all(
+                      color: selected
+                          ? CustomerUiColors.lime
+                          : CustomerUiColors.border,
+                      width: selected
+                          ? CustomerUiStroke.emphasis
+                          : CustomerUiStroke.hairline,
+                    ),
+                  ),
+                  child: ClipOval(
+                    child: imageUrl?.trim().isNotEmpty == true
+                        ? Image.network(
+                            imageUrl!,
+                            fit: BoxFit.cover,
+                            errorBuilder: (_, __, ___) =>
+                                _CategoryFallback(icon: fallbackIcon),
+                          )
+                        : _CategoryFallback(icon: fallbackIcon),
+                  ),
+                ),
+                const SizedBox(height: CustomerUiSpacing.xs),
+                Text(
+                  label,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  textAlign: TextAlign.center,
+                  style: Theme.of(context).textTheme.labelLarge,
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+}
+
+class _CategoryFallback extends StatelessWidget {
+  const _CategoryFallback({required this.icon});
+
+  final IconData icon;
+
+  @override
+  Widget build(BuildContext context) => ColoredBox(
+        color: CustomerUiColors.mint,
+        child: Center(
+          child: Icon(
+            icon,
+            color: CustomerUiColors.deepGreenStrong,
+          ),
+        ),
+      );
+}
+
+class CustomerProductImage extends StatelessWidget {
+  const CustomerProductImage({
+    this.imageUrl,
+    this.fallbackAsset,
+    this.aspectRatio = 1.75,
+    super.key,
+  });
+
+  final String? imageUrl;
+  final String? fallbackAsset;
+  final double aspectRatio;
+
+  @override
+  Widget build(BuildContext context) => AspectRatio(
+        aspectRatio: aspectRatio,
+        child: TweenAnimationBuilder<double>(
+          tween: Tween<double>(begin: 1.055, end: 1),
+          duration: const Duration(milliseconds: 720),
+          curve: Curves.easeOutCubic,
+          builder: (context, scale, child) => Transform.scale(
+            scale: scale,
+            child: child,
+          ),
+          child: Container(
+            margin: const EdgeInsets.all(2),
+            decoration: BoxDecoration(
+              color: CustomerUiColors.white,
+              borderRadius: BorderRadius.circular(CustomerUiRadii.xl),
+              boxShadow: const <BoxShadow>[
+                BoxShadow(
+                  color: Color(0x3D72E89A),
+                  blurRadius: 13,
+                  spreadRadius: 1,
+                  offset: Offset(0, 4),
+                ),
+              ],
+            ),
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(CustomerUiRadii.xl),
+              child: imageUrl?.trim().isNotEmpty == true
+                  ? Image.network(
+                      imageUrl!,
+                      fit: BoxFit.cover,
+                      errorBuilder: (_, __, ___) => _fallback(),
+                    )
+                  : _fallback(),
+            ),
+          ),
+        ),
+      );
+
+  Widget _fallback() {
+    if (fallbackAsset?.trim().isNotEmpty == true) {
+      return Image.asset(
+        fallbackAsset!,
+        fit: BoxFit.cover,
+        errorBuilder: (_, __, ___) => const _ProductFallback(),
+      );
+    }
+    return const _ProductFallback();
+  }
+}
+
+class _ProductFallback extends StatelessWidget {
+  const _ProductFallback();
+
+  @override
+  Widget build(BuildContext context) => const ColoredBox(
+        color: CustomerUiColors.mint,
+        child: Center(
+          child: Icon(
+            Icons.inventory_2_outlined,
+            color: CustomerUiColors.deepGreenSoft,
+            size: 34,
+          ),
+        ),
+      );
+}
+
+class CustomerProductCard extends StatelessWidget {
+  const CustomerProductCard({
+    required this.title,
+    required this.priceLabel,
+    this.imageUrl,
+    this.fallbackAsset,
+    this.categoryLabel,
+    this.brandLabel,
+    this.brandImageUrl,
+    this.oldPriceLabel,
+    this.discountLabel,
+    this.favorite = false,
+    this.onTap,
+    this.onFavorite,
+    this.onAdd,
+    this.addSemanticLabel,
+    this.favoriteSemanticLabel,
+    this.isAvailable = true,
+    this.unavailableLabel,
+    this.compact = false,
+    super.key,
+  });
+
+  final String title;
+  final String priceLabel;
+  final String? imageUrl;
+  final String? fallbackAsset;
+  final String? categoryLabel;
+  final String? brandLabel;
+  final String? brandImageUrl;
+  final String? oldPriceLabel;
+  final String? discountLabel;
+  final bool favorite;
+  final VoidCallback? onTap;
+  final VoidCallback? onFavorite;
+  final VoidCallback? onAdd;
+  final String? addSemanticLabel;
+  final String? favoriteSemanticLabel;
+  final bool isAvailable;
+  final String? unavailableLabel;
+  final bool compact;
+
+  @override
+  Widget build(BuildContext context) => Material(
+        color: CustomerUiColors.white,
+        borderRadius: BorderRadius.circular(CustomerUiRadii.xl),
+        clipBehavior: Clip.antiAlias,
+        child: InkWell(
+          onTap: onTap,
+          child: DecoratedBox(
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(CustomerUiRadii.xl),
+              border: Border.all(color: CustomerUiColors.border),
+            ),
+            child: Padding(
+              padding: EdgeInsets.all(
+                compact ? CustomerUiSpacing.xxs : CustomerUiSpacing.xs,
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Stack(
+                    children: [
+                      Opacity(
+                        opacity: isAvailable ? 1 : 0.42,
+                        child: CustomerProductImage(
+                          imageUrl: imageUrl,
+                          fallbackAsset: fallbackAsset,
+                          aspectRatio: compact ? 1.45 : 1.75,
+                        ),
+                      ),
+                      if (!isAvailable &&
+                          unavailableLabel?.trim().isNotEmpty == true)
+                        PositionedDirectional(
+                          bottom: CustomerUiSpacing.xs,
+                          start: CustomerUiSpacing.xs,
+                          child: DecoratedBox(
+                            key:
+                                const ValueKey('customer-product-out-of-stock'),
+                            decoration: BoxDecoration(
+                              color: CustomerUiColors.white,
+                              borderRadius:
+                                  BorderRadius.circular(CustomerUiRadii.pill),
+                              border:
+                                  Border.all(color: CustomerUiColors.border),
+                            ),
+                            child: Padding(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: CustomerUiSpacing.sm,
+                                vertical: CustomerUiSpacing.xxs,
+                              ),
+                              child: Text(
+                                unavailableLabel!,
+                                style: Theme.of(context)
+                                    .textTheme
+                                    .labelSmall
+                                    ?.copyWith(
+                                      color: CustomerUiColors.muted,
+                                      fontWeight: FontWeight.w800,
+                                    ),
+                              ),
+                            ),
+                          ),
+                        ),
+                      if (discountLabel?.trim().isNotEmpty == true)
+                        PositionedDirectional(
+                          top: CustomerUiSpacing.xs,
+                          start: CustomerUiSpacing.xs,
+                          child: CustomerBadge(
+                            label: discountLabel!,
+                            tone: CustomerBadgeTone.discount,
+                          ),
+                        ),
+                      if (categoryLabel?.trim().isNotEmpty == true)
+                        PositionedDirectional(
+                          top: discountLabel?.trim().isNotEmpty == true
+                              ? 40
+                              : CustomerUiSpacing.xs,
+                          start: CustomerUiSpacing.xs,
+                          child: CustomerBadge(
+                            key: const ValueKey(
+                              'customer-product-category-badge',
+                            ),
+                            label: categoryLabel!,
+                            tone: CustomerBadgeTone.accent,
+                          ),
+                        ),
+                      if (onFavorite != null)
+                        PositionedDirectional(
+                          top: CustomerUiSpacing.xs,
+                          end: CustomerUiSpacing.xs,
+                          child: CustomerOutlineIconButton(
+                            icon: favorite
+                                ? Icons.favorite_rounded
+                                : Icons.favorite_border_rounded,
+                            selected: favorite,
+                            semanticLabel: favoriteSemanticLabel,
+                            onPressed: onFavorite,
+                          ),
+                        ),
+                      if (brandImageUrl?.trim().isNotEmpty == true)
+                        Positioned(
+                          bottom: CustomerUiSpacing.xs,
+                          right: CustomerUiSpacing.xs,
+                          child: Tooltip(
+                            message: brandLabel?.trim() ?? '',
+                            child: Container(
+                              width: 30,
+                              height: 30,
+                              padding: const EdgeInsets.all(3),
+                              clipBehavior: Clip.antiAlias,
+                              decoration: BoxDecoration(
+                                color: CustomerUiColors.white,
+                                shape: BoxShape.circle,
+                                border: Border.all(
+                                  color: CustomerUiColors.border,
+                                ),
+                              ),
+                              child: ClipOval(
+                                child: Image.network(
+                                  brandImageUrl!,
+                                  fit: BoxFit.contain,
+                                  errorBuilder: (_, __, ___) => const Icon(
+                                    Icons.sell_outlined,
+                                    size: 16,
+                                    color: CustomerUiColors.deepGreenSoft,
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ),
+                        ),
+                      if (isAvailable && onAdd != null)
+                        Positioned(
+                          bottom: CustomerUiSpacing.xs,
+                          left: CustomerUiSpacing.xs,
+                          child: Semantics(
+                            button: true,
+                            label: addSemanticLabel,
+                            child: InkResponse(
+                              onTap: onAdd,
+                              radius: 23,
+                              child: const DecoratedBox(
+                                decoration: BoxDecoration(
+                                  color: CustomerUiColors.lime,
+                                  shape: BoxShape.circle,
+                                  boxShadow: <BoxShadow>[
+                                    BoxShadow(
+                                      color: Color(0x33000000),
+                                      blurRadius: 7,
+                                      offset: Offset(0, 2),
+                                    ),
+                                  ],
+                                ),
+                                child: SizedBox.square(
+                                  dimension: 36,
+                                  child: Icon(
+                                    Icons.add_rounded,
+                                    size: 20,
+                                    color: CustomerUiColors.deepGreenStrong,
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ),
+                        ),
+                    ],
+                  ),
+                  const SizedBox(height: CustomerUiSpacing.xxs),
+                  Align(
+                    alignment: AlignmentDirectional.centerEnd,
+                    child: CustomerBadge(
+                      key: const ValueKey('customer-product-price-badge'),
+                      label: priceLabel,
+                      tone: CustomerBadgeTone.success,
+                    ),
+                  ),
+                  const SizedBox(height: CustomerUiSpacing.xxs),
+                  SizedBox(
+                    width: double.infinity,
+                    height: 14,
+                    child: FittedBox(
+                      fit: BoxFit.scaleDown,
+                      alignment: AlignmentDirectional.centerStart,
+                      child: Text(
+                        title,
+                        maxLines: 1,
+                        softWrap: false,
+                        style:
+                            Theme.of(context).textTheme.titleMedium?.copyWith(
+                                  fontSize: compact ? 9 : 9.5,
+                                  height: 1.1,
+                                ),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      );
+}

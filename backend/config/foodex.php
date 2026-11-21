@@ -1,0 +1,33 @@
+<?php
+
+return [
+    'install_lock' => env('FOODEX_INSTALL_LOCK', 'storage/app/system/installed.lock'),
+    'install_progress' => env('FOODEX_INSTALL_PROGRESS', 'storage/app/system/install-progress.json'),
+    'installer_env_path' => env('FOODEX_INSTALL_ENV_PATH', base_path('.env')),
+    'update_backup_path' => env('FOODEX_UPDATE_BACKUP_PATH', storage_path('app/system/update-backups')),
+    'update_backup_retention_days' => max(1, (int) env('FOODEX_UPDATE_BACKUP_RETENTION_DAYS', 30)),
+    // Uncompressed Update ZIP staging budgets (bytes); verify larger release
+    // payloads before increasing limits on shared hosting.
+    'update_max_entry_uncompressed_bytes' => max(1, (int) env('FOODEX_UPDATE_MAX_ENTRY_UNCOMPRESSED_BYTES', 268435456)),
+    'update_max_total_uncompressed_bytes' => max(1, (int) env('FOODEX_UPDATE_MAX_TOTAL_UNCOMPRESSED_BYTES', 1073741824)),
+    // Bound ZIP central-directory records (files and directories) before enumeration.
+    // Enforced in both package validation and runtime preflight/extraction.
+    'update_max_zip_members' => max(1, (int) env('FOODEX_UPDATE_MAX_ZIP_MEMBERS', 50000)),
+    'mysql_dump_binary' => env('FOODEX_MYSQL_DUMP_BINARY', 'mysqldump'),
+    'mysql_client_binary' => env('FOODEX_MYSQL_CLIENT_BINARY', 'mysql'),
+    'pg_dump_binary' => env('FOODEX_PG_DUMP_BINARY', 'pg_dump'),
+    'pg_restore_binary' => env('FOODEX_PG_RESTORE_BINARY', 'pg_restore'),
+    'scheduler_auto_provision' => (bool) env('FOODEX_SCHEDULER_AUTO_PROVISION', true),
+    'scheduler_heartbeat' => (bool) env('FOODEX_SCHEDULER_HEARTBEAT', true),
+    'scheduler_php_binary' => env('FOODEX_SCHEDULER_PHP_BINARY', PHP_BINDIR.'/php'),
+    'crontab_binary' => env('FOODEX_CRONTAB_BINARY', 'crontab'),
+    // Temporary pilot convenience. Disable before public production rollout.
+    'mobile_trial_username_login' => (bool) env('FOODEX_MOBILE_TRIAL_USERNAME_LOGIN', true),
+    'platform_wholesale_store_code' => env('FOODEX_PLATFORM_WHOLESALE_STORE_CODE', ''),
+    'release_source_sha' => env('FOODEX_RELEASE_SOURCE_SHA', env('GITHUB_SHA')),
+    'release_run_number' => env('FOODEX_RELEASE_RUN_NUMBER', env('GITHUB_RUN_NUMBER')),
+    'launch' => [
+        'enabled' => (bool) env('FOODEX_PRODUCTION_LAUNCH_ENABLED', false),
+        'provider_ready' => (bool) env('FOODEX_PRODUCTION_PROVIDER_READY', false),
+    ],
+];

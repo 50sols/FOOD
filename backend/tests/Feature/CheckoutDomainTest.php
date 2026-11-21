@@ -1,0 +1,821 @@
+<?php
+
+namespace Tests\Feature;
+
+use App\Domain\WhatsApp\Lifecycle;
+use App\Domain\WhatsApp\RuntimePolicy;
+use App\Models\Address;
+use App\Models\B2cCustomer;
+use App\Models\Customer;
+use App\Models\Notification;
+use App\Models\Role;
+use App\Models\User;
+use Database\Seeders\CoreReferenceSeeder;
+use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Http;
+use Laravel\Sanctum\Sanctum;
+use Tests\TestCase;
+
+class CheckoutDomainTest extends TestCase
+{
+    use RefreshDatabase;
+
+    private int $storeId;
+
+    private int $productId;
+
+    private int $warehouseId;
+
+    private User $user;
+
+    private Customer $customer;
+
+    private B2cCustomer $domainCustomer;
+
+    private Address $address;
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        $this->seed(CoreReferenceSeeder::class);
+
+        $b2cTypeId = (int) DB::table('store_types')->where('code', 'B2C')->value('id');
+        $unitId = (int) DB::table('units')->insertGetId([
+            'code' => 'EA-CHECKOUT',
+            'name' => 'Each',
+            'decimal_places' => 0,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        $this->storeId = (int) DB::table('stores')->insertGetId([
+            'store_type_id' => $b2cTypeId,
+            'code' => 'CHECKOUT-B2C',
+            'name' => 'Checkout Retail',
+            'is_active' => true,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        $catalogId = (int) DB::table('catalogs')->insertGetId([
+            'store_id' => $this->storeId,
+            'channel' => 'b2c',
+            'code' => 'default',
+            'name' => 'Checkout Retail Catalog',
+            'is_active' => true,
+            'is_migration_quarantine' => false,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        $categoryId = (int) DB::table('categories')->insertGetId([
+            'catalog_id' => $catalogId,
+            'name' => 'Checkout',
+            'slug' => 'checkout',
+            'is_active' => true,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $this->productId = (int) DB::table('products')->insertGetId([
+            'catalog_id' => $catalogId,
+            'category_id' => $categoryId,
+            'unit_id' => $unitId,
+            'sku' => 'CHECKOUT-001',
+            'name' => 'Checkout Product',
+            'is_active' => true,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        DB::table('store_products')->insert([
+            'store_id' => $this->storeId,
+            'product_id' => $this->productId,
+            'price' => 1.250,
+            'is_active' => true,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $this->warehouseId = (int) DB::table('warehouses')->insertGetId([
+            'store_id' => $this->storeId,
+            'code' => 'WH-CHECKOUT',
+            'name' => 'Checkout Warehouse',
+            'is_active' => true,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        DB::table('inventories')->insert([
+            'warehouse_id' => $this->warehouseId,
+            'product_id' => $this->productId,
+            'quantity' => 5,
+            'reserved_quantity' => 0,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $this->user = User::query()->create([
+            'name' => 'Checkout Customer',
+            'email' => 'checkout@example.test',
+            'password' => 'secret-password',
+            'locale' => 'ar',
+            'is_active' => true,
+        ]);
+
+        $this->customer = Customer::query()->create([
+            'user_id' => $this->user->id,
+            'type' => 'b2c',
+            'name' => 'Checkout Customer',
+            'email' => $this->user->email,
+        ]);
+
+        $this->domainCustomer = B2cCustomer::query()->create([
+            'legacy_customer_id' => $this->customer->id,
+            'store_id' => $this->storeId,
+            'user_id' => $this->user->id,
+            'name' => 'Checkout Customer',
+            'email' => $this->user->email,
+        ]);
+
+        $this->address = Address::query()->create([
+            'customer_id' => $this->customer->id,
+            'b2c_customer_id' => $this->domainCustomer->id,
+            'label' => 'Home',
+            'line1' => 'Street 1',
+            'city' => 'Kuwait City',
+            'area' => 'Sharq',
+            'country_code' => 'KW',
+            'is_default' => true,
+        ]);
+
+        Sanctum::actingAs($this->user);
+    }
+
+    public function test_egp_minimum_rejects_a_short_cart_and_accepts_qualifying_total(): void
+    {
+        config()->set('checkout.minimum_merchandise_total_egp', 1500);
+
+        $this->addCartItem(2);
+
+        $this->withHeader('Idempotency-Key', 'minimum-test-block-1500')
+            ->postJson('/api/v1/checkout', [
+                'store_id' => $this->storeId,
+                'address_id' => $this->address->id,
+                'payment_method' => 'cash_on_delivery',
+            ])
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors(['cart']);
+
+        $this->assertDatabaseCount('orders', 0);
+
+        DB::table('store_products')
+            ->where('store_id', $this->storeId)
+            ->where('product_id', $this->productId)
+            ->update(['price' => 750]);
+
+        $this->withHeader('Idempotency-Key', 'minimum-test-accept-1500')
+            ->postJson('/api/v1/checkout', [
+                'store_id' => $this->storeId,
+                'address_id' => $this->address->id,
+                'payment_method' => 'cash_on_delivery',
+            ])
+            ->assertCreated()
+            ->assertJsonPath('subtotal', 1500);
+    }
+
+    public function test_customer_order_and_payment_checkout_are_unchanged_while_whatsapp_is_disabled(): void
+    {
+        $policy = app(RuntimePolicy::class);
+        $this->assertSame(Lifecycle::DISABLED, $policy->state()->lifecycle);
+        $this->assertFalse($policy->isOperational());
+        Http::preventStrayRequests();
+
+        $this->addCartItem(1);
+        $response = $this->withHeader('Idempotency-Key', 'checkout-whatsapp-disabled-001')
+            ->postJson('/api/v1/checkout', [
+                'store_id' => $this->storeId,
+                'address_id' => $this->address->id,
+                'payment_method' => 'cash_on_delivery',
+            ])
+            ->assertCreated()
+            ->assertJsonPath('payment.provider', 'cash_on_delivery')
+            ->assertJsonPath('payment.status', 'pending');
+
+        $orderId = (int) $response->json('id');
+        $this->assertDatabaseHas('customers', ['id' => $this->customer->id, 'user_id' => $this->user->id]);
+        $this->assertDatabaseHas('orders', ['id' => $orderId, 'customer_id' => $this->customer->id]);
+        $this->assertDatabaseHas('payments', [
+            'order_id' => $orderId,
+            'provider' => 'cash_on_delivery',
+            'status' => 'pending',
+        ]);
+        $this->assertSame(Lifecycle::DISABLED, $policy->state()->lifecycle);
+        $this->assertFalse($policy->isOperational());
+        Http::assertNothingSent();
+    }
+
+    public function test_checkout_creates_order_payment_history_audit_and_stock_reservation(): void
+    {
+        $this->addCartItem(2);
+
+        $response = $this->withHeader('Idempotency-Key', 'checkout-key-000001')
+            ->postJson('/api/v1/checkout', [
+                'store_id' => $this->storeId,
+                'address_id' => $this->address->id,
+                'payment_method' => 'cash_on_delivery',
+                'note' => 'Leave at reception',
+            ])
+            ->assertCreated()
+            ->assertJsonPath('channel', 'b2c')
+            ->assertJsonPath('status', 'pending')
+            ->assertJsonPath('subtotal', 2.5)
+            ->assertJsonPath('grand_total', 2.5)
+            ->assertJsonPath('payment.provider', 'cash_on_delivery')
+            ->assertJsonPath('payment.status', 'pending')
+            ->assertJsonPath('invoice.status', 'issued');
+
+        $orderId = (int) $response->json('id');
+
+        $this->assertDatabaseHas('orders', [
+            'id' => $orderId,
+            'customer_id' => $this->customer->id,
+            'b2c_customer_id' => $this->domainCustomer->id,
+            'address_id' => $this->address->id,
+            'checkout_idempotency_key' => 'checkout-key-000001',
+        ]);
+        $this->assertDatabaseHas('order_items', [
+            'order_id' => $orderId,
+            'product_id' => $this->productId,
+            'quantity' => 2,
+            'unit_price' => 1.250,
+        ]);
+        $invoiceId = (int) DB::table('invoices')->where('order_id', $orderId)->value('id');
+        $this->assertGreaterThan(0, $invoiceId);
+        $this->assertDatabaseHas('invoices', [
+            'id' => $invoiceId,
+            'order_id' => $orderId,
+            'store_id' => $this->storeId,
+            'b2c_customer_id' => $this->domainCustomer->id,
+            'channel' => 'b2c',
+            'status' => 'issued',
+            'subtotal' => 2.500,
+            'total' => 2.500,
+        ]);
+        $this->assertDatabaseHas('invoice_items', [
+            'invoice_id' => $invoiceId,
+            'product_id' => $this->productId,
+            'quantity' => 2,
+            'unit_price' => 1.250,
+            'line_total' => 2.500,
+        ]);
+        $this->assertDatabaseHas('payments', [
+            'order_id' => $orderId,
+            'invoice_id' => $invoiceId,
+            'provider' => 'cash_on_delivery',
+            'status' => 'pending',
+            'amount' => 2.500,
+        ]);
+        $this->assertDatabaseHas('order_status_history', [
+            'order_id' => $orderId,
+            'from_status' => null,
+            'to_status' => 'pending',
+        ]);
+        $this->assertDatabaseHas('stock_movements', [
+            'reference_type' => 'order',
+            'reference_id' => $orderId,
+            'type' => 'reserve',
+            'quantity' => 2,
+        ]);
+        $this->assertDatabaseHas('inventories', [
+            'warehouse_id' => $this->warehouseId,
+            'product_id' => $this->productId,
+            'reserved_quantity' => 2,
+        ]);
+        $this->assertDatabaseMissing('carts', [
+            'customer_id' => $this->customer->id,
+            'store_id' => $this->storeId,
+        ]);
+        $this->assertDatabaseHas('audit_logs', [
+            'event' => 'checkout.order_created',
+            'auditable_type' => 'App\\Models\\Order',
+            'auditable_id' => $orderId,
+        ]);
+        $this->assertDatabaseHas('audit_logs', [
+            'event' => 'invoice.issued',
+            'auditable_type' => 'App\\Models\\Invoice',
+            'auditable_id' => $invoiceId,
+        ]);
+    }
+
+    public function test_customer_invoice_is_snapshot_owned_and_downloads_in_arabic_and_english(): void
+    {
+        $this->addCartItem(2);
+
+        $checkout = $this->withHeader('Idempotency-Key', 'checkout-key-invoice-001')
+            ->postJson('/api/v1/checkout', [
+                'store_id' => $this->storeId,
+                'address_id' => $this->address->id,
+                'payment_method' => 'cash_on_delivery',
+            ])
+            ->assertCreated();
+
+        $invoiceId = (int) $checkout->json('invoice.id');
+        $this->assertGreaterThan(0, $invoiceId);
+
+        DB::table('store_products')
+            ->where('store_id', $this->storeId)
+            ->where('product_id', $this->productId)
+            ->update(['price' => 99.999]);
+
+        $this->getJson('/api/v1/invoices')
+            ->assertOk()
+            ->assertJsonPath('data.0.id', $invoiceId);
+
+        $this->getJson('/api/v1/invoices/'.$invoiceId)
+            ->assertOk()
+            ->assertJsonPath('data.grand_total', 2.5)
+            ->assertJsonPath('data.items.0.unit_price', 1.25)
+            ->assertJsonPath('data.items.0.line_total', 2.5);
+
+        $this->get('/api/v1/invoices/'.$invoiceId.'/download?locale=ar')
+            ->assertOk()
+            ->assertHeader('Content-Type', 'application/pdf')
+            ->assertSee('%PDF', false);
+        $this->get('/api/v1/invoices/'.$invoiceId.'/download?locale=en')
+            ->assertOk()
+            ->assertHeader('Content-Type', 'application/pdf')
+            ->assertSee('%PDF', false);
+
+        $otherUser = User::query()->create([
+            'name' => 'Foreign Invoice Customer',
+            'email' => 'foreign-invoice@example.test',
+            'password' => 'secret-password',
+            'is_active' => true,
+        ]);
+        $otherLegacy = Customer::query()->create([
+            'user_id' => $otherUser->id,
+            'type' => 'b2c',
+            'name' => 'Foreign Invoice Customer',
+            'email' => $otherUser->email,
+        ]);
+        B2cCustomer::query()->create([
+            'legacy_customer_id' => $otherLegacy->id,
+            'store_id' => $this->storeId,
+            'user_id' => $otherUser->id,
+            'name' => 'Foreign Invoice Customer',
+            'email' => $otherUser->email,
+        ]);
+
+        Sanctum::actingAs($otherUser);
+        $this->getJson('/api/v1/invoices/'.$invoiceId)->assertNotFound();
+        $this->get('/api/v1/invoices/'.$invoiceId.'/download?locale=en')->assertNotFound();
+    }
+
+    public function test_checkout_idempotency_replays_same_order_and_rejects_changed_payload(): void
+    {
+        $dashboardUser = User::query()->create([
+            'name' => 'Checkout Store Admin',
+            'email' => 'checkout-store-admin@example.test',
+            'password' => 'password',
+            'locale' => 'en',
+            'is_active' => true,
+        ]);
+        $dashboardRole = Role::query()
+            ->where('code', 'B2C_STORE_ADMIN')
+            ->firstOrFail();
+        DB::table('user_store_roles')->insert([
+            'user_id' => $dashboardUser->id,
+            'store_id' => $this->storeId,
+            'role_id' => $dashboardRole->id,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $this->addCartItem(1);
+
+        $payload = [
+            'store_id' => $this->storeId,
+            'address_id' => $this->address->id,
+            'payment_method' => 'cash_on_delivery',
+        ];
+
+        $first = $this->withHeader('Idempotency-Key', 'checkout-key-000002')
+            ->postJson('/api/v1/checkout', $payload)
+            ->assertCreated();
+
+        $orderId = (int) $first->json('id');
+
+        $this->assertDatabaseHas('notifications', [
+            'user_id' => $dashboardUser->id,
+            'app' => 'dashboard',
+            'type' => 'order.created',
+            'target_channel' => 'b2c',
+            'store_id' => $this->storeId,
+        ]);
+
+        $orderNotification = Notification::query()
+            ->where('user_id', $dashboardUser->id)
+            ->where('type', 'order.created')
+            ->firstOrFail();
+        $this->assertSame($orderId, (int) $orderNotification->data['order_id']);
+        $this->assertSame($this->storeId, (int) $orderNotification->data['store_id']);
+        $this->assertSame('b2c', $orderNotification->data['channel']);
+        $this->assertStringContainsString(
+            '#order-'.$orderId,
+            (string) $orderNotification->data['deep_link'],
+        );
+
+        $this->withHeader('Idempotency-Key', 'checkout-key-000002')
+            ->postJson('/api/v1/checkout', $payload)
+            ->assertOk()
+            ->assertJsonPath('id', $orderId);
+
+        $this->assertDatabaseCount('orders', 1);
+        $this->assertDatabaseCount('payments', 1);
+        $this->assertDatabaseCount('invoices', 1);
+        $this->assertSame(
+            1,
+            Notification::query()
+                ->where('user_id', $dashboardUser->id)
+                ->where('type', 'order.created')
+                ->count(),
+        );
+
+        $before = [
+            'orders' => DB::table('orders')->count(),
+            'order_items' => DB::table('order_items')->count(),
+            'invoices' => DB::table('invoices')->count(),
+            'payments' => DB::table('payments')->count(),
+            'notifications' => DB::table('notifications')->count(),
+            'audit_logs' => DB::table('audit_logs')->count(),
+            'cart_items' => DB::table('cart_items')->count(),
+            'stock_movements' => DB::table('stock_movements')->count(),
+            'inventory_reserved' => (float) DB::table('inventories')
+                ->where('warehouse_id', $this->warehouseId)
+                ->where('product_id', $this->productId)
+                ->value('reserved_quantity'),
+        ];
+        $originalRequestHash = (string) DB::table('orders')->where('id', $orderId)->value('checkout_request_hash');
+
+        foreach ([
+            'ar' => 'تم استخدام مفتاح منع التكرار لطلب إتمام شراء مختلف.',
+            'en' => 'Idempotency key was already used for a different checkout request.',
+        ] as $locale => $message) {
+            $this->user->forceFill(['locale' => $locale])->saveQuietly();
+            app()->setLocale($locale);
+
+            $this->withHeaders([
+                'Idempotency-Key' => 'checkout-key-000002',
+                'Accept-Language' => $locale === 'ar' ? 'en' : 'ar',
+            ])->postJson('/api/v1/checkout', [
+                ...$payload,
+                'note' => 'Different request',
+            ])
+                ->assertConflict()
+                ->assertJsonPath('message', $message);
+
+            $this->assertSame($before, [
+                'orders' => DB::table('orders')->count(),
+                'order_items' => DB::table('order_items')->count(),
+                'invoices' => DB::table('invoices')->count(),
+                'payments' => DB::table('payments')->count(),
+                'notifications' => DB::table('notifications')->count(),
+                'audit_logs' => DB::table('audit_logs')->count(),
+                'cart_items' => DB::table('cart_items')->count(),
+                'stock_movements' => DB::table('stock_movements')->count(),
+                'inventory_reserved' => (float) DB::table('inventories')
+                    ->where('warehouse_id', $this->warehouseId)
+                    ->where('product_id', $this->productId)
+                    ->value('reserved_quantity'),
+            ]);
+            $this->assertSame(
+                $originalRequestHash,
+                (string) DB::table('orders')->where('id', $orderId)->value('checkout_request_hash'),
+            );
+        }
+
+        $this->assertDatabaseCount('orders', 1);
+    }
+
+    public function test_checkout_idempotency_binds_server_cart_and_replays_only_consumed_same_intent(): void
+    {
+        $this->addCartItem(1);
+
+        $payload = [
+            'store_id' => $this->storeId,
+            'address_id' => $this->address->id,
+            'payment_method' => 'cash_on_delivery',
+            // Client-submitted prices and credit never become checkout authority.
+            'unit_price' => 0.001,
+            'grand_total' => 0.001,
+            'discount_total' => 999,
+            'credit_limit' => 999999,
+        ];
+
+        $first = $this->withHeader('Idempotency-Key', 'cart-bound-checkout-0001')
+            ->postJson('/api/v1/checkout', $payload)
+            ->assertCreated()
+            ->assertJsonPath('items.0.unit_price', 1.25);
+
+        $originalId = (int) $first->json('id');
+
+        // The original cart is consumed; an ambiguous network retry must
+        // read back the immutable order without reposting payment/inventory.
+        $this->withHeader('Idempotency-Key', 'cart-bound-checkout-0001')
+            ->postJson('/api/v1/checkout', $payload)
+            ->assertOk()
+            ->assertJsonPath('id', $originalId);
+
+        $this->assertDatabaseCount('orders', 1);
+        $this->assertDatabaseCount('invoices', 1);
+        $this->assertDatabaseCount('payments', 1);
+        $this->assertDatabaseHas('order_items', [
+            'order_id' => $originalId,
+            'product_id' => $this->productId,
+            'quantity' => 1,
+            'unit_price' => 1.25,
+        ]);
+
+        // A new cart with a changed server-observed physical quantity is a
+        // different purchase. Reusing the old key must fail without writes.
+        $this->addCartItem(2);
+
+        $this->withHeader('Idempotency-Key', 'cart-bound-checkout-0001')
+            ->postJson('/api/v1/checkout', $payload)
+            ->assertConflict();
+
+        $this->assertDatabaseCount('orders', 1);
+        $this->assertDatabaseCount('invoices', 1);
+        $this->assertDatabaseCount('payments', 1);
+        $this->assertDatabaseHas('cart_items', [
+            'product_id' => $this->productId,
+            'quantity' => 2,
+        ]);
+        $this->assertSame(
+            1.0,
+            (float) DB::table('inventories')
+                ->where('warehouse_id', $this->warehouseId)
+                ->where('product_id', $this->productId)
+                ->value('reserved_quantity'),
+        );
+
+        // The new intent is allowed only with its own idempotency key.
+        $second = $this->withHeader('Idempotency-Key', 'cart-bound-checkout-0002')
+            ->postJson('/api/v1/checkout', $payload)
+            ->assertCreated();
+
+        $this->assertNotSame($originalId, (int) $second->json('id'));
+        $this->assertDatabaseCount('orders', 2);
+        $this->assertDatabaseCount('payments', 2);
+        $this->assertDatabaseCount('invoices', 2);
+    }
+
+    public function test_checkout_derives_order_channel_from_authoritative_cart_not_client_persona(): void
+    {
+        $this->addCartItem(1);
+
+        $response = $this->withHeader('Idempotency-Key', 'checkout-authority-0001')
+            ->postJson('/api/v1/checkout', [
+                'store_id' => $this->storeId,
+                'address_id' => $this->address->id,
+                'channel' => 'b2b',
+                'customer_type' => 'business',
+                'customerType' => 'business',
+            ])
+            ->assertCreated()
+            ->assertJsonPath('store_id', $this->storeId)
+            ->assertJsonPath('channel', 'b2c');
+
+        $orderId = (int) $response->json('id');
+        $this->assertDatabaseHas('orders', [
+            'id' => $orderId,
+            'store_id' => $this->storeId,
+            'channel' => 'b2c',
+            'b2c_customer_id' => $this->domainCustomer->id,
+            'b2b_customer_id' => null,
+        ]);
+    }
+
+    public function test_checkout_rejects_foreign_address_and_unconfigured_payment_method(): void
+    {
+        $this->addCartItem(1);
+
+        $otherUser = User::query()->create([
+            'name' => 'Other',
+            'email' => 'checkout-other@example.test',
+            'password' => 'secret-password',
+            'is_active' => true,
+        ]);
+        $otherCustomer = Customer::query()->create([
+            'user_id' => $otherUser->id,
+            'type' => 'b2c',
+            'name' => 'Other',
+            'email' => $otherUser->email,
+        ]);
+        $otherDomainCustomer = B2cCustomer::query()->create([
+            'legacy_customer_id' => $otherCustomer->id,
+            'store_id' => $this->storeId,
+            'user_id' => $otherUser->id,
+            'name' => 'Other',
+            'email' => $otherUser->email,
+        ]);
+        $otherAddress = Address::query()->create([
+            'customer_id' => $otherCustomer->id,
+            'b2c_customer_id' => $otherDomainCustomer->id,
+            'line1' => 'Other street',
+            'city' => 'Kuwait City',
+            'country_code' => 'KW',
+        ]);
+
+        $this->withHeader('Idempotency-Key', 'checkout-key-000003')
+            ->postJson('/api/v1/checkout', [
+                'store_id' => $this->storeId,
+                'address_id' => $otherAddress->id,
+            ])
+            ->assertNotFound();
+
+        $this->withHeader('Idempotency-Key', 'checkout-key-000004')
+            ->postJson('/api/v1/checkout', [
+                'store_id' => $this->storeId,
+                'address_id' => $this->address->id,
+                'payment_method' => 'unknown-provider',
+            ])
+            ->assertUnprocessable();
+    }
+
+    public function test_unconfigured_checkout_payment_method_is_localized_and_does_not_mutate_checkout(): void
+    {
+        $this->addCartItem(1);
+
+        $inventoryReserved = (float) DB::table('inventories')
+            ->where('warehouse_id', $this->warehouseId)
+            ->where('product_id', $this->productId)
+            ->value('reserved_quantity');
+
+        $before = [
+            'orders' => DB::table('orders')->count(),
+            'order_items' => DB::table('order_items')->count(),
+            'invoices' => DB::table('invoices')->count(),
+            'payments' => DB::table('payments')->count(),
+            'audit_logs' => DB::table('audit_logs')->count(),
+            'notifications' => DB::table('notifications')->count(),
+            'carts' => DB::table('carts')->count(),
+            'cart_items' => DB::table('cart_items')->count(),
+        ];
+
+        foreach ([
+            'ar' => 'طريقة الدفع المحددة غير مهيأة.',
+            'en' => 'The selected payment method is not configured.',
+        ] as $locale => $message) {
+            $this->user->forceFill(['locale' => $locale])->saveQuietly();
+            app()->setLocale($locale);
+
+            $this->withHeaders([
+                'Accept-Language' => $locale === 'ar' ? 'en' : 'ar',
+                'X-FOODEX-Customer-Domain' => 'b2c',
+                'Idempotency-Key' => 'v2-3771-checkout-payment-'.$locale.'-0001',
+            ])->postJson('/api/v1/checkout', [
+                'store_id' => $this->storeId,
+                'address_id' => $this->address->id,
+                'payment_method' => 'unsupported_offline_payment',
+            ])
+                ->assertUnprocessable()
+                ->assertJsonPath('errors.payment_method.0', $message);
+
+            foreach ($before as $table => $count) {
+                $this->assertSame($count, DB::table($table)->count(), $table.' must stay unchanged after unconfigured payment-method checkout rejection.');
+            }
+
+            $this->assertSame($inventoryReserved, (float) DB::table('inventories')
+                ->where('warehouse_id', $this->warehouseId)
+                ->where('product_id', $this->productId)
+                ->value('reserved_quantity'));
+        }
+
+        $this->assertDatabaseCount('orders', 0);
+    }
+
+    public function test_checkout_missing_and_empty_carts_are_localized_and_write_nothing(): void
+    {
+        $persistedLocale = (string) DB::table('users')
+            ->where('id', $this->user->getKey())->value('locale');
+
+        foreach (['missing', 'empty'] as $cartState) {
+            if ($cartState === 'empty') {
+                $this->addCartItem(1);
+                $cartId = (int) DB::table('carts')
+                    ->where('store_id', $this->storeId)
+                    ->where('b2c_customer_id', $this->domainCustomer->getKey())
+                    ->value('id');
+                $this->assertGreaterThan(0, $cartId);
+                DB::table('cart_items')->where('cart_id', $cartId)->delete();
+                $this->assertDatabaseHas('carts', ['id' => $cartId]);
+                $this->assertDatabaseMissing('cart_items', ['cart_id' => $cartId]);
+            }
+
+            $before = [];
+            foreach ([
+                'carts', 'cart_items', 'orders', 'order_items', 'invoices',
+                'payments', 'audit_logs', 'notifications', 'stock_movements',
+            ] as $table) {
+                $before[$table] = DB::table($table)->count();
+            }
+            $beforeCart = DB::table('carts')
+                ->where('store_id', $this->storeId)
+                ->where('b2c_customer_id', $this->domainCustomer->getKey())
+                ->first();
+            $beforeInventory = DB::table('inventories')
+                ->where('warehouse_id', $this->warehouseId)
+                ->where('product_id', $this->productId)
+                ->first(['quantity', 'reserved_quantity']);
+
+            foreach ([
+                ['ar', 'en-US', 'لا توجد سلة تسوق مسجلة لهذا المتجر.', 'سلة التسوق فارغة.'],
+                ['en', 'ar-KW', 'No authenticated cart exists for this store.', 'The cart is empty.'],
+                ['fr', 'ar-KW', 'لا توجد سلة تسوق مسجلة لهذا المتجر.', 'سلة التسوق فارغة.'],
+                ['fr', 'en-US', 'No authenticated cart exists for this store.', 'The cart is empty.'],
+            ] as $case => [$actorLocale, $headerLocale, $missingMessage, $emptyMessage]) {
+                $this->user->forceFill(['locale' => $actorLocale])->saveQuietly();
+
+                $this->withHeaders([
+                    'Idempotency-Key' => 'v2-3874-checkout-'.$cartState.'-'.$case.'-safe',
+                    'Accept-Language' => $headerLocale,
+                    'X-FOODEX-Customer-Domain' => 'b2c',
+                ])->postJson('/api/v1/checkout', [
+                    'store_id' => $this->storeId,
+                    'address_id' => $this->address->id,
+                    'payment_method' => 'cash_on_delivery',
+                ])->assertConflict()
+                    ->assertJsonPath('message', $cartState === 'missing' ? $missingMessage : $emptyMessage);
+
+                foreach ($before as $table => $count) {
+                    $this->assertSame($count, DB::table($table)->count(), $table.' changed after denied checkout');
+                }
+                $this->assertEquals($beforeCart, DB::table('carts')
+                    ->where('store_id', $this->storeId)
+                    ->where('b2c_customer_id', $this->domainCustomer->getKey())
+                    ->first());
+                $this->assertEquals($beforeInventory, DB::table('inventories')
+                    ->where('warehouse_id', $this->warehouseId)
+                    ->where('product_id', $this->productId)
+                    ->first(['quantity', 'reserved_quantity']));
+            }
+        }
+        $this->user->forceFill(['locale' => $persistedLocale])->saveQuietly();
+    }
+
+    public function test_checkout_rechecks_stock_inside_transaction_and_preserves_cart_on_conflict(): void
+    {
+        $this->addCartItem(4);
+
+        DB::table('inventories')
+            ->where('warehouse_id', $this->warehouseId)
+            ->where('product_id', $this->productId)
+            ->update(['reserved_quantity' => 2]);
+
+        $this->withHeader('Idempotency-Key', 'checkout-key-000005')
+            ->postJson('/api/v1/checkout', [
+                'store_id' => $this->storeId,
+                'address_id' => $this->address->id,
+            ])
+            ->assertConflict();
+
+        $this->assertDatabaseCount('orders', 0);
+        $this->assertDatabaseHas('carts', [
+            'customer_id' => $this->customer->id,
+            'store_id' => $this->storeId,
+        ]);
+        $this->assertDatabaseHas('inventories', [
+            'warehouse_id' => $this->warehouseId,
+            'reserved_quantity' => 2,
+        ]);
+    }
+
+    public function test_checkout_requires_authentication_and_idempotency_key(): void
+    {
+        $this->addCartItem(1);
+
+        $this->postJson('/api/v1/checkout', [
+            'store_id' => $this->storeId,
+            'address_id' => $this->address->id,
+        ])->assertUnprocessable();
+
+        $this->app['auth']->forgetGuards();
+
+        $this->withHeader('Idempotency-Key', 'checkout-key-000006')
+            ->postJson('/api/v1/checkout', [
+                'store_id' => $this->storeId,
+                'address_id' => $this->address->id,
+            ])
+            ->assertUnauthorized();
+    }
+
+    private function addCartItem(float $quantity): void
+    {
+        $this->postJson('/api/v1/cart/items', [
+            'store_id' => $this->storeId,
+            'product_id' => $this->productId,
+            'quantity' => $quantity,
+        ])->assertCreated();
+    }
+}

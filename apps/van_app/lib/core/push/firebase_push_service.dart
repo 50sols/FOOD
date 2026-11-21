@@ -1,0 +1,454 @@
+import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
+import 'dart:math';
+
+import 'package:firebase_core/firebase_core.dart';
+import 'package:firebase_messaging/firebase_messaging.dart';
+import 'package:flutter_local_notifications/flutter_local_notifications.dart';
+import 'package:http/http.dart' as http;
+import 'package:shared_preferences/shared_preferences.dart';
+
+import '../config/foodex_environment.dart';
+
+const vanBundleId = 'com.foodex.van';
+const _vanPushChannelId = 'foodex_van_high_priority';
+const _vanPushChannelName = 'FOODEX Van';
+const _vanPushChannelDescription = 'FOODEX Van operational alerts.';
+const _vanInstallIdPreferenceKey = 'foodex_van_install_id_v1';
+
+final FlutterLocalNotificationsPlugin _vanLocalNotifications =
+    FlutterLocalNotificationsPlugin();
+
+@pragma('vm:entry-point')
+Future<void> foodexVanFirebaseBackgroundHandler(RemoteMessage message) async {
+  await Firebase.initializeApp();
+}
+
+Future<String> _loadOrCreateVanInstallId() async {
+  final preferences = await SharedPreferences.getInstance();
+  final stored = preferences.getString(_vanInstallIdPreferenceKey)?.trim();
+  if (stored != null && stored.isNotEmpty) return stored;
+
+  final random = Random.secure();
+  final entropy = List<int>.generate(16, (_) => random.nextInt(256))
+      .map((value) => value.toRadixString(16).padLeft(2, '0'))
+      .join();
+  final generated =
+      'van-${DateTime.now().microsecondsSinceEpoch.toRadixString(36)}-$entropy';
+  await preferences.setString(_vanInstallIdPreferenceKey, generated);
+  return generated;
+}
+
+Future<void> _initializeVanLocalNotifications(
+  void Function(NotificationResponse response) onResponse,
+) async {
+  const settings = InitializationSettings(
+    android: AndroidInitializationSettings('@mipmap/ic_launcher'),
+    iOS: DarwinInitializationSettings(),
+  );
+  await _vanLocalNotifications.initialize(
+    settings,
+    onDidReceiveNotificationResponse: onResponse,
+  );
+
+  if (Platform.isAndroid) {
+    const channel = AndroidNotificationChannel(
+      _vanPushChannelId,
+      _vanPushChannelName,
+      description: _vanPushChannelDescription,
+      importance: Importance.high,
+    );
+    await _vanLocalNotifications
+        .resolvePlatformSpecificImplementation<
+            AndroidFlutterLocalNotificationsPlugin>()
+        ?.createNotificationChannel(channel);
+  }
+}
+
+Future<void> _showVanLocalNotification(RemoteMessage message) async {
+  final title = message.notification?.title ??
+      message.data['title']?.toString() ??
+      'FOODEX Van';
+  final body =
+      message.notification?.body ?? message.data['body']?.toString() ?? '';
+
+  const details = NotificationDetails(
+    android: AndroidNotificationDetails(
+      _vanPushChannelId,
+      _vanPushChannelName,
+      channelDescription: _vanPushChannelDescription,
+      importance: Importance.high,
+      priority: Priority.high,
+      visibility: NotificationVisibility.public,
+    ),
+    iOS: DarwinNotificationDetails(
+      presentAlert: true,
+      presentBadge: true,
+      presentSound: true,
+    ),
+  );
+
+  await _vanLocalNotifications.show(
+    message.messageId?.hashCode ??
+        DateTime.now().millisecondsSinceEpoch.remainder(2147483647),
+    title,
+    body,
+    details,
+    payload: jsonEncode(message.data),
+  );
+}
+
+class VanPushAlert {
+  const VanPushAlert({
+    required this.title,
+    required this.body,
+    required this.openRequested,
+    this.orderId,
+    this.storeId,
+    this.channel,
+    this.deepLink,
+  });
+
+  final String title;
+  final String body;
+  final bool openRequested;
+  final int? orderId;
+  final int? storeId;
+  final String? channel;
+  final String? deepLink;
+
+  bool get canOpenB2bOrder =>
+      orderId != null && (channel ?? '').toLowerCase() == 'b2b';
+
+  factory VanPushAlert.fromPayload(
+    Map<String, dynamic> data, {
+    String? notificationTitle,
+    String? notificationBody,
+    bool openRequested = false,
+  }) {
+    int? parseInt(Object? value) {
+      if (value is int) return value;
+      if (value is num) return value.toInt();
+      return int.tryParse(value?.toString() ?? '');
+    }
+
+    final title =
+        notificationTitle ?? data['title']?.toString() ?? 'FOODEX Van';
+    final body = notificationBody ?? data['body']?.toString() ?? '';
+    final channel = data['channel']?.toString();
+
+    return VanPushAlert(
+      title: title,
+      body: body,
+      openRequested: openRequested,
+      orderId: parseInt(data['order_id']),
+      storeId: parseInt(data['store_id']),
+      channel: channel == null || channel.isEmpty ? null : channel,
+      deepLink: data['deep_link']?.toString(),
+    );
+  }
+}
+
+class VanPushDeviceRegistry {
+  VanPushDeviceRegistry({required this.baseUrl, http.Client? client})
+      : _client = client ?? http.Client();
+
+  final String baseUrl;
+  final http.Client _client;
+
+  Future<int?> register({
+    required String accessToken,
+    required String firebaseToken,
+    required String installId,
+  }) async {
+    final response = await _client.post(
+      Uri.parse('$baseUrl/api/v1/push/devices'),
+      headers: {
+        'Accept': 'application/json',
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer $accessToken',
+      },
+      body: jsonEncode({
+        'app': 'van',
+        'platform': Platform.isIOS ? 'ios' : 'android',
+        'environment': FoodexEnvironment.pushEnvironment,
+        'token': firebaseToken,
+        'install_id': installId,
+      }),
+    );
+
+    if (response.statusCode < 200 || response.statusCode >= 300) return null;
+    final decoded = jsonDecode(response.body);
+    if (decoded is! Map<String, dynamic> || decoded['data'] is! Map) {
+      return null;
+    }
+    final data = Map<String, dynamic>.from(decoded['data'] as Map);
+    return (data['id'] as num?)?.toInt();
+  }
+
+  Future<void> revoke({
+    required String accessToken,
+    required int deviceId,
+  }) async {
+    await _client.delete(
+      Uri.parse('$baseUrl/api/v1/push/devices/$deviceId'),
+      headers: {
+        'Accept': 'application/json',
+        'Authorization': 'Bearer $accessToken',
+      },
+    );
+  }
+}
+
+class VanFirebasePushService {
+  VanFirebasePushService._({
+    required this.registry,
+    required FirebaseMessaging? messaging,
+  }) : _messaging = messaging;
+
+  final VanPushDeviceRegistry registry;
+  final FirebaseMessaging? _messaging;
+  final StreamController<VanPushAlert> _alerts =
+      StreamController<VanPushAlert>.broadcast();
+
+  StreamSubscription<String>? _tokenSubscription;
+  StreamSubscription<RemoteMessage>? _foregroundSubscription;
+  StreamSubscription<RemoteMessage>? _openedSubscription;
+  Timer? _registrationRetryTimer;
+  VanPushAlert? _pendingOpenAlert;
+  String? _accessToken;
+  int? _deviceId;
+  Future<String>? _installIdFuture;
+  bool _registrationInFlight = false;
+  int _registrationRetryAttempt = 0;
+
+  static const _registrationRetryDelays = <Duration>[
+    Duration(seconds: 1),
+    Duration(seconds: 3),
+    Duration(seconds: 10),
+    Duration(seconds: 30),
+    Duration(minutes: 1),
+    Duration(minutes: 2),
+    Duration(minutes: 5),
+  ];
+
+  Stream<VanPushAlert> get alerts => _alerts.stream;
+  bool get enabled => _messaging != null;
+
+  static Future<VanFirebasePushService> bootstrap({
+    http.Client? client,
+  }) async {
+    final registry = VanPushDeviceRegistry(
+      baseUrl: FoodexEnvironment.apiBaseUrl,
+      client: client,
+    );
+
+    try {
+      await Firebase.initializeApp();
+      FirebaseMessaging.onBackgroundMessage(
+        foodexVanFirebaseBackgroundHandler,
+      );
+
+      final messaging = FirebaseMessaging.instance;
+      await messaging.requestPermission(
+        alert: true,
+        badge: true,
+        sound: true,
+      );
+      await messaging.setForegroundNotificationPresentationOptions(
+        alert: true,
+        badge: true,
+        sound: true,
+      );
+
+      final service = VanFirebasePushService._(
+        registry: registry,
+        messaging: messaging,
+      );
+      await _initializeVanLocalNotifications(
+        service._handleLocalNotificationResponse,
+      );
+
+      service._foregroundSubscription =
+          FirebaseMessaging.onMessage.listen((message) {
+        if (Platform.isAndroid) {
+          unawaited(_showVanLocalNotification(message));
+        }
+        service._alerts.add(
+          service._alertForMessage(message, openRequested: false),
+        );
+      });
+      service._openedSubscription =
+          FirebaseMessaging.onMessageOpenedApp.listen((message) {
+        service._queueOpenedAlert(
+          service._alertForMessage(message, openRequested: true),
+        );
+      });
+
+      final initialMessage = await messaging.getInitialMessage();
+      if (initialMessage != null) {
+        service._pendingOpenAlert =
+            service._alertForMessage(initialMessage, openRequested: true);
+      }
+
+      return service;
+    } catch (_) {
+      return VanFirebasePushService._(registry: registry, messaging: null);
+    }
+  }
+
+  VanPushAlert _alertForMessage(
+    RemoteMessage message, {
+    required bool openRequested,
+  }) {
+    return VanPushAlert.fromPayload(
+      Map<String, dynamic>.from(message.data),
+      notificationTitle: message.notification?.title,
+      notificationBody: message.notification?.body,
+      openRequested: openRequested,
+    );
+  }
+
+  void _handleLocalNotificationResponse(NotificationResponse response) {
+    final payload = response.payload;
+    if (payload == null || payload.trim().isEmpty) return;
+
+    try {
+      final decoded = jsonDecode(payload);
+      if (decoded is! Map) return;
+      _queueOpenedAlert(
+        VanPushAlert.fromPayload(
+          Map<String, dynamic>.from(decoded),
+          openRequested: true,
+        ),
+      );
+    } catch (_) {
+      // A malformed local-notification payload must never break Van runtime.
+    }
+  }
+
+  void _queueOpenedAlert(VanPushAlert alert) {
+    if (_accessToken == null || _accessToken!.isEmpty) {
+      _pendingOpenAlert = alert;
+      return;
+    }
+    _alerts.add(alert);
+  }
+
+  Future<String> _installId() =>
+      _installIdFuture ??= _loadOrCreateVanInstallId();
+
+  Future<void> bindSession(String accessToken) async {
+    final normalized = accessToken.trim();
+    if (normalized.isEmpty) return;
+
+    final sessionChanged = _accessToken != normalized;
+    _accessToken = normalized;
+    if (sessionChanged) {
+      _registrationRetryAttempt = 0;
+      _deviceId = null;
+    }
+
+    final messaging = _messaging;
+    if (messaging == null) return;
+
+    await _tokenSubscription?.cancel();
+    _tokenSubscription = messaging.onTokenRefresh.listen((newToken) {
+      unawaited(_attemptRegistration(firebaseToken: newToken));
+    });
+
+    _registrationRetryTimer?.cancel();
+    _registrationRetryTimer = null;
+    await _attemptRegistration();
+
+    final pending = _pendingOpenAlert;
+    if (pending != null && _accessToken == normalized) {
+      _pendingOpenAlert = null;
+      _alerts.add(pending);
+    }
+  }
+
+  Future<void> _attemptRegistration({String? firebaseToken}) async {
+    if (_registrationInFlight) return;
+
+    final accessToken = _accessToken;
+    final messaging = _messaging;
+    if (accessToken == null || accessToken.isEmpty || messaging == null) return;
+
+    _registrationInFlight = true;
+    try {
+      final token = firebaseToken ?? await messaging.getToken();
+      if (token == null || token.trim().isEmpty) {
+        _scheduleRegistrationRetry();
+        return;
+      }
+
+      final deviceId = await registry.register(
+        accessToken: accessToken,
+        firebaseToken: token,
+        installId: await _installId(),
+      );
+      if (deviceId == null) {
+        _scheduleRegistrationRetry();
+        return;
+      }
+
+      _deviceId = deviceId;
+      _registrationRetryAttempt = 0;
+      _registrationRetryTimer?.cancel();
+      _registrationRetryTimer = null;
+    } catch (_) {
+      _scheduleRegistrationRetry();
+    } finally {
+      _registrationInFlight = false;
+    }
+  }
+
+  void _scheduleRegistrationRetry() {
+    if (_accessToken == null || _messaging == null) return;
+
+    _registrationRetryTimer?.cancel();
+    final index = min(
+      _registrationRetryAttempt,
+      _registrationRetryDelays.length - 1,
+    );
+    final delay = _registrationRetryDelays[index];
+    _registrationRetryAttempt += 1;
+    _registrationRetryTimer = Timer(
+      delay,
+      () => unawaited(_attemptRegistration()),
+    );
+  }
+
+  Future<void> revokeSession() async {
+    final accessToken = _accessToken;
+    final deviceId = _deviceId;
+    _accessToken = null;
+    _deviceId = null;
+    _registrationRetryAttempt = 0;
+    _registrationRetryTimer?.cancel();
+    _registrationRetryTimer = null;
+    await _tokenSubscription?.cancel();
+    _tokenSubscription = null;
+
+    if (accessToken == null || deviceId == null) return;
+    try {
+      await registry.revoke(
+        accessToken: accessToken,
+        deviceId: deviceId,
+      );
+    } catch (_) {
+      // Logout must not fail because push-token revocation is unavailable.
+    }
+  }
+
+  Future<void> dispose() async {
+    _registrationRetryTimer?.cancel();
+    _registrationRetryTimer = null;
+    await _tokenSubscription?.cancel();
+    await _foregroundSubscription?.cancel();
+    await _openedSubscription?.cancel();
+    await _alerts.close();
+  }
+}

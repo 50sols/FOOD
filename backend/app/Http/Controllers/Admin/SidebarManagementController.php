@@ -1,0 +1,290 @@
+<?php
+
+namespace App\Http\Controllers\Admin;
+
+use App\Enterprise\Modules\ModuleOperationalReadiness;
+use App\Enterprise\Modules\ModuleRegistry;
+use App\Http\Controllers\Controller;
+use App\Models\Permission;
+use App\Models\Role;
+use App\Services\AdminSidebarManager;
+use App\Services\BuiltInJobRoleCatalog;
+use App\Support\AdminNavigation;
+use Illuminate\Contracts\View\View;
+use Illuminate\Http\RedirectResponse;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\App;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Gate;
+use Illuminate\Validation\ValidationException;
+
+final class SidebarManagementController extends Controller
+{
+    public function roleAccess(
+        Request $request,
+        AdminSidebarManager $sidebar,
+        ModuleRegistry $moduleRegistry,
+        ModuleOperationalReadiness $moduleReadiness,
+    ): View {
+        Gate::authorize('roles.manage');
+        $this->useActorLocale($request);
+
+        $roles = Role::query()
+            ->with('permissions:id,code')
+            ->orderByDesc('is_system')
+            ->orderBy('code')
+            ->get();
+
+        // An explicit role selection must resolve to that exact role. Do not
+        // silently display a different role's permission matrix when the query
+        // contains an array, a malformed ID, or a deleted/historical ID.
+        $roleId = $request->query('role_id');
+        if ($request->has('role_id')) {
+            abort_unless(is_string($roleId) && ctype_digit($roleId) && (int) $roleId > 0, 404);
+            $selectedRole = $roles->firstWhere('id', (int) $roleId);
+        } else {
+            $selectedRole = $roles->first();
+        }
+
+        abort_if($selectedRole === null, 404);
+
+        // P094: the Page Tree editor projects real role Permission Codes, not
+        // admin_sidebar_role_visibility. Preserve non-navigation role grants on
+        // a partial form submission; the canonical RbacManager remains the sole
+        // authority for role changes, scope and elevated grants.
+        $matrix = $sidebar->roleMatrix($selectedRole);
+        $permissionCodes = [];
+        $moduleReadinessByCode = [];
+        foreach ($matrix['groups'] as $group) {
+            foreach ($group['items'] as $item) {
+                $moduleCode = $item['meta']['module'] ?? null;
+                if (is_string($moduleCode) && $moduleCode !== '' && ! array_key_exists($moduleCode, $moduleReadinessByCode)) {
+                    try {
+                        $moduleReadinessByCode[$moduleCode] = $moduleReadiness->status(
+                            $moduleCode,
+                            $moduleRegistry->manifest($moduleCode)->version,
+                            $moduleRegistry->state($moduleCode),
+                        ) === 'ready';
+                    } catch (\Throwable) {
+                        // Fail closed without leaking internal health details to the preview.
+                        $moduleReadinessByCode[$moduleCode] = false;
+                    }
+                }
+                foreach ($item['permissions'] as $code) {
+                    $permissionCodes[$code] = true;
+                }
+            }
+        }
+
+        $pagePermissionsByCode = Permission::query()
+            ->whereIn('code', array_keys($permissionCodes))
+            ->get(['id', 'code'])
+            ->keyBy('code');
+        $selectedPermissionIds = $selectedRole->permissions
+            ->pluck('id')
+            ->map(static fn ($id): int => (int) $id)
+            ->all();
+        $pagePermissionIds = $pagePermissionsByCode
+            ->pluck('id')
+            ->map(static fn ($id): int => (int) $id)
+            ->all();
+
+        $actor = $request->user();
+        $canEditRolePermissions = (bool) $selectedRole->is_active
+            && $selectedRole->archived_at === null
+            && ! in_array($selectedRole->code, ['PLATFORM_OWNER', 'SUPER_ADMIN'], true)
+            && ! app(BuiltInJobRoleCatalog::class)->isBuiltIn((string) $selectedRole->code)
+            && ($actor->hasRole('SUPER_ADMIN')
+                || $selectedRole->permissions->pluck('code')
+                    ->diff($actor->effectivePermissionCodes())->isEmpty());
+
+        return view('admin.sidebar-role-access', [
+            'roles' => $roles,
+            'selectedRole' => $selectedRole,
+            'matrix' => $matrix,
+            'moduleReadinessByCode' => $moduleReadinessByCode,
+            'pagePermissionsByCode' => $pagePermissionsByCode,
+            'selectedPermissionIds' => $selectedPermissionIds,
+            'preservedPermissionIds' => array_values(array_diff($selectedPermissionIds, $pagePermissionIds)),
+            'canEditRolePermissions' => $canEditRolePermissions,
+            'navGroups' => app(AdminNavigation::class)->groupsFor($request->user()),
+            'navContext' => 'sidebar_role_access',
+            'user' => $request->user(),
+        ]);
+    }
+
+    public function updateRoleAccess(Request $request, Role $role, AdminSidebarManager $sidebar): RedirectResponse
+    {
+        Gate::authorize('roles.manage');
+        $this->useActorLocale($request);
+
+        $validated = $request->validate([
+            'item_keys' => ['nullable', 'array'],
+            'item_keys.*' => ['string', 'max:120'],
+        ]);
+
+        // A business group is a presentation container, never an item grant.
+        // Reject unknown/group keys atomically before changing visibility or audit.
+        $registeredItems = $sidebar->registry()['items'];
+        foreach ($validated['item_keys'] ?? [] as $index => $key) {
+            if (! array_key_exists($key, $registeredItems)) {
+                throw ValidationException::withMessages([
+                    "item_keys.{$index}" => __('sidebar_admin.invalid_item'),
+                ]);
+            }
+        }
+
+        $before = $sidebar->roleMatrix($role);
+        $sidebar->saveRoleVisibility($role, array_values($validated['item_keys'] ?? []));
+        $after = $sidebar->roleMatrix($role);
+
+        $this->audit($request, 'admin.sidebar.role_visibility.updated', 'role', (int) $role->id, $before, $after);
+
+        return redirect()
+            ->route('admin.sidebar-access.roles', ['role_id' => $role->id])
+            ->with('status', __('sidebar_admin.role_saved'));
+    }
+
+    public function layout(Request $request, AdminSidebarManager $sidebar): View
+    {
+        Gate::authorize('roles.manage');
+        $this->useActorLocale($request);
+
+        $layout = $sidebar->layoutData();
+
+        return view('admin.sidebar-layout', [
+            'layout' => $layout,
+            'sidebarAudit' => $sidebar->inventoryAudit($layout),
+            'protectedItems' => $sidebar->registry()['protected_items'],
+            'protectedGroups' => $sidebar->registry()['protected_groups'],
+            'navGroups' => app(AdminNavigation::class)->groupsFor($request->user()),
+            'navContext' => 'sidebar_layout',
+            'user' => $request->user(),
+        ]);
+    }
+
+    public function updateLayout(Request $request, AdminSidebarManager $sidebar): RedirectResponse
+    {
+        Gate::authorize('roles.manage');
+
+        $validated = $request->validate([
+            'groups' => ['required', 'array'],
+            'groups.*.label_ar' => ['nullable', 'string', 'max:160'],
+            'groups.*.label_en' => ['nullable', 'string', 'max:160'],
+            'groups.*.icon' => ['nullable', 'string', 'max:16'],
+            'groups.*.sort_order' => ['required', 'integer', 'between:-10000,10000'],
+            'groups.*.is_enabled' => ['required', 'boolean'],
+            'items' => ['required', 'array'],
+            'items.*.group_key' => ['required', 'string', 'max:80'],
+            'items.*.parent_key' => ['nullable', 'string', 'max:120'],
+            'items.*.label_ar' => ['nullable', 'string', 'max:160'],
+            'items.*.label_en' => ['nullable', 'string', 'max:160'],
+            'items.*.sort_order' => ['required', 'integer', 'between:-10000,10000'],
+            'items.*.is_enabled' => ['required', 'boolean'],
+        ]);
+
+        $registry = $sidebar->registry();
+        $groups = (array) $validated['groups'];
+        $items = (array) $validated['items'];
+
+        foreach (array_keys($groups) as $groupKey) {
+            if (! isset($registry['groups'][$groupKey])) {
+                throw ValidationException::withMessages(['groups' => __('sidebar_admin.invalid_group')]);
+            }
+        }
+
+        foreach ($items as $itemKey => $item) {
+            if (! isset($registry['items'][$itemKey])) {
+                throw ValidationException::withMessages(['items' => __('sidebar_admin.invalid_item')]);
+            }
+            if (! isset($registry['groups'][$item['group_key']])) {
+                throw ValidationException::withMessages(["items.{$itemKey}.group_key" => __('sidebar_admin.invalid_group')]);
+            }
+            $parent = $item['parent_key'] ?? null;
+            if ($parent !== null && $parent !== '') {
+                if ($parent === $itemKey || ! isset($registry['items'][$parent])) {
+                    throw ValidationException::withMessages(["items.{$itemKey}.parent_key" => __('sidebar_admin.invalid_parent')]);
+                }
+                $parentGroup = $items[$parent]['group_key'] ?? $registry['items'][$parent]['group'] ?? null;
+                if ($parentGroup !== $item['group_key']) {
+                    throw ValidationException::withMessages(["items.{$itemKey}.parent_key" => __('sidebar_admin.parent_same_group')]);
+                }
+            }
+        }
+
+        $this->assertNoParentCycles($items);
+        $this->assertMaxSidebarDepth($items);
+
+        $before = $sidebar->layoutData();
+        $sidebar->saveLayout($groups, $items);
+        $after = $sidebar->layoutData();
+        $this->audit($request, 'admin.sidebar.layout.updated', 'admin_sidebar', null, $before, $after);
+
+        return redirect()->route('admin.sidebar-layout.index')->with('status', __('sidebar_admin.layout_saved'));
+    }
+
+    /** @param array<string,array<string,mixed>> $items */
+    private function assertNoParentCycles(array $items): void
+    {
+        foreach (array_keys($items) as $start) {
+            $seen = [];
+            $current = $start;
+            while (isset($items[$current])) {
+                $parent = $items[$current]['parent_key'] ?? null;
+                if (! is_string($parent) || $parent === '') {
+                    break;
+                }
+                if (isset($seen[$parent]) || $parent === $start) {
+                    throw ValidationException::withMessages(["items.{$start}.parent_key" => __('sidebar_admin.parent_cycle')]);
+                }
+                $seen[$current] = true;
+                $current = $parent;
+            }
+        }
+    }
+
+    /** @param array<string,array<string,mixed>> $items */
+    private function assertMaxSidebarDepth(array $items): void
+    {
+        // The group counts as level 1: an item may have at most one page ancestor.
+        foreach ($items as $key => $item) {
+            $parent = $item['parent_key'] ?? null;
+            if (! is_string($parent) || $parent === '') {
+                continue;
+            }
+
+            $grandparent = $items[$parent]['parent_key'] ?? null;
+            if (is_string($grandparent) && $grandparent !== '') {
+                throw ValidationException::withMessages(["items.{$key}.parent_key" => __('sidebar_admin.max_nesting')]);
+            }
+        }
+    }
+
+    private function audit(
+        Request $request,
+        string $event,
+        string $type,
+        ?int $id,
+        mixed $before,
+        mixed $after,
+    ): void {
+        DB::table('audit_logs')->insert([
+            'user_id' => $request->user()?->id,
+            'event' => $event,
+            'auditable_type' => $type,
+            'auditable_id' => $id,
+            'before' => json_encode($before, JSON_THROW_ON_ERROR),
+            'after' => json_encode($after, JSON_THROW_ON_ERROR),
+            'ip_address' => $request->ip(),
+            'user_agent' => $request->userAgent(),
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+    }
+
+    private function useActorLocale(Request $request): void
+    {
+        $locale = (string) ($request->user()->locale ?? 'ar');
+        App::setLocale(in_array($locale, ['ar', 'en'], true) ? $locale : 'ar');
+    }
+}

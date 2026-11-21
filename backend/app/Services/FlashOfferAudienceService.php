@@ -1,0 +1,238 @@
+<?php
+
+namespace App\Services;
+
+use App\Models\B2bCustomer;
+use App\Models\B2cCustomer;
+use App\Models\FlashOffer;
+use App\Models\VanVisit;
+use Illuminate\Support\Facades\DB;
+
+final class FlashOfferAudienceService
+{
+    /** @return list<int>|null */
+    public function eligibleUserIds(FlashOffer $offer): ?array
+    {
+        $dimensions = [
+            [$this->integerList($offer->audience_customer_ids), fn (array $ids): array => $this->usersForCustomers($ids)],
+            [$this->integerList($offer->audience_customer_group_ids), fn (array $ids): array => $this->usersForGroups($offer, $ids)],
+            [$this->stringList($offer->audience_regions), fn (array $regions): array => $this->usersForRegions($regions)],
+            [$this->stringList($offer->audience_routes), fn (array $routes): array => $this->usersForRoutes($offer, $routes)],
+        ];
+
+        $eligible = null;
+        $configured = false;
+        foreach ($dimensions as [$values, $resolver]) {
+            if ($values === []) {
+                continue;
+            }
+            $configured = true;
+            $resolved = array_values(array_unique($resolver($values)));
+            $eligible = $eligible === null
+                ? $resolved
+                : array_values(array_intersect($eligible, $resolved));
+        }
+
+        return $configured ? ($eligible ?? []) : null;
+    }
+
+    public function isEligible(FlashOffer $offer, int $userId): bool
+    {
+        $eligible = $this->eligibleUserIds($offer);
+
+        return $eligible === null || in_array($userId, $eligible, true);
+    }
+
+    /** @return list<int>|null */
+    public function notificationUserIds(FlashOffer $offer, string $channel): ?array
+    {
+        $customerUsers = $this->eligibleUserIds($offer);
+        if ($customerUsers === null || $channel === 'customer') {
+            return $customerUsers;
+        }
+
+        if ($channel !== 'van' || $customerUsers === []) {
+            return $customerUsers === [] ? [] : null;
+        }
+
+        $actors = [];
+        foreach (VanVisit::query()->where('store_id', $offer->store_id)->get() as $visit) {
+            $customerUserId = $this->visitCustomerUserId($visit);
+            if ($customerUserId !== null && in_array($customerUserId, $customerUsers, true)) {
+                $actors[] = (int) $visit->actor_user_id;
+            }
+        }
+
+        return array_values(array_unique(array_filter($actors, static fn (int $id): bool => $id > 0)));
+    }
+
+    /**
+     * @param  list<int>  $ids
+     * @return list<int>
+     */
+    private function usersForCustomers(array $ids): array
+    {
+        $directUsers = DB::table('customers')
+            ->whereIn('id', $ids)
+            ->whereNotNull('user_id')
+            ->pluck('user_id')
+            ->map(static fn ($id): int => (int) $id);
+
+        $retailOwnerUsers = DB::table('retail_wholesale_accounts as retail_links')
+            ->join('b2b_customers as retail_b2b', 'retail_b2b.id', '=', 'retail_links.b2b_customer_id')
+            ->whereIn('retail_b2b.legacy_customer_id', $ids)
+            ->whereNotNull('retail_links.owner_user_id')
+            ->pluck('retail_links.owner_user_id')
+            ->map(static fn ($id): int => (int) $id);
+
+        return $directUsers
+            ->merge($retailOwnerUsers)
+            ->filter(static fn (int $id): bool => $id > 0)
+            ->unique()
+            ->values()
+            ->all();
+    }
+
+    /**
+     * @param  list<int>  $ids
+     * @return list<int>
+     */
+    private function usersForGroups(FlashOffer $offer, array $ids): array
+    {
+        // Group targeting is evaluated only within its own store. Inactive
+        // groups and another merchant's IDs may not widen an audience.
+        $memberIds = DB::table('commercial_customer_group_members as members')
+            ->join('commercial_customer_groups as groups', 'groups.id', '=', 'members.customer_group_id')
+            ->whereIn('members.customer_group_id', $ids)
+            ->where('groups.store_id', (int) $offer->store_id)
+            ->where('groups.is_active', true)
+            ->pluck('members.customer_id')
+            ->map(static fn ($id): int => (int) $id)
+            ->unique()->values()->all();
+        if ($memberIds === []) {
+            return [];
+        }
+
+        $channel = DB::table('stores')
+            ->join('store_types', 'store_types.id', '=', 'stores.store_type_id')
+            ->where('stores.id', $offer->store_id)
+            ->value('store_types.code');
+
+        $domain = strtoupper((string) $channel) === 'B2C' ? 'b2c_customers' : 'b2b_customers';
+        // Legacy customer IDs alone are not tenant identity. Resolve only
+        // customers present in the offer's authorized B2B/B2C domain first.
+        $domainCustomers = DB::table($domain)
+            ->whereIn('legacy_customer_id', $memberIds)
+            ->when($domain === 'b2c_customers', fn ($query) => $query->where('store_id', (int) $offer->store_id))
+            ->get(['legacy_customer_id', 'user_id']);
+        $validLegacyIds = $domainCustomers->pluck('legacy_customer_id')
+            ->map(static fn ($id): int => (int) $id)
+            ->unique()->values()->all();
+        if ($validLegacyIds === []) {
+            return [];
+        }
+
+        $domainUsers = $domainCustomers->pluck('user_id')
+            ->filter(static fn ($id): bool => $id !== null)
+            ->map(static fn ($id): int => (int) $id);
+
+        return collect($this->usersForCustomers($validLegacyIds))
+            ->merge($domainUsers)
+            ->filter(static fn (int $id): bool => $id > 0)
+            ->unique()->values()->all();
+    }
+
+    /**
+     * @param  list<string>  $regions
+     * @return list<int>
+     */
+    private function usersForRegions(array $regions): array
+    {
+        $wanted = array_map('mb_strtolower', $regions);
+        $customerIds = DB::table('addresses')
+            ->whereNotNull('customer_id')
+            ->get(['customer_id', 'area', 'governorate'])
+            ->filter(function (object $address) use ($wanted): bool {
+                $values = array_values(array_filter([
+                    mb_strtolower(trim((string) ($address->area ?? ''))),
+                    mb_strtolower(trim((string) ($address->governorate ?? ''))),
+                ]));
+
+                return array_intersect($wanted, $values) !== [];
+            })
+            ->pluck('customer_id')
+            ->map(static fn ($id): int => (int) $id)
+            ->unique()
+            ->values()
+            ->all();
+
+        return $customerIds === [] ? [] : $this->usersForCustomers($customerIds);
+    }
+
+    /**
+     * @param  list<string>  $routes
+     * @return list<int>
+     */
+    private function usersForRoutes(FlashOffer $offer, array $routes): array
+    {
+        $wanted = array_map('mb_strtolower', $routes);
+        $users = [];
+
+        foreach (VanVisit::query()->where('store_id', $offer->store_id)->get() as $visit) {
+            // Read through Eloquent's attribute API so the cast input remains safely typed.
+            $rawMetadata = $visit->getAttribute('metadata');
+            $metadata = is_array($rawMetadata) ? $rawMetadata : [];
+            $routeValues = array_values(array_filter(array_map(
+                static fn (mixed $value): string => mb_strtolower(trim((string) $value)),
+                [
+                    $metadata['route_id'] ?? null,
+                    $metadata['route_code'] ?? null,
+                    $metadata['route'] ?? null,
+                ],
+            )));
+            if (array_intersect($wanted, $routeValues) === []) {
+                continue;
+            }
+
+            $userId = $this->visitCustomerUserId($visit);
+            if ($userId !== null) {
+                $users[] = $userId;
+            }
+        }
+
+        return array_values(array_unique($users));
+    }
+
+    private function visitCustomerUserId(VanVisit $visit): ?int
+    {
+        $value = match ((string) $visit->customer_type) {
+            'b2b' => B2bCustomer::query()->whereKey((int) $visit->customer_id)->value('user_id'),
+            'b2c' => B2cCustomer::query()->whereKey((int) $visit->customer_id)->value('user_id'),
+            default => null,
+        };
+
+        return $value === null ? null : (int) $value;
+    }
+
+    /** @return list<int> */
+    private function integerList(mixed $value): array
+    {
+        return collect(is_array($value) ? $value : [])
+            ->map(static fn ($id): int => (int) $id)
+            ->filter(static fn (int $id): bool => $id > 0)
+            ->unique()
+            ->values()
+            ->all();
+    }
+
+    /** @return list<string> */
+    private function stringList(mixed $value): array
+    {
+        return collect(is_array($value) ? $value : [])
+            ->map(static fn ($item): string => trim((string) $item))
+            ->filter(static fn (string $item): bool => $item !== '')
+            ->unique()
+            ->values()
+            ->all();
+    }
+}

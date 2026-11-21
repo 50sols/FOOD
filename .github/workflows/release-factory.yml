@@ -1,0 +1,831 @@
+name: FOODEX Release Factory
+
+on:
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Publish/update the matching GitHub Release after validation
+        required: true
+        default: false
+        type: boolean
+  push:
+    branches:
+      - main
+    paths:
+      - VERSION
+      - docs/release/UPDATE_NOTES_*.md
+      - docs/release/FOODEX_1_0_77_PRODUCTION_HOLD.md
+      - .github/workflows/release-factory.yml
+      - .github/workflows/mobile-release-build.yml
+      - scripts/release-readiness.sh
+
+permissions:
+  contents: write
+  actions: write
+  pull-requests: write
+  id-token: write
+  attestations: write
+
+concurrency:
+  group: foodex-release-factory-${{ github.ref_name }}
+  cancel-in-progress: true
+
+jobs:
+  plan:
+    name: Resolve release identity
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.plan.outputs.version }}
+      build_number: ${{ steps.plan.outputs.build_number }}
+      customer_version: ${{ steps.plan.outputs.customer_version }}
+      customer_build_number: ${{ steps.plan.outputs.customer_build_number }}
+      customer_source_commit: ${{ steps.plan.outputs.customer_source_commit }}
+      customer_tree_sha: ${{ steps.plan.outputs.customer_tree_sha }}
+      customer_lineage_mode: ${{ steps.plan.outputs.customer_lineage_mode }}
+      base_ref: ${{ steps.plan.outputs.base_ref }}
+      previous_version: ${{ steps.plan.outputs.previous_version }}
+      dashboard_only: ${{ steps.plan.outputs.dashboard_only }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Enforce FOODEX 1.0.77 production hold
+        if: ${{ github.event_name == 'push' || inputs.publish }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(tr -d '[:space:]' < VERSION)"
+          if [[ "$version" == "1.0.77" && -f docs/release/FOODEX_1_0_77_PRODUCTION_HOLD.md ]]; then
+            echo "::error::FOODEX 1.0.77 production publication is held until #1380 certification removes FOODEX_1_0_77_PRODUCTION_HOLD.md."
+            exit 1
+          fi
+
+      - id: release-mode
+        name: Detect dashboard-only release
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(tr -d '[:space:]' < VERSION)"
+          customer="$(awk '/^version:/{print $2; exit}' apps/customer_app/pubspec.yaml | tr -d '"')"
+          driver="$(awk '/^version:/{print $2; exit}' apps/driver_app/pubspec.yaml | tr -d '"')"
+          van="$(awk '/^version:/{print $2; exit}' apps/van_app/pubspec.yaml | tr -d '"')"
+          dashboard_only=false
+
+          if [[ "$customer" == "$driver" && "$customer" == "$van" && "${customer%%+*}" != "$version" ]]; then
+            mobile_version="${customer%%+*}"
+            python3 - "$version" "$mobile_version" <<'PY'
+          import sys
+          def parse(value):
+              parts=value.split(".")
+              if len(parts) != 3 or not all(part.isdigit() for part in parts):
+                  raise SystemExit(f"Invalid semantic version: {value}")
+              return tuple(map(int, parts))
+          release=parse(sys.argv[1])
+          mobile=parse(sys.argv[2])
+          if release <= mobile:
+              raise SystemExit(
+                  f"Dashboard-only release must advance repository VERSION beyond mobile version: "
+                  f"repository={sys.argv[1]} mobile={sys.argv[2]}"
+              )
+          PY
+
+            base_ref=""
+            while read -r candidate; do
+              candidate_version="$(git show "$candidate":VERSION 2>/dev/null | tr -d '[:space:]' || true)"
+              if [[ "$candidate_version" == "$mobile_version" ]]; then
+                base_ref="$candidate"
+                break
+              fi
+            done < <(git log --format=%H -- VERSION)
+
+            if [[ -z "$base_ref" ]]; then
+              echo "::error::Cannot resolve the repository VERSION boundary for mobile baseline $mobile_version."
+              exit 1
+            fi
+
+            mobile_changes="$(git diff --name-only "$base_ref"...HEAD -- apps/customer_app apps/driver_app apps/van_app)"
+            if [[ -n "$mobile_changes" ]]; then
+              echo "::error::Repository VERSION is ahead of mobile identity, but mobile source changed since $mobile_version; refusing to classify as Dashboard-only."
+              printf '%s\n' "$mobile_changes"
+              exit 1
+            fi
+
+            test -f "docs/release/UPDATE_NOTES_${version}.md"
+            grep -Fq "## $version -" CHANGELOG.md
+            dashboard_only=true
+          fi
+
+          echo "dashboard_only=$dashboard_only" >> "$GITHUB_OUTPUT"
+
+      - name: Validate synchronized release readiness
+        env:
+          FOODEX_DASHBOARD_UPDATE_RELEASE: ${{ steps.release-mode.outputs.dashboard_only }}
+        run: bash scripts/release-readiness.sh
+      - id: plan
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(tr -d '[:space:]' < VERSION)"
+          customer="$(awk '/^version:/{print $2; exit}' apps/customer_app/pubspec.yaml | tr -d '"')"
+          driver="$(awk '/^version:/{print $2; exit}' apps/driver_app/pubspec.yaml | tr -d '"')"
+          van="$(awk '/^version:/{print $2; exit}' apps/van_app/pubspec.yaml | tr -d '"')"
+          dashboard_only="${{ steps.release-mode.outputs.dashboard_only }}"
+          if [[ "$dashboard_only" == "true" ]]; then
+            test "$customer" = "$driver"
+            test "$customer" = "$van"
+            customer_version="${customer%%+*}"
+            customer_build_number="${customer##*+}"
+            customer_source_commit="$GITHUB_SHA"
+            customer_tree_sha="$(git rev-parse HEAD:apps/customer_app)"
+            customer_lineage_mode="dashboard-only-carried-forward"
+            build_number="$customer_build_number"
+          elif [[ "$version" == "1.0.77" ]]; then
+            mkdir -p artifacts
+            python3 scripts/validate_customer_freeze_contract.py \
+              --candidate HEAD \
+              --metadata-out artifacts/customer-frozen-lineage.json
+            readarray -t frozen < <(python3 - <<'PY'
+          import json
+          data=json.load(open("docs/release/FOODEX_1_0_77_CUSTOMER_FREEZE.json"))
+          customer=data["frozen_customer"]
+          print(customer["source_version"])
+          print(customer["source_build_number"])
+          print(customer["source_identity"])
+          print(customer["baseline_commit"])
+          print(customer["tree_sha"])
+          print(customer["lineage_mode"])
+          PY
+            )
+            customer_version="${frozen[0]}"
+            customer_build_number="${frozen[1]}"
+            test "$customer" = "${frozen[2]}"
+            customer_source_commit="${frozen[3]}"
+            customer_tree_sha="${frozen[4]}"
+            customer_lineage_mode="${frozen[5]}"
+            test "$driver" = "$van"
+            test "${driver%%+*}" = "$version"
+            build_number="${driver##*+}"
+            if [[ -f docs/release/FOODEX_1_0_77_PRODUCTION_HOLD.md && "${{ github.event_name == 'push' || inputs.publish }}" == "true" ]]; then
+              echo "::error::FOODEX 1.0.77 production hold blocks publication until #1380 authorizes release composition."
+              exit 1
+            fi
+          else
+            test "$customer" = "$driver"
+            test "$customer" = "$van"
+            test "${customer%%+*}" = "$version"
+            customer_version="${customer%%+*}"
+            customer_build_number="${customer##*+}"
+            customer_source_commit="$GITHUB_SHA"
+            customer_tree_sha="$(git rev-parse HEAD:apps/customer_app)"
+            customer_lineage_mode="synchronized"
+            build_number="$customer_build_number"
+          fi
+          [[ "$build_number" =~ ^[1-9][0-9]*$ ]]
+          [[ "$customer_build_number" =~ ^[1-9][0-9]*$ ]]
+
+          previous_tag="$(git tag --merged HEAD --list 'v*' --sort=-v:refname | grep -vx "v$version" | head -n 1 || true)"
+          if [[ -n "$previous_tag" ]]; then
+            base_ref="$previous_tag"
+            previous_version="${previous_tag#v}"
+          else
+            base_ref="HEAD^"
+            previous_version="$(git show "$base_ref":VERSION | tr -d '[:space:]')"
+          fi
+
+          # 127 is a cumulative recovery release for installed 125 dashboards.
+          # Registry is at 125, even though the immutable 126 tag is published.
+          # Build and test a 125->127 ZIP instead of a 126->127-only package.
+          if [[ "$version" == "1.0.127" ]]; then
+            git merge-base --is-ancestor v1.0.125 HEAD || {
+              echo "::error::v1.0.125 must be an ancestor of release 127."; exit 1;
+            }
+            base_ref="v1.0.125"
+            previous_version="1.0.125"
+          fi
+
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "build_number=$build_number" >> "$GITHUB_OUTPUT"
+          echo "customer_version=$customer_version" >> "$GITHUB_OUTPUT"
+          echo "customer_build_number=$customer_build_number" >> "$GITHUB_OUTPUT"
+          echo "customer_source_commit=$customer_source_commit" >> "$GITHUB_OUTPUT"
+          echo "customer_tree_sha=$customer_tree_sha" >> "$GITHUB_OUTPUT"
+          echo "customer_lineage_mode=$customer_lineage_mode" >> "$GITHUB_OUTPUT"
+          echo "base_ref=$base_ref" >> "$GITHUB_OUTPUT"
+          echo "previous_version=$previous_version" >> "$GITHUB_OUTPUT"
+          echo "dashboard_only=$dashboard_only" >> "$GITHUB_OUTPUT"
+          echo "FOODEX release factory: $previous_version -> $version+$build_number from $GITHUB_SHA; Customer=$customer_version+$customer_build_number ($customer_lineage_mode); dashboard_only=$dashboard_only"
+
+  dashboard-only:
+    name: Route Dashboard-only release
+    needs: plan
+    if: needs.plan.outputs.dashboard_only == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Dispatch canonical Dashboard update workflow
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          echo "FOODEX ${{ needs.plan.outputs.version }} is Dashboard-only; mobile ${{ needs.plan.outputs.customer_version }} remains unchanged."
+          gh workflow run release-update-bundle.yml --ref main --repo "$GITHUB_REPOSITORY"
+
+  mobile:
+    name: Build mobile artifacts
+    if: needs.plan.outputs.dashboard_only != 'true'
+    needs: plan
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - app: customer
+            project: foodex_customer_app
+            display: Customer
+          - app: driver
+            project: foodex_driver_app
+            display: Driver
+          - app: van
+            project: foodex_van_app
+            display: Van
+    uses: ./.github/workflows/mobile-release-build.yml
+    with:
+      app: ${{ matrix.app }}
+      project: ${{ matrix.project }}
+      display: ${{ matrix.display }}
+      version: ${{ matrix.app == 'customer' && needs.plan.outputs.customer_version || needs.plan.outputs.version }}
+      build_number: ${{ matrix.app == 'customer' && needs.plan.outputs.customer_build_number || needs.plan.outputs.build_number }}
+
+  previews:
+    name: Build ${{ matrix.app }} dashboard preview
+    needs: plan
+    if: needs.plan.outputs.dashboard_only != 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        app: [customer, driver]
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    defaults:
+      run:
+        working-directory: apps/${{ matrix.app }}_app
+    steps:
+      - uses: actions/checkout@v7
+      - name: Set up Flutter 3.47.5
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: "3.47.5"
+          cache: true
+      - name: Build preview once
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${{ matrix.app }}" == "driver" ]]; then
+            flutter create --platforms=web --project-name foodex_driver_app .
+          fi
+          flutter pub get
+          flutter build web             --release             --target=lib/preview_main.dart             --base-href="/preview/${{ matrix.app }}/"             --dart-define=FOODEX_API_BASE_URL=https://foodex.50sols.com             --dart-define=FOODEX_PREVIEW_PARENT_ORIGIN=https://foodex.50sols.com             --dart-define=FOODEX_PREVIEW_CONTRACT_VERSION=shared-flutter-v1
+          test -s build/web/index.html
+          test -s build/web/main.dart.js
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-preview-${{ matrix.app }}-${{ github.sha }}
+          path: apps/${{ matrix.app }}_app/build/web/
+          if-no-files-found: error
+          retention-days: 30
+
+  setup:
+    name: Build Laravel setup once
+    needs: plan
+    if: needs.plan.outputs.dashboard_only != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v7
+      - name: Set up PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.3"
+          extensions: mbstring, pdo_mysql, zip
+          tools: composer:v2
+          coverage: none
+      - name: Cache Composer downloads
+        uses: actions/cache@v5
+        with:
+          path: ~/.cache/composer
+          key: composer-${{ runner.os }}-${{ hashFiles('backend/composer.lock') }}
+          restore-keys: composer-${{ runner.os }}-
+      - name: Build deterministic setup input
+        shell: bash
+        run: |
+          set -euo pipefail
+          composer install --working-dir=backend --no-dev --prefer-dist --optimize-autoloader --no-interaction --no-progress
+          stage="$(mktemp -d)"
+          mkdir -p "$stage/backend"
+          rsync -a backend/ "$stage/backend/"             --exclude='.env'             --exclude='tests/'             --exclude='docs/'             --exclude='.phpunit.cache/'             --exclude='storage/logs/*'             --exclude='storage/app/system/*'
+          rm -f "$stage/backend/bootstrap/cache/"*.php
+          cp VERSION "$stage/VERSION"
+          cp Release/INSTALL-FIRST.txt "$stage/INSTALL-FIRST.txt"
+          (cd "$stage" && zip -qr "$GITHUB_WORKSPACE/FOODEX-Laravel-Setup.zip" .)
+          test -s FOODEX-Laravel-Setup.zip
+          test "$(unzip -Z1 FOODEX-Laravel-Setup.zip | grep -c '^backend/.env$' || true)" = "0"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-laravel-setup-${{ github.sha }}
+          path: FOODEX-Laravel-Setup.zip
+          if-no-files-found: error
+          retention-days: 30
+
+  fresh-install:
+    name: Validate clean install from exact Setup ZIP
+    needs: [plan, setup]
+    if: needs.plan.outputs.dashboard_only != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      CURRENT_VERSION: ${{ needs.plan.outputs.version }}
+    services:
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ROOT_PASSWORD: root
+          MYSQL_DATABASE: foodex_acceptance
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -proot"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=12
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd="redis-cli ping"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=12
+    steps:
+      - uses: actions/checkout@v7
+      - name: Set up PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.3"
+          extensions: mbstring, pdo_mysql, zip
+          coverage: none
+      - name: Set up Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+      - name: Install Playwright Chromium
+        shell: bash
+        run: |
+          npm install --no-save playwright@1.55.0
+          npx playwright install --with-deps chromium
+      - uses: actions/download-artifact@v5
+        with:
+          name: release-laravel-setup-${{ github.sha }}
+          path: Release
+      - name: Run canonical fresh-install acceptance
+        shell: bash
+        run: bash scripts/validate-fresh-setup.sh
+      - name: Upload fresh-install evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-fresh-install-evidence-${{ github.sha }}
+          path: |
+            Release/FRESH_INSTALL_EVIDENCE.json
+            ScreenShots/FreshVan/
+          if-no-files-found: error
+          retention-days: 30
+
+  dashboard-update:
+    name: Build Dashboard delta update
+    needs: [plan, previews]
+    if: needs.plan.outputs.dashboard_only != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: foodex_ci_only
+          MYSQL_DATABASE: foodex_upgrade_127
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -uroot -pfoodex_ci_only"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=12
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: actions/download-artifact@v5
+        with:
+          name: release-preview-customer-${{ github.sha }}
+          path: backend/public/preview/customer
+      - uses: actions/download-artifact@v5
+        with:
+          name: release-preview-driver-${{ github.sha }}
+          path: backend/public/preview/driver
+      - name: Checkout pinned TCPDF runtime
+        uses: actions/checkout@v7
+        with:
+          repository: tecnickcom/TCPDF
+          ref: b18f6119161019916c5bb07cb8da5205ae5c1b63
+          path: .foodex-thirdparty/tcpdf-source
+          persist-credentials: false
+      - name: Stage pinned TCPDF runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf backend/app/ThirdParty/tcpdf
+          mkdir -p backend/app/ThirdParty/tcpdf
+          rsync -a --exclude='.git' --exclude='examples' --exclude='tests' --exclude='test' .foodex-thirdparty/tcpdf-source/ backend/app/ThirdParty/tcpdf/
+          test -f backend/app/ThirdParty/tcpdf/tcpdf.php
+      - name: Build delta update
+        shell: bash
+        env:
+          BASE_REF: ${{ needs.plan.outputs.base_ref }}
+          VERSION: ${{ needs.plan.outputs.version }}
+          PREVIOUS_VERSION: ${{ needs.plan.outputs.previous_version }}
+        run: |
+          set -euo pipefail
+          notes="$(python3 - <<'PY'
+          import os,re
+          from pathlib import Path
+          version=os.environ["VERSION"]
+          text=Path("CHANGELOG.md").read_text(encoding="utf-8")
+          match=re.search(rf"^## {re.escape(version)} - [^\n]+\n(?P<body>.*?)(?=^## |\Z)",text,re.M|re.S)
+          bullets=[line[2:].strip() for line in match.group("body").splitlines() if line.startswith("- ")] if match else []
+          print(" ".join(bullets) or f"FOODEX {version} release")
+          PY
+          )"
+          python3 scripts/build-update-bundle.py             --base "$BASE_REF"             --target-version "$VERSION"             --minimum-current-version "$PREVIOUS_VERSION"             --output-dir dist/update             --release-notes "$notes"
+      - name: Verify actual v1.0.126+ Dashboard capability package
+        shell: bash
+        env:
+          VERSION: ${{ needs.plan.outputs.version }}
+        run: |
+          python3 -m unittest scripts.tests.test_verify_release_capabilities -v
+          python3 scripts/verify_release_capabilities.py --archive dist/update/FOODEX-Update.zip --target-version "$VERSION"
+      - name: Set up PHP for actual v125 to v127 ZIP acceptance
+        if: needs.plan.outputs.version == '1.0.127'
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          extensions: mbstring, pdo_mysql, mysqli, zip
+          tools: composer:v2
+          coverage: none
+      - name: Verify 125 to 127 Dashboard Update ZIP on real MySQL with preserved data
+        if: needs.plan.outputs.version == '1.0.127'
+        shell: bash
+        run: bash scripts/ci-127-upgrade.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-dashboard-update-${{ github.sha }}
+          path: dist/update/
+          if-no-files-found: error
+          retention-days: 30
+
+  assemble:
+    name: Assemble and validate synchronized release
+    needs: [plan, mobile, setup, fresh-install, dashboard-update]
+    if: needs.plan.outputs.dashboard_only != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      CURRENT_VERSION: ${{ needs.plan.outputs.version }}
+      MOBILE_BUILD_NUMBER: ${{ needs.plan.outputs.build_number }}
+      CUSTOMER_VERSION: ${{ needs.plan.outputs.customer_version }}
+      CUSTOMER_BUILD_NUMBER: ${{ needs.plan.outputs.customer_build_number }}
+      CUSTOMER_SOURCE_COMMIT: ${{ needs.plan.outputs.customer_source_commit }}
+      CUSTOMER_TREE_SHA: ${{ needs.plan.outputs.customer_tree_sha }}
+      CUSTOMER_LINEAGE_MODE: ${{ needs.plan.outputs.customer_lineage_mode }}
+      SOURCE_COMMIT: ${{ github.sha }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v5
+        with:
+          pattern: release-mobile-*-${{ github.sha }}
+          path: release-input/mobile
+          merge-multiple: true
+      - uses: actions/download-artifact@v5
+        with:
+          name: release-laravel-setup-${{ github.sha }}
+          path: release-input/setup
+      - uses: actions/download-artifact@v5
+        with:
+          name: release-dashboard-update-${{ github.sha }}
+          path: release-input/update
+      - uses: actions/download-artifact@v5
+        with:
+          name: release-fresh-install-evidence-${{ github.sha }}
+          path: release-input/fresh
+      - name: Assemble exact tested artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p Release/Updates
+          customer_src="release-input/mobile/FOODEX-Customer.apk"
+          driver_src="release-input/mobile/FOODEX-Driver.apk"
+          van_src="release-input/mobile/FOODEX-Van.apk"
+          test -s "$customer_src" && test -s "$driver_src" && test -s "$van_src"
+          cp "$customer_src" Release/FOODEX-Customer.apk
+          cp "$customer_src" "Release/FOODEX-Customer-$CUSTOMER_VERSION.apk"
+          cp "$driver_src" Release/FOODEX-Driver.apk
+          cp "$driver_src" "Release/FOODEX-Driver-$CURRENT_VERSION.apk"
+          cp "$van_src" Release/FOODEX-Van.apk
+          cp "$van_src" "Release/FOODEX-Van-$CURRENT_VERSION.apk"
+          cp release-input/setup/FOODEX-Laravel-Setup.zip Release/FOODEX-Laravel-Setup.zip
+          cp release-input/fresh/Release/FRESH_INSTALL_EVIDENCE.json Release/FRESH_INSTALL_EVIDENCE.json
+          cp release-input/update/FOODEX-Update.* Release/Updates/
+
+          # Retain canonical dashboard upload names and publish SemVer aliases.
+          # Each alias contains the exact same bytes already tested by CI.
+          cp Release/FOODEX-Laravel-Setup.zip "Release/FOODEX-Setup-v$CURRENT_VERSION.zip"
+          cp Release/Updates/FOODEX-Update.zip "Release/FOODEX-Update-v$CURRENT_VERSION.zip"
+          cp docs/release/RELEASE_NOTES.md Release/RELEASE_NOTES.md
+          (cd Release &&
+            sha256sum "FOODEX-Setup-v$CURRENT_VERSION.zip" > "FOODEX-Setup-v$CURRENT_VERSION.sha256.txt" &&
+            sha256sum "FOODEX-Update-v$CURRENT_VERSION.zip" > "FOODEX-Update-v$CURRENT_VERSION.sha256.txt")
+          cmp Release/FOODEX-Laravel-Setup.zip "Release/FOODEX-Setup-v$CURRENT_VERSION.zip"
+          cmp Release/Updates/FOODEX-Update.zip "Release/FOODEX-Update-v$CURRENT_VERSION.zip"
+
+          python3 scripts/write-trial-bundle-manifest.py \
+            --version "$CURRENT_VERSION" \
+            --source-commit "$SOURCE_COMMIT" \
+            --run-number "$GITHUB_RUN_NUMBER" \
+            --mobile-build-number "$MOBILE_BUILD_NUMBER" \
+            --customer-version "$CUSTOMER_VERSION" \
+            --customer-build-number "$CUSTOMER_BUILD_NUMBER" \
+            --customer-source-commit "$CUSTOMER_SOURCE_COMMIT" \
+            --customer-tree-sha "$CUSTOMER_TREE_SHA" \
+            --customer-lineage "$CUSTOMER_LINEAGE_MODE" \
+            --api-base-url https://foodex.50sols.com \
+            --customer "Release/FOODEX-Customer-$CUSTOMER_VERSION.apk" \
+            --driver "Release/FOODEX-Driver-$CURRENT_VERSION.apk" \
+            --van "Release/FOODEX-Van-$CURRENT_VERSION.apk" \
+            --setup Release/FOODEX-Laravel-Setup.zip \
+            --output Release/BUILD_INFO.json
+
+          python3 - <<'PY'
+          import hashlib,json,os
+          from pathlib import Path
+          root=Path("Release")
+          version=os.environ["CURRENT_VERSION"]
+          build=int(os.environ["MOBILE_BUILD_NUMBER"])
+          customer_version=os.environ["CUSTOMER_VERSION"]
+          customer_build=int(os.environ["CUSTOMER_BUILD_NUMBER"])
+          def entry(display, app_version, app_build):
+              p=root/f"FOODEX-{display}-{app_version}.apk"
+              alias=root/f"FOODEX-{display}.apk"
+              assert hashlib.sha256(p.read_bytes()).digest()==hashlib.sha256(alias.read_bytes()).digest()
+              return {"app":display.lower(),"version":app_version,"build_number":app_build,"file":p.name,"latest_alias":alias.name,"bytes":p.stat().st_size,"sha256":hashlib.sha256(p.read_bytes()).hexdigest()}
+          customer=entry("Customer",customer_version,customer_build)
+          customer.update({"release_version":version,"lineage_mode":os.environ["CUSTOMER_LINEAGE_MODE"],"source_commit":os.environ["CUSTOMER_SOURCE_COMMIT"],"tree_sha":os.environ["CUSTOMER_TREE_SHA"]})
+          payload={"schema_version":1,"version":version,"build_number":build,"source_commit":os.environ["SOURCE_COMMIT"],"dashboard_update":{"directory":"Updates","package":"FOODEX-Update.zip","manifest":"FOODEX-Update.json"},"android_apps":[customer,entry("Driver",version,build),entry("Van",version,build)]}
+          (root/"LATEST_RELEASE.json").write_text(json.dumps(payload,indent=2)+"\n",encoding="utf-8")
+          PY
+
+          freeze_args=()
+          if [[ "$CURRENT_VERSION" == "1.0.77" ]]; then
+            freeze_args+=(--customer-freeze-contract docs/release/FOODEX_1_0_77_CUSTOMER_FREEZE.json)
+          fi
+          python3 scripts/validate_release_artifact_contract.py \
+            --release-dir Release \
+            --version "$CURRENT_VERSION" \
+            --build-number "$MOBILE_BUILD_NUMBER" \
+            --source-commit "$SOURCE_COMMIT" \
+            "${freeze_args[@]}"
+      - name: Verify complete 1.0.126+ Setup and Update package capabilities
+        shell: bash
+        run: |
+          python3 scripts/verify_release_capabilities.py --archive Release/FOODEX-Laravel-Setup.zip --target-version "$CURRENT_VERSION"
+          python3 scripts/verify_release_capabilities.py --archive Release/Updates/FOODEX-Update.zip --target-version "$CURRENT_VERSION"
+      - name: Upload synchronized release bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: FOODEX-Release-${{ needs.plan.outputs.version }}-${{ github.sha }}
+          path: Release/
+          if-no-files-found: error
+          retention-days: 30
+      - name: Sign Setup ZIP, Update ZIP and APK provenance from exact release SHA
+        uses: actions/attest-build-provenance@v3
+        with:
+          subject-path: |
+            Release/FOODEX-Laravel-Setup.zip
+            Release/Updates/FOODEX-Update.zip
+            Release/FOODEX-Setup-v${{ needs.plan.outputs.version }}.zip
+            Release/FOODEX-Update-v${{ needs.plan.outputs.version }}.zip
+            Release/FOODEX-Customer-${{ needs.plan.outputs.version }}.apk
+            Release/FOODEX-Driver-${{ needs.plan.outputs.version }}.apk
+            Release/FOODEX-Van-${{ needs.plan.outputs.version }}.apk
+      - name: Publish generated bundle branch
+        if: ${{ github.event_name == 'push' || inputs.publish }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          generated_branch="release/221-generated-trial-bundle"
+          stage="$(mktemp -d)"
+          cp -a Release/. "$stage/"
+          # Release assembly intentionally mutates tracked and ignored files in
+          # the current checkout. Preserve the validated bundle outside the
+          # worktree, then restore a clean source checkout before switching to
+          # the generated distribution branch.
+          git reset --hard "$SOURCE_COMMIT"
+          git clean -fdx Release
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if git ls-remote --exit-code --heads origin "refs/heads/$generated_branch" >/dev/null 2>&1; then
+            git fetch origin "$generated_branch"
+            git switch -C "$generated_branch" "origin/$generated_branch"
+          else
+            git switch -C "$generated_branch" "$SOURCE_COMMIT"
+          fi
+          rm -rf Release
+          mkdir -p Release
+          cp -a "$stage/." Release/
+          git add -f Release
+          if git diff --cached --quiet; then
+            echo "Generated distribution branch already matches this release."
+          else
+            git commit -m "release: refresh FOODEX $CURRENT_VERSION factory distribution"
+            git push origin "HEAD:refs/heads/$generated_branch"
+          fi
+
+      - name: Publish immutable GitHub Release
+        if: ${{ github.event_name == 'push' || inputs.publish }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="v$CURRENT_VERSION"
+          git fetch --force origin "refs/tags/$tag:refs/tags/$tag" 2>/dev/null || true
+          published="$(git rev-list -n 1 "$tag" 2>/dev/null || true)"
+          if [[ -n "$published" && "$published" != "$SOURCE_COMMIT" ]]; then
+            echo "::error::FOODEX $CURRENT_VERSION is already published from $published; refusing to replace immutable artifacts from $SOURCE_COMMIT."
+            exit 1
+          fi
+          test -s Release/RELEASE_NOTES.md
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release edit "$tag" --title "FOODEX $CURRENT_VERSION" --notes-file Release/RELEASE_NOTES.md
+          else
+            gh release create "$tag" --target "$SOURCE_COMMIT" --title "FOODEX $CURRENT_VERSION" --notes-file Release/RELEASE_NOTES.md
+          fi
+          gh release upload "$tag"             "Release/FOODEX-Customer-$CUSTOMER_VERSION.apk"             Release/FOODEX-Driver-$CURRENT_VERSION.apk             Release/FOODEX-Van-$CURRENT_VERSION.apk             Release/FOODEX-Laravel-Setup.zip             Release/LATEST_RELEASE.json             Release/BUILD_INFO.json             Release/Updates/FOODEX-Update.zip             Release/Updates/FOODEX-Update.json             Release/Updates/FOODEX-Update.sha256.txt             Release/Updates/FOODEX-Update.files.txt             "Release/FOODEX-Setup-v$CURRENT_VERSION.zip"             "Release/FOODEX-Setup-v$CURRENT_VERSION.sha256.txt"             "Release/FOODEX-Update-v$CURRENT_VERSION.zip"             "Release/FOODEX-Update-v$CURRENT_VERSION.sha256.txt"             Release/RELEASE_NOTES.md             --clobber
+
+      - name: Synchronize Dashboard update through protected main
+        if: ${{ github.event_name == 'push' || inputs.publish }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          sync_branch="release/${CURRENT_VERSION}-dashboard-update-sync"
+          stage="$(mktemp -d)"
+          mkdir -p "$stage/Updates"
+          cp -a Release/Updates/FOODEX-Update.zip "$stage/Updates/"
+          cp -a Release/Updates/FOODEX-Update.json "$stage/Updates/"
+          cp -a Release/Updates/FOODEX-Update.sha256.txt "$stage/Updates/"
+          cp -a Release/Updates/FOODEX-Update.files.txt "$stage/Updates/"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git fetch origin main
+          base_sha="$(git rev-parse origin/main)"
+          git switch -C "$sync_branch" origin/main
+
+          main_version="$(tr -d '[:space:]' < VERSION)"
+          if [[ "$main_version" != "$CURRENT_VERSION" ]]; then
+            echo "::error::main is already at $main_version; refusing to sync FOODEX $CURRENT_VERSION Dashboard artifacts."
+            exit 1
+          fi
+
+          mkdir -p Release/Updates
+          cp -a "$stage/Updates/." Release/Updates/
+
+          UPDATE_SHA="$(sha256sum Release/Updates/FOODEX-Update.zip | awk '{print $1}')"
+          UPDATE_SHA="$UPDATE_SHA" python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+
+          version=os.environ["CURRENT_VERSION"]
+          update_sha=os.environ["UPDATE_SHA"]
+          source_commit=os.environ["SOURCE_COMMIT"]
+          build_number=os.environ["MOBILE_BUILD_NUMBER"]
+          customer_identity=f"{os.environ['CUSTOMER_VERSION']}+{os.environ['CUSTOMER_BUILD_NUMBER']}"
+
+          registry_path=Path("docs/release/RELEASE_REGISTRY.json")
+          registry=json.loads(registry_path.read_text(encoding="utf-8"))
+          manifest=json.loads(Path("Release/Updates/FOODEX-Update.json").read_text(encoding="utf-8"))
+
+          if manifest.get("target_version") != version:
+              raise SystemExit(f"Dashboard target_version {manifest.get('target_version')} != {version}")
+          if manifest.get("sha256") != update_sha:
+              raise SystemExit("Dashboard package SHA does not match manifest")
+          previous=manifest.get("minimum_current_version")
+
+          existing=[entry for entry in registry["releases"] if entry.get("version") == version]
+          if existing:
+              if len(existing) != 1:
+                  raise SystemExit(f"Duplicate registry entries for {version}")
+              entry=existing[0]
+              if entry.get("state") != "published":
+                  raise SystemExit(f"Existing {version} registry entry is not published")
+              if entry.get("dashboard_update_sha256") != update_sha:
+                  raise SystemExit(f"Existing {version} registry SHA differs from published package")
+          else:
+              if registry.get("current_version") != previous:
+                  raise SystemExit(
+                      f"Registry current_version {registry.get('current_version')} "
+                      f"does not match update minimum_current_version {previous}"
+                  )
+              notes=f"docs/release/UPDATE_NOTES_{version}.md"
+              if not Path(notes).is_file():
+                  raise SystemExit(f"Missing release notes: {notes}")
+              registry["releases"].append({
+                  "version": version,
+                  "state": "published",
+                  "registration": "generated-release",
+                  "release_notes": notes,
+                  "dashboard_update_manifest": "Release/Updates/FOODEX-Update.json",
+                  "dashboard_update_package": "Release/Updates/FOODEX-Update.zip",
+                  "dashboard_update_checksum": "Release/Updates/FOODEX-Update.sha256.txt",
+                  "dashboard_update_file_list": "Release/Updates/FOODEX-Update.files.txt",
+                  "dashboard_update_sha256": update_sha,
+                  "note": (
+                      f"FOODEX {version} synchronized release automatically registered by Release Factory "
+                      f"from source {source_commit}. Dashboard update is directly deployable over {previous}; "
+                      f"Customer {customer_identity} is frozen/carried forward; Driver/Van are synchronized at {version}+{build_number}."
+                  ),
+              })
+          registry["current_version"]=version
+          registry_path.write_text(json.dumps(registry, indent=2) + "\n", encoding="utf-8")
+          PY
+
+          git add -f \
+            Release/Updates/FOODEX-Update.zip \
+            Release/Updates/FOODEX-Update.json \
+            Release/Updates/FOODEX-Update.sha256.txt \
+            Release/Updates/FOODEX-Update.files.txt \
+            docs/release/RELEASE_REGISTRY.json
+
+          if git diff --cached --quiet; then
+            echo "main already contains the validated FOODEX $CURRENT_VERSION Dashboard update."
+            exit 0
+          fi
+
+          git commit -m "release: sync Dashboard update $CURRENT_VERSION"
+          head_sha="$(git rev-parse HEAD)"
+          git push --force origin "HEAD:refs/heads/$sync_branch"
+
+          pr_number="$(gh pr list --state open --base main --head "$sync_branch" --json number --jq '.[0].number // empty')"
+          if [[ -z "$pr_number" ]]; then
+            gh pr create \
+              --base main \
+              --head "$sync_branch" \
+              --title "release: sync Dashboard update $CURRENT_VERSION" \
+              --body "Register FOODEX $CURRENT_VERSION as published and synchronize the exact Dashboard update artifacts already published in GitHub Release v$CURRENT_VERSION back to protected main."
+            pr_number="$(gh pr list --state open --base main --head "$sync_branch" --json number --jq '.[0].number')"
+          fi
+
+          gh workflow run release-sync-gate.yml \
+            --ref "$sync_branch" \
+            -f base_sha="$base_sha" \
+            -f head_sha="$head_sha" \
+            -f branch="$sync_branch"
+
+          run_id=""
+          for attempt in {1..30}; do
+            run_id="$(gh run list \
+              --workflow release-sync-gate.yml \
+              --branch "$sync_branch" \
+              --event workflow_dispatch \
+              --limit 20 \
+              --json databaseId,headSha \
+              --jq ".[] | select(.headSha == \"$head_sha\") | .databaseId" | head -n 1)"
+            if [[ -n "$run_id" ]]; then
+              break
+            fi
+            sleep 2
+          done
+
+          if [[ -z "$run_id" ]]; then
+            echo "::error::Could not locate the release sync gate run for $head_sha."
+            exit 1
+          fi
+
+          gh run watch "$run_id" --exit-status
+
+          pr_head="$(gh pr view "$pr_number" --json headRefOid --jq '.headRefOid')"
+          if [[ "$pr_head" != "$head_sha" ]]; then
+            echo "::error::Sync PR head moved from $head_sha to $pr_head; refusing automatic merge."
+            exit 1
+          fi
+
+          gh pr merge "$pr_number" --squash --delete-branch
+

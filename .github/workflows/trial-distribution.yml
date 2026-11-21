@@ -1,0 +1,510 @@
+name: FOODEX Trial Distribution Bundle
+# release-trigger: 1.0.65 dashboard bundle
+
+on:
+  push:
+    branches:
+      - "release/**"
+    paths:
+      - ".github/workflows/trial-distribution.yml"
+      - ".github/workflows/localization-quality-gate.yml"
+      - "VERSION"
+      - "backend/**"
+      - "apps/customer_app/**"
+      - "apps/driver_app/**"
+      - "apps/van_app/**"
+      - "scripts/configure-mobile-native.py"
+      - "scripts/verify-mobile-runtime-endpoint.py"
+      - "scripts/tests/test_mobile_runtime_endpoint.py"
+      - "store/submission/metadata.json"
+      - "scripts/build-dashboard-update.sh"
+      - "scripts/write-trial-bundle-manifest.py"
+      - "scripts/validate_release_artifact_contract.py"
+      - "scripts/validate_customer_freeze_contract.py"
+      - "docs/release/FOODEX_1_0_77_CUSTOMER_FREEZE.json"
+      - "scripts/tests/test_release_artifact_contract.py"
+      - "Release/README.md"
+      - "Release/INSTALL-FIRST.txt"
+      - "Release/Updates/README.md"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: foodex-trial-distribution-${{ github.ref_name }}
+  cancel-in-progress: true
+
+jobs:
+  detect-release-intent:
+    name: Detect release intent
+    runs-on: ubuntu-latest
+    outputs:
+      release_intent: ${{ steps.detect.outputs.release_intent }}
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 2
+
+      - name: Detect VERSION promotion or manual release
+        id: detect
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_REF_NAME" == release/*-update && "${{ github.event_name }}" == "push" ]]; then
+            echo "release_intent=false" >> "$GITHUB_OUTPUT"
+            echo "Dashboard-only update branch detected; skipping mobile trial distribution."
+            exit 0
+          fi
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            echo "release_intent=true" >> "$GITHUB_OUTPUT"
+            echo "Manual distribution requested."
+            exit 0
+          fi
+
+          current_version="$(tr -d '[:space:]' < VERSION)"
+          previous_version="$(git show HEAD^:VERSION 2>/dev/null | tr -d '[:space:]' || true)"
+          changed_paths="$(git diff --name-only HEAD^ HEAD || true)"
+
+          endpoint_gate_changed=false
+          while IFS= read -r changed_path; do
+            case "$changed_path" in
+              .github/workflows/customer-app-ci.yml|.github/workflows/driver-app-ci.yml|.github/workflows/van-app-ci.yml|.github/workflows/required-ci-gate.yml|.github/workflows/trial-distribution.yml|scripts/verify-mobile-runtime-endpoint.py|scripts/tests/test_mobile_runtime_endpoint.py)
+                endpoint_gate_changed=true
+                break
+                ;;
+            esac
+          done <<< "$changed_paths"
+
+          if [[ "$GITHUB_REF_NAME" == "main" && "$endpoint_gate_changed" == "true" ]]; then
+            echo "release_intent=true" >> "$GITHUB_OUTPUT"
+            echo "Mobile endpoint release gate changed on main; rebuilding current VERSION=$current_version."
+            exit 0
+          fi
+
+          if [[ "$GITHUB_REF_NAME" == "release/1021-uiux-v42-final-real-build" ]]; then
+            changed_paths="$(git diff --name-only HEAD^ HEAD || true)"
+            if [[ -n "$changed_paths" ]] && ! printf '%s\n' "$changed_paths" | grep -Ev '^Release/' >/dev/null; then
+              echo "release_intent=false" >> "$GITHUB_OUTPUT"
+              echo "Terminal generated-artifact-only publication detected; release rebuild is not required."
+              exit 0
+            fi
+            echo "release_intent=true" >> "$GITHUB_OUTPUT"
+            echo "Terminal #1021 release branch requests $current_version distribution from a source/workflow change."
+            exit 0
+          fi
+
+          if [[ -n "$previous_version" && "$current_version" != "$previous_version" ]]; then
+            echo "release_intent=true" >> "$GITHUB_OUTPUT"
+            echo "VERSION changed: $previous_version -> $current_version"
+          else
+            echo "release_intent=false" >> "$GITHUB_OUTPUT"
+            echo "No release intent: normal main merge with unchanged VERSION=$current_version."
+          fi
+
+  localization-quality:
+    needs: detect-release-intent
+    if: needs.detect-release-intent.outputs.release_intent == 'true'
+    uses: ./.github/workflows/localization-quality-gate.yml
+    with:
+      base_sha: ${{ github.event.before }}
+      head_sha: ${{ github.sha }}
+      run_mobile_runtime: true
+
+  build:
+    needs:
+      - detect-release-intent
+      - localization-quality
+    if: needs.detect-release-intent.outputs.release_intent == 'true' && needs.localization-quality.result == 'success'
+    name: Build tester distribution
+    runs-on: ubuntu-latest
+    timeout-minutes: 80
+
+    services:
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ROOT_PASSWORD: root
+          MYSQL_DATABASE: foodex_acceptance
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -proot"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=12
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd="redis-cli ping"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=12
+
+    env:
+      FOODEX_API_BASE_URL: https://foodex.50sols.com
+      CUSTOMER_FIREBASE_API_KEY: ${{ vars.FOODEX_CUSTOMER_FIREBASE_API_KEY }}
+      CUSTOMER_FIREBASE_APP_ID: ${{ vars.FOODEX_CUSTOMER_FIREBASE_APP_ID }}
+      CUSTOMER_FIREBASE_MESSAGING_SENDER_ID: ${{ vars.FOODEX_CUSTOMER_FIREBASE_MESSAGING_SENDER_ID }}
+      CUSTOMER_FIREBASE_PROJECT_ID: ${{ vars.FOODEX_CUSTOMER_FIREBASE_PROJECT_ID }}
+      DRIVER_FIREBASE_API_KEY: ${{ vars.FOODEX_DRIVER_FIREBASE_API_KEY }}
+      DRIVER_FIREBASE_APP_ID: ${{ vars.FOODEX_DRIVER_FIREBASE_APP_ID }}
+      DRIVER_FIREBASE_MESSAGING_SENDER_ID: ${{ vars.FOODEX_DRIVER_FIREBASE_MESSAGING_SENDER_ID }}
+      DRIVER_FIREBASE_PROJECT_ID: ${{ vars.FOODEX_DRIVER_FIREBASE_PROJECT_ID }}
+
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Enforce release versioning
+        shell: bash
+        run: |
+          set -euo pipefail
+          current_version="$(tr -d '[:space:]' < VERSION)"
+          if [[ "$current_version" == "1.0.77" ]]; then
+            python3 scripts/validate_customer_freeze_contract.py --candidate HEAD
+            echo "::error::FOODEX 1.0.77 carries a frozen Customer lineage and must use the canonical Release Factory; legacy Trial Distribution cannot relabel Customer 1.0.76 as 1.0.77."
+            exit 1
+          fi
+          customer_identity="$(awk '/^version:/{print $2; exit}' apps/customer_app/pubspec.yaml | tr -d '"')"
+          driver_identity="$(awk '/^version:/{print $2; exit}' apps/driver_app/pubspec.yaml | tr -d '"')"
+          van_identity="$(awk '/^version:/{print $2; exit}' apps/van_app/pubspec.yaml | tr -d '"')"
+          test "$customer_identity" = "$driver_identity"
+          test "$customer_identity" = "$van_identity"
+          test "${driver_identity%%+*}" = "$current_version"
+          mobile_build_number="${driver_identity##*+}"
+          test -n "$mobile_build_number"
+          test "$mobile_build_number" -gt 0
+          head_previous_version="$(git show HEAD^:VERSION 2>/dev/null | tr -d '[:space:]' || true)"
+          if [[ -z "$head_previous_version" ]]; then
+            head_previous_version="$current_version"
+          fi
+
+          previous_tag="$(
+            git tag --merged HEAD --list 'v*' --sort=-v:refname \
+              | grep -vx "v${current_version}" \
+              | head -n 1 \
+              || true
+          )"
+          if [[ -n "$previous_tag" ]]; then
+            previous_version="${previous_tag#v}"
+            update_base_ref="$previous_tag"
+          else
+            previous_version="$head_previous_version"
+            update_base_ref="$(git log --format=%H -- VERSION | sed -n '2p')"
+            if [[ -z "$update_base_ref" ]]; then
+              update_base_ref="HEAD^"
+            fi
+          fi
+
+          echo "CURRENT_VERSION=$current_version" >> "$GITHUB_ENV"
+          echo "MOBILE_BUILD_NUMBER=$mobile_build_number" >> "$GITHUB_ENV"
+          echo "PREVIOUS_VERSION=$previous_version" >> "$GITHUB_ENV"
+          echo "UPDATE_BASE_REF=$update_base_ref" >> "$GITHUB_ENV"
+
+      - name: Set up PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.3"
+          extensions: mbstring, pdo_mysql, zip
+          tools: composer:v2
+          coverage: none
+
+      - name: Set up Flutter 3.47.5
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: "3.47.5"
+          cache: true
+
+      - name: Prepare release directory
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p Release/Updates
+          rm -f \
+            Release/FOODEX-Customer.apk \
+            Release/FOODEX-Driver.apk \
+            Release/FOODEX-Van.apk \
+            Release/FOODEX-Customer-*.apk \
+            Release/FOODEX-Driver-*.apk \
+            Release/FOODEX-Van-*.apk \
+            Release/FOODEX-Laravel-Setup.zip \
+            Release/BUILD_INFO.json \
+            Release/LATEST_RELEASE.json
+
+      - name: Build Customer Android tester APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd apps/customer_app
+          flutter create --platforms=android --project-name foodex_customer_app .
+          python3 ../../scripts/configure-mobile-native.py --app customer --app-dir . --platform android
+          rm -f test/widget_test.dart
+          flutter pub get
+          defines=(--dart-define=FOODEX_API_BASE_URL="$FOODEX_API_BASE_URL")
+          if [[ -n "$CUSTOMER_FIREBASE_API_KEY" && -n "$CUSTOMER_FIREBASE_APP_ID" && -n "$CUSTOMER_FIREBASE_MESSAGING_SENDER_ID" && -n "$CUSTOMER_FIREBASE_PROJECT_ID" ]]; then
+            defines+=(--dart-define=FOODEX_FIREBASE_API_KEY="$CUSTOMER_FIREBASE_API_KEY")
+            defines+=(--dart-define=FOODEX_FIREBASE_APP_ID="$CUSTOMER_FIREBASE_APP_ID")
+            defines+=(--dart-define=FOODEX_FIREBASE_MESSAGING_SENDER_ID="$CUSTOMER_FIREBASE_MESSAGING_SENDER_ID")
+            defines+=(--dart-define=FOODEX_FIREBASE_PROJECT_ID="$CUSTOMER_FIREBASE_PROJECT_ID")
+          fi
+          flutter build apk --release --build-name="$CURRENT_VERSION" --build-number="$MOBILE_BUILD_NUMBER" "${defines[@]}"
+          aapt_bin="$(find "$ANDROID_HOME/build-tools" -type f -name aapt | sort -V | tail -n 1)"
+          apk=build/app/outputs/flutter-apk/app-release.apk
+          python3 ../../scripts/verify-mobile-runtime-endpoint.py "$apk"
+          "$aapt_bin" dump permissions "$apk" | grep -Fx "uses-permission: name='android.permission.INTERNET'"
+          "$aapt_bin" dump badging "$apk" > build/trial-badging.txt
+          grep -Fx "application-label:'FOODEX'" build/trial-badging.txt
+          grep -F "package: name='com.fiftysolution.foodex.customer'" build/trial-badging.txt
+          grep -F "versionCode='$MOBILE_BUILD_NUMBER'" build/trial-badging.txt
+          grep -F "versionName='$CURRENT_VERSION'" build/trial-badging.txt
+          cp "$apk" "$GITHUB_WORKSPACE/Release/FOODEX-Customer.apk"
+
+      - name: Build Driver Android tester APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd apps/driver_app
+          flutter create --platforms=android --project-name foodex_driver_app .
+          python3 ../../scripts/configure-mobile-native.py --app driver --app-dir . --platform android
+          rm -f test/widget_test.dart
+          flutter pub get
+          defines=(--dart-define=FOODEX_API_BASE_URL="$FOODEX_API_BASE_URL")
+          if [[ -n "$DRIVER_FIREBASE_API_KEY" && -n "$DRIVER_FIREBASE_APP_ID" && -n "$DRIVER_FIREBASE_MESSAGING_SENDER_ID" && -n "$DRIVER_FIREBASE_PROJECT_ID" ]]; then
+            defines+=(--dart-define=FOODEX_FIREBASE_API_KEY="$DRIVER_FIREBASE_API_KEY")
+            defines+=(--dart-define=FOODEX_FIREBASE_APP_ID="$DRIVER_FIREBASE_APP_ID")
+            defines+=(--dart-define=FOODEX_FIREBASE_MESSAGING_SENDER_ID="$DRIVER_FIREBASE_MESSAGING_SENDER_ID")
+            defines+=(--dart-define=FOODEX_FIREBASE_PROJECT_ID="$DRIVER_FIREBASE_PROJECT_ID")
+          fi
+          flutter build apk --release --build-name="$CURRENT_VERSION" --build-number="$MOBILE_BUILD_NUMBER" "${defines[@]}"
+          aapt_bin="$(find "$ANDROID_HOME/build-tools" -type f -name aapt | sort -V | tail -n 1)"
+          apk=build/app/outputs/flutter-apk/app-release.apk
+          python3 ../../scripts/verify-mobile-runtime-endpoint.py "$apk"
+          "$aapt_bin" dump permissions "$apk" | grep -Fx "uses-permission: name='android.permission.INTERNET'"
+          "$aapt_bin" dump badging "$apk" > build/trial-badging.txt
+          grep -Fx "application-label:'FOODEX Driver'" build/trial-badging.txt
+          grep -F "package: name='com.fiftysolution.foodex.driver'" build/trial-badging.txt
+          grep -F "versionCode='$MOBILE_BUILD_NUMBER'" build/trial-badging.txt
+          grep -F "versionName='$CURRENT_VERSION'" build/trial-badging.txt
+          cp "$apk" "$GITHUB_WORKSPACE/Release/FOODEX-Driver.apk"
+
+      - name: Build Van Android tester APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd apps/van_app
+          flutter create --platforms=android --project-name foodex_van_app .
+          python3 ../../scripts/configure-mobile-native.py --app van --app-dir . --platform android
+          rm -f test/widget_test.dart
+          flutter pub get
+          flutter build apk --release \
+            --build-name="$CURRENT_VERSION" \
+            --build-number="$MOBILE_BUILD_NUMBER" \
+            --dart-define=FOODEX_API_BASE_URL="$FOODEX_API_BASE_URL"
+          aapt_bin="$(find "$ANDROID_HOME/build-tools" -type f -name aapt | sort -V | tail -n 1)"
+          apk=build/app/outputs/flutter-apk/app-release.apk
+          python3 ../../scripts/verify-mobile-runtime-endpoint.py "$apk"
+          "$aapt_bin" dump permissions "$apk" | grep -Fx "uses-permission: name='android.permission.INTERNET'"
+          "$aapt_bin" dump badging "$apk" > build/trial-badging.txt
+          grep -Fx "application-label:'FOODEX Van'" build/trial-badging.txt
+          grep -F "package: name='com.foodex.van'" build/trial-badging.txt
+          grep -F "versionCode='$MOBILE_BUILD_NUMBER'" build/trial-badging.txt
+          grep -F "versionName='$CURRENT_VERSION'" build/trial-badging.txt
+          cp "$apk" "$GITHUB_WORKSPACE/Release/FOODEX-Van.apk"
+
+      - name: Verify production API domain inside APK binaries
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected='https://foodex.50sols.com'
+          forbidden='https://vanfoodex.50sols.com'
+          for apk in             Release/FOODEX-Customer.apk             Release/FOODEX-Driver.apk             Release/FOODEX-Van.apk
+          do
+            binary_strings="$(unzip -p "$apk" lib/arm64-v8a/libapp.so | strings)"
+            if ! grep -Fq "$expected" <<<"$binary_strings"; then
+              echo "::error::$apk does not embed the production FOODEX API endpoint: $expected"
+              exit 1
+            fi
+            if grep -Fq "$forbidden" <<<"$binary_strings"; then
+              echo "::error::$apk still embeds forbidden legacy Van endpoint: $forbidden"
+              exit 1
+            fi
+          done
+
+      - name: Create versioned mobile APK filenames
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp Release/FOODEX-Customer.apk "Release/FOODEX-Customer-${CURRENT_VERSION}.apk"
+          cp Release/FOODEX-Driver.apk "Release/FOODEX-Driver-${CURRENT_VERSION}.apk"
+          cp Release/FOODEX-Van.apk "Release/FOODEX-Van-${CURRENT_VERSION}.apk"
+
+      - name: Build Laravel first-install ZIP
+        shell: bash
+        run: |
+          set -euo pipefail
+          composer install --working-dir=backend --no-dev --prefer-dist --optimize-autoloader --no-interaction --no-progress
+          stage="$(mktemp -d)"
+          mkdir -p "$stage/backend"
+          rsync -a backend/ "$stage/backend/" --exclude='.env' --exclude='tests/' --exclude='docs/' --exclude='.phpunit.cache/' --exclude='storage/logs/*' --exclude='storage/app/system/*'
+          rm -f "$stage/backend/bootstrap/cache/"*.php
+          cp VERSION "$stage/VERSION"
+          cp Release/INSTALL-FIRST.txt "$stage/INSTALL-FIRST.txt"
+          cd "$stage"
+          zip -qr "$GITHUB_WORKSPACE/Release/FOODEX-Laravel-Setup.zip" .
+          cd "$GITHUB_WORKSPACE"
+          setup_bytes="$(stat -c%s Release/FOODEX-Laravel-Setup.zip)"
+          if (( setup_bytes >= 99000000 )); then
+            echo "::error::Laravel setup ZIP is too large for normal GitHub storage ($setup_bytes bytes)."
+            exit 1
+          fi
+
+      - name: Set up Node for fresh-install visual QA
+        uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+
+      - name: Install Playwright Chromium for fresh-install visual QA
+        shell: bash
+        run: |
+          npm install --no-save playwright@1.55.0
+          npx playwright install --with-deps chromium
+
+      - name: Validate clean install from ZIP only
+        shell: bash
+        run: bash scripts/validate-fresh-setup.sh
+
+      - name: Upload fresh-install Van visual QA
+        uses: actions/upload-artifact@v4
+        with:
+          name: foodex-uiux-v42-1-0-59-fresh-ui-${{ github.run_id }}
+          path: ScreenShots/FreshVan/
+          if-no-files-found: error
+          retention-days: 14
+
+
+      - name: Build dashboard Update Center package
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash scripts/build-dashboard-update.sh Release/Updates "$PREVIOUS_VERSION" "$CURRENT_VERSION" "$UPDATE_BASE_REF"
+          if [[ -f Release/Updates/FOODEX-Update.zip ]]; then
+            update_sha="$(sha256sum Release/Updates/FOODEX-Update.zip | awk '{print $1}')"
+            printf '%s  %s\n' "$update_sha" "FOODEX-Update.zip" > Release/Updates/FOODEX-Update.sha256.txt
+            unzip -Z1 Release/Updates/FOODEX-Update.zip > Release/Updates/FOODEX-Update.files.txt
+          fi
+
+      - name: Write bundle manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          customer_firebase=false
+          driver_firebase=false
+          if [[ -n "$CUSTOMER_FIREBASE_API_KEY" && -n "$CUSTOMER_FIREBASE_APP_ID" && -n "$CUSTOMER_FIREBASE_MESSAGING_SENDER_ID" && -n "$CUSTOMER_FIREBASE_PROJECT_ID" ]]; then
+            customer_firebase=true
+          fi
+          if [[ -n "$DRIVER_FIREBASE_API_KEY" && -n "$DRIVER_FIREBASE_APP_ID" && -n "$DRIVER_FIREBASE_MESSAGING_SENDER_ID" && -n "$DRIVER_FIREBASE_PROJECT_ID" ]]; then
+            driver_firebase=true
+          fi
+          python3 scripts/write-trial-bundle-manifest.py \
+            --version "$CURRENT_VERSION" \
+            --source-commit "$GITHUB_SHA" \
+            --run-number "$GITHUB_RUN_NUMBER" \
+            --mobile-build-number "$MOBILE_BUILD_NUMBER" \
+            --api-base-url "$FOODEX_API_BASE_URL" \
+            --customer "Release/FOODEX-Customer-${CURRENT_VERSION}.apk" \
+            --driver "Release/FOODEX-Driver-${CURRENT_VERSION}.apk" \
+            --van "Release/FOODEX-Van-${CURRENT_VERSION}.apk" \
+            --setup Release/FOODEX-Laravel-Setup.zip \
+            --customer-firebase "$customer_firebase" \
+            --driver-firebase "$driver_firebase" \
+            --output Release/BUILD_INFO.json
+
+          CURRENT_VERSION="$CURRENT_VERSION" MOBILE_BUILD_NUMBER="$MOBILE_BUILD_NUMBER" GITHUB_SHA="$GITHUB_SHA" python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+
+          version = os.environ["CURRENT_VERSION"]
+          build = int(os.environ["MOBILE_BUILD_NUMBER"])
+          root = Path("Release")
+
+          def entry(app: str):
+              versioned = root / f"FOODEX-{app}-{version}.apk"
+              latest = root / f"FOODEX-{app}.apk"
+              assert versioned.is_file() and versioned.stat().st_size > 0
+              assert latest.is_file() and latest.stat().st_size > 0
+              assert hashlib.sha256(versioned.read_bytes()).hexdigest() == hashlib.sha256(latest.read_bytes()).hexdigest()
+              return {
+                  "app": app.lower(),
+                  "version": version,
+                  "build_number": build,
+                  "file": versioned.name,
+                  "latest_alias": latest.name,
+                  "bytes": versioned.stat().st_size,
+                  "sha256": hashlib.sha256(versioned.read_bytes()).hexdigest(),
+              }
+
+          payload = {
+              "schema_version": 1,
+              "version": version,
+              "build_number": build,
+              "source_commit": os.environ["GITHUB_SHA"],
+              "dashboard_update": {
+                  "directory": "Updates",
+                  "package": "FOODEX-Update.zip",
+                  "manifest": "FOODEX-Update.json",
+              },
+              "android_apps": [
+                  entry("Customer"),
+                  entry("Driver"),
+                  entry("Van"),
+              ],
+          }
+          (root / "LATEST_RELEASE.json").write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+          PY
+
+      - name: Validate synchronized release artifact contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/validate_release_artifact_contract.py \
+            --release-dir Release \
+            --version "$CURRENT_VERSION" \
+            --build-number "$MOBILE_BUILD_NUMBER" \
+            --source-commit "$GITHUB_SHA"
+
+      # Trial builds are non-authoritative. Release Factory on protected main
+      # exclusively owns immutable GitHub Releases/tags and generated distribution.
+      - name: Validate bundle files
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s Release/FOODEX-Customer.apk
+          test -s Release/FOODEX-Driver.apk
+          test -s Release/FOODEX-Van.apk
+          test -s "Release/FOODEX-Customer-${CURRENT_VERSION}.apk"
+          test -s "Release/FOODEX-Driver-${CURRENT_VERSION}.apk"
+          test -s "Release/FOODEX-Van-${CURRENT_VERSION}.apk"
+          test -s Release/LATEST_RELEASE.json
+          test -s Release/FOODEX-Laravel-Setup.zip
+          test -s Release/BUILD_INFO.json
+          test -s Release/Updates/README.md
+          test -s Release/Updates/FOODEX-Update.json
+          unzip -l Release/FOODEX-Laravel-Setup.zip | grep -F 'backend/artisan'
+          unzip -l Release/FOODEX-Laravel-Setup.zip | grep -F 'VERSION'
+
+      - name: Upload distribution artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: foodex-trial-distribution-${{ env.CURRENT_VERSION }}
+          path: Release/
+          if-no-files-found: error
+          retention-days: 30
+

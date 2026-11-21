@@ -1,0 +1,1372 @@
+<?php
+
+namespace Tests\Feature;
+
+use App\Models\B2bAccount;
+use App\Models\Role;
+use App\Models\User;
+use App\Services\B2bCustomerService;
+use App\Services\B2cCustomerService;
+use App\Services\VanRegistryService;
+use App\Services\WholesalePrincipal;
+use Database\Seeders\CoreReferenceSeeder;
+use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\DB;
+use Tests\TestCase;
+
+class DashboardOrderManagementTest extends TestCase
+{
+    use RefreshDatabase;
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+        $this->seed(CoreReferenceSeeder::class);
+    }
+
+    public function test_b2c_store_admin_can_create_edit_and_cancel_manual_order_with_correct_reservations(): void
+    {
+        $store = $this->store('B2C', 'ORDER-RETAIL');
+        [$product, $inventory] = $this->product($store, 'b2c', 'RETAIL-ORDER-SKU', 4.500, 10);
+        $admin = $this->storeAdmin($store, 'retail-orders@example.test');
+        $customer = app(B2cCustomerService::class)->create($store, [
+            'name' => 'Retail Buyer',
+            'email' => 'retail-buyer@example.test',
+        ]);
+
+        $this->actingAs($admin)
+            ->get('/admin/b2c/orders?store_id='.$store)
+            ->assertOk()
+            ->assertSee('Create new order');
+
+        $this->actingAs($admin)->post('/admin/b2c/orders', [
+            'store_id' => $store,
+            'customer_id' => $customer->id,
+            'payment_method' => 'cash_on_delivery',
+            'discount_total' => 1,
+            'delivery_total' => 0.5,
+            'customer_note' => 'Phone order',
+            'items' => [
+                ['product_id' => $product, 'quantity' => 2],
+            ],
+        ])->assertRedirect();
+
+        $order = DB::table('orders')->where('store_id', $store)->where('channel', 'b2c')->first();
+        $this->assertNotNull($order);
+        $this->assertSame((int) $customer->id, (int) $order->b2c_customer_id);
+        $this->assertSame(9.0, (float) $order->subtotal);
+        $this->assertSame(0.0, (float) $order->discount_total);
+        $this->assertSame(0.0, (float) $order->delivery_total);
+        $this->assertSame(9.0, (float) $order->grand_total);
+        $this->assertNotNull($order->quote_id, 'Dashboard orders must persist the backend quote identity.');
+        $this->assertSame(2.0, (float) DB::table('inventories')->where('id', $inventory)->value('reserved_quantity'));
+        $this->assertDatabaseHas('payments', ['order_id' => $order->id, 'provider' => 'cash_on_delivery', 'status' => 'pending']);
+        $this->assertDatabaseHas('audit_logs', ['event' => 'dashboard.order_created', 'store_id' => $store]);
+
+        $this->actingAs($admin)->patch('/admin/b2c/orders/'.$order->id, [
+            'store_id' => $store,
+            'customer_id' => $customer->id,
+            'payment_method' => 'cash_on_delivery',
+            'discount_total' => 0,
+            'delivery_total' => 0,
+            'customer_note' => 'Quantity changed',
+            'items' => [
+                ['product_id' => $product, 'quantity' => 3],
+            ],
+        ])->assertRedirect();
+
+        $this->assertDatabaseHas('orders', [
+            'id' => $order->id,
+            'customer_note' => 'Quantity changed',
+        ]);
+        $this->assertSame(13.5, (float) DB::table('orders')->where('id', $order->id)->value('grand_total'));
+        $this->assertSame(3.0, (float) DB::table('inventories')->where('id', $inventory)->value('reserved_quantity'));
+        $this->assertDatabaseHas('audit_logs', ['event' => 'dashboard.order_updated', 'store_id' => $store]);
+
+        $this->actingAs($admin)->post('/admin/b2c/orders/'.$order->id.'/status', [
+            'store_id' => $store,
+            'status' => 'cancelled',
+            'note' => 'Customer cancelled',
+        ])->assertRedirect();
+
+        $this->assertDatabaseHas('orders', ['id' => $order->id, 'status' => 'cancelled']);
+        $this->assertSame(0.0, (float) DB::table('inventories')->where('id', $inventory)->value('reserved_quantity'));
+    }
+
+    public function test_b2c_dashboard_quote_and_order_localize_unconfigured_payment_method_without_writes(): void
+    {
+        $store = $this->store('B2C', 'ORDER-PAYMENT-LOCALE');
+        [$product, $inventory] = $this->product($store, 'b2c', 'ORDER-PAYMENT-LOCALE-SKU', 5.500, 10);
+        $admin = $this->storeAdmin($store, 'payment-locale-admin@example.test');
+        $customer = app(B2cCustomerService::class)->create($store, [
+            'name' => 'Payment Locale Retail Buyer',
+            'email' => 'payment-locale-buyer@example.test',
+        ]);
+
+        $payload = [
+            'store_id' => $store,
+            'customer_id' => $customer->id,
+            'payment_method' => 'unsupported_offline_payment',
+            'items' => [['product_id' => $product, 'quantity' => 1]],
+        ];
+        $baseline = [
+            'orders' => DB::table('orders')->count(),
+            'order_items' => DB::table('order_items')->count(),
+            'invoices' => DB::table('invoices')->count(),
+            'payments' => DB::table('payments')->count(),
+            'audit_logs' => DB::table('audit_logs')->count(),
+            'stock_movements' => DB::table('stock_movements')->count(),
+            'reserved_quantity' => (float) DB::table('inventories')->where('id', $inventory)->value('reserved_quantity'),
+        ];
+
+        foreach ([
+            'ar' => 'طريقة الدفع المحددة غير مهيأة.',
+            'en' => 'The selected payment method is not configured.',
+        ] as $locale => $message) {
+            $admin->forceFill(['locale' => $locale])->saveQuietly();
+            app()->setLocale($locale);
+
+            foreach (['/admin/b2c/orders/quote', '/admin/b2c/orders'] as $uri) {
+                $this->actingAs($admin)->withHeaders([
+                    'Accept-Language' => $locale === 'ar' ? 'en' : 'ar',
+                ])->postJson($uri, $payload)
+                    ->assertUnprocessable()
+                    ->assertJsonPath('errors.payment_method.0', $message);
+
+                $this->assertSame($baseline, [
+                    'orders' => DB::table('orders')->count(),
+                    'order_items' => DB::table('order_items')->count(),
+                    'invoices' => DB::table('invoices')->count(),
+                    'payments' => DB::table('payments')->count(),
+                    'audit_logs' => DB::table('audit_logs')->count(),
+                    'stock_movements' => DB::table('stock_movements')->count(),
+                    'reserved_quantity' => (float) DB::table('inventories')->where('id', $inventory)->value('reserved_quantity'),
+                ]);
+            }
+        }
+
+        $this->assertDatabaseCount('orders', 0);
+    }
+
+    public function test_b2c_manual_order_rejects_foreign_store_product_and_customer_ids(): void
+    {
+        $storeA = $this->store('B2C', 'ORDER-A');
+        $storeB = $this->store('B2C', 'ORDER-B');
+        [$productA] = $this->product($storeA, 'b2c', 'ORDER-A-P', 2, 10);
+        [$productB] = $this->product($storeB, 'b2c', 'ORDER-B-P', 3, 10);
+        $admin = $this->storeAdmin($storeA, 'store-a-orders@example.test');
+        $customerA = app(B2cCustomerService::class)->create($storeA, ['name' => 'Store A Buyer']);
+        $customerB = app(B2cCustomerService::class)->create($storeB, ['name' => 'Store B Buyer']);
+
+        $this->actingAs($admin)->post('/admin/b2c/orders', [
+            'store_id' => $storeA,
+            'customer_id' => $customerB->id,
+            'payment_method' => 'cash_on_delivery',
+            'items' => [['product_id' => $productA, 'quantity' => 1]],
+        ])->assertNotFound();
+
+        $this->actingAs($admin)->post('/admin/b2c/orders', [
+            'store_id' => $storeA,
+            'customer_id' => $customerA->id,
+            'payment_method' => 'cash_on_delivery',
+            'items' => [['product_id' => $productB, 'quantity' => 1]],
+        ])->assertNotFound();
+
+        $this->assertDatabaseCount('orders', 0);
+    }
+
+    public function test_retail_invoice_dashboard_is_store_scoped_and_supports_controlled_reissue(): void
+    {
+        $storeA = $this->store('B2C', 'INVOICE-STORE-A');
+        $storeB = $this->store('B2C', 'INVOICE-STORE-B');
+        [$product] = $this->product($storeA, 'b2c', 'INVOICE-A-SKU', 3.750, 10);
+        $adminA = $this->storeAdmin($storeA, 'invoice-admin-a@example.test');
+        $adminB = $this->storeAdmin($storeB, 'invoice-admin-b@example.test');
+        $customer = app(B2cCustomerService::class)->create($storeA, [
+            'name' => 'Invoice Buyer',
+            'email' => 'invoice-buyer@example.test',
+        ]);
+
+        $this->actingAs($adminA)->post('/admin/b2c/orders', [
+            'store_id' => $storeA,
+            'customer_id' => $customer->id,
+            'payment_method' => 'cash_on_delivery',
+            'items' => [['product_id' => $product, 'quantity' => 2]],
+        ])->assertRedirect();
+
+        $order = DB::table('orders')->where('store_id', $storeA)->where('channel', 'b2c')->first();
+        $this->assertNotNull($order);
+
+        $driver = $this->driver($storeA, 'b2c', 'invoice-driver-a@example.test');
+
+        $this->actingAs($adminA)->patch('/admin/operations/orders/'.$order->id.'/dispatch', [
+            'assignee_type' => 'driver',
+            'assignee_id' => $driver,
+            'reason' => 'Start retail fulfillment',
+        ])->assertRedirect();
+
+        $invoice = DB::table('invoices')->where('order_id', $order->id)->where('status', 'issued')->first();
+        $this->assertNotNull($invoice);
+
+        $this->actingAs($adminA)
+            ->get('/admin/b2c/finance?store_id='.$storeA)
+            ->assertOk()
+            ->assertSee('#'.$invoice->id);
+
+        $this->actingAs($adminA)
+            ->get('/admin/invoices/'.$invoice->id)
+            ->assertOk()
+            ->assertSee('#'.$invoice->id);
+
+        $this->actingAs($adminA)
+            ->get('/admin/invoices/'.$invoice->id.'/download?locale=ar')
+            ->assertOk()
+            ->assertHeader('Content-Type', 'application/pdf');
+
+        $this->actingAs($adminB)
+            ->get('/admin/invoices/'.$invoice->id)
+            ->assertNotFound();
+
+        $this->actingAs($adminA)
+            ->post('/admin/invoices/'.$invoice->id.'/void-reissue', [
+                'reason' => 'Controlled invoice correction',
+            ])
+            ->assertRedirect();
+
+        $replacement = DB::table('invoices')
+            ->where('order_id', $order->id)
+            ->where('status', 'reissued')
+            ->orderByDesc('revision')
+            ->first();
+        $this->assertNotNull($replacement);
+        $this->assertSame(2, (int) $replacement->revision);
+        $this->assertSame((int) $invoice->id, (int) $replacement->revision_of_invoice_id);
+        $this->assertDatabaseHas('invoices', [
+            'id' => $invoice->id,
+            'status' => 'voided',
+            'void_reason' => 'Controlled invoice correction',
+        ]);
+        $this->assertDatabaseHas('payments', [
+            'order_id' => $order->id,
+            'invoice_id' => $replacement->id,
+        ]);
+        $this->assertDatabaseHas('audit_logs', [
+            'event' => 'invoice.voided',
+            'auditable_id' => $invoice->id,
+        ]);
+
+        $this->actingAs($adminA)->post('/admin/b2c/orders/'.$order->id.'/status', [
+            'store_id' => $storeA,
+            'status' => 'cancelled',
+            'note' => 'Customer cancelled after assignment',
+        ])->assertRedirect();
+
+        $this->assertDatabaseHas('invoices', [
+            'id' => $replacement->id,
+            'status' => 'voided',
+        ]);
+        $this->assertDatabaseHas('driver_assignments', [
+            'order_id' => $order->id,
+            'driver_id' => $driver,
+            'status' => 'cancelled',
+        ]);
+        $this->assertDatabaseHas('order_dispatch_states', [
+            'order_id' => $order->id,
+            'status' => 'cancelled',
+            'current_assignee_type' => null,
+            'current_assignee_id' => null,
+        ]);
+    }
+
+    public function test_b2b_dashboard_order_uses_approved_customer_tier_price_and_finalizes_on_assignment(): void
+    {
+        $store = app(WholesalePrincipal::class)->storeId();
+        DB::table('settings')->updateOrInsert(
+            ['store_id' => $store, 'key' => 'b2b.pricing_tiers_enabled'],
+            [
+                'value' => json_encode(true, JSON_THROW_ON_ERROR),
+                'is_secret' => false,
+                'created_at' => now(),
+                'updated_at' => now(),
+            ],
+        );
+        [$product, $inventory] = $this->product($store, 'b2b', 'WHOLESALE-ORDER-SKU', 10, 20);
+        $warehouse = (int) DB::table('inventories')->where('inventories.id', $inventory)
+            ->join('warehouses', 'warehouses.id', '=', 'inventories.warehouse_id')
+            ->value('warehouses.id');
+        $tier = (int) DB::table('b2b_price_tiers')->insertGetId([
+            'code' => 'ORDER-GOLD',
+            'name' => 'Order Gold',
+            'priority' => 1,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        DB::table('b2b_price_rules')->insert([
+            'price_tier_id' => $tier,
+            'store_id' => $store,
+            'product_id' => $product,
+            'unit_price' => 7.250,
+            'minimum_quantity' => 5,
+            'is_active' => true,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $customer = app(B2bCustomerService::class)->create([
+            'name' => 'Wholesale Buyer',
+            'email' => 'wholesale-buyer@example.test',
+        ]);
+        B2bAccount::query()->create([
+            'customer_id' => $customer->legacy_customer_id,
+            'b2b_customer_id' => $customer->id,
+            'price_tier_id' => $tier,
+            'company_name' => 'Wholesale Buyer Co',
+            'status' => 'active',
+        ]);
+
+        $admin = $this->globalAdmin('B2B_ADMIN', 'wholesale-orders@example.test');
+
+        $this->actingAs($admin)->post('/admin/b2b/orders', [
+            'warehouse_id' => $warehouse,
+            'customer_id' => $customer->id,
+            'payment_method' => 'cash_on_delivery',
+            'items' => [['product_id' => $product, 'quantity' => 5]],
+        ])->assertRedirect();
+
+        $order = DB::table('orders')->where('store_id', $store)->where('channel', 'b2b')->first();
+        $this->assertNotNull($order);
+        $this->assertSame((int) $customer->id, (int) $order->b2b_customer_id);
+        $this->assertSame($warehouse, (int) $order->warehouse_id);
+        $this->assertSame(36.25, (float) $order->subtotal);
+        $this->assertSame(36.25, (float) $order->grand_total);
+        $this->assertDatabaseHas('order_items', [
+            'order_id' => $order->id,
+            'product_id' => $product,
+            'quantity' => 5,
+            'unit_price' => 7.250,
+            'line_total' => 36.250,
+        ]);
+        $this->assertDatabaseMissing('invoices', ['order_id' => $order->id]);
+
+        $driverUser = User::query()->create([
+            'name' => 'Wholesale Assignment Driver',
+            'email' => 'wholesale-assignment-driver@example.test',
+            'password' => 'password',
+            'locale' => 'en',
+            'is_active' => true,
+        ]);
+        $driverUser->roles()->attach(Role::query()->where('code', 'B2B_DRIVER')->firstOrFail());
+        $driver = (int) DB::table('drivers')->insertGetId([
+            'user_id' => $driverUser->id,
+            'store_id' => $store,
+            'driver_type' => 'b2b',
+            'is_available' => true,
+            'is_active' => true,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $registry = app(VanRegistryService::class);
+        $van = $registry->createVan(['code' => 'VAN-GOLD-ORDER-DISPATCH']);
+        $registry->assign($admin, $van, [
+            'assignment_type' => 'primary',
+            'effective_from' => '2026-10-01T00:00:00Z',
+        ]);
+
+        $this->actingAs($admin)
+            ->patchJson('/admin/operations/orders/'.$order->id.'/dispatch', [
+                'assignee_type' => 'driver',
+                'assignee_id' => $driver,
+                'reason' => 'Wholesale Driver override forbidden',
+            ])
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors('assignee_type');
+
+        $this->actingAs($admin)
+            ->get('/admin/b2b/orders')
+            ->assertOk()
+            ->assertSee('New order · awaiting Van assignment')
+            ->assertSee('Cancel order')
+            ->assertDontSee('Approve order')
+            ->assertDontSee('value="ready"', false);
+
+        DB::table('orders')->where('id', $order->id)->update(['payment_method' => 'account_credit']);
+
+        $this->actingAs($admin)->patch('/admin/operations/orders/'.$order->id.'/dispatch', [
+            'assignee_type' => 'van',
+            'assignee_id' => $van->id,
+            'reason' => 'Assignment must revalidate credit',
+        ])->assertStatus(409);
+
+        $this->assertDatabaseMissing('driver_assignments', [
+            'order_id' => $order->id,
+            'driver_id' => $driver,
+            'status' => 'assigned',
+        ]);
+        $this->assertDatabaseHas('orders', ['id' => $order->id, 'status' => 'pending']);
+        $this->assertDatabaseMissing('invoices', ['order_id' => $order->id]);
+
+        DB::table('orders')->where('id', $order->id)->update(['payment_method' => 'cash_on_delivery']);
+
+        $this->actingAs($admin)->patch('/admin/operations/orders/'.$order->id.'/dispatch', [
+            'assignee_type' => 'van',
+            'assignee_id' => $van->id,
+            'reason' => 'Start wholesale fulfillment',
+        ])->assertRedirect();
+
+        $this->assertDatabaseHas('orders', ['id' => $order->id, 'status' => 'out_for_delivery']);
+        $this->assertDatabaseHas('order_status_history', [
+            'order_id' => $order->id,
+            'from_status' => 'pending',
+            'to_status' => 'out_for_delivery',
+            'note' => 'fulfillment_assigned_auto_finalized',
+        ]);
+        foreach (['confirmed', 'preparing', 'ready'] as $removedStatus) {
+            $this->assertDatabaseMissing('order_status_history', [
+                'order_id' => $order->id,
+                'to_status' => $removedStatus,
+            ]);
+        }
+
+        $invoice = DB::table('invoices')->where('order_id', $order->id)->first();
+        $this->assertNotNull($invoice);
+        $this->assertSame('b2b', $invoice->channel);
+        $this->assertSame('ORDER-GOLD', $invoice->price_tier_code_snapshot);
+        $this->assertSame(36.25, (float) $invoice->total);
+        $this->assertDatabaseHas('invoice_items', [
+            'invoice_id' => $invoice->id,
+            'product_id' => $product,
+            'quantity' => 5,
+            'unit_price' => 7.250,
+            'price_tier_code_snapshot' => 'ORDER-GOLD',
+        ]);
+
+        DB::table('b2b_price_rules')->where('price_tier_id', $tier)->where('product_id', $product)->update(['unit_price' => 99.999]);
+        $this->assertSame(7.25, (float) DB::table('invoice_items')->where('invoice_id', $invoice->id)->value('unit_price'));
+    }
+
+    public function test_retail_dashboard_quote_and_multiline_invoice_finalize_on_driver_assignment(): void
+    {
+        $store = $this->store('B2C', 'ORDER-MULTI-RETAIL');
+        [$productA] = $this->product($store, 'b2c', 'MULTI-RETAIL-A', 4.500, 20);
+        [$productB] = $this->product($store, 'b2c', 'MULTI-RETAIL-B', 2.000, 20);
+        $admin = $this->storeAdmin($store, 'multi-retail@example.test');
+        $customer = app(B2cCustomerService::class)->create($store, [
+            'name' => 'Multi Retail Buyer',
+            'email' => 'multi-retail-buyer@example.test',
+        ]);
+        $payload = [
+            'store_id' => $store,
+            'customer_id' => $customer->id,
+            'payment_method' => 'cash_on_delivery',
+            'items' => [
+                ['product_id' => $productA, 'quantity' => 2],
+                ['product_id' => $productB, 'quantity' => 3],
+            ],
+        ];
+
+        $quoteResponse = $this->actingAs($admin)->postJson('/admin/b2c/orders/quote', $payload)->assertOk();
+        $quote = $quoteResponse->json('data');
+        $this->assertSame('backend_authoritative_quote_v1', $quote['pricing_source']);
+        $this->assertFalse((bool) $quote['has_unavailable_items']);
+        $this->assertSame(15.0, (float) $quote['subtotal']);
+        $this->assertCount(2, $quote['items']);
+
+        $this->actingAs($admin)->post('/admin/b2c/orders', $payload)->assertRedirect();
+
+        $order = DB::table('orders')->where('store_id', $store)->where('channel', 'b2c')->first();
+        $this->assertNotNull($order);
+        $this->assertSame(2, DB::table('order_items')->where('order_id', $order->id)->count());
+        $this->assertSame(15.0, (float) $order->subtotal);
+        $this->assertDatabaseMissing('invoices', ['order_id' => $order->id]);
+
+        $driverUser = User::query()->create([
+            'name' => 'Retail Assignment Driver',
+            'email' => 'retail-assignment-driver@example.test',
+            'password' => 'password',
+            'locale' => 'en',
+            'is_active' => true,
+        ]);
+        $driver = (int) DB::table('drivers')->insertGetId([
+            'user_id' => $driverUser->id,
+            'store_id' => $store,
+            'driver_type' => 'b2c',
+            'is_available' => true,
+            'is_active' => true,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $this->actingAs($admin)->patch('/admin/operations/orders/'.$order->id.'/dispatch', [
+            'assignee_type' => 'driver',
+            'assignee_id' => $driver,
+            'reason' => 'Start retail fulfillment',
+        ])->assertRedirect();
+
+        $this->assertDatabaseHas('orders', [
+            'id' => $order->id,
+            'status' => 'out_for_delivery',
+        ]);
+        $this->assertDatabaseHas('order_status_history', [
+            'order_id' => $order->id,
+            'from_status' => 'pending',
+            'to_status' => 'out_for_delivery',
+            'note' => 'fulfillment_assigned_auto_finalized',
+        ]);
+
+        $invoice = DB::table('invoices')->where('order_id', $order->id)->where('status', 'issued')->first();
+        $this->assertNotNull($invoice);
+        $this->assertSame((float) $order->grand_total, (float) $invoice->total);
+        $this->assertSame(2, DB::table('invoice_items')->where('invoice_id', $invoice->id)->count());
+
+        $this->actingAs($admin)
+            ->get('/admin/b2c/orders?store_id='.$store)
+            ->assertOk()
+            ->assertSee('#'.$invoice->id)
+            ->assertSee('data-order-invoice-icon', false);
+
+        $this->actingAs($admin)
+            ->get(route('admin.operations.orders.popup', [
+                'order' => (int) $order->id,
+                'kind' => 'invoice',
+            ]))
+            ->assertOk()
+            ->assertSee('data-order-popup-print', false)
+            ->assertSee('Print');
+    }
+
+    public function test_wholesale_dashboard_quote_uses_selected_warehouse_and_tier_for_multiple_lines(): void
+    {
+        $store = app(WholesalePrincipal::class)->storeId();
+        DB::table('settings')->updateOrInsert(
+            ['store_id' => $store, 'key' => 'b2b.pricing_tiers_enabled'],
+            [
+                'value' => json_encode(true, JSON_THROW_ON_ERROR),
+                'is_secret' => false,
+                'created_at' => now(),
+                'updated_at' => now(),
+            ],
+        );
+        [$productA, $inventoryA] = $this->product($store, 'b2b', 'MULTI-B2B-A', 12, 20);
+        [$productB] = $this->product($store, 'b2b', 'MULTI-B2B-B', 20, 20);
+        $warehouse = (int) DB::table('inventories')
+            ->join('warehouses', 'warehouses.id', '=', 'inventories.warehouse_id')
+            ->where('inventories.id', $inventoryA)
+            ->value('warehouses.id');
+        DB::table('inventories')->insert([
+            'warehouse_id' => $warehouse,
+            'product_id' => $productB,
+            'quantity' => 20,
+            'reserved_quantity' => 0,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $tier = (int) DB::table('b2b_price_tiers')->insertGetId([
+            'code' => 'MULTI-GOLD',
+            'name' => 'Multi Gold',
+            'priority' => 1,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        foreach ([[$productA, 7.500, 2], [$productB, 11.000, 3]] as [$product, $price, $minimum]) {
+            DB::table('b2b_price_rules')->insert([
+                'price_tier_id' => $tier,
+                'store_id' => $store,
+                'product_id' => $product,
+                'unit_price' => $price,
+                'minimum_quantity' => $minimum,
+                'is_active' => true,
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+        }
+
+        $customer = app(B2bCustomerService::class)->create([
+            'name' => 'Multi Wholesale Buyer',
+            'email' => 'multi-wholesale@example.test',
+        ]);
+        B2bAccount::query()->create([
+            'customer_id' => $customer->legacy_customer_id,
+            'b2b_customer_id' => $customer->id,
+            'price_tier_id' => $tier,
+            'company_name' => 'Multi Wholesale Co',
+            'status' => 'active',
+        ]);
+        $admin = $this->globalAdmin('B2B_ADMIN', 'multi-b2b-admin@example.test');
+        $payload = [
+            'warehouse_id' => $warehouse,
+            'customer_id' => $customer->id,
+            'payment_method' => 'cash_on_delivery',
+            'items' => [
+                ['product_id' => $productA, 'quantity' => 2],
+                ['product_id' => $productB, 'quantity' => 3],
+            ],
+        ];
+
+        $quoteResponse = $this->actingAs($admin)->postJson('/admin/b2b/orders/quote', $payload)->assertOk();
+        $quote = $quoteResponse->json('data');
+        $this->assertFalse((bool) $quote['has_unavailable_items']);
+        $this->assertSame('MULTI-GOLD', $quote['customer_context']['price_tier_code']);
+        $this->assertSame(48.0, (float) $quote['subtotal']);
+        $this->assertCount(2, $quote['items']);
+        $this->assertSame(20.0, (float) $quote['items'][1]['available_quantity']);
+
+        $this->actingAs($admin)->post('/admin/b2b/orders', $payload)->assertRedirect();
+        $order = DB::table('orders')->where('store_id', $store)->where('channel', 'b2b')->latest('id')->first();
+        $this->assertNotNull($order);
+        $this->assertSame(2, DB::table('order_items')->where('order_id', $order->id)->count());
+
+        $registry = app(VanRegistryService::class);
+        $van = $registry->createVan(['code' => 'VAN-MULTILINE-WHOLESALE']);
+        $registry->assign($admin, $van, [
+            'assignment_type' => 'primary',
+            'effective_from' => '2026-10-01T00:00:00Z',
+        ]);
+
+        $this->actingAs($admin)->patch('/admin/operations/orders/'.$order->id.'/dispatch', [
+            'assignee_type' => 'van',
+            'assignee_id' => $van->id,
+            'reason' => 'Start multi-line wholesale fulfillment',
+        ])->assertRedirect();
+
+        $invoice = DB::table('invoices')->where('order_id', $order->id)->first();
+        $this->assertNotNull($invoice);
+        $this->assertSame('MULTI-GOLD', $invoice->price_tier_code_snapshot);
+        $this->assertSame((float) $order->grand_total, (float) $invoice->total);
+        $this->assertSame(2, DB::table('invoice_items')->where('invoice_id', $invoice->id)->count());
+    }
+
+    public function test_b2b_rejection_reverses_checkout_settlement_once_without_touching_manual_ledger(): void
+    {
+        $store = app(WholesalePrincipal::class)->storeId();
+        $customer = app(B2bCustomerService::class)->create([
+            'name' => 'Rejected Settlement Buyer',
+            'email' => 'rejected-settlement@example.test',
+        ]);
+        $admin = $this->globalAdmin('B2B_ADMIN', 'reject-settlement-admin@example.test');
+
+        $orderId = (int) DB::table('orders')->insertGetId([
+            'store_id' => $store,
+            'customer_id' => (int) $customer->legacy_customer_id,
+            'b2b_customer_id' => (int) $customer->id,
+            'order_number' => 'REJECT-SETTLEMENT-1',
+            'channel' => 'b2b',
+            'status' => 'pending',
+            'currency' => 'KWD',
+            'subtotal' => 100,
+            'discount_total' => 0,
+            'delivery_total' => 0,
+            'grand_total' => 100,
+            'payment_method' => 'cash_on_delivery',
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $checkoutEntryId = (int) DB::table('customer_account_ledger_entries')->insertGetId([
+            'b2b_customer_id' => (int) $customer->id,
+            'store_id' => $store,
+            'order_id' => $orderId,
+            'entry_type' => 'adjustment_positive',
+            'reference' => 'checkout-balance-'.$orderId,
+            'description' => 'Checkout balance allocation',
+            'debit' => 30,
+            'credit' => 0,
+            'currency' => 'KWD',
+            'actor_user_id' => null,
+            'source' => 'checkout_balance_allocation',
+            'metadata' => json_encode(['balance_applied' => 30], JSON_THROW_ON_ERROR),
+            'occurred_at' => now(),
+            'created_at' => now(),
+        ]);
+
+        DB::table('customer_account_ledger_entries')->insert([
+            'b2b_customer_id' => (int) $customer->id,
+            'store_id' => $store,
+            'order_id' => $orderId,
+            'entry_type' => 'debit_note',
+            'reference' => 'manual-'.$orderId,
+            'description' => 'Manual Customer 360 adjustment',
+            'debit' => 5,
+            'credit' => 0,
+            'currency' => 'KWD',
+            'actor_user_id' => $admin->id,
+            'source' => 'dashboard_customer_360',
+            'metadata' => null,
+            'occurred_at' => now(),
+            'created_at' => now(),
+        ]);
+
+        $payload = [
+            'status' => 'cancelled',
+            'note' => 'Customer Service rejected',
+        ];
+
+        $this->actingAs($admin)
+            ->post('/admin/b2b/orders/'.$orderId.'/status', $payload)
+            ->assertRedirect()
+            ->assertSessionHasNoErrors();
+
+        $reference = 'order-cancel:'.$orderId.':entry:'.$checkoutEntryId;
+        $this->assertDatabaseHas('customer_account_ledger_entries', [
+            'b2b_customer_id' => $customer->id,
+            'order_id' => $orderId,
+            'entry_type' => 'adjustment_negative',
+            'reference' => $reference,
+            'debit' => 0,
+            'credit' => 30,
+            'source' => 'order_cancellation',
+        ]);
+        $this->assertSame(
+            1,
+            DB::table('customer_account_ledger_entries')
+                ->where('order_id', $orderId)
+                ->where('source', 'order_cancellation')
+                ->count(),
+        );
+        $this->assertSame(
+            1,
+            DB::table('customer_account_ledger_entries')
+                ->where('order_id', $orderId)
+                ->where('source', 'dashboard_customer_360')
+                ->count(),
+        );
+
+        $this->actingAs($admin)
+            ->post('/admin/b2b/orders/'.$orderId.'/status', $payload)
+            ->assertRedirect();
+
+        $this->assertSame(
+            1,
+            DB::table('customer_account_ledger_entries')
+                ->where('reference', $reference)
+                ->count(),
+        );
+    }
+
+    public function test_central_new_order_wizard_is_scoped_and_final_create_reprices_authoritatively(): void
+    {
+        $storeA = $this->store('B2C', 'WIZARD-STORE-A');
+        $storeB = $this->store('B2C', 'WIZARD-STORE-B');
+        [$productA, $inventoryA] = $this->product($storeA, 'b2c', 'WIZARD-A-SKU', 4.500, 20);
+        [$productB] = $this->product($storeB, 'b2c', 'WIZARD-B-SKU', 8.000, 20);
+        $admin = $this->storeAdmin($storeA, 'wizard-retail@example.test');
+        $customerA = app(B2cCustomerService::class)->create($storeA, [
+            'name' => 'Wizard Buyer A',
+            'email' => 'wizard-a@example.test',
+        ]);
+        app(B2cCustomerService::class)->create($storeB, [
+            'name' => 'Wizard Buyer B',
+            'email' => 'wizard-b@example.test',
+        ]);
+
+        $this->actingAs($admin)
+            ->get('/admin/operations/orders?channel=b2c')
+            ->assertOk()
+            ->assertSee('data-new-order-open', false)
+            ->assertSee('data-new-order-modal', false)
+            ->assertSee('data-wizard-step="0"', false)
+            ->assertSee('data-wizard-step="5"', false)
+            ->assertSee('WIZARD-STORE-A')
+            ->assertSee('data-lookup-url', false)
+            ->assertDontSee('Wizard Buyer A')
+            ->assertDontSee('WIZARD-A-SKU')
+            ->assertDontSee('WIZARD-STORE-B')
+            ->assertDontSee('Wizard Buyer B')
+            ->assertDontSee('WIZARD-B-SKU');
+
+        $this->actingAs($admin)
+            ->getJson('/admin/operations/orders/lookups/customer?channel=b2c&store_id='.$storeA.'&q=Wizard')
+            ->assertOk()
+            ->assertJsonFragment(['id' => $customerA->id, 'label' => 'Wizard Buyer A'])
+            ->assertJsonMissing(['label' => 'Wizard Buyer B']);
+
+        $this->actingAs($admin)
+            ->getJson('/admin/operations/orders/lookups/product?channel=b2c&store_id='.$storeA.'&q=WIZARD')
+            ->assertOk()
+            ->assertJsonFragment(['id' => $productA, 'label' => 'WIZARD-A-SKU'])
+            ->assertJsonMissing(['label' => 'WIZARD-B-SKU']);
+
+        $payload = [
+            '_order_create_context' => 'central',
+            'idempotency_key' => 'dashboard-wizard-price-0001',
+            'channel' => 'b2c',
+            'store_id' => $storeA,
+            'customer_id' => $customerA->id,
+            'payment_method' => 'cash_on_delivery',
+            'items' => [
+                ['product_id' => $productA, 'quantity' => 2],
+            ],
+        ];
+
+        $quote = $this->actingAs($admin)
+            ->postJson('/admin/operations/orders/quote', $payload)
+            ->assertOk()
+            ->json('data');
+
+        $this->assertSame(9.0, (float) $quote['subtotal']);
+        $this->assertFalse((bool) $quote['has_unavailable_items']);
+
+        DB::table('store_products')
+            ->where('store_id', $storeA)
+            ->where('product_id', $productA)
+            ->update(['price' => 7.000, 'updated_at' => now()]);
+
+        $response = $this->actingAs($admin)->post('/admin/operations/orders', $payload);
+        $response->assertRedirect();
+
+        $order = DB::table('orders')
+            ->where('store_id', $storeA)
+            ->where('channel', 'b2c')
+            ->latest('id')
+            ->first();
+
+        $this->assertNotNull($order);
+        $this->assertSame(14.0, (float) $order->subtotal);
+        $this->assertSame(2.0, (float) DB::table('inventories')->where('id', $inventoryA)->value('reserved_quantity'));
+        $response->assertRedirect(route('admin.operations.orders.index', [
+            'channel' => 'b2c',
+            'store_id' => $storeA,
+            'status' => 'pending',
+            'order' => $order->id,
+        ]));
+    }
+
+    public function test_central_new_order_wizard_has_localized_recoverable_draft_close_contract(): void
+    {
+        $store = $this->store('B2C', 'WIZARD-DRAFT-SAFETY');
+        [$product] = $this->product($store, 'b2c', 'WIZARD-DRAFT-SKU', 4.000, 10);
+        $admin = $this->storeAdmin($store, 'wizard-draft@example.test');
+        app(B2cCustomerService::class)->create($store, [
+            'name' => 'Wizard Draft Buyer',
+            'email' => 'wizard-draft-buyer@example.test',
+        ]);
+
+        app()->setLocale('en');
+        $this->actingAs($admin)
+            ->get('/admin/operations/orders?channel=b2c')
+            ->assertOk()
+            ->assertSee('data-new-order-discard', false)
+            ->assertSee('role="alertdialog"', false)
+            ->assertSee('Continue editing')
+            ->assertSee('Discard draft')
+            ->assertSee('data-lookup-url', false)
+            ->assertDontSee('WIZARD-DRAFT-SKU');
+
+        $expected = [
+            'en' => [
+                'title' => 'Keep this unfinished order?',
+                'description' => 'You have unsaved order details. Continue editing, or discard them deliberately to start fresh.',
+                'continue_editing' => 'Continue editing',
+                'discard' => 'Discard draft',
+            ],
+            'ar' => [
+                'title' => 'الاحتفاظ بالطلب غير المكتمل؟',
+                'description' => 'لديك بيانات طلب غير محفوظة. واصل التعديل أو تخلّص من المسودة بشكل صريح لبدء طلب جديد.',
+                'continue_editing' => 'متابعة التعديل',
+                'discard' => 'التخلص من المسودة',
+            ],
+        ];
+
+        foreach ($expected as $locale => $labels) {
+            app()->setLocale($locale);
+            foreach ($labels as $key => $label) {
+                $this->assertSame($label, __('order_operations.new_order_draft.'.$key));
+            }
+        }
+
+        $view = file_get_contents(resource_path('views/admin/_order-new-wizard.blade.php'));
+        $this->assertIsString($view);
+        $this->assertStringContainsString('if (!initialized) reset();', $view);
+        $this->assertStringContainsString('const requestClose = (trigger = null) => {', $view);
+        $this->assertStringContainsString('const discardAndClose = () => {', $view);
+        $this->assertStringContainsString("form.addEventListener('input', () => { dirty = true; invalidateQuote(); });", $view);
+        $this->assertStringContainsString("discardPanel?.dataset.visible === '1' && event.key === 'Tab'", $view);
+        $this->assertStringContainsString('node.inert = active;', $view);
+        $this->assertStringNotContainsString("const open = () => {\n        reset();", $view);
+
+        $this->assertDatabaseHas('store_products', [
+            'store_id' => $store,
+            'product_id' => $product,
+        ]);
+    }
+
+    public function test_central_new_order_endpoint_rejects_invalid_and_foreign_store_submissions_without_partial_order(): void
+    {
+        $storeA = $this->store('B2C', 'WIZARD-SCOPE-A');
+        $storeB = $this->store('B2C', 'WIZARD-SCOPE-B');
+        [$productA] = $this->product($storeA, 'b2c', 'WIZARD-SCOPE-A-SKU', 3.000, 10);
+        $admin = $this->storeAdmin($storeA, 'wizard-scope@example.test');
+        $customerA = app(B2cCustomerService::class)->create($storeA, ['name' => 'Wizard Scope Buyer']);
+
+        $validationKey = 'dashboard-wizard-validation-0001';
+        $this->actingAs($admin)->post('/admin/operations/orders', [
+            '_order_create_context' => 'central',
+            'idempotency_key' => $validationKey,
+            'channel' => 'b2c',
+            'store_id' => $storeA,
+            'customer_id' => $customerA->id,
+            'items' => [['product_id' => $productA, 'quantity' => 1]],
+        ])->assertSessionHasErrors('payment_method');
+
+        $this->assertSame('central', session()->getOldInput('_order_create_context'));
+        $this->assertSame($validationKey, session()->getOldInput('idempotency_key'));
+        $this->assertSame((string) $customerA->id, (string) session()->getOldInput('customer_id'));
+
+        $this->assertDatabaseCount('orders', 0);
+
+        $this->actingAs($admin)->post('/admin/operations/orders', [
+            '_order_create_context' => 'central',
+            'idempotency_key' => 'dashboard-wizard-foreign-0001',
+            'channel' => 'b2c',
+            'store_id' => $storeB,
+            'customer_id' => $customerA->id,
+            'payment_method' => 'cash_on_delivery',
+            'items' => [['product_id' => $productA, 'quantity' => 1]],
+        ])->assertNotFound();
+
+        $this->assertDatabaseCount('orders', 0);
+    }
+
+    public function test_central_new_order_submission_uses_one_idempotent_business_mutation(): void
+    {
+        $store = $this->store('B2C', 'WIZARD-IDEMPOTENCY');
+        [$product, $inventory] = $this->product($store, 'b2c', 'WIZARD-IDEMPOTENT-SKU', 5.000, 10);
+        $admin = $this->storeAdmin($store, 'wizard-idempotent@example.test');
+        $customer = app(B2cCustomerService::class)->create($store, [
+            'name' => 'Idempotent Wizard Buyer',
+            'email' => 'wizard-idempotent-buyer@example.test',
+        ]);
+
+        $payload = [
+            '_order_create_context' => 'central',
+            'idempotency_key' => 'dashboard-order-1585-0001',
+            'channel' => 'b2c',
+            'store_id' => $store,
+            'customer_id' => $customer->id,
+            'payment_method' => 'cash_on_delivery',
+            'items' => [['product_id' => $product, 'quantity' => 1]],
+        ];
+
+        $this->actingAs($admin)->post('/admin/operations/orders', $payload)->assertRedirect();
+
+        $order = DB::table('orders')
+            ->where('store_id', $store)
+            ->where('checkout_idempotency_key', $payload['idempotency_key'])
+            ->first();
+
+        $this->assertNotNull($order);
+        $this->actingAs($admin)
+            ->post('/admin/operations/orders', $payload)
+            ->assertRedirect(route('admin.operations.orders.index', [
+                'channel' => 'b2c',
+                'store_id' => $store,
+                'status' => 'pending',
+                'order' => $order->id,
+            ]));
+
+        $this->assertSame(
+            1,
+            DB::table('orders')->where('checkout_idempotency_key', $payload['idempotency_key'])->count(),
+        );
+        $this->assertSame(
+            1.0,
+            (float) DB::table('inventories')->where('id', $inventory)->value('reserved_quantity'),
+        );
+
+        $changedPayload = $payload;
+        $changedPayload['items'][0]['quantity'] = 2;
+
+        $this->actingAs($admin)
+            ->post('/admin/operations/orders', $changedPayload)
+            ->assertStatus(409);
+
+        $this->assertSame(
+            1,
+            DB::table('orders')->where('checkout_idempotency_key', $payload['idempotency_key'])->count(),
+        );
+        $this->assertSame(
+            1.0,
+            (float) DB::table('inventories')->where('id', $inventory)->value('reserved_quantity'),
+        );
+    }
+
+    public function test_central_new_order_wizard_rejects_stale_quote_ownership(): void
+    {
+        $view = file_get_contents(resource_path('views/admin/_order-new-wizard.blade.php'));
+        $this->assertIsString($view);
+        $this->assertStringContainsString('let quoteRevision = 0;', $view);
+        $this->assertStringContainsString('let quoteSession = 0;', $view);
+        $this->assertStringContainsString('quoteAbortController?.abort();', $view);
+        $this->assertStringContainsString('signal: controller.signal,', $view);
+        $this->assertStringContainsString('if (controller.signal.aborted || !ownsCurrentQuote(owner)) return;', $view);
+        $this->assertStringContainsString('quoteOwner = owner;', $view);
+        $this->assertStringContainsString('if (!quoteReady || !ownsCurrentQuote(quoteOwner)) {', $view);
+        $this->assertStringContainsString('quoteSession += 1;', $view);
+    }
+
+    public function test_central_new_order_wizard_exposes_submit_lock_and_validation_restore_contract(): void
+    {
+        $view = file_get_contents(resource_path('views/admin/_order-new-wizard.blade.php'));
+        $this->assertIsString($view);
+        $this->assertStringContainsString('data-wizard-idempotency', $view);
+        $this->assertStringContainsString('data-wizard-submit-state', $view);
+        $this->assertStringContainsString('if (isSubmitting) {', $view);
+        $this->assertStringContainsString('form.setAttribute(\'aria-busy\', active ? \'true\' : \'false\');', $view);
+        $this->assertStringContainsString('setSubmitting(true);', $view);
+        $this->assertStringContainsString('restoreServerInput().then((restored) => { if (restored) open(); });', $view);
+
+        $expected = [
+            'en' => 'Creating order…',
+            'ar' => 'جارٍ إنشاء الطلب…',
+        ];
+
+        foreach ($expected as $locale => $label) {
+            app()->setLocale($locale);
+            $this->assertSame($label, __('order_operations.new_order_submit.submitting'));
+        }
+    }
+
+    public function test_new_order_wizard_b2c_lookups_use_literal_symbols_without_cross_store_results(): void
+    {
+        $store = $this->store('B2C', 'LITERAL-WIZARD-A');
+        $foreignStore = $this->store('B2C', 'LITERAL-WIZARD-B');
+        [$exactProduct, $exactInventory] = $this->product($store, 'b2c', 'SKU%_!', 5, 10);
+        [$lookalikeProduct] = $this->product($store, 'b2c', 'SKUabc!', 6, 10);
+        [$slashProduct] = $this->product($store, 'b2c', 'BACK'.chr(92).'SLASH', 7, 10);
+        [$foreignProduct] = $this->product($foreignStore, 'b2c', 'FOREIGN%_!', 8, 10);
+        DB::table('products')->where('id', $exactProduct)->update(['barcode' => 'BAR%_!']);
+        DB::table('products')->where('id', $lookalikeProduct)->update(['barcode' => 'BARabc!']);
+
+        $exactCustomer = app(B2cCustomerService::class)->create($store, [
+            'name' => 'عربي %_! Buyer',
+            'email' => 'literal-exact@example.test',
+        ]);
+        $lookalikeCustomer = app(B2cCustomerService::class)->create($store, [
+            'name' => 'عربي abc! Buyer',
+            'email' => 'literal-lookalike@example.test',
+        ]);
+        $slashCustomer = app(B2cCustomerService::class)->create($store, [
+            'name' => 'Slash '.chr(92).' Customer',
+            'email' => 'literal-backslash@example.test',
+        ]);
+        $foreignCustomer = app(B2cCustomerService::class)->create($foreignStore, [
+            'name' => 'عربي %_! Foreign',
+            'email' => 'literal-foreign@example.test',
+        ]);
+        DB::table('b2c_customers')->where('id', $exactCustomer->id)->update(['phone' => '+965%_!']);
+        $admin = $this->storeAdmin($store, 'literal-wizard-admin@example.test');
+        $unprivileged = User::query()->create([
+            'name' => 'Roleless Lookup User',
+            'email' => 'roleless-wizard-literal@example.test',
+            'password' => 'password',
+            'is_active' => true,
+        ]);
+
+        $before = [
+            'orders' => DB::table('orders')->count(),
+            'audits' => DB::table('audit_logs')->count(),
+            'inventories' => DB::table('inventories')->count(),
+            'reserved' => DB::table('inventories')->where('id', $exactInventory)->value('reserved_quantity'),
+        ];
+
+        foreach ([
+            ['type' => 'customer', 'query' => '%_!', 'ids' => [$exactCustomer->id]],
+            ['type' => 'customer', 'query' => '+965%_!', 'ids' => [$exactCustomer->id]],
+            ['type' => 'customer', 'query' => 'literal-exact@example.test', 'ids' => [$exactCustomer->id]],
+            ['type' => 'customer', 'query' => 'عربي', 'ids' => [$exactCustomer->id, $lookalikeCustomer->id]],
+            ['type' => 'customer', 'query' => chr(92), 'ids' => [$slashCustomer->id]],
+            ['type' => 'customer', 'query' => "' OR 1=1 --", 'ids' => []],
+            ['type' => 'product', 'query' => 'SKU%_!', 'ids' => [$exactProduct]],
+            ['type' => 'product', 'query' => 'BAR%_!', 'ids' => [$exactProduct]],
+            ['type' => 'product', 'query' => chr(92), 'ids' => [$slashProduct]],
+            ['type' => 'product', 'query' => 'SKU', 'ids' => [$exactProduct, $lookalikeProduct]],
+            ['type' => 'product', 'query' => 'missing%_!', 'ids' => []],
+        ] as $case) {
+            $url = '/admin/operations/orders/lookups/'.$case['type'].'?'.http_build_query([
+                'channel' => 'b2c',
+                'store_id' => $store,
+                'q' => $case['query'],
+            ], '', '&', PHP_QUERY_RFC3986);
+            $response = $this->actingAs($admin)->getJson($url)
+                ->assertOk()
+                ->assertJsonPath('data.page', 1)
+                ->assertJsonPath('data.has_more', false);
+
+            $actual = array_map('intval', array_column((array) $response->json('data.items'), 'id'));
+            $expected = array_map('intval', $case['ids']);
+            sort($actual);
+            sort($expected);
+            $this->assertSame($expected, $actual, 'Wizard '.$case['type'].' search must be literal and store-scoped.');
+            $this->assertNotContains((int) $foreignCustomer->id, $case['type'] === 'customer' ? $actual : []);
+            $this->assertNotContains($foreignProduct, $case['type'] === 'product' ? $actual : []);
+        }
+
+        // Successful lookup GETs must have no order, audit or stock write side effects.
+        // Authorization denials are checked afterwards because security auditing may be intentional.
+        $this->assertSame($before['orders'], DB::table('orders')->count());
+        $this->assertSame($before['audits'], DB::table('audit_logs')->count());
+        $this->assertSame($before['inventories'], DB::table('inventories')->count());
+        $this->assertSame($before['reserved'], DB::table('inventories')->where('id', $exactInventory)->value('reserved_quantity'));
+
+        $this->actingAs($admin)
+            ->getJson('/admin/operations/orders/lookups/customer?channel=b2c&store_id='.$foreignStore.'&q=Foreign')
+            ->assertNotFound();
+        $this->actingAs($admin)
+            ->getJson('/admin/operations/orders/lookups/product?channel=b2b&store_id='.$store.'&q=SKU')
+            ->assertNotFound();
+        $this->actingAs($unprivileged)
+            ->getJson('/admin/operations/orders/lookups/customer?channel=b2c&store_id='.$store.'&q=%25')
+            ->assertForbidden();
+    }
+
+    public function test_new_order_wizard_b2b_lookup_preserves_approved_account_scope_with_literal_query(): void
+    {
+        $store = app(WholesalePrincipal::class)->storeId();
+        [$exactProduct] = $this->product($store, 'b2b', 'B2B%_!', 10, 12);
+        [$lookalikeProduct] = $this->product($store, 'b2b', 'B2Babc!', 10, 12);
+        $tier = (int) DB::table('b2b_price_tiers')->insertGetId([
+            'code' => 'WIZARD-LITERAL-TIER',
+            'name' => 'Wizard literal test tier',
+            'priority' => 1,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        $exact = app(B2bCustomerService::class)->create([
+            'name' => 'Wholesale %_! Buyer',
+            'email' => 'b2b-literal-exact@example.test',
+        ]);
+        $lookalike = app(B2bCustomerService::class)->create([
+            'name' => 'Wholesale abc! Buyer',
+            'email' => 'b2b-literal-lookalike@example.test',
+        ]);
+        foreach ([$exact, $lookalike] as $customer) {
+            B2bAccount::query()->create([
+                'customer_id' => $customer->legacy_customer_id,
+                'b2b_customer_id' => $customer->id,
+                'price_tier_id' => $tier,
+                'company_name' => $customer->name,
+                'status' => 'active',
+            ]);
+        }
+        DB::table('b2b_customers')->where('id', $exact->id)->update(['phone' => '+965%_!']);
+        DB::table('b2b_accounts')->where('b2b_customer_id', $exact->id)->update([
+            'tax_number' => 'TAX%_!',
+            'company_name' => 'شركة%_!',
+        ]);
+        $admin = $this->globalAdmin('B2B_ADMIN', 'literal-wizard-wholesale@example.test');
+
+        foreach ([
+            ['type' => 'customer', 'q' => '%_!', 'ids' => [$exact->id]],
+            ['type' => 'customer', 'q' => 'TAX%_!', 'ids' => [$exact->id]],
+            ['type' => 'customer', 'q' => 'شركة%_!', 'ids' => [$exact->id]],
+            ['type' => 'customer', 'q' => '+965%_!', 'ids' => [$exact->id]],
+            ['type' => 'customer', 'q' => 'Wholesale', 'ids' => [$exact->id, $lookalike->id]],
+            ['type' => 'product', 'q' => 'B2B%_!', 'ids' => [$exactProduct]],
+            ['type' => 'product', 'q' => 'B2Babc!', 'ids' => [$lookalikeProduct]],
+        ] as $case) {
+            $url = '/admin/operations/orders/lookups/'.$case['type'].'?'.http_build_query([
+                'channel' => 'b2b',
+                'store_id' => $store,
+                'q' => $case['q'],
+            ], '', '&', PHP_QUERY_RFC3986);
+            $response = $this->actingAs($admin)->getJson($url)->assertOk();
+            $actual = array_map('intval', array_column((array) $response->json('data.items'), 'id'));
+            $expected = array_map('intval', $case['ids']);
+            sort($actual);
+            sort($expected);
+            $this->assertSame($expected, $actual, 'B2B wizard must preserve eligible account/product scope.');
+        }
+        $this->assertDatabaseCount('orders', 0);
+    }
+
+    public function test_order_create_lookups_are_bounded_scoped_and_not_eagerly_embedded(): void
+    {
+        $store = $this->store('B2C', 'ORDER-LOOKUP');
+        $foreignStore = $this->store('B2C', 'ORDER-LOOKUP-FOREIGN');
+        [$product] = $this->product($store, 'b2c', 'LOOKUP-SKU', 4.5, 10);
+        $this->product($foreignStore, 'b2c', 'FOREIGN-LOOKUP-SKU', 9.5, 10);
+        $admin = $this->storeAdmin($store, 'lookup-orders@example.test');
+
+        for ($index = 1; $index <= 22; $index++) {
+            app(B2cCustomerService::class)->create($store, [
+                'name' => sprintf('Lookup Buyer %02d', $index),
+                'phone' => '+9655555'.sprintf('%04d', $index),
+                'email' => sprintf('lookup-buyer-%02d@example.test', $index),
+            ]);
+        }
+        app(B2cCustomerService::class)->create($foreignStore, [
+            'name' => 'Foreign Lookup Buyer',
+            'phone' => '+96550000000',
+            'email' => 'foreign-lookup@example.test',
+        ]);
+
+        $this->actingAs($admin)
+            ->get('/admin/operations/orders?channel=b2c&store_id='.$store)
+            ->assertOk()
+            ->assertDontSee('Lookup Buyer 01')
+            ->assertDontSee('LOOKUP-SKU')
+            ->assertSee('data-lookup-url', false);
+
+        $pageOne = $this->actingAs($admin)->getJson(
+            '/admin/operations/orders/lookups/customer?channel=b2c&store_id='.$store.'&q=Lookup&page=1'
+        );
+        $pageOne
+            ->assertOk()
+            ->assertJsonPath('data.page', 1)
+            ->assertJsonPath('data.has_more', true)
+            ->assertJsonCount(20, 'data.items');
+        $this->assertSame('Lookup Buyer 01', $pageOne->json('data.items.0.label'));
+        $this->assertStringContainsString('+9655555', (string) $pageOne->json('data.items.0.meta'));
+
+        $this->actingAs($admin)
+            ->getJson('/admin/operations/orders/lookups/customer?channel=b2c&store_id='.$store.'&q=Lookup&page=2')
+            ->assertOk()
+            ->assertJsonPath('data.has_more', false)
+            ->assertJsonCount(2, 'data.items');
+
+        $this->actingAs($admin)
+            ->getJson('/admin/operations/orders/lookups/product?channel=b2c&store_id='.$store.'&q=LOOKUP-SKU')
+            ->assertOk()
+            ->assertJsonFragment(['id' => $product, 'label' => 'LOOKUP-SKU'])
+            ->assertJsonMissing(['label' => 'FOREIGN-LOOKUP-SKU']);
+
+        $this->actingAs($admin)
+            ->getJson('/admin/operations/orders/lookups/customer?channel=b2c&store_id='.$foreignStore.'&q=Foreign')
+            ->assertNotFound();
+    }
+
+    private function store(string $type, string $code): int
+    {
+        return (int) DB::table('stores')->insertGetId([
+            'store_type_id' => DB::table('store_types')->where('code', $type)->value('id'),
+            'business_profile' => $type === 'B2C' ? 'RETAIL_STORE' : null,
+            'code' => $code,
+            'name' => $code,
+            'is_active' => true,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+    }
+
+    /** @return array{0:int,1:int} */
+    private function product(int $storeId, string $channel, string $sku, float $price, float $stock): array
+    {
+        $catalog = (int) DB::table('catalogs')->insertGetId([
+            'store_id' => $storeId,
+            'channel' => $channel,
+            'code' => 'cat-'.strtolower($sku),
+            'name' => $sku.' Catalog',
+            'is_active' => true,
+            'is_migration_quarantine' => false,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        $unit = (int) DB::table('units')->insertGetId([
+            'scope' => 'global',
+            'scope_key' => 'global',
+            'code' => 'EA-'.$sku,
+            'name' => 'Each',
+            'name_ar' => 'قطعة',
+            'name_en' => 'Each',
+            'decimal_places' => 0,
+            'is_active' => true,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        $product = (int) DB::table('products')->insertGetId([
+            'catalog_id' => $catalog,
+            'unit_id' => $unit,
+            'sku' => $sku,
+            'name' => $sku,
+            'is_active' => true,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        DB::table('store_products')->insert([
+            'store_id' => $storeId,
+            'product_id' => $product,
+            'price' => $price,
+            'is_active' => true,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        $warehouse = (int) DB::table('warehouses')->insertGetId([
+            'store_id' => $storeId,
+            'code' => 'WH-'.$sku,
+            'name' => 'Warehouse '.$sku,
+            'is_active' => true,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        $inventory = (int) DB::table('inventories')->insertGetId([
+            'warehouse_id' => $warehouse,
+            'product_id' => $product,
+            'quantity' => $stock,
+            'reserved_quantity' => 0,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        return [$product, $inventory];
+    }
+
+    private function storeAdmin(int $storeId, string $email): User
+    {
+        $user = User::query()->create([
+            'name' => 'Store Admin',
+            'email' => $email,
+            'password' => 'password',
+            'locale' => 'en',
+            'is_active' => true,
+        ]);
+        $role = Role::query()->where('code', 'B2C_STORE_ADMIN')->firstOrFail();
+        DB::table('user_store_roles')->insert([
+            'user_id' => $user->id,
+            'store_id' => $storeId,
+            'role_id' => $role->id,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        return $user;
+    }
+
+    private function driver(int $storeId, string $channel, string $email): int
+    {
+        $user = User::query()->create([
+            'name' => strtoupper($channel).' Test Driver',
+            'email' => $email,
+            'password' => 'password',
+            'locale' => 'en',
+            'is_active' => true,
+        ]);
+
+        $roleCode = $channel === 'b2b' ? 'B2B_DRIVER' : 'B2C_DRIVER';
+        $user->roles()->attach(Role::query()->where('code', $roleCode)->firstOrFail());
+
+        return (int) DB::table('drivers')->insertGetId([
+            'user_id' => $user->id,
+            'store_id' => $storeId,
+            'driver_type' => $channel,
+            'is_available' => true,
+            'is_active' => true,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+    }
+
+    private function globalAdmin(string $roleCode, string $email): User
+    {
+        $user = User::query()->create([
+            'name' => $roleCode,
+            'email' => $email,
+            'password' => 'password',
+            'locale' => 'en',
+            'is_active' => true,
+        ]);
+        $user->roles()->attach(Role::query()->where('code', $roleCode)->firstOrFail());
+
+        return $user;
+    }
+}

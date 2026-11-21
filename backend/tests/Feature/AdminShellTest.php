@@ -1,0 +1,306 @@
+<?php
+
+namespace Tests\Feature;
+
+use App\Models\Role;
+use App\Models\User;
+use Database\Seeders\CoreReferenceSeeder;
+use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\DB;
+use Tests\TestCase;
+
+class AdminShellTest extends TestCase
+{
+    use RefreshDatabase;
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        $this->seed(CoreReferenceSeeder::class);
+    }
+
+    public function test_guest_is_redirected_to_management_login(): void
+    {
+        $this->get('/admin')->assertRedirect(route('admin.b2c.login'));
+    }
+
+    public function test_b2b_admin_sees_only_wholesale_channel(): void
+    {
+        $user = $this->userWithGlobalRole('B2B_ADMIN');
+
+        $this->actingAs($user)
+            ->get('/admin')
+            ->assertOk()
+            ->assertSee('إدارة الجملة')
+            ->assertDontSee('إدارة التجزئة');
+
+        $this->actingAs($user)
+            ->get('/admin/b2b/dashboard')
+            ->assertOk();
+
+        $this->actingAs($user)
+            ->get('/admin/b2c/dashboard')
+            ->assertForbidden();
+    }
+
+    public function test_b2c_store_admin_sees_only_retail_channel(): void
+    {
+        $storeId = $this->createB2cStore();
+        $user = User::query()->create([
+            'name' => 'B2C Admin',
+            'email' => 'b2c-admin-shell@example.test',
+            'password' => 'password',
+            'locale' => 'ar',
+            'is_active' => true,
+        ]);
+
+        $this->assignStoreRole($user, $storeId, 'B2C_STORE_ADMIN');
+
+        $this->actingAs($user)
+            ->get('/admin')
+            ->assertRedirect(route('admin.b2c.dashboard'));
+
+        $this->actingAs($user)
+            ->get('/admin/b2c/dashboard')
+            ->assertOk();
+
+        $this->actingAs($user)
+            ->get('/admin/b2b/dashboard')
+            ->assertForbidden();
+    }
+
+    public function test_super_admin_lands_on_control_plane_and_keeps_explicit_wholesale_inspection(): void
+    {
+        $user = $this->userWithGlobalRole('SUPER_ADMIN');
+
+        $this->actingAs($user)
+            ->get('/admin')
+            ->assertRedirect(route('admin.administration.index'));
+
+        $this->actingAs($user)
+            ->get(route('admin.administration.index'))
+            ->assertOk()
+            ->assertSee('data-admin-hub="true"', false);
+
+        $this->actingAs($user)
+            ->get('/admin/b2b/dashboard')
+            ->assertOk()
+            ->assertSee('إدارة الجملة')
+            ->assertDontSee('href="'.route('admin.b2c.dashboard').'"', false)
+            ->assertSee('href="'.route('admin.retail-stores.index').'"', false)
+            ->assertSee(route('admin.logout'), false);
+
+        $this->actingAs($user)
+            ->get('/admin/b2c/dashboard')
+            ->assertRedirect(route('admin.retail-stores.index'));
+    }
+
+    public function test_fresh_install_super_admin_can_open_all_management_get_surfaces(): void
+    {
+        $user = $this->userWithGlobalRole('SUPER_ADMIN', 'en');
+
+        $this->assertDatabaseCount('stores', 0);
+
+        $this->actingAs($user)
+            ->get('/admin')
+            ->assertRedirect(route('admin.administration.index'));
+
+        $this->actingAs($user)
+            ->get(route('admin.administration.index'))
+            ->assertOk()
+            ->assertSee('data-admin-hub="true"', false);
+
+        foreach ([
+            '/admin/b2b/dashboard',
+            '/admin/b2b/clients',
+            '/admin/b2b/products',
+            '/admin/b2b/orders',
+            '/admin/b2b/drivers',
+            '/admin/b2b/reports',
+            '/admin/b2b/settings',
+            '/admin/reports',
+            '/admin/security',
+            '/admin/settings/app-versions',
+            '/admin/settings/mobile',
+            '/admin/settings/system-update',
+            '/admin/settings/translations',
+            '/admin/notifications',
+            '/admin/security/demo-data',
+        ] as $uri) {
+            $this->actingAs($user)
+                ->get($uri)
+                ->assertOk();
+        }
+
+        $this->actingAs($user)
+            ->get('/admin/b2b/pricing')
+            ->assertNotFound();
+    }
+
+    public function test_super_admin_sees_grouped_permission_aware_navigation(): void
+    {
+        $user = $this->userWithGlobalRole('SUPER_ADMIN', 'en');
+
+        $this->actingAs($user)
+            ->get('/admin/b2b/dashboard')
+            ->assertOk()
+            ->assertSee('Operations')
+            ->assertSee('Catalog')
+            ->assertSee('Analytics')
+            ->assertSee('Administration')
+            ->assertSee('data-nav-group="operations"', false)
+            ->assertSee('Search navigation');
+    }
+
+    public function test_b2b_sidebar_hides_inventory_clients_and_pricing(): void
+    {
+        $user = $this->userWithGlobalRole('B2B_ADMIN', 'en');
+
+        $this->actingAs($user)
+            ->get('/admin')
+            ->assertOk()
+            ->assertSee('Product Management')
+            ->assertDontSee('Inventory Management')
+            ->assertDontSee('System Settings / Lookups')
+            ->assertDontSee('href="'.route('admin.b2b.module', ['module' => 'clients']).'"', false)
+            ->assertDontSee('href="'.route('admin.b2b.module', ['module' => 'pricing']).'"', false);
+
+        $user->forceFill(['locale' => 'ar'])->save();
+
+        $this->actingAs($user->fresh())
+            ->get('/admin')
+            ->assertOk()
+            ->assertSee('إدارة المنتجات')
+            ->assertDontSee('إدارة المخزون')
+            ->assertDontSee('إعدادات النظام / القيم المرجعية');
+    }
+
+    public function test_shared_shell_exposes_foodex_brand_contract(): void
+    {
+        $user = $this->userWithGlobalRole('B2B_ADMIN', 'en');
+
+        $this->actingAs($user)
+            ->get('/admin')
+            ->assertOk()
+            ->assertSee('data-foodex-brand="v1"', false)
+            ->assertSee('--foodex-green:#158A3A', false)
+            ->assertSee('--foodex-orange:#EE731C', false)
+            ->assertSee('fonts.googleapis.com/css2?family=Tajawal:wght@400;500;700', false)
+            ->assertSee('--foodex-font-family:"Tajawal",sans-serif', false)
+            ->assertSee('--foodex-font-ar:var(--foodex-font-family)', false)
+            ->assertSee('--foodex-font-en:var(--foodex-font-family)', false)
+            ->assertDontSee('"Inter"', false)
+            ->assertDontSee('system-ui', false)
+            ->assertSee('--foodex-font-weight-regular:400', false)
+            ->assertSee('--foodex-font-weight-medium:500', false)
+            ->assertSee('--foodex-font-weight-bold:700', false)
+            ->assertSee('--foodex-control-height:44px', false)
+            ->assertSee('--foodex-sidebar-width:232px', false)
+            ->assertSee('.shell{direction:ltr;', false)
+            ->assertSee('.shell-sidebar{grid-column:2;grid-row:1;direction:rtl;', false)
+            ->assertSee('html[dir=ltr] .shell-sidebar{grid-column:1;direction:ltr}', false)
+            ->assertSee('.foodex-admin-layout{direction:ltr;', false)
+            ->assertSee('.foodex-empty-state{min-height:140px;', false)
+            ->assertSee('.foodex-modal-backdrop{position:fixed;', false)
+            ->assertSee('.pagination,.pager{display:flex;', false)
+            ->assertDontSee('#1f2937', false)
+            ->assertDontSee('color:#dbeafe', false);
+    }
+
+    public function test_workspace_uses_shared_sidebar_active_state_and_preserves_deep_link(): void
+    {
+        $storeId = $this->createB2cStore();
+        $user = User::query()->create([
+            'name' => 'B2C Navigation',
+            'email' => 'b2c-navigation@example.test',
+            'password' => 'password',
+            'locale' => 'en',
+            'is_active' => true,
+        ]);
+        $this->assignStoreRole($user, $storeId, 'B2C_STORE_ADMIN');
+
+        $this->actingAs($user)
+            ->get('/admin/b2c/orders')
+            ->assertOk()
+            ->assertSee('data-nav-group="operations"', false)
+            ->assertSee('aria-current="page"', false)
+            ->assertSee('Orders');
+    }
+
+    public function test_navigation_hides_modules_without_effective_permission(): void
+    {
+        $user = $this->userWithGlobalRole('FINANCE', 'en');
+
+        $this->actingAs($user)
+            ->get('/admin')
+            ->assertOk()
+            ->assertSee('Analytics')
+            ->assertDontSee('Users & Permissions')
+            ->assertDontSee('Translation Center')
+            ->assertDontSee('System Update');
+    }
+
+    public function test_driver_role_is_denied_management_dashboard_access(): void
+    {
+        $driver = $this->userWithGlobalRole('B2C_DRIVER');
+
+        $this->actingAs($driver)
+            ->get('/admin')
+            ->assertForbidden();
+    }
+
+    public function test_user_locale_controls_shell_direction_and_copy(): void
+    {
+        $user = $this->userWithGlobalRole('B2B_ADMIN', 'en');
+
+        $this->actingAs($user)
+            ->get('/admin')
+            ->assertOk()
+            ->assertSee('dir="ltr"', false)
+            ->assertSee('FOODEX Management Dashboard');
+    }
+
+    private function userWithGlobalRole(string $roleCode, string $locale = 'ar'): User
+    {
+        $user = User::query()->create([
+            'name' => $roleCode,
+            'email' => strtolower($roleCode).'-shell@example.test',
+            'password' => 'password',
+            'locale' => $locale,
+            'is_active' => true,
+        ]);
+
+        $role = Role::query()->where('code', $roleCode)->firstOrFail();
+        $user->roles()->attach($role);
+
+        return $user;
+    }
+
+    private function createB2cStore(): int
+    {
+        $storeTypeId = (int) DB::table('store_types')->where('code', 'B2C')->value('id');
+
+        return (int) DB::table('stores')->insertGetId([
+            'store_type_id' => $storeTypeId,
+            'code' => 'B2C-SHELL',
+            'name' => 'B2C Shell Store',
+            'is_active' => true,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+    }
+
+    private function assignStoreRole(User $user, int $storeId, string $roleCode): void
+    {
+        $roleId = (int) Role::query()->where('code', $roleCode)->value('id');
+
+        DB::table('user_store_roles')->insert([
+            'user_id' => $user->id,
+            'store_id' => $storeId,
+            'role_id' => $roleId,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+    }
+}

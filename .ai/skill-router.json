@@ -1,0 +1,330 @@
+{
+  "schema_version": 1,
+  "skill_root": ".ai/skills",
+  "controlled_roots": [
+    "backend/resources/views/admin/",
+    "backend/public/assets/admin/",
+    "apps/customer_app/lib/",
+    "apps/driver_app/lib/",
+    "apps/van_app/lib/",
+    "apps/customer_app/test/",
+    "apps/driver_app/test/",
+    "apps/van_app/test/"
+  ],
+  "routes": [
+    {
+      "id": "flutter-core",
+      "paths": [
+        "apps/customer_app/lib/**",
+        "apps/customer_app/test/**",
+        "apps/driver_app/lib/**",
+        "apps/driver_app/test/**",
+        "apps/van_app/lib/**",
+        "apps/van_app/test/**",
+        "apps/customer_app/analysis_options.yaml",
+        "apps/driver_app/analysis_options.yaml",
+        "apps/van_app/analysis_options.yaml"
+      ],
+      "skills": [
+        "flutter-authoring.md",
+        "flutter-state-safety.md",
+        "flutter-test-authoring.md"
+      ],
+      "gates": [
+        "flutter-authoring",
+        "flutter-analysis",
+        "flutter-tests"
+      ]
+    },
+    {
+      "id": "dashboard-ui",
+      "paths": [
+        "backend/resources/views/admin/**",
+        "backend/public/assets/admin/**"
+      ],
+      "skills": [
+        "ui-screen.md",
+        "foodex-uiux.md",
+        "dashboard-uiux.md",
+        "ui-route-authority.md",
+        "ui-accessibility.md",
+        "uiux-audit.md",
+        "uiux-evidence.md",
+        "ui-pr-evidence-plan.md"
+      ],
+      "gates": [
+        "uiux-policy",
+        "ui-structural-parity",
+        "ui-pr-evidence",
+        "localization"
+      ]
+    },
+    {
+      "id": "customer-ui",
+      "paths": [
+        "apps/customer_app/lib/**"
+      ],
+      "skills": [
+        "ui-screen.md",
+        "foodex-uiux.md",
+        "customer-uiux.md",
+        "ui-route-authority.md",
+        "ui-accessibility.md",
+        "uiux-audit.md",
+        "uiux-evidence.md",
+        "ui-pr-evidence-plan.md"
+      ],
+      "gates": [
+        "uiux-policy",
+        "ui-structural-parity",
+        "ui-pr-evidence",
+        "localization"
+      ]
+    },
+    {
+      "id": "driver-ui",
+      "paths": [
+        "apps/driver_app/lib/**"
+      ],
+      "skills": [
+        "ui-screen.md",
+        "foodex-uiux.md",
+        "driver-uiux.md",
+        "ui-route-authority.md",
+        "ui-accessibility.md",
+        "uiux-audit.md",
+        "uiux-evidence.md",
+        "ui-pr-evidence-plan.md"
+      ],
+      "gates": [
+        "uiux-policy",
+        "ui-structural-parity",
+        "ui-pr-evidence",
+        "localization"
+      ]
+    },
+    {
+      "id": "van-ui",
+      "paths": [
+        "apps/van_app/lib/**"
+      ],
+      "skills": [
+        "ui-screen.md",
+        "foodex-uiux.md",
+        "van-uiux.md",
+        "ui-route-authority.md",
+        "ui-accessibility.md",
+        "uiux-audit.md",
+        "uiux-evidence.md",
+        "ui-pr-evidence-plan.md"
+      ],
+      "gates": [
+        "uiux-policy",
+        "ui-structural-parity",
+        "ui-pr-evidence",
+        "localization"
+      ]
+    },
+    {
+      "id": "database",
+      "paths": [
+        "backend/database/migrations/**",
+        "backend/database/seeders/**"
+      ],
+      "skills": [
+        "database-change.md"
+      ],
+      "gates": [
+        "backend-validation"
+      ]
+    },
+    {
+      "id": "api",
+      "paths": [
+        "backend/app/Http/**",
+        "backend/routes/**",
+        "docs/api/openapi.yaml"
+      ],
+      "skills": [
+        "api-endpoint.md"
+      ],
+      "gates": [
+        "backend-validation"
+      ]
+    },
+    {
+      "id": "release",
+      "paths": [
+        "VERSION",
+        "docs/release/**",
+        ".github/workflows/release-*.yml",
+        "scripts/package-mobile-artifact.py",
+        "scripts/validate_release_artifact_contract.py"
+      ],
+      "skills": [
+        "release.md"
+      ],
+      "gates": [
+        "release-validation"
+      ]
+    },
+    {
+      "id": "ci",
+      "paths": [
+        ".github/workflows/**",
+        ".github/scripts/**",
+        "scripts/validate-*.sh",
+        ".ci/**",
+        "scripts/ci-*.py",
+        "scripts/worker-*.sh",
+        "scripts/detect-changed-areas.sh",
+        "scripts/flutter-test-hermeticity.py",
+        "scripts/foodex-branch-policy.py",
+        "scripts/tests/test_ci_*.py",
+        "scripts/tests/test_one_push_green_contract.py",
+        "scripts/tests/test_flutter_test_hermeticity.py",
+        "scripts/tests/test_foodex_branch_policy.py",
+        "scripts/flutter-changed-analysis.sh",
+        "scripts/bootstrap-flutter.sh"
+      ],
+      "skills": [
+        "ci-repair.md"
+      ],
+      "gates": [
+        "repository-policy"
+      ]
+    },
+    {
+      "id": "security",
+      "paths": [
+        "backend/app/Http/Middleware/**",
+        "backend/app/Policies/**",
+        "backend/app/Providers/AuthServiceProvider.php",
+        "docs/security/**"
+      ],
+      "skills": [
+        "security-review.md"
+      ],
+      "gates": [
+        "security-review"
+      ]
+    },
+    {
+      "id": "skill-system",
+      "paths": [
+        ".ai/skill-router.json",
+        ".ai/skills/**",
+        "docs/design-reference/UI_PLACEMENT_SCREEN_PATTERN_CONTRACT.md",
+        ".github/ISSUE_TEMPLATE/ui_implementation_task.yml",
+        ".github/ISSUE_TEMPLATE/implementation.md",
+        ".github/ISSUE_TEMPLATE/implementation_task.yml",
+        ".github/pull_request_template.md",
+        "scripts/foodex-skill-router.py",
+        "scripts/tests/test_foodex_skill_router.py",
+        "AGENTS.md"
+      ],
+      "skills": [
+        "uiux-skill-maintenance.md"
+      ],
+      "gates": [
+        "skill-router"
+      ]
+    }
+  ],
+  "conditional_rules": [
+    {
+      "id": "state-changing-ui",
+      "route_ids": [
+        "dashboard-ui",
+        "customer-ui",
+        "driver-ui",
+        "van-ui"
+      ],
+      "added_regex": "(?i)(\\b(?:post|put|patch|delete)\\s*\\(|method\\s*[:=]\\s*['\\\"](?:POST|PUT|PATCH|DELETE)|\\b(?:checkout|payment|remittance|collection|dispatch|assignment|submit|approve|reject|cancel|refund)\\b)",
+      "skills": [
+        "ui-interaction-safety.md"
+      ],
+      "gates": [
+        "mutation-safety"
+      ]
+    },
+    {
+      "id": "high-growth-live-ui",
+      "route_ids": [
+        "dashboard-ui"
+      ],
+      "added_regex": "(?i)(<table\\b|\\bDataTable\\s*\\(|\\bListView(?:\\.|\\s*\\()|\\bGridView(?:\\.|\\s*\\()|\\bpaginate\\s*\\(|\\bpagination\\b|\\bsearch\\b|\\bTimer\\.periodic\\b|\\bpoll(?:ing)?\\b|\\bStreamBuilder\\s*<)",
+      "skills": [
+        "ui-performance.md"
+      ],
+      "gates": [
+        "performance"
+      ]
+    },
+    {
+      "id": "flutter-async-lifecycle",
+      "route_ids": [
+        "flutter-core"
+      ],
+      "added_regex": "(?i)(\\bawait\\b|\\bFuture(?:<|\\.|\\s)|\\bTimer(?:\\.|\\s*\\()|\\bStream(?:Subscription|Builder|Controller)?(?:<|\\.|\\s*\\()|\\b(?:Animation|TextEditing|Scroll|Page|Tab)Controller\\s*\\(|\\bFocusNode\\s*\\(|\\b(?:Change|Value)Notifier(?:<|\\s*\\())",
+      "skills": [
+        "flutter-async-lifecycle.md"
+      ],
+      "gates": [
+        "flutter-lifecycle-safety"
+      ]
+    },
+    {
+      "id": "flutter-api-model",
+      "route_ids": [
+        "flutter-core"
+      ],
+      "added_regex": "(?i)(\\bhttp\\.|\\bClient\\s*\\(|\\bUri\\.|\\bjson(?:Decode|Encode)\\s*\\(|\\b(?:fromJson|toJson)\\s*\\(|\\bstatusCode\\b|\\bResponse\\b|\\bheaders\\b)",
+      "skills": [
+        "flutter-api-model-contract.md"
+      ],
+      "gates": [
+        "flutter-api-contract"
+      ]
+    },
+    {
+      "id": "flutter-navigation",
+      "route_ids": [
+        "flutter-core"
+      ],
+      "added_regex": "(?i)(\\bNavigator(?:\\.|\\s)|\\bshowDialog\\s*\\(|\\bshowModalBottomSheet\\s*\\(|\\bScaffoldMessenger(?:\\.|\\s)|\\bBuildContext\\b)",
+      "skills": [
+        "flutter-navigation-safety.md"
+      ],
+      "gates": [
+        "flutter-navigation-safety"
+      ]
+    },
+    {
+      "id": "flutter-localization",
+      "route_ids": [
+        "flutter-core"
+      ],
+      "added_regex": "(?i)(\\bText\\s*\\(|\\b(?:labelText|hintText|helperText|errorText|tooltip|semanticLabel|title|subtitle)\\s*:|\\bSnackBar\\s*\\(|\\bAlertDialog\\s*\\()",
+      "skills": [
+        "flutter-localization-code.md"
+      ],
+      "gates": [
+        "localization"
+      ]
+    },
+    {
+      "id": "flutter-performance",
+      "route_ids": [
+        "flutter-core"
+      ],
+      "added_regex": "(?i)(\\bListView(?:\\.|\\s*\\()|\\bGridView(?:\\.|\\s*\\()|\\bCustomScrollView\\s*\\(|\\bStreamBuilder\\s*<|\\bTimer\\.periodic\\b|\\bImage(?:\\.|\\s*\\()|\\bsearch\\b|\\bpoll(?:ing)?\\b)",
+      "skills": [
+        "flutter-performance-code.md"
+      ],
+      "gates": [
+        "flutter-performance"
+      ]
+    }
+  ]
+}

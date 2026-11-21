@@ -1,0 +1,392 @@
+<?php
+
+namespace Tests\Feature;
+
+use App\Models\Role;
+use App\Models\User;
+use App\Services\AdminSidebarManager;
+use App\Support\AdminNavigation;
+use Database\Seeders\CoreReferenceSeeder;
+use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\DB;
+use Tests\TestCase;
+
+class AdminNavigationAuthorizationAuditTest extends TestCase
+{
+    use RefreshDatabase;
+
+    private int $wholesaleStore;
+
+    private int $retailStore;
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+        $this->seed(CoreReferenceSeeder::class);
+
+        $this->wholesaleStore = $this->store('B2B', 'NAV-AUDIT-WHOLESALE');
+        $this->retailStore = $this->store('B2C', 'NAV-AUDIT-RETAIL');
+    }
+
+    public function test_every_visible_super_admin_navigation_target_opens_without_authorization_or_route_errors(): void
+    {
+        $this->assertEveryVisibleNavigationTargetOpens(
+            $this->globalUser('SUPER_ADMIN', 'nav-owner@example.test'),
+        );
+    }
+
+    public function test_every_visible_b2b_admin_navigation_target_opens_without_authorization_or_route_errors(): void
+    {
+        $this->assertEveryVisibleNavigationTargetOpens(
+            $this->globalUser('B2B_ADMIN', 'nav-wholesale@example.test'),
+        );
+    }
+
+    public function test_every_visible_retail_admin_navigation_target_opens_without_authorization_or_route_errors(): void
+    {
+        $this->assertEveryVisibleNavigationTargetOpens(
+            $this->retailAdmin('nav-retail@example.test'),
+        );
+    }
+
+    public function test_retail_store_admin_cannot_see_or_open_platform_erp(): void
+    {
+        $user = $this->retailAdmin('nav-retail-no-erp@example.test');
+
+        $groups = collect(app(AdminNavigation::class)->groupsFor($user))
+            ->keyBy('key');
+
+        $this->assertFalse($groups->has('erp'));
+        $this->actingAs($user)
+            ->get(route('admin.erp.index', [], false))
+            ->assertForbidden();
+        $this->actingAs($user)
+            ->get(route('admin.erp.procurement.index', [], false))
+            ->assertForbidden();
+    }
+
+    public function test_analytics_sidebar_excludes_ai_and_whatsapp_supervisor_entries(): void
+    {
+        $user = $this->globalUser('SUPER_ADMIN', 'nav-analytics-clean@example.test');
+
+        $analytics = collect(app(AdminNavigation::class)->groupsFor($user))
+            ->firstWhere('key', 'analytics');
+
+        $this->assertIsArray($analytics);
+        $keys = collect($analytics['children'] ?? [])->pluck('key');
+
+        $this->assertFalse($keys->contains('ai_analytics'));
+        $this->assertFalse($keys->contains('whatsapp_supervisor'));
+    }
+
+    public function test_customer_groups_sidebar_entries_are_registered_and_scoped_to_authorized_channel(): void
+    {
+        $items = app(AdminSidebarManager::class)->registry()['items'];
+        $this->assertSame('accounts', $items['customer_groups']['group']);
+        $this->assertSame('accounts', $items['b2c_customer_groups']['group']);
+        $this->assertSame('customer_groups.wholesale_title', $items['customer_groups']['label']);
+        $this->assertSame('customer_groups.retail_title', $items['b2c_customer_groups']['label']);
+
+        $wholesale = $this->globalUser('B2B_ADMIN', 'nav-groups-wholesale@example.test');
+        $wholesaleGroups = collect(app(AdminNavigation::class)->groupsFor($wholesale))
+            ->firstWhere('key', 'accounts');
+        $this->assertIsArray($wholesaleGroups);
+        $wholesaleItems = collect($wholesaleGroups['children'])->keyBy('key');
+        $this->assertTrue($wholesaleItems->has('customer_groups'));
+        $this->assertSame('admin.b2b.customer-groups.index', $wholesaleItems->get('customer_groups')['route']);
+        $this->assertFalse($wholesaleItems->has('b2c_customer_groups'));
+
+        $retail = $this->retailAdmin('nav-groups-retail@example.test');
+        $retailGroups = collect(app(AdminNavigation::class)->groupsFor($retail))
+            ->firstWhere('key', 'accounts');
+        $this->assertIsArray($retailGroups);
+        $retailItems = collect($retailGroups['children'])->keyBy('key');
+        $this->assertTrue($retailItems->has('b2c_customer_groups'));
+        $this->assertSame('admin.b2c.customer-groups.index', $retailItems->get('b2c_customer_groups')['route']);
+        $this->assertFalse($retailItems->has('customer_groups'));
+
+        $this->actingAs($wholesale)->get(route('admin.b2b.customer-groups.index'))
+            ->assertOk()
+            ->assertViewHas('navContext', 'customer_groups');
+        $this->actingAs($retail)->get(route('admin.b2c.customer-groups.index'))
+            ->assertOk()
+            ->assertViewHas('navContext', 'b2c_customer_groups');
+    }
+
+    public function test_retail_store_admin_sidebar_excludes_platform_only_navigation(): void
+    {
+        $user = $this->retailAdmin('nav-retail-isolated@example.test');
+
+        $groups = collect(app(AdminNavigation::class)->groupsFor($user));
+        $items = $groups
+            ->flatMap(fn (array $group) => $group['children'])
+            ->values();
+
+        $this->assertFalse($groups->contains('key', 'finance'));
+        $this->assertFalse($groups->contains('key', 'administration'));
+
+        $this->assertTrue(
+            $items->contains('key', 'enterprise_action_center'),
+            'Retail store admin must find authorized store-scoped My Work in Overview.',
+        );
+
+        // Scoped Retail Workspaces is a real authorized HTTP destination, not a platform grant.
+        $this->assertTrue(
+            $items->contains('key', 'enterprise_workspaces'),
+            'Retail store admin must discover its authorized scoped Workspaces entry in Overview.',
+        );
+        $this->actingAs($user)
+            ->get(route('admin.enterprise-workspaces.index'))
+            ->assertOk();
+
+        // A store admin with finance.view may discover scoped Treasury Master Data;
+        // this does not convey platform ERP Treasury privileges.
+        $this->assertTrue($items->contains('key', 'treasury_master'));
+
+        foreach ([
+            'whatsapp_inbox',
+            'whatsapp_supervisor',
+            'b2c_finance',
+            'administration_hub',
+        ] as $forbiddenKey) {
+            $this->assertFalse(
+                $items->contains('key', $forbiddenKey),
+                "Retail sidebar unexpectedly exposed platform-only item [{$forbiddenKey}].",
+            );
+        }
+
+        $this->assertFalse(
+            $items->contains('label', 'admin.b2c_workspace.modules.finance'),
+            'Retail sidebar must never render the removed B2C finance translation key.',
+        );
+    }
+
+    public function test_customer_service_manager_and_agent_sidebar_hide_platform_hubs_but_keep_service_workspace(): void
+    {
+        foreach (['CUSTOMER_SERVICE_MANAGER', 'CUSTOMER_SERVICE_SUPERVISOR', 'CUSTOMER_SERVICE_AGENT'] as $roleCode) {
+            $user = $this->globalUser($roleCode, strtolower($roleCode).'@example.test');
+
+            $groups = collect(app(AdminNavigation::class)->groupsFor($user));
+            $items = $groups
+                ->flatMap(fn (array $group) => $group['children'])
+                ->pluck('key');
+
+            foreach ([
+                'enterprise_action_center',
+                'enterprise_workspaces',
+                'erp_center',
+                'erp_my_work',
+                'administration_hub',
+            ] as $hiddenKey) {
+                $this->assertFalse(
+                    $items->contains($hiddenKey),
+                    "{$roleCode} sidebar unexpectedly exposed [{$hiddenKey}].",
+                );
+            }
+
+            $this->assertFalse(
+                $groups->contains('key', 'administration'),
+                "{$roleCode} sidebar must hide the Administration group when its hub is hidden.",
+            );
+            $this->assertFalse(
+                $groups->contains('key', 'erp'),
+                "{$roleCode} sidebar must hide the ERP group.",
+            );
+            $this->assertTrue(
+                $items->contains('erp_customer_service'),
+                "{$roleCode} must retain the Customer Service workspace entry.",
+            );
+        }
+    }
+
+    public function test_my_work_http_endpoints_enforce_the_same_platform_scope_as_sidebar(): void
+    {
+        $inactiveRetail = $this->retailAdmin('v2-my-work-inactive@example.test');
+        $inactiveRetail->forceFill(['is_active' => false])->save();
+
+        $deniedUsers = [
+            $inactiveRetail,
+            $this->globalUser('CUSTOMER_SERVICE_AGENT', 'v2-my-work-service@example.test'),
+        ];
+
+        foreach ($deniedUsers as $user) {
+            $this->assertFalse(
+                collect(app(AdminNavigation::class)->groupsFor($user))
+                    ->flatMap(fn (array $group) => $group['children'])
+                    ->contains('key', 'enterprise_action_center'),
+            );
+
+            $this->actingAs($user)
+                ->get(route('admin.action-center.index'))
+                ->assertForbidden();
+            $this->actingAs($user)
+                ->get(route('admin.action-center.export'))
+                ->assertForbidden();
+            $this->actingAs($user)
+                ->post(route('admin.action-center.decide', [
+                    'workflowRequest' => 999999,
+                    'stepCode' => 'approval',
+                ]), ['decision' => 'APPROVED'])
+                ->assertForbidden();
+        }
+    }
+
+    public function test_retail_store_admin_can_discover_and_open_scoped_my_work(): void
+    {
+        $user = $this->retailAdmin('v2-my-work-retail-allowed@example.test');
+
+        $this->assertTrue(app(AdminNavigation::class)->canAccessMyWork($user));
+        $items = collect(app(AdminNavigation::class)->groupsFor($user))
+            ->flatMap(fn (array $group) => $group['children']);
+
+        $this->assertTrue($items->contains('key', 'enterprise_action_center'));
+
+        $this->actingAs($user)
+            ->get(route('admin.action-center.index'))
+            ->assertOk();
+    }
+
+    public function test_v2_notifications_administration_entry_uses_canonical_authorization(): void
+    {
+        $superAdmin = $this->globalUser('SUPER_ADMIN', 'v2-notifications-super@example.test');
+        $this->assertTrue($superAdmin->hasPermission('notifications.manage'));
+
+        $superGroups = collect(app(AdminNavigation::class)->groupsFor($superAdmin));
+        $administration = $superGroups->firstWhere('key', 'administration');
+        $this->assertIsArray($administration);
+
+        $notificationItem = collect($administration['children'])->firstWhere('key', 'notifications_center');
+        $overview = $superGroups->firstWhere('key', 'overview');
+        $this->assertFalse(collect($overview['children'] ?? [])->contains('key', 'notifications_center'));
+        $this->assertNotNull($notificationItem);
+        $this->assertSame('admin.notifications.index', $notificationItem['route']);
+        $this->assertSame('notifications.title', $notificationItem['label']);
+
+        $this->actingAs($superAdmin)
+            ->get(route('admin.notifications.index'))
+            ->assertOk();
+
+        foreach ([
+            $this->globalUser('B2B_ADMIN', 'v2-notifications-b2b@example.test'),
+            $this->retailAdmin('v2-notifications-retail@example.test'),
+        ] as $unauthorized) {
+            $this->assertFalse(
+                collect(app(AdminNavigation::class)->groupsFor($unauthorized))
+                    ->flatMap(fn (array $group) => $group['children'])
+                    ->contains('key', 'notifications_center'),
+            );
+
+            $this->actingAs($unauthorized)
+                ->get(route('admin.notifications.index'))
+                ->assertForbidden();
+        }
+    }
+
+    public function test_global_platform_admin_keeps_platform_navigation_entries(): void
+    {
+        $user = $this->globalUser('B2B_ADMIN', 'nav-platform-sidebar@example.test');
+
+        $items = collect(app(AdminNavigation::class)->groupsFor($user))
+            ->flatMap(fn (array $group) => $group['children'])
+            ->pluck('key');
+
+        foreach ([
+            'enterprise_action_center',
+            'enterprise_workspaces',
+            'treasury_master',
+            'administration_hub',
+        ] as $requiredKey) {
+            $this->assertTrue(
+                $items->contains($requiredKey),
+                "Global platform sidebar lost expected item [{$requiredKey}].",
+            );
+        }
+    }
+
+    public function test_global_platform_admin_remains_eligible_for_erp(): void
+    {
+        $user = $this->globalUser('B2B_ADMIN', 'nav-platform-erp@example.test');
+
+        $this->assertTrue(app(AdminNavigation::class)->canAccessPlatformErp($user));
+        $this->assertTrue(
+            collect(app(AdminNavigation::class)->groupsFor($user))->contains('key', 'erp'),
+        );
+    }
+
+    private function assertEveryVisibleNavigationTargetOpens(User $user): void
+    {
+        $items = collect(app(AdminNavigation::class)->groupsFor($user))
+            ->flatMap(fn (array $group) => $group['children'])
+            ->values();
+
+        $this->assertNotEmpty($items, 'The navigation audit requires at least one visible destination.');
+
+        foreach ($items as $item) {
+            $uri = route($item['route'], $item['params'], false);
+            $response = $this->actingAs($user)->get($uri);
+            $status = $response->getStatusCode();
+
+            $this->assertTrue(
+                $status >= 200 && $status < 400,
+                sprintf(
+                    'Visible admin navigation item [%s] (%s) returned HTTP %d for user %s.',
+                    $item['key'],
+                    $uri,
+                    $status,
+                    $user->email,
+                ),
+            );
+        }
+    }
+
+    private function globalUser(string $roleCode, string $email): User
+    {
+        $user = User::query()->create([
+            'name' => $roleCode,
+            'email' => $email,
+            'password' => 'password',
+            'locale' => 'ar',
+            'is_active' => true,
+        ]);
+        $user->roles()->attach(Role::query()->where('code', $roleCode)->firstOrFail());
+
+        return $user;
+    }
+
+    private function retailAdmin(string $email): User
+    {
+        $user = User::query()->create([
+            'name' => 'Retail Navigation Audit',
+            'email' => $email,
+            'password' => 'password',
+            'locale' => 'ar',
+            'is_active' => true,
+        ]);
+        $role = Role::query()->where('code', 'B2C_STORE_ADMIN')->firstOrFail();
+
+        DB::table('user_store_roles')->insert([
+            'user_id' => $user->id,
+            'store_id' => $this->retailStore,
+            'role_id' => $role->id,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        return $user;
+    }
+
+    private function store(string $type, string $code): int
+    {
+        $typeId = (int) DB::table('store_types')->where('code', $type)->value('id');
+
+        return (int) DB::table('stores')->insertGetId([
+            'store_type_id' => $typeId,
+            'business_profile' => $type === 'B2C' ? 'RETAIL_STORE' : null,
+            'code' => $code,
+            'name' => $code,
+            'is_active' => true,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+    }
+}

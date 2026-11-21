@@ -1,0 +1,646 @@
+import '../auth/customer_session.dart';
+import 'customer_commerce_context.dart';
+
+abstract final class CustomerRoutePaths {
+  static const splash = '/splash';
+  static const entry = '/entry';
+  static const marketplace = '/marketplace';
+  static const home = '/home';
+  static const retailHome = '/retail/:store/home';
+  static const retailProductDetails = '/retail/:store/products/:product';
+  static const offers = '/offers';
+  static const invoices = '/invoices';
+  static const products = '/products';
+  static const productDetails = '/products/:id';
+  static const categories = '/categories';
+  static const favorites = '/favorites';
+  static const orders = '/orders';
+  static const notifications = '/notifications';
+  static const addresses = '/profile/addresses';
+  static const settings = '/profile/settings';
+  static const diagnostics = '/diagnostics';
+  static const cart = '/cart';
+  static const checkoutAuth = '/auth/checkout';
+  static const checkoutAddressPayment = '/checkout/address-payment';
+  static const orderTracking = '/orders/:id/track';
+  static const profile = '/profile';
+
+  static const b2bHome = '/b2b/home';
+  static const b2bDashboard = '/b2b/dashboard';
+  static const b2bStoreAnalytics = '/b2b/store-analytics';
+  static const b2bPurchaseReports = '/b2b/reports/purchases';
+  static const b2bTopProducts = '/b2b/products/top';
+  static const b2bProducts = '/b2b/products';
+  static const b2bOffers = '/b2b/offers';
+  static const b2bProductDetails = '/b2b/products/:id';
+  static const b2bInvoices = '/b2b/invoices';
+  static const b2bInvoiceDetails = '/b2b/invoices/:id';
+  static const b2bAccountStatement = '/b2b/account-statement';
+  static const b2bOrders = '/b2b/orders';
+  static const b2bFavorites = '/b2b/favorites';
+  static const b2bOrderDetails = '/b2b/orders/:id';
+  static const b2bNotifications = '/b2b/notifications';
+  static const b2bCart = '/b2b/cart';
+  static const b2bCheckout = '/b2b/checkout';
+  static const b2bAddresses = '/b2b/profile/addresses';
+  static const b2bProfile = '/b2b/profile';
+}
+
+enum CustomerAuthEntry { login, register }
+
+abstract final class CustomerRouteLocations {
+  static String retailHome(CustomerCommerceContext context) {
+    _requireChannel(context, CustomerCommerceChannel.retail);
+    return _scoped('/retail/${context.storeId}/home', context);
+  }
+
+  static String retailProducts(
+    CustomerCommerceContext context, {
+    String? query,
+    int? categoryId,
+  }) {
+    _requireChannel(context, CustomerCommerceChannel.retail);
+    if (categoryId != null && categoryId <= 0) {
+      throw ArgumentError.value(categoryId, 'categoryId', 'must be positive');
+    }
+    final normalizedQuery = query?.trim();
+    return _scoped(
+      CustomerRoutePaths.products,
+      context,
+      <String, String>{
+        if (normalizedQuery != null && normalizedQuery.isNotEmpty)
+          'q': normalizedQuery,
+        if (categoryId != null) 'category_id': '$categoryId',
+      },
+    );
+  }
+
+  static String retailProduct(
+    CustomerCommerceContext context,
+    int productId,
+  ) {
+    _requireChannel(context, CustomerCommerceChannel.retail);
+    if (productId <= 0) {
+      throw ArgumentError.value(productId, 'productId', 'must be positive');
+    }
+    return _scoped(
+      '/retail/${context.storeId}/products/$productId',
+      context,
+    );
+  }
+
+  static String retailCart(CustomerCommerceContext context) {
+    _requireChannel(context, CustomerCommerceChannel.retail);
+    return _scoped(CustomerRoutePaths.cart, context);
+  }
+
+  static String retailCheckout(CustomerCommerceContext context) {
+    _requireChannel(context, CustomerCommerceChannel.retail);
+    return _scoped(CustomerRoutePaths.checkoutAddressPayment, context);
+  }
+
+  static String retailProfile(CustomerCommerceContext context) {
+    _requireChannel(context, CustomerCommerceChannel.retail);
+    return _scoped(CustomerRoutePaths.profile, context);
+  }
+
+  static String retailInvoices(CustomerCommerceContext context) {
+    _requireChannel(context, CustomerCommerceChannel.retail);
+    return _scoped(CustomerRoutePaths.invoices, context);
+  }
+
+  static String retailOrders(CustomerCommerceContext context) {
+    _requireChannel(context, CustomerCommerceChannel.retail);
+    return _scoped(CustomerRoutePaths.orders, context);
+  }
+
+  static String retailAddresses(CustomerCommerceContext context) {
+    _requireChannel(context, CustomerCommerceChannel.retail);
+    return _scoped(CustomerRoutePaths.addresses, context);
+  }
+
+  static String retailFavorites(CustomerCommerceContext context) {
+    _requireChannel(context, CustomerCommerceChannel.retail);
+    return _scoped(CustomerRoutePaths.favorites, context);
+  }
+
+  static String retailNotifications(CustomerCommerceContext context) {
+    _requireChannel(context, CustomerCommerceChannel.retail);
+    return _scoped(CustomerRoutePaths.notifications, context);
+  }
+
+  static String storeAnalytics({int? retailStoreId}) {
+    if (retailStoreId != null && retailStoreId <= 0) {
+      throw ArgumentError.value(
+        retailStoreId,
+        'retailStoreId',
+        'must be positive',
+      );
+    }
+    return CustomerStoreAnalyticsRouteContext(
+      retailStoreId: retailStoreId,
+    ).location;
+  }
+
+  static String wholesaleHome(CustomerCommerceContext context) {
+    _requireChannel(context, CustomerCommerceChannel.wholesale);
+    return _scoped(CustomerRoutePaths.b2bHome, context);
+  }
+
+  static String wholesaleProduct(
+    CustomerCommerceContext context,
+    int productId,
+  ) {
+    _requireChannel(context, CustomerCommerceChannel.wholesale);
+    if (productId <= 0) {
+      throw ArgumentError.value(productId, 'productId', 'must be positive');
+    }
+    return _scoped(
+      '/b2b/products/$productId',
+      context,
+    );
+  }
+
+  static String wholesaleOffers(CustomerCommerceContext context) {
+    _requireChannel(context, CustomerCommerceChannel.wholesale);
+    return _scoped(CustomerRoutePaths.b2bOffers, context);
+  }
+
+  static String wholesaleCart(CustomerCommerceContext context) {
+    _requireChannel(context, CustomerCommerceChannel.wholesale);
+    return _scoped(CustomerRoutePaths.b2bCart, context);
+  }
+
+  static String wholesaleOrders(CustomerCommerceContext context) {
+    _requireChannel(context, CustomerCommerceChannel.wholesale);
+    return _scoped(CustomerRoutePaths.b2bOrders, context);
+  }
+
+  static String wholesaleFavorites(CustomerCommerceContext context) {
+    _requireChannel(context, CustomerCommerceChannel.wholesale);
+    return _scoped(CustomerRoutePaths.b2bFavorites, context);
+  }
+
+  static String wholesaleNotifications(CustomerCommerceContext context) {
+    _requireChannel(context, CustomerCommerceChannel.wholesale);
+    return _scoped(CustomerRoutePaths.b2bNotifications, context);
+  }
+
+  static String wholesaleProfile(CustomerCommerceContext context) {
+    _requireChannel(context, CustomerCommerceChannel.wholesale);
+    return _scoped(CustomerRoutePaths.b2bProfile, context);
+  }
+
+  static String wholesaleAddresses(CustomerCommerceContext context) {
+    _requireChannel(context, CustomerCommerceChannel.wholesale);
+    return _scoped(CustomerRoutePaths.b2bAddresses, context);
+  }
+
+  static String authHandoff({
+    required CustomerCommerceContext context,
+    required String next,
+    CustomerAuthEntry entry = CustomerAuthEntry.login,
+  }) {
+    final safeNext = safeCustomerContextReturnLocation(
+      next,
+      context: context,
+    );
+    if (safeNext == null) {
+      throw ArgumentError.value(
+        next,
+        'next',
+        'must be a safe route in the same commerce context',
+      );
+    }
+
+    return Uri(
+      path: CustomerRoutePaths.checkoutAuth,
+      queryParameters: <String, String>{
+        ...context.toQueryParameters(),
+        'entry': entry.name,
+        'next': safeNext,
+      },
+    ).toString();
+  }
+
+  static String _scoped(
+    String path,
+    CustomerCommerceContext context, [
+    Map<String, String> extra = const <String, String>{},
+  ]) =>
+      Uri(
+        path: path,
+        queryParameters: <String, String>{
+          ...context.toQueryParameters(),
+          ...extra,
+        },
+      ).toString();
+
+  static void _requireChannel(
+    CustomerCommerceContext context,
+    CustomerCommerceChannel expected,
+  ) {
+    if (context.channel != expected) {
+      throw ArgumentError.value(
+        context.channel,
+        'context.channel',
+        'expected ${expected.name}',
+      );
+    }
+  }
+}
+
+class CustomerStoreAnalyticsRouteContext {
+  const CustomerStoreAnalyticsRouteContext({this.retailStoreId})
+      : assert(retailStoreId == null || retailStoreId > 0);
+
+  final int? retailStoreId;
+
+  String get location {
+    if (retailStoreId == null) {
+      return CustomerRoutePaths.b2bStoreAnalytics;
+    }
+
+    return Uri(
+      path: CustomerRoutePaths.b2bStoreAnalytics,
+      queryParameters: <String, String>{
+        'retail_store_id': '$retailStoreId',
+      },
+    ).toString();
+  }
+
+  static CustomerStoreAnalyticsRouteContext? tryParse(String? location) {
+    if (location == null || location.isEmpty || location != location.trim()) {
+      return null;
+    }
+
+    final uri = Uri.tryParse(location);
+    if (uri == null ||
+        uri.hasScheme ||
+        uri.hasAuthority ||
+        uri.fragment.isNotEmpty ||
+        uri.path != CustomerRoutePaths.b2bStoreAnalytics ||
+        uri.path.contains(r'\')) {
+      return null;
+    }
+
+    const allowedKeys = <String>{'retail_store_id'};
+    if (uri.queryParametersAll.keys.any(
+      (key) => !allowedKeys.contains(key),
+    )) {
+      return null;
+    }
+
+    final retailStoreValues = uri.queryParametersAll['retail_store_id'];
+    if (retailStoreValues != null && retailStoreValues.length != 1) {
+      return null;
+    }
+
+    final rawRetailStoreId = retailStoreValues?.single;
+    final retailStoreId =
+        rawRetailStoreId == null ? null : int.tryParse(rawRetailStoreId);
+    if (rawRetailStoreId != null &&
+        (rawRetailStoreId.isEmpty ||
+            retailStoreId == null ||
+            retailStoreId <= 0)) {
+      return null;
+    }
+
+    return CustomerStoreAnalyticsRouteContext(
+      retailStoreId: retailStoreId,
+    );
+  }
+}
+
+class CustomerRouteDefinition {
+  const CustomerRouteDefinition({
+    required this.pattern,
+    required this.label,
+    this.channel,
+    this.requiresAuth = false,
+  });
+
+  final String pattern;
+  final String label;
+  final CustomerChannel? channel;
+  final bool requiresAuth;
+
+  bool matches(String location) {
+    final path = Uri.parse(location).path;
+    final actual = Uri.parse(path).pathSegments;
+    final expected = Uri.parse(pattern).pathSegments;
+
+    if (actual.length != expected.length) {
+      return false;
+    }
+
+    for (var index = 0; index < expected.length; index++) {
+      final expectedSegment = expected[index];
+      final actualSegment = actual[index];
+
+      if (expectedSegment.startsWith(':')) {
+        if (actualSegment.isEmpty) {
+          return false;
+        }
+
+        continue;
+      }
+
+      if (expectedSegment != actualSegment) {
+        return false;
+      }
+    }
+
+    return true;
+  }
+}
+
+String? safeCustomerReturnLocation(
+  String? value, {
+  required CustomerChannel channel,
+}) {
+  if (value == null || value.isEmpty || value != value.trim()) {
+    return null;
+  }
+
+  final uri = Uri.tryParse(value);
+  if (uri == null ||
+      uri.hasScheme ||
+      uri.hasAuthority ||
+      uri.fragment.isNotEmpty ||
+      !uri.path.startsWith('/') ||
+      uri.path.startsWith('//') ||
+      uri.path.contains(r'\')) {
+    return null;
+  }
+
+  CustomerRouteDefinition? destination;
+  for (final definition in customerRouteDefinitions) {
+    if (definition.matches(value)) {
+      destination = definition;
+      break;
+    }
+  }
+
+  if (destination == null || destination.channel != channel) {
+    return null;
+  }
+
+  if (destination.pattern == CustomerRoutePaths.b2bStoreAnalytics &&
+      CustomerStoreAnalyticsRouteContext.tryParse(value) == null) {
+    return null;
+  }
+
+  if (destination.pattern == CustomerRoutePaths.checkoutAuth) {
+    return null;
+  }
+
+  return value;
+}
+
+String? safeCustomerContextReturnLocation(
+  String? value, {
+  required CustomerCommerceContext context,
+}) {
+  final channel =
+      context.isWholesale ? CustomerChannel.b2b : CustomerChannel.b2c;
+  final safe = safeCustomerReturnLocation(value, channel: channel);
+  if (safe == null) {
+    return null;
+  }
+
+  final parsedContext = CustomerCommerceContext.tryParseLocation(safe);
+  if (parsedContext == null || !context.sameScope(parsedContext)) {
+    return null;
+  }
+
+  return safe;
+}
+
+const customerRouteDefinitions = <CustomerRouteDefinition>[
+  CustomerRouteDefinition(
+    pattern: CustomerRoutePaths.splash,
+    label: 'Splash',
+  ),
+  CustomerRouteDefinition(
+    pattern: CustomerRoutePaths.entry,
+    label: 'Customer entry',
+  ),
+  CustomerRouteDefinition(
+    pattern: CustomerRoutePaths.marketplace,
+    label: 'Platform marketplace',
+  ),
+  CustomerRouteDefinition(
+    pattern: CustomerRoutePaths.home,
+    label: 'B2C home',
+    channel: CustomerChannel.b2c,
+  ),
+  CustomerRouteDefinition(
+    pattern: CustomerRoutePaths.retailHome,
+    label: 'Retail storefront',
+    channel: CustomerChannel.b2c,
+  ),
+  CustomerRouteDefinition(
+    pattern: CustomerRoutePaths.retailProductDetails,
+    label: 'Retail product details',
+    channel: CustomerChannel.b2c,
+  ),
+  CustomerRouteDefinition(
+    pattern: CustomerRoutePaths.offers,
+    label: 'B2C offers',
+    channel: CustomerChannel.b2c,
+  ),
+  CustomerRouteDefinition(
+    pattern: CustomerRoutePaths.invoices,
+    label: 'customer.nav.invoices',
+    channel: CustomerChannel.b2c,
+    requiresAuth: true,
+  ),
+  CustomerRouteDefinition(
+    pattern: CustomerRoutePaths.products,
+    label: 'B2C products',
+    channel: CustomerChannel.b2c,
+  ),
+  CustomerRouteDefinition(
+    pattern: CustomerRoutePaths.productDetails,
+    label: 'B2C product details',
+    channel: CustomerChannel.b2c,
+  ),
+  CustomerRouteDefinition(
+    pattern: CustomerRoutePaths.categories,
+    label: 'B2C categories',
+    channel: CustomerChannel.b2c,
+  ),
+  CustomerRouteDefinition(
+    pattern: CustomerRoutePaths.favorites,
+    label: 'B2C favorites',
+    channel: CustomerChannel.b2c,
+    requiresAuth: true,
+  ),
+  CustomerRouteDefinition(
+    pattern: CustomerRoutePaths.orders,
+    label: 'B2C orders',
+    channel: CustomerChannel.b2c,
+    requiresAuth: true,
+  ),
+  CustomerRouteDefinition(
+    pattern: CustomerRoutePaths.notifications,
+    label: 'B2C notifications',
+    channel: CustomerChannel.b2c,
+    requiresAuth: true,
+  ),
+  CustomerRouteDefinition(
+    pattern: CustomerRoutePaths.addresses,
+    label: 'B2C addresses',
+    channel: CustomerChannel.b2c,
+    requiresAuth: true,
+  ),
+  CustomerRouteDefinition(
+    pattern: CustomerRoutePaths.settings,
+    label: 'B2C settings',
+    channel: CustomerChannel.b2c,
+    requiresAuth: true,
+  ),
+  CustomerRouteDefinition(
+    pattern: CustomerRoutePaths.diagnostics,
+    label: 'Customer diagnostics',
+  ),
+  CustomerRouteDefinition(
+    pattern: CustomerRoutePaths.cart,
+    label: 'B2C cart',
+    channel: CustomerChannel.b2c,
+  ),
+  CustomerRouteDefinition(
+    pattern: CustomerRoutePaths.checkoutAuth,
+    label: 'B2C checkout login',
+    channel: CustomerChannel.b2c,
+  ),
+  CustomerRouteDefinition(
+    pattern: CustomerRoutePaths.checkoutAddressPayment,
+    label: 'B2C checkout',
+    channel: CustomerChannel.b2c,
+    requiresAuth: true,
+  ),
+  CustomerRouteDefinition(
+    pattern: CustomerRoutePaths.orderTracking,
+    label: 'B2C order tracking',
+    channel: CustomerChannel.b2c,
+    requiresAuth: true,
+  ),
+  CustomerRouteDefinition(
+    pattern: CustomerRoutePaths.profile,
+    label: 'B2C profile',
+    channel: CustomerChannel.b2c,
+    requiresAuth: true,
+  ),
+  CustomerRouteDefinition(
+    pattern: CustomerRoutePaths.b2bHome,
+    label: 'B2B wholesale storefront',
+    channel: CustomerChannel.b2b,
+  ),
+  CustomerRouteDefinition(
+    pattern: CustomerRoutePaths.b2bDashboard,
+    label: 'B2B dashboard',
+    channel: CustomerChannel.b2b,
+    requiresAuth: true,
+  ),
+  CustomerRouteDefinition(
+    pattern: CustomerRoutePaths.b2bStoreAnalytics,
+    label: 'b2b.store_analytics.title',
+    channel: CustomerChannel.b2b,
+    requiresAuth: true,
+  ),
+  CustomerRouteDefinition(
+    pattern: CustomerRoutePaths.b2bPurchaseReports,
+    label: 'B2B purchase reports',
+    channel: CustomerChannel.b2b,
+    requiresAuth: true,
+  ),
+  CustomerRouteDefinition(
+    pattern: CustomerRoutePaths.b2bTopProducts,
+    label: 'B2B top products',
+    channel: CustomerChannel.b2b,
+    requiresAuth: true,
+  ),
+  CustomerRouteDefinition(
+    pattern: CustomerRoutePaths.b2bProducts,
+    label: 'B2B products',
+    channel: CustomerChannel.b2b,
+  ),
+  CustomerRouteDefinition(
+    pattern: CustomerRoutePaths.b2bOffers,
+    label: 'customer.nav.offers',
+    channel: CustomerChannel.b2b,
+  ),
+  CustomerRouteDefinition(
+    pattern: CustomerRoutePaths.b2bProductDetails,
+    label: 'B2B product details',
+    channel: CustomerChannel.b2b,
+  ),
+  CustomerRouteDefinition(
+    pattern: CustomerRoutePaths.b2bInvoices,
+    label: 'B2B invoices',
+    channel: CustomerChannel.b2b,
+    requiresAuth: true,
+  ),
+  CustomerRouteDefinition(
+    pattern: CustomerRoutePaths.b2bInvoiceDetails,
+    label: 'B2B invoice details',
+    channel: CustomerChannel.b2b,
+    requiresAuth: true,
+  ),
+  CustomerRouteDefinition(
+    pattern: CustomerRoutePaths.b2bAccountStatement,
+    label: 'B2B account statement',
+    channel: CustomerChannel.b2b,
+    requiresAuth: true,
+  ),
+  CustomerRouteDefinition(
+    pattern: CustomerRoutePaths.b2bOrders,
+    label: 'B2B orders',
+    channel: CustomerChannel.b2b,
+    requiresAuth: true,
+  ),
+  CustomerRouteDefinition(
+    pattern: CustomerRoutePaths.b2bFavorites,
+    label: 'B2B favorites',
+    channel: CustomerChannel.b2b,
+    requiresAuth: true,
+  ),
+  CustomerRouteDefinition(
+    pattern: CustomerRoutePaths.b2bOrderDetails,
+    label: 'B2B order details',
+    channel: CustomerChannel.b2b,
+    requiresAuth: true,
+  ),
+  CustomerRouteDefinition(
+    pattern: CustomerRoutePaths.b2bNotifications,
+    label: 'B2B notifications',
+    channel: CustomerChannel.b2b,
+    requiresAuth: true,
+  ),
+  CustomerRouteDefinition(
+    pattern: CustomerRoutePaths.b2bCart,
+    label: 'B2B cart',
+    channel: CustomerChannel.b2b,
+    requiresAuth: true,
+  ),
+  CustomerRouteDefinition(
+    pattern: CustomerRoutePaths.b2bCheckout,
+    label: 'B2B checkout',
+    channel: CustomerChannel.b2b,
+    requiresAuth: true,
+  ),
+  CustomerRouteDefinition(
+    pattern: CustomerRoutePaths.b2bAddresses,
+    label: 'B2B addresses',
+    channel: CustomerChannel.b2b,
+    requiresAuth: true,
+  ),
+  CustomerRouteDefinition(
+    pattern: CustomerRoutePaths.b2bProfile,
+    label: 'B2B profile',
+    channel: CustomerChannel.b2b,
+    requiresAuth: true,
+  ),
+];

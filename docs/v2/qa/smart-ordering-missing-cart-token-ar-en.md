@@ -1,0 +1,10 @@
+# V2 #3788 — public Smart Ordering cart token missing HTTP 401 AR/EN
+
+Source: `backend/app/Http/Controllers/Api/SmartOrderingController.php::cartToken`, shared by public Smart Ordering cart show, add, update, remove and checkout. This is **X-Smart-Cart-Token**, distinct from `X-Guest-Token` in #3763 and the valid-token expiry in #3780.
+
+- Hard-coded `Cart token is required.` localized with `smart_ordering.cart.token_required` in existing paired `backend/lang/{ar,en}/smart_ordering.php`; original English unchanged. Missing and trim-empty header still return HTTP 401. A nonblank forged token continues to reach canonical cart lookup, where it receives 404; no change to SHA-256/hmac/constant-time verification, IDs, headers, auth, response keys or HTTP codes.
+- Standalone `backend/tests/Feature/V2SmartOrderingMissingCartTokenLocalizationTest.php` seeds core fixtures and exercises actual public `GET /api/smart-ordering/carts/{uuid}`. English/Arabic 401 exact messages, missing/whitespace header cases, forged nonblank token 404, and unchanged cart/item/order/order-context row counts.
+- Mobile impact: Customer may display localized string in existing HTTP error `message`; **no** Flutter DTO/API schema, route, transport or auth change. Driver: none; Van: none; Dashboard: none. B2C=DRIVER ONLY and B2B=VAN ONLY unchanged. Public cart endpoint already exists; no new UI/RTL route.
+- `REVIEW_RISK: HIGH` because this is a bearer-token admission guard. Denial order and no disclosure preserved. No migrations/financial writes/recovery. No secret literals, API keys or customer data committed.
+- Required exact-final-head evidence: PHP syntax/Pint/PHPStan/Composer security/OpenAPI; AR/EN; full Laravel; MySQL/Redis fresh-install, upgrade and recovery; Repository Policy, FOODEX V2 Isolation and terminal Required CI. Same-account file-by-file COMMENTED review is a technical audit, **not** independent peer APPROVED. Manual staging/UAT remains under master #2503.
+- Issue #3788 and its single branch/PR target only `Foodex_V2`; no main merge/tag/release/deploy/cPanel/APK.

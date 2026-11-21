@@ -1,0 +1,54 @@
+name: Worker Watchdog
+
+on:
+  # Quiet mode (#1637): one periodic reconciliation per hour is enough while
+  # active program lanes are converging. Event fan-out from comments, every
+  # branch-update event, and Required CI completion is intentionally disabled.
+  schedule:
+    - cron: "17 * * * *"
+  workflow_dispatch:
+  issues:
+    types: [opened, reopened]
+  pull_request_target:
+    types: [opened, reopened, ready_for_review, closed]
+
+permissions:
+  actions: read
+  checks: read
+  contents: read
+  issues: write
+  pull-requests: read
+  statuses: read
+
+# Watchdog is a state reconciler, not a CI workload. Under active development
+# many issue/PR/workflow events can arrive within seconds. Keep one actionable
+# reconciliation slot and let the newest repository state supersede older work.
+#
+# Watchdog-generated issue comments get an isolated no-op concurrency key so
+# they cannot cancel the run that created them and cannot create a cascade.
+concurrency:
+  group: ${{ github.event_name == 'issue_comment' && contains(github.event.comment.body, '<!-- foodex-watchdog:') && format('worker-watchdog-self-{0}', github.run_id) || 'worker-watchdog' }}
+  cancel-in-progress: true
+
+jobs:
+  watchdog:
+    name: Detect stale workers and external gates
+    # Ignore watchdog-authored comments. Also ignore workflow_run events that
+    # are not PR-originated (notably main push/schedule runs); those have no
+    # worker lease to reconcile and previously caused repeated full scans.
+    if: ${{ (github.event_name != 'issue_comment' || !contains(github.event.comment.body, '<!-- foodex-watchdog:')) && (github.event_name != 'workflow_run' || github.event.workflow_run.event == 'pull_request') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout trusted default-branch policy
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+
+      - name: Run worker watchdog
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const watchdog = require('./.github/scripts/worker-watchdog.js');
+            await watchdog.run({ github, context, core });

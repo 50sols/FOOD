@@ -1,0 +1,2042 @@
+import 'dart:async';
+import 'dart:convert';
+
+import 'package:flutter/material.dart';
+import 'package:foodex_customer_app/shared/foodex_wave_loading.dart';
+import 'package:http/http.dart' as http;
+
+import '../../core/auth/customer_session.dart';
+import '../../core/config/foodex_environment.dart';
+import '../../core/localization/app_translations.dart';
+import '../../core/routing/customer_commerce_context.dart';
+import '../../core/routing/customer_routes.dart';
+import '../../core/theme/customer_ui_v3_tokens.dart';
+import '../../shared/customer_persistent_footer.dart';
+import 'marketplace_barcode_scanner.dart';
+import 'storefront_design_system.dart';
+
+class PlatformMarketplaceScreen extends StatefulWidget {
+  const PlatformMarketplaceScreen({
+    required this.session,
+    required this.onPlatformRegistered,
+    super.key,
+    this.client,
+    this.onLocaleChanged,
+    this.sessionProvider,
+    this.commerceContextProvider,
+    this.barcodeScanner = showMarketplaceBarcodeScanner,
+  });
+
+  final CustomerSession session;
+  final ValueChanged<String> onPlatformRegistered;
+  final http.Client? client;
+  final ValueChanged<Locale>? onLocaleChanged;
+  final CustomerSession Function()? sessionProvider;
+  final CustomerCommerceContext? Function()? commerceContextProvider;
+  final MarketplaceBarcodeScanner barcodeScanner;
+
+  @override
+  State<PlatformMarketplaceScreen> createState() =>
+      _PlatformMarketplaceScreenState();
+}
+
+class _PlatformMarketplaceScreenState extends State<PlatformMarketplaceScreen> {
+  late final http.Client _client = widget.client ?? http.Client();
+  late Future<Map<String, dynamic>> _future = _load();
+  final PageController _bannerController = PageController();
+  final TextEditingController _searchController = TextEditingController();
+  final FocusNode _searchFocus = FocusNode();
+  Timer? _bannerTimer;
+  int _bannerIndex = 0;
+  int _bannerCount = -1;
+  int? _selectedCategoryId;
+  String? _pendingAfterAuth;
+  CustomerCommerceContext? _lastChosenCommerceContext;
+
+  CustomerSession get _currentSession =>
+      widget.sessionProvider?.call() ?? widget.session;
+
+  CustomerCommerceContext? _safeCommerceContext(
+    Map<String, dynamic> data,
+    CustomerCommerceContext? fallback,
+  ) {
+    final remembered =
+        _lastChosenCommerceContext ?? widget.commerceContextProvider?.call();
+    if (remembered == null) return fallback;
+    if (!remembered.isRetail) return remembered;
+
+    final allowedRetailStoreIds = _rows(data['retail_banners'])
+        .map((row) => _int(row['store_id'] ?? row['id']))
+        .where((id) => id > 0)
+        .toSet();
+
+    return allowedRetailStoreIds.contains(remembered.storeId)
+        ? remembered
+        : fallback;
+  }
+
+  Future<Map<String, dynamic>> _load() async {
+    final baseUrl = FoodexEnvironment.apiBaseUrl;
+    final query = _searchController.text.trim();
+    final params = <String, String>{
+      if (query.isNotEmpty) 'q': query,
+      if (_selectedCategoryId != null)
+        'category_id': _selectedCategoryId.toString(),
+    };
+    final uri = Uri.parse('$baseUrl/api/v1/platform/storefront').replace(
+      queryParameters: params.isEmpty ? null : params,
+    );
+    final data = await _get(uri.toString());
+
+    // The platform storefront API is authoritative for Retail discovery.
+    // It returns configured placements first, then every eligible active B2C
+    // store as a fallback row. Keep a defensive per-store dedupe in the app so
+    // a malformed duplicate placement can never duplicate the store carousel.
+    final configuredRetail = _rows(data['retail_banners']);
+    data['retail_banners'] = _mergeRetailStoreCarousel(configuredRetail);
+
+    return data;
+  }
+
+  List<Map<String, dynamic>> _mergeRetailStoreCarousel(
+    List<Map<String, dynamic>> configuredRetail,
+  ) {
+    final byStoreId = <int, Map<String, dynamic>>{};
+
+    for (final store in configuredRetail) {
+      final id = _int(store['store_id'] ?? store['id']);
+      if (id > 0 && !byStoreId.containsKey(id)) {
+        byStoreId[id] = store;
+      }
+    }
+
+    return byStoreId.values.toList(growable: false);
+  }
+
+  void _submitSearch(String _) {
+    setState(() {
+      _future = _load();
+    });
+  }
+
+  Future<void> _scanBarcode() async {
+    String? scanned;
+    try {
+      scanned = await widget.barcodeScanner(context);
+    } catch (_) {
+      scanned = null;
+    }
+
+    if (!mounted) return;
+    final value = scanned?.trim() ?? '';
+    if (value.isEmpty) {
+      _searchFocus.requestFocus();
+      return;
+    }
+
+    _searchController.text = value;
+    _searchFocus.unfocus();
+    setState(() {
+      _selectedCategoryId = null;
+      _future = _load();
+    });
+  }
+
+  void _toggleLocale() {
+    final current = Localizations.localeOf(context).languageCode;
+    widget.onLocaleChanged?.call(Locale(current == 'ar' ? 'en' : 'ar'));
+  }
+
+  void _selectCategory(int? categoryId) {
+    setState(() {
+      _selectedCategoryId = categoryId;
+      _future = _load();
+    });
+  }
+
+  void _startBannerAutoSlide(int count) {
+    if (_bannerCount == count) return;
+    _bannerCount = count;
+    _bannerTimer?.cancel();
+    if (count <= 0) {
+      _bannerIndex = 0;
+      return;
+    }
+    if (_bannerIndex >= count) {
+      _bannerIndex = 0;
+      if (_bannerController.hasClients) {
+        _bannerController.jumpToPage(0);
+      }
+    }
+    if (count <= 1) return;
+    _bannerTimer = Timer.periodic(const Duration(seconds: 5), (_) {
+      if (!mounted || !_bannerController.hasClients) return;
+      _bannerIndex = (_bannerIndex + 1) % count;
+      _bannerController.animateToPage(
+        _bannerIndex,
+        duration: const Duration(milliseconds: 420),
+        curve: Curves.easeOutCubic,
+      );
+    });
+  }
+
+  @override
+  void didUpdateWidget(covariant PlatformMarketplaceScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.session.accessToken != widget.session.accessToken ||
+        oldWidget.session.isAuthenticated != widget.session.isAuthenticated) {
+      _future = _load();
+    }
+  }
+
+  @override
+  void dispose() {
+    _bannerTimer?.cancel();
+    _bannerController.dispose();
+    _searchController.dispose();
+    _searchFocus.dispose();
+    if (widget.client == null) {
+      _client.close();
+    }
+    super.dispose();
+  }
+
+  Future<Map<String, dynamic>> _get(String url) async {
+    final token = _currentSession.accessToken;
+    final response = await _client.get(
+      Uri.parse(url),
+      headers: {
+        'Accept': 'application/json',
+        if (token != null && token.isNotEmpty) 'Authorization': 'Bearer $token',
+      },
+    );
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      throw _MarketplaceException('http_${response.statusCode}');
+    }
+    final decoded = jsonDecode(response.body);
+    if (decoded is! Map) {
+      throw const _MarketplaceException('invalid_response');
+    }
+    return Map<String, dynamic>.from(decoded);
+  }
+
+  Future<void> _register() async {
+    final result = await showModalBottomSheet<Map<String, String>>(
+      context: context,
+      isScrollControlled: true,
+      showDragHandle: true,
+      builder: (sheetContext) => const _RegistrationSheet(),
+    );
+    if (result == null || !mounted) return;
+
+    try {
+      final response = await _client.post(
+        Uri.parse('${FoodexEnvironment.apiBaseUrl}/api/v1/auth/register'),
+        headers: const {
+          'Accept': 'application/json',
+          'Content-Type': 'application/json',
+        },
+        body: jsonEncode({
+          ...result,
+          'locale': Localizations.localeOf(context).languageCode,
+        }),
+      );
+      final decoded = response.body.isEmpty ? null : jsonDecode(response.body);
+      if (response.statusCode < 200 ||
+          response.statusCode >= 300 ||
+          decoded is! Map) {
+        throw const _MarketplaceException('registration_failed');
+      }
+      final token = decoded['token']?.toString() ?? '';
+      if (token.isEmpty) {
+        throw const _MarketplaceException('missing_token');
+      }
+
+      widget.onPlatformRegistered(token);
+      if (!mounted) return;
+      final pending = _pendingAfterAuth;
+      _pendingAfterAuth = null;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+            content:
+                Text(context.tr('customer.marketplace.registration_success'))),
+      );
+      setState(() => _future = _load());
+      if (pending != null && pending.isNotEmpty) {
+        Navigator.of(context).pushNamed(pending);
+      }
+    } catch (_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+            content:
+                Text(context.tr('customer.marketplace.registration_failed'))),
+      );
+    }
+  }
+
+  void _openRetail(Map<String, dynamic> placement) {
+    final storeId = _int(placement['store_id'] ?? placement['id']);
+    if (storeId <= 0) return;
+
+    final placementId =
+        _int(placement['placement_id'] ?? placement['banner_id']);
+    final commerceContext = CustomerCommerceContext(
+      channel: CustomerCommerceChannel.retail,
+      storeId: storeId,
+      source: CustomerCommerceSource.retailBanner,
+      entryPlacementId: placementId > 0 ? placementId : null,
+    );
+    setState(() => _lastChosenCommerceContext = commerceContext);
+    Navigator.of(context).pushNamed(
+      CustomerRouteLocations.retailHome(commerceContext),
+    );
+  }
+
+  void _openWholesaleStore(CustomerCommerceContext commerceContext) {
+    setState(() => _lastChosenCommerceContext = commerceContext);
+    Navigator.of(context).pushNamed(
+      CustomerRouteLocations.wholesaleHome(commerceContext),
+    );
+  }
+
+  String _cartLocation(CustomerCommerceContext context) => context.isRetail
+      ? CustomerRouteLocations.retailCart(context)
+      : CustomerRouteLocations.wholesaleCart(context);
+
+  String _ordersLocation(CustomerCommerceContext context) => context.isRetail
+      ? CustomerRouteLocations.retailOrders(context)
+      : CustomerRouteLocations.wholesaleOrders(context);
+
+  String _profileLocation(CustomerCommerceContext context) => context.isRetail
+      ? CustomerRouteLocations.retailProfile(context)
+      : CustomerRouteLocations.wholesaleProfile(context);
+
+  String _notificationsLocation(CustomerCommerceContext context) =>
+      context.isRetail
+          ? CustomerRouteLocations.retailNotifications(context)
+          : CustomerRouteLocations.wholesaleNotifications(context);
+
+  String _storeLocation(CustomerCommerceContext context) => context.isRetail
+      ? CustomerRouteLocations.retailHome(context)
+      : CustomerRouteLocations.wholesaleHome(context);
+
+  void _openWholesaleCategory(int storeId, int categoryId) {
+    if (storeId <= 0 || categoryId <= 0) return;
+    final commerceContext = CustomerCommerceContext(
+      channel: CustomerCommerceChannel.wholesale,
+      storeId: storeId,
+      source: CustomerCommerceSource.marketplace,
+    );
+    setState(() => _lastChosenCommerceContext = commerceContext);
+    Navigator.of(context).pushNamed(
+      Uri(
+        path: CustomerRoutePaths.b2bProducts,
+        queryParameters: <String, String>{
+          ...commerceContext.toQueryParameters(),
+          'category_id': '$categoryId',
+        },
+      ).toString(),
+    );
+  }
+
+  void _openWholesaleProduct(int storeId, int productId) {
+    if (storeId <= 0 || productId <= 0) return;
+    final commerceContext = CustomerCommerceContext(
+      channel: CustomerCommerceChannel.wholesale,
+      storeId: storeId,
+      source: CustomerCommerceSource.wholesaleEntry,
+    );
+    setState(() => _lastChosenCommerceContext = commerceContext);
+    Navigator.of(context).pushNamed(
+      CustomerRouteLocations.wholesaleProduct(
+        commerceContext,
+        productId,
+      ),
+    );
+  }
+
+  Widget _pageHeader(
+    BuildContext context,
+    CustomerCommerceContext? scope,
+  ) =>
+      _MarketplaceHeader(
+        isAuthenticated: () => _currentSession.isAuthenticated,
+        onRegister: _register,
+        onLogin: () => Navigator.of(context).pushNamed(
+          '/auth/checkout?next=/marketplace',
+        ),
+        onProfile: () {
+          if (scope == null) return;
+          Navigator.of(context).pushNamed(_profileLocation(scope));
+        },
+        onScan: _scanBarcode,
+        onLanguageToggle: _toggleLocale,
+        localeCode: Localizations.localeOf(context).languageCode,
+        onStore: () {
+          if (scope == null) return;
+          Navigator.of(context).pushNamed(_storeLocation(scope));
+        },
+        onCart: () {
+          if (scope == null) return;
+          Navigator.of(context).pushNamed(_cartLocation(scope));
+        },
+        onOrders: () {
+          if (scope == null) return;
+          Navigator.of(context).pushNamed(_ordersLocation(scope));
+        },
+        onNotifications: () {
+          if (scope == null) return;
+          Navigator.of(context).pushNamed(_notificationsLocation(scope));
+        },
+        searchController: _searchController,
+        onSearchSubmitted: _submitSearch,
+        onSearchClear: () {
+          _searchController.clear();
+          _submitSearch('');
+        },
+      );
+
+  @override
+  Widget build(BuildContext context) => Scaffold(
+        backgroundColor: const Color(0xFFF8FAF9),
+        body: SafeArea(
+          child: FutureBuilder<Map<String, dynamic>>(
+            future: _future,
+            builder: (context, snapshot) {
+              if (snapshot.connectionState != ConnectionState.done) {
+                return Column(
+                  children: [
+                    _pageHeader(
+                        context, widget.commerceContextProvider?.call()),
+                    const Expanded(
+                      child: Center(child: FoodexWaveLoading()),
+                    ),
+                  ],
+                );
+              }
+              if (snapshot.hasError) {
+                return Column(
+                  children: [
+                    _pageHeader(
+                        context, widget.commerceContextProvider?.call()),
+                    Expanded(
+                      child: Center(
+                        child: Padding(
+                          padding: const EdgeInsets.all(24),
+                          child: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              const Icon(Icons.cloud_off_rounded, size: 48),
+                              const SizedBox(height: 12),
+                              Text(context.tr('customer.store.error.title')),
+                              const SizedBox(height: 12),
+                              FilledButton(
+                                onPressed: () =>
+                                    setState(() => _future = _load()),
+                                child:
+                                    Text(context.tr('customer.action.retry')),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
+                );
+              }
+
+              final data = snapshot.data ?? const <String, dynamic>{};
+              final wholesale = data['store'] is Map
+                  ? Map<String, dynamic>.from(data['store'] as Map)
+                  : <String, dynamic>{};
+              final retail = _rows(data['retail_banners']);
+              final categories = _rows(data['categories']);
+              final sections = _rows(data['sections']);
+              final offers = _rows(data['offers']);
+              final productEnvelope = data['products'] is Map
+                  ? Map<String, dynamic>.from(data['products'] as Map)
+                  : <String, dynamic>{};
+              final products = _rows(productEnvelope['data']);
+              final offersSection = _marketplaceSection(sections, 'offers');
+              final featuredSection =
+                  _marketplaceSection(sections, 'featured_products');
+              final featuredProducts = _marketplaceFeaturedProducts(
+                products,
+                featuredSection,
+              );
+              final isArabic =
+                  Localizations.localeOf(context).languageCode == 'ar';
+              final offersTitle = _marketplaceSectionTitle(
+                offersSection,
+                isArabic: isArabic,
+                fallbackAr: 'عروض',
+                fallbackEn: 'Offers',
+              );
+              final featuredTitle = _marketplaceSectionTitle(
+                featuredSection,
+                isArabic: isArabic,
+                fallbackAr: 'منتجات مميزة',
+                fallbackEn: 'Featured products',
+              );
+              final currency =
+                  data['currency']?.toString().trim().isNotEmpty == true
+                      ? data['currency'].toString().trim()
+                      : 'EGP';
+              final showHomeCollections = _selectedCategoryId == null &&
+                  _searchController.text.trim().isEmpty;
+              final homeCollections = <MapEntry<int, Widget>>[];
+              if (showHomeCollections &&
+                  offersSection != null &&
+                  offers.isNotEmpty) {
+                homeCollections.add(
+                  MapEntry(
+                    _marketplaceSectionSort(offersSection, 30),
+                    _MarketplaceOfferSection(
+                      title: offersTitle,
+                      offers: offers,
+                      currency: currency,
+                    ),
+                  ),
+                );
+              }
+              if (showHomeCollections &&
+                  featuredSection != null &&
+                  featuredProducts.isNotEmpty) {
+                homeCollections.add(
+                  MapEntry(
+                    _marketplaceSectionSort(featuredSection, 40),
+                    _MarketplaceFeaturedSection(
+                      title: featuredTitle,
+                      products: featuredProducts,
+                      onProductTap: (product) => _openWholesaleProduct(
+                        _int(wholesale['id']),
+                        _int(product['id']),
+                      ),
+                    ),
+                  ),
+                );
+              }
+              homeCollections.sort((a, b) => a.key.compareTo(b.key));
+              final hero = data['hero'] is Map
+                  ? Map<String, dynamic>.from(data['hero'] as Map)
+                  : <String, dynamic>{};
+              final storeId = _int(wholesale['id']);
+              final wholesaleContext = storeId > 0
+                  ? CustomerCommerceContext(
+                      channel: CustomerCommerceChannel.wholesale,
+                      storeId: storeId,
+                      source: CustomerCommerceSource.marketplace,
+                    )
+                  : null;
+              final activeCommerceContext =
+                  _safeCommerceContext(data, wholesaleContext);
+              final retailBannerCount = retail.length;
+              WidgetsBinding.instance.addPostFrameCallback((_) {
+                _startBannerAutoSlide(retailBannerCount);
+              });
+
+              return LayoutBuilder(
+                builder: (context, constraints) {
+                  final bannerHeight =
+                      constraints.maxWidth < 350 ? 158.0 : 166.0;
+                  final retailBannerHeight = bannerHeight / 2;
+                  const productColumns = 3;
+                  final productAspectRatio =
+                      (constraints.maxWidth >= 720 ? .72 : .68) / .85;
+
+                  return CustomScrollView(
+                    slivers: [
+                      SliverToBoxAdapter(
+                        child: _pageHeader(context, activeCommerceContext),
+                      ),
+                      SliverToBoxAdapter(
+                        child: SizedBox(
+                          key: const ValueKey('marketplace-primary-banner'),
+                          height: bannerHeight,
+                          child: SizedBox(
+                            key: const ValueKey(
+                              'marketplace-wholesale-entry',
+                            ),
+                            child: _WholesaleHero(
+                              onTap: wholesaleContext == null
+                                  ? null
+                                  : () => _openWholesaleStore(
+                                        wholesaleContext,
+                                      ),
+                              title: (hero['title']?.toString().trim() ?? '')
+                                      .isNotEmpty
+                                  ? hero['title'].toString().trim()
+                                  : 'FOODEX Wholesale',
+                              imageUrl: hero['image_url']?.toString(),
+                            ),
+                          ),
+                        ),
+                      ),
+                      if (retail.isNotEmpty)
+                        SliverToBoxAdapter(
+                          child: Column(
+                            key: const ValueKey(
+                              'marketplace-retail-store-banner-section',
+                            ),
+                            children: [
+                              SizedBox(
+                                key: const ValueKey(
+                                  'marketplace-retail-store-carousel',
+                                ),
+                                height: retailBannerHeight,
+                                child: PageView.builder(
+                                  controller: _bannerController,
+                                  itemCount: retail.length,
+                                  onPageChanged: (index) {
+                                    if (_bannerIndex == index) return;
+                                    setState(() => _bannerIndex = index);
+                                  },
+                                  itemBuilder: (_, index) {
+                                    final store = retail[index];
+                                    return Padding(
+                                      padding:
+                                          const EdgeInsetsDirectional.symmetric(
+                                        horizontal: 10,
+                                      ),
+                                      child: _RetailStoreBanner(
+                                        store: store,
+                                        width: double.infinity,
+                                        onTap: () => _openRetail(store),
+                                      ),
+                                    );
+                                  },
+                                ),
+                              ),
+                              if (retail.length > 1)
+                                Padding(
+                                  padding: const EdgeInsets.only(
+                                    top: 3,
+                                    bottom: 3,
+                                  ),
+                                  child: Row(
+                                    key: const ValueKey(
+                                      'marketplace-retail-banner-indicators',
+                                    ),
+                                    mainAxisAlignment: MainAxisAlignment.center,
+                                    children: List.generate(
+                                      retail.length,
+                                      (index) => AnimatedContainer(
+                                        duration:
+                                            const Duration(milliseconds: 180),
+                                        width: _bannerIndex == index ? 18 : 6,
+                                        height: 6,
+                                        margin: const EdgeInsets.symmetric(
+                                          horizontal: 3,
+                                        ),
+                                        decoration: BoxDecoration(
+                                          color: _bannerIndex == index
+                                              ? FoodexPalette.wholesale.primary
+                                              : const Color(0xFFD7DDE1),
+                                          borderRadius:
+                                              BorderRadius.circular(999),
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                            ],
+                          ),
+                        ),
+                      if (categories.isNotEmpty)
+                        SliverToBoxAdapter(
+                          child: _MarketplaceCategoryRail(
+                            categories: categories,
+                            selectedCategoryId: _selectedCategoryId,
+                            onSelect: (categoryId) {
+                              if (categoryId == null) {
+                                _selectCategory(null);
+                                return;
+                              }
+                              _openWholesaleCategory(storeId, categoryId);
+                            },
+                          ),
+                        ),
+                      ...homeCollections.map(
+                        (entry) => SliverToBoxAdapter(child: entry.value),
+                      ),
+                      SliverPadding(
+                        padding: const EdgeInsets.fromLTRB(12, 10, 12, 5),
+                        sliver: SliverToBoxAdapter(
+                          child: _MarketplaceSectionHeader(
+                            title: context.tr(
+                              'customer.marketplace.wholesale_products',
+                            ),
+                            actionLabel: context.tr(
+                              'customer.marketplace.all_categories',
+                            ),
+                            onAction: () {
+                              if (_selectedCategoryId != null ||
+                                  _searchController.text.isNotEmpty) {
+                                _searchController.clear();
+                                _selectCategory(null);
+                              }
+                            },
+                          ),
+                        ),
+                      ),
+                      if (products.isEmpty)
+                        SliverToBoxAdapter(
+                          child: Padding(
+                            padding: const EdgeInsets.all(24),
+                            child: Text(
+                              context.tr('b2b.empty.products'),
+                              textAlign: TextAlign.center,
+                            ),
+                          ),
+                        )
+                      else
+                        SliverPadding(
+                          padding: const EdgeInsets.fromLTRB(12, 0, 12, 28),
+                          sliver: SliverGrid(
+                            key: const ValueKey('marketplace-product-grid'),
+                            gridDelegate:
+                                SliverGridDelegateWithFixedCrossAxisCount(
+                              crossAxisCount: productColumns,
+                              mainAxisSpacing: 9,
+                              crossAxisSpacing: 9,
+                              childAspectRatio: productAspectRatio,
+                            ),
+                            delegate: SliverChildBuilderDelegate(
+                              (context, index) {
+                                final product = products[index];
+                                return _WholesaleProductCard(
+                                  product: product,
+                                  onTap: () => _openWholesaleProduct(
+                                    storeId,
+                                    _int(product['id']),
+                                  ),
+                                );
+                              },
+                              childCount: products.length,
+                            ),
+                          ),
+                        ),
+                    ],
+                  );
+                },
+              );
+            },
+          ),
+        ),
+        bottomNavigationBar: FutureBuilder<Map<String, dynamic>>(
+          future: _future,
+          builder: (context, snapshot) {
+            final data = snapshot.data;
+            if (data == null) return const SizedBox.shrink();
+
+            final wholesale = data['store'] is Map
+                ? Map<String, dynamic>.from(data['store'] as Map)
+                : const <String, dynamic>{};
+            final storeId = _int(wholesale['id']);
+            if (storeId <= 0) return const SizedBox.shrink();
+
+            final fallbackContext = CustomerCommerceContext(
+              channel: CustomerCommerceChannel.wholesale,
+              storeId: storeId,
+              source: CustomerCommerceSource.marketplace,
+            );
+            final selectedContext = _safeCommerceContext(data, null);
+            return CustomerPersistentFooterDock(
+              commerceContext: selectedContext ?? fallbackContext,
+              activeDestination: CustomerFooterDestination.home,
+              isPlatformHome: true,
+              disableProducts:
+                  _currentSession.isAuthenticated && selectedContext == null,
+            );
+          },
+        ),
+      );
+}
+
+class _MarketplaceHeader extends StatelessWidget {
+  const _MarketplaceHeader({
+    required this.isAuthenticated,
+    required this.onRegister,
+    required this.onLogin,
+    required this.onProfile,
+    required this.onScan,
+    required this.onLanguageToggle,
+    required this.localeCode,
+    required this.onStore,
+    required this.onCart,
+    required this.onOrders,
+    required this.onNotifications,
+    required this.searchController,
+    required this.onSearchSubmitted,
+    required this.onSearchClear,
+  });
+
+  final bool Function() isAuthenticated;
+  final VoidCallback onRegister;
+  final VoidCallback onLogin;
+  final VoidCallback onProfile;
+  final VoidCallback onScan;
+  final VoidCallback onLanguageToggle;
+  final String localeCode;
+  final VoidCallback onStore;
+  final VoidCallback onCart;
+  final VoidCallback onOrders;
+  final VoidCallback onNotifications;
+  final TextEditingController searchController;
+  final ValueChanged<String> onSearchSubmitted;
+  final VoidCallback onSearchClear;
+
+  @override
+  Widget build(BuildContext context) {
+    Widget roundAction({
+      required Key key,
+      required IconData icon,
+      required VoidCallback onPressed,
+      String? tooltip,
+    }) =>
+        Material(
+          color: Colors.transparent,
+          shape: const CircleBorder(),
+          child: InkWell(
+            key: key,
+            customBorder: const CircleBorder(),
+            onTap: onPressed,
+            child: Tooltip(
+              message: tooltip ?? '',
+              child: SizedBox(
+                width: 36,
+                height: 36,
+                child: Icon(
+                  icon,
+                  size: 22,
+                  color: CustomerUiColors.marketplaceInk,
+                ),
+              ),
+            ),
+          ),
+        );
+
+    Widget accountAction() => PopupMenuButton<String>(
+          key: const ValueKey('marketplace-auth-menu'),
+          padding: EdgeInsets.zero,
+          tooltip: isAuthenticated()
+              ? context.tr('customer.nav.profile')
+              : context.tr('customer.action.login'),
+          icon: Container(
+            width: 38,
+            height: 38,
+            decoration: const BoxDecoration(
+              color: Colors.white,
+              shape: BoxShape.circle,
+              boxShadow: [
+                BoxShadow(
+                  color: Color(0x0D0F172A),
+                  blurRadius: 10,
+                  offset: Offset(0, 3),
+                ),
+              ],
+            ),
+            child: const Icon(
+              Icons.person_outline_rounded,
+              color: CustomerUiColors.marketplaceInk,
+              size: 22,
+            ),
+          ),
+          onSelected: (value) {
+            switch (value) {
+              case 'profile':
+                onProfile();
+                return;
+              case 'login':
+                onLogin();
+                return;
+              case 'register':
+                onRegister();
+                return;
+              case 'scan':
+                onScan();
+                return;
+              case 'language':
+                onLanguageToggle();
+                return;
+            }
+          },
+          itemBuilder: (_) {
+            final authenticated = isAuthenticated();
+            return [
+              if (authenticated)
+                PopupMenuItem(
+                  key: const ValueKey('marketplace-profile-action'),
+                  value: 'profile',
+                  child: Text(context.tr('customer.nav.profile')),
+                )
+              else ...[
+                PopupMenuItem(
+                  key: const ValueKey('marketplace-login-action'),
+                  value: 'login',
+                  child: Text(context.tr('customer.action.login')),
+                ),
+                PopupMenuItem(
+                  key: const ValueKey('marketplace-register-action'),
+                  value: 'register',
+                  child: Text(context.tr('customer.marketplace.register')),
+                ),
+              ],
+              PopupMenuItem(
+                key: const ValueKey('marketplace-scan'),
+                value: 'scan',
+                child: Row(
+                  children: [
+                    const Icon(Icons.qr_code_scanner_rounded, size: 20),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Text(
+                        context.tr('customer.marketplace.scan'),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              PopupMenuItem(
+                key: const ValueKey('marketplace-language'),
+                value: 'language',
+                child: Text(localeCode == 'ar' ? 'English' : 'العربية'),
+              ),
+            ];
+          },
+        );
+
+    return FoodexWholesaleHeader(
+      key: const ValueKey('marketplace-compact-header'),
+      title: 'FOODEX',
+      palette: FoodexPalette.wholesale,
+      searchController: searchController,
+      searchKey: const ValueKey('marketplace-search'),
+      searchHint: context.tr('customer.marketplace.search_hint'),
+      notificationKey: const ValueKey('marketplace-notifications'),
+      cartKey: const ValueKey('marketplace-cart'),
+      onSearchSubmitted: onSearchSubmitted,
+      onClearSearch: onSearchClear,
+      leading: accountAction(),
+      trailingActions: [
+        roundAction(
+          key: const ValueKey('marketplace-orders'),
+          icon: Icons.shopping_bag_outlined,
+          tooltip: localeCode == 'ar' ? 'الطلبات' : 'Orders',
+          onPressed: onOrders,
+        ),
+        roundAction(
+          key: const ValueKey('marketplace-store'),
+          icon: Icons.storefront_rounded,
+          tooltip: context.tr('customer.nav.home'),
+          onPressed: onStore,
+        ),
+        const SizedBox.shrink(
+          key: ValueKey('marketplace-brand-title'),
+        ),
+      ],
+      onNotifications: onNotifications,
+      onCart: onCart,
+    );
+  }
+}
+
+class _RetailStoreBanner extends StatelessWidget {
+  const _RetailStoreBanner({
+    required this.store,
+    required this.width,
+    required this.onTap,
+  });
+
+  final Map<String, dynamic> store;
+  final double width;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final id = _int(store['store_id'] ?? store['id']);
+    final image = store['banner_url']?.toString().trim();
+    final title = store['title']?.toString().trim();
+    final name = store['name']?.toString().trim() ?? '';
+    final displayTitle = title != null && title.isNotEmpty ? title : name;
+
+    Widget backgroundFallback() => const DecoratedBox(
+          decoration: BoxDecoration(
+            gradient: LinearGradient(
+              begin: AlignmentDirectional.topStart,
+              end: AlignmentDirectional.bottomEnd,
+              colors: [
+                CustomerUiColors.wholesaleVehicleGreen,
+                CustomerUiColors.wholesalePositiveValue,
+              ],
+            ),
+          ),
+          child: Align(
+            alignment: AlignmentDirectional.centerEnd,
+            child: Padding(
+              padding: EdgeInsetsDirectional.only(end: 18),
+              child: Icon(
+                Icons.storefront_rounded,
+                color: Color(0x35FFFFFF),
+                size: 48,
+              ),
+            ),
+          ),
+        );
+
+    return SizedBox(
+      key: ValueKey('marketplace-retail-banner-$id'),
+      width: width,
+      child: Material(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(18),
+        clipBehavior: Clip.antiAlias,
+        child: InkWell(
+          onTap: onTap,
+          child: Stack(
+            fit: StackFit.expand,
+            children: [
+              if (image != null && image.isNotEmpty)
+                Image.network(
+                  image,
+                  key: ValueKey('marketplace-retail-banner-image-$id'),
+                  fit: BoxFit.cover,
+                  errorBuilder: (_, __, ___) => backgroundFallback(),
+                )
+              else
+                backgroundFallback(),
+              DecoratedBox(
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                    begin: AlignmentDirectional.centerStart,
+                    end: AlignmentDirectional.centerEnd,
+                    colors: [
+                      FoodexPalette.wholesale.primaryDark
+                          .withValues(alpha: 0.92),
+                      FoodexPalette.wholesale.primary.withValues(alpha: 0.65),
+                      FoodexPalette.wholesale.primary.withValues(alpha: 0.18),
+                    ],
+                  ),
+                ),
+              ),
+              Padding(
+                padding: const EdgeInsetsDirectional.fromSTEB(15, 8, 12, 8),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            displayTitle,
+                            key: ValueKey(
+                              'marketplace-retail-banner-title-$id',
+                            ),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 15.5,
+                              height: 1.08,
+                              fontWeight: FontWeight.w900,
+                            ),
+                          ),
+                          const SizedBox(height: 4),
+                          Text(
+                            context.tr('customer.marketplace.shop_now'),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 10.5,
+                              height: 1,
+                              fontWeight: FontWeight.w800,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    Container(
+                      width: 30,
+                      height: 30,
+                      decoration: BoxDecoration(
+                        color: Colors.white.withValues(alpha: 0.94),
+                        shape: BoxShape.circle,
+                      ),
+                      child: const Icon(
+                        Icons.arrow_forward_rounded,
+                        size: 18,
+                        color: CustomerUiColors.wholesaleVehicleGreen,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _WholesaleHero extends StatelessWidget {
+  const _WholesaleHero({
+    required this.title,
+    this.imageUrl,
+    this.onTap,
+  });
+
+  final String title;
+  final String? imageUrl;
+  final VoidCallback? onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final image = imageUrl?.trim();
+    final isArabic =
+        Localizations.localeOf(context).languageCode.toLowerCase() == 'ar';
+
+    Widget fallback() => const DecoratedBox(
+          decoration: BoxDecoration(
+            gradient: LinearGradient(
+              begin: AlignmentDirectional.topStart,
+              end: AlignmentDirectional.bottomEnd,
+              colors: [Color(0xFF00452F), Color(0xFF078A43)],
+            ),
+          ),
+          child: Align(
+            alignment: AlignmentDirectional.centerEnd,
+            child: Padding(
+              padding: EdgeInsetsDirectional.only(end: 22),
+              child: Icon(
+                Icons.warehouse_rounded,
+                color: Color(0x36FFFFFF),
+                size: 88,
+              ),
+            ),
+          ),
+        );
+
+    return Container(
+      margin: const EdgeInsetsDirectional.fromSTEB(10, 4, 10, 1),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(18),
+        boxShadow: const [
+          BoxShadow(
+            color: Color(0x100F172A),
+            blurRadius: 12,
+            offset: Offset(0, 4),
+          ),
+        ],
+      ),
+      clipBehavior: Clip.antiAlias,
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
+          key: const ValueKey('marketplace-wholesale-banner-action'),
+          onTap: onTap,
+          child: Stack(
+            fit: StackFit.expand,
+            children: [
+              if (image != null && image.isNotEmpty)
+                Image.network(
+                  image,
+                  key: const ValueKey('marketplace-wholesale-hero-image'),
+                  fit: BoxFit.cover,
+                  errorBuilder: (_, __, ___) => fallback(),
+                )
+              else
+                fallback(),
+              const DecoratedBox(
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                    begin: AlignmentDirectional.centerStart,
+                    end: AlignmentDirectional.centerEnd,
+                    colors: [
+                      Color(0xE900452F),
+                      Color(0xA6078A43),
+                      Color(0x24078A43),
+                    ],
+                  ),
+                ),
+              ),
+              Padding(
+                padding: const EdgeInsetsDirectional.fromSTEB(18, 15, 18, 14),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 10,
+                        vertical: 5,
+                      ),
+                      decoration: BoxDecoration(
+                        color: const Color(0x38FFFFFF),
+                        borderRadius: BorderRadius.circular(999),
+                      ),
+                      child: Text(
+                        isArabic ? 'متجر الجملة' : 'Wholesale store',
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 10.5,
+                          fontWeight: FontWeight.w900,
+                        ),
+                      ),
+                    ),
+                    const Spacer(),
+                    ConstrainedBox(
+                      constraints: const BoxConstraints(maxWidth: 225),
+                      child: Text(
+                        title,
+                        key: const ValueKey(
+                          'marketplace-wholesale-hero-title',
+                        ),
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontWeight: FontWeight.w900,
+                          fontSize: 21,
+                          height: 1.12,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 9),
+                    Container(
+                      constraints: const BoxConstraints(minWidth: 94),
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 15,
+                        vertical: 8,
+                      ),
+                      decoration: BoxDecoration(
+                        color: Colors.white,
+                        borderRadius: BorderRadius.circular(999),
+                      ),
+                      child: Text(
+                        context.tr('customer.marketplace.browse_guest'),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        textAlign: TextAlign.center,
+                        style: const TextStyle(
+                          color: Color(0xFF087347),
+                          fontSize: 11,
+                          fontWeight: FontWeight.w900,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _MarketplaceCategoryRail extends StatelessWidget {
+  const _MarketplaceCategoryRail({
+    required this.categories,
+    required this.selectedCategoryId,
+    required this.onSelect,
+  });
+
+  final List<Map<String, dynamic>> categories;
+  final int? selectedCategoryId;
+  final ValueChanged<int?> onSelect;
+
+  @override
+  Widget build(BuildContext context) => SizedBox(
+        key: const ValueKey('marketplace-categories'),
+        height: 92,
+        child: ListView.separated(
+          scrollDirection: Axis.horizontal,
+          padding: const EdgeInsets.fromLTRB(8, 7, 8, 5),
+          itemCount: categories.length,
+          separatorBuilder: (_, __) => const SizedBox(width: 4),
+          itemBuilder: (context, index) {
+            final row = categories[index];
+            final id = _int(row['id']);
+            final selected = selectedCategoryId == id;
+            final name = row['name']?.toString() ?? '';
+            final image = row['image_url']?.toString().trim();
+
+            return SizedBox(
+              width: 56,
+              child: InkWell(
+                key: ValueKey('marketplace-category-$id'),
+                borderRadius: BorderRadius.circular(999),
+                onTap: () => onSelect(id),
+                child: Column(
+                  children: [
+                    AnimatedContainer(
+                      duration: const Duration(milliseconds: 160),
+                      width: 52,
+                      height: 52,
+                      decoration: BoxDecoration(
+                        color: selected
+                            ? const Color(0xFFE9F7EF)
+                            : const Color(0xFFF8FAF9),
+                        shape: BoxShape.circle,
+                        border: Border.all(
+                          color: selected
+                              ? const Color(0xFF78C850)
+                              : const Color(0xFFF0F2F3),
+                          width: selected ? 1.6 : 1,
+                        ),
+                        boxShadow: const [
+                          BoxShadow(
+                            color: Color(0x090F172A),
+                            blurRadius: 6,
+                            offset: Offset(0, 2),
+                          ),
+                        ],
+                      ),
+                      clipBehavior: Clip.antiAlias,
+                      child: image != null && image.isNotEmpty
+                          ? Image.network(
+                              image,
+                              fit: BoxFit.cover,
+                              errorBuilder: (_, __, ___) => Icon(
+                                _marketplaceCategoryIcon(name),
+                                color: const Color(0xFF087347),
+                                size: 25,
+                              ),
+                            )
+                          : Icon(
+                              _marketplaceCategoryIcon(name),
+                              color: const Color(0xFF087347),
+                              size: 25,
+                            ),
+                    ),
+                    const SizedBox(height: 5),
+                    Text(
+                      name,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                        color: CustomerUiColors.marketplaceInk,
+                        fontSize: 9.5,
+                        height: 1.1,
+                        fontWeight:
+                            selected ? FontWeight.w900 : FontWeight.w700,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            );
+          },
+        ),
+      );
+}
+
+class _MarketplaceOfferSection extends StatelessWidget {
+  const _MarketplaceOfferSection({
+    required this.title,
+    required this.offers,
+    required this.currency,
+  });
+
+  final String title;
+  final List<Map<String, dynamic>> offers;
+  final String currency;
+
+  @override
+  Widget build(BuildContext context) => Padding(
+        key: const ValueKey('marketplace-offers-section'),
+        padding: const EdgeInsets.fromLTRB(12, 10, 12, 3),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            _MarketplaceCollectionTitle(title: title),
+            const SizedBox(height: 8),
+            SizedBox(
+              height: 94,
+              child: ListView.separated(
+                scrollDirection: Axis.horizontal,
+                itemCount: offers.length,
+                separatorBuilder: (_, __) => const SizedBox(width: 8),
+                itemBuilder: (context, index) {
+                  final offer = offers[index];
+                  final id = _int(offer['id']);
+                  final name = offer['name']?.toString().trim() ?? '';
+                  final type = offer['type']?.toString().trim() ?? '';
+                  final value = offer['value'];
+                  final badge = _marketplaceOfferBadge(type, value, currency);
+
+                  return Container(
+                    key: ValueKey('marketplace-offer-$id'),
+                    width: 176,
+                    padding: const EdgeInsetsDirectional.fromSTEB(
+                      12,
+                      10,
+                      12,
+                      10,
+                    ),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFEAF7F0),
+                      borderRadius: BorderRadius.circular(16),
+                      border: Border.all(
+                        color: const Color(0xFFD7EDE2),
+                      ),
+                    ),
+                    child: Row(
+                      children: [
+                        Container(
+                          width: 42,
+                          height: 42,
+                          decoration: const BoxDecoration(
+                            color: Colors.white,
+                            shape: BoxShape.circle,
+                          ),
+                          child: const Icon(
+                            Icons.local_offer_outlined,
+                            color: Color(0xFF087347),
+                            size: 22,
+                          ),
+                        ),
+                        const SizedBox(width: 9),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              Text(
+                                name,
+                                maxLines: 2,
+                                overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(
+                                  color: CustomerUiColors.marketplaceInk,
+                                  fontSize: 11.5,
+                                  height: 1.15,
+                                  fontWeight: FontWeight.w800,
+                                ),
+                              ),
+                              if (badge.isNotEmpty) ...[
+                                const SizedBox(height: 4),
+                                Text(
+                                  badge,
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: const TextStyle(
+                                    color: Color(0xFF087347),
+                                    fontSize: 11,
+                                    fontWeight: FontWeight.w900,
+                                  ),
+                                ),
+                              ],
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+                  );
+                },
+              ),
+            ),
+          ],
+        ),
+      );
+}
+
+class _MarketplaceFeaturedSection extends StatelessWidget {
+  const _MarketplaceFeaturedSection({
+    required this.title,
+    required this.products,
+    required this.onProductTap,
+  });
+
+  final String title;
+  final List<Map<String, dynamic>> products;
+  final ValueChanged<Map<String, dynamic>> onProductTap;
+
+  @override
+  Widget build(BuildContext context) => Padding(
+        key: const ValueKey('marketplace-featured-section'),
+        padding: const EdgeInsets.fromLTRB(12, 10, 12, 3),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            _MarketplaceCollectionTitle(title: title),
+            const SizedBox(height: 8),
+            SizedBox(
+              height: 242,
+              child: ListView.separated(
+                scrollDirection: Axis.horizontal,
+                itemCount: products.length,
+                separatorBuilder: (_, __) => const SizedBox(width: 8),
+                itemBuilder: (context, index) {
+                  final product = products[index];
+                  return SizedBox(
+                    width: 168,
+                    child: _WholesaleProductCard(
+                      product: product,
+                      keyPrefix: 'marketplace-featured-product',
+                      onTap: () => onProductTap(product),
+                    ),
+                  );
+                },
+              ),
+            ),
+          ],
+        ),
+      );
+}
+
+class _MarketplaceCollectionTitle extends StatelessWidget {
+  const _MarketplaceCollectionTitle({required this.title});
+
+  final String title;
+
+  @override
+  Widget build(BuildContext context) => Text(
+        title,
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+        textAlign: TextAlign.start,
+        style: const TextStyle(
+          color: CustomerUiColors.marketplaceInk,
+          fontSize: 18,
+          height: 1.15,
+          fontWeight: FontWeight.w900,
+        ),
+      );
+}
+
+class _MarketplaceSectionHeader extends StatelessWidget {
+  const _MarketplaceSectionHeader({
+    required this.title,
+    required this.actionLabel,
+    required this.onAction,
+  });
+
+  final String title;
+  final String actionLabel;
+  final VoidCallback onAction;
+
+  @override
+  Widget build(BuildContext context) => Directionality(
+        textDirection: TextDirection.rtl,
+        child: Row(
+          children: [
+            Expanded(
+              child: Text(
+                title,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(
+                  color: CustomerUiColors.marketplaceInk,
+                  fontSize: 20,
+                  height: 1.15,
+                  fontWeight: FontWeight.w900,
+                ),
+              ),
+            ),
+            TextButton.icon(
+              onPressed: onAction,
+              style: TextButton.styleFrom(
+                padding: EdgeInsets.zero,
+                minimumSize: const Size(0, 30),
+                tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+              ),
+              icon: const Icon(
+                Icons.arrow_back_rounded,
+                size: 17,
+                color: Color(0xFF087347),
+              ),
+              label: Text(
+                actionLabel,
+                style: const TextStyle(
+                  color: Color(0xFF087347),
+                  fontSize: 12.5,
+                  fontWeight: FontWeight.w800,
+                ),
+              ),
+            ),
+          ],
+        ),
+      );
+}
+
+IconData _marketplaceCategoryIcon(String rawName) {
+  final name = rawName.toLowerCase();
+  if (name.contains('لبن') ||
+      name.contains('حليب') ||
+      name.contains('ألبان') ||
+      name.contains('البان') ||
+      name.contains('dairy') ||
+      name.contains('milk')) {
+    return Icons.local_drink_outlined;
+  }
+  if (name.contains('جبن') || name.contains('cheese')) {
+    return Icons.breakfast_dining_outlined;
+  }
+  if (name.contains('خض') ||
+      name.contains('فاكه') ||
+      name.contains('veget') ||
+      name.contains('fruit')) {
+    return Icons.eco_outlined;
+  }
+  if (name.contains('مجمد') || name.contains('frozen')) {
+    return Icons.ac_unit_rounded;
+  }
+  if (name.contains('لحوم') ||
+      name.contains('دواجن') ||
+      name.contains('meat') ||
+      name.contains('chicken')) {
+    return Icons.set_meal_outlined;
+  }
+  if (name.contains('مشروب') ||
+      name.contains('عصير') ||
+      name.contains('beverage') ||
+      name.contains('drink')) {
+    return Icons.local_cafe_outlined;
+  }
+  if (name.contains('مخب') ||
+      name.contains('خبز') ||
+      name.contains('bakery') ||
+      name.contains('bread')) {
+    return Icons.bakery_dining_outlined;
+  }
+  return Icons.shopping_basket_outlined;
+}
+
+IconData _marketplaceProductIcon(String rawName) {
+  final name = rawName.toLowerCase();
+  if (name.contains('لبن') || name.contains('حليب') || name.contains('milk')) {
+    return Icons.local_drink_outlined;
+  }
+  if (name.contains('جبن') || name.contains('cheese')) {
+    return Icons.breakfast_dining_outlined;
+  }
+  if (name.contains('مياه') || name.contains('ماء') || name.contains('water')) {
+    return Icons.water_drop_rounded;
+  }
+  if (name.contains('زيت') || name.contains('oil')) {
+    return Icons.opacity_rounded;
+  }
+  if (name.contains('بيض') || name.contains('egg')) {
+    return Icons.egg_outlined;
+  }
+  if (name.contains('بطاط') ||
+      name.contains('خض') ||
+      name.contains('فاكه') ||
+      name.contains('veget') ||
+      name.contains('fruit')) {
+    return Icons.eco_outlined;
+  }
+  return Icons.inventory_2_outlined;
+}
+
+class _WholesaleProductCard extends StatelessWidget {
+  const _WholesaleProductCard({
+    required this.product,
+    required this.onTap,
+    this.keyPrefix = 'marketplace-product',
+  });
+
+  final Map<String, dynamic> product;
+  final VoidCallback onTap;
+  final String keyPrefix;
+
+  @override
+  Widget build(BuildContext context) {
+    final id = _int(product['id']);
+    final image = product['image_url']?.toString().trim();
+    final rawPrice = product['unit_price'] ??
+        product['account_price'] ??
+        product['price'] ??
+        '';
+    final currency = product['currency']?.toString().trim();
+    final name = product['name']?.toString().trim() ?? '';
+    final brand = product['brand_name']?.toString().trim() ?? '';
+    final priceText =
+        '$rawPrice ${currency == null || currency.isEmpty ? 'EGP' : currency}';
+
+    return Material(
+      key: ValueKey('$keyPrefix-card-$id'),
+      color: Colors.transparent,
+      borderRadius: BorderRadius.circular(18),
+      clipBehavior: Clip.antiAlias,
+      child: InkWell(
+        onTap: onTap,
+        child: Ink(
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(18),
+            border: Border.all(color: const Color(0xFFE2ECE6)),
+            boxShadow: const [
+              BoxShadow(
+                color: Color(0x0B0F172A),
+                blurRadius: 12,
+                offset: Offset(0, 4),
+              ),
+            ],
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Expanded(
+                child: Stack(
+                  children: [
+                    Positioned.fill(
+                      child: Padding(
+                        padding: const EdgeInsets.fromLTRB(10, 10, 10, 3),
+                        child: TweenAnimationBuilder<double>(
+                          tween: Tween<double>(begin: 1.055, end: 1),
+                          duration: const Duration(milliseconds: 720),
+                          curve: Curves.easeOutCubic,
+                          builder: (context, scale, child) => Transform.scale(
+                            scale: scale,
+                            child: child,
+                          ),
+                          child: Container(
+                            decoration: BoxDecoration(
+                              color: Colors.white,
+                              borderRadius: BorderRadius.circular(18),
+                              boxShadow: const <BoxShadow>[
+                                BoxShadow(
+                                  color:
+                                      CustomerUiColors.marketplaceImageShadow,
+                                  blurRadius: 13,
+                                  spreadRadius: 1,
+                                  offset: Offset(0, 4),
+                                ),
+                              ],
+                            ),
+                            clipBehavior: Clip.antiAlias,
+                            child: image != null && image.isNotEmpty
+                                ? Image.network(
+                                    image,
+                                    key: ValueKey('$keyPrefix-image-$id'),
+                                    fit: BoxFit.contain,
+                                    errorBuilder: (_, __, ___) =>
+                                        _MarketplaceProductFallback(name: name),
+                                  )
+                                : _MarketplaceProductFallback(name: name),
+                          ),
+                        ),
+                      ),
+                    ),
+                    if (brand.isNotEmpty)
+                      PositionedDirectional(
+                        top: 8,
+                        end: 8,
+                        child: Container(
+                          key: ValueKey('$keyPrefix-brand-$id'),
+                          constraints: const BoxConstraints(maxWidth: 118),
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 8,
+                            vertical: 4,
+                          ),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFFE9F7EE),
+                            borderRadius: BorderRadius.circular(999),
+                          ),
+                          child: Text(
+                            brand,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                              color: Color(0xFF006736),
+                              fontSize: 9,
+                              fontWeight: FontWeight.w900,
+                            ),
+                          ),
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(10, 4, 10, 12),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    SizedBox(
+                      key: ValueKey('$keyPrefix-name-$id'),
+                      width: double.infinity,
+                      height: 14,
+                      child: FittedBox(
+                        fit: BoxFit.scaleDown,
+                        alignment: AlignmentDirectional.centerStart,
+                        child: Text(
+                          name,
+                          maxLines: 1,
+                          softWrap: false,
+                          style: const TextStyle(
+                            color: CustomerUiColors.marketplaceInk,
+                            fontWeight: FontWeight.w900,
+                            fontSize: 9.5,
+                            height: 1.1,
+                          ),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 6),
+                    Text(
+                      priceText,
+                      key: ValueKey('$keyPrefix-price-$id'),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        color: Color(0xFF087347),
+                        fontWeight: FontWeight.w900,
+                        fontSize: 14,
+                        height: 1.1,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _MarketplaceProductFallback extends StatelessWidget {
+  const _MarketplaceProductFallback({required this.name});
+
+  final String name;
+
+  @override
+  Widget build(BuildContext context) => Center(
+        child: Container(
+          width: 54,
+          height: 54,
+          decoration: const BoxDecoration(
+            color: Color(0xFFEAF7F0),
+            shape: BoxShape.circle,
+          ),
+          child: Icon(
+            _marketplaceProductIcon(name),
+            color: const Color(0xFF0A7047),
+            size: 28,
+          ),
+        ),
+      );
+}
+
+class _RegistrationSheet extends StatefulWidget {
+  const _RegistrationSheet();
+
+  @override
+  State<_RegistrationSheet> createState() => _RegistrationSheetState();
+}
+
+class _RegistrationSheetState extends State<_RegistrationSheet> {
+  final name = TextEditingController();
+  final email = TextEditingController();
+  final phone = TextEditingController();
+  final password = TextEditingController();
+  final confirmation = TextEditingController();
+
+  @override
+  void dispose() {
+    name.dispose();
+    email.dispose();
+    phone.dispose();
+    password.dispose();
+    confirmation.dispose();
+    super.dispose();
+  }
+
+  void _submit() {
+    if (name.text.trim().isEmpty ||
+        email.text.trim().isEmpty ||
+        phone.text.trim().isEmpty ||
+        password.text.length < 8 ||
+        password.text != confirmation.text) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+            content: Text(
+                context.tr('customer.marketplace.registration_validation'))),
+      );
+      return;
+    }
+    Navigator.pop(context, {
+      'name': name.text.trim(),
+      'email': email.text.trim(),
+      'phone': phone.text.trim(),
+      'password': password.text,
+      'password_confirmation': confirmation.text,
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) => SafeArea(
+        child: Padding(
+          padding: EdgeInsets.fromLTRB(
+            20,
+            0,
+            20,
+            20 + MediaQuery.viewInsetsOf(context).bottom,
+          ),
+          child: SingleChildScrollView(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Text(
+                  context.tr('customer.marketplace.register_title'),
+                  style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                        fontWeight: FontWeight.w900,
+                      ),
+                ),
+                const SizedBox(height: 6),
+                Text(context.tr('customer.marketplace.register_subtitle')),
+                const SizedBox(height: 16),
+                TextField(
+                    controller: name,
+                    decoration: InputDecoration(
+                        labelText: context.tr('customer.settings.name'))),
+                const SizedBox(height: 10),
+                TextField(
+                    controller: email,
+                    keyboardType: TextInputType.emailAddress,
+                    decoration: InputDecoration(
+                        labelText: context.tr('customer.login.email'))),
+                const SizedBox(height: 10),
+                TextField(
+                    controller: phone,
+                    keyboardType: TextInputType.phone,
+                    decoration: InputDecoration(
+                        labelText: context.tr('customer.marketplace.phone'))),
+                const SizedBox(height: 10),
+                TextField(
+                    controller: password,
+                    obscureText: true,
+                    decoration: InputDecoration(
+                        labelText: context.tr('customer.login.password'))),
+                const SizedBox(height: 10),
+                TextField(
+                    controller: confirmation,
+                    obscureText: true,
+                    decoration: InputDecoration(
+                        labelText: context
+                            .tr('customer.marketplace.password_confirmation'))),
+                const SizedBox(height: 18),
+                FilledButton(
+                  onPressed: _submit,
+                  child:
+                      Text(context.tr('customer.marketplace.create_account')),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+}
+
+Map<String, dynamic>? _marketplaceSection(
+  List<Map<String, dynamic>> sections,
+  String type,
+) {
+  for (final section in sections) {
+    if (section['type']?.toString() == type ||
+        section['key']?.toString() == type) {
+      return section;
+    }
+  }
+  return null;
+}
+
+String _marketplaceSectionTitle(
+  Map<String, dynamic>? section, {
+  required bool isArabic,
+  required String fallbackAr,
+  required String fallbackEn,
+}) {
+  final key = isArabic ? 'title_ar' : 'title_en';
+  final value = section?[key]?.toString().trim() ?? '';
+  if (value.isNotEmpty) return value;
+  return isArabic ? fallbackAr : fallbackEn;
+}
+
+int _marketplaceSectionSort(
+  Map<String, dynamic>? section,
+  int fallback,
+) {
+  final value = _int(section?['sort_order']);
+  return value > 0 ? value : fallback;
+}
+
+List<Map<String, dynamic>> _marketplaceFeaturedProducts(
+  List<Map<String, dynamic>> products,
+  Map<String, dynamic>? section,
+) {
+  final config = section?['config'] is Map
+      ? Map<String, dynamic>.from(section!['config'] as Map)
+      : const <String, dynamic>{};
+  final configuredIds = config['product_ids'] is List
+      ? (config['product_ids'] as List)
+          .map(_int)
+          .where((id) => id > 0)
+          .toList(growable: false)
+      : const <int>[];
+  final rawLimit = _int(config['limit']);
+  final limit = rawLimit > 0 ? rawLimit.clamp(1, 12).toInt() : 6;
+
+  if (configuredIds.isNotEmpty) {
+    final byId = <int, Map<String, dynamic>>{
+      for (final product in products)
+        if (_int(product['id']) > 0) _int(product['id']): product,
+    };
+    return configuredIds
+        .map((id) => byId[id])
+        .whereType<Map<String, dynamic>>()
+        .take(limit)
+        .toList(growable: false);
+  }
+
+  return products.take(limit).toList(growable: false);
+}
+
+String _marketplaceOfferBadge(
+  String type,
+  Object? rawValue,
+  String currency,
+) {
+  final value = rawValue is num
+      ? rawValue.toDouble()
+      : double.tryParse(rawValue?.toString() ?? '');
+  if (value == null || value <= 0) return '';
+
+  final normalized = type.toLowerCase();
+  final compact = value == value.roundToDouble()
+      ? value.toInt().toString()
+      : value.toStringAsFixed(2);
+
+  if (normalized.contains('percent') || normalized.contains('percentage')) {
+    return '$compact%';
+  }
+
+  return '$compact $currency';
+}
+
+List<Map<String, dynamic>> _rows(Object? value) {
+  if (value is! List) return const [];
+  return value
+      .whereType<Map>()
+      .map((row) => Map<String, dynamic>.from(row))
+      .toList(growable: false);
+}
+
+int _int(Object? value) =>
+    value is num ? value.toInt() : int.tryParse('$value') ?? 0;
+
+class _MarketplaceException implements Exception {
+  const _MarketplaceException(this.code);
+  final String code;
+}

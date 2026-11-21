@@ -1,0 +1,1851 @@
+<?php
+
+namespace App\Http\Controllers\Admin;
+
+use App\Domain\WhatsApp\CustomerTimelineService;
+use App\Http\Controllers\Controller;
+use App\Models\Address;
+use App\Models\B2bAccount;
+use App\Models\B2bCustomer;
+use App\Models\GeographyNode;
+use App\Models\Invoice;
+use App\Models\PlatformCustomer;
+use App\Models\Store;
+use App\Models\User;
+use App\Services\AuditLogger;
+use App\Services\B2bAccountLedgerService;
+use App\Services\CustomerDomainResolver;
+use App\Services\CustomerReplicaReportPdfService;
+use App\Services\CustomerReplicaReportService;
+use App\Services\CustomerServiceCaseManager;
+use App\Services\OperationalTenantScope;
+use App\Services\ReportExportService;
+use App\Services\RetailMerchantIdentityService;
+use App\Support\AdminNavigation;
+use App\Support\DisplayNumber;
+use Illuminate\Contracts\View\View;
+use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Database\Query\Builder as QueryBuilder;
+use Illuminate\Http\JsonResponse;
+use Illuminate\Http\RedirectResponse;
+use Illuminate\Http\Request;
+use Illuminate\Http\Response;
+use Illuminate\Support\Collection;
+use Illuminate\Support\Facades\App;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Str;
+use Illuminate\Validation\Rule;
+use Illuminate\Validation\ValidationException;
+use RuntimeException;
+use stdClass;
+
+final class Customer360Controller extends Controller
+{
+    public function __construct(
+        private readonly OperationalTenantScope $scope,
+        private readonly AdminNavigation $navigation,
+        private readonly CustomerServiceCaseManager $serviceCases,
+        private readonly CustomerTimelineService $customerTimeline,
+    ) {}
+
+    public function index(Request $request): View
+    {
+        $actor = $this->actor($request);
+        $access = $this->access($actor);
+        $filters = $request->validate([
+            'q' => ['nullable', 'string', 'max:120'],
+            'origin_channel' => ['nullable', Rule::in(['b2b', 'b2c', 'unknown'])],
+            'registration_source' => ['nullable', Rule::in(['customer_app', 'dashboard', 'import', 'migration'])],
+            'active' => ['nullable', Rule::in(['0', '1'])],
+            'origin_store_id' => ['nullable', 'integer', 'min:1'],
+            'date_from' => ['nullable', 'date'],
+            'date_to' => ['nullable', 'date', 'after_or_equal:date_from'],
+        ]);
+
+        $query = PlatformCustomer::query()->with(['user', 'originStore']);
+        $this->applyVisibility($query, $access);
+
+        $search = trim((string) ($filters['q'] ?? ''));
+        if ($search !== '') {
+            // Treat search as literal text: escape SQL LIKE's !, % and _ operators
+            // before adding the intentional substring wildcards.
+            $literalSearch = '%'.str_replace(['!', '%', '_'], ['!!', '!%', '!_'], $search).'%';
+            $query->where(function ($q) use ($literalSearch): void {
+                $q->whereRaw("platform_customers.name LIKE ? ESCAPE '!'", [$literalSearch])
+                    ->orWhereRaw("platform_customers.email LIKE ? ESCAPE '!'", [$literalSearch])
+                    ->orWhereRaw("platform_customers.phone LIKE ? ESCAPE '!'", [$literalSearch]);
+            });
+        }
+
+        foreach (['origin_channel', 'registration_source'] as $column) {
+            if (! empty($filters[$column])) {
+                $query->where($column, $filters[$column]);
+            }
+        }
+
+        if (array_key_exists('active', $filters) && $filters['active'] !== null && $filters['active'] !== '') {
+            $query->where('is_active', $filters['active'] === '1');
+        }
+
+        if (! empty($filters['origin_store_id'])) {
+            $originStoreId = (int) $filters['origin_store_id'];
+            abort_unless(in_array($originStoreId, $access['origin_store_ids'], true), 404);
+            $query->where('origin_store_id', $originStoreId);
+        }
+
+        if (! empty($filters['date_from'])) {
+            $query->whereDate('registered_at', '>=', $filters['date_from']);
+        }
+        if (! empty($filters['date_to'])) {
+            $query->whereDate('registered_at', '<=', $filters['date_to']);
+        }
+
+        $customers = $query
+            ->orderByDesc('registered_at')
+            ->orderByDesc('id')
+            ->paginate(25)
+            ->withQueryString();
+
+        $customers->getCollection()->transform(
+            fn (PlatformCustomer $customer): array => $this->summaryRow($customer, $actor, $access),
+        );
+
+        return view('admin.customer-360-index', [
+            'user' => $actor,
+            'navGroups' => $this->navigation->groupsFor($actor),
+            'navContext' => 'customer_360',
+            'customers' => $customers,
+            'filters' => $filters,
+            'access' => $access,
+            'accessModeLabel' => $this->businessLabel((string) $access['mode']),
+            'originStores' => $this->originStores($access),
+        ]);
+    }
+
+    public function invalidReference(string $invalidCustomerReference): RedirectResponse
+    {
+        return redirect()->route('admin.customer-360.index');
+    }
+
+    public function show(Request $request, int $platformCustomer, B2bAccountLedgerService $ledger): View
+    {
+        $actor = $this->actor($request);
+        $access = $this->access($actor);
+        $customer = $this->findVisible($platformCustomer, $access);
+        $summary = $this->summaryRow($customer, $actor, $access);
+        $domains = $this->domainIds($customer, $access);
+
+        $orders = $this->ordersQuery($domains, $access)
+            ->leftJoin('stores', 'stores.id', '=', 'orders.store_id')
+            ->orderByDesc('orders.created_at')
+            ->orderByDesc('orders.id')
+            ->paginate(25, [
+                'orders.id',
+                'orders.order_number',
+                'orders.store_id',
+                'orders.channel',
+                'orders.status',
+                'orders.currency',
+                'orders.grand_total',
+                'orders.created_at',
+                'stores.name as store_name',
+            ], 'orders_page')
+            ->withQueryString()
+            ->fragment('orders');
+        $orders->setCollection($orders->getCollection()->map(function (mixed $row) use ($actor): array {
+            $row = (object) $row;
+            $channel = strtolower((string) $row->channel);
+            $params = ['module' => 'orders', 'q' => DisplayNumber::reference($row->id)];
+            if ($channel === 'b2c') {
+                $params['store_id'] = (int) $row->store_id;
+                if ($actor->hasRole('SUPER_ADMIN')) {
+                    $params['support_access'] = 1;
+                }
+            }
+
+            $vanAssignment = null;
+            $vanExecution = null;
+            $vanTimeline = [];
+            if ($channel === 'b2b') {
+                $vanAssignment = DB::table('order_van_assignments')
+                    ->leftJoin('vans', 'vans.id', '=', 'order_van_assignments.van_id')
+                    ->where('order_van_assignments.order_id', (int) $row->id)
+                    ->orderByRaw("CASE WHEN order_van_assignments.status = 'active' THEN 0 ELSE 1 END")
+                    ->orderByDesc('order_van_assignments.id')
+                    ->first([
+                        'order_van_assignments.id',
+                        'order_van_assignments.status',
+                        'order_van_assignments.assigned_at',
+                        'vans.code as van_code',
+                    ]);
+
+                $vanExecution = DB::table('order_van_execution_states')
+                    ->where('order_id', (int) $row->id)
+                    ->orderByDesc('id')
+                    ->first(['status', 'failure_reason_code', 'last_transition_at']);
+
+                $vanTimeline = DB::table('order_van_execution_events')
+                    ->where('order_id', (int) $row->id)
+                    ->orderByDesc('captured_at')
+                    ->orderByDesc('id')
+                    ->limit(8)
+                    ->get(['id', 'action', 'from_status', 'to_status', 'reason_code', 'captured_at'])
+                    ->map(fn (object $event): array => [
+                        'id' => (int) $event->id,
+                        'action' => $this->businessLabel((string) $event->action),
+                        'from' => $this->businessLabel((string) $event->from_status),
+                        'to' => $this->businessLabel((string) $event->to_status),
+                        'reason' => $event->reason_code === null
+                            ? null
+                            : $this->businessLabel((string) $event->reason_code),
+                        'captured_at' => $event->captured_at,
+                    ])
+                    ->all();
+            }
+
+            return [
+                'id' => (int) $row->id,
+                'number' => DisplayNumber::reference($row->id),
+                'internal_number' => (string) $row->order_number,
+                'store' => (string) ($row->store_name ?? '-'),
+                'channel' => $channel,
+                'channel_label' => $this->businessLabel($channel),
+                'status' => (string) $row->status,
+                'status_label' => $this->businessLabel((string) $row->status),
+                'currency' => (string) $row->currency,
+                'total' => (float) $row->grand_total,
+                'created_at' => $row->created_at,
+                'url' => route("admin.{$channel}.module", $params),
+                'van_code' => $vanAssignment?->van_code,
+                'van_assignment_status' => $vanAssignment?->status,
+                'van_execution_status' => $vanExecution?->status,
+                'van_failure_reason' => $vanExecution?->failure_reason_code,
+                'van_last_transition_at' => $vanExecution?->last_transition_at,
+                'van_timeline' => $vanTimeline,
+            ];
+        }));
+
+        $invoices = $this->invoicesQuery($customer, $domains, $access)
+            ->leftJoin('stores', 'stores.id', '=', 'invoices.store_id')
+            ->orderByDesc('invoices.issued_at')
+            ->orderByDesc('invoices.id')
+            ->paginate(25, [
+                'invoices.id',
+                'invoices.invoice_number',
+                'invoices.store_id',
+                'invoices.channel',
+                'invoices.status',
+                'invoices.currency',
+                'invoices.total',
+                'invoices.issued_at',
+                'stores.name as store_name',
+            ], 'invoices_page')
+            ->withQueryString()
+            ->fragment('invoices');
+        $invoices->setCollection($invoices->getCollection()->map(function (mixed $row) use ($ledger): array {
+            $row = (object) $row;
+            $amounts = $ledger->invoiceAmounts(Invoice::query()->findOrFail((int) $row->id));
+
+            return [
+                'id' => (int) $row->id,
+                'number' => DisplayNumber::reference($row->id),
+                'internal_number' => (string) $row->invoice_number,
+                'store' => (string) ($row->store_name ?? '-'),
+                'channel' => strtolower((string) $row->channel),
+                'channel_label' => $this->businessLabel(strtolower((string) $row->channel)),
+                'status' => (string) $row->status,
+                'status_label' => $this->businessLabel((string) $row->status),
+                'currency' => (string) $row->currency,
+                'total' => (float) $row->total,
+                'paid_amount' => (float) $amounts['paid_amount'],
+                'outstanding_amount' => (float) $amounts['outstanding_amount'],
+                'issued_at' => $row->issued_at,
+                'url' => route('admin.invoices.show', ['invoice' => $row->id]),
+                'pdf_url' => route('admin.invoices.download', ['invoice' => $row->id, 'locale' => app()->getLocale()]),
+            ];
+        }));
+
+        $addresses = $this->addressQuery($customer)
+            ->orderByDesc('is_default')
+            ->orderBy('id')
+            ->get();
+        $wholesale = $this->wholesaleInfo($customer, $access);
+        $statementFilters = $request->validate([
+            'statement_from' => ['nullable', 'date'],
+            'statement_to' => ['nullable', 'date', 'after_or_equal:statement_from'],
+        ]);
+        $statement = null;
+        $domain = $this->wholesaleDomain($customer, $access);
+        if ($domain instanceof B2bCustomer && $wholesale !== null) {
+            $statement = $ledger->statement(
+                $domain,
+                $statementFilters['statement_from'] ?? null,
+                $statementFilters['statement_to'] ?? null,
+            );
+        }
+
+        $serviceStoreIds = array_values(array_intersect(
+            $access['origin_store_ids'],
+            $this->serviceCases->viewStoreIds($actor),
+        ));
+        $serviceCaseRows = $this->serviceCases->customerCases(
+            $actor,
+            (int) $customer->getKey(),
+            $serviceStoreIds,
+        );
+        $serviceTimeline = $serviceStoreIds === []
+            ? collect()
+            : $this->customerTimeline->forCustomer(
+                $actor,
+                (int) $customer->getKey(),
+                $serviceStoreIds,
+                150,
+            );
+        $canManageServiceCases = collect($serviceStoreIds)
+            ->contains(fn (int $storeId): bool => $this->serviceCases->canManageStore($actor, $storeId));
+
+        return view('admin.customer-360-show', [
+            'user' => $actor,
+            'navGroups' => $this->navigation->groupsFor($actor),
+            'navContext' => 'customer_360',
+            'customer' => $customer,
+            'summary' => $summary,
+            'access' => $access,
+            'orders' => $orders,
+            'invoices' => $invoices,
+            'retailStores' => $this->retailDomains($customer, $access),
+            'wholesale' => $wholesale,
+            'statement' => $statement,
+            'statementFilters' => $statementFilters,
+            'canManageFinance' => $wholesale !== null && ($actor->hasRole('SUPER_ADMIN') || $actor->hasPermission('finance.manage')),
+            'addresses' => $addresses,
+            'geographyOptions' => $this->geographyOptions(),
+            'canManageAddresses' => $this->canManageAddresses($actor, $customer, $access),
+            'serviceCases' => $serviceCaseRows,
+            'serviceTimeline' => $serviceTimeline,
+            'canManageServiceCases' => $canManageServiceCases,
+            'canManageIdentity' => $this->canManageCustomerCredentials($actor),
+            'canManageFullIdentity' => $actor->hasRole('SUPER_ADMIN'),
+            'loginUser' => $customer->user,
+        ]);
+    }
+
+    public function financeInvoices(
+        Request $request,
+        int $platformCustomer,
+        B2bAccountLedgerService $ledger,
+    ): JsonResponse {
+        $actor = $this->actor($request);
+        $access = $this->access($actor);
+        $customer = $this->findVisible($platformCustomer, $access);
+
+        abort_unless($actor->hasRole('SUPER_ADMIN') || $actor->hasPermission('finance.manage'), 403);
+        abort_if($access['mode'] === 'b2c', 403);
+
+        $domain = $this->wholesaleDomain($customer, $access);
+        abort_unless($domain instanceof B2bCustomer, 404);
+
+        $validated = $request->validate([
+            'q' => ['nullable', 'string', 'max:120'],
+            'selected_id' => ['nullable', 'integer', 'min:1'],
+            'entry_type' => ['nullable', Rule::in(B2bAccountLedgerService::MANUAL_TYPES)],
+        ]);
+        $currency = strtoupper((string) $ledger->summary($domain)['currency']);
+        $search = trim((string) ($validated['q'] ?? ''));
+        $referenceId = $search === '' ? null : DisplayNumber::referenceId($search);
+
+        $base = DB::table('invoices')
+            ->leftJoin('stores', 'stores.id', '=', 'invoices.store_id')
+            ->where('invoices.b2b_customer_id', $domain->getKey())
+            ->where('invoices.channel', 'b2b')
+            ->whereIn('invoices.store_id', $access['b2b_store_ids'])
+            ->whereRaw('UPPER(invoices.currency) = ?', [$currency]);
+
+        $query = clone $base;
+        if ($search !== '') {
+            // Explicit, portable LIKE escaping keeps finance invoice identifiers
+            // literal on SQLite and MySQL/MariaDB, including backslashes.
+            $needle = '%'.str_replace(['!', '%', '_'], ['!!', '!%', '!_'], $search).'%';
+            $query->where(function ($builder) use ($needle, $referenceId): void {
+                $builder->whereRaw("invoices.invoice_number LIKE ? ESCAPE '!'", [$needle]);
+                if ($referenceId !== null) {
+                    $builder->orWhere('invoices.id', $referenceId);
+                }
+            });
+        }
+
+        $rows = $query
+            ->orderByDesc('invoices.issued_at')
+            ->orderByDesc('invoices.id')
+            ->limit(20)
+            ->get([
+                'invoices.id',
+                'invoices.invoice_number',
+                'invoices.status',
+                'invoices.currency',
+                'invoices.total',
+                'invoices.issued_at',
+                'stores.name as store_name',
+            ]);
+
+        $format = function (object $row) use ($ledger): array {
+            $invoice = Invoice::query()->findOrFail((int) $row->id);
+            $amounts = $ledger->invoiceAmounts($invoice);
+            $currency = strtoupper((string) $row->currency);
+
+            return [
+                'id' => (int) $row->id,
+                'number' => DisplayNumber::reference($row->id),
+                'internal_number' => (string) $row->invoice_number,
+                'store' => (string) ($row->store_name ?? ''),
+                'status' => (string) $row->status,
+                'status_label' => $this->businessLabel((string) $row->status),
+                'currency' => $currency,
+                'total' => round((float) $row->total, 3),
+                'outstanding' => round((float) $amounts['outstanding_amount'], 3),
+                'issued_at' => $row->issued_at === null ? null : (string) $row->issued_at,
+            ];
+        };
+
+        $results = $rows->map($format)->values();
+        $selected = null;
+        $selectedId = isset($validated['selected_id']) ? (int) $validated['selected_id'] : null;
+        if ($selectedId !== null && $selectedId > 0) {
+            $selectedRow = (clone $base)
+                ->where('invoices.id', $selectedId)
+                ->first([
+                    'invoices.id',
+                    'invoices.invoice_number',
+                    'invoices.status',
+                    'invoices.currency',
+                    'invoices.total',
+                    'invoices.issued_at',
+                    'stores.name as store_name',
+                ]);
+            if ($selectedRow !== null) {
+                $selected = $format($selectedRow);
+            }
+        }
+
+        return response()->json([
+            'currency' => $currency,
+            'results' => $results,
+            'selected' => $selected,
+        ]);
+    }
+
+    public function updateIdentity(
+        Request $request,
+        int $platformCustomer,
+        AuditLogger $audit,
+    ): RedirectResponse {
+        $actor = $this->actor($request);
+        $canManageFullIdentity = $actor->hasRole('SUPER_ADMIN');
+        abort_unless($this->canManageCustomerCredentials($actor), 403);
+
+        $access = $this->access($actor);
+        $customer = $this->findVisible($platformCustomer, $access);
+        $validated = $request->validate([
+            'name' => [$canManageFullIdentity ? 'required' : 'nullable', 'string', 'max:255'],
+            'email' => ['required', 'email', 'max:255'],
+            'phone' => ['nullable', 'string', 'max:40'],
+            'password' => ['nullable', 'string', 'min:8', 'max:255', 'confirmed'],
+        ]);
+
+        $name = $canManageFullIdentity
+            ? trim((string) $validated['name'])
+            : trim((string) $customer->name);
+        $email = Str::lower(trim((string) $validated['email']));
+        $phone = $canManageFullIdentity
+            ? trim((string) ($validated['phone'] ?? ''))
+            : trim((string) ($customer->phone ?? ''));
+        $phone = $phone === '' ? null : $phone;
+        $password = $validated['password'] ?? null;
+        $password = is_string($password) && trim($password) !== '' ? $password : null;
+
+        if ($password !== null && Str::endsWith($email, '@contacts.foodex.local')) {
+            throw ValidationException::withMessages([
+                'password' => [__('customer_360.identity.login_email_required')],
+            ]);
+        }
+
+        $previousUserId = (int) ($customer->user_id ?? 0);
+        $duplicateUser = User::query()
+            ->whereKeyNot($previousUserId)
+            ->whereRaw('LOWER(email) = ?', [$email])
+            ->exists();
+        $duplicateCustomer = PlatformCustomer::query()
+            ->whereKeyNot((int) $customer->getKey())
+            ->whereRaw('LOWER(email) = ?', [$email])
+            ->exists();
+        if ($duplicateUser || $duplicateCustomer) {
+            throw ValidationException::withMessages([
+                'email' => [__('customer_360.identity.email_in_use')],
+            ]);
+        }
+
+        $before = [
+            'name' => (string) $customer->name,
+            'email' => (string) $customer->email,
+            'phone' => $customer->phone,
+        ];
+
+        [$updated, $loginUser, $userWasCreated, $passwordChanged, $wasActive] = DB::transaction(
+            function () use ($customer, $name, $email, $phone, $password): array {
+                $locked = PlatformCustomer::query()
+                    ->whereKey($customer->getKey())
+                    ->lockForUpdate()
+                    ->firstOrFail();
+
+                $staleUserId = (int) ($locked->user_id ?? 0);
+                $user = User::query()
+                    ->whereKey($staleUserId)
+                    ->lockForUpdate()
+                    ->first();
+                $userWasCreated = ! $user instanceof User;
+
+                if ($userWasCreated) {
+                    $user = User::query()->create([
+                        'name' => $name,
+                        'email' => $email,
+                        'password' => Hash::make($password ?? Str::random(64)),
+                        'locale' => in_array(app()->getLocale(), ['ar', 'en'], true) ? app()->getLocale() : 'ar',
+                        'is_active' => $password !== null,
+                        'is_platform_customer' => true,
+                        'deactivated_at' => $password === null ? now() : null,
+                        'deactivation_reason' => $password === null
+                            ? 'Imported customer; mobile login not provisioned.'
+                            : null,
+                    ]);
+                }
+
+                $wasActive = (bool) $user->is_active;
+                $userValues = [
+                    'name' => $name,
+                    'email' => $email,
+                    'is_platform_customer' => true,
+                ];
+                if ($password !== null) {
+                    $userValues = array_merge($userValues, [
+                        'password' => Hash::make($password),
+                        'is_active' => true,
+                        'deactivated_at' => null,
+                        'deactivation_reason' => null,
+                    ]);
+                }
+                $user->forceFill($userValues)->save();
+
+                $customerValues = [
+                    'user_id' => $user->getKey(),
+                    'name' => $name,
+                    'email' => $email,
+                    'phone' => $phone,
+                ];
+                if ($password !== null) {
+                    $customerValues['is_active'] = true;
+                }
+                $locked->forceFill($customerValues)->save();
+
+                $legacyValues = [
+                    'name' => $name,
+                    'email' => $email,
+                    'phone' => $phone,
+                    'updated_at' => now(),
+                ];
+                if ($userWasCreated) {
+                    $legacyUserId = DB::table('customers')
+                        ->where('id', $locked->legacy_customer_id)
+                        ->value('user_id');
+                    $legacyUserExists = $legacyUserId !== null
+                        && User::query()->whereKey((int) $legacyUserId)->exists();
+
+                    if ($legacyUserId === null
+                        || (int) $legacyUserId === $staleUserId
+                        || ! $legacyUserExists) {
+                        $legacyValues['user_id'] = $user->getKey();
+                    }
+                }
+                DB::table('customers')
+                    ->where('id', $locked->legacy_customer_id)
+                    ->update($legacyValues);
+
+                foreach (['b2b_customers', 'b2c_customers'] as $table) {
+                    if ($userWasCreated) {
+                        DB::table($table)
+                            ->where('user_id', $staleUserId)
+                            ->update([
+                                'user_id' => $user->getKey(),
+                                'updated_at' => now(),
+                            ]);
+                        DB::table($table)
+                            ->whereNull('user_id')
+                            ->where('legacy_customer_id', $locked->legacy_customer_id)
+                            ->update([
+                                'user_id' => $user->getKey(),
+                                'updated_at' => now(),
+                            ]);
+                    }
+
+                    DB::table($table)
+                        ->where(function ($query) use ($locked, $user): void {
+                            $query->where('legacy_customer_id', $locked->legacy_customer_id)
+                                ->orWhere('user_id', $user->getKey());
+                        })
+                        ->update([
+                            'name' => $name,
+                            'email' => $email,
+                            'phone' => $phone,
+                            'updated_at' => now(),
+                        ]);
+                }
+
+                if ($password !== null) {
+                    $user->tokens()->delete();
+                }
+
+                return [
+                    $locked->refresh(),
+                    $user->refresh(),
+                    $userWasCreated,
+                    $password !== null,
+                    $wasActive,
+                ];
+            },
+            3,
+        );
+
+        $audit->record(
+            'customer360.identity_updated',
+            $actor,
+            $updated,
+            $before,
+            [
+                'name' => (string) $updated->name,
+                'email' => (string) $updated->email,
+                'phone' => $updated->phone,
+            ],
+            $request,
+        );
+
+        if ($passwordChanged) {
+            $audit->record(
+                'customer360.mobile_password_reset',
+                $actor,
+                $loginUser,
+                [
+                    'user_id' => (int) $loginUser->getKey(),
+                    'was_active' => $wasActive,
+                    'login_identity_repaired' => $userWasCreated,
+                ],
+                [
+                    'user_id' => (int) $loginUser->getKey(),
+                    'is_active' => true,
+                    'tokens_revoked' => true,
+                    'login_identity_repaired' => $userWasCreated,
+                ],
+                $request,
+            );
+        }
+
+        return redirect()
+            ->to(route('admin.customer-360.show', ['platformCustomer' => $updated->getKey()]).'#identity')
+            ->with(
+                'status',
+                $passwordChanged
+                    ? __('customer_360.identity.credentials_saved')
+                    : __('customer_360.identity.updated'),
+            );
+    }
+
+    public function resetMobilePassword(
+        Request $request,
+        int $platformCustomer,
+        AuditLogger $audit,
+    ): RedirectResponse {
+        $actor = $this->actor($request);
+        abort_unless($actor->hasRole('SUPER_ADMIN'), 403);
+
+        $access = $this->access($actor);
+        $customer = $this->findVisible($platformCustomer, $access);
+        $validated = $request->validate([
+            'password' => ['required', 'string', 'min:8', 'max:255', 'confirmed'],
+        ]);
+
+        $user = $customer->user;
+        abort_unless($user instanceof User, 409);
+
+        $loginEmail = Str::lower(trim((string) $customer->email));
+        $userEmail = Str::lower(trim((string) $user->email));
+        $syntheticLogin = Str::endsWith($loginEmail, '@contacts.foodex.local');
+        if ($loginEmail === ''
+            || filter_var($loginEmail, FILTER_VALIDATE_EMAIL) === false
+            || $syntheticLogin
+            || $userEmail !== $loginEmail) {
+            throw ValidationException::withMessages([
+                'password' => [__('customer_360.identity.login_email_required')],
+            ]);
+        }
+
+        $wasActive = (bool) $user->is_active;
+        DB::transaction(function () use ($customer, $user, $validated): void {
+            $lockedUser = User::query()->whereKey($user->getKey())->lockForUpdate()->firstOrFail();
+            $lockedCustomer = PlatformCustomer::query()->whereKey($customer->getKey())->lockForUpdate()->firstOrFail();
+
+            $lockedUser->forceFill([
+                'password' => Hash::make((string) $validated['password']),
+                'is_active' => true,
+                'is_platform_customer' => true,
+                'deactivated_at' => null,
+                'deactivation_reason' => null,
+            ])->save();
+            $lockedCustomer->forceFill(['is_active' => true])->save();
+            $lockedUser->tokens()->delete();
+        }, 3);
+
+        $audit->record(
+            'customer360.mobile_password_reset',
+            $actor,
+            $user,
+            [
+                'user_id' => (int) $user->getKey(),
+                'was_active' => $wasActive,
+            ],
+            [
+                'user_id' => (int) $user->getKey(),
+                'is_active' => true,
+                'tokens_revoked' => true,
+            ],
+            $request,
+        );
+
+        return redirect()
+            ->to(route('admin.customer-360.show', ['platformCustomer' => $customer->getKey()]).'#identity')
+            ->with('status', __('customer_360.identity.password_reset'));
+    }
+
+    public function updateCreditLimit(
+        Request $request,
+        int $platformCustomer,
+        AuditLogger $audit,
+    ): RedirectResponse {
+        $actor = $this->actor($request);
+        $access = $this->access($actor);
+        $customer = $this->findVisible($platformCustomer, $access);
+
+        abort_unless($actor->hasRole('SUPER_ADMIN') || $actor->hasPermission('finance.manage'), 403);
+        abort_if($access['mode'] === 'b2c', 403);
+
+        $domain = $this->wholesaleDomain($customer, $access);
+        abort_unless($domain instanceof B2bCustomer, 404);
+
+        $validated = $request->validate([
+            'credit_limit' => ['required', 'numeric', 'min:0', 'max:99999999999.999'],
+        ]);
+        $creditLimit = round((float) $validated['credit_limit'], 3);
+
+        [$account, $previousCreditLimit] = DB::transaction(function () use ($domain, $creditLimit): array {
+            $account = B2bAccount::query()
+                ->where('b2b_customer_id', $domain->getKey())
+                ->where('status', 'active')
+                ->lockForUpdate()
+                ->firstOrFail();
+
+            $previousCreditLimit = round((float) $account->credit_limit, 3);
+            $account->credit_limit = $creditLimit;
+            $account->save();
+
+            return [$account, $previousCreditLimit];
+        }, 3);
+
+        $before = ['credit_limit' => $previousCreditLimit];
+        $after = ['credit_limit' => round((float) $account->credit_limit, 3)];
+
+        $audit->record(
+            'customer360.credit_limit_updated',
+            $actor,
+            $account,
+            $before,
+            $after,
+            $request,
+        );
+
+        return redirect()
+            ->to(route('admin.customer-360.show', ['platformCustomer' => $customer->getKey()]).'#finance')
+            ->with('status', $this->msg('تم تحديث الحد الائتماني.', 'Credit limit updated.'));
+    }
+
+    public function storeFinanceEntry(
+        Request $request,
+        int $platformCustomer,
+        B2bAccountLedgerService $ledger,
+        AuditLogger $audit,
+    ): RedirectResponse {
+        $actor = $this->actor($request);
+        $access = $this->access($actor);
+        $customer = $this->findVisible($platformCustomer, $access);
+        abort_unless($actor->hasRole('SUPER_ADMIN') || $actor->hasPermission('finance.manage'), 403);
+        abort_if($access['mode'] === 'b2c', 403);
+
+        $domain = $this->wholesaleDomain($customer, $access);
+        abort_unless($domain instanceof B2bCustomer, 404);
+
+        $finance = $ledger->summary($domain);
+        $currency = strtoupper((string) $finance['currency']);
+        $fractionDigits = DisplayNumber::moneyFractionDigits($currency);
+
+        $validated = $request->validate([
+            'entry_type' => ['required', Rule::in(B2bAccountLedgerService::MANUAL_TYPES)],
+            'direction' => ['required', Rule::in(['debit', 'credit'])],
+            'amount' => ['required', 'numeric', 'gt:0', 'decimal:0,'.$fractionDigits],
+            'reference' => ['nullable', 'string', 'max:120'],
+            'description' => ['nullable', 'string', 'max:500'],
+            'invoice_id' => ['nullable', 'integer', 'min:1'],
+            'occurred_at' => ['nullable', 'date'],
+        ]);
+
+        $amount = round((float) $validated['amount'], $fractionDigits);
+        $invoiceId = isset($validated['invoice_id']) ? (int) $validated['invoice_id'] : null;
+        if ($invoiceId !== null && $invoiceId > 0) {
+            $eligibleInvoice = DB::table('invoices')
+                ->where('id', $invoiceId)
+                ->where('b2b_customer_id', $domain->getKey())
+                ->where('channel', 'b2b')
+                ->whereIn('store_id', $access['b2b_store_ids'])
+                ->whereRaw('UPPER(currency) = ?', [$currency])
+                ->exists();
+
+            if (! $eligibleInvoice) {
+                throw ValidationException::withMessages([
+                    'invoice_id' => [__('customer_360.finance.invoice_not_eligible')],
+                ]);
+            }
+        }
+
+        $entryId = $ledger->appendManual($domain, [
+            'entry_type' => $validated['entry_type'],
+            'debit' => $validated['direction'] === 'debit' ? $amount : 0,
+            'credit' => $validated['direction'] === 'credit' ? $amount : 0,
+            'currency' => $currency,
+            'reference' => $validated['reference'] ?? null,
+            'description' => $validated['description'] ?? null,
+            'invoice_id' => $invoiceId,
+            'occurred_at' => $validated['occurred_at'] ?? now(),
+            'source' => 'dashboard_customer_360',
+        ], $actor);
+
+        $audit->record(
+            'customer360.finance_entry_created',
+            $actor,
+            $customer,
+            null,
+            [
+                'ledger_entry_id' => $entryId,
+                'b2b_customer_id' => (int) $domain->getKey(),
+                'entry_type' => (string) $validated['entry_type'],
+                'direction' => (string) $validated['direction'],
+                'amount' => $amount,
+                'currency' => $currency,
+            ],
+            $request,
+        );
+
+        return redirect()
+            ->route('admin.customer-360.show', ['platformCustomer' => $customer->getKey()])
+            ->with('status', $this->msg('تم تسجيل الحركة المالية.', 'Financial entry recorded.'));
+    }
+
+    public function settleInvoice(
+        Request $request,
+        int $platformCustomer,
+        int $invoice,
+        B2bAccountLedgerService $ledger,
+        AuditLogger $audit,
+    ): RedirectResponse {
+        $actor = $this->actor($request);
+        $access = $this->access($actor);
+        $customer = $this->findVisible($platformCustomer, $access);
+        abort_unless($actor->hasRole('SUPER_ADMIN') || $actor->hasPermission('finance.manage'), 403);
+        abort_if($access['mode'] === 'b2c', 403);
+
+        $domain = $this->wholesaleDomain($customer, $access);
+        abort_unless($domain instanceof B2bCustomer, 404);
+
+        $model = Invoice::query()
+            ->whereKey($invoice)
+            ->where('b2b_customer_id', $domain->getKey())
+            ->firstOrFail();
+
+        $validated = $request->validate([
+            'amount' => ['required', 'numeric', 'gt:0'],
+            'reference' => ['nullable', 'string', 'max:120'],
+            'description' => ['nullable', 'string', 'max:500'],
+            'settlement_request_id' => ['nullable', 'uuid'],
+        ]);
+
+        $result = $ledger->settleInvoice(
+            $domain,
+            $model,
+            (float) $validated['amount'],
+            (string) $model->currency,
+            $actor,
+            $validated['reference'] ?? null,
+            $validated['description'] ?? null,
+            $validated['settlement_request_id'] ?? null,
+        );
+
+        if (! $result['replayed']) {
+            $audit->record('customer360.invoice_settled', $actor, $model, null, $result, $request);
+        }
+
+        return redirect()
+            ->to(route('admin.customer-360.show', ['platformCustomer' => $customer->getKey()]).'#invoices')
+            ->with('status', $this->msg('تم تسجيل تسوية الفاتورة.', 'Invoice settlement recorded.'));
+    }
+
+    public function reverseFinanceEntry(
+        Request $request,
+        int $platformCustomer,
+        int $ledgerEntry,
+        B2bAccountLedgerService $ledger,
+        AuditLogger $audit,
+    ): RedirectResponse {
+        $actor = $this->actor($request);
+        $access = $this->access($actor);
+        $customer = $this->findVisible($platformCustomer, $access);
+        abort_unless($actor->hasRole('SUPER_ADMIN') || $actor->hasPermission('finance.manage'), 403);
+        abort_if($access['mode'] === 'b2c', 403);
+
+        $domain = $this->wholesaleDomain($customer, $access);
+        abort_unless($domain instanceof B2bCustomer, 404);
+        $validated = $request->validate(['reason' => ['required', 'string', 'max:500']]);
+
+        $result = $ledger->reverseManualEntry($domain, $ledgerEntry, $actor, (string) $validated['reason']);
+        $audit->record('customer360.finance_entry_reversed', $actor, $customer, null, $result, $request);
+
+        return redirect()
+            ->to(route('admin.customer-360.show', ['platformCustomer' => $customer->getKey()]).'#statement')
+            ->with('status', $this->msg('تم تسجيل قيد عكسي للحركة.', 'Reversal entry recorded.'));
+    }
+
+    public function statementExport(
+        Request $request,
+        int $platformCustomer,
+        B2bAccountLedgerService $ledger,
+        ReportExportService $exports,
+        AuditLogger $audit,
+    ): Response {
+        $actor = $this->actor($request);
+        $access = $this->access($actor);
+        $customer = $this->findVisible($platformCustomer, $access);
+        abort_if($access['mode'] === 'b2c', 403);
+        $domain = $this->wholesaleDomain($customer, $access);
+        abort_unless($domain instanceof B2bCustomer, 404);
+
+        $filters = $request->validate([
+            'from' => ['nullable', 'date'],
+            'to' => ['nullable', 'date', 'after_or_equal:from'],
+            'format' => ['nullable', Rule::in(['pdf', 'xlsx'])],
+            'locale' => ['nullable', Rule::in(['ar', 'en'])],
+        ]);
+        $statement = $ledger->statement($domain, $filters['from'] ?? null, $filters['to'] ?? null);
+        $currency = (string) ($statement['currency'] ?? '');
+        $report = [
+            'report' => 'account_statement',
+            'generated_at' => now()->toIso8601String(),
+            'filters' => ['from' => $filters['from'] ?? '', 'to' => $filters['to'] ?? ''],
+            'columns' => ['date', 'type', 'reference', 'description', 'debit', 'credit', 'running_balance', 'currency'],
+            'rows' => collect($statement['transactions'])->map(static fn (array $row): array => [
+                'date' => (string) ($row['occurred_at'] ?? ''),
+                'type' => (string) ($row['type'] ?? ''),
+                'reference' => (string) ($row['reference'] ?? ''),
+                'description' => (string) ($row['description'] ?? ''),
+                'debit' => (float) ($row['debit'] ?? 0),
+                'credit' => (float) ($row['credit'] ?? 0),
+                'running_balance' => (float) ($row['running_balance'] ?? 0),
+                'currency' => (string) ($row['currency'] ?? $currency),
+            ])->all(),
+            'kpis' => [
+                'opening_balance' => ((float) $statement['opening_balance']).' '.$currency,
+                'period_debits' => ((float) $statement['period_debits']).' '.$currency,
+                'period_credits' => ((float) $statement['period_credits']).' '.$currency,
+                'closing_balance' => ((float) $statement['closing_balance']).' '.$currency,
+            ],
+        ];
+
+        $format = (string) ($filters['format'] ?? 'pdf');
+        $locale = (string) ($filters['locale'] ?? $actor->locale ?? app()->getLocale());
+        $locale = in_array($locale, ['ar', 'en'], true) ? $locale : 'en';
+        try {
+            $export = $exports->build($report, $format, $locale);
+        } catch (RuntimeException) {
+            abort(503, 'Document export is temporarily unavailable.');
+        }
+
+        $audit->record('customer360.statement_exported', $actor, $customer, null, [
+            'format' => $format,
+            'from' => $filters['from'] ?? null,
+            'to' => $filters['to'] ?? null,
+        ], $request);
+
+        return response($export['content'], 200, [
+            'Content-Type' => $export['mime'],
+            'Content-Disposition' => 'attachment; filename="'.$exports->filename($report, $export['extension']).'"',
+            'Cache-Control' => 'private, no-store',
+        ]);
+    }
+
+    public function replicaReport(
+        Request $request,
+        int $platformCustomer,
+        string $report,
+        CustomerReplicaReportService $reports,
+    ): View {
+        $actor = $this->actor($request);
+        $access = $this->access($actor);
+        $customer = $this->findVisible($platformCustomer, $access);
+        abort_if($access['mode'] === 'b2c', 403);
+
+        $domain = $this->wholesaleDomain($customer, $access);
+        abort_unless($domain instanceof B2bCustomer, 404);
+
+        $filters = $request->validate([
+            'from' => ['nullable', 'date'],
+            'to' => ['nullable', 'date', 'after_or_equal:from'],
+        ]);
+        $from = (string) ($filters['from'] ?? now()->startOfMonth()->toDateString());
+        $to = (string) ($filters['to'] ?? now()->toDateString());
+
+        // Build once before presenting the viewer so invalid report keys and
+        // customer/date scope fail before the embedded PDF request is rendered.
+        $data = $reports->build($domain, $report, $from, $to);
+
+        return view('admin.customer-report-replica', [
+            'user' => $actor,
+            'navGroups' => $this->navigation->groupsFor($actor),
+            'navContext' => 'customer_360',
+            'customer' => $customer,
+            'report' => $report,
+            'reportTitle' => $this->replicaReportTitle($report),
+            'from' => $from,
+            'to' => $to,
+            'rowCount' => count((array) ($data['rows'] ?? [])),
+        ]);
+    }
+
+    public function replicaReportPdf(
+        Request $request,
+        int $platformCustomer,
+        string $report,
+        CustomerReplicaReportService $reports,
+        CustomerReplicaReportPdfService $pdfs,
+        AuditLogger $audit,
+    ): Response {
+        $actor = $this->actor($request);
+        $access = $this->access($actor);
+        $customer = $this->findVisible($platformCustomer, $access);
+        abort_if($access['mode'] === 'b2c', 403);
+
+        $domain = $this->wholesaleDomain($customer, $access);
+        abort_unless($domain instanceof B2bCustomer, 404);
+
+        $filters = $request->validate([
+            'from' => ['nullable', 'date'],
+            'to' => ['nullable', 'date', 'after_or_equal:from'],
+            'inline' => ['nullable', Rule::in(['0', '1'])],
+        ]);
+        $from = (string) ($filters['from'] ?? now()->startOfMonth()->toDateString());
+        $to = (string) ($filters['to'] ?? now()->toDateString());
+        $data = $reports->build($domain, $report, $from, $to);
+
+        try {
+            $content = $pdfs->render($data);
+        } catch (RuntimeException) {
+            abort(503, 'Document export is temporarily unavailable.');
+        }
+
+        $audit->record('customer360.replica_report_exported', $actor, $customer, null, [
+            'report' => $report,
+            'from' => $from,
+            'to' => $to,
+            'rows' => count((array) ($data['rows'] ?? [])),
+        ], $request);
+
+        $disposition = ($filters['inline'] ?? '0') === '1' ? 'inline' : 'attachment';
+        $filename = 'FOODEX-'.$report.'-customer-'.$domain->getKey().'-'.str_replace('-', '', $from).'-'.str_replace('-', '', $to).'.pdf';
+
+        return response($content, 200, [
+            'Content-Type' => 'application/pdf',
+            'Content-Disposition' => $disposition.'; filename="'.$filename.'"',
+            'Cache-Control' => 'private, no-store',
+            'X-Content-Type-Options' => 'nosniff',
+        ]);
+    }
+
+    public function storeAddress(
+        Request $request,
+        int $platformCustomer,
+        AuditLogger $audit,
+    ): RedirectResponse {
+        $actor = $this->actor($request);
+        $access = $this->access($actor);
+        $customer = $this->findVisible($platformCustomer, $access);
+        $this->assertCanManageAddresses($actor, $customer, $access);
+        $validated = $request->validate($this->addressRules(false));
+        $this->assertLocationSemantics($validated);
+
+        $address = DB::transaction(function () use ($customer, $validated): Address {
+            $this->addressQuery($customer)->lockForUpdate()->get();
+            $shouldDefault = (bool) ($validated['is_default'] ?? false)
+                || ! $this->addressQuery($customer)->exists();
+
+            if ($shouldDefault) {
+                $this->addressQuery($customer)
+                    ->update(['is_default' => false, 'updated_at' => now()]);
+            }
+
+            return Address::query()->create([
+                'customer_id' => (int) $customer->legacy_customer_id,
+                'platform_customer_id' => (int) $customer->getKey(),
+                'b2b_customer_id' => null,
+                'b2c_customer_id' => null,
+                ...$this->normalizedAddress($validated),
+                'is_default' => $shouldDefault,
+            ]);
+        }, 3);
+
+        $audit->record(
+            'customer360.address_created',
+            $actor,
+            $address,
+            null,
+            ['platform_customer_id' => (int) $customer->getKey()],
+            $request,
+        );
+
+        return $this->addressRedirect($customer, $this->msg('تمت إضافة العنوان.', 'Address added.'));
+    }
+
+    public function updateAddress(
+        Request $request,
+        int $platformCustomer,
+        int $address,
+        AuditLogger $audit,
+    ): RedirectResponse {
+        $actor = $this->actor($request);
+        $access = $this->access($actor);
+        $customer = $this->findVisible($platformCustomer, $access);
+        $this->assertCanManageAddresses($actor, $customer, $access);
+        $validated = $request->validate($this->addressRules(true));
+        $model = $this->addressQuery($customer)->whereKey($address)->firstOrFail();
+        $this->assertLocationSemantics($validated, $model);
+        $before = $model->only([
+            'label', 'line1', 'city', 'area', 'country_code',
+            'latitude', 'longitude', 'is_default',
+        ]);
+
+        DB::transaction(function () use ($customer, $model, $validated): void {
+            $this->addressQuery($customer)->lockForUpdate()->get();
+            $locked = $this->addressQuery($customer)->whereKey($model->getKey())->firstOrFail();
+
+            if (($validated['is_default'] ?? false) === true) {
+                $this->addressQuery($customer)
+                    ->whereKeyNot($locked->getKey())
+                    ->update(['is_default' => false, 'updated_at' => now()]);
+            }
+
+            $locked->fill($this->normalizedAddress($validated));
+            if (array_key_exists('is_default', $validated)) {
+                $locked->is_default = (bool) $validated['is_default'];
+            }
+            $locked->save();
+
+            if (! $this->addressQuery($customer)->where('is_default', true)->exists()) {
+                $fallback = $this->addressQuery($customer)->orderBy('id')->first();
+                $fallback?->update(['is_default' => true]);
+            }
+        }, 3);
+
+        $model->refresh();
+        $audit->record(
+            'customer360.address_updated',
+            $actor,
+            $model,
+            $before,
+            $model->only([
+                'label', 'line1', 'city', 'area', 'country_code',
+                'latitude', 'longitude', 'is_default',
+            ]),
+            $request,
+        );
+
+        return $this->addressRedirect($customer, $this->msg('تم تحديث العنوان.', 'Address updated.'));
+    }
+
+    public function setDefaultAddress(
+        Request $request,
+        int $platformCustomer,
+        int $address,
+        AuditLogger $audit,
+    ): RedirectResponse {
+        $actor = $this->actor($request);
+        $access = $this->access($actor);
+        $customer = $this->findVisible($platformCustomer, $access);
+        $this->assertCanManageAddresses($actor, $customer, $access);
+        $model = $this->addressQuery($customer)->whereKey($address)->firstOrFail();
+
+        DB::transaction(function () use ($customer, $model): void {
+            $this->addressQuery($customer)->lockForUpdate()->get();
+            $this->addressQuery($customer)
+                ->whereKeyNot($model->getKey())
+                ->update(['is_default' => false, 'updated_at' => now()]);
+            $this->addressQuery($customer)
+                ->whereKey($model->getKey())
+                ->update(['is_default' => true, 'updated_at' => now()]);
+        }, 3);
+
+        $model->refresh();
+        $audit->record(
+            'customer360.address_default_changed',
+            $actor,
+            $model,
+            null,
+            ['is_default' => true, 'platform_customer_id' => (int) $customer->getKey()],
+            $request,
+        );
+
+        return $this->addressRedirect($customer, $this->msg('تم تعيين العنوان الافتراضي.', 'Default address updated.'));
+    }
+
+    public function destroyAddress(
+        Request $request,
+        int $platformCustomer,
+        int $address,
+        AuditLogger $audit,
+    ): RedirectResponse {
+        $actor = $this->actor($request);
+        $access = $this->access($actor);
+        $customer = $this->findVisible($platformCustomer, $access);
+        $this->assertCanManageAddresses($actor, $customer, $access);
+        $model = $this->addressQuery($customer)->whereKey($address)->firstOrFail();
+        $wasDefault = (bool) $model->is_default;
+
+        DB::transaction(function () use ($customer, $model, $wasDefault): void {
+            $this->addressQuery($customer)->lockForUpdate()->get();
+            $model->delete();
+
+            if ($wasDefault) {
+                $fallback = $this->addressQuery($customer)->orderBy('id')->first();
+                $fallback?->update(['is_default' => true]);
+            }
+        }, 3);
+
+        $audit->record(
+            'customer360.address_deleted',
+            $actor,
+            $model,
+            ['platform_customer_id' => (int) $customer->getKey()],
+            null,
+            $request,
+        );
+
+        return $this->addressRedirect($customer, $this->msg('تم حذف العنوان.', 'Address deleted.'));
+    }
+
+    /** @return Builder<Address> */
+    private function addressQuery(PlatformCustomer $customer)
+    {
+        return Address::query()->where(function ($query) use ($customer): void {
+            $query->where('platform_customer_id', $customer->getKey())
+                ->orWhere(function ($legacy) use ($customer): void {
+                    $legacy->whereNull('platform_customer_id')
+                        ->where('customer_id', $customer->legacy_customer_id);
+                });
+        });
+    }
+
+    /** @return array<string, list<array<string, int|string|null>>> */
+    private function geographyOptions(): array
+    {
+        $locale = app()->getLocale() === 'ar' ? 'ar' : 'en';
+
+        return GeographyNode::query()
+            ->where('is_active', true)
+            ->whereIn('type', ['country', 'governorate', 'city', 'area'])
+            ->orderBy('country_code')
+            ->orderBy('type')
+            ->orderBy($locale === 'ar' ? 'name_ar' : 'name_en')
+            ->get(['id', 'parent_id', 'type', 'code', 'country_code', 'name_ar', 'name_en'])
+            ->groupBy('type')
+            ->map(fn (Collection $nodes): array => $nodes->map(fn (GeographyNode $node): array => [
+                'id' => (int) $node->id,
+                'parent_id' => $node->parent_id === null ? null : (int) $node->parent_id,
+                'country_code' => strtoupper((string) $node->country_code),
+                'value' => $node->type === 'country'
+                    ? strtoupper((string) $node->country_code)
+                    : (string) $node->name_en,
+                'label' => (string) ($locale === 'ar' ? $node->name_ar : $node->name_en),
+            ])->values()->all())
+            ->all();
+    }
+
+    /** @return array<string, array<int, string>> */
+    private function addressRules(bool $partial): array
+    {
+        $required = $partial ? ['sometimes'] : ['required'];
+
+        return [
+            'label' => ['sometimes', 'nullable', 'string', 'max:100'],
+            'recipient_name' => ['sometimes', 'nullable', 'string', 'max:255'],
+            'delivery_phone' => ['sometimes', 'nullable', 'string', 'max:50'],
+            'line1' => [...$required, 'string', 'max:255'],
+            'line2' => ['sometimes', 'nullable', 'string', 'max:255'],
+            'city' => [...$required, 'string', 'max:120'],
+            'area' => ['sometimes', 'nullable', 'string', 'max:120'],
+            'country_code' => [...$required, 'string', 'size:2'],
+            'country' => ['sometimes', 'nullable', 'string', 'max:120'],
+            'governorate' => ['sometimes', 'nullable', 'string', 'max:120'],
+            'block' => ['sometimes', 'nullable', 'string', 'max:120'],
+            'street' => ['sometimes', 'nullable', 'string', 'max:255'],
+            'avenue' => ['sometimes', 'nullable', 'string', 'max:120'],
+            'building' => ['sometimes', 'nullable', 'string', 'max:120'],
+            'floor' => ['sometimes', 'nullable', 'string', 'max:120'],
+            'apartment' => ['sometimes', 'nullable', 'string', 'max:120'],
+            'landmark' => ['sometimes', 'nullable', 'string', 'max:255'],
+            'delivery_notes' => ['sometimes', 'nullable', 'string', 'max:1000'],
+            'latitude' => ['sometimes', 'nullable', 'numeric', 'between:-90,90', 'required_with:longitude'],
+            'longitude' => ['sometimes', 'nullable', 'numeric', 'between:-180,180', 'required_with:latitude'],
+            'location_accuracy_meters' => ['sometimes', 'nullable', 'numeric', 'min:0', 'max:100000'],
+            'location_source' => ['sometimes', Rule::in(['manual', 'current_location', 'map_pin'])],
+            'is_default' => ['sometimes', 'boolean'],
+        ];
+    }
+
+    /**
+     * Keep Dashboard-created geographic addresses subject to the same
+     * invariants as customer self-service addresses.
+     *
+     * @param  array<string, mixed>  $validated
+     */
+    private function assertLocationSemantics(array $validated, ?Address $existing = null): void
+    {
+        $source = array_key_exists('location_source', $validated)
+            ? (string) $validated['location_source']
+            : (string) ($existing?->location_source ?: 'manual');
+
+        $latitude = array_key_exists('latitude', $validated)
+            ? $validated['latitude']
+            : $existing?->latitude;
+        $longitude = array_key_exists('longitude', $validated)
+            ? $validated['longitude']
+            : $existing?->longitude;
+
+        if (in_array($source, ['current_location', 'map_pin'], true)
+            && ($latitude === null || $longitude === null)) {
+            throw ValidationException::withMessages([
+                'latitude' => [__('customer_address_location.coordinate_pair_required')],
+                'longitude' => [__('customer_address_location.coordinate_pair_required')],
+            ]);
+        }
+
+        if (array_key_exists('location_accuracy_meters', $validated)
+            && $validated['location_accuracy_meters'] !== null
+            && ($latitude === null || $longitude === null)) {
+            throw ValidationException::withMessages([
+                'location_accuracy_meters' => [__('customer_address_location.accuracy_pair_required')],
+            ]);
+        }
+    }
+
+    /** @return array<string, mixed> */
+    private function normalizedAddress(array $validated): array
+    {
+        $values = [];
+        foreach ([
+            'label', 'recipient_name', 'delivery_phone', 'line1', 'line2',
+            'city', 'area', 'country', 'governorate', 'block', 'street',
+            'avenue', 'building', 'floor', 'apartment', 'landmark',
+            'delivery_notes', 'latitude', 'longitude',
+            'location_accuracy_meters', 'location_source',
+        ] as $field) {
+            if (array_key_exists($field, $validated)) {
+                $values[$field] = $validated[$field];
+            }
+        }
+
+        if (array_key_exists('country_code', $validated)) {
+            $values['country_code'] = Str::upper((string) $validated['country_code']);
+        }
+        if (array_key_exists('line1', $values) && ! array_key_exists('street', $values)) {
+            $values['street'] = $values['line1'];
+        }
+
+        return $values;
+    }
+
+    private function canManageAddresses(User $actor, PlatformCustomer $customer, array $access): bool
+    {
+        if ($actor->hasRole('SUPER_ADMIN')) {
+            return true;
+        }
+
+        if ($access['mode'] === 'b2b') {
+            return $this->scope->allowedStoreIds($actor, 'b2b.accounts.manage', 'b2b') !== [];
+        }
+
+        $allowed = $this->scope->allowedStoreIds($actor, 'customers.manage', 'b2c');
+        if ($allowed === [] || $customer->user_id === null) {
+            return false;
+        }
+
+        return DB::table('b2c_customers')
+            ->where('user_id', $customer->user_id)
+            ->whereIn('store_id', $allowed)
+            ->exists();
+    }
+
+    private function assertCanManageAddresses(User $actor, PlatformCustomer $customer, array $access): void
+    {
+        abort_unless($this->canManageAddresses($actor, $customer, $access), 403);
+    }
+
+    private function addressRedirect(PlatformCustomer $customer, string $message): RedirectResponse
+    {
+        return redirect(
+            route('admin.customer-360.show', ['platformCustomer' => $customer->getKey()]).'#addresses',
+        )->with('status', $message);
+    }
+
+    /** @param array{mode:string,b2b_store_ids:list<int>,b2c_store_ids:list<int>,origin_store_ids:list<int>} $access */
+    private function applyVisibility($query, array $access): void
+    {
+        if ($access['mode'] === 'platform') {
+            return;
+        }
+
+        if ($access['mode'] === 'b2b') {
+            $query->where(function ($visible): void {
+                $visible->whereIn(
+                    'platform_customers.user_id',
+                    DB::table('b2b_customers')
+                        ->select('user_id')
+                        ->whereNotNull('user_id'),
+                )->orWhereIn(
+                    'platform_customers.legacy_customer_id',
+                    DB::table('b2b_customers')
+                        ->select('legacy_customer_id')
+                        ->whereNotNull('legacy_customer_id'),
+                )->orWhereIn(
+                    'platform_customers.user_id',
+                    DB::table('retail_wholesale_accounts')
+                        ->join(
+                            'b2b_accounts',
+                            'b2b_accounts.b2b_customer_id',
+                            '=',
+                            'retail_wholesale_accounts.b2b_customer_id',
+                        )
+                        ->select('retail_wholesale_accounts.owner_user_id')
+                        ->whereNotNull('retail_wholesale_accounts.owner_user_id')
+                        ->where('b2b_accounts.status', 'active'),
+                );
+            });
+
+            return;
+        }
+
+        $query->whereIn('platform_customers.user_id', DB::table('b2c_customers')
+            ->select('user_id')
+            ->whereNotNull('user_id')
+            ->whereIn('store_id', $access['b2c_store_ids']));
+    }
+
+    /** @return array{mode:string,b2b_store_ids:list<int>,b2c_store_ids:list<int>,origin_store_ids:list<int>} */
+    private function access(User $actor): array
+    {
+        if ($actor->hasRole('SUPER_ADMIN')) {
+            $b2b = $this->scope->allowedStoreIds($actor, 'b2b.accounts.view', 'b2b');
+            $b2c = $this->scope->allowedStoreIds($actor, 'customers.view', 'b2c');
+
+            return [
+                'mode' => 'platform',
+                'b2b_store_ids' => $b2b,
+                'b2c_store_ids' => $b2c,
+                'origin_store_ids' => array_values(array_unique([...$b2b, ...$b2c])),
+            ];
+        }
+
+        if ($this->navigation->canAccess($actor, 'b2b')) {
+            $b2bPermission = $actor->hasPermission('b2b.accounts.view')
+                ? 'b2b.accounts.view'
+                : ($this->navigation->usesCustomerServiceDashboardProfile($actor) && $actor->hasPermission('customers.view')
+                    ? 'customers.view'
+                    : null);
+
+            if ($b2bPermission !== null) {
+                $b2b = $this->scope->allowedStoreIds($actor, $b2bPermission, 'b2b');
+
+                return [
+                    'mode' => 'b2b',
+                    'b2b_store_ids' => $b2b,
+                    'b2c_store_ids' => [],
+                    'origin_store_ids' => $b2b,
+                ];
+            }
+        }
+
+        $b2c = $this->scope->allowedStoreIds($actor, 'customers.view', 'b2c');
+        abort_if($b2c === [], 403);
+
+        return [
+            'mode' => 'b2c',
+            'b2b_store_ids' => [],
+            'b2c_store_ids' => $b2c,
+            'origin_store_ids' => $b2c,
+        ];
+    }
+
+    private function canManageCustomerCredentials(User $actor): bool
+    {
+        if ($actor->hasRole('SUPER_ADMIN')) {
+            return true;
+        }
+
+        foreach ([
+            'CUSTOMER_SERVICE_MANAGER',
+            'CUSTOMER_SERVICE_SUPERVISOR',
+            'CUSTOMER_SERVICE_AGENT',
+        ] as $roleCode) {
+            if ($actor->hasRole($roleCode)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private function actor(Request $request): User
+    {
+        $actor = $request->user();
+        abort_unless($actor instanceof User, 401);
+
+        return $actor;
+    }
+
+    /** @param array{mode:string,b2b_store_ids:list<int>,b2c_store_ids:list<int>,origin_store_ids:list<int>} $access */
+    private function findVisible(int $id, array $access): PlatformCustomer
+    {
+        $query = PlatformCustomer::query()->with(['user', 'originStore'])->whereKey($id);
+        $this->applyVisibility($query, $access);
+
+        return $query->firstOrFail();
+    }
+
+    /** @return array<string,mixed> */
+    private function summaryRow(PlatformCustomer $customer, User $actor, array $access): array
+    {
+        $domains = $this->domainIds($customer, $access);
+        $orders = $this->ordersQuery($domains, $access);
+        $invoices = $this->invoicesQuery($customer, $domains, $access);
+        $origin = $this->originPresentation($customer, $access);
+        $wholesale = $this->wholesaleInfo($customer, $access);
+        $relatedUser = $customer->user;
+        $userIsActive = $relatedUser instanceof User ? $relatedUser->is_active : true;
+        $registrationSource = strtolower(trim((string) $customer->registration_source));
+        $registrationSourceLabel = in_array(
+            $registrationSource,
+            ['customer_app', 'dashboard', 'import', 'migration'],
+            true,
+        )
+            ? $this->businessLabel($registrationSource)
+            : $this->businessLabel('unknown');
+
+        return [
+            'id' => (int) $customer->getKey(),
+            'name' => (string) $customer->name,
+            'email' => (string) $customer->email,
+            'phone' => $customer->phone,
+            'active' => (bool) $customer->is_active && $userIsActive,
+            'origin' => $origin,
+            'registration_source' => $registrationSource,
+            'registration_source_label' => $registrationSourceLabel,
+            'origin_channel_label' => $this->businessLabel((string) ($customer->origin_channel ?: 'unknown')),
+            'registered_at' => $customer->registered_at,
+            'orders_count' => (clone $orders)->count(),
+            'orders_total' => (float) (clone $orders)->sum('orders.grand_total'),
+            'invoices_count' => (clone $invoices)->count(),
+            'invoices_total' => (float) (clone $invoices)->sum('invoices.total'),
+            'wholesale_tier' => $wholesale['tier_name'] ?? null,
+            'url' => route('admin.customer-360.show', ['platformCustomer' => $customer->getKey()]),
+        ];
+    }
+
+    private function wholesaleDomain(PlatformCustomer $customer, array $access): ?B2bCustomer
+    {
+        if ($access['mode'] === 'b2c') {
+            return null;
+        }
+
+        $user = $customer->user;
+        if ($user instanceof User) {
+            $resolved = app(CustomerDomainResolver::class)->existingB2b($user);
+            if ($resolved instanceof B2bCustomer) {
+                return $resolved;
+            }
+        }
+
+        return B2bCustomer::query()
+            ->where('legacy_customer_id', $customer->legacy_customer_id)
+            ->first();
+    }
+
+    /** @return array{b2b_id:?int,b2c_ids:list<int>} */
+    private function domainIds(PlatformCustomer $customer, array $access): array
+    {
+        $domain = $this->wholesaleDomain($customer, $access);
+        $b2bId = $domain instanceof B2bCustomer ? (int) $domain->getKey() : null;
+
+        $b2c = [];
+        if ($customer->user_id !== null) {
+            $b2c = DB::table('b2c_customers')
+                ->where('user_id', $customer->user_id)
+                ->when($access['mode'] === 'b2c', fn ($q) => $q->whereIn('store_id', $access['b2c_store_ids']))
+                ->when($access['mode'] === 'b2b', fn ($q) => $q->whereRaw('1 = 0'))
+                ->pluck('id')
+                ->map(static fn ($id): int => (int) $id)
+                ->all();
+        }
+
+        return ['b2b_id' => $b2bId, 'b2c_ids' => $b2c];
+    }
+
+    /** @param array{b2b_id:?int,b2c_ids:list<int>} $domains */
+    private function ordersQuery(array $domains, array $access): QueryBuilder
+    {
+        $query = DB::table('orders');
+
+        if ($access['mode'] === 'b2b') {
+            if ($domains['b2b_id'] === null) {
+                return $query->whereRaw('1 = 0');
+            }
+
+            return $query
+                ->where('orders.channel', 'b2b')
+                ->where('orders.b2b_customer_id', $domains['b2b_id'])
+                ->whereIn('orders.store_id', $access['b2b_store_ids']);
+        }
+
+        if ($access['mode'] === 'b2c') {
+            if ($domains['b2c_ids'] === []) {
+                return $query->whereRaw('1 = 0');
+            }
+
+            return $query
+                ->where('orders.channel', 'b2c')
+                ->whereIn('orders.b2c_customer_id', $domains['b2c_ids'])
+                ->whereIn('orders.store_id', $access['b2c_store_ids']);
+        }
+
+        return $query->where(function ($q) use ($domains): void {
+            if ($domains['b2b_id'] !== null) {
+                $q->orWhere('orders.b2b_customer_id', $domains['b2b_id']);
+            }
+            if ($domains['b2c_ids'] !== []) {
+                $q->orWhereIn('orders.b2c_customer_id', $domains['b2c_ids']);
+            }
+            if ($domains['b2b_id'] === null && $domains['b2c_ids'] === []) {
+                $q->whereRaw('1 = 0');
+            }
+        });
+    }
+
+    /** @param array{b2b_id:?int,b2c_ids:list<int>} $domains */
+    private function invoicesQuery(PlatformCustomer $customer, array $domains, array $access): QueryBuilder
+    {
+        $query = DB::table('invoices')->where(function ($q) use ($customer, $domains): void {
+            $q->where('invoices.platform_customer_id', $customer->getKey());
+            if ($domains['b2b_id'] !== null) {
+                $q->orWhere('invoices.b2b_customer_id', $domains['b2b_id']);
+            }
+            if ($domains['b2c_ids'] !== []) {
+                $q->orWhereIn('invoices.b2c_customer_id', $domains['b2c_ids']);
+            }
+        });
+
+        if ($access['mode'] === 'b2b') {
+            return $query->where('invoices.channel', 'b2b')->whereIn('invoices.store_id', $access['b2b_store_ids']);
+        }
+        if ($access['mode'] === 'b2c') {
+            return $query->where('invoices.channel', 'b2c')->whereIn('invoices.store_id', $access['b2c_store_ids']);
+        }
+
+        return $query;
+    }
+
+    /** @return array<string,mixed>|null */
+    private function wholesaleInfo(PlatformCustomer $customer, array $access): ?array
+    {
+        $domain = $this->wholesaleDomain($customer, $access);
+        if (! $domain instanceof B2bCustomer) {
+            return null;
+        }
+
+        $row = DB::table('b2b_customers')
+            ->leftJoin('b2b_accounts', 'b2b_accounts.b2b_customer_id', '=', 'b2b_customers.id')
+            ->leftJoin('b2b_price_tiers', 'b2b_price_tiers.id', '=', 'b2b_accounts.price_tier_id')
+            ->where('b2b_customers.id', $domain->getKey())
+            ->first([
+                'b2b_customers.id as customer_id',
+                'b2b_accounts.id as account_id',
+                'b2b_accounts.company_name',
+                'b2b_accounts.status',
+                'b2b_accounts.credit_limit',
+                'b2b_price_tiers.id as tier_id',
+                'b2b_price_tiers.code as tier_code',
+                'b2b_price_tiers.name as tier_name',
+            ]);
+
+        if ($row === null) {
+            return null;
+        }
+
+        $financial = strtolower((string) $row->status) === 'active'
+            ? app(B2bAccountLedgerService::class)->summary($domain)
+            : null;
+
+        return [
+            'customer_id' => (int) $row->customer_id,
+            'account_id' => $row->account_id === null ? null : (int) $row->account_id,
+            'company_name' => $row->company_name,
+            'status' => $row->status,
+            'status_label' => $this->businessLabel((string) $row->status),
+            'credit_limit' => $row->credit_limit === null ? null : (float) $row->credit_limit,
+            'tier_id' => $row->tier_id === null ? null : (int) $row->tier_id,
+            'tier_code' => $row->tier_code,
+            'tier_name' => $row->tier_name,
+            'financial' => $financial,
+        ];
+    }
+
+    private function businessLabel(string $value): string
+    {
+        $key = strtolower(trim($value));
+        if ($key === '') {
+            return '—';
+        }
+
+        $translationKey = 'customer_360.business_labels.'.$key;
+        $translated = __($translationKey);
+
+        return $translated === $translationKey
+            ? Str::headline($key)
+            : $translated;
+    }
+
+    /** @return list<array{id:int,name:string,code:string}> */
+    private function retailDomains(PlatformCustomer $customer, array $access): array
+    {
+        if ($access['mode'] === 'b2b') {
+            return [];
+        }
+
+        $storeIds = [];
+        if ($customer->user_id !== null) {
+            $storeIds = DB::table('b2c_customers')
+                ->where('user_id', $customer->user_id)
+                ->pluck('store_id')
+                ->map(static fn ($id): int => (int) $id)
+                ->all();
+        }
+
+        $user = $customer->user;
+        if ($user instanceof User) {
+            $storeIds = [
+                ...$storeIds,
+                ...app(RetailMerchantIdentityService::class)->retailStoreIds($user),
+            ];
+        }
+
+        $storeIds = array_values(array_unique(array_map('intval', $storeIds)));
+        if ($access['mode'] === 'b2c') {
+            $storeIds = array_values(array_intersect($storeIds, $access['b2c_store_ids']));
+        }
+
+        if ($storeIds === []) {
+            return [];
+        }
+
+        return DB::table('stores')
+            ->whereIn('id', $storeIds)
+            ->orderBy('name')
+            ->get(['id', 'name', 'code'])
+            ->map(fn (object $row): array => [
+                'id' => (int) $row->id,
+                'name' => (string) $row->name,
+                'code' => (string) $row->code,
+            ])
+            ->all();
+    }
+
+    /** @return array{channel:string,label:string,exact:bool} */
+    private function originPresentation(PlatformCustomer $customer, array $access): array
+    {
+        $channel = strtolower((string) ($customer->origin_channel ?: 'unknown'));
+        $storeId = $customer->origin_store_id === null ? null : (int) $customer->origin_store_id;
+        $canRevealStore = $storeId !== null && (
+            $access['mode'] === 'platform'
+            || in_array($storeId, $access['origin_store_ids'], true)
+        );
+
+        $originStore = $customer->originStore;
+        if ($canRevealStore && $originStore instanceof Store) {
+            return [
+                'channel' => $channel,
+                'label' => $originStore->name.' · '.$originStore->code,
+                'exact' => true,
+            ];
+        }
+
+        if ($channel === 'b2b') {
+            return ['channel' => 'b2b', 'label' => $this->msg('الجملة', 'Wholesale'), 'exact' => false];
+        }
+        if ($channel === 'b2c') {
+            return [
+                'channel' => 'b2c',
+                'label' => $access['mode'] === 'b2c'
+                    ? $this->msg('مسجل من مصدر تجزئة آخر', 'Registered via another Retail source')
+                    : $this->msg('التجزئة', 'Retail'),
+                'exact' => false,
+            ];
+        }
+
+        return ['channel' => 'unknown', 'label' => $this->msg('مصدر قديم / غير معروف', 'Legacy / unknown source'), 'exact' => false];
+    }
+
+    /** @return Collection<int, stdClass> */
+    private function originStores(array $access): Collection
+    {
+        if ($access['origin_store_ids'] === []) {
+            return collect();
+        }
+
+        return DB::table('stores')
+            ->whereIn('id', $access['origin_store_ids'])
+            ->orderBy('name')
+            ->get(['id', 'name', 'code']);
+    }
+
+    private function replicaReportTitle(string $report): string
+    {
+        return match ($report) {
+            CustomerReplicaReportService::ACCOUNT_STATEMENT => 'كشف حساب عميل',
+            CustomerReplicaReportService::ITEM_DETAIL => 'مسحوبات عميل تفصيلي بالاصناف',
+            CustomerReplicaReportService::ITEM_SUMMARY => 'مسحوبات عميل بالاصناف',
+            default => abort(404),
+        };
+    }
+
+    private function msg(string $ar, string $en): string
+    {
+        return App::getLocale() === 'ar' ? $ar : $en;
+    }
+}

@@ -1,0 +1,50 @@
+name: foodex_customer_app
+description: FOODEX Customer bootstrap foundation.
+publish_to: "none"
+version: 1.0.127+127
+environment:
+  sdk: ">=3.5.0 <4.0.0"
+
+dependencies:
+  foodex_formatting:
+    path: ../../packages/foodex_formatting
+  flutter:
+    sdk: flutter
+  foodex_visualization:
+    path: ../../packages/foodex_visualization
+  flutter_localizations:
+    sdk: flutter
+  cupertino_icons: ^1.0.8
+  http: ^1.2.2
+  google_fonts: ^8.2.1
+  firebase_core: ^3.15.2
+  firebase_messaging: ^15.2.10
+  flutter_local_notifications: ^18.0.1
+  shared_preferences: ^2.5.3
+  # shared_preferences_android 2.5.0 crashes Android release builds under R8
+  # with SharedPreferencesApiRegistrar NoSuchMethodError. Keep the last
+  # known-good native implementation until the upstream consumer rules land.
+  shared_preferences_android: ">=2.4.28 <2.5.0"
+  flutter_secure_storage: ^11.2.0
+  local_auth: ^2.3.0
+  share_plus: ^13.3.0
+  # v7 uses Apple Vision on iOS instead of ML Kit, avoiding the conflicting
+  # GoogleDataTransport pod and the v6 simulator native-module failure.
+  mobile_scanner: 7.4.4
+  geolocator: ^14.1.1
+  flutter_map: ^8.2.1
+  latlong2: ^0.9.1
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^5.0.0
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/branding/splash_full.png
+    - assets/branding/foodex-economical-group.webp
+    - assets/branding/login_reference/
+    - assets/store_selector/
+    - assets/customer_ui_v3/asset_contract.json

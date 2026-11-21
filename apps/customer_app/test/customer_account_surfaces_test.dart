@@ -1,0 +1,581 @@
+import 'package:flutter/material.dart';
+import 'package:flutter_test/flutter_test.dart';
+import 'package:foodex_customer_app/core/api/b2c_account_api.dart';
+import 'package:foodex_customer_app/core/location/customer_location_service.dart';
+import 'package:foodex_customer_app/core/location/customer_map_pin_selector.dart';
+import 'package:foodex_customer_app/core/theme/foodex_theme.dart';
+import 'package:foodex_customer_app/features/customer_account/customer_account_data.dart';
+import 'package:foodex_customer_app/features/customer_account/customer_account_screen.dart';
+import 'package:foodex_customer_app/features/customer_account/customer_address_book_screen.dart';
+import 'package:foodex_customer_app/features/customer_account/customer_favorites_screen.dart';
+import 'package:foodex_customer_app/features/customer_account/customer_notification_center_screen.dart';
+import 'package:foodex_customer_app/shared/customer_ui_v3/customer_ui_v3.dart';
+
+void main() {
+  test('customer map defaults to Egypt and preserves saved coordinates', () {
+    final fallback = customerMapInitialViewport();
+    expect(fallback.center.latitude, customerMapDefaultLatitude);
+    expect(fallback.center.longitude, customerMapDefaultLongitude);
+    expect(fallback.zoom, customerMapDefaultZoom);
+
+    final saved = customerMapInitialViewport(
+      initialLatitude: 30.0444,
+      initialLongitude: 31.2357,
+    );
+    expect(saved.center.latitude, 30.0444);
+    expect(saved.center.longitude, 31.2357);
+    expect(saved.zoom, customerMapSavedPointZoom);
+
+    expect(customerDefaultAddressCity, 'Cairo');
+    expect(customerDefaultAddressCountry, 'Egypt');
+    expect(customerDefaultAddressCountryCode, 'EG');
+  });
+
+  testWidgets(
+    'account overview isolates section failure and scopes favorites to store',
+    (tester) async {
+      final api = _AccountFakeApi(
+        profileError: const B2cAccountException('network_unavailable'),
+        addressesValue: {
+          'data': [
+            {'id': 1},
+            {'id': 2},
+          ],
+        },
+        favoritesValue: {
+          'data': [
+            {
+              'product': {'id': 8, 'name': 'Coffee'},
+            },
+          ],
+        },
+        notificationsValue: const {'data': []},
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          locale: const Locale('en'),
+          home: CustomerAccountScreen(
+            api: api,
+            favoritesApi: api,
+            retailStoreId: 19,
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(api.favoriteLoads, <int?>[19]);
+      expect(find.byKey(const ValueKey('customer-account-screen')),
+          findsOneWidget);
+      expect(find.byKey(const ValueKey('customer-account-profile-section')),
+          findsOneWidget);
+      expect(find.text('2'), findsOneWidget);
+      expect(find.text('1'), findsOneWidget);
+      expect(find.byIcon(Icons.refresh_rounded), findsOneWidget);
+    },
+  );
+
+  testWidgets('favorites remove action keeps exact retail store context',
+      (tester) async {
+    final api = _AccountFakeApi(
+      favoritesValue: {
+        'data': [
+          {
+            'product': {'id': 8, 'name': 'Coffee', 'price': 2.5},
+          },
+        ],
+      },
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        locale: const Locale('en'),
+        home: CustomerFavoritesScreen(
+          api: api,
+          favoritesApi: api,
+          retailStoreId: 19,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(
+      find.byKey(const ValueKey('customer-favorite-remove-8')),
+    );
+    await tester.pumpAndSettle();
+
+    expect(api.favoriteLoads, everyElement(19));
+    expect(api.removedFavorites, <(int, int?)>[(8, 19)]);
+  });
+
+  testWidgets(
+    'notification center marks read and emits only structured order target',
+    (tester) async {
+      final api = _AccountFakeApi(
+        notificationsValue: {
+          'data': [
+            {
+              'id': 7,
+              'title': 'Order update',
+              'body': 'Preparing',
+              'read_at': null,
+              'data': {
+                'order_id': 55,
+                'channel': 'b2c',
+                'store_id': 19,
+                'url': 'https://untrusted.example/redirect',
+              },
+            },
+          ],
+        },
+      );
+      CustomerNotificationTarget? target;
+
+      await tester.pumpWidget(
+        MaterialApp(
+          locale: const Locale('en'),
+          home: CustomerNotificationCenterScreen(
+            api: api,
+            onOpenOrder: (value) => target = value,
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      await tester.tap(
+        find.byKey(const ValueKey('customer-notification-7')),
+      );
+      await tester.pumpAndSettle();
+
+      expect(api.readNotifications, <int>[7]);
+      expect(target?.orderId, 55);
+      expect(target?.channel, 'b2c');
+      expect(target?.storeId, 19);
+    },
+  );
+
+  testWidgets('address book saves authoritative GPS location with address',
+      (tester) async {
+    final api = _AccountFakeApi(addressesValue: const {'data': []});
+
+    await tester.pumpWidget(
+      MaterialApp(
+        locale: const Locale('en'),
+        home: CustomerAddressBookScreen(
+          api: api,
+          locationService: const _LocationFake(),
+          reverseGeocoder: const _ReverseGeocoderFake(),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byKey(const ValueKey('customer-address-add')));
+    await tester.pumpAndSettle();
+
+    final currentLocation = find.byKey(
+      const ValueKey('customer-address-current-location'),
+    );
+    final line1 = find.byKey(const ValueKey('customer-address-line1'));
+    expect(
+      tester.getTopLeft(currentLocation).dy,
+      lessThan(tester.getTopLeft(line1).dy),
+    );
+
+    await tester.ensureVisible(currentLocation);
+    await tester.tap(currentLocation);
+    await tester.pumpAndSettle();
+
+    expect(
+      find.byKey(const ValueKey('customer-address-coordinates')),
+      findsOneWidget,
+    );
+    expect(
+      tester.widget<TextField>(line1).controller?.text,
+      'Test Street 12',
+    );
+    expect(
+      tester
+          .widget<TextField>(
+            find.byKey(const ValueKey('customer-address-governorate')),
+          )
+          .controller
+          ?.text,
+      'Hawalli',
+    );
+    expect(
+      tester
+          .widget<TextField>(
+            find.byKey(const ValueKey('customer-address-area')),
+          )
+          .controller
+          ?.text,
+      'Salmiya',
+    );
+
+    final governorateRect = tester.getRect(
+      find.byKey(const ValueKey('customer-address-governorate')),
+    );
+    final areaRect = tester.getRect(
+      find.byKey(const ValueKey('customer-address-area')),
+    );
+    expect(
+      (governorateRect.center.dy - areaRect.center.dy).abs(),
+      lessThan(1),
+    );
+    expect(find.text('Block'), findsNothing);
+    expect(find.text('Avenue'), findsNothing);
+
+    await tester.tap(find.byKey(const ValueKey('customer-address-save')));
+    await tester.pumpAndSettle();
+
+    expect(api.createdAddresses, hasLength(1));
+    expect(api.createdAddresses.single['line1'], 'Test Street 12');
+    expect(api.createdAddresses.single['area'], 'Salmiya');
+    expect(api.createdAddresses.single['governorate'], 'Hawalli');
+    expect(api.createdAddresses.single['city'], 'Kuwait City');
+    expect(api.createdAddresses.single['country'], 'Kuwait');
+    expect(api.createdAddresses.single['country_code'], 'KW');
+    expect(api.createdAddresses.single.containsKey('block'), isFalse);
+    expect(api.createdAddresses.single.containsKey('avenue'), isFalse);
+    expect(api.createdAddresses.single['latitude'], 29.3759);
+    expect(api.createdAddresses.single['longitude'], 47.9774);
+    expect(api.createdAddresses.single['location_source'], 'current_location');
+  });
+
+  testWidgets('contact us submits phone and message to Customer Service',
+      (tester) async {
+    final api = _AccountFakeApi(
+      addressesValue: const {'data': []},
+      favoritesValue: const {'data': []},
+      notificationsValue: const {'data': []},
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        locale: const Locale('en'),
+        theme: FoodexTheme.light(),
+        home: CustomerAccountScreen(
+          api: api,
+          favoritesApi: api,
+          retailStoreId: 19,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    final contact = find.byKey(const ValueKey('customer-account-contact-us'));
+    await tester.dragUntilVisible(
+      contact,
+      find.byType(ListView),
+      const Offset(0, -200),
+    );
+    await tester.ensureVisible(contact);
+    await tester.pumpAndSettle();
+    await tester.tap(contact);
+    await tester.pumpAndSettle();
+
+    await tester.enterText(
+      find.byKey(const ValueKey('customer-contact-phone')),
+      '+96551112222',
+    );
+    await tester.enterText(
+      find.byKey(const ValueKey('customer-contact-message')),
+      'Please call me about my order.',
+    );
+    await tester.tap(find.byKey(const ValueKey('customer-contact-submit')));
+    await tester.pumpAndSettle();
+
+    expect(api.lastContactStoreId, 19);
+    expect(api.lastContactPhone, '+96551112222');
+    expect(api.lastContactMessage, 'Please call me about my order.');
+    expect(
+      find.byKey(const ValueKey('customer-contact-success')),
+      findsOneWidget,
+    );
+    expect(find.textContaining('Case #42'), findsOneWidget);
+  });
+
+  testWidgets(
+    'account V3 stays coherent in RTL on a narrow phone with enlarged text',
+    (tester) async {
+      final api = _AccountFakeApi(
+        addressesValue: {
+          'data': [
+            {
+              'id': 1,
+              'label': 'Home',
+              'line1': 'Street 1',
+              'city': 'Kuwait City',
+              'is_default': true,
+            },
+          ],
+        },
+        favoritesValue: const {'data': []},
+        notificationsValue: const {'data': []},
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: FoodexTheme.light(),
+          builder: (context, child) => MediaQuery(
+            data: MediaQuery.of(context).copyWith(
+              size: const Size(320, 760),
+              textScaler: const TextScaler.linear(1.3),
+            ),
+            child: Directionality(
+              textDirection: TextDirection.rtl,
+              child: child!,
+            ),
+          ),
+          home: CustomerAccountScreen(
+            api: api,
+            favoritesApi: api,
+            retailStoreId: 19,
+            onOpenAddresses: () {},
+            onOpenFavorites: () {},
+            onOpenNotifications: () {},
+            onOpenOrders: () {},
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(const ValueKey('foodex-wholesale-shared-header')),
+          findsOneWidget);
+      expect(
+        find.byKey(const ValueKey('foodex-wholesale-shared-header')),
+        findsOneWidget,
+      );
+      // Compact v4.2 density keeps account shortcuts visible on a narrow viewport.\n      expect(find.byType(CustomerAccountShortcutCard), findsNWidgets(5));
+
+      await tester.drag(
+        find.byType(ListView),
+        const Offset(0, -300),
+      );
+      await tester.pumpAndSettle();
+
+      expect(
+        find.byKey(const ValueKey('customer-account-orders-section')),
+        findsOneWidget,
+      );
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'account surfaces compact headers and refresh automatically on resume',
+    (tester) async {
+      final api = _AccountFakeApi(
+        addressesValue: const {'data': []},
+        favoritesValue: const {'data': []},
+        notificationsValue: const {'data': []},
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: FoodexTheme.light(),
+          home: CustomerAccountScreen(
+            api: api,
+            favoritesApi: api,
+            retailStoreId: 19,
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(
+        find.byKey(const ValueKey('foodex-wholesale-shared-header')),
+        findsOneWidget,
+      );
+
+      final profileBefore = api.profileLoads;
+      final addressesBefore = api.addressLoads;
+      final favoritesBefore = api.favoriteLoads.length;
+      final notificationsBefore = api.notificationLoads;
+
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+      await tester.pump();
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+      await tester.pumpAndSettle();
+
+      expect(api.profileLoads, profileBefore + 1);
+      expect(api.addressLoads, addressesBefore + 1);
+      expect(api.favoriteLoads.length, favoritesBefore + 1);
+      expect(api.notificationLoads, notificationsBefore + 1);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets('notification and address empty states use V3 state primitives',
+      (tester) async {
+    final api = _AccountFakeApi(
+      addressesValue: const {'data': []},
+      notificationsValue: const {'data': []},
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: FoodexTheme.light(),
+        home: CustomerNotificationCenterScreen(api: api),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.byKey(const ValueKey('foodex-wholesale-shared-header')),
+        findsOneWidget);
+    expect(find.byType(CustomerStateView), findsOneWidget);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: FoodexTheme.light(),
+        home: CustomerAddressBookScreen(api: api),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.byKey(const ValueKey('foodex-wholesale-shared-header')),
+        findsOneWidget);
+    expect(find.byType(CustomerStateView), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+}
+
+class _LocationFake implements CustomerLocationService {
+  const _LocationFake();
+
+  @override
+  Future<CustomerLocationPoint> currentLocation() async =>
+      const CustomerLocationPoint(
+        latitude: 29.3759,
+        longitude: 47.9774,
+        accuracyMeters: 4.5,
+      );
+}
+
+class _ReverseGeocoderFake implements CustomerReverseGeocoder {
+  const _ReverseGeocoderFake();
+
+  @override
+  Future<CustomerGeocodedAddress?> reverse({
+    required double latitude,
+    required double longitude,
+    String? languageCode,
+  }) async =>
+      const CustomerGeocodedAddress(
+        line1: 'Test Street 12',
+        area: 'Salmiya',
+        governorate: 'Hawalli',
+        city: 'Kuwait City',
+        country: 'Kuwait',
+        countryCode: 'KW',
+        building: '12',
+      );
+}
+
+class _AccountFakeApi
+    implements B2cAccountApi, B2cRetailFavoritesApi, CustomerContactApi {
+  _AccountFakeApi({
+    this.profileError,
+    this.addressesValue = const {'data': []},
+    this.favoritesValue = const {'data': []},
+    this.notificationsValue = const {'data': []},
+  });
+
+  final Object? profileError;
+  final Object? profileValue = const {
+    'name': 'Customer',
+    'email': 'c@example.test',
+  };
+  final Object? addressesValue;
+  final Object? favoritesValue;
+  final Object? notificationsValue;
+
+  int profileLoads = 0;
+  int addressLoads = 0;
+  int notificationLoads = 0;
+  final List<int?> favoriteLoads = <int?>[];
+  final List<(int, int?)> removedFavorites = <(int, int?)>[];
+  final List<int> readNotifications = <int>[];
+  final List<Map<String, dynamic>> createdAddresses = <Map<String, dynamic>>[];
+  int? lastContactStoreId;
+  String? lastContactPhone;
+  String? lastContactMessage;
+
+  @override
+  Future<Object?> profile() async {
+    profileLoads += 1;
+    if (profileError != null) throw profileError!;
+    return profileValue;
+  }
+
+  @override
+  Future<Object?> addresses() async {
+    addressLoads += 1;
+    return addressesValue;
+  }
+
+  @override
+  Future<Object?> favorites() async => favoritesValue;
+
+  @override
+  Future<void> removeFavorite(int productId) async {
+    removedFavorites.add((productId, null));
+  }
+
+  @override
+  Future<Object?> favoritesForStore(int storeId) async {
+    favoriteLoads.add(storeId);
+    return favoritesValue;
+  }
+
+  @override
+  Future<void> addFavoriteForStore(int storeId, int productId) async {}
+
+  @override
+  Future<void> removeFavoriteForStore(int storeId, int productId) async {
+    removedFavorites.add((productId, storeId));
+  }
+
+  @override
+  Future<Object?> notifications({String locale = 'ar'}) async {
+    notificationLoads += 1;
+    return notificationsValue;
+  }
+
+  @override
+  Future<void> markNotificationRead(int notificationId) async {
+    readNotifications.add(notificationId);
+  }
+
+  @override
+  Future<Object?> submitContactUs({
+    required int storeId,
+    required String phone,
+    required String message,
+  }) async {
+    lastContactStoreId = storeId;
+    lastContactPhone = phone;
+    lastContactMessage = message;
+    return const {
+      'data': {
+        'id': 42,
+        'status': 'open',
+        'type': 'complaint',
+        'source': 'customer_app',
+      },
+    };
+  }
+
+  @override
+  Future<Object?> createAddress(Map<String, dynamic> values) async {
+    createdAddresses.add(Map<String, dynamic>.from(values));
+    return values;
+  }
+
+  @override
+  Future<Object?> updateProfile(Map<String, dynamic> values) async => values;
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) => Future<Object?>.value(null);
+}
