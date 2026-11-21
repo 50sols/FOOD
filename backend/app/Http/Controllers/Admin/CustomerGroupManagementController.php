@@ -24,7 +24,11 @@ final class CustomerGroupManagementController extends Controller
     public function index(Request $request): View
     {
         [$actor, $storeId, $channel] = $this->authorizedStore($request, 'customers.view');
-        $search = trim((string) $request->query('q', ''));
+        // Reject nested GET search data after store authorization and before
+        // string coercion, query construction, or rendering the search input.
+        $searchInput = $request->query('q', '');
+        abort_if(is_array($searchInput), 404);
+        $search = trim((string) $searchInput);
         $groups = DB::table('commercial_customer_groups')
             ->where('store_id', $storeId)
             ->when($search !== '', function ($query) use ($search): void {
