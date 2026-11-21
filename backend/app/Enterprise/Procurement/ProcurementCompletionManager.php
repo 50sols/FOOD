@@ -332,6 +332,19 @@ final class ProcurementCompletionManager
         ])->validate();
 
         return DB::transaction(function () use ($actor, $scope, $purchaseRequestId, $data): object {
+            // The module-enabled preflight may become stale before the draft
+            // RFQ/lines/audit are written. Share lifecycle's row lock before
+            // locking the scoped purchase request and creating an RFQ.
+            $module = DB::table('enterprise_modules')
+                ->where('code', 'procurement')
+                ->lockForUpdate()
+                ->first();
+            abort_unless(
+                $module !== null && $module->state === ModuleState::ENABLED->value,
+                404,
+                'Procurement module is disabled.',
+            );
+
             $request = DB::table('enterprise_purchase_requests')
                 ->where('organization_id', $scope->organizationId)
                 ->where('company_id', $scope->companyId)
