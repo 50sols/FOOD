@@ -51,9 +51,10 @@ final class LookupManagementController extends Controller
 
         // A malformed explicit store selector must never silently turn into
         // zero and replace a user's chosen store with the first visible store.
+        $storeProvided = array_key_exists('store_id', $request->query());
         $storeInput = $request->query('store_id');
         abort_unless(
-            $storeInput === null || (is_string($storeInput)
+            ! $storeProvided || (is_string($storeInput)
                 && preg_match('/\\A(?:0|[1-9][0-9]*)\\z/D', $storeInput) === 1
                 && filter_var($storeInput, FILTER_VALIDATE_INT) !== false),
             404,
@@ -82,7 +83,7 @@ final class LookupManagementController extends Controller
                 ->where($table.'.store_id', $currentStoreId);
         }
 
-        $searchInput = $request->query('q', '');
+        $searchInput = $request->query('q', '') ?? '';
         abort_unless(is_string($searchInput), 404);
         $search = trim($searchInput);
         if ($search !== '') {
@@ -97,14 +98,14 @@ final class LookupManagementController extends Controller
             });
         }
 
-        $scopeInput = $request->query('scope', 'all');
+        $scopeInput = $request->query('scope', 'all') ?? '';
         abort_unless(is_string($scopeInput), 404);
         $scope = $isSuperAdmin ? $scopeInput : 'all';
         if ($isSuperAdmin && in_array($scope, [LookupScopeService::GLOBAL, LookupScopeService::B2B, LookupScopeService::STORE], true)) {
             $query->where($table.'.scope', $scope);
         }
 
-        $statusInput = $request->query('status', 'all');
+        $statusInput = $request->query('status', 'all') ?? '';
         abort_unless(is_string($statusInput), 404);
         $status = $statusInput;
         if ($status === 'active') {
