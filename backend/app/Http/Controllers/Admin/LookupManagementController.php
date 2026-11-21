@@ -49,8 +49,18 @@ final class LookupManagementController extends Controller
         $isRetailScoped = $isSuperAdmin === false && $isB2bAdmin === false && $retailStoreIds !== [];
         $currentStoreId = null;
 
+        // A malformed explicit store selector must never silently turn into
+        // zero and replace a user's chosen store with the first visible store.
+        $storeInput = $request->query('store_id');
+        abort_unless(
+            $storeInput === null || (is_string($storeInput)
+                && preg_match('/\\A(?:0|[1-9][0-9]*)\\z/D', $storeInput) === 1
+                && filter_var($storeInput, FILTER_VALIDATE_INT) !== false),
+            404,
+        );
+        $requestedStoreId = $storeInput === null ? 0 : (int) $storeInput;
+
         if ($isRetailScoped) {
-            $requestedStoreId = $request->integer('store_id');
             if ($requestedStoreId > 0) {
                 abort_unless(collect($retailStoreIds)->contains($requestedStoreId), 404);
                 $currentStoreId = $requestedStoreId;
@@ -72,7 +82,9 @@ final class LookupManagementController extends Controller
                 ->where($table.'.store_id', $currentStoreId);
         }
 
-        $search = trim((string) $request->query('q', ''));
+        $searchInput = $request->query('q', '');
+        abort_unless(is_string($searchInput), 404);
+        $search = trim($searchInput);
         if ($search !== '') {
             // These are user-entered literal substrings, not SQL wildcard patterns.
             $term = '%'.str_replace(['!', '%', '_'], ['!!', '!%', '!_'], $search).'%';
@@ -85,19 +97,23 @@ final class LookupManagementController extends Controller
             });
         }
 
-        $scope = $isSuperAdmin ? (string) $request->query('scope', 'all') : 'all';
+        $scopeInput = $request->query('scope', 'all');
+        abort_unless(is_string($scopeInput), 404);
+        $scope = $isSuperAdmin ? $scopeInput : 'all';
         if ($isSuperAdmin && in_array($scope, [LookupScopeService::GLOBAL, LookupScopeService::B2B, LookupScopeService::STORE], true)) {
             $query->where($table.'.scope', $scope);
         }
 
-        $status = (string) $request->query('status', 'all');
+        $statusInput = $request->query('status', 'all');
+        abort_unless(is_string($statusInput), 404);
+        $status = $statusInput;
         if ($status === 'active') {
             $query->where($table.'.is_active', true);
         } elseif ($status === 'inactive') {
             $query->where($table.'.is_active', false);
         }
 
-        $storeId = $isSuperAdmin ? $request->integer('store_id') : ($currentStoreId ?? 0);
+        $storeId = $isSuperAdmin ? $requestedStoreId : ($currentStoreId ?? 0);
         if ($isSuperAdmin && $storeId > 0) {
             $query->where($table.'.store_id', $storeId);
         }
