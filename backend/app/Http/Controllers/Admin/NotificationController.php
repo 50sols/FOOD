@@ -29,8 +29,21 @@ final class NotificationController extends Controller
     {
         $actor = $this->authorizeManage($request);
         App::setLocale(in_array($actor->locale, ['ar', 'en'], true) ? $actor->locale : 'ar');
-        $search = trim((string) $request->query('q', ''));
-        $status = trim((string) $request->query('status', ''));
+        // Validate GET input shapes after authorization, before any list or
+        // publication-review query. Laravel normalizes empty fields to null.
+        $queryFilters = $request->query();
+        $requestedSearch = $queryFilters['q'] ?? '';
+        $requestedStatus = $queryFilters['status'] ?? '';
+        $requestedReview = $queryFilters['review_notification'] ?? '';
+        abort_unless(
+            is_string($requestedSearch)
+                && is_string($requestedStatus)
+                && is_string($requestedReview),
+            404,
+        );
+
+        $search = trim($requestedSearch);
+        $status = trim($requestedStatus);
 
         // Treat user input as a literal substring, not a SQL LIKE pattern.
         // A fixed, explicit escape character works consistently on MySQL and SQLite.
@@ -58,7 +71,7 @@ final class NotificationController extends Controller
         $reviewSummary = null;
         $reviewToken = null;
         $reviewStoreName = null;
-        $reviewNotificationId = max(0, (int) $request->query('review_notification', 0));
+        $reviewNotificationId = max(0, (int) $requestedReview);
 
         if ($reviewNotificationId > 0) {
             $reviewNotification = Notification::query()->whereKey($reviewNotificationId)->firstOrFail();
