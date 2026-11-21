@@ -36,6 +36,13 @@ final class CouponManagementController extends Controller
     public function index(Request $request): View
     {
         $actor = $this->authorizeAccess($request, 'coupons.view');
+
+        // Reject nested query input before string coercion; authorization still runs first.
+        foreach (['q', 'channel', 'status'] as $field) {
+            $value = $request->query($field);
+            abort_unless($value === null || is_string($value), 404);
+        }
+
         $search = trim((string) $request->query('q', ''));
         $channel = strtolower(trim((string) $request->query('channel', '')));
         $status = trim((string) $request->query('status', ''));
