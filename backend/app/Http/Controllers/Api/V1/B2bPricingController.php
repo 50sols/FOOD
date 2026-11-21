@@ -172,6 +172,8 @@ class B2bPricingController extends Controller
             ->join('stores', 'stores.id', '=', 'catalogs.store_id')
             ->join('store_types', 'store_types.id', '=', 'stores.store_type_id')
             ->where('products.id', $data['product_id'])
+            ->where('products.is_active', true)
+            ->where('stores.is_active', true)
             ->where('catalogs.store_id', $data['store_id'])
             ->where('catalogs.channel', 'b2b')
             ->where('catalogs.is_active', true)
