@@ -721,6 +721,12 @@ final class AccountsReceivableService
             // before creating the settlement journal (including legacy drafts).
             $this->assertPostingAccount($scope, (int) $allocation->settlement_account_id, 'settlement_account_id');
 
+            // A posted AR document can outlive its original Finance account
+            // permissions. Revalidate the receivable side of the journal too:
+            // a disabled, control-only or cross-entity account must not be
+            // credited by replaying a settlement draft created earlier.
+            $this->assertPostingAccount($scope, (int) $document->receivable_account_id, 'receivable_account_id');
+
             $postedAllocations = EnterpriseAccountsReceivableAllocation::query()
                 ->where('ar_document_id', $document->id)
                 ->where('status', 'posted')
