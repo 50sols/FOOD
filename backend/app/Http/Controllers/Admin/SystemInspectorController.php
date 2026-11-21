@@ -40,6 +40,17 @@ final class SystemInspectorController extends Controller
         DashboardDeploymentProvenance $deploymentProvenance,
     ): View {
         $actor = $this->platformAdmin($request);
+
+        // Keep the existing platform-admin authorization first. Nested query values
+        // are not valid scalar filters: reject them before string/int/bool conversion
+        // or invoking any diagnostic queries and deployment source verification.
+        foreach ([
+            'source', 'severity', 'q', 'app_version', 'app_build', 'channel',
+            'store_id', 'restaurant_store_id', 'verify_source',
+        ] as $filter) {
+            abort_if(is_array($request->query($filter)), 404);
+        }
+
         $source = trim((string) $request->query('source', ''));
         $severity = trim((string) $request->query('severity', ''));
         $search = trim((string) $request->query('q', ''));
