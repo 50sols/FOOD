@@ -2419,6 +2419,52 @@ final class V2ErpProcurementRfqReceiptFlowTest extends TestCase
         $this->assertSame($before, DB::table('enterprise_purchase_requests')->count());
     }
 
+    /**
+     * An authentic, unpublished maker RFQ and company/store-scoped supplier.
+     *
+     * @return array{int,int}
+     */
+    private function draftRfqForPublish(User $maker, Store $store): array
+    {
+        $code = 'P135-PUBLISH-SUP-'.$maker->id;
+        $reason = 'P135 publish preflight '.$maker->id;
+        $this->actingAs($maker)->post(route('admin.erp.procurement.suppliers.store'), [
+            'store_id' => $store->id, 'scope_type' => 'store', 'code' => $code,
+            'name_en' => 'P135 invitation publication supplier',
+            'name_ar' => 'مورد اختبار نشر الدعوة',
+        ])->assertRedirect();
+        $supplierId = (int) DB::table('enterprise_suppliers')->where('code', $code)->value('id');
+        $this->assertGreaterThan(0, $supplierId);
+
+        $this->actingAs($maker)->post(route('admin.erp.procurement.requests.store'), [
+            'store_id' => $store->id, 'currency_code' => 'KWD', 'reason' => $reason,
+            'item_code' => 'P135-PUBLISH-SKU', 'description' => 'RFQ publication guard',
+            'quantity' => 2, 'unit' => 'each', 'estimated_unit_cost' => '4.250',
+        ])->assertRedirect();
+        $requestId = (int) DB::table('enterprise_purchase_requests')
+            ->where('reason', $reason)->value('id');
+        $this->assertGreaterThan(0, $requestId);
+        $this->actingAs($maker)->post(route('admin.erp.procurement.requests.submit', $requestId), [
+            'store_id' => $store->id,
+        ])->assertRedirect();
+
+        $this->actingAs($maker)->post(route('admin.erp.procurement.rfqs.store'), [
+            'store_id' => $store->id, 'purchase_request_id' => $requestId,
+            'title' => 'P135 unpublished invitation '.$maker->id,
+            'response_due_at' => now()->addDays(5)->format('Y-m-d H:i:s'),
+        ])->assertRedirect();
+        $rfqId = (int) DB::table('enterprise_procurement_rfqs')
+            ->where('purchase_request_id', $requestId)->value('id');
+        $this->assertGreaterThan(0, $rfqId);
+        $this->assertDatabaseHas('enterprise_procurement_rfqs', [
+            'id' => $rfqId, 'status' => 'draft', 'store_id' => $store->id,
+        ]);
+        $this->assertSame(0, DB::table('enterprise_procurement_rfq_invitations')
+            ->where('rfq_id', $rfqId)->count());
+
+        return [$supplierId, $rfqId];
+    }
+
     /** @return array{int,int,int,int} */
     private function quotedRequest(User $maker, Store $store, bool $assertPricePrecision = false): array
     {
