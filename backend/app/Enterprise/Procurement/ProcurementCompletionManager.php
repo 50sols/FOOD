@@ -634,7 +634,11 @@ final class ProcurementCompletionManager
                     'quote_id' => [__('enterprise_procurement.errors.quote_expired')],
                 ]);
             }
-            $supplier = $this->visibleSupplier($scope, (int) $quote->supplier_id);
+            // An operator supplier hold, disqualification or scope move must not
+            // commit between eligibility validation and the awarded PO write.
+            // Preserve the canonical company/store scope while holding the row
+            // until the award transaction either commits or rolls back.
+            $supplier = $this->visibleSupplier($scope, (int) $quote->supplier_id, true);
             if ($supplier->status !== 'active' || $supplier->qualification_status === 'unqualified') {
                 throw ValidationException::withMessages([
                     'supplier_id' => [__('enterprise_procurement.errors.quote_supplier_ineligible')],
@@ -2637,9 +2641,9 @@ final class ProcurementCompletionManager
         return $query->firstOrFail();
     }
 
-    private function visibleSupplier(EnterpriseDataScope $scope, int $supplierId): EnterpriseSupplier
+    private function visibleSupplier(EnterpriseDataScope $scope, int $supplierId, bool $lock = false): EnterpriseSupplier
     {
-        return EnterpriseSupplier::query()
+        $query = EnterpriseSupplier::query()
             ->where('id', $supplierId)
             ->where('organization_id', $scope->organizationId)
             ->where('company_id', $scope->companyId)
@@ -2648,8 +2652,13 @@ final class ProcurementCompletionManager
                     ->orWhere(function ($store) use ($scope): void {
                         $store->where('scope_type', 'store')->where('store_id', $scope->storeId);
                     });
-            })
-            ->firstOrFail();
+            });
+
+        if ($lock) {
+            $query->lockForUpdate();
+        }
+
+        return $query->firstOrFail();
     }
 
     private function baseScope(User $actor, ResolvedTenantContext $context): EnterpriseDataScope
