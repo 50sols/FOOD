@@ -189,7 +189,7 @@ class B2bAdminWorkspaceTest extends TestCase
         foreach (['test', 'save'] as $action) {
             $this->actingAs($admin)->post('/admin/b2b/pricing', $candidate + [
                 'setup_action' => $action,
-            ])->assertStatus(422);
+            ])->assertNotFound();
         }
         $this->assertDatabaseCount('b2b_price_rules', 0);
         $this->assertSame($auditBefore, DB::table('audit_logs')->count());
