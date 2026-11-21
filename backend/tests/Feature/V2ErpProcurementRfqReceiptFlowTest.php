@@ -1913,9 +1913,11 @@ final class V2ErpProcurementRfqReceiptFlowTest extends TestCase
         app()->setLocale('ar');
         $this->actingAs($checker)->post(route('admin.erp.procurement.contracts.activate', $contractId), [
             'store_id' => $store->id,
-        ])->assertNotFound();
+        ])->assertForbidden();
         $this->assertFalse($pendingShutdown);
-        $this->assertSame('module', $reads[0] ?? null);
+        // A suspended module is rejected by the HTTP access gate before the
+        // mutation transaction. The re-enabled positive path proves lock order.
+        $this->assertSame([], $reads);
         $this->assertDatabaseHas('enterprise_procurement_contracts', [
             'id' => $contractId, 'status' => 'draft', 'activated_by' => null,
         ]);
@@ -1940,9 +1942,11 @@ final class V2ErpProcurementRfqReceiptFlowTest extends TestCase
         app()->setLocale('ar');
         $this->actingAs($checker)->post(route('admin.erp.procurement.contracts.terminate', $contractId), [
             'store_id' => $store->id,
-        ])->assertNotFound();
+        ])->assertForbidden();
         $this->assertFalse($pendingShutdown);
-        $this->assertSame('module', $reads[0] ?? null);
+        // A suspended module is rejected by the HTTP access gate before the
+        // mutation transaction. The re-enabled positive path proves lock order.
+        $this->assertSame([], $reads);
         $this->assertDatabaseHas('enterprise_procurement_contracts', [
             'id' => $contractId, 'status' => 'active', 'terminated_by' => null,
         ]);
@@ -2022,10 +2026,10 @@ final class V2ErpProcurementRfqReceiptFlowTest extends TestCase
         });
 
         app()->setLocale('ar');
-        $this->actingAs($maker)->post($createUrl, $postData)->assertNotFound();
+        $this->actingAs($maker)->post($createUrl, $postData)->assertForbidden();
         $this->assertFalse($pending, 'The test must actually inject a post-preflight shutdown.');
         $this->assertSame(ModuleState::SUSPENDED, app(ModuleRegistry::class)->state('procurement'));
-        $this->assertSame('module', $reads[0] ?? null);
+        $this->assertSame([], $reads, 'Early authorization denial must not enter the RFQ write transaction.');
         $this->assertDatabaseMissing('enterprise_procurement_rfqs', [
             'purchase_request_id' => $requestId,
         ]);
@@ -2102,9 +2106,9 @@ final class V2ErpProcurementRfqReceiptFlowTest extends TestCase
 
         $this->actingAs($maker)->post(route('admin.erp.procurement.rfqs.cancel', $rfqId), [
             'store_id' => $store->id,
-        ])->assertNotFound();
+        ])->assertForbidden();
         $this->assertFalse($pendingShutdown);
-        $this->assertSame('module', $lockedReadOrder[0] ?? null);
+        $this->assertSame([], $lockedReadOrder, 'Denied request must not lock or revoke an RFQ.');
         $this->assertSame(ModuleState::SUSPENDED, app(ModuleRegistry::class)->state('procurement'));
         $this->assertDatabaseHas('enterprise_procurement_rfqs', [
             'id' => $rfqId, 'status' => 'published', 'cancelled_by' => null,
@@ -2253,7 +2257,7 @@ final class V2ErpProcurementRfqReceiptFlowTest extends TestCase
                 'store_id' => $store->id, 'supplier_ids' => [$supplierId],
             ]);
             if ($case['action'] === 'suspend') {
-                $result->assertNotFound();
+                $result->assertForbidden();
                 $this->assertSame(ModuleState::SUSPENDED, app(ModuleRegistry::class)->state('procurement'));
             } else {
                 $result->assertRedirect()->assertSessionHasErrors('supplier_ids');
@@ -2318,7 +2322,7 @@ final class V2ErpProcurementRfqReceiptFlowTest extends TestCase
         app(ModuleLifecycleManager::class)->transition('procurement', ModuleState::SUSPENDED);
         $this->actingAs($checker)->post(route('admin.erp.procurement.rfqs.award', [
             'rfq' => $rfqId, 'quote' => $quoteId,
-        ]), ['store_id' => $store->id])->assertNotFound();
+        ]), ['store_id' => $store->id])->assertForbidden();
 
         $this->assertDatabaseHas('enterprise_procurement_rfqs', [
             'id' => $rfqId, 'status' => 'awarded', 'awarded_quote_id' => $quoteId,
