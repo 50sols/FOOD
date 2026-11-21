@@ -49,6 +49,22 @@ final class V2SystemLookupFilterQueryShapeTest extends TestCase
             'priority' => 9000,
             'is_active' => true,
         ]);
+        $inactiveLookup = OperationalLookup::query()->create([
+            'type' => OperationalLookupService::PAYMENT_METHOD,
+            'code' => 'v2_4052_inactive',
+            'label_ar' => 'طريقة متوقفة %_',
+            'label_en' => 'V2-4052-Method%_Inactive',
+            'sort_order' => 9002,
+            'is_active' => false,
+        ]);
+        $inactiveTier = B2bPriceTier::query()->create([
+            'code' => 'V24052INACTIVE',
+            'name' => 'V2-4052-Tier%_Inactive',
+            'name_ar' => 'شريحة متوقفة %_',
+            'name_en' => 'V2-4052-Tier%_Inactive',
+            'priority' => 9002,
+            'is_active' => false,
+        ]);
         $before = $this->counts();
         $actor = $this->superAdmin();
 
@@ -72,6 +88,22 @@ final class V2SystemLookupFilterQueryShapeTest extends TestCase
             ]))->assertOk()
                 ->assertSee('dir="'.$direction.'"', false)
                 ->assertSee($tier->code);
+
+            $this->actingAs($actor->fresh())->get('/admin/operations/lookups?'.http_build_query([
+                'type' => 'payment-methods',
+                'q' => 'V2-4052-Method%_',
+                'status' => 'inactive',
+            ]))->assertOk()
+                ->assertSee($inactiveLookup->code)
+                ->assertDontSee($lookup->code);
+
+            $this->actingAs($actor->fresh())->get('/admin/operations/lookups?'.http_build_query([
+                'type' => 'pricing-tiers',
+                'q' => 'V2-4052-Tier%_',
+                'status' => 'inactive',
+            ]))->assertOk()
+                ->assertSee($inactiveTier->code)
+                ->assertDontSee($tier->code);
 
             // Preserve existing fallback for an unknown scalar status:
             // it is not an authorization bypass or a typed filter.
