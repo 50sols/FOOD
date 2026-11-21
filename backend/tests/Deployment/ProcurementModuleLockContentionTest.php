@@ -4,6 +4,7 @@ namespace Tests\Deployment;
 
 use App\Enterprise\Modules\ModuleRegistry;
 use App\Enterprise\Modules\ModuleState;
+use App\Services\WholesalePrincipal;
 use App\Models\User;
 use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\Artisan;
@@ -344,8 +345,10 @@ final class ProcurementModuleLockContentionTest extends TestCase
         $this->assertSame(0, Artisan::call('migrate', ['--force' => true]));
 
         $company = DB::table('enterprise_companies')->orderBy('id')->first();
-        $store = DB::table('stores')->orderBy('id')->first();
         $this->assertNotNull($company);
+        // Migrated disposable MySQL starts without stores. Provision a
+        // canonical B2B principal rather than depending on another test's seed.
+        $store = DB::table('stores')->where('id', app(WholesalePrincipal::class)->storeId())->first();
         $this->assertNotNull($store);
         $actor = User::factory()->create(['is_active' => true]);
         $supplierId = null;
