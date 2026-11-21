@@ -1818,6 +1818,67 @@ final class V2ErpProcurementRfqReceiptFlowTest extends TestCase
             ->where('event', 'enterprise.procurement.rfq.awarded')->count());
     }
 
+    public function test_award_rechecks_supplier_hold_and_disqualification_after_authorized_preflight_without_po(): void
+    {
+        $store = $this->store();
+        $maker = $this->actor('PROCUREMENT_BUYER', 'ar');
+        $checker = $this->actor('PROCUREMENT_MANAGER', 'en');
+        [$supplierId, $requestId, $rfqId, $quoteId] = $this->quotedRequest($maker, $store);
+
+        $this->actingAs($checker)->post(route('admin.erp.procurement.requests.decision', $requestId), [
+            'store_id' => $store->id, 'decision' => 'approve',
+        ])->assertRedirect();
+        $beforeAudits = DB::table('audit_logs')
+            ->where('event', 'enterprise.procurement.rfq.awarded')->count();
+        $beforeCost = DB::table('enterprise_purchase_request_lines')
+            ->where('purchase_request_id', $requestId)->value('estimated_unit_cost');
+        $injection = null;
+        $injected = [];
+
+        // Reproduce a governance change AFTER the module-enabled preflight
+        // SELECT and BEFORE award's locked supplier eligibility read. This
+        // QueryExecuted listener is a deterministic single-process interleave;
+        // independent two-worker MySQL/HTTP acceptance remains separately due.
+        DB::listen(function (QueryExecuted $query) use (&$injection, &$injected, $supplierId): void {
+            if ($injection === null
+                || ! str_starts_with(strtolower(ltrim($query->sql)), 'select')
+                || ! str_contains($query->sql, 'enterprise_modules')) {
+                return;
+            }
+
+            $kind = $injection;
+            $injection = null;
+            DB::table('enterprise_suppliers')->where('id', $supplierId)->update(
+                $kind === 'hold' ? ['status' => 'on_hold'] : ['qualification_status' => 'unqualified'],
+            );
+            $injected[] = $kind;
+        });
+
+        foreach (['ar' => 'hold', 'en' => 'disqualified'] as $locale => $kind) {
+            DB::table('enterprise_suppliers')->where('id', $supplierId)->update([
+                'status' => 'active', 'qualification_status' => 'qualified',
+            ]);
+            app()->setLocale($locale);
+            $checker->forceFill(['locale' => $locale])->save();
+            $injection = $kind;
+
+            $this->actingAs($checker->fresh())->post(route('admin.erp.procurement.rfqs.award', [
+                'rfq' => $rfqId, 'quote' => $quoteId,
+            ]), ['store_id' => $store->id])
+                ->assertRedirect()->assertSessionHasErrors('supplier_id');
+
+            $this->assertNull($injection, 'Supplier governance change must occur during module-enabled preflight.');
+            $this->assertDatabaseHas('enterprise_procurement_quotes', [
+                'id' => $quoteId, 'status' => 'submitted', 'total_amount' => '8.500',
+            ]);
+            $this->assertUnawarded($requestId, $rfqId, $beforeCost);
+            $this->assertSame($beforeAudits, DB::table('audit_logs')
+                ->where('event', 'enterprise.procurement.rfq.awarded')->count());
+        }
+
+        $this->assertSame(['hold', 'disqualified'], $injected);
+    }
+
     public function test_rfq_cannot_award_before_independent_checker_approves_without_mutating_supplier_or_price(): void
     {
         $store = $this->store();
