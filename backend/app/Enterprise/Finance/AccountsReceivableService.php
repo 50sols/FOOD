@@ -716,6 +716,11 @@ final class AccountsReceivableService
                 ]);
             }
 
+            // A draft does not reserve the account's posting authority. Recheck
+            // its active, non-control, legal-entity-scoped status immediately
+            // before creating the settlement journal (including legacy drafts).
+            $this->assertPostingAccount($scope, (int) $allocation->settlement_account_id, 'settlement_account_id');
+
             $postedAllocations = EnterpriseAccountsReceivableAllocation::query()
                 ->where('ar_document_id', $document->id)
                 ->where('status', 'posted')
