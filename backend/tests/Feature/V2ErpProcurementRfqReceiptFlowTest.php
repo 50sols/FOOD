@@ -1944,6 +1944,54 @@ final class V2ErpProcurementRfqReceiptFlowTest extends TestCase
             ->where('event', 'enterprise.procurement.rfq.awarded')->count());
     }
 
+    public function test_award_rejects_invalidated_submitted_invitation_in_both_locales_without_po_or_audit(): void
+    {
+        $store = $this->store();
+        $maker = $this->actor('PROCUREMENT_BUYER', 'ar');
+        $checker = $this->actor('PROCUREMENT_MANAGER', 'en');
+        [$supplierId, $requestId, $rfqId, $quoteId] = $this->quotedRequest($maker, $store);
+
+        $this->actingAs($checker)->post(route('admin.erp.procurement.requests.decision', $requestId), [
+            'store_id' => $store->id, 'decision' => 'approve',
+        ])->assertRedirect();
+        $invitation = DB::table('enterprise_procurement_rfq_invitations')
+            ->where('rfq_id', $rfqId)
+            ->where('supplier_id', $supplierId)
+            ->first();
+        $this->assertNotNull($invitation);
+        $this->assertSame('submitted', $invitation->status);
+        $originalCost = DB::table('enterprise_purchase_request_lines')
+            ->where('purchase_request_id', $requestId)->value('estimated_unit_cost');
+        $awardAudits = DB::table('audit_logs')
+            ->where('event', 'enterprise.procurement.rfq.awarded')->count();
+
+        // A quote that was genuinely submitted before revocation remains
+        // persisted, but is no longer authority to create a PO. Reject even
+        // though module, RFQ, buyer/checker and supplier are still eligible.
+        foreach (['ar' => 'revoked', 'en' => 'expired', 'ar' => 'opened'] as $locale => $status) {
+            DB::table('enterprise_procurement_rfq_invitations')
+                ->where('id', $invitation->id)
+                ->update(['status' => $status]);
+            app()->setLocale($locale);
+            $checker->forceFill(['locale' => $locale])->save();
+
+            $this->actingAs($checker->fresh())->post(route('admin.erp.procurement.rfqs.award', [
+                'rfq' => $rfqId, 'quote' => $quoteId,
+            ]), ['store_id' => $store->id])
+                ->assertRedirect()->assertSessionHasErrors('quote_id');
+
+            $this->assertDatabaseHas('enterprise_procurement_rfq_invitations', [
+                'id' => $invitation->id, 'status' => $status,
+            ]);
+            $this->assertDatabaseHas('enterprise_procurement_quotes', [
+                'id' => $quoteId, 'status' => 'submitted', 'total_amount' => '8.500',
+            ]);
+            $this->assertUnawarded($requestId, $rfqId, $originalCost);
+            $this->assertSame($awardAudits, DB::table('audit_logs')
+                ->where('event', 'enterprise.procurement.rfq.awarded')->count());
+        }
+    }
+
     public function test_tampered_persisted_supplier_quote_negative_money_or_quantity_cannot_create_po(): void
     {
         $store = $this->store();
