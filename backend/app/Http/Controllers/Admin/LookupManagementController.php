@@ -49,8 +49,19 @@ final class LookupManagementController extends Controller
         $isRetailScoped = $isSuperAdmin === false && $isB2bAdmin === false && $retailStoreIds !== [];
         $currentStoreId = null;
 
+        // A malformed explicit store selector must never silently turn into
+        // zero and replace a user's chosen store with the first visible store.
+        $storeProvided = array_key_exists('store_id', $request->query());
+        $storeInput = $request->query('store_id');
+        abort_unless(
+            ! $storeProvided || (is_string($storeInput)
+                && preg_match('/\\A(?:0|[1-9][0-9]*)\\z/D', $storeInput) === 1
+                && filter_var($storeInput, FILTER_VALIDATE_INT) !== false),
+            404,
+        );
+        $requestedStoreId = $storeInput === null ? 0 : (int) $storeInput;
+
         if ($isRetailScoped) {
-            $requestedStoreId = $request->integer('store_id');
             if ($requestedStoreId > 0) {
                 abort_unless(collect($retailStoreIds)->contains($requestedStoreId), 404);
                 $currentStoreId = $requestedStoreId;
@@ -72,7 +83,11 @@ final class LookupManagementController extends Controller
                 ->where($table.'.store_id', $currentStoreId);
         }
 
-        $search = trim((string) $request->query('q', ''));
+        $searchInput = $request->query('q', '');
+        // HTTP query values are strings or arrays; Laravel converts an
+        // explicit empty string to null. Reject arrays, preserve empty text.
+        abort_if(is_array($searchInput), 404);
+        $search = trim((string) $searchInput);
         if ($search !== '') {
             // These are user-entered literal substrings, not SQL wildcard patterns.
             $term = '%'.str_replace(['!', '%', '_'], ['!!', '!%', '!_'], $search).'%';
@@ -85,19 +100,26 @@ final class LookupManagementController extends Controller
             });
         }
 
-        $scope = $isSuperAdmin ? (string) $request->query('scope', 'all') : 'all';
+        // Distinguish a missing filter from an explicitly submitted empty
+        // value, which ConvertEmptyStringsToNull normalizes to null.
+        $queryFilters = $request->query();
+        $scopeInput = array_key_exists('scope', $queryFilters) ? $queryFilters['scope'] : 'all';
+        abort_if(is_array($scopeInput), 404);
+        $scope = $isSuperAdmin ? (string) $scopeInput : 'all';
         if ($isSuperAdmin && in_array($scope, [LookupScopeService::GLOBAL, LookupScopeService::B2B, LookupScopeService::STORE], true)) {
             $query->where($table.'.scope', $scope);
         }
 
-        $status = (string) $request->query('status', 'all');
+        $statusInput = array_key_exists('status', $queryFilters) ? $queryFilters['status'] : 'all';
+        abort_if(is_array($statusInput), 404);
+        $status = (string) $statusInput;
         if ($status === 'active') {
             $query->where($table.'.is_active', true);
         } elseif ($status === 'inactive') {
             $query->where($table.'.is_active', false);
         }
 
-        $storeId = $isSuperAdmin ? $request->integer('store_id') : ($currentStoreId ?? 0);
+        $storeId = $isSuperAdmin ? $requestedStoreId : ($currentStoreId ?? 0);
         if ($isSuperAdmin && $storeId > 0) {
             $query->where($table.'.store_id', $storeId);
         }
