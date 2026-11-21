@@ -131,6 +131,10 @@ final class SmartOrderingCustomerGrowthController extends Controller
     ): JsonResponse {
         $this->authorizeSite($request, $site, $tenants, 'smart_ordering.view');
 
+        // Resolve the authorized restaurant first. Nested GET selectors must
+        // not be coerced to an unintended branch ID or an unfiltered list.
+        abort_if(is_array($request->query('branch_id')), 404);
+
         return response()->json([
             'rewards' => $admin->rewards($site, $request->integer('branch_id') ?: null),
         ]);
