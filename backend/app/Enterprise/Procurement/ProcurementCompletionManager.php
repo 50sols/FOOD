@@ -368,7 +368,10 @@ final class ProcurementCompletionManager
             }
 
             if (($data['contract_id'] ?? null) !== null) {
-                $contract = $this->visibleContract($scope, (int) $data['contract_id']);
+                // Hold the scoped agreement across validity validation and draft
+                // creation. Concurrent termination must commit entirely
+                // before this check or after the new RFQ is persisted.
+                $contract = $this->visibleContract($scope, (int) $data['contract_id'], true);
                 if (
                     $contract->status !== 'active'
                     || now()->toDateString() < (string) $contract->starts_on
@@ -1479,9 +1482,19 @@ final class ProcurementCompletionManager
         $scope = $this->scope($actor, $context, 'procurement.purchase_orders.manage');
 
         // The same record-level SoD used by AP posting and Treasury payment
-        // release applies to the supplier agreement itself. Lock across the
-        // state transition so concurrent activation cannot bypass the checker.
+        // release applies to the supplier agreement itself. Serialize module
+        // lifecycle before locking the agreement, matching RFQ transitions.
         DB::transaction(function () use ($actor, $scope, $contractId): void {
+            $module = DB::table('enterprise_modules')
+                ->where('code', 'procurement')
+                ->lockForUpdate()
+                ->first();
+            abort_unless(
+                $module !== null && $module->state === ModuleState::ENABLED->value,
+                404,
+                'Procurement module is disabled.',
+            );
+
             $contract = $this->visibleContract($scope, $contractId, true);
             if ($contract->status === 'active') {
                 return;
@@ -1515,25 +1528,41 @@ final class ProcurementCompletionManager
         int $contractId,
     ): void {
         $scope = $this->scope($actor, $context, 'procurement.purchase_orders.manage');
-        $contract = $this->visibleContract($scope, $contractId, true);
-        if ($contract->status === 'terminated') {
-            return;
-        }
-        if (! in_array($contract->status, ['draft', 'active'], true)) {
-            throw ValidationException::withMessages(['status' => ['Contract cannot be terminated from its current state.']]);
-        }
 
-        DB::table('enterprise_procurement_contracts')->where('id', $contract->id)->update([
-            'status' => 'terminated',
-            'terminated_by' => $actor->id,
-            'terminated_at' => now(),
-            'updated_by' => $actor->id,
-            'updated_at' => now(),
-        ]);
-        $this->audit->record('enterprise.procurement.contract.terminated', $actor, null, null, [
-            'store_id' => $scope->storeId,
-            'contract_id' => $contract->id,
-        ]);
+        // A locking SELECT outside a transaction releases its row lock before
+        // the subsequent UPDATE in MySQL autocommit mode. Hold module and
+        // contract locks through termination + audit in one real transaction.
+        DB::transaction(function () use ($actor, $scope, $contractId): void {
+            $module = DB::table('enterprise_modules')
+                ->where('code', 'procurement')
+                ->lockForUpdate()
+                ->first();
+            abort_unless(
+                $module !== null && $module->state === ModuleState::ENABLED->value,
+                404,
+                'Procurement module is disabled.',
+            );
+
+            $contract = $this->visibleContract($scope, $contractId, true);
+            if ($contract->status === 'terminated') {
+                return;
+            }
+            if (! in_array($contract->status, ['draft', 'active'], true)) {
+                throw ValidationException::withMessages(['status' => ['Contract cannot be terminated from its current state.']]);
+            }
+
+            DB::table('enterprise_procurement_contracts')->where('id', $contract->id)->update([
+                'status' => 'terminated',
+                'terminated_by' => $actor->id,
+                'terminated_at' => now(),
+                'updated_by' => $actor->id,
+                'updated_at' => now(),
+            ]);
+            $this->audit->record('enterprise.procurement.contract.terminated', $actor, null, null, [
+                'store_id' => $scope->storeId,
+                'contract_id' => $contract->id,
+            ]);
+        }, 3);
     }
 
     public function assignContractToOrder(
