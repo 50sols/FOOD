@@ -25,6 +25,91 @@ class PromotionalNotificationCampaignTest extends TestCase
         $this->seed(CoreReferenceSeeder::class);
     }
 
+    public function test_campaign_dashboard_rejects_nested_get_filters_after_authorization_without_writes(): void
+    {
+        $mine = $this->store('B2C', 'CAMPAIGN-QUERY-MINE');
+        $foreign = $this->store('B2C', 'CAMPAIGN-QUERY-FOREIGN');
+        $super = $this->globalRoleUser('SUPER_ADMIN', 'campaign-query-super@example.test');
+        $retail = $this->storeRoleUser($mine, 'B2C_STORE_ADMIN', 'campaign-query-retail@example.test');
+        $roleless = User::factory()->create(['locale' => 'en']);
+
+        $this->launchCampaign([
+            'name' => 'Campaign literal 100%_! marker',
+            'target_channel' => 'b2c',
+            'store_id' => $mine,
+        ]);
+        $this->launchCampaign([
+            'name' => 'Campaign decoy 100XX marker',
+            'target_channel' => 'b2c',
+            'store_id' => $mine,
+        ]);
+        $this->launchCampaign([
+            'name' => 'Foreign campaign must stay hidden',
+            'target_channel' => 'b2c',
+            'store_id' => $foreign,
+        ]);
+        $this->launchCampaign([
+            'name' => 'Campaign draft filter',
+            'target_channel' => 'b2c',
+            'store_id' => $mine,
+            'status' => 'draft',
+        ]);
+
+        $campaignCount = DB::table('notification_campaigns')->count();
+        $auditCount = DB::table('audit_logs')->count();
+
+        foreach (['ar', 'en'] as $locale) {
+            foreach ([$super, $retail] as $actor) {
+                $actor->forceFill(['locale' => $locale])->save();
+
+                $this->actingAs($actor)
+                    ->get('/admin/notification-campaigns?q='.rawurlencode('100%_!'))
+                    ->assertOk()
+                    ->assertSee('Campaign literal 100%_! marker')
+                    ->assertDontSee('Campaign decoy 100XX marker');
+
+                $this->actingAs($actor)
+                    ->get('/admin/notification-campaigns?status=draft')
+                    ->assertOk()
+                    ->assertSee('Campaign draft filter')
+                    ->assertDontSee('Campaign literal 100%_! marker');
+
+                $this->actingAs($actor)
+                    ->get('/admin/notification-campaigns?q=&status=&review_campaign=0&review_action=')
+                    ->assertOk();
+
+                foreach ([
+                    'q[]=value',
+                    'q[deep][0]=value',
+                    'status[]=draft',
+                    'status[deep]=active',
+                    'review_campaign[]=1',
+                    'review_campaign[deep]=1',
+                    'review_action[]=activate',
+                    'review_action[deep]=send_now',
+                    'q[]=value&status=active',
+                ] as $query) {
+                    $this->actingAs($actor)
+                        ->get('/admin/notification-campaigns?'.$query)
+                        ->assertNotFound();
+                }
+            }
+
+            $this->actingAs($retail)
+                ->get('/admin/notification-campaigns?status=active')
+                ->assertOk()
+                ->assertDontSee('Foreign campaign must stay hidden');
+
+            $roleless->forceFill(['locale' => $locale])->save();
+            $this->actingAs($roleless)
+                ->get('/admin/notification-campaigns?q[]=value')
+                ->assertForbidden();
+        }
+
+        $this->assertSame($campaignCount, DB::table('notification_campaigns')->count());
+        $this->assertSame($auditCount, DB::table('audit_logs')->count());
+    }
+
     public function test_b2b_admin_can_schedule_b2b_campaign_but_cannot_target_b2c(): void
     {
         $admin = $this->globalRoleUser('B2B_ADMIN', 'b2b-campaigns@example.test');

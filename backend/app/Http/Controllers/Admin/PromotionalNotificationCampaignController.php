@@ -37,6 +37,13 @@ final class PromotionalNotificationCampaignController extends Controller
     public function index(Request $request, NotificationAudienceReviewService $reviews): View
     {
         $actor = $this->authorizeAccess($request, 'notifications.view');
+
+        // Reject nested GET filters before PHP can coerce arrays to "Array" or an
+        // integer. Authorization stays first so an unprivileged actor gets 403.
+        foreach (['q', 'status', 'review_campaign', 'review_action'] as $key) {
+            abort_if(is_array($request->query($key)), 404);
+        }
+
         $canManage = $this->canAccess($actor, 'notifications.manage');
         $search = trim((string) $request->query('q', ''));
         $status = trim((string) $request->query('status', ''));
