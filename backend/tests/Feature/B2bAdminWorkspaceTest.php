@@ -172,6 +172,29 @@ class B2bAdminWorkspaceTest extends TestCase
         $this->assertDatabaseCount('b2b_price_rules', 0);
         $this->assertSame($auditBefore, DB::table('audit_logs')->count());
 
+        // A candidate may refer to an already existing product whose
+        // status changes between form rendering and Test/Save. Neither action
+        // may accept an inactive Wholesale catalog product or its store.
+        DB::table('products')->where('id', $product)->update(['is_active' => false]);
+        foreach (['test', 'save'] as $action) {
+            $this->actingAs($admin)->post('/admin/b2b/pricing', $candidate + [
+                'setup_action' => $action,
+            ])->assertStatus(422);
+        }
+        $this->assertDatabaseCount('b2b_price_rules', 0);
+        $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+        DB::table('products')->where('id', $product)->update(['is_active' => true]);
+
+        DB::table('stores')->where('id', $store)->update(['is_active' => false]);
+        foreach (['test', 'save'] as $action) {
+            $this->actingAs($admin)->post('/admin/b2b/pricing', $candidate + [
+                'setup_action' => $action,
+            ])->assertStatus(422);
+        }
+        $this->assertDatabaseCount('b2b_price_rules', 0);
+        $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+        DB::table('stores')->where('id', $store)->update(['is_active' => true]);
+
         $this->actingAs($admin)->post('/admin/b2b/pricing', $candidate + [
             'setup_action' => 'save',
         ])->assertRedirect()->assertSessionHasNoErrors();
