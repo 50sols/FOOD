@@ -28,6 +28,10 @@ final class SmartOrderingSupplyController extends Controller
         $storeIds = app(RestaurantSaasStoreAccess::class)
             ->allowedStoreIds($actor, 'smart_ordering.view', $request);
 
+        // A nested explicit selector must not coerce to zero and redirect to
+        // an unrelated default authorized store. Store authorization runs first.
+        abort_if(is_array($request->query('store_id')), 404);
+
         $requested = $request->integer('store_id');
         if ($requested > 0 && ! in_array($requested, $storeIds, true)) {
             abort(404);
