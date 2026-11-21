@@ -20,6 +20,7 @@ use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Gate;
+use Illuminate\Validation\Rule;
 
 class B2bPricingController extends Controller
 {
@@ -145,7 +146,7 @@ class B2bPricingController extends Controller
         abort_unless($user instanceof User, 401);
         Gate::authorize('b2b.pricing.manage');
         $data = $request->validate([
-            'price_tier_id' => ['required', 'integer', 'exists:b2b_price_tiers,id'],
+            'price_tier_id' => ['required', 'integer', Rule::exists('b2b_price_tiers', 'id')->where('is_active', true)],
             'store_id' => ['required', 'integer', 'exists:stores,id'],
             'product_id' => ['required', 'integer', 'exists:products,id'],
             'unit_price' => ['required', 'numeric', 'gte:0'],
