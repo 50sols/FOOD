@@ -10,6 +10,10 @@ The objective is simple:
 
 GitHub is the source of truth. Chat history is not.
 
+## Owner's compact V2 closeout command (2026-11-21, #4045)
+
+For FOODEX V2, `V2_CLOSE_NEXT` or **كمل V2** means: read [the canonical issue closeout playbook](docs/v2/V2_ISSUE_CLOSEOUT_PLAYBOOK.md), refresh live issues/leases/PRs/CI, and complete one smallest safe independent in-scope leaf on its original branch/PR into `Foodex_V2`. `V2_CLOSE_3` means repeat sequentially for up to three complete leaves. This shorthand **does not waive** any ownership, scope, review, exact-head CI, protection or merge gate; do not close partial Issues, activate unscheduled workers, merge to main or touch production. The [dated snapshot](docs/v2/V2_ISSUE_CLOSEOUT_SNAPSHOT.json) is only a starting inventory; live GitHub always wins.
+
 ## Repository-native AI context and skills
 
 FOODEX keeps a repository-native orientation and execution layer under `.ai/`. It exists to make a new or resumed coding agent productive quickly; it does **not** replace this file, live GitHub state, or authoritative contracts under `docs/`.
