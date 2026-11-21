@@ -68,6 +68,13 @@ final class SmartOrderingSupplyController extends Controller
         $this->authorizeSite($request, $site, $tenants, 'smart_ordering.view');
         $this->assertEntitled($site);
 
+        // Only scalar GET selectors may reach date parsing, branch lookups or
+        // the product search. Authorization and module entitlement run first.
+        foreach (['from', 'to', 'branch_id', 'q'] as $filter) {
+            $value = $request->query($filter);
+            abort_unless($value === null || is_string($value), 404);
+        }
+
         $branchId = $request->integer('branch_id') ?: null;
         if ($branchId !== null) {
             abort_unless(
