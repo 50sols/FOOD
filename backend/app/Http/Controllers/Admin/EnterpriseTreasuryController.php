@@ -74,6 +74,19 @@ final class EnterpriseTreasuryController extends Controller
         abort_unless(is_string($tab) && in_array($tab, self::TABS, true), 404);
         abort_unless($this->allowed($actor, $storeId, 'finance.view'), 403);
 
+        // Reject nested IDs after Treasury authorization, before integer()
+        // can coerce an array into an unrelated facility/account/cashbox ID.
+        // Only inspect the filter owned by the selected panel.
+        $idFilters = match ($tab) {
+            'financing' => ['facility_id'],
+            'cheques', 'reconciliation' => ['bank_account_id'],
+            'cash_closing' => ['cashbox_id'],
+            default => [],
+        };
+        foreach ($idFilters as $filter) {
+            abort_if(is_array($request->query($filter)), 404);
+        }
+
         $cashboxes = EnterpriseCashbox::query()
             ->where('store_id', $storeId)
             ->where('is_active', true)
