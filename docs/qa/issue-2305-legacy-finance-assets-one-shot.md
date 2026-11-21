@@ -1,6 +1,6 @@
 # Issue #2305 QA evidence
 
-This scope is an operator-run Artisan command. RBAC, tenant isolation, and browser AR/EN presentation are not applicable; the command uses existing protected legacy materialization tables, never promotes native fixed assets, and preserves both Arabic and English source names.
+This scope is an operator-run Artisan command. RBAC, tenant isolation, and browser AR/EN presentation are not applicable; the command uses existing protected legacy materialization tables, never promotes native fixed assets, and preserves both Arabic and English source names. Customer / Driver / Van impact is none: no mobile app code or shared API contract changes are included.
 
 ## Automated acceptance cases
 
