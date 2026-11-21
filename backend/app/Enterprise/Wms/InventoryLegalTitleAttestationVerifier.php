@@ -442,11 +442,31 @@ final class InventoryLegalTitleAttestationVerifier
                 }
             });
 
-        if ($inventoryId !== null) {
-            $unrecorded->where('movement.inventory_id', $inventoryId);
+        if ($inventoryId === null) {
+            // The unscoped guard validates live sources only: approved demo
+            // cleanup preserves historical immutable events after deleting
+            // disposable movement rows.
+            return ! $unrecorded->exists();
         }
 
-        return ! $unrecorded->exists();
+        $unrecorded->where('movement.inventory_id', $inventoryId);
+        if ($unrecorded->exists()) {
+            return false;
+        }
+
+        // Conversely, a privileged DELETE bypass can erase a canonical
+        // movement while leaving its event. A scoped inventory must never
+        // regain legal-title certification merely because its source row no
+        // longer participates in the LEFT JOIN above.
+        return ! DB::table('enterprise_inventory_owner_movement_events as owner_event')
+            ->where('owner_event.inventory_id', $inventoryId)
+            ->whereNotExists(function ($query): void {
+                $query->selectRaw('1')
+                    ->from('stock_movements as movement')
+                    ->whereColumn('movement.id', 'owner_event.source_stock_movement_id')
+                    ->whereColumn('movement.inventory_id', 'owner_event.inventory_id');
+            })
+            ->exists();
     }
 
     /**
