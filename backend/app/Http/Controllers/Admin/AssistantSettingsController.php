@@ -44,6 +44,9 @@ final class AssistantSettingsController extends Controller
         );
 
         $canManage = $actor->hasPermission('settings.manage');
+        // Preserve the existing settings authorization first. A nested trace
+        // selector is not a trace ID; deny it before PHP coerces an array.
+        abort_if($canManage && is_array($request->query('trace')), 404);
         $traceId = $canManage ? trim((string) $request->query('trace', '')) : '';
 
         return view('admin.assistant-settings', [
