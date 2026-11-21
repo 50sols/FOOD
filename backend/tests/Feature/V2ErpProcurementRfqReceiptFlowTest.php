@@ -1968,7 +1968,13 @@ final class V2ErpProcurementRfqReceiptFlowTest extends TestCase
         // A quote that was genuinely submitted before revocation remains
         // persisted, but is no longer authority to create a PO. Reject even
         // though module, RFQ, buyer/checker and supplier are still eligible.
-        foreach (['ar' => 'revoked', 'en' => 'expired', 'ar' => 'opened'] as $locale => $status) {
+        foreach ([
+            ['locale' => 'ar', 'status' => 'revoked'],
+            ['locale' => 'en', 'status' => 'expired'],
+            ['locale' => 'ar', 'status' => 'opened'],
+        ] as $case) {
+            $locale = $case['locale'];
+            $status = $case['status'];
             DB::table('enterprise_procurement_rfq_invitations')
                 ->where('id', $invitation->id)
                 ->update(['status' => $status]);
