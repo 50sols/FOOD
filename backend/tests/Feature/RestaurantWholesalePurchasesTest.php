@@ -125,6 +125,60 @@ final class RestaurantWholesalePurchasesTest extends TestCase
             ->assertSee('Purchase Cart');
     }
 
+    public function test_restaurant_wholesale_tab_get_rejects_nested_shapes_without_losing_buyer_scope(): void
+    {
+        $restaurant = $this->store('B2C', 'REST-TAB-STRICT');
+        $operator = $this->storeAdmin($restaurant, 'restaurant-tab-strict@example.test');
+        $this->enableRestaurant($restaurant);
+        $this->linkWholesaleBuyer($restaurant, $operator);
+
+        $url = route('admin.restaurant.wholesale-purchases.index', ['retail_store_id' => $restaurant->id]);
+        $before = [
+            DB::table('carts')->count(),
+            DB::table('cart_items')->count(),
+            DB::table('orders')->count(),
+            DB::table('audit_logs')->count(),
+        ];
+
+        foreach (['ar' => 'rtl', 'en' => 'ltr'] as $locale => $direction) {
+            $operator->forceFill(['locale' => $locale])->save();
+            app()->setLocale($locale);
+
+            $this->actingAs($operator->fresh())->get($url.'&tab=orders')
+                ->assertOk()
+                ->assertSee('dir="'.$direction.'"', false)
+                ->assertViewHas('tab', 'orders');
+            $this->actingAs($operator->fresh())->get($url.'&tab=invoices')
+                ->assertOk()
+                ->assertViewHas('tab', 'invoices');
+            $this->actingAs($operator->fresh())->get($url.'&tab=unknown')
+                ->assertOk()
+                ->assertViewHas('tab', 'catalog');
+            $this->actingAs($operator->fresh())->get($url.'&tab=')
+                ->assertOk()
+                ->assertViewHas('tab', 'catalog');
+
+            foreach ([
+                '&tab%5B%5D=orders',
+                '&tab%5Bdeep%5D%5B0%5D=invoices',
+                '&tab%5Bstep%5D=cart',
+            ] as $malformed) {
+                $this->actingAs($operator->fresh())->get($url.$malformed)->assertNotFound();
+            }
+        }
+
+        $foreign = $this->storeAdmin($this->store('B2C', 'REST-TAB-FOREIGN'), 'foreign-tab-operator@example.test');
+        $this->actingAs($foreign)->get($url.'&tab=orders')->assertNotFound();
+        $this->actingAs($foreign)->get($url.'&tab%5B%5D=orders')->assertNotFound();
+
+        $this->assertSame($before, [
+            DB::table('carts')->count(),
+            DB::table('cart_items')->count(),
+            DB::table('orders')->count(),
+            DB::table('audit_logs')->count(),
+        ]);
+    }
+
     private function linkWholesaleBuyer(Store $store, User $owner): int
     {
         $tierId = (int) DB::table('b2b_price_tiers')
