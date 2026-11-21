@@ -87,6 +87,52 @@ final class V2UpdaterCaseAliasedMigrationUploadTest extends TestCase
         $this->assertSame(0, SystemVersion::query()->where('version', '1.2.0')->count());
     }
 
+    public function test_dot_segment_migration_aliases_are_rejected_before_update_history(): void
+    {
+        if (! function_exists('sodium_crypto_sign_keypair')) {
+            $this->markTestSkipped('Ed25519 extension required for signed migration alias test.');
+        }
+
+        $actor = $this->superAdmin();
+        $beforeFiles = $this->incomingFiles();
+
+        foreach ([
+            './backend/database/migrations/2026_11_14_000004_probe.php',
+            'backend/./database/migrations/2026_11_14_000005_probe.php',
+            'backend/database/migrations/../migrations/2026_11_14_000006_probe.php',
+        ] as $entry) {
+            $path = $this->archive([$entry]);
+
+            try {
+                $this->scan($path);
+                $this->fail('Ambiguous ZIP path was accepted: '.$entry);
+            } catch (RuntimeException $exception) {
+                $this->assertSame(
+                    __('update_signed_manifest.invalid_signature'),
+                    $exception->getMessage(),
+                    $entry,
+                );
+            }
+
+            // Valid signed sidecar: reject the ambiguous ZIP before writing
+            // UpdateHistory, creating backups or entering maintenance mode.
+            $this->actingAs($actor)
+                ->post(route('admin.system-update.store'), $this->signedPayload($path))
+                ->assertRedirect(route('admin.system-update.index'))
+                ->assertSessionHasErrors('update');
+
+            $this->assertDatabaseCount('update_history', 0);
+            $this->assertFalse(app()->isDownForMaintenance());
+            $this->assertSame($beforeFiles, $this->incomingFiles());
+            $this->assertSame(0, SystemVersion::query()->where('version', '1.2.0')->count());
+        }
+
+        $this->assertFalse($this->scan($this->archive([
+            'backend/database/migration_templates/template.php',
+            'backend/app/ReadOnlyProbe.php',
+        ])));
+    }
+
     public function test_unauthenticated_upload_does_not_enter_migration_scan_or_history(): void
     {
         $path = $this->archive(['Backend/Database/Migrations/2026_11_14_000001_probe.PHP']);
