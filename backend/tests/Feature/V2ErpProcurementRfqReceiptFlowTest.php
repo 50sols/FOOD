@@ -1761,6 +1761,91 @@ final class V2ErpProcurementRfqReceiptFlowTest extends TestCase
             ->where('event', 'enterprise.goods_receipt.posted')->count());
     }
 
+    public function test_rfq_cancel_after_module_shutdown_preflight_does_not_revoke_invitation_or_audit_then_recovers(): void
+    {
+        $store = $this->store();
+        $maker = $this->actor('PROCUREMENT_BUYER', 'ar');
+        [$supplierId, $rfqId] = $this->draftRfqForPublish($maker, $store);
+
+        $this->actingAs($maker)->post(route('admin.erp.procurement.rfqs.publish', $rfqId), [
+            'store_id' => $store->id, 'supplier_ids' => [$supplierId],
+        ])->assertRedirect()->assertSessionHas('procurement_portal_links');
+        $this->assertDatabaseHas('enterprise_procurement_rfq_invitations', [
+            'rfq_id' => $rfqId, 'supplier_id' => $supplierId, 'status' => 'invited',
+        ]);
+        $auditBefore = DB::table('audit_logs')
+            ->where('event', 'enterprise.procurement.rfq.cancelled')->count();
+
+        $pendingShutdown = true;
+        $lockedReadOrder = [];
+        DB::listen(function (QueryExecuted $query) use (&$pendingShutdown, &$lockedReadOrder): void {
+            if (! str_starts_with(strtolower(ltrim($query->sql)), 'select')) {
+                return;
+            }
+
+            // Deliberate single-process preflight interleave, not two HTTP
+            // workers. The scope() lookup already returned its ENABLED state
+            // by the time this callback suspends the persisted lifecycle.
+            if ($pendingShutdown && str_contains($query->sql, 'enterprise_modules')) {
+                $pendingShutdown = false;
+                app(ModuleLifecycleManager::class)->transition('procurement', ModuleState::SUSPENDED);
+            }
+
+            if (DB::connection()->transactionLevel() < 2) {
+                return;
+            }
+            if (str_contains($query->sql, 'enterprise_modules')) {
+                $lockedReadOrder[] = 'module';
+            } elseif (str_contains($query->sql, 'enterprise_procurement_rfqs')) {
+                $lockedReadOrder[] = 'rfq';
+            }
+        });
+
+        $this->actingAs($maker)->post(route('admin.erp.procurement.rfqs.cancel', $rfqId), [
+            'store_id' => $store->id,
+        ])->assertNotFound();
+        $this->assertFalse($pendingShutdown);
+        $this->assertSame('module', $lockedReadOrder[0] ?? null);
+        $this->assertSame(ModuleState::SUSPENDED, app(ModuleRegistry::class)->state('procurement'));
+        $this->assertDatabaseHas('enterprise_procurement_rfqs', [
+            'id' => $rfqId, 'status' => 'published', 'cancelled_by' => null,
+        ]);
+        $this->assertDatabaseHas('enterprise_procurement_rfq_invitations', [
+            'rfq_id' => $rfqId, 'supplier_id' => $supplierId, 'status' => 'invited',
+        ]);
+        $this->assertSame($auditBefore, DB::table('audit_logs')
+            ->where('event', 'enterprise.procurement.rfq.cancelled')->count());
+
+        // Recovery is a genuine explicitly authorized module lifecycle
+        // change, not permission to bypass the disabled-module gate.
+        app(ModuleLifecycleManager::class)->transition('procurement', ModuleState::ENABLED);
+        app()->setLocale('en');
+        $maker->forceFill(['locale' => 'en'])->save();
+        $lockedReadOrder = [];
+        $this->actingAs($maker->fresh())->post(route('admin.erp.procurement.rfqs.cancel', $rfqId), [
+            'store_id' => $store->id,
+        ])->assertRedirect();
+        $this->assertSame(['module', 'rfq'], array_slice(array_values(array_unique($lockedReadOrder)), 0, 2));
+        $this->assertDatabaseHas('enterprise_procurement_rfqs', [
+            'id' => $rfqId, 'status' => 'cancelled', 'cancelled_by' => $maker->id,
+        ]);
+        $this->assertDatabaseHas('enterprise_procurement_rfq_invitations', [
+            'rfq_id' => $rfqId, 'supplier_id' => $supplierId, 'status' => 'revoked',
+        ]);
+        $this->assertSame($auditBefore + 1, DB::table('audit_logs')
+            ->where('event', 'enterprise.procurement.rfq.cancelled')->count());
+
+        // Idempotent retry must not revoke or audit twice.
+        $this->actingAs($maker->fresh())->post(route('admin.erp.procurement.rfqs.cancel', $rfqId), [
+            'store_id' => $store->id,
+        ])->assertRedirect();
+        $this->assertSame($auditBefore + 1, DB::table('audit_logs')
+            ->where('event', 'enterprise.procurement.rfq.cancelled')->count());
+        $this->assertDatabaseHas('enterprise_procurement_rfq_invitations', [
+            'rfq_id' => $rfqId, 'supplier_id' => $supplierId, 'status' => 'revoked',
+        ]);
+    }
+
     public function test_rfq_publish_locks_module_rfq_and_scoped_supplier_before_issuing_one_invitation(): void
     {
         $store = $this->store();
