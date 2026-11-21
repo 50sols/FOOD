@@ -82,8 +82,21 @@ final class V2Stage1WholesaleOrderDeliveryJourneyTest extends TestCase
         ]);
         $this->assertDatabaseMissing('driver_assignments', ['order_id' => $order->id]);
 
-        Sanctum::actingAs($vanActor, ['app:van']);
         $path = '/api/v1/van/orders/'.$order->id.'/execution';
+        // Another valid Van representative cannot steal the order by guessing
+        // its identifier; denied reads must not create delivery events.
+        $otherActor = $this->actor('VAN_OPERATOR', 'en');
+        $otherVan = $registry->createVan(['code' => 'STAGE1-OTHER-VAN-'.$otherActor->id]);
+        $registry->assign($otherActor, $otherVan, [
+            'representative_user_id' => $otherActor->id,
+            'assignment_type' => 'primary',
+            'effective_from' => now()->subMinute(),
+        ]);
+        Sanctum::actingAs($otherActor, ['app:van']);
+        $this->getJson($path)->assertNotFound();
+        $this->assertDatabaseCount('order_van_execution_events', 0);
+
+        Sanctum::actingAs($vanActor, ['app:van']);
         $this->getJson($path)->assertOk()->assertJsonPath('data.status', 'assigned');
 
         foreach (['accepted', 'picked_up', 'out_for_delivery'] as $index => $status) {
