@@ -26,7 +26,11 @@ final class RestaurantWholesalePurchasesController extends Controller
         abort_unless($user instanceof User, 401);
 
         $context = $purchases->context($request, $user);
-        $tab = strtolower((string) $request->query('tab', 'catalog'));
+        // Authenticate and scope the restaurant buyer first, then reject
+        // nested tab selectors before PHP can coerce them into a string.
+        $requestedTab = $request->query('tab', 'catalog');
+        abort_unless($requestedTab === null || is_string($requestedTab), 404);
+        $tab = strtolower((string) $requestedTab);
         if (! in_array($tab, self::TABS, true)) {
             $tab = 'catalog';
         }
