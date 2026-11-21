@@ -19,19 +19,17 @@ final class TranslationController extends Controller
         Gate::authorize('translations.manage');
 
         // Reject nested GET filters before synchronizing defaults (a database write).
-        $requestedSearch = $request->query('q', '');
-        $requestedSurface = $request->query('surface', '');
-        // Laravel's ConvertEmptyStringsToNull normalizes submitted empty filters.
-        abort_unless(
-            ($requestedSearch === null || is_string($requestedSearch))
-                && ($requestedSurface === null || is_string($requestedSurface)),
-            404
-        );
+        // Query() without a key preserves input shapes; ?? normalizes submitted
+        // empty fields converted to null by Laravel's request middleware.
+        $queryFilters = $request->query();
+        $requestedSearch = $queryFilters['q'] ?? '';
+        $requestedSurface = $queryFilters['surface'] ?? '';
+        abort_unless(is_string($requestedSearch) && is_string($requestedSurface), 404);
 
         $catalog->syncDefaults();
 
-        $search = trim($requestedSearch ?? '');
-        $surface = trim($requestedSurface ?? '');
+        $search = trim($requestedSearch);
+        $surface = trim($requestedSurface);
         $literalSearch = '%'.str_replace(['!', '%', '_'], ['!!', '!%', '!_'], $search).'%';
 
         $translations = AppTranslation::query()
