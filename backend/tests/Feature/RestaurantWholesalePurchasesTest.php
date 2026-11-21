@@ -151,6 +151,13 @@ final class RestaurantWholesalePurchasesTest extends TestCase
             $this->actingAs($operator->fresh())->get($url.'&tab=invoices')
                 ->assertOk()
                 ->assertViewHas('tab', 'invoices');
+            // An absent selector still defaults to the existing catalog.
+            $this->actingAs($operator->fresh())->get($url)
+                ->assertOk()
+                ->assertViewHas('tab', 'catalog');
+            $this->actingAs($operator->fresh())->get($url.'&tab=delivery')
+                ->assertOk()
+                ->assertViewHas('tab', 'delivery');
             $this->actingAs($operator->fresh())->get($url.'&tab=unknown')
                 ->assertOk()
                 ->assertViewHas('tab', 'catalog');
