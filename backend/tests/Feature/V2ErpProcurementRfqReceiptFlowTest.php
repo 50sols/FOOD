@@ -1761,6 +1761,102 @@ final class V2ErpProcurementRfqReceiptFlowTest extends TestCase
             ->where('event', 'enterprise.goods_receipt.posted')->count());
     }
 
+    public function test_real_http_rfq_contract_binding_requires_live_scoped_agreement_and_denies_terminated_contract(): void
+    {
+        $store = $this->store();
+        $maker = $this->actor('PROCUREMENT_MANAGER', 'ar');
+        $checker = $this->actor('PROCUREMENT_MANAGER', 'en');
+        $supplierCode = 'P135-CONTRACT-RFQ-'.$maker->id;
+        $this->actingAs($maker)->post(route('admin.erp.procurement.suppliers.store'), [
+            'store_id' => $store->id, 'scope_type' => 'store',
+            'code' => $supplierCode,
+            'name_en' => 'Contract-bound RFQ supplier', 'name_ar' => 'مورد عقد الطلب',
+        ])->assertRedirect();
+        $supplierId = (int) DB::table('enterprise_suppliers')
+            ->where('code', $supplierCode)->value('id');
+        $this->assertGreaterThan(0, $supplierId);
+
+        $title = 'P135 binding contract '.$maker->id;
+        $this->actingAs($maker)->post(route('admin.erp.procurement.contracts.store'), [
+            'store_id' => $store->id, 'supplier_id' => $supplierId,
+            'title' => $title, 'currency_code' => 'KWD',
+            'starts_on' => now()->subDay()->toDateString(),
+            'ends_on' => now()->addMonth()->toDateString(),
+        ])->assertRedirect();
+        $contractId = (int) DB::table('enterprise_procurement_contracts')
+            ->where('title', $title)->value('id');
+        $this->assertGreaterThan(0, $contractId);
+        $this->actingAs($checker)->post(route('admin.erp.procurement.contracts.activate', $contractId), [
+            'store_id' => $store->id,
+        ])->assertRedirect();
+        $this->assertDatabaseHas('enterprise_procurement_contracts', [
+            'id' => $contractId, 'status' => 'active', 'activated_by' => $checker->id,
+        ]);
+
+        $reason = 'P135 RFQ contract bound '.$maker->id;
+        $this->actingAs($maker)->post(route('admin.erp.procurement.requests.store'), [
+            'store_id' => $store->id, 'currency_code' => 'KWD',
+            'reason' => $reason, 'item_code' => 'P135-CONTRACT-SKU',
+            'description' => 'Approved contract backing',
+            'quantity' => 2, 'unit' => 'each', 'estimated_unit_cost' => '4.250',
+        ])->assertRedirect();
+        $requestId = (int) DB::table('enterprise_purchase_requests')
+            ->where('reason', $reason)->value('id');
+        $this->assertGreaterThan(0, $requestId);
+        $this->actingAs($maker)->post(route('admin.erp.procurement.requests.submit', $requestId), [
+            'store_id' => $store->id,
+        ])->assertRedirect();
+        $this->actingAs($maker)->post(route('admin.erp.procurement.rfqs.store'), [
+            'store_id' => $store->id,
+            'purchase_request_id' => $requestId,
+            'contract_id' => $contractId,
+            'title' => 'P135 locked active contract',
+            'response_due_at' => now()->addDays(5)->format('Y-m-d H:i:s'),
+        ])->assertRedirect();
+        $this->assertDatabaseHas('enterprise_procurement_rfqs', [
+            'purchase_request_id' => $requestId, 'contract_id' => $contractId, 'status' => 'draft',
+        ]);
+
+        $this->actingAs($checker)->post(route('admin.erp.procurement.contracts.terminate', $contractId), [
+            'store_id' => $store->id,
+        ])->assertRedirect();
+        $this->assertDatabaseHas('enterprise_procurement_contracts', [
+            'id' => $contractId, 'status' => 'terminated',
+        ]);
+
+        $secondReason = 'P135 terminated contract '.$maker->id;
+        $this->actingAs($maker)->post(route('admin.erp.procurement.requests.store'), [
+            'store_id' => $store->id, 'currency_code' => 'KWD',
+            'reason' => $secondReason, 'item_code' => 'P135-CONTRACT-SKU',
+            'description' => 'Reject terminated agreement',
+            'quantity' => 2, 'unit' => 'each', 'estimated_unit_cost' => '5.000',
+        ])->assertRedirect();
+        $secondRequest = (int) DB::table('enterprise_purchase_requests')
+            ->where('reason', $secondReason)->value('id');
+        $this->assertGreaterThan(0, $secondRequest);
+        $this->actingAs($maker)->post(route('admin.erp.procurement.requests.submit', $secondRequest), [
+            'store_id' => $store->id,
+        ])->assertRedirect();
+        $audits = DB::table('audit_logs')
+            ->where('event', 'enterprise.procurement.rfq.created')->count();
+        app()->setLocale('en');
+        $this->actingAs($maker)->post(route('admin.erp.procurement.rfqs.store'), [
+            'store_id' => $store->id,
+            'purchase_request_id' => $secondRequest,
+            'contract_id' => $contractId,
+            'title' => 'P135 rejected terminated contract',
+            'response_due_at' => now()->addDays(5)->format('Y-m-d H:i:s'),
+        ])->assertRedirect()->assertSessionHasErrors('contract_id');
+        $this->assertDatabaseMissing('enterprise_procurement_rfqs', [
+            'purchase_request_id' => $secondRequest,
+        ]);
+        $this->assertSame($audits, DB::table('audit_logs')
+            ->where('event', 'enterprise.procurement.rfq.created')->count());
+        $this->assertDatabaseHas('enterprise_purchase_requests', [
+            'id' => $secondRequest, 'status' => 'submitted', 'supplier_id' => null,
+        ]);
+    }
+
     public function test_contract_activation_and_termination_are_transactional_and_fail_closed_after_module_shutdown(): void
     {
         $store = $this->store();
