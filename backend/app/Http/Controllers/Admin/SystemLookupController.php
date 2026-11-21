@@ -62,8 +62,13 @@ final class SystemLookupController extends Controller
         abort_unless(is_string($requestedType), 404);
         $key = $this->typeKey($requestedType);
         $definition = self::TYPES[$key];
-        $status = (string) $request->query('status', 'all');
-        $search = trim((string) $request->query('q', ''));
+        // GET filters are scalar selectors; never coerce nested query arrays
+        // into strings or echo them back into links in the response.
+        $requestedStatus = $request->query('status', 'all');
+        $requestedSearch = $request->query('q', '');
+        abort_unless(is_string($requestedStatus) && is_string($requestedSearch), 404);
+        $status = $requestedStatus;
+        $search = trim($requestedSearch);
         $literalSearch = '%'.str_replace(['!', '%', '_'], ['!!', '!%', '!_'], $search).'%';
 
         if ($definition['type'] === OperationalLookupService::PRICE_TIER) {
