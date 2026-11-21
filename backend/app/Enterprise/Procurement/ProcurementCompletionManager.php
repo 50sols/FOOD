@@ -622,8 +622,13 @@ final class ProcurementCompletionManager
                 ->where('id', $quote->invitation_id)
                 ->where('rfq_id', $rfq->id)
                 ->where('supplier_id', $quote->supplier_id)
+                ->lockForUpdate()
                 ->first();
-            if ($invitation === null) {
+            // An authentic submitted quote is not independent approval after
+            // its invitation was revoked, expired or otherwise invalidated.
+            // Lock the invitation until award commits, so operator changes
+            // cannot race a stale provenance check into a purchase order.
+            if ($invitation === null || $invitation->status !== 'submitted') {
                 throw ValidationException::withMessages([
                     'quote_id' => [__('enterprise_procurement.errors.quote_source_invalid')],
                 ]);
