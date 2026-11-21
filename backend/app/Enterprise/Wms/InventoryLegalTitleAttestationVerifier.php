@@ -411,8 +411,35 @@ final class InventoryLegalTitleAttestationVerifier
                 'movement.id',
             )
             ->where(function ($query): void {
+                // An event with a matching source ID but altered source
+                // attributes is not proof of an immutable movement history.
+                // Compare all recorded source fields, including both NULL
+                // directions for nullable columns, on MySQL and SQLite.
                 $query->whereNull('owner_event.source_stock_movement_id')
-                    ->orWhereColumn('owner_event.inventory_id', '<>', 'movement.inventory_id');
+                    ->orWhereColumn('owner_event.inventory_id', '<>', 'movement.inventory_id')
+                    ->orWhereColumn('owner_event.movement_type', '<>', 'movement.type')
+                    ->orWhereColumn('owner_event.movement_quantity', '<>', 'movement.quantity');
+
+                foreach ([
+                    'movement_store_id' => 'store_id',
+                    'movement_user_id' => 'user_id',
+                    'movement_reference_type' => 'reference_type',
+                    'movement_reference_id' => 'reference_id',
+                    'movement_created_at' => 'created_at',
+                ] as $snapshotColumn => $sourceColumn) {
+                    $snapshot = 'owner_event.'.$snapshotColumn;
+                    $source = 'movement.'.$sourceColumn;
+
+                    $query->orWhere(function ($difference) use ($snapshot, $source): void {
+                        $difference->whereColumn($snapshot, '<>', $source)
+                            ->orWhere(function ($nullMismatch) use ($snapshot, $source): void {
+                                $nullMismatch->whereNull($snapshot)->whereNotNull($source);
+                            })
+                            ->orWhere(function ($nullMismatch) use ($snapshot, $source): void {
+                                $nullMismatch->whereNotNull($snapshot)->whereNull($source);
+                            });
+                    });
+                }
             });
 
         if ($inventoryId !== null) {
