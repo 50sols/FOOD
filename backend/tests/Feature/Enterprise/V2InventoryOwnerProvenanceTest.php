@@ -513,8 +513,8 @@ final class V2InventoryOwnerProvenanceTest extends TestCase
         ]);
 
         $verifier = app(InventoryLegalTitleAttestationVerifier::class);
-        $coverage = new \\ReflectionMethod(InventoryLegalTitleAttestationVerifier::class, 'hasCompleteOwnerMovementEventCoverage');
-        $guard = new \\ReflectionMethod(InventoryLegalTitleAttestationVerifier::class, 'hasProtectedStockMovementHistory');
+        $coverage = new \ReflectionMethod(InventoryLegalTitleAttestationVerifier::class, 'hasCompleteOwnerMovementEventCoverage');
+        $guard = new \ReflectionMethod(InventoryLegalTitleAttestationVerifier::class, 'hasProtectedStockMovementHistory');
         $this->assertTrue($coverage->invoke($verifier, $stock['inventory_id']));
         $this->assertTrue($guard->invoke($verifier, $stock['inventory_id']));
 
