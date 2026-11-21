@@ -496,6 +496,87 @@ class SmartOrderingCustomerGrowthTest extends TestCase
         ]);
     }
 
+    public function test_admin_loyalty_rewards_reject_nested_branch_get_after_site_authorization(): void
+    {
+        [, $admin, $site] = $this->restaurant('V2-LOYALTY-GET-A');
+        [, $otherAdmin, $otherSite] = $this->restaurant('V2-LOYALTY-GET-B');
+
+        app(LoyaltyAdminService::class)->createReward(
+            $admin,
+            $site,
+            'Site A Reward',
+            'مكافأة المتجر أ',
+            15,
+        );
+        app(LoyaltyAdminService::class)->createReward(
+            $otherAdmin,
+            $otherSite,
+            'Site B Reward',
+            'مكافأة المتجر ب',
+            25,
+        );
+
+        $url = route('admin.smart-ordering.loyalty.rewards', ['site' => $site->getKey()]);
+        $before = [
+            DB::table('smart_ordering_loyalty_rewards')->count(),
+            DB::table('smart_ordering_loyalty_ledger')->count(),
+            DB::table('audit_logs')->count(),
+        ];
+
+        foreach (['ar', 'en'] as $locale) {
+            $admin->forceFill(['locale' => $locale])->save();
+            app()->setLocale($locale);
+
+            foreach (['', '?branch_id=', '?branch_id=999999'] as $valid) {
+                $this->actingAs($admin->fresh())
+                    ->getJson($url.$valid)
+                    ->assertOk()
+                    ->assertJsonCount(1, 'rewards')
+                    ->assertJsonPath('rewards.0.name_en', 'Site A Reward')
+                    ->assertJsonPath('rewards.0.name_ar', 'مكافأة المتجر أ');
+            }
+
+            foreach ([
+                '?branch_id%5B%5D=999999',
+                '?branch_id%5Bdeep%5D=999999',
+                '?branch_id%5Bdeep%5D%5B0%5D=999999',
+            ] as $malformed) {
+                $this->actingAs($admin->fresh())
+                    ->getJson($url.$malformed)
+                    ->assertNotFound();
+            }
+        }
+
+        // A foreign-store actor must not see Site A data, even with a
+        // malformed selector; tenant authorization precedes input checks.
+        $this->actingAs($otherAdmin)
+            ->getJson($url.'?branch_id=999999')
+            ->assertNotFound();
+        $this->actingAs($otherAdmin)
+            ->getJson($url.'?branch_id%5B%5D=999999')
+            ->assertNotFound();
+
+        $roleless = User::factory()->create([
+            'email' => 'v2-loyalty-branch-roleless@example.test',
+            'locale' => 'en',
+            'is_active' => true,
+        ]);
+        // The dashboard middleware must deny a roleless actor (403) before
+        // the route ever evaluates the branch selector.
+        $this->actingAs($roleless)
+            ->getJson($url.'?branch_id=999999')
+            ->assertForbidden();
+        $this->actingAs($roleless)
+            ->getJson($url.'?branch_id%5B%5D=999999')
+            ->assertForbidden();
+
+        $this->assertSame($before, [
+            DB::table('smart_ordering_loyalty_rewards')->count(),
+            DB::table('smart_ordering_loyalty_ledger')->count(),
+            DB::table('audit_logs')->count(),
+        ]);
+    }
+
     /** @return array{0:int,1:User,2:SmartOrderingSite} */
     private function restaurant(string $code): array
     {
