@@ -106,6 +106,30 @@ final class V2LookupFilterQueryShapeTest extends TestCase
         $this->assertSame($before, $this->recordCounts());
     }
 
+    public function test_explicit_empty_text_filters_keep_legacy_behavior_but_empty_store_id_does_not(): void
+    {
+        $actor = $this->globalActor();
+        $before = $this->recordCounts();
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            $actor->forceFill(['locale' => $locale])->save();
+
+            // ConvertEmptyStringsToNull runs before the GET controller; text
+            // filter empties remain valid, while store_id is an explicit scope.
+            $this->actingAs($actor->fresh())->get('/admin/lookups?type=brands&q=&scope=&status=')
+                ->assertOk()
+                ->assertViewHas('filters', static fn (array $filters): bool => $filters['q'] === ''
+                    && $filters['scope'] === ''
+                    && $filters['status'] === '');
+
+            $this->actingAs($actor->fresh())->get('/admin/lookups?store_id=')
+                ->assertNotFound();
+        }
+
+        $this->assertSame($before, $this->recordCounts());
+    }
+
     public function test_retail_selected_store_is_preserved_and_foreign_store_remains_404(): void
     {
         $storeA = $this->store('V2-4050-STORE-A');
