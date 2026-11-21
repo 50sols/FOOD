@@ -491,6 +491,66 @@ final class V2InventoryOwnerProvenanceTest extends TestCase
         ]);
     }
 
+    public function test_changed_movement_snapshot_fails_closed_even_after_immutable_guards_are_restored(): void
+    {
+        if (DB::connection()->getDriverName() !== 'sqlite') {
+            $this->markTestSkipped('SQL guard tampering is isolated to SQLite in this fixture.');
+        }
+
+        $this->seed(CoreReferenceSeeder::class);
+        $stock = $this->stock('OWNER-EVENT-INTEGRITY');
+        $now = now();
+        $movementId = (int) DB::table('stock_movements')->insertGetId([
+            'inventory_id' => $stock['inventory_id'],
+            'store_id' => $stock['store_id'],
+            'user_id' => null,
+            'type' => 'p110_integrity_test',
+            'quantity' => '0.125',
+            'reference_type' => null,
+            'reference_id' => null,
+            'created_at' => $now,
+            'updated_at' => $now,
+        ]);
+
+        $verifier = app(InventoryLegalTitleAttestationVerifier::class);
+        $coverage = new \\ReflectionMethod(InventoryLegalTitleAttestationVerifier::class, 'hasCompleteOwnerMovementEventCoverage');
+        $guard = new \\ReflectionMethod(InventoryLegalTitleAttestationVerifier::class, 'hasProtectedStockMovementHistory');
+        $this->assertTrue($coverage->invoke($verifier, $stock['inventory_id']));
+        $this->assertTrue($guard->invoke($verifier, $stock['inventory_id']));
+
+        // Simulate privileged corruption while the immutable event UPDATE
+        // guard is unavailable; a restored trigger alone cannot attest that
+        // the historical source row and its snapshot still match.
+        DB::unprepared('DROP TRIGGER IF EXISTS p110_owner_event_no_update');
+        try {
+            $event = DB::table('enterprise_inventory_owner_movement_events')
+                ->where('source_stock_movement_id', $movementId);
+
+            $event->update(['movement_quantity' => '0.126']);
+            $this->assertFalse($coverage->invoke($verifier, $stock['inventory_id']));
+
+            // Quantity now matches again; a NULL/non-NULL source reference
+            // mismatch must independently invalidate provenance.
+            $event->update(['movement_quantity' => '0.125', 'movement_reference_type' => 'forged']);
+            $this->assertFalse($coverage->invoke($verifier, $stock['inventory_id']));
+        } finally {
+            $migration = require database_path('migrations/2026_11_18_130000_create_enterprise_inventory_owner_movement_events.php');
+            $migration->up();
+        }
+
+        $this->assertFalse($coverage->invoke($verifier, $stock['inventory_id']));
+        $this->assertFalse($guard->invoke($verifier, $stock['inventory_id']));
+        $this->assertDatabaseHas('stock_movements', [
+            'id' => $movementId,
+            'quantity' => '0.125',
+            'reference_type' => null,
+        ]);
+        $this->assertDatabaseHas('enterprise_inventory_owner_movement_events', [
+            'source_stock_movement_id' => $movementId,
+            'movement_reference_type' => 'forged',
+        ]);
+    }
+
     public function test_missing_owner_event_trigger_disables_title_certification(): void
     {
         if (DB::connection()->getDriverName() !== 'sqlite') {
