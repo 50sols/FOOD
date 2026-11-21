@@ -453,6 +453,16 @@ final class SystemUpdateController extends Controller
                 // Match validator migration classification on case-insensitive
                 // hosts as well as canonical Linux release layouts.
                 $relativePath = strtolower(str_replace('\\', '/', trim($name)));
+
+                // Reject ambiguous ZIP dot segments at the signed upload
+                // boundary, before UpdateManager creates update history.
+                // The extractor already refuses noncanonical paths, but
+                // such aliases must not reach backup or maintenance setup.
+                $segments = explode('/', $relativePath);
+                if (in_array('.', $segments, true) || in_array('..', $segments, true)) {
+                    throw new RuntimeException(__('update_signed_manifest.invalid_signature'));
+                }
+
                 if (str_starts_with($relativePath, 'backend/database/migrations/')
                     && str_ends_with($relativePath, '.php')) {
                     return true;
