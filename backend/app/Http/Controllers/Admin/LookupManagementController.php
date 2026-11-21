@@ -100,14 +100,17 @@ final class LookupManagementController extends Controller
             });
         }
 
-        $scopeInput = $request->query('scope', 'all');
+        // Distinguish a missing filter from an explicitly submitted empty
+        // value, which ConvertEmptyStringsToNull normalizes to null.
+        $queryFilters = $request->query();
+        $scopeInput = array_key_exists('scope', $queryFilters) ? $queryFilters['scope'] : 'all';
         abort_if(is_array($scopeInput), 404);
         $scope = $isSuperAdmin ? (string) $scopeInput : 'all';
         if ($isSuperAdmin && in_array($scope, [LookupScopeService::GLOBAL, LookupScopeService::B2B, LookupScopeService::STORE], true)) {
             $query->where($table.'.scope', $scope);
         }
 
-        $statusInput = $request->query('status', 'all');
+        $statusInput = array_key_exists('status', $queryFilters) ? $queryFilters['status'] : 'all';
         abort_if(is_array($statusInput), 404);
         $status = (string) $statusInput;
         if ($status === 'active') {
