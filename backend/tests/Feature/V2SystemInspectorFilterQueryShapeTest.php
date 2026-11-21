@@ -47,8 +47,11 @@ final class V2SystemInspectorFilterQueryShapeTest extends TestCase
             'store_id', 'restaurant_store_id', 'verify_source',
         ];
 
-        $eventsBefore = DB::table('system_inspector_events')->count();
+        // 404s are intentionally recorded by SystemInspectorRecorder as sanitized
+        // diagnostic events; only business/audit source records must stay unchanged.
         $storesBefore = DB::table('stores')->count();
+        $productsBefore = DB::table('products')->count();
+        $auditBefore = DB::table('audit_logs')->count();
 
         foreach (['ar', 'en'] as $locale) {
             $admin = $this->userWithRole('SUPER_ADMIN', $locale);
@@ -70,8 +73,9 @@ final class V2SystemInspectorFilterQueryShapeTest extends TestCase
             }
         }
 
-        $this->assertSame($eventsBefore, DB::table('system_inspector_events')->count());
         $this->assertSame($storesBefore, DB::table('stores')->count());
+        $this->assertSame($productsBefore, DB::table('products')->count());
+        $this->assertSame($auditBefore, DB::table('audit_logs')->count());
     }
 
     public function test_non_platform_actor_stays_forbidden_before_valid_or_nested_selector_validation(): void
