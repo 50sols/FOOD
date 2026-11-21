@@ -4,9 +4,11 @@ namespace Tests\Deployment;
 
 use App\Enterprise\Modules\ModuleRegistry;
 use App\Enterprise\Modules\ModuleState;
+use App\Models\User;
 use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Str;
 use PDO;
 use PDOException;
 use Tests\TestCase;
@@ -345,7 +347,7 @@ final class ProcurementModuleLockContentionTest extends TestCase
         $store = DB::table('stores')->orderBy('id')->first();
         $this->assertNotNull($company);
         $this->assertNotNull($store);
-        $actor = \App\Models\User::factory()->create(['is_active' => true]);
+        $actor = User::factory()->create(['is_active' => true]);
         $supplierId = null;
         $contractId = null;
         $peer = null;
@@ -363,7 +365,7 @@ final class ProcurementModuleLockContentionTest extends TestCase
                 'created_at' => now(), 'updated_at' => now(),
             ]);
             $contractId = DB::table('enterprise_procurement_contracts')->insertGetId([
-                'public_id' => (string) \Illuminate\Support\Str::uuid(),
+                'public_id' => (string) Str::uuid(),
                 'contract_number' => 'P135-CON-'.$key,
                 'organization_id' => $company->organization_id,
                 'company_id' => $company->id,
