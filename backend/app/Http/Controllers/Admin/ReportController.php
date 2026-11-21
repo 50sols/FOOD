@@ -26,7 +26,11 @@ final class ReportController extends Controller
 
         $this->assertReportScopeBeforeValidation($user, 'reports.view');
 
-        $report = (string) $request->query('report', 'orders');
+        // Reject nested report selectors before PHP string conversion or tab rendering.
+        // Preserve the previous scalar/null behavior for absent or empty filters.
+        $requestedReport = $request->query('report', 'orders');
+        abort_if(is_array($requestedReport), 404);
+        $report = (string) $requestedReport;
         $validated = $request->validate([
             ...$this->rules(),
             'page' => ['nullable', 'integer', 'min:1'],
