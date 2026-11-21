@@ -73,10 +73,16 @@ final class V2TreasuryNestedIdFilterTest extends TestCase
                 $this->actingAs($actor->fresh())
                     ->get($url.'&'.$filter.'=999999')
                     ->assertOk();
+                // Unused selectors must not interfere with an unrelated panel.
+                $ignoredFilter = $filter === 'facility_id' ? 'cashbox_id' : 'facility_id';
+                $this->actingAs($actor->fresh())
+                    ->get($url.'&'.$ignoredFilter.'%5B%5D=1')
+                    ->assertOk();
 
                 foreach ([
                     '&'.$filter.'%5B%5D=999999',
                     '&'.$filter.'%5Bnested%5D=999999',
+                    '&'.$filter.'%5Bnested%5D%5B0%5D=999999',
                 ] as $malformed) {
                     $this->actingAs($actor->fresh())
                         ->get($url.$malformed)
