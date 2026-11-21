@@ -1888,15 +1888,24 @@ final class V2ErpProcurementRfqReceiptFlowTest extends TestCase
         $beforeTerminate = DB::table('audit_logs')
             ->where('event', 'enterprise.procurement.contract.terminated')->count();
         $pendingShutdown = true;
+        $insideLifecycleTransition = false;
         $reads = [];
-        DB::listen(function (QueryExecuted $query) use (&$pendingShutdown, &$reads): void {
+        DB::listen(function (QueryExecuted $query) use (&$pendingShutdown, &$insideLifecycleTransition, &$reads): void {
+            if ($insideLifecycleTransition) {
+                return;
+            }
             if (! str_starts_with(strtolower(ltrim($query->sql)), 'select')) {
                 return;
             }
             if ($pendingShutdown && str_contains($query->sql, 'enterprise_modules')
                 && DB::connection()->transactionLevel() === 1) {
                 $pendingShutdown = false;
-                app(ModuleLifecycleManager::class)->transition('procurement', ModuleState::SUSPENDED);
+                $insideLifecycleTransition = true;
+                try {
+                    app(ModuleLifecycleManager::class)->transition('procurement', ModuleState::SUSPENDED);
+                } finally {
+                    $insideLifecycleTransition = false;
+                }
             }
             if (DB::connection()->transactionLevel() < 2) {
                 return;
@@ -2002,8 +2011,12 @@ final class V2ErpProcurementRfqReceiptFlowTest extends TestCase
         $before = DB::table('audit_logs')
             ->where('event', 'enterprise.procurement.rfq.created')->count();
         $pending = true;
+        $insideLifecycleTransition = false;
         $reads = [];
-        DB::listen(function (QueryExecuted $query) use (&$pending, &$reads): void {
+        DB::listen(function (QueryExecuted $query) use (&$pending, &$insideLifecycleTransition, &$reads): void {
+            if ($insideLifecycleTransition) {
+                return;
+            }
             if (! str_starts_with(strtolower(ltrim($query->sql)), 'select')) {
                 return;
             }
@@ -2012,7 +2025,12 @@ final class V2ErpProcurementRfqReceiptFlowTest extends TestCase
             // module-enabled preflight, before draft RFQ creation begins.
             if ($pending && str_contains($query->sql, 'enterprise_modules')) {
                 $pending = false;
-                app(ModuleLifecycleManager::class)->transition('procurement', ModuleState::SUSPENDED);
+                $insideLifecycleTransition = true;
+                try {
+                    app(ModuleLifecycleManager::class)->transition('procurement', ModuleState::SUSPENDED);
+                } finally {
+                    $insideLifecycleTransition = false;
+                }
             }
 
             if (DB::connection()->transactionLevel() < 2) {
@@ -2080,8 +2098,12 @@ final class V2ErpProcurementRfqReceiptFlowTest extends TestCase
             ->where('event', 'enterprise.procurement.rfq.cancelled')->count();
 
         $pendingShutdown = true;
+        $insideLifecycleTransition = false;
         $lockedReadOrder = [];
-        DB::listen(function (QueryExecuted $query) use (&$pendingShutdown, &$lockedReadOrder): void {
+        DB::listen(function (QueryExecuted $query) use (&$pendingShutdown, &$insideLifecycleTransition, &$lockedReadOrder): void {
+            if ($insideLifecycleTransition) {
+                return;
+            }
             if (! str_starts_with(strtolower(ltrim($query->sql)), 'select')) {
                 return;
             }
@@ -2091,7 +2113,12 @@ final class V2ErpProcurementRfqReceiptFlowTest extends TestCase
             // by the time this callback suspends the persisted lifecycle.
             if ($pendingShutdown && str_contains($query->sql, 'enterprise_modules')) {
                 $pendingShutdown = false;
-                app(ModuleLifecycleManager::class)->transition('procurement', ModuleState::SUSPENDED);
+                $insideLifecycleTransition = true;
+                try {
+                    app(ModuleLifecycleManager::class)->transition('procurement', ModuleState::SUSPENDED);
+                } finally {
+                    $insideLifecycleTransition = false;
+                }
             }
 
             if (DB::connection()->transactionLevel() < 2) {
