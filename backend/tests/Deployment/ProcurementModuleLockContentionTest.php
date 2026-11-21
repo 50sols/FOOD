@@ -334,6 +334,176 @@ final class ProcurementModuleLockContentionTest extends TestCase
         }
     }
 
+    public function test_two_mysql_sessions_serialize_scoped_contract_termination_and_rfq_binding(): void
+    {
+        $this->assertSame('true', getenv('FOODEX_DISPOSABLE_SERVICES'));
+        $this->assertSame('mysql', DB::connection()->getDriverName());
+        $this->assertSame('foodex_acceptance', DB::connection()->getDatabaseName());
+        $this->assertSame(0, Artisan::call('migrate', ['--force' => true]));
+
+        $company = DB::table('enterprise_companies')->orderBy('id')->first();
+        $store = DB::table('stores')->orderBy('id')->first();
+        $this->assertNotNull($company);
+        $this->assertNotNull($store);
+        $actor = \App\Models\User::factory()->create(['is_active' => true]);
+        $supplierId = null;
+        $contractId = null;
+        $peer = null;
+
+        try {
+            $key = bin2hex(random_bytes(8));
+            $supplierId = DB::table('enterprise_suppliers')->insertGetId([
+                'organization_id' => $company->organization_id,
+                'company_id' => $company->id,
+                'scope_type' => 'company',
+                'code' => 'P135-CONTRACT-LOCK-'.$key,
+                'name_en' => 'Disposable contract lock supplier',
+                'status' => 'active',
+                'qualification_status' => 'qualified',
+                'created_at' => now(), 'updated_at' => now(),
+            ]);
+            $contractId = DB::table('enterprise_procurement_contracts')->insertGetId([
+                'public_id' => (string) \Illuminate\Support\Str::uuid(),
+                'contract_number' => 'P135-CON-'.$key,
+                'organization_id' => $company->organization_id,
+                'company_id' => $company->id,
+                'store_id' => $store->id,
+                'supplier_id' => $supplierId,
+                'status' => 'active',
+                'title' => 'Disposable contract termination interleave',
+                'currency_code' => 'KWD',
+                'starts_on' => now()->subDay()->toDateString(),
+                'ends_on' => now()->addMonth()->toDateString(),
+                'created_by' => $actor->id,
+                'created_at' => now(), 'updated_at' => now(),
+            ]);
+
+            $config = config('database.connections.mysql');
+            $this->assertIsArray($config);
+            $peer = new PDO(
+                sprintf(
+                    'mysql:host=%s;port=%d;dbname=%s;charset=utf8mb4',
+                    (string) ($config['host'] ?? '127.0.0.1'),
+                    (int) ($config['port'] ?? 3306),
+                    (string) $config['database'],
+                ),
+                (string) ($config['username'] ?? ''),
+                (string) ($config['password'] ?? ''),
+                [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION, PDO::ATTR_EMULATE_PREPARES => false],
+            );
+            $primaryId = (int) DB::selectOne('SELECT CONNECTION_ID() AS id')->id;
+            $peerId = (int) $peer->query('SELECT CONNECTION_ID()')->fetchColumn();
+            $this->assertGreaterThan(0, $primaryId);
+            $this->assertGreaterThan(0, $peerId);
+            $this->assertNotSame($primaryId, $peerId);
+
+            // RFQ binding's scoped contract lock wins first: a separate
+            // operator connection cannot terminate or replace its status
+            // until the RFQ transaction releases the row.
+            DB::beginTransaction();
+            try {
+                $locked = DB::table('enterprise_procurement_contracts')
+                    ->where('id', $contractId)
+                    ->where('organization_id', $company->organization_id)
+                    ->where('company_id', $company->id)
+                    ->where('store_id', $store->id)
+                    ->lockForUpdate()
+                    ->first();
+                $this->assertNotNull($locked);
+                $this->assertSame('active', $locked->status);
+
+                $peer->beginTransaction();
+                try {
+                    $blocked = false;
+                    try {
+                        $statement = $peer->prepare(
+                            'SELECT status FROM enterprise_procurement_contracts WHERE id = ? FOR UPDATE NOWAIT',
+                        );
+                        $statement->execute([$contractId]);
+                    } catch (PDOException $error) {
+                        $blocked = true;
+                        $this->assertSame(3572, (int) ($error->errorInfo[1] ?? 0));
+                    }
+                    $this->assertTrue($blocked, 'Termination cannot bypass a locked RFQ contract snapshot.');
+                } finally {
+                    if ($peer->inTransaction()) {
+                        $peer->rollBack();
+                    }
+                }
+            } finally {
+                DB::rollBack();
+            }
+
+            // Operator termination wins first: the separately running
+            // RFQ binding cannot acquire an active contract until commit.
+            $peer->beginTransaction();
+            try {
+                $statement = $peer->prepare(
+                    'UPDATE enterprise_procurement_contracts SET status = ? WHERE id = ?',
+                );
+                $statement->execute(['terminated', $contractId]);
+                $this->assertSame(
+                    'terminated',
+                    $peer->query(
+                        'SELECT status FROM enterprise_procurement_contracts WHERE id = '.$contractId,
+                    )->fetchColumn(),
+                );
+
+                DB::beginTransaction();
+                try {
+                    $blocked = false;
+                    try {
+                        DB::select(
+                            'SELECT status FROM enterprise_procurement_contracts WHERE id = ? FOR UPDATE NOWAIT',
+                            [$contractId],
+                        );
+                    } catch (QueryException $error) {
+                        $blocked = true;
+                        $this->assertSame(3572, (int) ($error->errorInfo[1] ?? 0));
+                    }
+                    $this->assertTrue($blocked, 'RFQ creation must not read an uncommitted termination.');
+                } finally {
+                    DB::rollBack();
+                }
+
+                $peer->commit();
+            } finally {
+                if ($peer->inTransaction()) {
+                    $peer->rollBack();
+                }
+            }
+
+            DB::beginTransaction();
+            try {
+                $afterCommit = DB::table('enterprise_procurement_contracts')
+                    ->where('id', $contractId)
+                    ->where('organization_id', $company->organization_id)
+                    ->where('company_id', $company->id)
+                    ->where('store_id', $store->id)
+                    ->lockForUpdate()
+                    ->first();
+                $this->assertNotNull($afterCommit);
+                $this->assertSame('terminated', $afterCommit->status);
+            } finally {
+                DB::rollBack();
+            }
+        } finally {
+            if ($peer !== null && $peer->inTransaction()) {
+                $peer->rollBack();
+            }
+            if (DB::connection()->transactionLevel() > 0) {
+                DB::rollBack();
+            }
+            if ($contractId !== null) {
+                DB::table('enterprise_procurement_contracts')->where('id', $contractId)->delete();
+            }
+            if ($supplierId !== null) {
+                DB::table('enterprise_suppliers')->where('id', $supplierId)->delete();
+            }
+            $actor->delete();
+        }
+    }
+
     private function assertPeerNowaitBlocked(PDO $peer): void
     {
         $blocked = false;
