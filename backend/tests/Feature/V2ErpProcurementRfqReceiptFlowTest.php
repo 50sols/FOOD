@@ -1761,6 +1761,133 @@ final class V2ErpProcurementRfqReceiptFlowTest extends TestCase
             ->where('event', 'enterprise.goods_receipt.posted')->count());
     }
 
+    public function test_rfq_publish_locks_module_rfq_and_scoped_supplier_before_issuing_one_invitation(): void
+    {
+        $store = $this->store();
+        $maker = $this->actor('PROCUREMENT_BUYER', 'ar');
+        [$supplierId, $rfqId] = $this->draftRfqForPublish($maker, $store);
+        $auditBefore = DB::table('audit_logs')
+            ->where('event', 'enterprise.procurement.rfq.published')->count();
+
+        // RefreshDatabase has an outer test-owned transaction. This observes
+        // only the nested publication transaction in this PHP process, not a
+        // real independent PHP/HTTP worker contention or signed stage proof.
+        $reads = [];
+        DB::listen(function (QueryExecuted $query) use (&$reads): void {
+            if (DB::connection()->transactionLevel() < 2
+                || ! str_starts_with(strtolower(ltrim($query->sql)), 'select')) {
+                return;
+            }
+            if (str_contains($query->sql, 'enterprise_modules')) {
+                $reads[] = 'module';
+            } elseif (str_contains($query->sql, 'enterprise_procurement_rfqs')) {
+                $reads[] = 'rfq';
+            } elseif (str_contains($query->sql, 'enterprise_suppliers')) {
+                $reads[] = 'supplier';
+            }
+        });
+
+        $this->actingAs($maker)->post(route('admin.erp.procurement.rfqs.publish', $rfqId), [
+            'store_id' => $store->id, 'supplier_ids' => [$supplierId],
+        ])->assertRedirect()->assertSessionHas('procurement_portal_links');
+
+        $order = array_values(array_unique($reads));
+        $this->assertSame(['module', 'rfq', 'supplier'], array_slice($order, 0, 3));
+        $this->assertCount(1, session('procurement_portal_links'));
+        $this->assertDatabaseHas('enterprise_procurement_rfqs', [
+            'id' => $rfqId, 'status' => 'published',
+        ]);
+        $this->assertDatabaseHas('enterprise_procurement_rfq_invitations', [
+            'rfq_id' => $rfqId, 'supplier_id' => $supplierId, 'status' => 'invited',
+        ]);
+        $this->assertSame(1, DB::table('enterprise_procurement_rfq_invitations')
+            ->where('rfq_id', $rfqId)->count());
+        $this->assertSame($auditBefore + 1, DB::table('audit_logs')
+            ->where('event', 'enterprise.procurement.rfq.published')->count());
+
+        // A retried publish request must not mint another bearer invitation,
+        // even if a stale browser submits its previous supplier selection.
+        $this->actingAs($maker)->post(route('admin.erp.procurement.rfqs.publish', $rfqId), [
+            'store_id' => $store->id, 'supplier_ids' => [$supplierId],
+        ])->assertRedirect();
+        $this->assertSame(1, DB::table('enterprise_procurement_rfq_invitations')
+            ->where('rfq_id', $rfqId)->count());
+        $this->assertSame($auditBefore + 1, DB::table('audit_logs')
+            ->where('event', 'enterprise.procurement.rfq.published')->count());
+    }
+
+    public function test_rfq_publish_denies_module_shutdown_and_supplier_governance_after_preflight_without_tokens(): void
+    {
+        $store = $this->store();
+        $foreignStore = Store::query()->create([
+            'store_type_id' => (int) DB::table('store_types')->where('code', 'B2B')->value('id'),
+            'code' => 'P135-PUBLISH-FOREIGN', 'name' => 'Foreign RFQ invitation store', 'is_active' => true,
+        ]);
+        app(OrganizationHierarchyService::class)->ensureDefaultScopeForStore($foreignStore);
+
+        $pending = null;
+        $activeSupplier = null;
+        $triggered = [];
+        DB::listen(function (QueryExecuted $query) use (&$pending, &$activeSupplier, &$triggered, $foreignStore): void {
+            if ($pending === null
+                || ! str_starts_with(strtolower(ltrim($query->sql)), 'select')
+                || ! str_contains($query->sql, 'enterprise_modules')) {
+                return;
+            }
+
+            // This is a deterministic single-process preflight interleave:
+            // complete governance mutation before the publication locks run.
+            $action = $pending;
+            $pending = null;
+            $triggered[] = $action;
+            if ($action === 'suspend') {
+                app(ModuleLifecycleManager::class)->transition('procurement', ModuleState::SUSPENDED);
+            } else {
+                DB::table('enterprise_suppliers')->where('id', $activeSupplier)->update(match ($action) {
+                    'hold' => ['status' => 'on_hold'],
+                    'disqualified' => ['qualification_status' => 'unqualified'],
+                    'foreign_scope' => ['scope_type' => 'store', 'store_id' => $foreignStore->id],
+                });
+            }
+        });
+
+        foreach ([
+            ['locale' => 'ar', 'action' => 'hold'],
+            ['locale' => 'en', 'action' => 'disqualified'],
+            ['locale' => 'ar', 'action' => 'foreign_scope'],
+            ['locale' => 'en', 'action' => 'suspend'],
+        ] as $case) {
+            $maker = $this->actor('PROCUREMENT_BUYER', $case['locale']);
+            [$supplierId, $rfqId] = $this->draftRfqForPublish($maker, $store);
+            $beforeAudit = DB::table('audit_logs')
+                ->where('event', 'enterprise.procurement.rfq.published')->count();
+            $activeSupplier = $supplierId;
+            $pending = $case['action'];
+            app()->setLocale($case['locale']);
+
+            $result = $this->actingAs($maker)->post(route('admin.erp.procurement.rfqs.publish', $rfqId), [
+                'store_id' => $store->id, 'supplier_ids' => [$supplierId],
+            ]);
+            if ($case['action'] === 'suspend') {
+                $result->assertNotFound();
+                $this->assertSame(ModuleState::SUSPENDED, app(ModuleRegistry::class)->state('procurement'));
+            } else {
+                $result->assertRedirect()->assertSessionHasErrors('supplier_ids');
+            }
+
+            $this->assertNull($pending, 'Governance must change only after the module preflight SELECT.');
+            $this->assertDatabaseHas('enterprise_procurement_rfqs', [
+                'id' => $rfqId, 'status' => 'draft',
+            ]);
+            $this->assertSame(0, DB::table('enterprise_procurement_rfq_invitations')
+                ->where('rfq_id', $rfqId)->count());
+            $this->assertSame($beforeAudit, DB::table('audit_logs')
+                ->where('event', 'enterprise.procurement.rfq.published')->count());
+        }
+
+        $this->assertSame(['hold', 'disqualified', 'foreign_scope', 'suspend'], $triggered);
+    }
+
     public function test_authenticated_rfq_award_locks_procurement_before_rfq_and_rejects_replay_after_shutdown(): void
     {
         $store = $this->store();
