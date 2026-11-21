@@ -29,7 +29,7 @@ final class RestaurantWholesalePurchasesController extends Controller
         // Authenticate and scope the restaurant buyer first, then reject
         // nested tab selectors before PHP can coerce them into a string.
         $requestedTab = $request->query('tab', 'catalog');
-        abort_unless($requestedTab === null || is_string($requestedTab), 404);
+        abort_if(is_array($requestedTab), 404);
         $tab = strtolower((string) $requestedTab);
         if (! in_array($tab, self::TABS, true)) {
             $tab = 'catalog';
