@@ -1832,6 +1832,11 @@ final class V2ErpProcurementRfqReceiptFlowTest extends TestCase
             ->where('event', 'enterprise.procurement.rfq.awarded')->count();
         $beforeCost = DB::table('enterprise_purchase_request_lines')
             ->where('purchase_request_id', $requestId)->value('estimated_unit_cost');
+        $foreignStore = Store::query()->create([
+            'store_type_id' => (int) DB::table('store_types')->where('code', 'B2B')->value('id'),
+            'code' => 'P135-AWARD-SUPPLIER-FOREIGN', 'name' => 'Foreign supplier scope', 'is_active' => true,
+        ]);
+        app(OrganizationHierarchyService::class)->ensureDefaultScopeForStore($foreignStore);
         $injection = null;
         $injected = [];
 
@@ -1839,7 +1844,7 @@ final class V2ErpProcurementRfqReceiptFlowTest extends TestCase
         // SELECT and BEFORE award's locked supplier eligibility read. This
         // QueryExecuted listener is a deterministic single-process interleave;
         // independent two-worker MySQL/HTTP acceptance remains separately due.
-        DB::listen(function (QueryExecuted $query) use (&$injection, &$injected, $supplierId): void {
+        DB::listen(function (QueryExecuted $query) use (&$injection, &$injected, $supplierId, $foreignStore): void {
             if ($injection === null
                 || ! str_starts_with(strtolower(ltrim($query->sql)), 'select')
                 || ! str_contains($query->sql, 'enterprise_modules')) {
@@ -1849,7 +1854,11 @@ final class V2ErpProcurementRfqReceiptFlowTest extends TestCase
             $kind = $injection;
             $injection = null;
             DB::table('enterprise_suppliers')->where('id', $supplierId)->update(
-                $kind === 'hold' ? ['status' => 'on_hold'] : ['qualification_status' => 'unqualified'],
+                match ($kind) {
+                    'hold' => ['status' => 'on_hold'],
+                    'disqualified' => ['qualification_status' => 'unqualified'],
+                    'foreign_store' => ['scope_type' => 'store', 'store_id' => $foreignStore->id],
+                },
             );
             $injected[] = $kind;
         });
@@ -1876,7 +1885,24 @@ final class V2ErpProcurementRfqReceiptFlowTest extends TestCase
                 ->where('event', 'enterprise.procurement.rfq.awarded')->count());
         }
 
-        $this->assertSame(['hold', 'disqualified'], $injected);
+        // A supplier reassigned to a different B2B store cannot be awarded
+        // through the original store's valid checker, RFQ and quote IDs.
+        DB::table('enterprise_suppliers')->where('id', $supplierId)->update([
+            'status' => 'active', 'qualification_status' => 'qualified',
+            'scope_type' => 'store', 'store_id' => $store->id,
+        ]);
+        $injection = 'foreign_store';
+        $this->actingAs($checker->fresh())->post(route('admin.erp.procurement.rfqs.award', [
+            'rfq' => $rfqId, 'quote' => $quoteId,
+        ]), ['store_id' => $store->id])->assertNotFound();
+        $this->assertNull($injection);
+        $this->assertDatabaseHas('enterprise_suppliers', [
+            'id' => $supplierId, 'scope_type' => 'store', 'store_id' => $foreignStore->id,
+        ]);
+        $this->assertUnawarded($requestId, $rfqId, $beforeCost);
+        $this->assertSame($beforeAudits, DB::table('audit_logs')
+            ->where('event', 'enterprise.procurement.rfq.awarded')->count());
+        $this->assertSame(['hold', 'disqualified', 'foreign_store'], $injected);
     }
 
     public function test_rfq_cannot_award_before_independent_checker_approves_without_mutating_supplier_or_price(): void
