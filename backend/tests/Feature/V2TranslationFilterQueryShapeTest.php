@@ -97,6 +97,26 @@ final class V2TranslationFilterQueryShapeTest extends TestCase
         }
     }
 
+    public function test_empty_search_and_surface_query_values_preserve_filter_form_behavior(): void
+    {
+        $actor = $this->superAdmin();
+
+        foreach (['ar' => 'rtl', 'en' => 'ltr'] as $locale => $direction) {
+            $actor->forceFill(['locale' => $locale])->save();
+            app()->setLocale($locale);
+
+            // Browsers submit empty form fields; middleware may convert them to null.
+            $this->actingAs($actor->fresh())
+                ->get('/admin/settings/translations?q=&surface=')
+                ->assertOk()
+                ->assertSee('dir="'.$direction.'"', false);
+
+            $this->actingAs($actor->fresh())
+                ->get('/admin/settings/translations?q=')
+                ->assertOk();
+        }
+    }
+
     public function test_actor_without_translation_permission_cannot_read_valid_or_malformed_filters(): void
     {
         $actor = User::factory()->create(['is_active' => true]);
