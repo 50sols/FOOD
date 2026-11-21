@@ -359,6 +359,50 @@ final class V2ReceivableSettlementWorkbenchTest extends TestCase
         ]);
     }
 
+    public function test_settlement_draft_cannot_post_after_finance_account_is_disabled(): void
+    {
+        $fixture = $this->fixture('P303-STALE-CASH');
+        $receivables = app(AccountsReceivableService::class);
+        $makerContext = app(TenantContextResolver::class)->retail(
+            $fixture['maker'],
+            $fixture['store']->id,
+        );
+        $posterContext = app(TenantContextResolver::class)->retail(
+            $fixture['poster'],
+            $fixture['store']->id,
+        );
+
+        $allocation = $receivables->createAllocation(
+            $fixture['maker'],
+            $makerContext,
+            $fixture['document']->id,
+            [
+                'idempotency_key' => 'p303-stale-cash-account',
+                'allocation_date' => '2027-01-12',
+                'amount' => '15.000',
+                'settlement_account_id' => $fixture['cash_account_id'],
+            ],
+        );
+        DB::table('enterprise_finance_accounts')
+            ->where('id', $fixture['cash_account_id'])
+            ->update(['status' => 'inactive']);
+
+        try {
+            $receivables->postAllocation($fixture['poster'], $posterContext, $allocation->id);
+            $this->fail('Posting must not use an account disabled after the draft was created.');
+        } catch (ValidationException $exception) {
+            $this->assertArrayHasKey('settlement_account_id', $exception->errors());
+        }
+
+        $this->assertSame('draft', $allocation->fresh()->status);
+        $this->assertNull($allocation->fresh()->journal_id);
+        $this->assertDatabaseCount('enterprise_finance_journals', 1);
+        $this->assertDatabaseMissing('audit_logs', [
+            'event' => 'enterprise.finance.ar_allocation_posted',
+            'auditable_id' => $allocation->id,
+        ]);
+    }
+
     public function test_legacy_self_netting_allocation_is_rejected_before_journal_posting(): void
     {
         $fixture = $this->fixture('P303-LEGACY-SELF-NET');
