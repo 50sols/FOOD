@@ -320,6 +320,45 @@ final class V2ReceivableSettlementWorkbenchTest extends TestCase
         $this->assertDatabaseCount('enterprise_ar_allocations', 1);
     }
 
+    public function test_invalid_settlement_account_errors_target_the_form_field_without_financial_writes(): void
+    {
+        $fixture = $this->fixture('P303-INVALID-ACCOUNT', wholesale: true);
+        $service = app(AccountsReceivableService::class);
+        $context = app(TenantContextResolver::class)->wholesale($fixture['maker'], $fixture['store']->id);
+        $document = $fixture['document'];
+        $missingAccountId = (int) DB::table('enterprise_finance_accounts')->max('id') + 100;
+        $payload = [
+            'idempotency_key' => 'p303-invalid-posting-account',
+            'allocation_date' => '2027-01-12',
+            'amount' => '15.000',
+            'settlement_account_id' => $missingAccountId,
+        ];
+
+        // A Finance account validation failure must be attached to the field
+        // submitted by the Dashboard, not the unrelated legacy account_id key.
+        try {
+            $service->createAllocation($fixture['maker'], $context, $document->id, $payload);
+            $this->fail('A missing Finance posting account must be rejected.');
+        } catch (ValidationException $exception) {
+            $this->assertArrayHasKey('settlement_account_id', $exception->errors());
+            $this->assertArrayNotHasKey('account_id', $exception->errors());
+        }
+
+        foreach (['en', 'ar'] as $locale) {
+            $fixture['maker']->forceFill(['locale' => $locale])->save();
+            $this->actingAs($fixture['maker']->fresh())->post(
+                route('admin.erp.finance.receivables.settlements.store', $document->id),
+                ['store_id' => $fixture['store']->id, ...$payload],
+            )->assertSessionHasErrors('settlement_account_id');
+        }
+
+        $this->assertDatabaseCount('enterprise_ar_allocations', 0);
+        $this->assertDatabaseCount('enterprise_finance_journals', 1);
+        $this->assertDatabaseMissing('audit_logs', [
+            'event' => 'enterprise.finance.ar_allocation_created',
+        ]);
+    }
+
     public function test_legacy_self_netting_allocation_is_rejected_before_journal_posting(): void
     {
         $fixture = $this->fixture('P303-LEGACY-SELF-NET');

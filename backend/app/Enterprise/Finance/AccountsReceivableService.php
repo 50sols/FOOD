@@ -140,8 +140,8 @@ final class AccountsReceivableService
             abort_unless($context->ownsStore((int) $data['store_id']), 404);
         }
         Customer::query()->findOrFail((int) $data['customer_id']);
-        $this->assertPostingAccount($scope, (int) $data['receivable_account_id']);
-        $this->assertPostingAccount($scope, (int) $data['offset_account_id']);
+        $this->assertPostingAccount($scope, (int) $data['receivable_account_id'], 'receivable_account_id');
+        $this->assertPostingAccount($scope, (int) $data['offset_account_id'], 'offset_account_id');
 
         $entryDate = CarbonImmutable::parse((string) $data['entry_date'])->toDateString();
         $dueDate = CarbonImmutable::parse((string) $data['due_date'])->toDateString();
@@ -519,7 +519,7 @@ final class AccountsReceivableService
                 ]);
             }
 
-            $this->assertPostingAccount($scope, (int) $data['settlement_account_id']);
+            $this->assertPostingAccount($scope, (int) $data['settlement_account_id'], 'settlement_account_id');
             $amount = $this->formatMills($this->toMills($data['amount']));
             if ($this->toMills($amount) < 1) {
                 throw ValidationException::withMessages([
@@ -1180,6 +1180,7 @@ final class AccountsReceivableService
     private function assertPostingAccount(
         EnterpriseDataScope $scope,
         int $accountId,
+        string $fieldName,
     ): void {
         $exists = EnterpriseFinanceAccount::query()
             ->whereKey($accountId)
@@ -1193,7 +1194,7 @@ final class AccountsReceivableService
 
         if (! $exists) {
             throw ValidationException::withMessages([
-                'account_id' => [
+                $fieldName => [
                     'Finance account must be an active posting account in the same legal entity.',
                 ],
             ]);
