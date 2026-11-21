@@ -24,6 +24,10 @@ final class CustomerGroupManagementController extends Controller
     public function index(Request $request): View
     {
         [$actor, $storeId, $channel] = $this->authorizedStore($request, 'customers.view');
+        // The authenticated store/channel scope is enforced above. A nested
+        // explicit GET selector must not silently choose the default store
+        // after integer() coerces it to zero.
+        abort_if(is_array($request->query('store_id')), 404);
         // Reject nested GET search data after store authorization and before
         // string coercion, query construction, or rendering the search input.
         $searchInput = $request->query('q', '');
