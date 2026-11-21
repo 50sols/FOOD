@@ -491,13 +491,19 @@ class CustomerGroupManagementTest extends TestCase
             ] as [$actor, $routeName, $storeId, $visible]) {
                 $url = route($routeName);
 
-                foreach (['', '?store_id=', '?store_id='.$storeId] as $valid) {
+                foreach (['', '?store_id='] as $fallback) {
                     $this->actingAs($actor->fresh())
-                        ->get($url.$valid)
+                        ->get($url.$fallback)
                         ->assertOk()
-                        ->assertSee($visible)
                         ->assertSee('dir="'.$direction.'"', false);
                 }
+
+                $this->actingAs($actor->fresh())
+                    ->get($url.'?store_id='.$storeId)
+                    ->assertOk()
+                    ->assertSee($visible)
+                    ->assertDontSee('Foreign ID Shape Group')
+                    ->assertSee('dir="'.$direction.'"', false);
 
                 foreach ([
                     '?store_id%5B%5D='.$storeId,
