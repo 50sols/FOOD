@@ -29,6 +29,14 @@ final class NotificationController extends Controller
     {
         $actor = $this->authorizeManage($request);
         App::setLocale(in_array($actor->locale, ['ar', 'en'], true) ? $actor->locale : 'ar');
+
+        // Authorization stays first; nested GET values must never be coerced
+        // into search text, status or a notification review identifier.
+        foreach (['q', 'status', 'review_notification'] as $field) {
+            $value = $request->query($field);
+            abort_unless($value === null || is_string($value), 404);
+        }
+
         $search = trim((string) $request->query('q', ''));
         $status = trim((string) $request->query('status', ''));
 
