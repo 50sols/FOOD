@@ -159,6 +159,14 @@ final class CustomerServiceWorkspaceController extends Controller
             403,
         );
 
+        // The index's optional case selector is a scalar record identity, not
+        // an array filter. A show URL has an authoritative route-bound case
+        // ID and must not be redirected by an unrelated query parameter.
+        // Authorize the actor first; reject nested selectors before case reads.
+        if ($selectedCaseId === null) {
+            abort_if(is_array($request->query('case_id')), 404);
+        }
+
         $filters = $request->validate([
             'q' => ['nullable', 'string', 'max:120'],
             'store_id' => ['nullable', 'integer', 'min:1'],
