@@ -561,12 +561,14 @@ class SmartOrderingCustomerGrowthTest extends TestCase
             'locale' => 'en',
             'is_active' => true,
         ]);
+        // The dashboard middleware must deny a roleless actor (403) before
+        // the route ever evaluates the branch selector.
         $this->actingAs($roleless)
             ->getJson($url.'?branch_id=999999')
-            ->assertNotFound();
+            ->assertForbidden();
         $this->actingAs($roleless)
             ->getJson($url.'?branch_id%5B%5D=999999')
-            ->assertNotFound();
+            ->assertForbidden();
 
         $this->assertSame($before, [
             DB::table('smart_ordering_loyalty_rewards')->count(),
