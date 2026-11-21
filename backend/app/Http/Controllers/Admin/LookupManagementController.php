@@ -83,9 +83,11 @@ final class LookupManagementController extends Controller
                 ->where($table.'.store_id', $currentStoreId);
         }
 
-        $searchInput = $request->query('q', '') ?? '';
-        abort_unless(is_string($searchInput), 404);
-        $search = trim($searchInput);
+        $searchInput = $request->query('q', '');
+        // HTTP query values are strings or arrays; Laravel converts an
+        // explicit empty string to null. Reject arrays, preserve empty text.
+        abort_if(is_array($searchInput), 404);
+        $search = trim((string) $searchInput);
         if ($search !== '') {
             // These are user-entered literal substrings, not SQL wildcard patterns.
             $term = '%'.str_replace(['!', '%', '_'], ['!!', '!%', '!_'], $search).'%';
@@ -98,16 +100,16 @@ final class LookupManagementController extends Controller
             });
         }
 
-        $scopeInput = $request->query('scope', 'all') ?? '';
-        abort_unless(is_string($scopeInput), 404);
-        $scope = $isSuperAdmin ? $scopeInput : 'all';
+        $scopeInput = $request->query('scope', 'all');
+        abort_if(is_array($scopeInput), 404);
+        $scope = $isSuperAdmin ? (string) $scopeInput : 'all';
         if ($isSuperAdmin && in_array($scope, [LookupScopeService::GLOBAL, LookupScopeService::B2B, LookupScopeService::STORE], true)) {
             $query->where($table.'.scope', $scope);
         }
 
-        $statusInput = $request->query('status', 'all') ?? '';
-        abort_unless(is_string($statusInput), 404);
-        $status = $statusInput;
+        $statusInput = $request->query('status', 'all');
+        abort_if(is_array($statusInput), 404);
+        $status = (string) $statusInput;
         if ($status === 'active') {
             $query->where($table.'.is_active', true);
         } elseif ($status === 'inactive') {
