@@ -556,6 +556,18 @@ class SmartOrderingCustomerGrowthTest extends TestCase
             ->getJson($url.'?branch_id%5B%5D=999999')
             ->assertNotFound();
 
+        $roleless = User::factory()->create([
+            'email' => 'v2-loyalty-branch-roleless@example.test',
+            'locale' => 'en',
+            'is_active' => true,
+        ]);
+        $this->actingAs($roleless)
+            ->getJson($url.'?branch_id=999999')
+            ->assertNotFound();
+        $this->actingAs($roleless)
+            ->getJson($url.'?branch_id%5B%5D=999999')
+            ->assertNotFound();
+
         $this->assertSame($before, [
             DB::table('smart_ordering_loyalty_rewards')->count(),
             DB::table('smart_ordering_loyalty_ledger')->count(),
