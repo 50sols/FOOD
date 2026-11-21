@@ -437,6 +437,19 @@ final class ProcurementCompletionManager
         }
 
         return DB::transaction(function () use ($actor, $scope, $rfqId, $supplierIds): array {
+            // Scope authorization is a preflight, not a durable grant. Serialize
+            // the final RFQ publication with ModuleLifecycleManager shutdown
+            // before taking RFQ and supplier locks or issuing bearer tokens.
+            $module = DB::table('enterprise_modules')
+                ->where('code', 'procurement')
+                ->lockForUpdate()
+                ->first();
+            abort_unless(
+                $module !== null && $module->state === ModuleState::ENABLED->value,
+                404,
+                'Procurement module is disabled.',
+            );
+
             $rfq = $this->visibleRfq($scope, $rfqId, true);
             if ($rfq->status === 'published') {
                 return [];
@@ -457,6 +470,12 @@ final class ProcurementCompletionManager
                             $store->where('scope_type', 'store')->where('store_id', $scope->storeId);
                         });
                 })
+                // Lock actual eligible rows through invitation insert + RFQ
+                // publication. A supplier hold, qualification or scope move
+                // must commit either before this check or after publication.
+                // Stable ID order avoids inconsistent multiple-supplier locks.
+                ->orderBy('id')
+                ->lockForUpdate()
                 ->get(['id']);
 
             if ($suppliers->count() !== count($supplierIds)) {
