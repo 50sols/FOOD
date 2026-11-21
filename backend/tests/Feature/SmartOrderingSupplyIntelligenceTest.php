@@ -441,6 +441,79 @@ class SmartOrderingSupplyIntelligenceTest extends TestCase
         $this->assertSame($counts['audit'], DB::table('audit_logs')->count());
     }
 
+    public function test_supply_dashboard_get_filters_reject_nested_shapes_after_site_authorization(): void
+    {
+        $f = $this->fixture();
+        $actor = $f['actor'];
+        $role = Role::query()->where('code', 'B2C_STORE_ADMIN')->firstOrFail();
+        DB::table('user_store_roles')->insert([
+            'user_id' => $actor->id,
+            'store_id' => $f['restaurant_store_id'],
+            'role_id' => $role->id,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $url = route('admin.smart-ordering.supply.index', ['site' => $f['site_id']]);
+        $counts = [
+            DB::table('smart_ordering_supply_mappings')->count(),
+            DB::table('smart_ordering_supply_stock_snapshots')->count(),
+            DB::table('smart_ordering_supply_reorder_drafts')->count(),
+            DB::table('audit_logs')->count(),
+        ];
+
+        foreach (['ar' => 'rtl', 'en' => 'ltr'] as $locale => $direction) {
+            $actor->forceFill(['locale' => $locale])->save();
+            app()->setLocale($locale);
+
+            $this->actingAs($actor->fresh())
+                ->get($url.'?'.http_build_query([
+                    'from' => now('Asia/Kuwait')->subDays(7)->toDateString(),
+                    'to' => now('Asia/Kuwait')->toDateString(),
+                    'branch_id' => $f['branch_id'],
+                    'q' => 'FDX-',
+                ]))
+                ->assertOk()
+                ->assertSee('dir="'.$direction.'"', false);
+
+            $this->actingAs($actor->fresh())
+                ->get($url.'?from=&to=&branch_id=&q=')
+                ->assertOk();
+
+            foreach ([
+                '?from%5B%5D=2026-11-21',
+                '?from%5Bnested%5D=2026-11-21',
+                '?to%5B%5D=2026-11-22',
+                '?to%5Bnested%5D=2026-11-22',
+                '?branch_id%5B%5D='.$f['branch_id'],
+                '?branch_id%5Bnested%5D='.$f['branch_id'],
+                '?q%5B%5D=FDX',
+                '?q%5Bnested%5D=FDX',
+            ] as $malformed) {
+                $this->actingAs($actor->fresh())
+                    ->get($url.$malformed)
+                    ->assertNotFound();
+            }
+        }
+
+        $roleless = User::query()->create([
+            'name' => 'V2 Supply Roleless',
+            'email' => 'v2-4074-roleless@example.test',
+            'password' => 'password',
+            'locale' => 'en',
+            'is_active' => true,
+        ]);
+        $this->actingAs($roleless)->get($url.'?q=valid')->assertForbidden();
+        $this->actingAs($roleless)->get($url.'?q%5B%5D=invalid')->assertForbidden();
+
+        $this->assertSame($counts, [
+            DB::table('smart_ordering_supply_mappings')->count(),
+            DB::table('smart_ordering_supply_stock_snapshots')->count(),
+            DB::table('smart_ordering_supply_reorder_drafts')->count(),
+            DB::table('audit_logs')->count(),
+        ]);
+    }
+
     public function test_supply_workspace_tabs_preserve_scope_locale_and_exclusive_rendering(): void
     {
         $f = $this->fixture();
