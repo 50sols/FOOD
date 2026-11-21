@@ -1761,6 +1761,118 @@ final class V2ErpProcurementRfqReceiptFlowTest extends TestCase
             ->where('event', 'enterprise.goods_receipt.posted')->count());
     }
 
+    public function test_contract_activation_and_termination_are_transactional_and_fail_closed_after_module_shutdown(): void
+    {
+        $store = $this->store();
+        $maker = $this->actor('PROCUREMENT_MANAGER', 'ar');
+        $checker = $this->actor('PROCUREMENT_MANAGER', 'en');
+        $code = 'P135-CONT-LOCK-'.$maker->id;
+        $title = 'P135 lifecycle contract '.$maker->id;
+
+        $this->actingAs($maker)->post(route('admin.erp.procurement.suppliers.store'), [
+            'store_id' => $store->id, 'scope_type' => 'store',
+            'code' => $code, 'name_en' => 'Contract lifecycle lock supplier',
+            'name_ar' => 'مورد اختبار قفل العقد',
+        ])->assertRedirect();
+        $supplierId = (int) DB::table('enterprise_suppliers')->where('code', $code)->value('id');
+        $this->assertGreaterThan(0, $supplierId);
+
+        $this->actingAs($maker)->post(route('admin.erp.procurement.contracts.store'), [
+            'store_id' => $store->id, 'supplier_id' => $supplierId,
+            'title' => $title, 'currency_code' => 'KWD',
+            'starts_on' => now()->subDay()->toDateString(),
+            'ends_on' => now()->addMonth()->toDateString(),
+        ])->assertRedirect();
+        $contractId = (int) DB::table('enterprise_procurement_contracts')
+            ->where('title', $title)->value('id');
+        $this->assertGreaterThan(0, $contractId);
+
+        $beforeActivate = DB::table('audit_logs')
+            ->where('event', 'enterprise.procurement.contract.activated')->count();
+        $beforeTerminate = DB::table('audit_logs')
+            ->where('event', 'enterprise.procurement.contract.terminated')->count();
+        $pendingShutdown = true;
+        $reads = [];
+        DB::listen(function (QueryExecuted $query) use (&$pendingShutdown, &$reads): void {
+            if (! str_starts_with(strtolower(ltrim($query->sql)), 'select')) {
+                return;
+            }
+            if ($pendingShutdown && str_contains($query->sql, 'enterprise_modules')
+                && DB::connection()->transactionLevel() === 1) {
+                $pendingShutdown = false;
+                app(ModuleLifecycleManager::class)->transition('procurement', ModuleState::SUSPENDED);
+            }
+            if (DB::connection()->transactionLevel() < 2) {
+                return;
+            }
+            if (str_contains($query->sql, 'enterprise_modules')) {
+                $reads[] = 'module';
+            } elseif (str_contains($query->sql, 'enterprise_procurement_contracts')) {
+                $reads[] = 'contract';
+            }
+        });
+
+        // Arabic checker rejection: the source's stale preflight is not an
+        // authorization to activate an agreement after operator shutdown.
+        app()->setLocale('ar');
+        $this->actingAs($checker)->post(route('admin.erp.procurement.contracts.activate', $contractId), [
+            'store_id' => $store->id,
+        ])->assertNotFound();
+        $this->assertFalse($pendingShutdown);
+        $this->assertSame('module', $reads[0] ?? null);
+        $this->assertDatabaseHas('enterprise_procurement_contracts', [
+            'id' => $contractId, 'status' => 'draft', 'activated_by' => null,
+        ]);
+        $this->assertSame($beforeActivate, DB::table('audit_logs')
+            ->where('event', 'enterprise.procurement.contract.activated')->count());
+
+        app(ModuleLifecycleManager::class)->transition('procurement', ModuleState::ENABLED);
+        $reads = [];
+        app()->setLocale('en');
+        $this->actingAs($checker)->post(route('admin.erp.procurement.contracts.activate', $contractId), [
+            'store_id' => $store->id,
+        ])->assertRedirect();
+        $this->assertSame(['module', 'contract'], array_slice(array_values(array_unique($reads)), 0, 2));
+        $this->assertDatabaseHas('enterprise_procurement_contracts', [
+            'id' => $contractId, 'status' => 'active', 'activated_by' => $checker->id,
+        ]);
+        $this->assertSame($beforeActivate + 1, DB::table('audit_logs')
+            ->where('event', 'enterprise.procurement.contract.activated')->count());
+
+        $pendingShutdown = true;
+        $reads = [];
+        app()->setLocale('ar');
+        $this->actingAs($checker)->post(route('admin.erp.procurement.contracts.terminate', $contractId), [
+            'store_id' => $store->id,
+        ])->assertNotFound();
+        $this->assertFalse($pendingShutdown);
+        $this->assertSame('module', $reads[0] ?? null);
+        $this->assertDatabaseHas('enterprise_procurement_contracts', [
+            'id' => $contractId, 'status' => 'active', 'terminated_by' => null,
+        ]);
+        $this->assertSame($beforeTerminate, DB::table('audit_logs')
+            ->where('event', 'enterprise.procurement.contract.terminated')->count());
+
+        app(ModuleLifecycleManager::class)->transition('procurement', ModuleState::ENABLED);
+        $reads = [];
+        app()->setLocale('en');
+        $this->actingAs($checker)->post(route('admin.erp.procurement.contracts.terminate', $contractId), [
+            'store_id' => $store->id,
+        ])->assertRedirect();
+        $this->assertSame(['module', 'contract'], array_slice(array_values(array_unique($reads)), 0, 2));
+        $this->assertDatabaseHas('enterprise_procurement_contracts', [
+            'id' => $contractId, 'status' => 'terminated', 'terminated_by' => $checker->id,
+        ]);
+        $this->assertSame($beforeTerminate + 1, DB::table('audit_logs')
+            ->where('event', 'enterprise.procurement.contract.terminated')->count());
+
+        $this->actingAs($checker)->post(route('admin.erp.procurement.contracts.terminate', $contractId), [
+            'store_id' => $store->id,
+        ])->assertRedirect();
+        $this->assertSame($beforeTerminate + 1, DB::table('audit_logs')
+            ->where('event', 'enterprise.procurement.contract.terminated')->count());
+    }
+
     public function test_rfq_creation_rechecks_module_shutdown_after_preflight_without_draft_or_audit(): void
     {
         $store = $this->store();
