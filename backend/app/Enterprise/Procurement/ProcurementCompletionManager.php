@@ -534,6 +534,19 @@ final class ProcurementCompletionManager
         $scope = $this->scope($actor, $context, 'procurement.purchase_requests.manage');
 
         DB::transaction(function () use ($actor, $scope, $rfqId): void {
+            // Cancellation and invitation revocation must be serialized with
+            // operator module suspension, just like publish/award and public
+            // supplier GET/POST. Preflight permission is not a durable grant.
+            $module = DB::table('enterprise_modules')
+                ->where('code', 'procurement')
+                ->lockForUpdate()
+                ->first();
+            abort_unless(
+                $module !== null && $module->state === ModuleState::ENABLED->value,
+                404,
+                'Procurement module is disabled.',
+            );
+
             $rfq = $this->visibleRfq($scope, $rfqId, true);
             if ($rfq->status === 'cancelled') {
                 return;
