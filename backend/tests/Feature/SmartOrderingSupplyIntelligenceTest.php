@@ -441,6 +441,86 @@ class SmartOrderingSupplyIntelligenceTest extends TestCase
         $this->assertSame($counts['audit'], DB::table('audit_logs')->count());
     }
 
+    public function test_supply_entry_rejects_nested_store_ids_after_authorization_without_default_fallback(): void
+    {
+        $f = $this->fixture();
+        $actor = $f['actor'];
+        $role = Role::query()->where('code', 'B2C_STORE_ADMIN')->firstOrFail();
+        DB::table('user_store_roles')->insert([
+            'user_id' => $actor->id,
+            'store_id' => $f['restaurant_store_id'],
+            'role_id' => $role->id,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $foreignStoreId = $this->store('B2C', 'SO-ENTRY-FOREIGN-'.Str::upper(Str::random(6)));
+        $url = route('admin.smart-ordering.supply.entry');
+        $destination = route('admin.smart-ordering.supply.index', ['site' => $f['site_id']]);
+
+        foreach (['ar', 'en'] as $locale) {
+            $actor->forceFill(['locale' => $locale])->save();
+            app()->setLocale($locale);
+
+            foreach ([
+                '',
+                '?store_id=',
+                '?store_id='.$f['restaurant_store_id'],
+            ] as $valid) {
+                $this->actingAs($actor->fresh())
+                    ->get($url.$valid)
+                    ->assertRedirect($destination);
+            }
+
+            $this->actingAs($actor->fresh())
+                ->get($url.'?store_id='.$foreignStoreId)
+                ->assertNotFound();
+        }
+
+        $before = [
+            DB::table('smart_ordering_sites')->count(),
+            DB::table('smart_ordering_supply_mappings')->count(),
+            DB::table('smart_ordering_supply_stock_snapshots')->count(),
+            DB::table('smart_ordering_supply_reorder_drafts')->count(),
+            DB::table('audit_logs')->count(),
+        ];
+
+        foreach (['ar', 'en'] as $locale) {
+            $actor->forceFill(['locale' => $locale])->save();
+            app()->setLocale($locale);
+
+            foreach ([
+                '?store_id%5B%5D='.$f['restaurant_store_id'],
+                '?store_id%5Bother%5D='.$f['restaurant_store_id'],
+                '?store_id%5Bdeep%5D%5Bid%5D='.$f['restaurant_store_id'],
+            ] as $nested) {
+                $this->actingAs($actor->fresh())
+                    ->get($url.$nested)
+                    ->assertNotFound();
+            }
+        }
+
+        $roleless = User::query()->create([
+            'name' => 'Supply Entry Unauthorized',
+            'email' => 'v2-4084-supply-entry-roleless@example.test',
+            'password' => 'password',
+            'locale' => 'en',
+            'is_active' => true,
+        ]);
+        $this->actingAs($roleless)->get($url.'?store_id='.$f['restaurant_store_id'])
+            ->assertForbidden();
+        $this->actingAs($roleless)->get($url.'?store_id%5B%5D='.$f['restaurant_store_id'])
+            ->assertForbidden();
+
+        $this->assertSame($before, [
+            DB::table('smart_ordering_sites')->count(),
+            DB::table('smart_ordering_supply_mappings')->count(),
+            DB::table('smart_ordering_supply_stock_snapshots')->count(),
+            DB::table('smart_ordering_supply_reorder_drafts')->count(),
+            DB::table('audit_logs')->count(),
+        ]);
+    }
+
     public function test_supply_dashboard_get_filters_reject_nested_shapes_after_site_authorization(): void
     {
         $f = $this->fixture();
