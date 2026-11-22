@@ -79,7 +79,13 @@ final class SmartOrderingSupplyController extends Controller
             abort_unless($value === null || is_string($value), 404);
         }
 
-        $branchId = $request->integer('branch_id') ?: null;
+        // An explicit invalid scalar must not become an unfiltered site-wide
+        // dashboard through Request::integer() coercion to zero. Empty/absent
+        // remains unfiltered; the ownership check below still hides foreign IDs.
+        $branchFilter = $request->validate([
+            'branch_id' => ['nullable', 'integer', 'min:1'],
+        ]);
+        $branchId = isset($branchFilter['branch_id']) ? (int) $branchFilter['branch_id'] : null;
         if ($branchId !== null) {
             abort_unless(
                 DB::table('smart_ordering_branches')

@@ -751,6 +751,83 @@ class SmartOrderingSupplyIntelligenceTest extends TestCase
         ]);
     }
 
+    public function test_supply_index_invalid_scalar_branch_never_falls_back_to_full_site_ar_en(): void
+    {
+        $f = $this->fixture();
+        $actor = $f['actor'];
+        $role = Role::query()->where('code', 'B2C_STORE_ADMIN')->firstOrFail();
+        DB::table('user_store_roles')->insert([
+            'user_id' => $actor->id,
+            'store_id' => $f['restaurant_store_id'],
+            'role_id' => $role->id,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        $foreignStore = $this->store('B2C', 'V2-SUPPLY-SCALAR-'.Str::upper(Str::random(6)));
+        $foreignSite = (int) DB::table('smart_ordering_sites')->insertGetId([
+            'public_id' => (string) Str::uuid(),
+            'store_id' => $foreignStore,
+            'slug' => 'supply-scalar-'.Str::lower(Str::random(8)),
+            'runtime_state' => 'ENABLED',
+            'master_enabled' => true,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        $foreignBranch = $this->smartBranch($foreignSite, 'FOREIGN-SCALAR');
+        $missingBranch = (int) DB::table('smart_ordering_branches')->max('id') + 10000;
+        $url = route('admin.smart-ordering.supply.index', ['site' => $f['site_id']]);
+        $foreignUrl = route('admin.smart-ordering.supply.index', ['site' => $foreignSite]);
+        $tables = ['smart_ordering_supply_mappings', 'smart_ordering_supply_stock_snapshots',
+            'smart_ordering_supply_reorder_drafts', 'audit_logs'];
+        $before = [];
+        foreach ($tables as $table) {
+            $before[$table] = DB::table($table)->count();
+        }
+        $originalLocale = app()->getLocale();
+
+        try {
+            foreach (['ar' => 'rtl', 'en' => 'ltr'] as $locale => $direction) {
+                $actor->forceFill(['locale' => $locale])->saveQuietly();
+                app()->setLocale($locale);
+
+                foreach (['?branch_id=invalid', '?branch_id=0', '?branch_id=-1',
+                    '?branch_id=1.5', '?branch_id=999999999999999999999999'] as $invalid) {
+                    $this->actingAs($actor->fresh())->getJson($url.$invalid)
+                        ->assertUnprocessable();
+                }
+                foreach ([$foreignBranch, $missingBranch] as $notOwned) {
+                    $this->actingAs($actor->fresh())
+                        ->get($url.'?branch_id='.$notOwned)->assertNotFound();
+                }
+                $this->actingAs($actor->fresh())
+                    ->get($url.'?branch_id%5B%5D='.$f['branch_id'])->assertNotFound();
+                $this->actingAs($actor->fresh())
+                    ->get($foreignUrl.'?branch_id=invalid')->assertNotFound();
+
+                foreach (['', '?branch_id=', '?branch_id='.$f['branch_id']] as $allowed) {
+                    $this->actingAs($actor->fresh())->get($url.$allowed)
+                        ->assertOk()->assertSee('dir="'.$direction.'"', false);
+                }
+            }
+        } finally {
+            app()->setLocale($originalLocale);
+        }
+
+        $roleless = User::query()->create([
+            'name' => 'Supply branch roleless',
+            'email' => 'v2-supply-scalar-roleless@example.test',
+            'password' => 'password',
+            'locale' => 'en',
+            'is_active' => true,
+        ]);
+        $this->actingAs($roleless)->get($url.'?branch_id=invalid')
+            ->assertForbidden();
+        foreach ($tables as $table) {
+            $this->assertSame($before[$table], DB::table($table)->count(),
+                $table.' unchanged');
+        }
+    }
+
     public function test_supply_dashboard_get_filters_reject_nested_shapes_after_site_authorization(): void
     {
         $f = $this->fixture();
