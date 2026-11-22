@@ -140,10 +140,19 @@ final class V2WorkforceClockShiftScopeTest extends TestCase
         $this->actingAs($actor->fresh())->post($url, [
             'action' => 'clock_in', 'shift_public_id' => $ownedShift,
         ])->assertRedirect();
+        $ownedShiftId = (int) DB::table('restaurant_shifts')
+            ->where('public_id', $ownedShift)->value('id');
+        $foreignShiftId = (int) DB::table('restaurant_shifts')
+            ->where('public_id', $foreignShift)->value('id');
         $this->assertDatabaseHas('restaurant_time_clock_sessions', [
             'branch_id' => (int) $ownedBranch->id,
             'user_id' => (int) $actor->id,
+            'shift_id' => $ownedShiftId,
             'status' => 'OPEN',
+        ]);
+        $this->assertDatabaseMissing('restaurant_time_clock_sessions', [
+            'branch_id' => (int) $ownedBranch->id,
+            'shift_id' => $foreignShiftId,
         ]);
         $this->assertSame($initialClockCount + 1, DB::table('restaurant_time_clock_sessions')->count());
         $this->assertDatabaseHas('audit_logs', [
