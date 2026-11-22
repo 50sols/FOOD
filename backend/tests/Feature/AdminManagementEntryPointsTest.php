@@ -104,5 +104,4 @@ class AdminManagementEntryPointsTest extends TestCase
             app()->setLocale($originalLocale);
         }
     }
-
 }
