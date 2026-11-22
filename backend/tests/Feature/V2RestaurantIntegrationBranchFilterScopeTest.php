@@ -104,6 +104,18 @@ final class V2RestaurantIntegrationBranchFilterScopeTest extends TestCase
                         'status' => 'retry',
                     ]))->assertUnprocessable()->assertJsonValidationErrors('branch_id');
                 }
+                // Canonical integer selectors with leading zeroes must keep
+                // their site scope rather than bypassing the branch check.
+                $this->actingAs($admin->fresh())->getJson(route($route, [
+                    'site' => $siteA->getKey(),
+                    'branch_id' => str_pad((string) $branches['B'], 8, '0', STR_PAD_LEFT),
+                    'status' => 'retry',
+                ]))->assertNotFound();
+                $this->actingAs($admin->fresh())->get(route($route, [
+                    'site' => $siteA->getKey(),
+                    'branch_id' => str_pad((string) $branches['A'], 8, '0', STR_PAD_LEFT),
+                    'status' => 'retry',
+                ]))->assertOk();
                 $this->actingAs($admin->fresh())->get(route($route, [
                     'site' => $siteA->getKey(),
                     'branch_id' => $branches['A'],
