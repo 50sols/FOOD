@@ -244,7 +244,9 @@ class V2RestaurantTableRoutePrevalidationTest extends TestCase
                 foreach ([
                     [],
                     ['other_table_public_id' => 'not-a-uuid', 'note' => ['bad']],
+                    ['other_table_public_id' => ['nested' => $memberPublicId], 'note' => ['bad']],
                     ['other_table_public_id' => $memberPublicId, 'note' => ['bad']],
+                    ['other_table_public_id' => $tables[0]['public_id'], 'note' => 'same table'],
                 ] as $invalidPayload) {
                     $this->actingAs($actor->fresh())
                         ->postJson($combineUrl, $invalidPayload)
