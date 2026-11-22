@@ -109,6 +109,11 @@ final class V2RestaurantIntegrationBranchFilterScopeTest extends TestCase
                     'branch_id' => $branches['A'],
                     'status' => 'retry',
                 ]))->assertOk();
+                // Site-wide observability remains available without a branch selector.
+                $this->actingAs($admin->fresh())->get(route($route, [
+                    'site' => $siteA->getKey(),
+                    'status' => 'retry',
+                ]))->assertOk();
             }
         } finally {
             app()->setLocale($oldLocale);
