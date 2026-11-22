@@ -340,6 +340,20 @@ class B2bAdminWorkspaceTest extends TestCase
             ->put('/admin/b2b/settings/pricing-tiers', ['enabled' => '1', 'setup_action' => 'test'])
             ->assertForbidden();
 
+        // Authorization takes precedence over malformed Test/Save input.
+        // Unauthorized actors cannot probe field-validation details.
+        foreach (['ar', 'en'] as $locale) {
+            $retail->forceFill(['locale' => $locale])->save();
+            foreach (['test', 'save'] as $action) {
+                $this->actingAs($retail->fresh())
+                    ->put('/admin/b2b/settings/pricing-tiers', [
+                        'enabled' => 'not-a-boolean',
+                        'setup_action' => $action,
+                    ])
+                    ->assertForbidden();
+            }
+        }
+
         $this->assertDatabaseMissing('settings', ['key' => 'b2b.pricing_tiers_enabled']);
         $this->assertDatabaseMissing('audit_logs', ['event' => 'b2b.pricing_mode.updated']);
     }
