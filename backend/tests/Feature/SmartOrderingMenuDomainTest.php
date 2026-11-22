@@ -43,6 +43,82 @@ class SmartOrderingMenuDomainTest extends TestCase
         $this->seed(CoreReferenceSeeder::class);
     }
 
+    public function test_menu_context_rejects_malformed_store_selector_before_draft_or_write_ar_en(): void
+    {
+        $owned = $this->fixture('MENU-SELECTOR-A', 4.250);
+        $foreign = $this->fixture('MENU-SELECTOR-B', 5.500);
+        $url = route('admin.smart-ordering.menu.index');
+        $writeUrl = route('admin.smart-ordering.menu.menus.store');
+        $tables = [
+            'smart_ordering_sites',
+            'smart_ordering_revisions',
+            'smart_ordering_menus',
+            'audit_logs',
+        ];
+        $before = [];
+        foreach ($tables as $table) {
+            $before[$table] = DB::table($table)->count();
+        }
+
+        $originalLocale = app()->getLocale();
+        try {
+            foreach (['ar', 'en'] as $locale) {
+                $owned['admin']->forceFill(['locale' => $locale])->saveQuietly();
+                app()->setLocale($locale);
+
+                foreach ([
+                    '?store_id=invalid',
+                    '?store_id=0',
+                    '?store_id=-1',
+                    '?store_id=1.5',
+                    '?store_id=999999999999999999999999',
+                ] as $invalid) {
+                    $this->actingAs($owned['admin']->fresh())
+                        ->getJson($url.$invalid)->assertUnprocessable();
+                }
+
+                foreach ([
+                    '?store_id%5B%5D='.$owned['store_id'],
+                    '?store_id%5Bdeep%5D='.$owned['store_id'],
+                ] as $nested) {
+                    $this->actingAs($owned['admin']->fresh())
+                        ->getJson($url.$nested)->assertNotFound();
+                }
+
+                $this->actingAs($owned['admin']->fresh())
+                    ->getJson($url.'?store_id='.$foreign['store_id'])->assertNotFound();
+
+                $this->actingAs($owned['admin']->fresh())
+                    ->postJson($writeUrl, ['store_id' => 'invalid', 'name_en' => 'Wrong Store'])
+                    ->assertUnprocessable();
+                $this->actingAs($owned['admin']->fresh())
+                    ->postJson($writeUrl, ['store_id' => [$owned['store_id']], 'name_en' => 'Wrong Store'])
+                    ->assertNotFound();
+            }
+        } finally {
+            app()->setLocale($originalLocale);
+        }
+
+        $this->actingAs($foreign['admin'])
+            ->getJson($url.'?store_id='.$owned['store_id'])->assertNotFound();
+        $roleless = User::factory()->create([
+            'email' => 'v2-menu-selector-roleless@example.test',
+            'locale' => 'en',
+            'is_active' => true,
+        ]);
+        $this->actingAs($roleless)
+            ->getJson($url.'?store_id=invalid')->assertForbidden();
+
+        foreach ($tables as $table) {
+            $this->assertSame($before[$table], DB::table($table)->count(), $table.' must remain unchanged');
+        }
+
+        foreach (['', '?store_id=', '?store_id='.$owned['store_id']] as $valid) {
+            $this->actingAs($owned['admin']->fresh())
+                ->get($url.$valid)->assertOk();
+        }
+    }
+
     public function test_appearance_preview_rejects_nested_selectors_after_authorization_without_changing_draft(): void
     {
         $fixture = $this->fixture('PREVIEW-SHAPE-A', 5.750);

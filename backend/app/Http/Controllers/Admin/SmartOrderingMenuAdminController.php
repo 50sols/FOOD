@@ -1249,7 +1249,15 @@ final class SmartOrderingMenuAdminController extends Controller
         $storeIds = app(RestaurantSaasStoreAccess::class)
             ->allowedStoreIds($actor, $permission, $request);
 
-        $requested = $request->integer('store_id');
+        // Canonical store permission is resolved before selector validation.
+        // Never coerce a nested selector to a default store and initialize its
+        // draft or apply an unintended Menu Builder mutation.
+        abort_if(is_array($request->input('store_id')), 404);
+
+        // An explicitly malformed scalar must not silently select the first
+        // authorized store. Missing/blank input retains the normal fallback.
+        $selection = $request->validate(['store_id' => ['nullable', 'integer', 'min:1']]);
+        $requested = isset($selection['store_id']) ? (int) $selection['store_id'] : 0;
         if ($requested > 0 && ! in_array($requested, $storeIds, true)) {
             abort(404);
         }
