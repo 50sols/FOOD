@@ -147,6 +147,22 @@ class WholesaleMinimumOrderTest extends TestCase
             'setup_action' => 'test',
         ])->assertForbidden();
 
+        // Invalid input cannot bypass the Wholesale permission check or expose
+        // business validation to an unauthorized Retail account.
+        foreach (['ar', 'en'] as $locale) {
+            $retail->update(['locale' => $locale]);
+            foreach (['test', 'save'] as $action) {
+                $this->actingAs($retail->fresh())->put(route('admin.b2b.storefront.minimum-order'), [
+                    'minimum_order_egp' => 'invalid-price',
+                    'setup_action' => $action,
+                ])->assertForbidden();
+            }
+        }
+
+        $this->assertDatabaseMissing('settings', [
+            'store_id' => app(WholesalePrincipal::class)->storeId(),
+            'key' => MinimumOrderPolicy::WHOLESALE_SETTING_KEY,
+        ]);
         $this->assertSame(1500.0, app(MinimumOrderPolicy::class)->minimumForStore(app(WholesalePrincipal::class)->storeId()));
         $this->assertDatabaseMissing('audit_logs', ['event' => 'b2b.checkout.minimum_order.updated']);
     }
