@@ -44,7 +44,7 @@ final class V2WholesaleFinancePdfExportBoundaryTest extends TestCase
             'orders' => DB::table('orders')->count(),
             'payments' => DB::table('payments')->count(),
             'invoices' => DB::table('invoices')->count(),
-            'assignments' => DB::table('driver_assignments')->count(),
+            'driver_assignments' => DB::table('driver_assignments')->count(),
         ];
 
         foreach (['ar', 'en'] as $locale) {
