@@ -51,6 +51,8 @@ final class SmartOrderingQrController extends Controller
             'type' => ['nullable', Rule::in(SmartOrderingQrManager::TYPES)],
             'state' => ['nullable', Rule::in(['enabled', 'disabled', 'scheduled', 'expired'])],
             'q' => ['nullable', 'string', 'max:120'],
+            // Invalid explicit pagination must not silently become page one.
+            'qr_page' => ['nullable', 'integer', 'min:1'],
         ]);
 
         $selectedStoreId = isset($filters['store_id']) ? (int) $filters['store_id'] : null;
