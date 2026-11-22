@@ -472,7 +472,7 @@ final class V2ReceivableSettlementWorkbenchTest extends TestCase
                         $makerContext,
                         $fixture['document']->id,
                         [
-                            'idempotency_key' => 'p303-parent-status-'. $parentStatus.'-'.$allocationStatus,
+                            'idempotency_key' => 'p303-parent-status-'.$parentStatus.'-'.$allocationStatus,
                             'allocation_date' => '2027-01-12',
                             'amount' => '15.000',
                             'settlement_account_id' => $fixture['cash_account_id'],
