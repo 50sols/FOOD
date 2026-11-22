@@ -18,6 +18,23 @@ final class RepeatOrderService
     ) {}
 
     /**
+     * Check the route target within the authorized restaurant/customer context
+     * before validating unrelated Admin request fields. createDraft rechecks it.
+     */
+    public function assertSourceOrderInScope(SmartOrderingSite $site, int $customerId, int $sourceOrderId): void
+    {
+        abort_unless(
+            DB::table('orders')
+                ->where('id', $sourceOrderId)
+                ->where('store_id', $site->store_id)
+                ->where('customer_id', $customerId)
+                ->whereRaw('LOWER(channel) = ?', ['b2c'])
+                ->exists(),
+            404,
+        );
+    }
+
+    /**
      * Build a repeat-order draft from historical quantities and live server pricing.
      *
      * @param  list<int>  $selectedOrderItemIds
