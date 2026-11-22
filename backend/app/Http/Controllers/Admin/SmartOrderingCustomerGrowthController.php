@@ -88,6 +88,10 @@ final class SmartOrderingCustomerGrowthController extends Controller
         TenantContextResolver $tenants,
     ): JsonResponse {
         $actor = $this->authorizeSite($request, $site, $tenants, 'smart_ordering.manage');
+
+        // A foreign customer must not disclose adjustment field validation.
+        $loyalty->assertAdjustmentTargetInScope($actor, $site, $customer);
+
         $data = $request->validate([
             'points' => ['required', 'integer', 'not_in:0'],
             'reason' => ['required', 'string', 'max:500'],
