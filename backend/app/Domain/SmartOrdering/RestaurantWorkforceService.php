@@ -295,6 +295,15 @@ final class RestaurantWorkforceService
             ]);
     }
 
+    /**
+     * Fail closed on an inaccessible route shift before validating mutation input.
+     * transitionShift retains its own canonical scoped relookup.
+     */
+    public function assertShiftInBranch(SmartOrderingBranch $branch, string $shiftPublicId): void
+    {
+        $this->shift($branch, $shiftPublicId);
+    }
+
     public function transitionShift(
         SmartOrderingBranch $branch,
         string $shiftPublicId,

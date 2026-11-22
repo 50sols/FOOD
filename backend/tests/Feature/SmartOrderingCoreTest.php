@@ -1933,6 +1933,100 @@ class SmartOrderingCoreTest extends TestCase
             ->assertSee('متاحة');
     }
 
+    public function test_shift_transition_rejects_unscoped_route_before_action_validation_in_ar_and_en(): void
+    {
+        $admin = $this->storeAdmin($this->storeId);
+        $staff = $this->workforceUser($this->storeId, 'Scoped Shift Staff', true);
+
+        $this->actingAs($admin)
+            ->post(route('admin.smart-ordering.workforce.staff.store', $this->branch->public_id), [
+                'user_id' => $staff->id,
+            ])->assertRedirect();
+
+        $this->actingAs($admin)
+            ->post(route('admin.smart-ordering.workforce.shifts.store', $this->branch->public_id), [
+                'user_id' => $staff->id,
+                'starts_at' => '2026-10-18T10:00',
+                'ends_at' => '2026-10-18T18:00',
+            ])->assertRedirect();
+
+        $owned = DB::table('restaurant_shifts')
+            ->where('branch_id', $this->branch->id)
+            ->where('user_id', $staff->id)->first();
+        $this->assertNotNull($owned);
+
+        $otherBranch = SmartOrderingBranch::query()->create([
+            'public_id' => (string) Str::uuid(),
+            'site_id' => $this->branch->site_id,
+            'code' => 'separate-workforce-branch',
+            'name_ar' => 'فرع ورديات مختلف',
+            'name_en' => 'Separate workforce branch',
+            'timezone' => 'Asia/Kuwait',
+            'is_active' => true,
+        ]);
+        $otherShiftId = (string) Str::uuid();
+        DB::table('restaurant_shifts')->insert([
+            'public_id' => $otherShiftId,
+            'branch_id' => $otherBranch->id,
+            'user_id' => $staff->id,
+            'starts_at' => '2026-10-19 07:00:00',
+            'ends_at' => '2026-10-19 15:00:00',
+            'status' => 'DRAFT',
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $url = fn (string $shift): string => route('admin.smart-ordering.workforce.shifts.transition', [
+            $this->branch->public_id,
+            $shift,
+        ]);
+        $beforeAudits = DB::table('audit_logs')
+            ->where('event', 'smart_ordering.workforce.shift.transitioned')->count();
+        $beforeShiftCount = DB::table('restaurant_shifts')->count();
+        $previousLocale = app()->getLocale();
+
+        try {
+            foreach (['ar', 'en'] as $locale) {
+                app()->setLocale($locale);
+                $admin->forceFill(['locale' => $locale])->saveQuietly();
+
+                foreach ([$otherShiftId, (string) Str::uuid()] as $unavailable) {
+                    $this->actingAs($admin->fresh())
+                        ->postJson($url($unavailable), ['action' => ['invalid']])
+                        ->assertNotFound();
+                    $this->actingAs($admin->fresh())
+                        ->postJson($url($unavailable), [])
+                        ->assertNotFound();
+                }
+
+                $this->actingAs($admin->fresh())
+                    ->postJson($url((string) $owned->public_id), [])
+                    ->assertUnprocessable()
+                    ->assertJsonValidationErrors('action');
+                $this->actingAs($admin->fresh())
+                    ->postJson($url((string) $owned->public_id), ['action' => ['invalid']])
+                    ->assertUnprocessable()
+                    ->assertJsonValidationErrors('action');
+            }
+        } finally {
+            app()->setLocale($previousLocale);
+        }
+
+        $this->assertSame($beforeAudits, DB::table('audit_logs')
+            ->where('event', 'smart_ordering.workforce.shift.transitioned')->count());
+        $this->assertSame($beforeShiftCount, DB::table('restaurant_shifts')->count());
+        $this->assertDatabaseHas('restaurant_shifts', ['public_id' => $otherShiftId, 'status' => 'DRAFT']);
+        $this->assertDatabaseHas('restaurant_shifts', ['id' => $owned->id, 'status' => 'DRAFT']);
+
+        $this->actingAs($admin->fresh())
+            ->post($url((string) $owned->public_id), ['action' => 'publish'])
+            ->assertRedirect();
+        $this->assertDatabaseHas('restaurant_shifts', ['id' => $owned->id, 'status' => 'PUBLISHED']);
+        $this->assertDatabaseHas('restaurant_shifts', ['public_id' => $otherShiftId, 'status' => 'DRAFT']);
+        $this->assertSame($beforeAudits + 1, DB::table('audit_logs')
+            ->where('event', 'smart_ordering.workforce.shift.transitioned')->count());
+    }
+
     public function test_restaurant_workforce_reuses_store_identity_rejects_overlap_and_cross_scope(): void
     {
         $admin = $this->storeAdmin($this->storeId);

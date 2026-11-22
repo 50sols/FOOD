@@ -80,6 +80,7 @@ final class SmartOrderingWorkforceController extends Controller
     public function transitionShift(string $branch, string $shift, Request $request): RedirectResponse
     {
         [$actor, $branchModel] = $this->authorizedBranch($branch, $request, 'smart_ordering.manage');
+        $this->workforce->assertShiftInBranch($branchModel, $shift);
         $data = $request->validate(['action' => ['required', Rule::in(['publish', 'cancel'])]]);
         $this->workforce->transitionShift($branchModel, $shift, (string) $data['action'], $actor);
         $this->audit->record('smart_ordering.workforce.shift.transitioned', $actor, null, null, [
