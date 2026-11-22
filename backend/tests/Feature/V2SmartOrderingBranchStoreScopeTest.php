@@ -53,7 +53,7 @@ class V2SmartOrderingBranchStoreScopeTest extends TestCase
             'updated_at' => now(),
         ]);
 
-        $url = route('admin.smart-ordering.operations.branches.store');
+        $url = route('admin.smart-ordering.branches.store');
         $before = DB::table('smart_ordering_branches')->count();
         $localeBefore = app()->getLocale();
 
