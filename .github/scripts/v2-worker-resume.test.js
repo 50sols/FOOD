@@ -1,0 +1,121 @@
+'use strict';
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const { pages, readCheckpoint, claimReferences, decide, buildPlan } = require('./v2-worker-resume');
+
+const issue = { number: 4151, state: 'open', title: 'V2 | safe worker resume', labels: [] };
+const base = { ref: 'Foodex_V2' };
+const pr = (state='open', branch='ci/4151-resume', number=4152) => ({
+  number, state, merged: state === 'merged', merged_at: state === 'merged' ? '2026-11-22' : null,
+  merge_commit_sha: state === 'merged' ? 'integration-sha' : null,
+  head: { ref: branch, sha: 'head-sha' }, base,
+  title: 'V2 #4151 — test', body: 'Closes #4151'
+});
+test('no original allows only CANDIDATE, never creates anything', () => {
+  assert.equal(decide({ issue, branches:[], prs:[], refs:[], checkpoint:null }).action,
+    'CANDIDATE_NEW_BRANCH');
+});
+test('open original PR must be resumed on its exact SHA', () => {
+  const d=decide({issue,branches:['ci/4151-resume'],prs:[pr()],refs:[],checkpoint:null});
+  assert.deepEqual([d.action,d.pr,d.head],['RESUME_ORIGINAL_PR',4152,'head-sha']);
+});
+test('merged original PR cannot be re-created even when issue is open', () => {
+  const d=decide({issue,branches:[],prs:[pr('merged')],refs:[],checkpoint:null});
+  assert.deepEqual([d.action,d.head],['VERIFY_INTEGRATION_ACCEPTANCE','integration-sha']);
+});
+test('closed unmerged original needs reconciliation, not replacement branch', () => {
+  assert.equal(decide({issue,branches:[],prs:[pr('closed')],refs:[],checkpoint:null}).action,
+    'BLOCK_CLOSED_ORIGINAL_PR');
+});
+test('orphan branch and stale claim force safe reuse or block', () => {
+  assert.equal(decide({issue,branches:['ci/4151-resume'],prs:[],refs:[],checkpoint:null}).action,
+    'RESUME_ORIGINAL_BRANCH');
+  assert.equal(decide({issue,branches:[],prs:[],refs:[{branch:'ci/4151-resume'}],checkpoint:null}).action,
+    'BLOCK_MISSING_ORIGINAL_BRANCH');
+});
+test('multiple branches, duplicate PRs, human gates and leases fail closed', () => {
+  assert.equal(decide({issue,branches:['ci/4151-a','ci/4151-b'],prs:[],refs:[],checkpoint:null}).action,
+    'BLOCK_CONFLICTING_ORIGINALS');
+  assert.equal(decide({issue,branches:[],prs:[pr(),pr('open','ci/4151-resume',4153)],refs:[],checkpoint:null}).action,
+    'BLOCK_DUPLICATE_PRS');
+  assert.equal(decide({issue:{...issue,labels:[{name:'gate:approval'}]},branches:[],prs:[],refs:[]}).action,
+    'BLOCK_HUMAN_GATE');
+  assert.equal(decide({issue:{...issue,labels:[{name:'worker:active'}]},branches:[],prs:[],refs:[]}).action,
+    'BLOCK_CURRENT_LEASE');
+});
+test('durable checkpoints never change remote PR truth', () => {
+  const body = '<!-- foodex-worker-checkpoint:v1 -->\n'
+    + JSON.stringify({schema:1,issue:4151,branch:'ci/4151-resume',
+      head:'obsolete-head',done:['tests'],remaining:['deploy'],next:'CI'});
+  const checkpoint=readCheckpoint([{id:10,body}],4151);
+  assert.equal(checkpoint.comment_id,10);
+  assert.deepEqual(checkpoint.remaining,['deploy']);
+  assert.equal(readCheckpoint([{id:10,body}],999),null);
+  assert.equal(readCheckpoint([{id:11,body:'<!-- foodex-worker-checkpoint:v1 -->\n{broken'}],4151),null);
+});
+test('issue claim references survive newer status checkpoints', () => {
+  const c=claimReferences([{body:'<!-- foodex-worker-state:v1 -->\nSTATE: ACTIVE\n'
+    + 'OWNER: test\nBRANCH: ci/4151-resume; BASE: Foodex_V2 ONLY\nPR: #4152 (DRAFT)'}]);
+  assert.equal(c[0].branch,'ci/4151-resume');
+  assert.equal(c[0].pr,4152);
+});
+test('incomplete or oversized search pagination fails closed', async () => {
+  await assert.rejects(pages(async()=>({data:{items:[],total_count:2}}),{},'items'),/incomplete/);
+  await assert.rejects(pages(async()=>({data:{wrong:[]}}),{},'items'),/payload/);
+  await assert.rejects(pages(async()=>({data:Array(100).fill({})}),{},'branches',2),/cap/);
+});
+
+function harness({mode='merged',acceptance='in_progress',multiple=false,issueState=issue}={}) {
+  const calls=[];
+  const thePR = pr(mode, 'ci/4151-resume');
+  const c=[{id:7,body:'<!-- foodex-worker-state:v1 -->\nSTATE: MERGED\n'
+    + 'OWNER: worker-a\nBRANCH: ci/4151-resume\nPR: #4152'}];
+  const gh={rest:{
+    issues:{
+      get:async()=>({data:issueState}),
+      listComments:async()=>({data:c}),
+    },
+    search:{issuesAndPullRequests:async()=>({data:{items:[{number:4152}],total_count:1}})},
+    repos:{
+      listBranches:async()=>({data:[]}),
+      getBranch:async()=>({data:{commit:{sha:'latest-v2'}}}),
+    },
+    pulls:{
+      list:async()=>({data:[]}),
+      get:async ({pull_number})=>{calls.push('pr:'+pull_number); return {data:thePR};},
+    },
+    actions:{
+      listWorkflowRunsForRepo:async()=>({data:{workflow_runs:[
+        {id:1200,name:'FOODEX V2 Integrated Backend Acceptance',
+         status:acceptance==='success'?'completed':acceptance,
+         conclusion:acceptance==='success'?'success':null,
+         head_sha:'latest-v2'},
+        ...(multiple?[{id:1199,name:'FOODEX V2 Integrated Backend Acceptance',
+          status:'completed',conclusion:'success',head_sha:'older'}]:[]),
+      ]}}),
+    },
+  }};
+  return {gh,calls};
+}
+test('actual merged #4117 style case holds on latest integrated CI, not stale PR head', async () => {
+  const {gh}=harness();
+  const result=await buildPlan({github:gh,owner:'o',repo:'FOOD',issueNumber:4151});
+  assert.equal(result.action,'VERIFY_INTEGRATION_ACCEPTANCE');
+  assert.equal(result.integration_head,'latest-v2');
+  assert.equal(result.integration_acceptance.status,'in_progress');
+  assert.equal(result.integration_accepted,false);
+});
+test('latest full integrated success is valid; older success never substitutes', async () => {
+  const {gh}=harness({acceptance:'success',multiple:true});
+  const result=await buildPlan({github:gh,owner:'o',repo:'FOOD',issueNumber:4151});
+  assert.equal(result.integration_accepted,true);
+  const {gh:second}=harness({acceptance:'in_progress',multiple:true});
+  const other=await buildPlan({github:second,owner:'o',repo:'FOOD',issueNumber:4151});
+  assert.equal(other.integration_accepted,false);
+});
+test('read-only preflight never writes, closed original retains audit', async () => {
+  const {gh}=harness({mode:'closed'});
+  const x=await buildPlan({github:gh,owner:'o',repo:'FOOD',issueNumber:4151});
+  assert.equal(x.action,'BLOCK_CLOSED_ORIGINAL_PR');
+  assert.equal(x.original_pr,4152);
+});
