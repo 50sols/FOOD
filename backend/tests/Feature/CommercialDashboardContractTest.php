@@ -184,6 +184,54 @@ class CommercialDashboardContractTest extends TestCase
             ->assertDontSee('reservation_confirmed');
     }
 
+    public function test_sales_control_product_selector_fails_closed_after_scope_in_both_locales(): void
+    {
+        [$manager, $storeId] = $this->wholesaleManager();
+        $productId = $this->flashProduct($storeId, 'b2b');
+        $roleless = User::factory()->create(['is_active' => true, 'locale' => 'en']);
+        $url = route('admin.commercial.sales-control', ['store_id' => $storeId]);
+        $initialLocale = app()->getLocale();
+
+        try {
+            foreach (['ar' => 'rtl', 'en' => 'ltr'] as $locale => $direction) {
+                $manager->forceFill(['locale' => $locale])->saveQuietly();
+                app()->setLocale($locale);
+
+                $productCount = DB::table('products')->count();
+                $auditCount = DB::table('audit_logs')->count();
+
+                foreach ([
+                    '?product[]=1',
+                    '?product=abc',
+                    '?product=-1',
+                    '?product=1.5',
+                    '?product=999999999999999999999999',
+                ] as $invalid) {
+                    $this->actingAs($manager->fresh())->getJson($url.$invalid)
+                        ->assertUnprocessable();
+                    $this->assertSame($productCount, DB::table('products')->count());
+                    $this->assertSame($auditCount, DB::table('audit_logs')->count());
+                }
+
+                $this->actingAs($roleless)->getJson($url.'?product[]=1')
+                    ->assertForbidden();
+
+                foreach (['', '?product=', '?product=0'] as $empty) {
+                    $this->actingAs($manager->fresh())->get($url.$empty)
+                        ->assertOk()
+                        ->assertSee('dir="'.$direction.'"', false);
+                }
+
+                $this->actingAs($manager->fresh())->get($url.'?product='.$productId)
+                    ->assertOk()
+                    ->assertSee('dir="'.$direction.'"', false)
+                    ->assertSee('Flash Product');
+            }
+        } finally {
+            app()->setLocale($initialLocale);
+        }
+    }
+
     public function test_sales_control_uses_premium_dashboard_shell_instead_of_legacy_standalone_surface(): void
     {
         [$manager, $storeId] = $this->wholesaleManager();
