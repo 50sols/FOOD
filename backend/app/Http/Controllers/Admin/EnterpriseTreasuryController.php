@@ -416,6 +416,7 @@ final class EnterpriseTreasuryController extends Controller
     public function transitionCheque(Request $request, int $cheque): RedirectResponse
     {
         [$actor, $context, $storeId] = $this->mutationContext($request);
+        $this->cheques->assertTransitionTargetInScope($actor, $context, $cheque);
         $data = $request->validate([
             '_operation_key' => ['required', 'string', 'max:128', 'regex:/^[A-Za-z0-9][A-Za-z0-9._:-]*$/'],
             'to_status' => ['required', Rule::in([
