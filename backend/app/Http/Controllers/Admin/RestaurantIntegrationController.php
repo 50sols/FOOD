@@ -32,7 +32,10 @@ final class RestaurantIntegrationController extends Controller
         $requestedBranch = $request->query('branch_id');
         if (is_string($requestedBranch) && ctype_digit($requestedBranch)) {
             // Oversized selectors remain validation errors, not saturated scope lookups.
-            $branchId = filter_var($requestedBranch, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
+            $normalizedBranch = ltrim($requestedBranch, '0');
+            $branchId = $normalizedBranch === '' ? false : filter_var($normalizedBranch, FILTER_VALIDATE_INT, [
+                'options' => ['min_range' => 1],
+            ]);
             if ($branchId !== false) {
                 abort_unless(
                     DB::table('smart_ordering_branches')
