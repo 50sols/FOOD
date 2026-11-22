@@ -2,10 +2,12 @@
 
 namespace Tests\Feature;
 
+use App\Models\AppTranslation;
 use App\Models\Role;
 use App\Models\User;
 use Database\Seeders\CoreReferenceSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\DB;
 use Tests\TestCase;
 
 class AdminManagementEntryPointsTest extends TestCase
@@ -42,4 +44,65 @@ class AdminManagementEntryPointsTest extends TestCase
             ->assertSee(route('admin.translations.index'))
             ->assertSee(__('admin.translations.title'));
     }
+
+    public function test_translation_pages_validate_selectors_before_sync_in_both_locales(): void
+    {
+        $this->seed(CoreReferenceSeeder::class);
+
+        $admin = User::query()->create([
+            'name' => 'Translation paging administrator',
+            'email' => 'translation-page-admin@example.test',
+            'password' => 'password',
+            'locale' => 'en',
+            'is_active' => true,
+        ]);
+        $admin->roles()->attach(Role::query()->where('code', 'SUPER_ADMIN')->firstOrFail());
+
+        $roleless = User::query()->create([
+            'name' => 'Translation paging denied user',
+            'email' => 'translation-page-denied@example.test',
+            'password' => 'password',
+            'locale' => 'en',
+            'is_active' => true,
+        ]);
+        $url = route('admin.translations.index');
+        $originalLocale = app()->getLocale();
+
+        try {
+            foreach (['ar' => 'rtl', 'en' => 'ltr'] as $locale => $direction) {
+                $admin->forceFill(['locale' => $locale])->saveQuietly();
+                app()->setLocale($locale);
+
+                $translationCount = AppTranslation::query()->count();
+                $auditCount = DB::table('audit_logs')->count();
+
+                foreach ([
+                    '?page[]=2',
+                    '?page=abc',
+                    '?page=0',
+                    '?page=-2',
+                    '?page=1.5',
+                    '?page=999999999999999999999999',
+                ] as $invalid) {
+                    $this->actingAs($admin->fresh())->getJson($url.$invalid)
+                        ->assertUnprocessable();
+                    $this->assertSame($translationCount, AppTranslation::query()->count());
+                    $this->assertSame($auditCount, DB::table('audit_logs')->count());
+                }
+
+                $this->actingAs($roleless)->getJson($url.'?page=invalid')
+                    ->assertForbidden();
+                $this->assertSame($translationCount, AppTranslation::query()->count());
+
+                foreach (['', '?page=1', '?page=2', '?page='] as $valid) {
+                    $this->actingAs($admin->fresh())->get($url.$valid)
+                        ->assertOk()
+                        ->assertSee('dir="'.$direction.'"', false);
+                }
+            }
+        } finally {
+            app()->setLocale($originalLocale);
+        }
+    }
+
 }
