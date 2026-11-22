@@ -67,6 +67,7 @@ final class V2WholesaleDashboardHttpIsolationTest extends TestCase
                     'store_id' => $retailStore,
                 ], false))
                 ->assertOk()
+                ->assertViewHas('storeIds', static fn (array $ids): bool => ! in_array($retailStore, $ids, true))
                 ->assertSee('dir="'.$direction.'"', false);
 
             $this->actingAs($retailActor->fresh())
