@@ -78,9 +78,11 @@ test('incomplete or oversized search pagination fails closed', async () => {
   await assert.rejects(pages(async()=>({data:Array(100).fill({})}),{},'branches',2),/cap/);
 });
 
-function harness({mode='merged',acceptance='in_progress',multiple=false,issueState=issue}={}) {
+function harness({mode='merged',acceptance='in_progress',multiple=false,crossReference=false,issueState=issue}={}) {
   const calls=[];
   const thePR = pr(mode, 'ci/4151-resume');
+  const unrelatedPR = { ...pr('open', 'fix/9999-unrelated', 4153),
+    title: 'V2 #9999 — dependent change', body: 'Parent #4151; follows #4151' };
   const c=[{id:7,body:'<!-- foodex-worker-state:v1 -->\nSTATE: MERGED\n'
     + 'OWNER: worker-a\nBRANCH: ci/4151-resume\nPR: #4152'}];
   const gh={rest:{
@@ -88,14 +90,14 @@ function harness({mode='merged',acceptance='in_progress',multiple=false,issueSta
       get:async()=>({data:issueState}),
       listComments:async()=>({data:c}),
     },
-    search:{issuesAndPullRequests:async()=>({data:{items:[{number:4152}],total_count:1}})},
+    search:{issuesAndPullRequests:async()=>({data:{items:[{number:4152},...(crossReference?[{number:4153}]:[])],total_count:crossReference?2:1}})},
     repos:{
       listBranches:async()=>({data:[]}),
       getBranch:async()=>({data:{commit:{sha:'latest-v2'}}}),
     },
     pulls:{
       list:async()=>({data:[]}),
-      get:async ({pull_number})=>{calls.push('pr:'+pull_number); return {data:thePR};},
+      get:async ({pull_number})=>{calls.push('pr:'+pull_number); return {data:pull_number===4153?unrelatedPR:thePR};},
     },
     actions:{
       listWorkflowRunsForRepo:async()=>({data:{workflow_runs:[
@@ -110,6 +112,13 @@ function harness({mode='merged',acceptance='in_progress',multiple=false,issueSta
   }};
   return {gh,calls};
 }
+test('dependency-only mention is not mistaken for an original PR', async () => {
+  const {gh}=harness({crossReference:true});
+  const result=await buildPlan({github:gh,owner:'o',repo:'FOOD',issueNumber:4151});
+  assert.equal(result.action,'VERIFY_INTEGRATION_ACCEPTANCE');
+  assert.deepEqual(result.original_prs.map(item=>item.number),[4152]);
+});
+
 test('actual merged #4117 style case holds on latest integrated CI, not stale PR head', async () => {
   const {gh}=harness();
   const result=await buildPlan({github:gh,owner:'o',repo:'FOOD',issueNumber:4151});
