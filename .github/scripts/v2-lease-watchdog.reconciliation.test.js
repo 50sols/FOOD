@@ -134,7 +134,7 @@ function harness(opts={}) {
   const terminalRuns=Array.from({length:100},(_,i)=>({id:i,head_sha:'old-head',status:'completed'}));
   const github = { rest: {
     search:{issuesAndPullRequests:async()=>({data:{items:[issue]}})},
-    pulls:{list:async()=>({data:[]}),get:async()=>{
+    pulls:{list:async args=>({data:args.state==='all' && opts.historicalPr ? [matchingPr] : []}),get:async()=>{
       prReads++;
       return {data:opts.originalPrClosesMidSweep&&prReads>1
         ? {...matchingPr,state:'closed',merged:false,merged_at:null} : matchingPr};
@@ -333,4 +333,19 @@ test('inline BASE annotation probes the real branch and preserves recent-commit 
     ['feat/2929-lease-tests', 'feat/2929-lease-tests']);
   assert.deepEqual(stale.mutations,
     ['remove:worker:active','add:worker:handoff-ready','comment']);
+});
+
+test('merged original PR discoverable only via historical search is not a fresh handoff', async () => {
+  const out = await sweep({historicalPr:true,mergedPr:true});
+  assert.equal(out.result.released,0);
+  assert.deepEqual(out.mutations,['remove:worker:active','comment']);
+});
+test('historically closed unmerged PR without claim PR is approval gated', async () => {
+  const out = await sweep({historicalPr:true,closedOriginalPr:true});
+  assert.equal(out.result.released,0);
+  assert.deepEqual(out.mutations,['remove:worker:active','add:gate:approval','comment']);
+});
+test('foreign historical PR cannot suppress a legitimate stale handoff', async () => {
+  const out = await sweep({historicalPr:true,mergedPr:true,foreignPr:true});
+  assert.equal(out.result.released,1);
 });
