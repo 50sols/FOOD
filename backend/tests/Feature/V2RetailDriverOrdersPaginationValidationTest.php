@@ -64,8 +64,11 @@ final class V2RetailDriverOrdersPaginationValidationTest extends TestCase
                     $this->assertSame($auditCount, DB::table('audit_logs')->count());
                 }
 
+                // No authorized B2B store exists in this retail-only fixture.
+                // The channel permission gate returns 403 before driver 404 and
+                // malformed page 422; never weaken production authorization.
                 $this->actingAs($admin->fresh())->getJson($wrongChannel.'&page=invalid')
-                    ->assertNotFound();
+                    ->assertForbidden();
                 $this->actingAs($roleless)->getJson($url.'&page=invalid')
                     ->assertForbidden();
 
