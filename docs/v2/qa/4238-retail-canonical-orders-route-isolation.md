@@ -22,6 +22,10 @@ This is HTTP contract coverage, not a claim about any real user's role data or t
 
 **MOBILE IMPACT:** Customer NO_DIRECT_IMPACT, Driver NO_DIRECT_IMPACT, Van NO_DIRECT_IMPACT. This test only invokes an authenticated Laravel Admin HTML GET route, with no Flutter/API/dispatch changes. Existing B2B VAN ONLY / B2C DRIVER ONLY policy is preserved.
 
+## CI event provenance
+
+The V2 Isolation workflow checks the pull-request body captured by the **event payload**, rather than refetching later edited PR metadata on a failed-job rerun. The original event failed solely because its PR body lacked the exact `MOBILE IMPACT` declaration; the PR description now explicitly lists Customer, Driver and Van separately. A fresh source HEAD must trigger the next PR workflow event so this correction is tested without disabling or bypassing the Isolation Gate. The source/test claims remain subject to backend runtime results, not this metadata check alone.
+
 ## Integration contract
 
 Original issue #4238, branch `test/4238-v2-retail-orders-route-isolation`, one PR targeting **Foodex_V2 only**. Required exact-head Repository Policy, V2 Isolation, FOODEX Required CI including Laravel and MySQL/Redis/terminal required-ci-gate must pass. Record actual run URLs and merge SHA only after verification. Final real-browser/staging UAT remains at master #2503. Parent P031 #2782 stays open for the complete route matrix. No main, release, tag, production or app artifacts.
