@@ -989,6 +989,147 @@ class SmartOrderingCoreTest extends TestCase
         $this->assertSame($this->extraProductId, $selection['modifiers'][0]['product_id']);
     }
 
+    public function test_merchandising_site_branch_preflight_precedes_unrelated_validation_in_ar_en(): void
+    {
+        $actor = $this->storeAdmin($this->storeId);
+        $siteId = (int) $this->branch->site_id;
+        $ownedBranchId = (int) $this->branch->getKey();
+        $foreignStoreId = (int) DB::table('stores')->insertGetId([
+            'store_type_id' => DB::table('store_types')->where('code', 'B2C')->value('id'),
+            'code' => 'MERCH-FOREIGN-'.Str::upper(Str::random(8)),
+            'name' => 'Merchandising foreign store',
+            'is_active' => true,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        $foreignSiteId = (int) DB::table('smart_ordering_sites')->insertGetId([
+            'public_id' => (string) Str::uuid(),
+            'store_id' => $foreignStoreId,
+            'slug' => 'merch-foreign-'.Str::lower(Str::random(8)),
+            'runtime_state' => 'ENABLED',
+            'master_enabled' => true,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        $foreignBranch = SmartOrderingBranch::query()->create([
+            'public_id' => (string) Str::uuid(),
+            'site_id' => $foreignSiteId,
+            'code' => 'FOREIGN',
+            'name_en' => 'Foreign',
+            'timezone' => 'Asia/Kuwait',
+            'is_active' => true,
+            'accepting_orders' => true,
+            'supports_dine_in' => true,
+            'supports_pickup' => true,
+            'supports_delivery' => true,
+            'allow_scheduled' => true,
+            'pickup_lead_minutes' => 0,
+            'max_schedule_days' => 7,
+            'service_charge' => 0,
+        ]);
+        $foreignBranchId = (int) $foreignBranch->getKey();
+        $missingBranchId = $foreignBranchId + 10000;
+        $offerUrl = route('admin.smart-ordering.merchandising.offers.store', ['site' => $siteId]);
+        $recommendationUrl = route('admin.smart-ordering.merchandising.recommendations.store', ['site' => $siteId]);
+        $validOffer = ['name' => 'Scoped offer', 'type' => 'fixed'];
+        $validRecommendation = [
+            'name' => 'Scoped recommendation',
+            'placement' => 'cart_upsell',
+            'recommended_product_id' => $this->productId,
+        ];
+
+        $offer = $this->actingAs($actor)->postJson($offerUrl,
+            [...$validOffer, 'branch_id' => $ownedBranchId])
+            ->assertCreated()->json('id');
+        $recommendation = $this->actingAs($actor)->postJson($recommendationUrl,
+            [...$validRecommendation, 'branch_id' => $ownedBranchId])
+            ->assertCreated()->json('id');
+
+        $cases = [
+            ['method' => 'POST', 'url' => $offerUrl, 'valid' => $validOffer, 'required' => 'name'],
+            ['method' => 'PUT', 'url' => route('admin.smart-ordering.merchandising.offers.update',
+                ['site' => $siteId, 'offer' => $offer]), 'valid' => $validOffer, 'required' => 'name'],
+            ['method' => 'POST', 'url' => $recommendationUrl,
+                'valid' => $validRecommendation, 'required' => 'name'],
+            ['method' => 'PUT', 'url' => route('admin.smart-ordering.merchandising.recommendations.update',
+                ['site' => $siteId, 'recommendation' => $recommendation]),
+                'valid' => $validRecommendation, 'required' => 'name'],
+        ];
+        $tables = ['smart_ordering_offer_rules', 'smart_ordering_recommendation_rules', 'audit_logs'];
+        $before = [];
+        foreach ($tables as $table) {
+            $before[$table] = DB::table($table)->count();
+        }
+        $originalLocale = app()->getLocale();
+        try {
+            foreach (['ar', 'en'] as $locale) {
+                $actor->forceFill(['locale' => $locale])->saveQuietly();
+                app()->setLocale($locale);
+                foreach ($cases as $case) {
+                    foreach ([$foreignBranchId, (string) $foreignBranchId, $missingBranchId] as $denied) {
+                        foreach ([
+                            ['branch_id' => $denied],
+                            ['branch_id' => $denied, $case['required'] => ['invalid']],
+                            [...$case['valid'], 'branch_id' => $denied],
+                        ] as $payload) {
+                            $this->actingAs($actor->fresh())
+                                ->json($case['method'], $case['url'], $payload)->assertNotFound();
+                        }
+                    }
+                    foreach ([
+                        ['branch_id' => 0],
+                        ['branch_id' => 'bad'],
+                        ['branch_id' => '9999999999999999999999999999999'],
+                        ['branch_id' => $ownedBranchId, $case['required'] => ['invalid']],
+                    ] as $payload) {
+                        $this->actingAs($actor->fresh())
+                            ->json($case['method'], $case['url'], $payload)->assertUnprocessable();
+                    }
+                }
+            }
+        } finally {
+            app()->setLocale($originalLocale);
+        }
+        foreach ($tables as $table) {
+            $this->assertSame($before[$table], DB::table($table)->count(), $table.' unchanged');
+        }
+        $this->assertDatabaseHas('smart_ordering_offer_rules', [
+            'public_id' => $offer, 'site_id' => $siteId, 'branch_id' => $ownedBranchId,
+        ]);
+        $this->assertDatabaseHas('smart_ordering_recommendation_rules', [
+            'public_id' => $recommendation, 'site_id' => $siteId, 'branch_id' => $ownedBranchId,
+        ]);
+        $this->assertSame(0, DB::table('smart_ordering_offer_rules')
+            ->where('site_id', $foreignSiteId)->count());
+        $this->assertSame(0, DB::table('smart_ordering_recommendation_rules')
+            ->where('site_id', $foreignSiteId)->count());
+
+        // Authorized updates must retain their site and branch after denied
+        // cross-tenant requests, without creating additional records.
+        $this->actingAs($actor->fresh())->putJson(route(
+            'admin.smart-ordering.merchandising.offers.update',
+            ['site' => $siteId, 'offer' => $offer],
+        ), [...$validOffer, 'name' => 'Updated scoped offer', 'branch_id' => $ownedBranchId])
+            ->assertOk();
+        $this->actingAs($actor->fresh())->putJson(route(
+            'admin.smart-ordering.merchandising.recommendations.update',
+            ['site' => $siteId, 'recommendation' => $recommendation],
+        ), [...$validRecommendation, 'name' => 'Updated scoped recommendation', 'branch_id' => $ownedBranchId])
+            ->assertOk();
+        $this->assertDatabaseHas('smart_ordering_offer_rules', [
+            'public_id' => $offer, 'site_id' => $siteId,
+            'branch_id' => $ownedBranchId, 'name' => 'Updated scoped offer',
+        ]);
+        $this->assertDatabaseHas('smart_ordering_recommendation_rules', [
+            'public_id' => $recommendation, 'site_id' => $siteId,
+            'branch_id' => $ownedBranchId, 'name' => 'Updated scoped recommendation',
+        ]);
+        $this->assertSame($before['smart_ordering_offer_rules'],
+            DB::table('smart_ordering_offer_rules')->count());
+        $this->assertSame($before['smart_ordering_recommendation_rules'],
+            DB::table('smart_ordering_recommendation_rules')->count());
+    }
+
     public function test_merchandising_precedence_and_cart_recalculation_are_server_authoritative(): void
     {
         $winner = $this->offer([
