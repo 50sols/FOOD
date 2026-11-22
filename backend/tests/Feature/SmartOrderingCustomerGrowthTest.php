@@ -130,6 +130,65 @@ class SmartOrderingCustomerGrowthTest extends TestCase
         $this->assertNotSame($customerA['legacy_id'], $customerB['legacy_id']);
     }
 
+    public function test_admin_history_rejects_nested_limit_after_tenant_and_customer_scope_in_ar_en(): void
+    {
+        [$storeA, $adminA, $siteA] = $this->restaurant('HISTORY-LIMIT-A');
+        [$storeB, $adminB, $siteB] = $this->restaurant('HISTORY-LIMIT-B');
+        $customerA = $this->customer($storeA, 'History Customer A', '+96550000671');
+        $customerB = $this->customer($storeB, 'History Customer B', '+96550000672');
+        $this->order($storeA, $customerA['legacy_id'], $customerA['b2c_id'], 'COMPLETED', 4.000);
+        $this->order($storeA, $customerA['legacy_id'], $customerA['b2c_id'], 'COMPLETED', 6.000);
+        $this->order($storeB, $customerB['legacy_id'], $customerB['b2c_id'], 'COMPLETED', 99.000);
+
+        $url = route('admin.smart-ordering.customers.orders', [
+            'site' => $siteA->getKey(),
+            'customer' => $customerA['legacy_id'],
+        ]);
+        $foreignCustomerUrl = route('admin.smart-ordering.customers.orders', [
+            'site' => $siteA->getKey(),
+            'customer' => $customerB['legacy_id'],
+        ]);
+        $otherSiteUrl = route('admin.smart-ordering.customers.orders', [
+            'site' => $siteB->getKey(),
+            'customer' => $customerB['legacy_id'],
+        ]);
+        $before = [
+            DB::table('orders')->count(),
+            DB::table('audit_logs')->count(),
+        ];
+        $originalLocale = app()->getLocale();
+
+        try {
+            foreach (['ar', 'en'] as $locale) {
+                $adminA->forceFill(['locale' => $locale])->saveQuietly();
+                app()->setLocale($locale);
+
+                foreach (['?limit%5B%5D=1', '?limit%5Bdeep%5D=1'] as $nested) {
+                    $this->actingAs($adminA->fresh())->getJson($url.$nested)
+                        ->assertUnprocessable();
+                    $this->actingAs($adminA->fresh())->getJson($foreignCustomerUrl.$nested)
+                        ->assertNotFound();
+                    $this->actingAs($adminA->fresh())->getJson($otherSiteUrl.$nested)
+                        ->assertNotFound();
+                }
+
+                $this->actingAs($adminA->fresh())->getJson($url)
+                    ->assertOk()->assertJsonCount(2, 'orders');
+                $this->actingAs($adminA->fresh())->getJson($url.'?limit=1')
+                    ->assertOk()->assertJsonCount(1, 'orders');
+            }
+        } finally {
+            app()->setLocale($originalLocale);
+        }
+
+        $this->actingAs($adminB)->getJson($url.'?limit%5B%5D=1')
+            ->assertNotFound();
+        $this->assertSame($before, [
+            DB::table('orders')->count(),
+            DB::table('audit_logs')->count(),
+        ]);
+    }
+
     public function test_customer_profile_is_restaurant_scoped_and_same_phone_never_merges_tenants(): void
     {
         [$storeA, $adminA, $siteA] = $this->restaurant('CRM-A');
