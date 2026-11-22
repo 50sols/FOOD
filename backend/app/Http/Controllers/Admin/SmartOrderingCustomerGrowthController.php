@@ -113,6 +113,8 @@ final class SmartOrderingCustomerGrowthController extends Controller
         TenantContextResolver $tenants,
     ): JsonResponse {
         $actor = $this->authorizeSite($request, $site, $tenants, 'smart_ordering.manage');
+        $this->preflightLoyaltyBranch($request, $site, $admin);
+
         $data = $request->validate([
             'points_per_currency_unit' => ['required', 'numeric', 'min:0'],
             'minimum_spend' => ['nullable', 'numeric', 'min:0'],
@@ -156,6 +158,8 @@ final class SmartOrderingCustomerGrowthController extends Controller
         TenantContextResolver $tenants,
     ): JsonResponse {
         $actor = $this->authorizeSite($request, $site, $tenants, 'smart_ordering.manage');
+        $this->preflightLoyaltyBranch($request, $site, $admin);
+
         $data = $request->validate([
             'name_en' => ['required', 'string', 'max:255'],
             'name_ar' => ['nullable', 'string', 'max:255'],
@@ -193,6 +197,8 @@ final class SmartOrderingCustomerGrowthController extends Controller
                 ->exists(),
             404,
         );
+
+        $this->preflightLoyaltyBranch($request, $site, $admin);
 
         $data = $request->validate([
             'name_en' => ['required', 'string', 'max:255'],
@@ -284,6 +290,22 @@ final class SmartOrderingCustomerGrowthController extends Controller
         $feedback->resolveCase($actor, $site, $case, (string) $data['resolution_note']);
 
         return response()->json(['status' => 'RESOLVED']);
+    }
+
+    private function preflightLoyaltyBranch(
+        Request $request,
+        SmartOrderingSite $site,
+        LoyaltyAdminService $admin,
+    ): void {
+        // Only valid explicit branch selectors are scoped before unrelated
+        // rule/reward fields; malformed selectors retain Laravel's 422.
+        $requestedBranch = $request->input('branch_id');
+        if (is_int($requestedBranch) || (is_string($requestedBranch) && ctype_digit($requestedBranch))) {
+            $branchId = filter_var($requestedBranch, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
+            if ($branchId !== false) {
+                $admin->assertBranchInSite($site, $branchId);
+            }
+        }
     }
 
     private function authorizeSite(
