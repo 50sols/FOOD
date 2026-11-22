@@ -74,4 +74,18 @@ final class V2AccountsPayableOfficerPermissionTest extends TestCase
             $this->assertFalse($actor->fresh()->hasPermission($forbidden), $forbidden);
         }
     }
+    public function test_ap_officer_cannot_open_security_role_management_in_arabic_or_english(): void
+    {
+        $actor = User::factory()->create(['is_active' => true, 'locale' => 'en']);
+        $actor->roles()->attach(Role::query()->where('code', 'AP_OFFICER')->firstOrFail());
+
+        foreach (['ar', 'en'] as $locale) {
+            $actor->forceFill(['locale' => $locale])->save();
+
+            $this->actingAs($actor->fresh())
+                ->get(route('admin.sidebar-access.roles', [], false))
+                ->assertForbidden();
+        }
+    }
+
 }
