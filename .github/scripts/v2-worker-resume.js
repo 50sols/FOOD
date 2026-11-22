@@ -145,7 +145,7 @@ async function buildPlan({ github, owner, repo, issueNumber }) {
     { q }, 'items');
   const foundBranches = await pages(args => github.rest.repos.listBranches(args),
     { owner, repo }, 'branches');
-  const branchPattern = new RegExp('^(?:feat|fix|test|chore|ci|docs|refactor|worker)/'
+  const branchPattern = new RegExp('^(?:feat|feature|fix|test|chore|ci|docs|refactor|worker)/'
     + issueNumber + '-');
   const branches = foundBranches.map(b => b.name).filter(b => branchPattern.test(b));
   const prIds = new Set(candidates.map(i => i.number));
