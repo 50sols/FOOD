@@ -29,6 +29,9 @@ final class CustomerGroupManagementController extends Controller
         $searchInput = $request->query('q', '');
         abort_if(is_array($searchInput), 404);
         $search = trim((string) $searchInput);
+        // Keep scoped authorization and nested-search 404 precedence before
+        // rejecting malformed explicit pages instead of falling back to page one.
+        $request->validate(['page' => ['nullable', 'integer', 'min:1']]);
         $groups = DB::table('commercial_customer_groups')
             ->where('store_id', $storeId)
             ->when($search !== '', function ($query) use ($search): void {
