@@ -127,6 +127,13 @@ class V2RestaurantTableRoutePrevalidationTest extends TestCase
                     $this->actingAs($actor->fresh())->putJson($floorUrl($unavailable), [
                         'name_en' => ['invalid'],
                     ])->assertNotFound();
+                    // A valid payload must not authorize a sibling or missing route floor.
+                    $this->actingAs($actor->fresh())->putJson($floorUrl($unavailable), [
+                        'name_en' => 'Unauthorized Floor',
+                        'name_ar' => 'دور غير مصرح',
+                        'sort_order' => 2,
+                        'is_active' => 1,
+                    ])->assertNotFound();
                 }
 
                 foreach ([$tables[1]['public_id'], (string) Str::uuid()] as $unavailable) {
@@ -134,6 +141,18 @@ class V2RestaurantTableRoutePrevalidationTest extends TestCase
                         ->assertNotFound();
                     $this->actingAs($actor->fresh())->putJson($tableUrl($unavailable), [
                         'capacity' => ['invalid'],
+                    ])->assertNotFound();
+                    // The same scoped 404 applies to well-formed table mutations.
+                    $this->actingAs($actor->fresh())->putJson($tableUrl($unavailable), [
+                        'floor_public_id' => $floors[0]['public_id'],
+                        'label' => 'Unauthorized Table',
+                        'capacity' => 4,
+                        'position_x' => 125,
+                        'position_y' => 135,
+                        'visual_width' => 160,
+                        'visual_height' => 120,
+                        'shape' => 'rectangle',
+                        'is_active' => 1,
                     ])->assertNotFound();
                 }
 
