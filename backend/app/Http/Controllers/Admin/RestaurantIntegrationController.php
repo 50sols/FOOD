@@ -99,6 +99,10 @@ final class RestaurantIntegrationController extends Controller
         AuditLogger $audit,
     ): RedirectResponse {
         $actor = $this->authorizeSite($request, $site, $tenants, 'smart_ordering.manage');
+
+        // A foreign or unknown connector must not expose payload validation.
+        $integrations->assertConnectorInScope($site, $integration);
+
         $data = $request->validate(['status' => ['required', 'in:disabled,enabled,degraded,suspended']]);
         $integrations->setStatus($site, $integration, (string) $data['status']);
         $audit->record('restaurant.integration.status_changed', $actor, null, null, [
