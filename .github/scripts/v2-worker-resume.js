@@ -160,7 +160,11 @@ async function buildPlan({ github, owner, repo, issueNumber }) {
     const pr = (await github.rest.pulls.get({ owner, repo, pull_number: number })).data;
     // Same branch name in a fork is not the canonical repository branch.
     // Only the original FOOD repository may own a resumable V2 issue PR.
-    if (pr.head?.repo?.full_name && pr.head.repo.full_name !== owner + '/' + repo) {
+    const headRepo = pr.head?.repo?.full_name;
+    if (typeof headRepo !== 'string' ||
+        headRepo.toLowerCase() !== (owner + '/' + repo).toLowerCase()) {
+      // Missing repository identity may indicate a deleted fork; never
+      // attribute that PR to the authoritative issue branch.
       continue;
     }
     // Title/body issue link or matching original issue branch is required.
