@@ -182,6 +182,20 @@ async function run({ github, context, core, nowMs = Date.now() }) {
         (claim.branch && pr.head?.ref === claim.branch)
       )
     );
+    // An open-only PR inventory is NOT proof that no original PR exists.
+    // When a claimed branch has no PR number, query ALL states on exactly
+    // that head. A merged/closed original must never become a fresh handoff.
+    const historical = (!claim.pr && claim.branch && !ownPr)
+      ? await listPages(args => github.rest.pulls.list(args), {
+          owner, repo, base: 'Foodex_V2', state: 'all',
+          head: owner + ':' + claim.branch,
+        }, 15, 'pulls')
+      : [];
+    if (historical.length > 1) {
+      active += 1; // Ambiguous ownership: fail closed, no label mutation.
+      continue;
+    }
+    const originalPrNumber = claim.pr || historical[0]?.number || 0;
     // Use the *live issue branch*, not a potentially stale PR-search head.
     const firstBranch = await branchState(github, owner, repo, claim.branch);
     const head = firstBranch.sha || ownPr?.head?.sha || '';
@@ -192,8 +206,8 @@ async function run({ github, context, core, nowMs = Date.now() }) {
     // labeling it handoff-ready would solicit a forbidden duplicate PR.
     // Verify both PR provenance and live lease identity before clearing
     // only obsolete worker labels; never close the Issue or change its gates.
-    if (claim.pr) {
-      const resolved = await github.rest.pulls.get({ owner, repo, pull_number: claim.pr });
+    if (originalPrNumber) {
+      const resolved = await github.rest.pulls.get({ owner, repo, pull_number: originalPrNumber });
       const mergedOriginal = isMatchingMergedPr(resolved.data, claim);
       const closedUnmergedOriginal = isMatchingClosedUnmergedPr(resolved.data, claim);
       if (mergedOriginal || closedUnmergedOriginal) {
@@ -209,7 +223,7 @@ async function run({ github, context, core, nowMs = Date.now() }) {
         const latestBranch = await branchState(github, owner, repo, claim.branch);
         if (latestBranch.sha !== firstBranch.sha
             || await ciInProgress(github, owner, repo, latestBranch.sha || head, claim.branch)) continue;
-        const latestPr = await github.rest.pulls.get({ owner, repo, pull_number: claim.pr });
+        const latestPr = await github.rest.pulls.get({ owner, repo, pull_number: originalPrNumber });
         if (mergedOriginal && !isMatchingMergedPr(latestPr.data, claim)) continue;
         if (closedUnmergedOriginal && !isMatchingClosedUnmergedPr(latestPr.data, claim)) continue;
         for (const currentLabel of ACTIVE) {
@@ -224,11 +238,11 @@ async function run({ github, context, core, nowMs = Date.now() }) {
           });
         }
         const marker = mergedOriginal
-          ? '<!-- foodex-v2-integrated-lease:issue=' + issue.number + ' pr=' + claim.pr + ' -->'
-          : '<!-- foodex-v2-closed-original-lease:issue=' + issue.number + ' pr=' + claim.pr + ' -->';
+          ? '<!-- foodex-v2-integrated-lease:issue=' + issue.number + ' pr=' + originalPrNumber + ' -->'
+          : '<!-- foodex-v2-closed-original-lease:issue=' + issue.number + ' pr=' + originalPrNumber + ' -->';
         if (!current.some(c => (c.body || '').includes(marker))) {
           const explanation = mergedOriginal
-            ? 'PR #' + claim.pr + ' was independently verified MERGED into Foodex_V2. '
+            ? 'PR #' + originalPrNumber + ' was independently verified MERGED into Foodex_V2. '
               + 'Obsolete worker-active/waiting labels were cleared; no handoff-ready label was added.\n'
               + 'The Issue remains OPEN for any unaccepted source requirements. '
               + 'Do not recreate the merged PR; preflight a distinct atomic follow-up if necessary. '
@@ -243,7 +257,7 @@ async function run({ github, context, core, nowMs = Date.now() }) {
           });
         }
         core.info('#' + issue.number + ': verified ' + (mergedOriginal ? 'merged' : 'closed-unmerged')
-          + ' original PR #' + claim.pr + '; stale active labels cleared without handoff');
+          + ' original PR #' + originalPrNumber + '; stale active labels cleared without handoff');
         continue;
       }
     }
@@ -281,8 +295,8 @@ async function run({ github, context, core, nowMs = Date.now() }) {
     if (!secondDecision.release) continue;
     // An original PR may be closed or merged while this sweep is scanning.
     // Never race an administrative closure with an automatic handoff label.
-    if (claim.pr) {
-      const currentOriginal = await github.rest.pulls.get({ owner, repo, pull_number: claim.pr });
+    if (originalPrNumber) {
+      const currentOriginal = await github.rest.pulls.get({ owner, repo, pull_number: originalPrNumber });
       if (isMatchingMergedPr(currentOriginal.data, claim)
           || isMatchingClosedUnmergedPr(currentOriginal.data, claim)) continue;
     }
