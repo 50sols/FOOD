@@ -191,6 +191,7 @@ return [
         'new_settlement' => 'Record settlement draft',
         'settlement_account' => 'Settlement account',
         'settlement_account_same_as_ar' => 'The AR receivable account cannot be used as its own settlement account. Select a different account.',
+        'document_not_posted' => 'A settlement cannot be posted unless its parent AR document remains posted.',
         'source_invoice_invalid' => 'The source invoice is unavailable or does not match this customer, store, currency or receivable amount.',
         'collection_source_invalid' => 'The collection receipt allocation is missing, already linked, reversed, unposted or does not match the source invoice, store, channel, currency or amount.',
         'receipt_allocation' => 'Posted collection receipt allocation',
