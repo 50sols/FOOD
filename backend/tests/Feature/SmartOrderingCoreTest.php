@@ -2538,9 +2538,10 @@ class SmartOrderingCoreTest extends TestCase
         }
 
         $staff = $this->workforceUser($this->storeId, 'Time Clock Staff');
+        // Canonical OperationalTenantScope::assertStore conceals ungranted store authority as 404.
         $this->actingAs($staff)
             ->putJson($url($ownedId), [])
-            ->assertForbidden();
+            ->assertNotFound();
 
         $this->assertDatabaseHas('restaurant_time_clock_sessions', [
             'public_id' => $foreignId,
