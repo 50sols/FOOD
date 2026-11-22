@@ -32,6 +32,9 @@ final class SmartOrderingSupplyController extends Controller
         // an unrelated default authorized store. Store authorization runs first.
         abort_if(is_array($request->query('store_id')), 404);
 
+        // Never interpret an explicitly malformed scalar as a request for the
+        // default store. Absent and empty selectors still use normal fallback.
+        $request->validate(['store_id' => ['nullable', 'integer', 'min:1']]);
         $requested = $request->integer('store_id');
         if ($requested > 0 && ! in_array($requested, $storeIds, true)) {
             abort(404);
