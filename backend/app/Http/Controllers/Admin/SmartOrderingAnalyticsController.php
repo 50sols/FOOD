@@ -100,9 +100,11 @@ final class SmartOrderingAnalyticsController extends Controller
             return null;
         }
 
-        $id = (int) $value;
+        // Preserve the validator's 422 for out-of-range numeric selectors;
+        // a saturated integer cast would wrongly turn them into scoped 404s.
+        $id = filter_var($value, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
 
-        return $id > 0 ? $id : null;
+        return $id === false ? null : $id;
     }
 
     /**
