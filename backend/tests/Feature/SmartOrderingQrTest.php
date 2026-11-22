@@ -273,6 +273,8 @@ class SmartOrderingQrTest extends TestCase
 
             foreach ([
                 ['store_id' => $foreignStore],
+                ['store_id' => (string) $foreignStore],
+                $this->payload($foreignStore, ['store_id' => (string) $foreignStore]),
                 ['store_id' => $foreignStore, 'type' => 'invalid', 'label' => ['not-a-string'], 'target_path' => []],
                 $this->payload($foreignStore),
             ] as $foreignPayload) {
