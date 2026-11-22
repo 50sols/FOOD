@@ -192,7 +192,9 @@ final class CustomerServiceWorkspaceController extends Controller
         // the requested store before exposing invalid navigation details.
         $selectorRules = ['page' => ['nullable', 'integer', 'min:1']];
         if ($selectedCaseId === null) {
-            $selectorRules['case_id'] = ['nullable', 'integer', 'min:1'];
+            // Preserve the established case_id=0 sentinel for "no selected case";
+            // nonnumeric, negative, fractional and oversized identities fail.
+            $selectorRules['case_id'] = ['nullable', 'integer', 'min:0'];
         }
         $request->validate($selectorRules);
 
