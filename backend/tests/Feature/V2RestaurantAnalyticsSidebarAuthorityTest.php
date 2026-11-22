@@ -77,6 +77,13 @@ class V2RestaurantAnalyticsSidebarAuthorityTest extends TestCase
                     $this->actingAs($operator->fresh())->getJson(route($route, [
                         'store_id' => $owned, 'from' => 'malformed-date',
                     ]))->assertUnprocessable()->assertJsonValidationErrors('from');
+                    // Oversized numeric selectors are malformed, not valid foreign IDs.
+                    foreach (['store_id', 'branch_id'] as $selector) {
+                        $this->actingAs($operator->fresh())->getJson(route($route, [
+                            'store_id' => $owned,
+                            $selector => '999999999999999999999999999999',
+                        ]))->assertUnprocessable()->assertJsonValidationErrors($selector);
+                    }
                 }
                 $this->actingAs($operator->fresh())->get(route('admin.smart-ordering.analytics.index', [
                     'store_id' => $owned,
