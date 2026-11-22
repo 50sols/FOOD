@@ -265,6 +265,27 @@ final class RestaurantGuestServiceTest extends TestCase
             'notes' => null,
         ], $this->admin);
 
+        // Owned records must still reach validation rather than being concealed as 404.
+        $ownedReservation = $service->createReservation($this->branchA, [
+            'guest_name' => 'Authorized Branch Guest',
+            'guest_phone' => null,
+            'guest_email' => null,
+            'party_size' => 2,
+            'service_at' => '2026-10-18T19:00',
+            'table_public_id' => null,
+            'notes' => null,
+        ], $this->admin);
+        $ownedEntry = $service->createWaitlist($this->branchA, [
+            'guest_name' => 'Authorized Branch Waiting',
+            'guest_phone' => null,
+            'guest_email' => null,
+            'party_size' => 2,
+            'quoted_wait_minutes' => 15,
+            'priority' => 0,
+            'priority_reason' => null,
+            'notes' => null,
+        ], $this->admin);
+
         $before = [
             'reservation' => DB::table('smart_ordering_reservations')
                 ->where('public_id', $reservation)->first(),
@@ -296,6 +317,11 @@ final class RestaurantGuestServiceTest extends TestCase
                         ])->assertNotFound();
                     }
                 }
+                $this->actingAs($this->admin->fresh())->postJson(route(
+                    'admin.smart-ordering.reservations.transition',
+                    [$this->branchA->public_id, $ownedReservation],
+                ), ['status' => ['invalid']])->assertUnprocessable()->assertJsonValidationErrors('status');
+
                 foreach ([$entry, (string) Str::uuid()] as $id) {
                     foreach ([
                         'admin.smart-ordering.waitlist.update' => 'putJson',
@@ -318,6 +344,10 @@ final class RestaurantGuestServiceTest extends TestCase
                         ])->assertNotFound();
                     }
                 }
+                $this->actingAs($this->admin->fresh())->postJson(route(
+                    'admin.smart-ordering.waitlist.convert',
+                    [$this->branchA->public_id, $ownedEntry],
+                ), ['seat_now' => ['invalid']])->assertUnprocessable()->assertJsonValidationErrors('seat_now');
             }
         } finally {
             app()->setLocale($previousLocale);
