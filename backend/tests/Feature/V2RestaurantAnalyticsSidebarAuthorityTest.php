@@ -30,7 +30,7 @@ class V2RestaurantAnalyticsSidebarAuthorityTest extends TestCase
         $operator = $this->retailOperator([$owned]);
 
         $siteId = (int) DB::table('smart_ordering_sites')->insertGetId([
-            'public_id' => (string) \\Illuminate\\Support\\Str::uuid(),
+            'public_id' => (string) \Illuminate\Support\Str::uuid(),
             'store_id' => $foreign,
             'slug' => 'foreign-report-scope',
             'runtime_state' => 'ENABLED',
@@ -39,7 +39,7 @@ class V2RestaurantAnalyticsSidebarAuthorityTest extends TestCase
             'updated_at' => now(),
         ]);
         $foreignBranch = (int) DB::table('smart_ordering_branches')->insertGetId([
-            'public_id' => (string) \\Illuminate\\Support\\Str::uuid(),
+            'public_id' => (string) \Illuminate\Support\Str::uuid(),
             'site_id' => $siteId,
             'code' => 'foreign-analytics',
             'name_en' => 'Foreign Analytics Branch',
