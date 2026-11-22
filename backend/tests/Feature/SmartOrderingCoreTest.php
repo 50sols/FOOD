@@ -2114,6 +2114,10 @@ class SmartOrderingCoreTest extends TestCase
                 'ends_at' => '2026-10-18T19:00',
             ])->assertRedirect();
 
+        $this->assertNotSame((string) $owned->starts_at, (string) DB::table('restaurant_shifts')
+            ->where('id', $owned->id)->value('starts_at'));
+        $this->assertNotSame((string) $owned->ends_at, (string) DB::table('restaurant_shifts')
+            ->where('id', $owned->id)->value('ends_at'));
         $this->assertSame($auditBefore + 1, DB::table('audit_logs')
             ->where('event', 'smart_ordering.workforce.shift.updated')->count());
         $this->assertDatabaseHas('restaurant_shifts', [
