@@ -1994,8 +1994,15 @@ class SmartOrderingCoreTest extends TestCase
                     $this->actingAs($admin->fresh())
                         ->postJson($url($unavailable), ['action' => ['invalid']])
                         ->assertNotFound();
+                    $this->actingAs($admin->fresh())
+                        ->postJson($url($unavailable), [])
+                        ->assertNotFound();
                 }
 
+                $this->actingAs($admin->fresh())
+                    ->postJson($url((string) $owned->public_id), [])
+                    ->assertUnprocessable()
+                    ->assertJsonValidationErrors('action');
                 $this->actingAs($admin->fresh())
                     ->postJson($url((string) $owned->public_id), ['action' => ['invalid']])
                     ->assertUnprocessable()
