@@ -9,6 +9,10 @@ concurrency:
 
 permissions:
   contents: read
+  checks: read
+  issues: read
+  pull-requests: read
+  actions: read
 
 jobs:
   changes:
@@ -83,6 +87,17 @@ jobs:
           node --check .github/scripts/v2-lease-watchdog.js
           node --check .github/scripts/v2-worker-resume.js
           node --test .github/scripts/v2-lease-watchdog.test.js .github/scripts/v2-lease-watchdog.reconciliation.test.js .github/scripts/v2-worker-resume.test.js
+
+      - name: Test V2 CI freeze and readiness contracts
+        run: node --test .github/scripts/v2-pr-ci-freeze.test.js .github/scripts/v2-pr-merge-readiness.test.js
+
+      - name: Enforce V2 PR final CI freeze
+        if: ${{ github.base_ref == 'Foodex_V2' }}
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const { guardGithub } = require('./.github/scripts/v2-pr-ci-freeze.js');
+            await guardGithub({ github, context, core });
 
       - name: Validate One-Push Green contracts
         shell: bash
@@ -476,3 +491,31 @@ jobs:
           require_applicable_success "$ENTERPRISE_PERFORMANCE_CHANGED" "Enterprise performance certification" "$ENTERPRISE_PERFORMANCE_RESULT"
 
           echo "All required validations for changed areas passed."
+
+  v2-merge-readiness:
+    name: V2 merge readiness monitor
+    if: ${{ always() && github.base_ref == 'Foodex_V2' }}
+    needs: [required-ci-gate]
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    permissions:
+      contents: read
+      checks: read
+      pull-requests: read
+      issues: read
+    steps:
+      - name: Checkout read-only PR code
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Test action state machine
+        run: node --test .github/scripts/v2-pr-ci-freeze.test.js .github/scripts/v2-pr-merge-readiness.test.js
+
+      - name: Summarize exact-head merge readiness without mutating PR
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const { report } = require('./.github/scripts/v2-pr-merge-readiness.js');
+            await report({ github, context, core });
+
