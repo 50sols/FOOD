@@ -42,6 +42,11 @@ final class NotificationController extends Controller
             404,
         );
 
+        $request->validate([
+            'page' => ['nullable', 'integer', 'min:1'],
+            'review_notification' => ['nullable', 'integer', 'min:0'],
+        ]);
+
         $search = trim($requestedSearch);
         $status = trim($requestedStatus);
 
