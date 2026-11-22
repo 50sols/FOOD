@@ -25,6 +25,22 @@ final class RestaurantIntegrationController extends Controller
         TenantContextResolver $tenants,
     ): View {
         $actor = $this->authorizeSite($request, $site, $tenants, 'smart_ordering.view');
+
+        // A selected branch belongs to this restaurant site before other
+        // observability filters are validated. Invalid/absent selectors still
+        // use their existing request validation contract.
+        $requestedBranch = $request->query('branch_id');
+        if (is_string($requestedBranch) && ctype_digit($requestedBranch)
+            && (int) $requestedBranch > 0) {
+            abort_unless(
+                DB::table('smart_ordering_branches')
+                    ->where('site_id', $site->getKey())
+                    ->where('id', (int) $requestedBranch)
+                    ->exists(),
+                404,
+            );
+        }
+
         $filters = $request->validate([
             'provider' => ['nullable', 'alpha_dash', 'max:80'],
             'capability' => ['nullable', 'string', 'max:80'],
