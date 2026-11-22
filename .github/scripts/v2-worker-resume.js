@@ -155,7 +155,7 @@ async function buildPlan({ github, owner, repo, issueNumber }) {
     // GitHub search returns incidental mentions of this issue in parent and
     // dependency lists. Only title ownership, an explicit PR closing/ref line,
     // an issue-scoped branch or the original claim can establish provenance.
-    const titleOwnsIssue = new RegExp('(?:^|[^\\d])#' + issueNumber + '(?:\\b|$)')
+    const titleOwnsIssue = new RegExp('^\\s*(?:V2\\s*[:|\\-]?\\s*)?#' + issueNumber + '(?:\\b|$)', 'i')
       .test(pr.title || '');
     const bodyOwnsIssue = new RegExp(
       '^\\s*(?:refs?|closes?|fix(?:es)?|resolves?)\\s*:?\\s*#' + issueNumber + '(?:\\b|$)', 'im'
