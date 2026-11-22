@@ -64,7 +64,7 @@ final class V2RetailOrdersCanonicalSelectorHardeningTest extends TestCase
                     ->assertNotFound();
             }
 
-            foreach (['0', '-1', '01', 'not-an-id', '21474836480000000000000'] as $bad) {
+            foreach (['0', '-1', '01', '+1', ' 1', 'not-an-id', '21474836480000000000000'] as $bad) {
                 foreach (['store_id', 'store'] as $alias) {
                     $this->actingAs($actor->fresh())
                         ->get($this->url([$alias => $bad]))
