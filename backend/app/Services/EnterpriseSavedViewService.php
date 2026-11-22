@@ -49,6 +49,20 @@ final class EnterpriseSavedViewService
             ->get();
     }
 
+    /**
+     * Fail closed on the requested surface and effective tenant before validating
+     * unrelated Saved View fields. The write path rechecks the same authority.
+     */
+    public function assertCanAccessScope(
+        User $actor,
+        string $surfaceKey,
+        string $scopeType,
+        ?int $scopeId,
+    ): void {
+        $this->surfaceKey($surfaceKey);
+        $this->authorizeScope($actor, $scopeType, $scopeId);
+    }
+
     public function stateToken(
         string $surfaceKey,
         string $scopeType,
