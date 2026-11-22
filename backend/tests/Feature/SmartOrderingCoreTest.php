@@ -2043,6 +2043,25 @@ class SmartOrderingCoreTest extends TestCase
             'floor_area_id' => DB::table('smart_ordering_floor_areas')->where('public_id', $ownedFloor)->value('id'),
             'capacity' => 3,
         ]);
+
+        $this->actingAs($admin->fresh())
+            ->post($storeUrl, [
+                'floor_public_id' => $ownedFloor,
+                'label' => 'Floor Scope New',
+                'capacity' => 2,
+                'position_x' => 90,
+                'position_y' => 90,
+                'visual_width' => 160,
+                'visual_height' => 120,
+                'shape' => 'rectangle',
+                'is_active' => true,
+            ])->assertRedirect();
+        $this->assertDatabaseHas('smart_ordering_tables', [
+            'branch_id' => $this->branch->id,
+            'floor_area_id' => DB::table('smart_ordering_floor_areas')->where('public_id', $ownedFloor)->value('id'),
+            'label' => 'Floor Scope New',
+            'capacity' => 2,
+        ]);
     }
 
     public function test_table_position_and_combine_scope_precedes_body_validation_in_ar_and_en(): void
