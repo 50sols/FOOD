@@ -51,6 +51,10 @@ final class SystemInspectorController extends Controller
             abort_if(is_array($request->query($filter)), 404);
         }
 
+        // Preserve platform-admin authority and nested-filter 404 precedence
+        // before evaluating expensive diagnostics or paginating audit events.
+        $request->validate(['page' => ['nullable', 'integer', 'min:1']]);
+
         $source = trim((string) $request->query('source', ''));
         $severity = trim((string) $request->query('severity', ''));
         $search = trim((string) $request->query('q', ''));
