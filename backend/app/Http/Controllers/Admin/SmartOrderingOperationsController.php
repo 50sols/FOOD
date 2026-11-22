@@ -69,6 +69,9 @@ final class SmartOrderingOperationsController extends Controller
             'payment_status' => ['nullable', Rule::in(['pending', 'authorized', 'captured', 'partially_refunded', 'refunded', 'voided', 'failed'])],
             'payment_provider' => ['nullable', 'string', 'max:80'],
             'reconciliation' => ['nullable', Rule::in(['mismatch'])],
+            // An explicitly invalid pagination selector must not silently
+            // select the first page of another query result.
+            'page' => ['nullable', 'integer', 'min:1'],
         ]);
 
         $tab = (string) ($validated['tab'] ?? 'orders');
