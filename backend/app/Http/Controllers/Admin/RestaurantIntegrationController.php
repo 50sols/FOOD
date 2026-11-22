@@ -30,15 +30,18 @@ final class RestaurantIntegrationController extends Controller
         // observability filters are validated. Invalid/absent selectors still
         // use their existing request validation contract.
         $requestedBranch = $request->query('branch_id');
-        if (is_string($requestedBranch) && ctype_digit($requestedBranch)
-            && (int) $requestedBranch > 0) {
-            abort_unless(
-                DB::table('smart_ordering_branches')
-                    ->where('site_id', $site->getKey())
-                    ->where('id', (int) $requestedBranch)
-                    ->exists(),
-                404,
-            );
+        if (is_string($requestedBranch) && ctype_digit($requestedBranch)) {
+            // Oversized selectors remain validation errors, not saturated scope lookups.
+            $branchId = filter_var($requestedBranch, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
+            if ($branchId !== false) {
+                abort_unless(
+                    DB::table('smart_ordering_branches')
+                        ->where('site_id', $site->getKey())
+                        ->where('id', $branchId)
+                        ->exists(),
+                    404,
+                );
+            }
         }
 
         $filters = $request->validate([
