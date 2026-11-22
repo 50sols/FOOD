@@ -98,6 +98,7 @@ final class V2KitchenRoutingStationScopeTest extends TestCase
                 'capacity_limit' => 5,
                 'is_active' => true,
             ]);
+
             return (string) DB::table('smart_ordering_kitchen_stations')
                 ->where('branch_id', $branch->getKey())
                 ->where('name_en', $name)->value('public_id');
