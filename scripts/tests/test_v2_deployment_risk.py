@@ -92,6 +92,17 @@ class V2DeploymentRiskTest(unittest.TestCase):
             self.assertIn(name, fast)
             self.assertIn(name, original)
         self.assertNotIn("production-services:", fast)
+        # Keep scoped Laravel jobs in sync with the canonical reusable workflow.
+        # Ignore only comment and timeout differences; command changes must be
+        # incorporated into the scoped lane before backend-ci changes can merge.
+        canonical = original.split("\n  production-services:\n", 1)[0]
+        canonical = canonical.replace("name: Backend CI", "name: FOODEX V2 Scoped Backend CI", 1)
+        def contract(text):
+            return "\n".join(
+                line for line in text.splitlines()
+                if not line.lstrip().startswith(("#", "timeout-minutes:"))
+            ).strip()
+        self.assertEqual(contract(canonical), contract(fast))
         gate = (ROOT / ".github/workflows/required-ci-gate.yml").read_text()
         for needle in (
             "v2_fast_backend: $" + "{{ steps.deployment.outputs.v2_fast_backend }}",
