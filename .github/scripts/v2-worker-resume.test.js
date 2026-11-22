@@ -66,6 +66,20 @@ test('active or waiting CI lease blocks takeover of existing original branch wit
   assert.equal(available.action,'RESUME_ORIGINAL_BRANCH');
 });
 
+test('ready label cannot override latest unreconciled WORKING branch claim', () => {
+  const claim={branch:'ci/4151-resume',pr:null,state:'WORKING'};
+  const data={issue:{...issue,labels:[{name:'worker:ready'}]},
+    branches:['ci/4151-resume'],prs:[],refs:[claim],checkpoint:null};
+  const result=decide(data);
+  assert.equal(result.action,'BLOCK_CLAIM_LEASE_CONFLICT');
+  assert.equal(result.branch,'ci/4151-resume');
+  assert.equal(result.reason,'latest-worker-claim-not-reconciled');
+
+  // A later authoritative handoff claim can release the ambiguity.
+  assert.equal(decide({...data,refs:[claim,{...claim,state:'HANDOFF_READY'}]}).action,
+    'RESUME_ORIGINAL_BRANCH');
+});
+
 test('multiple branches, duplicate PRs, human gates and leases fail closed', () => {
   assert.equal(decide({issue,branches:['ci/4151-a','ci/4151-b'],prs:[],refs:[],checkpoint:null}).action,
     'BLOCK_CONFLICTING_ORIGINALS');
