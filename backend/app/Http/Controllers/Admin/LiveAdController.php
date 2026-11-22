@@ -49,6 +49,10 @@ final class LiveAdController extends Controller
             404,
         );
 
+        // Reject invalid pagination only after tenant authorization and the
+        // existing nested-filter 404 guard; do not silently serve page one.
+        $request->validate(['page' => ['nullable', 'integer', 'min:1']]);
+
         $search = trim($requestedSearch);
         $channel = strtolower(trim($requestedChannel));
         $status = trim($requestedStatus);
