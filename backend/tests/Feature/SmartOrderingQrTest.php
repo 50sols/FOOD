@@ -261,6 +261,61 @@ class SmartOrderingQrTest extends TestCase
         $this->assertDatabaseCount('smart_ordering_qr_events', 1);
     }
 
+    public function test_qr_create_authorizes_explicit_store_before_body_validation_in_ar_and_en(): void
+    {
+        [$ownedStore, $foreignStore] = $this->stores();
+        $admin = $this->storeAdmin($ownedStore, 'en');
+        $url = route('admin.smart-ordering.qr.store');
+
+        foreach (['ar', 'en'] as $locale) {
+            $admin->forceFill(['locale' => $locale])->save();
+            app()->setLocale($locale);
+
+            foreach ([
+                ['store_id' => $foreignStore],
+                ['store_id' => (string) $foreignStore],
+                $this->payload($foreignStore, ['store_id' => (string) $foreignStore]),
+                ['store_id' => $foreignStore, 'type' => 'invalid', 'label' => ['not-a-string'], 'target_path' => []],
+                $this->payload($foreignStore),
+            ] as $foreignPayload) {
+                $this->actingAs($admin)
+                    ->postJson($url, $foreignPayload)
+                    ->assertNotFound();
+            }
+
+            foreach ([
+                [],
+                ['store_id' => 0],
+                ['store_id' => 'invalid'],
+                ['store_id' => '999999999999999999999999999999'],
+                ['store_id' => $ownedStore],
+                $this->payload($ownedStore, ['type' => 'invalid']),
+            ] as $invalidPayload) {
+                $this->actingAs($admin)
+                    ->postJson($url, $invalidPayload)
+                    ->assertUnprocessable();
+            }
+
+            $this->actingAs($admin)
+                ->post($url, $this->payload($ownedStore, ['label' => 'Allowed QR '.$locale]))
+                ->assertRedirect();
+        }
+
+        $this->assertDatabaseCount('smart_ordering_qr_codes', 2);
+        $this->assertDatabaseMissing('smart_ordering_qr_codes', ['store_id' => $foreignStore]);
+        $this->assertSame(
+            2,
+            DB::table('audit_logs')
+                ->where('event', 'smart_ordering.qr.created')
+                ->where('store_id', $ownedStore)
+                ->count(),
+        );
+        $this->assertDatabaseMissing('audit_logs', [
+            'event' => 'smart_ordering.qr.created',
+            'store_id' => $foreignStore,
+        ]);
+    }
+
     public function test_store_admin_manager_is_scoped_and_uses_business_controls(): void
     {
         [$storeA, $storeB] = $this->stores();
