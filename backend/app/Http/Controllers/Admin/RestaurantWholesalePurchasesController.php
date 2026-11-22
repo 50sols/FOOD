@@ -96,13 +96,14 @@ final class RestaurantWholesalePurchasesController extends Controller
     ): RedirectResponse {
         $user = $request->user();
         abort_unless($user instanceof User, 401);
+        $buyerContext = $this->preflightBuyerContext($request, $user, $purchases);
         $validated = $request->validate([
             'retail_store_id' => ['required', 'integer', 'min:1'],
             'product_id' => ['required', 'integer', 'min:1'],
             'quantity' => ['required', 'numeric', 'gt:0'],
         ]);
 
-        $context = $purchases->context($request, $user);
+        $context = $buyerContext ?? $purchases->context($request, $user);
         $purchases->addCartItem(
             $context,
             $user,
@@ -121,12 +122,13 @@ final class RestaurantWholesalePurchasesController extends Controller
     ): RedirectResponse {
         $user = $request->user();
         abort_unless($user instanceof User, 401);
+        $buyerContext = $this->preflightBuyerContext($request, $user, $purchases);
         $validated = $request->validate([
             'retail_store_id' => ['required', 'integer', 'min:1'],
             'quantity' => ['required', 'numeric', 'gt:0'],
         ]);
 
-        $context = $purchases->context($request, $user);
+        $context = $buyerContext ?? $purchases->context($request, $user);
         $purchases->updateCartItem($context, $user, $item, (float) $validated['quantity']);
 
         return $this->backTo($context['restaurant_store_id'], 'cart')
@@ -140,11 +142,12 @@ final class RestaurantWholesalePurchasesController extends Controller
     ): RedirectResponse {
         $user = $request->user();
         abort_unless($user instanceof User, 401);
+        $buyerContext = $this->preflightBuyerContext($request, $user, $purchases);
         $request->validate([
             'retail_store_id' => ['required', 'integer', 'min:1'],
         ]);
 
-        $context = $purchases->context($request, $user);
+        $context = $buyerContext ?? $purchases->context($request, $user);
         $purchases->removeCartItem($context, $item);
 
         return $this->backTo($context['restaurant_store_id'], 'cart')
@@ -158,6 +161,7 @@ final class RestaurantWholesalePurchasesController extends Controller
     ): RedirectResponse {
         $user = $request->user();
         abort_unless($user instanceof User, 401);
+        $buyerContext = $this->preflightBuyerContext($request, $user, $purchases);
 
         $validated = $request->validate([
             'retail_store_id' => ['required', 'integer', 'min:1'],
@@ -175,7 +179,7 @@ final class RestaurantWholesalePurchasesController extends Controller
             'idempotency_key' => ['required', 'string', 'min:16', 'max:100'],
         ]);
 
-        $context = $purchases->context($request, $user);
+        $context = $buyerContext ?? $purchases->context($request, $user);
         abort_unless(
             in_array((string) $validated['payment_method'], $purchases->paymentMethods($context), true),
             422,
@@ -203,6 +207,30 @@ final class RestaurantWholesalePurchasesController extends Controller
             ->with('status', __('restaurant_wholesale.messages.order_submitted', [
                 'id' => $orderId > 0 ? $orderId : '—',
             ]));
+    }
+
+    /**
+     * Resolve an explicitly targeted Retail buyer before reporting unrelated
+     * cart/checkout body errors. Missing/malformed store selectors still go
+     * through the existing required-field validator unchanged.
+     *
+     * @return array<string,mixed>|null
+     */
+    private function preflightBuyerContext(
+        Request $request,
+        User $user,
+        RestaurantWholesalePurchaseService $purchases,
+    ): ?array {
+        $requested = $request->input('retail_store_id');
+        if (! is_int($requested) && ! (is_string($requested) && ctype_digit($requested))) {
+            return null;
+        }
+
+        if ((int) $requested < 1) {
+            return null;
+        }
+
+        return $purchases->context($request, $user);
     }
 
     private function backTo(int $restaurantStoreId, string $tab): RedirectResponse
