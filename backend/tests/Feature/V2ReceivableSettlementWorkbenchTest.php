@@ -451,6 +451,80 @@ final class V2ReceivableSettlementWorkbenchTest extends TestCase
         ]);
     }
 
+    public function test_stale_parent_ar_state_blocks_new_post_and_posted_idempotent_replay_without_financial_writes(): void
+    {
+        $ar = app(AccountsReceivableService::class);
+        $initialLocale = app()->getLocale();
+
+        try {
+            foreach (['draft', 'cancelled'] as $parentStatus) {
+                foreach (['draft', 'posted'] as $allocationStatus) {
+                    $fixture = $this->fixture('P303-PARENT-'.strtoupper($parentStatus).'-'.strtoupper($allocationStatus));
+                    $makerContext = app(TenantContextResolver::class)->retail(
+                        $fixture['maker'], $fixture['store']->id,
+                    );
+                    $posterContext = app(TenantContextResolver::class)->retail(
+                        $fixture['poster'], $fixture['store']->id,
+                    );
+
+                    $allocation = $ar->createAllocation(
+                        $fixture['maker'],
+                        $makerContext,
+                        $fixture['document']->id,
+                        [
+                            'idempotency_key' => 'p303-parent-status-'. $parentStatus.'-'.$allocationStatus,
+                            'allocation_date' => '2027-01-12',
+                            'amount' => '15.000',
+                            'settlement_account_id' => $fixture['cash_account_id'],
+                        ],
+                    );
+
+                    if ($allocationStatus === 'posted') {
+                        $ar->postAllocation($fixture['poster'], $posterContext, $allocation->id);
+                    }
+
+                    $originalJournalId = $allocation->fresh()->journal_id;
+                    $journalCount = DB::table('enterprise_finance_journals')->count();
+                    $postingAuditCount = DB::table('audit_logs')
+                        ->where('event', 'enterprise.finance.ar_allocation_posted')
+                        ->where('auditable_id', $allocation->id)
+                        ->count();
+
+                    // Simulate an invalid historical/admin state transition
+                    // after allocation creation; the post path must fail closed.
+                    $fixture['document']->forceFill(['status' => $parentStatus])->save();
+
+                    foreach (['en', 'ar'] as $locale) {
+                        app()->setLocale($locale);
+                        try {
+                            $ar->postAllocation($fixture['poster'], $posterContext, $allocation->id);
+                            $this->fail('A non-posted parent must not authorize posting or retry.');
+                        } catch (ValidationException $exception) {
+                            $this->assertSame(
+                                [__('finance_workbench.receivables.document_not_posted', [], $locale)],
+                                $exception->errors()['status'] ?? [],
+                            );
+                        }
+                    }
+
+                    $this->assertSame($allocationStatus, $allocation->fresh()->status);
+                    $this->assertSame($originalJournalId, $allocation->fresh()->journal_id);
+                    $this->assertSame($parentStatus, $fixture['document']->fresh()->status);
+                    $this->assertSame($journalCount, DB::table('enterprise_finance_journals')->count());
+                    $this->assertSame(
+                        $postingAuditCount,
+                        DB::table('audit_logs')
+                            ->where('event', 'enterprise.finance.ar_allocation_posted')
+                            ->where('auditable_id', $allocation->id)
+                            ->count(),
+                    );
+                }
+            }
+        } finally {
+            app()->setLocale($initialLocale);
+        }
+    }
+
     public function test_legacy_self_netting_allocation_is_rejected_before_journal_posting(): void
     {
         $fixture = $this->fixture('P303-LEGACY-SELF-NET');
