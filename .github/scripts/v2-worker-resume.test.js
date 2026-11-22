@@ -36,6 +36,13 @@ test('merged original PR cannot be re-created even when issue is open', () => {
   const d=decide({issue,branches:[],prs:[pr('merged')],refs:[],checkpoint:null});
   assert.deepEqual([d.action,d.head],['VERIFY_INTEGRATION_ACCEPTANCE','integration-sha']);
 });
+test('merged original without authoritative merge SHA cannot be certified', () => {
+  const missingMergeSha = { ...pr('merged'), merge_commit_sha: null };
+  const d=decide({issue,branches:[],prs:[missingMergeSha],refs:[],checkpoint:null});
+  assert.equal(d.action,'BLOCK_UNKNOWN_MERGE_SHA');
+  assert.equal(d.reason,'merged-original-has-no-authoritative-merge-commit');
+});
+
 test('closed unmerged original needs reconciliation, not replacement branch', () => {
   assert.equal(decide({issue,branches:[],prs:[pr('closed')],refs:[],checkpoint:null}).action,
     'BLOCK_CLOSED_ORIGINAL_PR');
