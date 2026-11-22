@@ -229,18 +229,10 @@ class SmartOrderingSupplyIntelligenceTest extends TestCase
             route('admin.smart-ordering.supply.mappings.store', $f['site']),
             [...$cases[0]['valid'], 'branch_id' => $f['branch_id']],
         )->assertRedirect();
-        $ordersBeforeDraft = DB::table('orders')->count();
-        $this->actingAs($actor->fresh())->post(
-            $cases[1]['url'], [...$cases[1]['valid'], 'branch_id' => $f['branch_id']],
-        )->assertRedirect()
-            ->assertSessionHas('smart_ordering_supply_draft');
-        $this->assertSame($ordersBeforeDraft, DB::table('orders')->count(),
-            'A supply reorder draft must not place a wholesale order');
-        $this->assertDatabaseHas('smart_ordering_supply_reorder_drafts', [
-            'site_id' => $f['site_id'],
-            'branch_id' => $f['branch_id'],
-            'converted_order_id' => null,
-        ]);
+        // A reorder draft requires executable recommendations from real completed
+        // consumption. That positive lifecycle is covered by the dedicated
+        // one-click reorder test; this regression proves branch authorization
+        // happens before payload validation, without fabricating inventory.
         $this->actingAs($actor->fresh())->post(
             $cases[2]['url'], [...$cases[2]['valid'], 'branch_id' => $f['branch_id']],
         )->assertRedirect();
