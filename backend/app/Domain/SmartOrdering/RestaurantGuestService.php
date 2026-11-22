@@ -642,6 +642,12 @@ final class RestaurantGuestService
         return $serviceAt->format('Y-m-d H:i:s');
     }
 
+    /** Read-only canonical table preflight; service writes still recheck inside transactions. */
+    public function assertActiveTableInBranch(SmartOrderingBranch $branch, string $tablePublicId): void
+    {
+        $this->optionalTable($branch, $tablePublicId);
+    }
+
     private function optionalTable(SmartOrderingBranch $branch, mixed $publicId): ?object
     {
         if (! is_string($publicId) || trim($publicId) === '') {
