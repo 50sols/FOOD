@@ -553,6 +553,18 @@ final class RestaurantIntegrationService
         abort_unless($updated === 1, 404);
     }
 
+    /** Resolve a webhook only within its authorized restaurant site. */
+    public function assertWebhookInScope(SmartOrderingSite $site, string $publicId): void
+    {
+        abort_unless(
+            DB::table('restaurant_saas_webhook_subscriptions')
+                ->where('site_id', $site->getKey())
+                ->where('public_id', $publicId)
+                ->exists(),
+            404,
+        );
+    }
+
     public function setWebhookActive(SmartOrderingSite $site, string $publicId, bool $active): void
     {
         $updated = DB::table('restaurant_saas_webhook_subscriptions')

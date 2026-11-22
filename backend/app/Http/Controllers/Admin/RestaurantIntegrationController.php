@@ -190,6 +190,7 @@ final class RestaurantIntegrationController extends Controller
         AuditLogger $audit,
     ): RedirectResponse {
         $actor = $this->authorizeSite($request, $site, $tenants, 'smart_ordering.manage');
+        $integrations->assertWebhookInScope($site, $webhook);
         $data = $request->validate(['active' => ['required', 'boolean']]);
         $integrations->setWebhookActive($site, $webhook, (bool) $data['active']);
         $audit->record('restaurant.integration.webhook_status_changed', $actor, null, null, [
