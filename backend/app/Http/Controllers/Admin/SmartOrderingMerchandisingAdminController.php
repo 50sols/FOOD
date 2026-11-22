@@ -139,6 +139,7 @@ final class SmartOrderingMerchandisingAdminController extends Controller
     /** @return array<string,mixed> */
     private function offerData(Request $request, SmartOrderingSite $site): array
     {
+        $this->preflightBranchScope($request, $site);
         $data = $request->validate([
             'name' => ['required', 'string', 'max:190'],
             'type' => ['required', Rule::in(self::OFFER_TYPES)],
@@ -205,6 +206,7 @@ final class SmartOrderingMerchandisingAdminController extends Controller
     /** @return array<string,mixed> */
     private function recommendationData(Request $request, SmartOrderingSite $site): array
     {
+        $this->preflightBranchScope($request, $site);
         $data = $request->validate([
             'name' => ['required', 'string', 'max:190'],
             'placement' => ['required', Rule::in(SmartOrderingMerchandisingService::PLACEMENTS)],
@@ -248,6 +250,27 @@ final class SmartOrderingMerchandisingAdminController extends Controller
             'ends_at' => $data['ends_at'] ?? null,
             'is_active' => (bool) ($data['is_active'] ?? true),
         ];
+    }
+
+    private function preflightBranchScope(Request $request, SmartOrderingSite $site): void
+    {
+        // Only syntactically positive scalar selectors are scoped before
+        // unrelated merchandising inputs; leave malformed selectors to 422.
+        $requested = $request->input('branch_id');
+        if (! is_int($requested) && ! (is_string($requested) && ctype_digit($requested))) {
+            return;
+        }
+        $branchId = filter_var($requested, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
+        if ($branchId === false) {
+            return;
+        }
+        abort_unless(
+            DB::table('smart_ordering_branches')
+                ->where('id', $branchId)
+                ->where('site_id', $site->getKey())
+                ->exists(),
+            404,
+        );
     }
 
     private function assertBranch(SmartOrderingSite $site, mixed $branchId): void
