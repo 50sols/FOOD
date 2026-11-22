@@ -19,6 +19,10 @@ Issue #4240 is an independent, bounded Laravel HTTP acceptance regression under 
 
 No production routes/controller/service, permissions, user accounts, API, schema or Flutter applications are modified. No read-only success is represented as real customer-account or financial approval acceptance.
 
+## Boundary and fixture provenance
+
+The Wholesale store fixture is resolved from the existing canonical `WholesalePrincipal::storeId()` service after reference seeding; this is not a newly invented Wholesale tenant. The positive B2B_ADMIN capability follows existing `UnifiedOrderOperationsTest` coverage for `/admin/operations/orders?channel=b2b`, while this leaf intentionally checks the **distinct canonical** `/admin/b2b/orders` route and forged selected store/channel. A negative HTTP status must be observed from actual Laravel middleware/controller execution, not inferred from selected Sidebar items. All synthetic actor identities are local database fixtures and do not establish any live user's actual assignments.
+
 ## Risk and mobile impact
 
 REVIEW_RISK: HIGH due to cross-channel and cross-store security assertions. Negative cases target the actual middleware/controller entry and cannot be inferred from Sidebar visibility. In a failed CI run, fix a legitimate source defect only after resolving active file ownership; never weaken denial assertions just to green the gate. Same-account review is an engineering audit, not independent APPROVED review.
