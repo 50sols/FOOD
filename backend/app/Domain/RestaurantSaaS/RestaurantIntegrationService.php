@@ -93,6 +93,21 @@ final class RestaurantIntegrationService
         return $publicId;
     }
 
+    /**
+     * Check an integration's tenant ownership before validating unrelated
+     * Admin mutation input. setStatus repeats scope at the actual write.
+     */
+    public function assertConnectorInScope(SmartOrderingSite $site, string $publicId): void
+    {
+        abort_unless(
+            DB::table('restaurant_saas_integrations')
+                ->where('site_id', $site->getKey())
+                ->where('public_id', $publicId)
+                ->exists(),
+            404,
+        );
+    }
+
     public function setStatus(SmartOrderingSite $site, string $publicId, string $status): void
     {
         abort_unless(in_array($status, ['disabled', 'enabled', 'degraded', 'suspended'], true), 422);
