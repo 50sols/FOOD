@@ -1949,6 +1949,121 @@ class SmartOrderingCoreTest extends TestCase
             ->assertNotFound();
     }
 
+    public function test_table_selected_floor_scope_precedes_unrelated_validation_in_ar_and_en(): void
+    {
+        $admin = $this->storeAdmin($this->storeId);
+        $ownedTable = $this->restaurantTable('Floor Scope Own', 'floor-scope-own-token');
+        $siblingBranch = SmartOrderingBranch::query()->create([
+            'public_id' => (string) Str::uuid(),
+            'site_id' => $this->branch->site_id,
+            'code' => 'floor-payload-sibling',
+            'name_ar' => 'فرع طابق شقيق',
+            'name_en' => 'Sibling floor branch',
+            'timezone' => 'Asia/Kuwait',
+            'is_active' => true,
+        ]);
+        $insertFloor = static function (SmartOrderingBranch $branch, string $name): string {
+            $uuid = (string) Str::uuid();
+            DB::table('smart_ordering_floor_areas')->insert([
+                'public_id' => $uuid,
+                'branch_id' => $branch->getKey(),
+                'name_en' => $name,
+                'name_ar' => $name,
+                'sort_order' => 0,
+                'is_active' => true,
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+
+            return $uuid;
+        };
+        $ownedFloor = $insertFloor($this->branch, 'Owned Floor');
+        $foreignFloor = $insertFloor($siblingBranch, 'Sibling Floor');
+        $storeUrl = route('admin.smart-ordering.tables.store', $this->branch->public_id);
+        $updateUrl = route('admin.smart-ordering.tables.update', [
+            $this->branch->public_id, $ownedTable->public_id,
+        ]);
+        $beforeTables = DB::table('smart_ordering_tables')->count();
+        $beforeAudits = DB::table('audit_logs')->count();
+        $originalLocale = app()->getLocale();
+
+        try {
+            foreach (['ar', 'en'] as $locale) {
+                app()->setLocale($locale);
+                $admin->forceFill(['locale' => $locale])->saveQuietly();
+
+                foreach ([$foreignFloor, (string) Str::uuid()] as $unavailableFloor) {
+                    foreach ([$storeUrl, $updateUrl] as $url) {
+                        $payload = ['floor_public_id' => $unavailableFloor, 'capacity' => ['invalid']];
+                        $response = $this->actingAs($admin->fresh());
+                        ($url === $storeUrl
+                            ? $response->postJson($url, $payload)
+                            : $response->putJson($url, $payload))->assertNotFound();
+                    }
+                }
+
+                foreach ([$storeUrl, $updateUrl] as $url) {
+                    $payload = ['floor_public_id' => ['nested'], 'capacity' => ['invalid']];
+                    $response = $this->actingAs($admin->fresh());
+                    ($url === $storeUrl
+                        ? $response->postJson($url, $payload)
+                        : $response->putJson($url, $payload))->assertUnprocessable();
+
+                    $payload = ['floor_public_id' => $ownedFloor, 'capacity' => ['invalid']];
+                    $response = $this->actingAs($admin->fresh());
+                    ($url === $storeUrl
+                        ? $response->postJson($url, $payload)
+                        : $response->putJson($url, $payload))->assertUnprocessable();
+                }
+            }
+        } finally {
+            app()->setLocale($originalLocale);
+        }
+
+        $this->assertSame($beforeTables, DB::table('smart_ordering_tables')->count());
+        $this->assertSame($beforeAudits, DB::table('audit_logs')->count());
+        $this->assertDatabaseHas('smart_ordering_tables', [
+            'id' => $ownedTable->id, 'floor_area_id' => null,
+        ]);
+
+        $this->actingAs($admin->fresh())
+            ->put($updateUrl, [
+                'floor_public_id' => $ownedFloor,
+                'label' => 'Floor Scope Own',
+                'capacity' => 3,
+                'position_x' => 60,
+                'position_y' => 60,
+                'visual_width' => 160,
+                'visual_height' => 120,
+                'shape' => 'rectangle',
+                'is_active' => true,
+            ])->assertRedirect();
+        $this->assertDatabaseHas('smart_ordering_tables', [
+            'id' => $ownedTable->id,
+            'floor_area_id' => DB::table('smart_ordering_floor_areas')->where('public_id', $ownedFloor)->value('id'),
+            'capacity' => 3,
+        ]);
+
+        $this->actingAs($admin->fresh())
+            ->post($storeUrl, [
+                'floor_public_id' => $ownedFloor,
+                'label' => 'Floor Scope New',
+                'capacity' => 2,
+                'position_x' => 90,
+                'position_y' => 90,
+                'visual_width' => 160,
+                'visual_height' => 120,
+                'shape' => 'rectangle',
+                'is_active' => true,
+            ])->assertRedirect();
+        $this->assertDatabaseHas('smart_ordering_tables', [
+            'branch_id' => $this->branch->id,
+            'floor_area_id' => DB::table('smart_ordering_floor_areas')->where('public_id', $ownedFloor)->value('id'),
+            'label' => 'Floor Scope New',
+            'capacity' => 2,
+        ]);
+    }
+
     public function test_table_position_and_combine_scope_precedes_body_validation_in_ar_and_en(): void
     {
         $admin = $this->storeAdmin($this->storeId);

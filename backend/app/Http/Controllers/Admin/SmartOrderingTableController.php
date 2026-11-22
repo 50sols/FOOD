@@ -49,6 +49,7 @@ final class SmartOrderingTableController extends Controller
     public function storeTable(string $branch, Request $request): RedirectResponse
     {
         [$actor, $branchModel] = $this->authorizedBranch($branch, $request);
+        $this->preflightSelectedFloor($branchModel, $request);
         $this->tables->createTable($branchModel, $this->tableData($request));
 
         return $this->backToTables($branchModel, __('smart_ordering.tables.table_saved'));
@@ -58,6 +59,7 @@ final class SmartOrderingTableController extends Controller
     {
         [$actor, $branchModel] = $this->authorizedBranch($branch, $request);
         $this->tables->assertTableInBranch($branchModel, $table);
+        $this->preflightSelectedFloor($branchModel, $request);
         $this->tables->updateTable($branchModel, $table, $this->tableData($request));
 
         return $this->backToTables($branchModel, __('smart_ordering.tables.table_saved'));
@@ -169,6 +171,16 @@ final class SmartOrderingTableController extends Controller
         $this->scope->assertStore($actor, (int) $branch->store_id, 'orders.manage', 'b2c');
 
         return [$actor, $branch];
+    }
+
+    private function preflightSelectedFloor(SmartOrderingBranch $branch, Request $request): void
+    {
+        // Valid explicit floor UUIDs are scoped before unrelated table fields.
+        // Missing or malformed selectors retain the existing validator result.
+        $floorId = $request->input('floor_public_id');
+        if (is_string($floorId) && Str::isUuid($floorId)) {
+            $this->tables->assertFloorInBranch($branch, $floorId);
+        }
     }
 
     /** @return array<string,mixed> */
