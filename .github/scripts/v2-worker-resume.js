@@ -118,15 +118,18 @@ function decide({ issue, branches, prs, refs, checkpoint }) {
       branch: original, pr: pr.number, reason: 'owner-reconciliation-required' };
     return { action: 'BLOCK_UNKNOWN_PR_STATE', reason: 'not-authoritative' };
   }
+  // An existing original branch is not permission to take over an active
+  // worker lease. Resolve the lease/watchdog first, even when no PR exists.
+  if (labels.some(l => l === 'worker:active' || l === 'worker:waiting-ci')) {
+    return { action: 'BLOCK_CURRENT_LEASE', branch: original,
+      reason: 'active-worker-owns-issue' };
+  }
   if (original) {
     if (branches.includes(original)) return {
       action: 'RESUME_ORIGINAL_BRANCH', branch: original, reason: 'existing-work-no-new-branch'
     };
     return { action: 'BLOCK_MISSING_ORIGINAL_BRANCH', branch: original,
       reason: 'claimed-history-exists-but-ref-is-missing' };
-  }
-  if (labels.some(l => l === 'worker:active' || l === 'worker:waiting-ci')) {
-    return { action: 'BLOCK_CURRENT_LEASE', reason: 'active-worker-owns-issue' };
   }
   return { action: 'CANDIDATE_NEW_BRANCH', reason: 'revalidate-atomically-before-claim' };
 }
