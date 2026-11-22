@@ -217,6 +217,52 @@ class V2RestaurantTableRoutePrevalidationTest extends TestCase
             'created_at' => now(),
             'updated_at' => now(),
         ]);
+        // A member table in a completely different Retail store is also
+        // hidden before validation of the combine note.
+        $foreignStoreId = (int) DB::table('stores')->insertGetId([
+            'store_type_id' => (int) DB::table('store_types')->where('code', 'B2C')->value('id'),
+            'code' => 'V2-FOREIGN-COMBINE-'.Str::lower(Str::random(6)),
+            'name' => 'Foreign Combine Store',
+            'is_active' => true,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        $foreignSiteId = (int) DB::table('smart_ordering_sites')->insertGetId([
+            'public_id' => (string) Str::uuid(),
+            'store_id' => $foreignStoreId,
+            'slug' => 'foreign-combine-'.Str::lower(Str::random(8)),
+            'runtime_state' => 'ENABLED',
+            'master_enabled' => true,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        $foreignBranchId = (int) DB::table('smart_ordering_branches')->insertGetId([
+            'public_id' => (string) Str::uuid(),
+            'site_id' => $foreignSiteId,
+            'code' => 'FOREIGN-COMBINE',
+            'name_en' => 'Foreign Combine',
+            'timezone' => 'Asia/Kuwait',
+            'is_active' => true,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        $foreignMemberPublicId = (string) Str::uuid();
+        DB::table('smart_ordering_tables')->insert([
+            'public_id' => $foreignMemberPublicId,
+            'branch_id' => $foreignBranchId,
+            'label' => 'Other Store Table',
+            'capacity' => 2,
+            'position_x' => 25,
+            'position_y' => 25,
+            'visual_width' => 160,
+            'visual_height' => 120,
+            'shape' => 'rectangle',
+            'qr_reference' => (string) Str::uuid(),
+            'token_hash' => hash('sha256', (string) Str::uuid()),
+            'is_active' => true,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
         $combineUrl = route('admin.smart-ordering.tables.combine', [
             $ownedBranch->public_id, $tables[0]['public_id'],
         ]);
@@ -229,7 +275,7 @@ class V2RestaurantTableRoutePrevalidationTest extends TestCase
                 app()->setLocale($locale);
                 $actor->forceFill(['locale' => $locale])->saveQuietly();
 
-                foreach ([$tables[1]['public_id'], (string) Str::uuid()] as $deniedMember) {
+                foreach ([$tables[1]['public_id'], $foreignMemberPublicId, (string) Str::uuid()] as $deniedMember) {
                     foreach ([
                         ['other_table_public_id' => $deniedMember],
                         ['other_table_public_id' => $deniedMember, 'note' => ['bad' => 'nested']],
