@@ -448,6 +448,15 @@ final class RestaurantWorkforceService
     }
 
     /**
+     * Resolve the route session using the same branch predicate as the correction.
+     * A foreign or missing session must fail before parsing untrusted request data.
+     */
+    public function assertSessionInBranch(SmartOrderingBranch $branch, string $sessionPublicId): void
+    {
+        $this->session($branch, $sessionPublicId);
+    }
+
+    /**
      * @param  array<string,mixed>  $data
      * @return array{before:array<string,mixed>,after:array<string,mixed>}
      */
@@ -457,11 +466,7 @@ final class RestaurantWorkforceService
         array $data,
         User $actor,
     ): array {
-        $session = DB::table('restaurant_time_clock_sessions')
-            ->where('branch_id', (int) $branch->getKey())
-            ->where('public_id', $sessionPublicId)
-            ->first();
-        abort_unless($session !== null, 404);
+        $session = $this->session($branch, $sessionPublicId);
 
         if ($session->status !== 'CLOSED') {
             throw ValidationException::withMessages([
@@ -533,6 +538,17 @@ final class RestaurantWorkforceService
             'sessions' => [],
             'current_session' => null,
         ];
+    }
+
+    private function session(SmartOrderingBranch $branch, string $publicId): object
+    {
+        $session = DB::table('restaurant_time_clock_sessions')
+            ->where('branch_id', (int) $branch->getKey())
+            ->where('public_id', $publicId)
+            ->first();
+        abort_unless($session !== null, 404);
+
+        return $session;
     }
 
     private function assertAssigned(SmartOrderingBranch $branch, int $userId): void

@@ -122,6 +122,7 @@ final class SmartOrderingWorkforceController extends Controller
         Request $request,
     ): RedirectResponse {
         [$actor, $branchModel] = $this->authorizedBranch($branch, $request, 'smart_ordering.manage');
+        $this->workforce->assertSessionInBranch($branchModel, $session);
         $data = $request->validate([
             'clocked_in_at' => ['required', 'date_format:Y-m-d\TH:i'],
             'clocked_out_at' => ['required', 'date_format:Y-m-d\TH:i'],
