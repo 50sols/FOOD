@@ -829,6 +829,17 @@ class SmartOrderingSupplyIntelligenceTest extends TestCase
             'created_at' => now(),
             'updated_at' => now(),
         ]);
+        $foreignStoreId = $this->store('B2C', 'SO-DATE-FOREIGN-'.Str::upper(Str::random(6)));
+        $foreignSiteId = (int) DB::table('smart_ordering_sites')->insertGetId([
+            'public_id' => (string) Str::uuid(),
+            'store_id' => $foreignStoreId,
+            'slug' => 'supply-date-foreign-'.Str::lower(Str::random(8)),
+            'runtime_state' => 'ENABLED',
+            'master_enabled' => true,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        $foreignUrl = route('admin.smart-ordering.supply.index', ['site' => $foreignSiteId]);
         $url = route('admin.smart-ordering.supply.index', ['site' => $f['site_id']]);
         $tables = ['smart_ordering_supply_mappings', 'smart_ordering_supply_stock_snapshots',
             'smart_ordering_supply_reorder_drafts', 'audit_logs'];
@@ -852,6 +863,8 @@ class SmartOrderingSupplyIntelligenceTest extends TestCase
                     $this->actingAs($actor->fresh())->getJson($url.$invalid)
                         ->assertUnprocessable();
                 }
+                $this->actingAs($actor->fresh())->getJson($foreignUrl.'?from=invalid')
+                    ->assertNotFound();
                 foreach (['', '?from=&to=', '?from=2026-01-01&to=2026-01-31'] as $valid) {
                     $this->actingAs($actor->fresh())->get($url.$valid)
                         ->assertOk()->assertSee('dir="'.$direction.'"', false);
