@@ -13,7 +13,7 @@ use Tests\TestCase;
 
 /**
  * P031: a forged Retail store/channel cannot change the server-selected
- * Wholesale Drivers workspace workspace, and a Retail actor cannot open the page.
+ * Wholesale Drivers workspace, and a Retail actor cannot open the page.
  */
 final class V2WholesaleDriversWorkspaceHttpIsolationTest extends TestCase
 {
@@ -33,7 +33,7 @@ final class V2WholesaleDriversWorkspaceHttpIsolationTest extends TestCase
             'store_type_id' => DB::table('store_types')->where('code', 'B2C')->value('id'),
             'business_profile' => 'RETAIL_STORE',
             'code' => 'P031-DRIVERS-RETAIL',
-            'name' => 'P031 DriversWorkspace Retail',
+            'name' => 'P031 Drivers Retail',
             'is_active' => true,
             'created_at' => now(),
             'updated_at' => now(),
