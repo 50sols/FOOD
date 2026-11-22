@@ -85,9 +85,11 @@ test('incomplete or oversized search pagination fails closed', async () => {
   await assert.rejects(pages(async()=>({data:Array(100).fill({})}),{},'branches',2),/cap/);
 });
 
-function harness({mode='merged',acceptance='in_progress',multiple=false,crossReference=false,ancestry='ahead',issueState=issue}={}) {
+function harness({mode='merged',acceptance='in_progress',multiple=false,crossReference=false,forkOriginal=false,ancestry='ahead',issueState=issue}={}) {
   const calls=[];
-  const thePR = pr(mode, 'ci/4151-resume');
+  const thePR = { ...pr(mode, 'ci/4151-resume'),
+    head: { ...pr(mode, 'ci/4151-resume').head,
+      repo: { full_name: forkOriginal ? 'external/FOOD' : 'o/FOOD' } } };
   const unrelatedPR = { ...pr('open', 'fix/9999-unrelated', 4153),
     title: 'V2 #9999 — dependent on #4151', body: 'Parent #4151; follows #4151' };
   const c=[{id:7,body:'<!-- foodex-worker-state:v1 -->\nSTATE: MERGED\n'
@@ -120,6 +122,14 @@ function harness({mode='merged',acceptance='in_progress',multiple=false,crossRef
   }};
   return {gh,calls};
 }
+test('fork PR with matching branch and issue must not become the original V2 PR', async () => {
+  const {gh}=harness({forkOriginal:true});
+  const result=await buildPlan({github:gh,owner:'o',repo:'FOOD',issueNumber:4151});
+  assert.equal(result.action,'BLOCK_MISSING_ORIGINAL_BRANCH');
+  assert.deepEqual(result.original_prs,[]);
+  assert.equal(result.integration_accepted,undefined);
+});
+
 test('dependency-only mention is not mistaken for an original PR', async () => {
   const {gh}=harness({crossReference:true});
   const result=await buildPlan({github:gh,owner:'o',repo:'FOOD',issueNumber:4151});
