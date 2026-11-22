@@ -73,6 +73,23 @@ final class OrderOperationsController extends Controller
 
     public function b2cIndex(Request $request): View
     {
+        // This compatibility GET pins the Retail channel. Explicit store aliases
+        // must agree and use canonical positive IDs: never silently ignore a
+        // contradictory or malformed selector and fall back to another store.
+        $explicitStoreIds = [];
+        foreach (['store_id', 'store'] as $key) {
+            if (! $request->query->has($key)) {
+                continue;
+            }
+
+            $raw = $request->query($key);
+            abort_unless(is_string($raw) && preg_match('/^[1-9][0-9]*$/D', $raw) === 1, 404);
+            $parsed = filter_var($raw, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
+            abort_unless($parsed !== false && (string) $parsed === $raw, 404);
+            $explicitStoreIds[] = $parsed;
+        }
+        abort_if(count(array_unique($explicitStoreIds)) > 1, 404);
+
         $request->merge(['channel' => 'b2c']);
 
         return $this->index($request);
