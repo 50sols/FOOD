@@ -95,6 +95,15 @@ final class V2RestaurantIntegrationBranchFilterScopeTest extends TestCase
                     'branch_id' => $branches['A'],
                     'status' => 'invalid-status',
                 ]))->assertUnprocessable()->assertJsonValidationErrors('status');
+                // Invalid selectors must stay on the normal validator path (422),
+                // never be coerced into an authorization lookup.
+                foreach ([0, 'not-a-branch', ['nested']] as $invalidBranch) {
+                    $this->actingAs($admin->fresh())->getJson(route($route, [
+                        'site' => $siteA->getKey(),
+                        'branch_id' => $invalidBranch,
+                        'status' => 'retry',
+                    ]))->assertUnprocessable()->assertJsonValidationErrors('branch_id');
+                }
                 $this->actingAs($admin->fresh())->get(route($route, [
                     'site' => $siteA->getKey(),
                     'branch_id' => $branches['A'],
