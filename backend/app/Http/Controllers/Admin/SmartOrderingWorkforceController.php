@@ -97,6 +97,12 @@ final class SmartOrderingWorkforceController extends Controller
     public function clock(string $branch, Request $request): RedirectResponse
     {
         [$actor, $branchModel] = $this->authorizedBranch($branch, $request, 'orders.view');
+        // The branch must own an explicit valid shift UUID before unrelated
+        // action validation can reveal details about the request.
+        $requestedShift = $request->input('shift_public_id');
+        if (is_string($requestedShift) && \Illuminate\Support\Str::isUuid($requestedShift)) {
+            $this->workforce->assertShiftInBranch($branchModel, $requestedShift);
+        }
         $data = $request->validate([
             'action' => ['required', Rule::in(['clock_in', 'break_start', 'break_end', 'clock_out'])],
             'shift_public_id' => ['nullable', 'uuid'],
