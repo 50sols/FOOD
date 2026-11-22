@@ -187,6 +187,17 @@ final class CustomerServiceWorkspaceController extends Controller
             abort_unless(in_array((int) $filters['store_id'], $viewStoreIds, true), 404);
         }
 
+        // Navigation selectors are separate from case filters. Preserve the
+        // route-bound case identity on show pages, and check authorization and
+        // the requested store before exposing invalid navigation details.
+        $selectorRules = ['page' => ['nullable', 'integer', 'min:1']];
+        if ($selectedCaseId === null) {
+            // Preserve the established case_id=0 sentinel for "no selected case";
+            // nonnumeric, negative, fractional and oversized identities fail.
+            $selectorRules['case_id'] = ['nullable', 'integer', 'min:0'];
+        }
+        $request->validate($selectorRules);
+
         if (($filters['risk'] ?? null) === 'high') {
             $filters['priority'] ??= 'high';
         }
