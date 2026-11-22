@@ -189,6 +189,21 @@ async function buildPlan({ github, owner, repo, issueNumber }) {
     const integration = await github.rest.repos.getBranch({ owner, repo, branch: 'Foodex_V2' });
     const sha = integration.data.commit?.sha || '';
     if (!sha) throw Error('missing-v2-integration-head');
+    // A green run on the latest branch cannot certify an original PR if
+    // its merge commit is no longer reachable (e.g. after a branch rewrite).
+    const ancestry = await github.rest.repos.compareCommits({
+      owner, repo, base: result.head, head: sha,
+    });
+    const ancestryStatus = ancestry?.data?.status;
+    if (!['identical', 'ahead'].includes(ancestryStatus)) {
+      plan.integration_head = sha;
+      plan.integration_merge_reachable = false;
+      plan.integration_acceptance = { status: 'blocked', conclusion: null, head: sha };
+      plan.integration_accepted = false;
+      plan.warning += ' Original PR merge commit is not an ancestor of the current V2 head.';
+      return plan;
+    }
+    plan.integration_merge_reachable = true;
     const runs = await pages(args => github.rest.actions.listWorkflowRunsForRepo(args),
       // Both push and authorized workflow_dispatch acceptance runs are valid
       // when they certify the exact current integration SHA.
