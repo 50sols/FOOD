@@ -59,8 +59,10 @@ final class V2AccountsPayableOfficerPermissionTest extends TestCase
         $actor = User::factory()->create(['is_active' => true]);
         $actor->roles()->attach($role);
 
-        $this->assertTrue($actor->fresh()->hasPermission('finance.view'));
-        $this->assertTrue($actor->fresh()->hasPermission('finance.manage'));
+        // AP_OFFICER remains deliberately excluded from channel global roles.
+        // A role catalog declaration alone is not an effective authorization grant.
+        $this->assertFalse($actor->fresh()->hasPermission('finance.view'));
+        $this->assertFalse($actor->fresh()->hasPermission('finance.manage'));
 
         foreach ([
             'finance.post',
