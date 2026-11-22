@@ -176,6 +176,84 @@ class CustomerServiceWorkspaceTest extends TestCase
             ->assertNotFound();
     }
 
+    public function test_case_note_post_checks_store_scope_before_body_validation_in_arabic_and_english(): void
+    {
+        $storeA = $this->store('B2C', 'CS-NOTE-PRE-A');
+        $storeB = $this->store('B2C', 'CS-NOTE-PRE-B');
+        $actorA = $this->storeUser($storeA, ['customers.view', 'customers.manage']);
+        $actorB = $this->storeUser($storeB, ['customers.view', 'customers.manage']);
+        $customerA = $this->customer($storeA, 'b2c', 'Own Note Customer');
+        $customerB = $this->customer($storeB, 'b2c', 'Foreign Note Customer');
+
+        $service = app(CustomerServiceCaseManager::class);
+        $caseA = $service->createCase($actorA, [
+            'store_id' => $storeA,
+            'platform_customer_id' => $customerA->id,
+            'type' => 'complaint',
+            'priority' => 'normal',
+            'queue' => 'general',
+            'subject' => 'Own note case',
+        ]);
+        $caseB = $service->createCase($actorB, [
+            'store_id' => $storeB,
+            'platform_customer_id' => $customerB->id,
+            'type' => 'complaint',
+            'priority' => 'normal',
+            'queue' => 'general',
+            'subject' => 'Foreign note case',
+        ]);
+
+        $beforeNotes = DB::table('customer_service_case_notes')->count();
+        $beforeAudits = DB::table('audit_logs')->count();
+
+        foreach (['ar', 'en'] as $locale) {
+            $actorA->forceFill(['locale' => $locale])->save();
+
+            foreach ([$caseB->id, $caseB->id + 1000000] as $unavailableId) {
+                $this->actingAs($actorA->fresh())
+                    ->postJson(route('admin.erp.customer-service.cases.notes.store', ['case' => $unavailableId]), [
+                        'body' => ['invalid-nested-value'],
+                    ])
+                    ->assertNotFound();
+
+                $this->actingAs($actorA->fresh())
+                    ->postJson(route('admin.erp.customer-service.cases.notes.store', ['case' => $unavailableId]))
+                    ->assertNotFound();
+            }
+
+            $this->actingAs($actorA->fresh())
+                ->postJson(route('admin.erp.customer-service.cases.notes.store', ['case' => $caseA->id]), [
+                    'body' => ['invalid-nested-value'],
+                ])
+                ->assertUnprocessable()
+                ->assertJsonValidationErrors('body');
+        }
+
+        $unprivileged = User::factory()->create(['is_active' => true]);
+        $this->actingAs($unprivileged)
+            ->postJson(route('admin.erp.customer-service.cases.notes.store', ['case' => $caseA->id]), [
+                'body' => ['invalid-nested-value'],
+            ])
+            ->assertForbidden();
+
+        $this->assertSame($beforeNotes, DB::table('customer_service_case_notes')->count());
+        $this->assertSame($beforeAudits, DB::table('audit_logs')->count());
+
+        $this->actingAs($actorA->fresh())
+            ->post(route('admin.erp.customer-service.cases.notes.store', ['case' => $caseA->id]), [
+                'body' => 'Authorized scoped case note',
+            ])
+            ->assertRedirect(route('admin.erp.customer-service.cases.show', ['case' => $caseA->id]));
+
+        $this->assertDatabaseHas('customer_service_case_notes', [
+            'case_id' => $caseA->id,
+            'body' => 'Authorized scoped case note',
+        ]);
+        $this->assertDatabaseMissing('customer_service_case_notes', ['case_id' => $caseB->id]);
+        $this->assertSame($beforeNotes + 1, DB::table('customer_service_case_notes')->count());
+        $this->assertSame($beforeAudits + 1, DB::table('audit_logs')->count());
+    }
+
     public function test_chatbot_case_authority_is_promoted_to_customer_service_cases(): void
     {
         $this->assertDatabaseHas('migrations', [
