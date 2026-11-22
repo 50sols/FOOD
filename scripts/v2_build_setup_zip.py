@@ -106,7 +106,17 @@ def build_setup_zip(source_root: Path, output: Path, source_epoch: int) -> str:
                     latest = path.lstat()
                     if not stat.S_ISREG(latest.st_mode) or _member_identity(latest) != _member_identity(meta):
                         raise SetupBuildError(f"Setup staging member changed during packaging: {name}")
-        os.replace(temporary, output)
+        # Publishing must be exclusive: a second builder (or symlink) can
+        # create the destination after the initial existence preflight.
+        # The completed temporary archive and target share a directory, so
+        # hard-link creation is atomic and never replaces that late arrival.
+        # If the filesystem cannot guarantee this, fail closed.
+        try:
+            os.link(temporary, output)
+        except FileExistsError as exc:
+            raise SetupBuildError("Refusing to replace an existing Setup ZIP.") from exc
+        except OSError as exc:
+            raise SetupBuildError("Unable to publish Setup ZIP without overwrite.") from exc
     finally:
         temporary.unlink(missing_ok=True)
 
