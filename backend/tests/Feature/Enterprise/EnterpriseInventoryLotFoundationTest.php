@@ -132,8 +132,12 @@ final class EnterpriseInventoryLotFoundationTest extends TestCase
     public function test_lot_status_http_route_enforces_warehouse_scope_before_validation_in_arabic_and_english(): void
     {
         $this->seed(CoreReferenceSeeder::class);
+        // This is an HTTP route regression: admit the fixture through the
+        // existing ERP gateway without changing production authorization.
+        config()->set('enterprise_module_readiness.certified_versions.inventory_wms', app(\\App\\Enterprise\\Modules\\ModuleRegistry::class)->manifest('inventory_wms')->version);
         $fixture = $this->fixture();
         $actor = $this->inventoryUser($fixture['store_id']);
+        $this->grantPlatformErpAccess($actor);
         $service = app(InventoryLotService::class);
         $ownLot = $service->upsert(
             $actor,
