@@ -103,6 +103,27 @@ final class SmartOrderingThemePreviewController extends Controller
         abort_unless($actor instanceof User, 401);
         $storeIds = app(RestaurantSaasStoreAccess::class)
             ->allowedStoreIds($actor, 'smart_ordering.view', $request);
+
+        // Resolve a valid explicit site before unrelated theme validation.
+        // Missing/invalid site selectors still follow Laravel's normal 422.
+        $requestedSite = $request->input('site');
+        if (is_string($requestedSite) && trim($requestedSite) !== '' && mb_strlen($requestedSite) <= 100) {
+            $requestedKey = trim($requestedSite);
+            $authorizedSite = SmartOrderingSite::query()
+                ->whereIn('store_id', $storeIds)
+                ->where(function ($query) use ($requestedKey): void {
+                    $query->where('public_id', $requestedKey)->orWhere('slug', $requestedKey);
+                })
+                ->first();
+            abort_unless($authorizedSite instanceof SmartOrderingSite, 404);
+            app(RestaurantSaasStoreAccess::class)->assertStore(
+                $actor,
+                (int) $authorizedSite->store_id,
+                'smart_ordering.manage',
+                'b2c',
+            );
+        }
+
         $data = $request->validate([
             'site' => ['required', 'string', 'max:100'],
             'theme' => ['required', 'string', 'max:100'],
