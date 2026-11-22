@@ -316,6 +316,52 @@ class SmartOrderingQrTest extends TestCase
         ]);
     }
 
+    public function test_qr_index_authorizes_explicit_store_before_other_filters_in_ar_and_en(): void
+    {
+        [$ownedStore, $foreignStore] = $this->stores();
+        $admin = $this->storeAdmin($ownedStore, 'en');
+        $url = route('admin.smart-ordering.qr.index');
+        $initialQrs = DB::table('smart_ordering_qr_codes')->count();
+        $initialAudits = DB::table('audit_logs')->count();
+        $originalLocale = app()->getLocale();
+
+        try {
+            foreach (['ar', 'en'] as $locale) {
+                $admin->forceFill(['locale' => $locale])->saveQuietly();
+                app()->setLocale($locale);
+
+                foreach ([
+                    '?store_id='.$foreignStore,
+                    '?store_id='.$foreignStore.'&type=invalid',
+                    '?store_id='.$foreignStore.'&state=invalid',
+                    '?store_id=999999999&type=invalid',
+                ] as $query) {
+                    $this->actingAs($admin->fresh())->getJson($url.$query)->assertNotFound();
+                }
+
+                foreach ([
+                    '?store_id=invalid&type=invalid',
+                    '?store_id=99999999999999999999999999999&type=invalid',
+                    '?store_id%5B%5D='.$foreignStore,
+                    '?store_id=0',
+                    '?store_id='.$ownedStore.'&type=invalid',
+                    '?store_id='.$ownedStore.'&state=invalid',
+                ] as $query) {
+                    $this->actingAs($admin->fresh())->getJson($url.$query)->assertUnprocessable();
+                }
+
+                $this->actingAs($admin->fresh())
+                    ->get($url.'?store_id='.$ownedStore)
+                    ->assertOk();
+            }
+        } finally {
+            app()->setLocale($originalLocale);
+        }
+
+        $this->assertSame($initialQrs, DB::table('smart_ordering_qr_codes')->count());
+        $this->assertSame($initialAudits, DB::table('audit_logs')->count());
+    }
+
     public function test_store_admin_manager_is_scoped_and_uses_business_controls(): void
     {
         [$storeA, $storeB] = $this->stores();
