@@ -1,0 +1,11 @@
+# V2 P031 — Canonical Retail Orders GET store-selector hardening (#4295)
+
+- **Proven defect:** `OrderOperationsController::b2cIndex` normalized `channel=b2c` but ignored client `store` alias while validating `store_id`. Scoped Store A actor could submit `store_id=A&store=B` and receive 200, contrary to P031. Original #4292 PR #4294 exact-head CI run #45066615358 Laravel shard 2/4 failed at test line 71 (expected 404, got 200).
+- **Ownership:** #4295 owns the narrow runtime prerequisite; #4292 retains exclusive ownership of its test and QA. Do not edit the #4292 original branch/PR.
+- **Fix:** canonical Retail GET `OrderOperationsController::b2cIndex` checks both optional query keys `store_id` and `store` as canonical positive decimal integers, denies zero, negative, leading zero, arbitrary strings, arrays, overflow, or contradictory selectors with HTTP 404, prior to existing `channel=b2c` pin and `index()` permission/store query. Unspecified selector and matching values retain normal behavior; `store` stays untrusted, never granting scope.
+- **Security:** Retail scope still enforced by OperationalTenantScope. Generic Operations Orders GET, B2B aliases, writes, API and mobile contracts unaffected.
+- **Real Laravel test:** `V2RetailOrdersCanonicalSelectorHardeningTest.php` covers authorized AR/RTL and EN/LTR, matched aliases and forged channel pinned to B2C, foreign Retail/B2B stores, contradictory and malformed aliases, roleless/B2B-only 403, no operational GET writes.
+- **Dependency:** after this fix merges, original #4292 PR #4294 must be updated against Foodex_V2 and pass every exact-final-head required CI check before #4292 is eligible to close. Prior failing run never counts as green.
+- **HIGH review risk:** same-account COMMENT is not independent GitHub APPROVED, follow all required approvals and branch protection.
+- **Mobile impact:** Customer NO_DIRECT_IMPACT; Driver NO_DIRECT_IMPACT; Van NO_DIRECT_IMPACT; B2B Van-only and B2C Driver-only unchanged.
+- **Delivery:** Foodex_V2 ONLY, no main, release, prod or APK. Exact HEAD Repo Policy, V2 Isolation, full Required CI Laravel 4 shards and MySQL Redis install/upgrade/recovery terminal SUCCESS, protected SHA-guarded merge and verify three files on merge SHA. Close only #4295, keep #4292 and parents #2782/#2503 open until their own acceptance.
