@@ -26,6 +26,10 @@ final class TranslationController extends Controller
         $requestedSurface = $queryFilters['surface'] ?? '';
         abort_unless(is_string($requestedSearch) && is_string($requestedSurface), 404);
 
+        // Refuse malformed explicit pages before syncDefaults() writes catalog rows.
+        // The authorization and nested-filter 404 checks above retain precedence.
+        $request->validate(['page' => ['nullable', 'integer', 'min:1']]);
+
         $catalog->syncDefaults();
 
         $search = trim($requestedSearch);
