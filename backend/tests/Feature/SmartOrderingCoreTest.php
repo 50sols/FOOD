@@ -1995,17 +1995,25 @@ class SmartOrderingCoreTest extends TestCase
                 foreach ([$foreignFloor, (string) Str::uuid()] as $unavailableFloor) {
                     foreach ([$storeUrl, $updateUrl] as $url) {
                         $payload = ['floor_public_id' => $unavailableFloor, 'capacity' => ['invalid']];
-                        $this->actingAs($admin->fresh())->postJson($url, $payload)->assertNotFound();
+                        $response = $this->actingAs($admin->fresh());
+                        ($url === $storeUrl
+                            ? $response->postJson($url, $payload)
+                            : $response->putJson($url, $payload))->assertNotFound();
                     }
                 }
 
                 foreach ([$storeUrl, $updateUrl] as $url) {
-                    $this->actingAs($admin->fresh())
-                        ->postJson($url, ['floor_public_id' => ['nested'], 'capacity' => ['invalid']])
-                        ->assertUnprocessable();
-                    $this->actingAs($admin->fresh())
-                        ->postJson($url, ['floor_public_id' => $ownedFloor, 'capacity' => ['invalid']])
-                        ->assertUnprocessable();
+                    $payload = ['floor_public_id' => ['nested'], 'capacity' => ['invalid']];
+                    $response = $this->actingAs($admin->fresh());
+                    ($url === $storeUrl
+                        ? $response->postJson($url, $payload)
+                        : $response->putJson($url, $payload))->assertUnprocessable();
+
+                    $payload = ['floor_public_id' => $ownedFloor, 'capacity' => ['invalid']];
+                    $response = $this->actingAs($admin->fresh());
+                    ($url === $storeUrl
+                        ? $response->postJson($url, $payload)
+                        : $response->putJson($url, $payload))->assertUnprocessable();
                 }
             }
         } finally {
