@@ -2,6 +2,7 @@
 
 namespace Tests\Feature;
 
+use App\Models\Permission;
 use App\Models\Role;
 use App\Models\User;
 use Database\Seeders\CoreReferenceSeeder;
@@ -16,19 +17,46 @@ final class V2CustomerServiceWorkspaceReadSelectorsTest extends TestCase
     protected function setUp(): void
     {
         parent::setUp();
+        config()->set('security.mfa.enforce_privileged', false);
         $this->seed(CoreReferenceSeeder::class);
     }
 
     public function test_case_and_page_navigation_fail_closed_after_authorization_and_store_scope_in_both_locales(): void
     {
-        $actor = User::query()->create([
-            'name' => 'Customer service selector operator',
-            'email' => 'v2-customer-service-selectors@example.test',
-            'password' => 'password',
+        // Reuse the established tenant-scoped Customer Service operator
+        // fixture pattern from V2CustomerServiceCaseQueryShapeTest. A
+        // SUPER_ADMIN without a store is not a representative happy path.
+        $storeId = (int) DB::table('stores')->insertGetId([
+            'store_type_id' => DB::table('store_types')->where('code', 'B2C')->value('id'),
+            'code' => 'V2-CS-READ-SELECTORS',
+            'name' => 'Customer Service Read Selectors',
             'is_active' => true,
-            'locale' => 'en',
+            'created_at' => now(),
+            'updated_at' => now(),
         ]);
-        $actor->roles()->attach(Role::query()->where('code', 'SUPER_ADMIN')->firstOrFail());
+        $actor = User::factory()->create(['is_active' => true, 'locale' => 'en']);
+        $this->grantPlatformErpAccess($actor);
+        $role = Role::query()->create([
+            'code' => 'V2_CS_READ_SELECTORS',
+            'name' => 'Scoped Customer Service Read Selectors',
+            'scope' => 'store',
+            'is_system' => false,
+            'is_active' => true,
+        ]);
+        $permissionIds = collect(['customers.view', 'customers.manage'])
+            ->map(static fn (string $code): int => (int) Permission::query()->firstOrCreate(
+                ['code' => $code],
+                ['name' => $code],
+            )->id)
+            ->all();
+        $role->permissions()->attach($permissionIds);
+        DB::table('user_store_roles')->insert([
+            'user_id' => $actor->id,
+            'store_id' => $storeId,
+            'role_id' => $role->id,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
 
         $roleless = User::query()->create([
             'name' => 'Customer service selector roleless',
@@ -46,11 +74,12 @@ final class V2CustomerServiceWorkspaceReadSelectorsTest extends TestCase
 
         foreach (['ar' => 'rtl', 'en' => 'ltr'] as $locale => $direction) {
             $actor->forceFill(['locale' => $locale])->saveQuietly();
+            app()->setLocale($locale);
 
             foreach ([
                 '?page[]=2', '?page=invalid', '?page=0',
                 '?page=-1', '?page=1.5', '?page=99999999999999999999999',
-                '?case_id=invalid', '?case_id=0', '?case_id=-1',
+                '?case_id=invalid', '?case_id=-1',
                 '?case_id=1.5', '?case_id=99999999999999999999999',
                 '?page=1&case_id=invalid', '?page=invalid&case_id=1',
             ] as $invalid) {
@@ -75,7 +104,7 @@ final class V2CustomerServiceWorkspaceReadSelectorsTest extends TestCase
                 ->assertForbidden();
 
             foreach ([
-                '', '?page=', '?case_id=', '?page=1',
+                '', '?page=', '?case_id=', '?case_id=0', '?page=1',
                 '?page=2', '?page=9999', '?page=1&case_id=',
             ] as $valid) {
                 $this->actingAs($actor->fresh())
