@@ -822,6 +822,18 @@ class SmartOrderingCustomerGrowthTest extends TestCase
             }
 
             foreach ([
+                '?branch_id=invalid',
+                '?branch_id=0',
+                '?branch_id=-1',
+                '?branch_id=1.5',
+                '?branch_id=999999999999999999999999',
+            ] as $invalidScalar) {
+                $this->actingAs($admin->fresh())
+                    ->getJson($url.$invalidScalar)
+                    ->assertUnprocessable();
+            }
+
+            foreach ([
                 '?branch_id%5B%5D=999999',
                 '?branch_id%5Bdeep%5D=999999',
                 '?branch_id%5Bdeep%5D%5B0%5D=999999',
@@ -840,6 +852,9 @@ class SmartOrderingCustomerGrowthTest extends TestCase
         $this->actingAs($otherAdmin)
             ->getJson($url.'?branch_id%5B%5D=999999')
             ->assertNotFound();
+        $this->actingAs($otherAdmin)
+            ->getJson($url.'?branch_id=invalid')
+            ->assertNotFound();
 
         $roleless = User::factory()->create([
             'email' => 'v2-loyalty-branch-roleless@example.test',
@@ -853,6 +868,9 @@ class SmartOrderingCustomerGrowthTest extends TestCase
             ->assertForbidden();
         $this->actingAs($roleless)
             ->getJson($url.'?branch_id%5B%5D=999999')
+            ->assertForbidden();
+        $this->actingAs($roleless)
+            ->getJson($url.'?branch_id=invalid')
             ->assertForbidden();
 
         $this->assertSame($before, [
