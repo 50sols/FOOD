@@ -274,6 +274,61 @@ class RestaurantSaaSIntegrationHubTest extends TestCase
         }
     }
 
+    public function test_webhook_status_scopes_route_before_active_validation_in_ar_and_en(): void
+    {
+        [$adminA, $siteA] = $this->integrationAdminSite('V2-WEBHOOK-PATCH-A');
+        [$adminB, $siteB] = $this->integrationAdminSite('V2-WEBHOOK-PATCH-B');
+        $service = app(RestaurantIntegrationService::class);
+        $own = $service->createWebhook($adminA, $siteA, 'https://example.test/own', ['orders.created']);
+        $foreign = $service->createWebhook($adminB, $siteB, 'https://example.test/foreign', ['orders.created']);
+
+        $url = fn (string $id): string => route('admin.smart-ordering.webhooks.status', [
+            'site' => $siteA->getKey(),
+            'webhook' => $id,
+        ]);
+        $ownUrl = $url($own['public_id']);
+        $foreignUrl = $url($foreign['public_id']);
+        $missingUrl = $url((string) Str::uuid());
+        $auditBefore = DB::table('audit_logs')->count();
+        $beforeRows = DB::table('restaurant_saas_webhook_subscriptions')
+            ->orderBy('id')->get(['id', 'site_id', 'public_id', 'is_active'])->toArray();
+        $previousLocale = app()->getLocale();
+
+        try {
+            foreach (['ar', 'en'] as $locale) {
+                app()->setLocale($locale);
+                $adminA->forceFill(['locale' => $locale])->saveQuietly();
+
+                foreach ([$foreignUrl, $missingUrl] as $unavailableUrl) {
+                    $this->actingAs($adminA->fresh())->patchJson($unavailableUrl, [])->assertNotFound();
+                    $this->actingAs($adminA->fresh())->patchJson($unavailableUrl, ['active' => ['invalid']])->assertNotFound();
+                    $this->actingAs($adminA->fresh())->patchJson($unavailableUrl, ['active' => false])->assertNotFound();
+                }
+                $this->actingAs($adminA->fresh())->patchJson($ownUrl, ['active' => ['invalid']])
+                    ->assertUnprocessable()->assertJsonValidationErrors('active');
+            }
+        } finally {
+            app()->setLocale($previousLocale);
+        }
+
+        $this->assertEquals($beforeRows, DB::table('restaurant_saas_webhook_subscriptions')
+            ->orderBy('id')->get(['id', 'site_id', 'public_id', 'is_active'])->toArray());
+        $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+
+        $this->actingAs($adminA->fresh())->patch($ownUrl, ['active' => false])->assertRedirect();
+        $this->assertDatabaseHas('restaurant_saas_webhook_subscriptions', [
+            'site_id' => $siteA->getKey(),
+            'public_id' => $own['public_id'],
+            'is_active' => false,
+        ]);
+        $this->assertDatabaseHas('restaurant_saas_webhook_subscriptions', [
+            'site_id' => $siteB->getKey(),
+            'public_id' => $foreign['public_id'],
+            'is_active' => true,
+        ]);
+        $this->assertSame($auditBefore + 1, DB::table('audit_logs')->count());
+    }
+
     public function test_admin_connector_status_checks_site_scope_before_payload_validation_in_both_locales(): void
     {
         [$adminA, $siteA] = $this->integrationAdminSite('V2-INT-PATCH-A');
