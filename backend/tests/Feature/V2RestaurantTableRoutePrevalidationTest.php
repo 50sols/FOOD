@@ -246,10 +246,21 @@ class V2RestaurantTableRoutePrevalidationTest extends TestCase
             'created_at' => now(),
             'updated_at' => now(),
         ]);
+        $foreignFloorId = (int) DB::table('smart_ordering_floor_areas')->insertGetId([
+            'public_id' => (string) Str::uuid(),
+            'branch_id' => $foreignBranchId,
+            'name_en' => 'Foreign Floor',
+            'name_ar' => 'صالة أجنبية',
+            'sort_order' => 0,
+            'is_active' => true,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
         $foreignMemberPublicId = (string) Str::uuid();
         DB::table('smart_ordering_tables')->insert([
             'public_id' => $foreignMemberPublicId,
             'branch_id' => $foreignBranchId,
+            'floor_area_id' => $foreignFloorId,
             'label' => 'Other Store Table',
             'capacity' => 2,
             'position_x' => 25,
