@@ -88,7 +88,7 @@ class V2DeploymentRiskTest(unittest.TestCase):
         original = (ROOT / ".github/workflows/backend-ci.yml").read_text()
         for name in ("Backend fast-fail", "Backend tests", "composer lint", "composer analyse",
                      "composer audit", "Validate OpenAPI contract", "php artisan migrate:fresh --force",
-                     "php artisan db:seed --force", "php artisan test --configuration=.phpunit-shard.xml",
+                     "php artisan db:seed --force", "vendor/bin/phpunit --configuration=.phpunit-shard.xml",
                      "backend-shards:", "needs: [fast, backend-smoke, backend-shards]"):
             self.assertIn(name, fast)
             self.assertIn(name, original)

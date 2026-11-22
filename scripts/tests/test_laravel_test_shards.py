@@ -58,7 +58,7 @@ class LaravelShardContractTest(unittest.TestCase):
                 self.assertIn("needs: [fast, backend-smoke, backend-shards]", content)
                 self.assertNotIn("    needs: fast\n", content)
                 self.assertIn("Run complete Laravel shard", content)
-                self.assertIn("php artisan test --configuration=.phpunit-shard.xml", content)
+                self.assertIn("vendor/bin/phpunit --configuration=.phpunit-shard.xml", content)
                 self.assertIn("Run Composer security audit", content)
                 self.assertIn("Validate fresh migrations", content)
                 self.assertIn("Validate deterministic seed data", content)

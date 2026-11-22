@@ -71,7 +71,7 @@ class AssistantConversationEngineTest extends TestCase
     public function test_relative_time_windows_are_deterministic(): void
     {
         $parser = new TimeWindowParser;
-        $now = CarbonImmutable::parse('2026-10-01 10:00:00', 'Asia/Kuwait');
+        // Date bounds are asserted against a Monday-first locale, independently of\n        // locales selected by earlier tests in the same PHPUnit worker.\n        $now = CarbonImmutable::parse('2026-10-01 10:00:00', 'Asia/Kuwait')->locale('en_GB');
 
         $today = $parser->parse('sales today', $now);
         $yesterday = $parser->parse('orders yesterday', $now);

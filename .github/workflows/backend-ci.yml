@@ -237,7 +237,7 @@ jobs:
       - name: Run complete Laravel shard
         run: |
           php artisan config:clear --ansi
-          php artisan test --configuration=.phpunit-shard.xml --log-junit=laravel-shard-${{ matrix.shard }}.xml
+          vendor/bin/phpunit --configuration=.phpunit-shard.xml --display-warnings --display-deprecations --display-phpunit-deprecations --log-junit=laravel-shard-${{ matrix.shard }}.xml
 
       - name: Preserve shard evidence
         if: always()
