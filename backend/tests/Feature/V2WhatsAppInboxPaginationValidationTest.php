@@ -41,6 +41,7 @@ final class V2WhatsAppInboxPaginationValidationTest extends TestCase
 
                 foreach ([
                     '?page[]=2',
+                    '?status[]=OPEN',
                     '?page=invalid',
                     '?page=0',
                     '?page=-1',
