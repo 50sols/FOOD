@@ -14,6 +14,7 @@ use App\Models\User;
 use App\Support\TenantContextResolver;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 
 final class SmartOrderingCustomerGrowthController extends Controller
 {
@@ -174,6 +175,17 @@ final class SmartOrderingCustomerGrowthController extends Controller
         TenantContextResolver $tenants,
     ): JsonResponse {
         $actor = $this->authorizeSite($request, $site, $tenants, 'smart_ordering.manage');
+
+        // A foreign or unknown reward cannot disclose validation behavior.
+        // The service rechecks scope when applying the authorized mutation.
+        abort_unless(
+            DB::table('smart_ordering_loyalty_rewards')
+                ->where('site_id', $site->getKey())
+                ->where('public_id', $reward)
+                ->exists(),
+            404,
+        );
+
         $data = $request->validate([
             'name_en' => ['required', 'string', 'max:255'],
             'name_ar' => ['nullable', 'string', 'max:255'],

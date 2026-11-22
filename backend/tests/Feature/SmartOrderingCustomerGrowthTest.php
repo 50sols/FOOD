@@ -577,6 +577,84 @@ class SmartOrderingCustomerGrowthTest extends TestCase
         ]);
     }
 
+    public function test_loyalty_reward_update_checks_site_scoped_reward_before_body_validation(): void
+    {
+        [, $adminA, $siteA] = $this->restaurant('V2-LOYALTY-PUT-A');
+        [, $adminB, $siteB] = $this->restaurant('V2-LOYALTY-PUT-B');
+
+        $rewardA = app(LoyaltyAdminService::class)->createReward(
+            $adminA, $siteA, 'Site A Reward', 'مكافأة المتجر أ', 15,
+        );
+        $rewardB = app(LoyaltyAdminService::class)->createReward(
+            $adminB, $siteB, 'Site B Reward', 'مكافأة المتجر ب', 25,
+        );
+        $route = fn (string $id): string => route('admin.smart-ordering.loyalty.rewards.update', [
+            'site' => $siteA->getKey(),
+            'reward' => $id,
+        ]);
+        $ownUrl = $route($rewardA['public_id']);
+        $foreignUrl = $route($rewardB['public_id']);
+        $missingUrl = $route((string) Str::uuid());
+
+        $invalid = ['name_en' => ['nested' => 'invalid'], 'points_cost' => ['nested' => 0]];
+        $valid = [
+            'name_en' => 'Authorized Reward',
+            'name_ar' => 'مكافأة موثوقة',
+            'points_cost' => 30,
+            'is_active' => true,
+        ];
+        $beforeRewards = DB::table('smart_ordering_loyalty_rewards')
+            ->orderBy('id')
+            ->get(['id', 'site_id', 'public_id', 'name_en', 'points_cost', 'is_active'])
+            ->toArray();
+        $beforeAudits = DB::table('audit_logs')->count();
+        $beforeLedger = DB::table('smart_ordering_loyalty_ledger')->count();
+        $initialLocale = app()->getLocale();
+
+        try {
+            foreach (['ar', 'en'] as $locale) {
+                $adminA->forceFill(['locale' => $locale])->saveQuietly();
+                app()->setLocale($locale);
+                $this->actingAs($adminA->fresh())->putJson($foreignUrl, $invalid)->assertNotFound();
+                $this->actingAs($adminA->fresh())->putJson($missingUrl, $invalid)->assertNotFound();
+            }
+        } finally {
+            app()->setLocale($initialLocale);
+        }
+
+        // Existing tenant authority also wins over malformed update input.
+        $this->actingAs($adminB)->putJson($ownUrl, $invalid)->assertNotFound();
+        $this->assertEquals($beforeRewards, DB::table('smart_ordering_loyalty_rewards')
+            ->orderBy('id')
+            ->get(['id', 'site_id', 'public_id', 'name_en', 'points_cost', 'is_active'])
+            ->toArray());
+        $this->assertSame($beforeAudits, DB::table('audit_logs')->count());
+        $this->assertSame($beforeLedger, DB::table('smart_ordering_loyalty_ledger')->count());
+
+        // The same payload is a normal validation error on the owned reward.
+        $this->actingAs($adminA->fresh())->putJson($ownUrl, $invalid)
+            ->assertUnprocessable()->assertJsonValidationErrors(['name_en', 'points_cost']);
+        $this->assertSame($beforeAudits, DB::table('audit_logs')->count());
+
+        $this->actingAs($adminA->fresh())->putJson($ownUrl, $valid)
+            ->assertOk()->assertJsonPath('name_en', 'Authorized Reward')
+            ->assertJsonPath('points_cost', 30);
+        $this->assertDatabaseHas('smart_ordering_loyalty_rewards', [
+            'site_id' => $siteA->id,
+            'public_id' => $rewardA['public_id'],
+            'name_en' => 'Authorized Reward',
+            'points_cost' => 30,
+        ]);
+        $this->assertDatabaseHas('smart_ordering_loyalty_rewards', [
+            'site_id' => $siteB->id,
+            'public_id' => $rewardB['public_id'],
+            'name_en' => 'Site B Reward',
+            'points_cost' => 25,
+        ]);
+        $this->assertSame($beforeAudits + 1, DB::table('audit_logs')->count());
+        $this->assertSame($beforeLedger, DB::table('smart_ordering_loyalty_ledger')->count());
+    }
+
     /** @return array{0:int,1:User,2:SmartOrderingSite} */
     private function restaurant(string $code): array
     {
