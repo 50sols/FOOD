@@ -62,6 +62,18 @@ final class RestaurantWholesalePurchasesTest extends TestCase
                         'product_id' => ['invalid'],
                         'payment_method' => ['invalid'],
                     ])->assertNotFound();
+                    // Well-typed inputs must not bypass the foreign Retail buyer scope.
+                    $this->actingAs($actor->fresh())->$method($target['url'], [
+                        'retail_store_id' => $foreign->id,
+                        'quantity' => 1,
+                        'product_id' => 1,
+                        'payment_method' => 'cash',
+                        'idempotency_key' => 'buyer-scope-foreign-1234567890',
+                    ])->assertNotFound();
+                    // A foreign selector takes precedence over missing unrelated fields.
+                    $this->actingAs($actor->fresh())->$method($target['url'], [
+                        'retail_store_id' => $foreign->id,
+                    ])->assertNotFound();
                 }
 
                 $this->actingAs($actor->fresh())
