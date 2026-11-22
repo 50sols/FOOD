@@ -134,7 +134,7 @@ async function ciInProgress(github, owner, repo, head, branch) {
     && !['FOODEX V2 Idle Lease Watchdog', 'Worker Watchdog'].includes(run.name));
   return checkActive || workflowActive;
 }
-async function integratedAcceptanceInProgress(github, owner, repo) {
+async function integratedAcceptanceOutstanding(github, owner, repo) {
   // An original issue may already be merged while full acceptance is still
   // running against Foodex_V2. Protect the lease until terminal CI evidence.
   // Read-only, SHA-scoped and fail-closed on missing/malformed API results.
@@ -144,8 +144,13 @@ async function integratedAcceptanceInProgress(github, owner, repo) {
   const runs = await listPages(args => github.rest.actions.listWorkflowRunsForRepo(args), {
     owner, repo, branch: 'Foodex_V2',
   }, 15, 'workflow_runs');
-  return runs.some(r => r.name === 'FOODEX V2 Integrated Backend Acceptance'
-    && r.head_sha === head && r.status !== 'completed');
+  const relevant = runs.filter(r => r.name === 'FOODEX V2 Integrated Backend Acceptance'
+    && r.head_sha === head).sort((a, b) => b.id - a.id);
+  // A missing, failed, cancelled or still-running integration run is not
+  // successful post-merge acceptance. Keep the original claim and let the
+  // operator resolve failed acceptance instead of silently releasing it.
+  const newest = relevant[0];
+  return !newest || newest.status !== 'completed' || newest.conclusion !== 'success';
 }
 function humanGate(labels, claim) {
   return labels.some(l => l === 'gate:human' || l.startsWith('gate:'))
@@ -225,7 +230,7 @@ async function run({ github, context, core, nowMs = Date.now() }) {
       const closedUnmergedOriginal = isMatchingClosedUnmergedPr(resolved.data, claim);
       if (mergedOriginal || closedUnmergedOriginal) {
         if (ciRunning || (mergedOriginal
-            && await integratedAcceptanceInProgress(github, owner, repo))) {
+            && await integratedAcceptanceOutstanding(github, owner, repo))) {
           active += 1;
           continue;
         }
@@ -240,7 +245,7 @@ async function run({ github, context, core, nowMs = Date.now() }) {
         const latestBranch = await branchState(github, owner, repo, claim.branch);
         if (latestBranch.sha !== firstBranch.sha
             || await ciInProgress(github, owner, repo, latestBranch.sha || head, claim.branch)
-            || (mergedOriginal && await integratedAcceptanceInProgress(github, owner, repo))) {
+            || (mergedOriginal && await integratedAcceptanceOutstanding(github, owner, repo))) {
           // A fresh V2 integrated run may have started while issue comments
           // and labels were being re-read. Never clear the lease mid-run.
           continue;
