@@ -671,6 +671,72 @@ class SmartOrderingSupplyIntelligenceTest extends TestCase
         $this->assertSame($counts['audit'], DB::table('audit_logs')->count());
     }
 
+    public function test_supply_entry_rejects_malformed_scalar_store_selector_before_default_ar_en(): void
+    {
+        $f = $this->fixture();
+        $actor = $f['actor'];
+        $role = Role::query()->where('code', 'B2C_STORE_ADMIN')->firstOrFail();
+        DB::table('user_store_roles')->insert([
+            'user_id' => $actor->id,
+            'store_id' => $f['restaurant_store_id'],
+            'role_id' => $role->id,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        $foreignStore = $this->store('B2C', 'SO-ENTRY-SCALAR-'.Str::upper(Str::random(6)));
+        $url = route('admin.smart-ordering.supply.entry');
+        $destination = route('admin.smart-ordering.supply.index', ['site' => $f['site_id']]);
+        $tables = [
+            'smart_ordering_sites',
+            'smart_ordering_supply_mappings',
+            'smart_ordering_supply_stock_snapshots',
+            'smart_ordering_supply_reorder_drafts',
+            'audit_logs',
+        ];
+        $before = [];
+        foreach ($tables as $table) {
+            $before[$table] = DB::table($table)->count();
+        }
+        $originalLocale = app()->getLocale();
+        try {
+            foreach (['ar', 'en'] as $locale) {
+                $actor->forceFill(['locale' => $locale])->saveQuietly();
+                app()->setLocale($locale);
+
+                foreach (['?store_id=invalid', '?store_id=0', '?store_id=-1',
+                    '?store_id=1.5', '?store_id=999999999999999999999999'] as $invalid) {
+                    $this->actingAs($actor->fresh())->getJson($url.$invalid)
+                        ->assertUnprocessable();
+                }
+
+                $this->actingAs($actor->fresh())
+                    ->get($url.'?store_id='.$foreignStore)->assertNotFound();
+                $this->actingAs($actor->fresh())
+                    ->get($url.'?store_id%5B%5D='.$f['restaurant_store_id'])->assertNotFound();
+
+                foreach (['', '?store_id=', '?store_id='.$f['restaurant_store_id']] as $valid) {
+                    $this->actingAs($actor->fresh())->get($url.$valid)
+                        ->assertRedirect($destination);
+                }
+            }
+        } finally {
+            app()->setLocale($originalLocale);
+        }
+
+        $roleless = User::query()->create([
+            'name' => 'Supply Scalar Unauthorized',
+            'email' => 'supply-entry-scalar-roleless@example.test',
+            'password' => 'password',
+            'locale' => 'en',
+            'is_active' => true,
+        ]);
+        $this->actingAs($roleless)->getJson($url.'?store_id=invalid')
+            ->assertForbidden();
+        foreach ($tables as $table) {
+            $this->assertSame($before[$table], DB::table($table)->count(), $table.' unchanged');
+        }
+    }
+
     public function test_supply_entry_rejects_nested_store_ids_after_authorization_without_default_fallback(): void
     {
         $f = $this->fixture();
