@@ -21,6 +21,7 @@ final class V2RetailDriverOrdersPaginationValidationTest extends TestCase
         $typeId = (int) DB::table('store_types')->where('code', 'B2C')->value('id');
         $storeId = (int) DB::table('stores')->insertGetId([
             'store_type_id' => $typeId,
+            'business_profile' => 'RETAIL_STORE',
             'code' => 'V2-DRIVER-PAGE',
             'name' => 'Retail Driver Page',
             'is_active' => true,
@@ -38,6 +39,34 @@ final class V2RetailDriverOrdersPaginationValidationTest extends TestCase
         $admin = User::factory()->create(['is_active' => true, 'locale' => 'en']);
         $admin->roles()->attach(Role::query()->where('code', 'SUPER_ADMIN')->firstOrFail());
         $roleless = User::factory()->create(['is_active' => true, 'locale' => 'en']);
+
+        // A store-scoped retail manager may not read a different retail
+        // store's driver, even if the page selector is malformed.
+        $foreignStoreId = (int) DB::table('stores')->insertGetId([
+            'store_type_id' => $typeId,
+            'business_profile' => 'RETAIL_STORE',
+            'code' => 'V2-DRIVER-PAGE-FOREIGN',
+            'name' => 'Other Retail Driver Page',
+            'is_active' => true,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        $foreignDriverUser = User::factory()->create(['is_active' => true]);
+        $foreignDriver = Driver::query()->create([
+            'user_id' => $foreignDriverUser->id,
+            'store_id' => $foreignStoreId,
+            'driver_type' => 'b2c',
+            'is_available' => true,
+            'is_active' => true,
+        ]);
+        $scopedManager = User::factory()->create(['is_active' => true, 'locale' => 'en']);
+        DB::table('user_store_roles')->insert([
+            'user_id' => $scopedManager->id,
+            'store_id' => $storeId,
+            'role_id' => Role::query()->where('code', 'B2C_STORE_ADMIN')->firstOrFail()->id,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
         $url = route('admin.drivers.orders', ['driver' => $driver->id, 'channel' => 'b2c']);
         $wrongChannel = route('admin.drivers.orders', ['driver' => $driver->id, 'channel' => 'b2b']);
         $originalLocale = app()->getLocale();
@@ -71,6 +100,15 @@ final class V2RetailDriverOrdersPaginationValidationTest extends TestCase
                     ->assertForbidden();
                 $this->actingAs($roleless)->getJson($url.'&page=invalid')
                     ->assertForbidden();
+
+                $foreignUrl = route('admin.drivers.orders', [
+                    'driver' => $foreignDriver->id,
+                    'channel' => 'b2c',
+                    'store_id' => $storeId,
+                ]);
+                $this->actingAs($scopedManager->fresh())
+                    ->getJson($foreignUrl.'&page=invalid')
+                    ->assertNotFound();
 
                 foreach (['', '&page=1', '&page=2', '&page='] as $valid) {
                     $this->actingAs($admin->fresh())->get($url.$valid)
