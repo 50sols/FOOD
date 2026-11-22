@@ -85,7 +85,7 @@ test('incomplete or oversized search pagination fails closed', async () => {
   await assert.rejects(pages(async()=>({data:Array(100).fill({})}),{},'branches',2),/cap/);
 });
 
-function harness({mode='merged',acceptance='in_progress',multiple=false,crossReference=false,forkOriginal=false,missingHeadRepo=false,mixedCaseHeadRepo=false,ancestry='ahead',issueState=issue}={}) {
+function harness({mode='merged',acceptance='in_progress',multiple=false,crossReference=false,forkOriginal=false,missingHeadRepo=false,mixedCaseHeadRepo=false,featureBranch=false,ancestry='ahead',issueState=issue}={}) {
   const calls=[];
   const thePR = { ...pr(mode, 'ci/4151-resume'),
     head: { ...pr(mode, 'ci/4151-resume').head,
@@ -101,7 +101,7 @@ function harness({mode='merged',acceptance='in_progress',multiple=false,crossRef
     },
     search:{issuesAndPullRequests:async()=>({data:{items:[{number:4152},...(crossReference?[{number:4153}]:[])],total_count:crossReference?2:1}})},
     repos:{
-      listBranches:async()=>({data:[]}),
+      listBranches:async()=>({data:featureBranch?[{name:'feature/4151-original'}]:[]}),
       getBranch:async()=>({data:{commit:{sha:'latest-v2'}}}),
       compareCommits:async()=>({data:{status:ancestry}}),
     },
@@ -140,6 +140,13 @@ test('deleted fork without head repository identity fails closed; same repo name
   const accepted=await buildPlan({github:sameRepo,owner:'o',repo:'FOOD',issueNumber:4151});
   assert.equal(accepted.action,'VERIFY_INTEGRATION_ACCEPTANCE');
   assert.deepEqual(accepted.original_prs.map(pr=>pr.number),[4152]);
+});
+
+test('historical feature/ issue branches are discovered instead of treating the issue as unclaimed', async () => {
+  const {gh}=harness({featureBranch:true});
+  const result=await buildPlan({github:gh,owner:'o',repo:'FOOD',issueNumber:4151});
+  assert.deepEqual(result.actual_branches,['feature/4151-original']);
+  assert.equal(result.action,'BLOCK_CONFLICTING_ORIGINALS');
 });
 
 test('dependency-only mention is not mistaken for an original PR', async () => {
