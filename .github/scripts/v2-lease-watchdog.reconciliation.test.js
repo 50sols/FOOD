@@ -108,7 +108,7 @@ test('paginated exact-head check and workflow collections include later pages', 
 function harness(opts={}) {
   const issue = { number:2929, title:'V2 | AUTO-LEASE example', state:'open',
     labels: [{name:'worker:active'}, ...(opts.humanGate ? [{name:'gate:human'}] : [])] };
-  const mutations=[]; let branchReads=0, commentReads=0, prReads=0;
+  const mutations=[]; let branchReads=0, commentReads=0, prReads=0, integrationReads=0;
   const branchNames=[];
   const oldState = state(1,'2026-11-10T09:20:00Z');
   if (opts.inlineBranchBase) {
@@ -161,10 +161,14 @@ function harness(opts={}) {
       return {data:{check_runs:opts.queuedCi?[{name:'required-ci-gate',status:'queued'}]:[]}};
     }},
     actions:{listWorkflowRunsForRepo:async args=>{
-      if (args.branch === 'Foodex_V2') return {data:{workflow_runs:opts.integratedRunning
-        ? [{name:'FOODEX V2 Integrated Backend Acceptance',head_sha:'v2-head',status:'in_progress'}]
-        : opts.integratedOtherSha ? [{name:'FOODEX V2 Integrated Backend Acceptance',
-            head_sha:'older-v2',status:'in_progress'}] : []}};
+      if (args.branch === 'Foodex_V2') {
+        integrationReads++;
+        return {data:{workflow_runs:(opts.integratedRunning ||
+            (opts.integratedStartsMidSweep && integrationReads > 1))
+          ? [{name:'FOODEX V2 Integrated Backend Acceptance',head_sha:'v2-head',status:'in_progress'}]
+          : opts.integratedOtherSha ? [{name:'FOODEX V2 Integrated Backend Acceptance',
+              head_sha:'older-v2',status:'in_progress'}] : []}};
+      }
       if (opts.malformedWorkflowsPageTwo && args.page===2) return {data:{wrong_collection:[]}};
       if (opts.tooManyWorkflows) return {data:{workflow_runs:terminalRuns}};
       if (opts.activeWorkflowPageTwo || opts.unrelatedWorkflowPageTwo)
@@ -209,6 +213,12 @@ test('merged original stays claimed while latest integrated Foodex_V2 acceptance
   assert.deepEqual(active.mutations,[]);
   const obsolete=await sweep({claimPr:true,mergedPr:true,integratedOtherSha:true});
   assert.deepEqual(obsolete.mutations,['remove:worker:active','comment']);
+});
+
+test('integrated CI starting after first check prevents merged lease release', async () => {
+  const out=await sweep({claimPr:true,mergedPr:true,integratedStartsMidSweep:true});
+  assert.equal(out.result.released,0);
+  assert.deepEqual(out.mutations,[]);
 });
 
 test('unmerged original PR keeps normal stale lease release behavior', async () => {
