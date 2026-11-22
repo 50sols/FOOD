@@ -179,8 +179,9 @@ async function buildPlan({ github, owner, repo, issueNumber }) {
     ).test(pr.body || '');
     const hasBranch = branchPattern.test(pr.head?.ref || '') ||
       branches.includes(pr.head?.ref);
-    if (titleOwnsIssue || bodyOwnsIssue || hasBranch ||
-        refs.some(r => r.pr === number)) prs.push(pr);
+    // A claim comment is an untrusted checkpoint, not PR ownership proof.
+    // Require authoritative issue provenance on the PR or its branch.
+    if (titleOwnsIssue || bodyOwnsIssue || hasBranch) prs.push(pr);
   }
   const result = decide({ issue, branches, prs, refs, checkpoint });
   const plan = { schema: 1, issue: issueNumber, base: 'Foodex_V2',
