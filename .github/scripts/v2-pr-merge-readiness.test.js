@@ -1,7 +1,7 @@
 'use strict';
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { decision, REQUIRED } = require('./v2-pr-merge-readiness.js');
+const { decision, REQUIRED, exactTechnicalReview } = require('./v2-pr-merge-readiness.js');
 const SHA = 'f'.repeat(40), BASE = 'e'.repeat(40), PREV = 'd'.repeat(40);
 const pr = {number:4267,state:'open',draft:false,base:{ref:'Foodex_V2',sha:BASE},
   head:{sha:SHA},mergeable:true,mergeable_state:'clean',labels:[]};
@@ -31,4 +31,14 @@ test('source completion, technical review, draft and real human approval stay ex
   assert.equal(action({pr:{...pr,mergeable_state:'blocked'}}),'REVIEW_REQUIRED');
   assert.equal(action({reviews:[{user:{login:'reviewer'},state:'CHANGES_REQUESTED'}]}),'REVIEW_REQUIRED');
   assert.equal(action({freeze:{ok:false,state:'FROZEN_HEAD_CHANGED'}}),'FIX_FREEZE');
+});
+
+test('head-bound technical review must be on the same exact line; old approvals cannot bleed into new commits',()=>{
+  const old = 'a'.repeat(40), now = 'b'.repeat(40);
+  assert.equal(exactTechnicalReview('TECHNICAL_REVIEW: PASS | HEAD: ' + now, now), true);
+  assert.equal(exactTechnicalReview('TECHNICAL_REVIEW: PASS | HEAD: ' + old + '\nNew head ' + now, now), false);
+  assert.equal(exactTechnicalReview('TECHNICAL_REVIEW: PASS | HEAD: ' + now.slice(0, 12), now), false);
+  assert.equal(exactTechnicalReview('TECHNICAL_REVIEW: PENDING | HEAD: ' + now, now), false);
+  assert.equal(exactTechnicalReview('TECHNICAL_REVIEW: PASS | HEAD: ' + old, now), false);
+  assert.equal(exactTechnicalReview('TECHNICAL_REVIEW: PASS | HEAD: ' + now + ' extra', now), false);
 });

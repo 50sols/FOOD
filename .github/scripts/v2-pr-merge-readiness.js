@@ -57,6 +57,14 @@ function decision({ pr, expectedHead, expectedBase, checks, reviews = [], freeze
   return { action: 'READY_FOR_MERGE_REVIEW', reason: 'verified-green-recheck-human-gates' };
 }
 
+function exactTechnicalReview(body, head) {
+  if (typeof body !== 'string' || !/^[a-f0-9]{40}$/i.test(head || '')) return false;
+  return body.split(/\r?\n/).some(line => {
+    const match = line.match(/^\s*TECHNICAL_REVIEW:\s*PASS\s*\|\s*HEAD:\s*([a-f0-9]{40})\s*$/i);
+    return Boolean(match && match[1].toLowerCase() === head.toLowerCase());
+  });
+}
+
 async function report({ github, context, core }) {
   const { owner, repo } = context.repo;
   const event = context.payload.pull_request;
@@ -71,10 +79,7 @@ async function report({ github, context, core }) {
   const freeze = await freezePolicy.resolve(github, { owner, repo, prNumber: number, currentHead: pr.head.sha });
   const body = String(pr.body || '');
   const sourceComplete = /(?:^|\n)SOURCE_COMPLETE:\s*YES\b/im.test(body);
-  const technicalReview = new RegExp('(?:^|\\n)TECHNICAL_REVIEW:\\s*PASS\\b[\\s\\S]*?'
-    + pr.head.sha.slice(0, 12), 'i').test(body) ||
-    new RegExp('(?:^|\\n)TECHNICAL_REVIEW:\\s*PASS\\s*\\|\\s*HEAD:\\s*'
-      + pr.head.sha, 'i').test(body);
+  const technicalReview = exactTechnicalReview(body, pr.head.sha);
   const result = decision({ pr, expectedHead: event.head.sha, expectedBase: event.base.sha,
     checks, reviews, freeze, sourceComplete, technicalReview });
   const reportData = { ...result, pr: number, expected_head: event.head.sha,
@@ -88,4 +93,4 @@ async function report({ github, context, core }) {
     core.notice('V2 PR #' + number + ': ' + result.action + ' — ' + result.reason);
 }
 
-module.exports = { RED, REQUIRED, latestByName, decision, report };
+module.exports = { RED, REQUIRED, latestByName, exactTechnicalReview, decision, report };
