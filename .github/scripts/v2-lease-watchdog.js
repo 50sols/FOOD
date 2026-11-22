@@ -239,7 +239,12 @@ async function run({ github, context, core, nowMs = Date.now() }) {
             || humanGate(liveLabels, claim)) continue;
         const latestBranch = await branchState(github, owner, repo, claim.branch);
         if (latestBranch.sha !== firstBranch.sha
-            || await ciInProgress(github, owner, repo, latestBranch.sha || head, claim.branch)) continue;
+            || await ciInProgress(github, owner, repo, latestBranch.sha || head, claim.branch)
+            || (mergedOriginal && await integratedAcceptanceInProgress(github, owner, repo))) {
+          // A fresh V2 integrated run may have started while issue comments
+          // and labels were being re-read. Never clear the lease mid-run.
+          continue;
+        }
         const latestPr = await github.rest.pulls.get({ owner, repo, pull_number: originalPrNumber });
         if (mergedOriginal && !isMatchingMergedPr(latestPr.data, claim)) continue;
         if (closedUnmergedOriginal && !isMatchingClosedUnmergedPr(latestPr.data, claim)) continue;
