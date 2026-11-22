@@ -82,7 +82,7 @@ function harness({mode='merged',acceptance='in_progress',multiple=false,crossRef
   const calls=[];
   const thePR = pr(mode, 'ci/4151-resume');
   const unrelatedPR = { ...pr('open', 'fix/9999-unrelated', 4153),
-    title: 'V2 #9999 — dependent change', body: 'Parent #4151; follows #4151' };
+    title: 'V2 #9999 — dependent on #4151', body: 'Parent #4151; follows #4151' };
   const c=[{id:7,body:'<!-- foodex-worker-state:v1 -->\nSTATE: MERGED\n'
     + 'OWNER: worker-a\nBRANCH: ci/4151-resume\nPR: #4152'}];
   const gh={rest:{
