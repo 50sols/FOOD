@@ -2026,6 +2026,114 @@ class SmartOrderingCoreTest extends TestCase
             ->assertSee('متاحة');
     }
 
+    public function test_shift_update_rejects_unscoped_route_before_body_validation_in_ar_and_en(): void
+    {
+        $admin = $this->storeAdmin($this->storeId);
+        $staff = $this->workforceUser($this->storeId, 'Update Scope Staff', true);
+
+        $this->actingAs($admin)
+            ->post(route('admin.smart-ordering.workforce.staff.store', $this->branch->public_id), [
+                'user_id' => $staff->id,
+            ])->assertRedirect();
+        $this->actingAs($admin)
+            ->post(route('admin.smart-ordering.workforce.shifts.store', $this->branch->public_id), [
+                'user_id' => $staff->id,
+                'starts_at' => '2026-10-18T10:00',
+                'ends_at' => '2026-10-18T18:00',
+            ])->assertRedirect();
+
+        $owned = DB::table('restaurant_shifts')
+            ->where('branch_id', $this->branch->id)->where('user_id', $staff->id)->first();
+        $this->assertNotNull($owned);
+        $sibling = SmartOrderingBranch::query()->create([
+            'public_id' => (string) Str::uuid(),
+            'site_id' => $this->branch->site_id,
+            'code' => 'shift-update-sibling',
+            'name_ar' => 'فرع ورديات آخر',
+            'name_en' => 'Other shifts branch',
+            'timezone' => 'Asia/Kuwait',
+            'is_active' => true,
+        ]);
+        $foreignId = (string) Str::uuid();
+        DB::table('restaurant_shifts')->insert([
+            'public_id' => $foreignId,
+            'branch_id' => $sibling->id,
+            'user_id' => $staff->id,
+            'starts_at' => '2026-10-19 07:00:00',
+            'ends_at' => '2026-10-19 15:00:00',
+            'status' => 'DRAFT',
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        $url = fn (string $shift): string => route('admin.smart-ordering.workforce.shifts.update', [
+            $this->branch->public_id, $shift,
+        ]);
+        $auditBefore = DB::table('audit_logs')
+            ->where('event', 'smart_ordering.workforce.shift.updated')->count();
+        $localeBefore = app()->getLocale();
+
+        try {
+            foreach (['ar', 'en'] as $locale) {
+                app()->setLocale($locale);
+                $admin->forceFill(['locale' => $locale])->saveQuietly();
+
+                foreach ([$foreignId, (string) Str::uuid()] as $unavailable) {
+                    $this->actingAs($admin->fresh())
+                        ->putJson($url($unavailable), ['user_id' => ['invalid']])
+                        ->assertNotFound();
+                    $this->actingAs($admin->fresh())
+                        ->putJson($url($unavailable), [])
+                        ->assertNotFound();
+                    // A well-formed update must not mutate a sibling or unknown shift either.
+                    $this->actingAs($admin->fresh())
+                        ->putJson($url($unavailable), [
+                            'user_id' => $staff->id,
+                            'starts_at' => '2026-10-20T11:00',
+                            'ends_at' => '2026-10-20T19:00',
+                        ])->assertNotFound();
+                }
+
+                $this->actingAs($admin->fresh())
+                    ->putJson($url((string) $owned->public_id), [])
+                    ->assertUnprocessable()
+                    ->assertJsonValidationErrors(['user_id', 'starts_at', 'ends_at']);
+            }
+        } finally {
+            app()->setLocale($localeBefore);
+        }
+
+        $this->assertDatabaseHas('restaurant_shifts', [
+            'public_id' => $foreignId,
+            'status' => 'DRAFT',
+            'starts_at' => '2026-10-19 07:00:00',
+        ]);
+        $this->assertDatabaseHas('restaurant_shifts', [
+            'id' => $owned->id,
+            'status' => 'DRAFT',
+        ]);
+        $this->assertSame($auditBefore, DB::table('audit_logs')
+            ->where('event', 'smart_ordering.workforce.shift.updated')->count());
+
+        $this->actingAs($admin->fresh())
+            ->put($url((string) $owned->public_id), [
+                'user_id' => $staff->id,
+                'starts_at' => '2026-10-18T11:00',
+                'ends_at' => '2026-10-18T19:00',
+            ])->assertRedirect();
+
+        $this->assertNotSame((string) $owned->starts_at, (string) DB::table('restaurant_shifts')
+            ->where('id', $owned->id)->value('starts_at'));
+        $this->assertNotSame((string) $owned->ends_at, (string) DB::table('restaurant_shifts')
+            ->where('id', $owned->id)->value('ends_at'));
+        $this->assertSame($auditBefore + 1, DB::table('audit_logs')
+            ->where('event', 'smart_ordering.workforce.shift.updated')->count());
+        $this->assertDatabaseHas('restaurant_shifts', [
+            'public_id' => $foreignId,
+            'status' => 'DRAFT',
+            'starts_at' => '2026-10-19 07:00:00',
+        ]);
+    }
+
     public function test_shift_transition_rejects_unscoped_route_before_action_validation_in_ar_and_en(): void
     {
         $admin = $this->storeAdmin($this->storeId);
