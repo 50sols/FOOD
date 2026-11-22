@@ -125,6 +125,15 @@ function decide({ issue, branches, prs, refs, checkpoint }) {
       reason: 'active-worker-owns-issue' };
   }
   if (original) {
+    // A misleading worker:ready label is not proof that an active owner
+    // released the original branch. Treat a latest WORKING/ACTIVE claim as
+    // an ambiguity requiring lease reconciliation, never as takeover consent.
+    const latestClaim = refs.length ? refs[refs.length - 1] : null;
+    if (latestClaim && /^(?:WORKING|ACTIVE)$/i.test(latestClaim.state) &&
+        latestClaim.branch === original) {
+      return { action: 'BLOCK_CLAIM_LEASE_CONFLICT', branch: original,
+        reason: 'latest-worker-claim-not-reconciled' };
+    }
     if (branches.includes(original)) return {
       action: 'RESUME_ORIGINAL_BRANCH', branch: original, reason: 'existing-work-no-new-branch'
     };
