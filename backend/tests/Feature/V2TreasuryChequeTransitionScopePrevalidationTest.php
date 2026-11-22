@@ -76,6 +76,15 @@ final class V2TreasuryChequeTransitionScopePrevalidationTest extends TestCase
                     ->assertNotFound();
             }
 
+            // The foreign Retail store selector itself must remain unauthorized.
+            $this->actingAs($checkerA->fresh())
+                ->postJson(route('admin.erp.treasury.cheques.transition', ['cheque' => $chequeB->id]), [
+                    'store_id' => $storeB->id,
+                    '_operation_key' => 'foreign-selector-denied',
+                    'to_status' => EnterpriseTreasuryCheque::STATUS_DEPOSITED,
+                ])
+                ->assertForbidden();
+
             $this->actingAs($checkerA->fresh())
                 ->postJson(route('admin.erp.treasury.cheques.transition', ['cheque' => $chequeA->id]), [
                     'store_id' => $storeA->id,
