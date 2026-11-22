@@ -6,8 +6,9 @@ const SHA = 'f'.repeat(40), BASE = 'e'.repeat(40), PREV = 'd'.repeat(40);
 const pr = {number:4267,state:'open',draft:false,base:{ref:'Foodex_V2',sha:BASE},
   head:{sha:SHA},mergeable:true,mergeable_state:'clean',labels:[]};
 const green = REQUIRED.map((name,id)=>({id:id+1,name,head_sha:SHA,status:'completed',conclusion:'success'}));
-const data = {pr,expectedHead:SHA,expectedBase:BASE,checks:green,freeze:{ok:true,state:'FROZEN'},
-  sourceComplete:true,technicalReview:true};
+const data = {pr,expectedHead:SHA,expectedBase:BASE,integrationHead:BASE,checks:green,
+  freeze:{ok:true,state:'FROZEN'},sourceComplete:true,technicalReview:true,
+  issueVerified:true,issueLabels:[]};
 function action(change){return decision({...data,...change}).action;}
 test('only full exact SHA Required CI and policy success yield merge review',()=>{
   assert.equal(action(), 'READY_FOR_MERGE_REVIEW');
@@ -41,4 +42,13 @@ test('head-bound technical review must be on the same exact line; old approvals 
   assert.equal(exactTechnicalReview('TECHNICAL_REVIEW: PENDING | HEAD: ' + now, now), false);
   assert.equal(exactTechnicalReview('TECHNICAL_REVIEW: PASS | HEAD: ' + old, now), false);
   assert.equal(exactTechnicalReview('TECHNICAL_REVIEW: PASS | HEAD: ' + now + ' extra', now), false);
+});
+
+test('live Foodex_V2 tip and owning issue must be independently verified',()=>{
+  assert.equal(action({integrationHead:PREV}), 'BASE_ADVANCED_REVALIDATE');
+  assert.equal(action({integrationHead:null}), 'BASE_ADVANCED_REVALIDATE');
+  assert.equal(action({issueVerified:false}), 'ISSUE_UNVERIFIED');
+  assert.equal(action({issueLabels:[{name:'gate:approval'}]}), 'REVIEW_REQUIRED');
+  assert.equal(action({pr:{...pr,requested_reviewers:[{login:'independent-reviewer'}]}}), 'REVIEW_REQUIRED');
+  assert.equal(action({pr:{...pr,requested_teams:[{slug:'ci-review'}]}}), 'REVIEW_REQUIRED');
 });

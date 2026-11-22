@@ -14,14 +14,15 @@ function latestByName(checks) {
   return map;
 }
 
-function decision({ pr, expectedHead, expectedBase, checks, reviews = [], freeze, sourceComplete,
-  technicalReview }) {
+function decision({ pr, expectedHead, expectedBase, integrationHead, checks, reviews = [], freeze, sourceComplete,
+  technicalReview, issueVerified, issueLabels = [] }) {
   if (pr?.base?.ref !== 'Foodex_V2') return { action: 'NOT_V2', reason: 'wrong-base' };
   if (!pr || pr.state !== 'open') return { action: 'CLOSED', reason: 'no-open-pr' };
   const sha = pr.head?.sha || '';
   if (sha !== expectedHead || pr.base?.sha !== expectedBase)
     return { action: 'STALE_HEAD', reason: 'head-or-base-advanced' };
   if (!freeze || freeze.ok !== true) return { action: 'FIX_FREEZE', reason: freeze?.state || 'no-freeze-evidence' };
+  if (!issueVerified) return { action: 'ISSUE_UNVERIFIED', reason: 'missing-open-original-issue' };
   const status = latestByName(checks);
   for (const name of REQUIRED) {
     const check = status.get(name);
@@ -32,6 +33,9 @@ function decision({ pr, expectedHead, expectedBase, checks, reviews = [], freeze
     if (check.status !== 'completed' || check.conclusion !== 'success')
       return { action: 'WAIT_CI', reason: name + '-' + (check.conclusion || 'running') };
   }
+  // A successful check at the event base cannot certify a moving integration branch.
+  if (!integrationHead || integrationHead !== expectedBase)
+    return { action: 'BASE_ADVANCED_REVALIDATE', reason: 'v2-tip-differs-from-tested-base' };
   // The terminal required-ci-gate already aggregates ALL applicable CI jobs.
   if (!sourceComplete) return { action: 'SOURCE_INCOMPLETE', reason: 'missing-source-complete-evidence' };
   if (!technicalReview) return { action: 'TECHNICAL_REVIEW_REQUIRED', reason: 'missing-head-bound-review' };
@@ -40,9 +44,11 @@ function decision({ pr, expectedHead, expectedBase, checks, reviews = [], freeze
     return { action: 'RESOLVE_CONFLICTS', reason: 'merge-conflict' };
   if (pr.mergeable === null || !['clean', 'blocked', 'unstable'].includes(pr.mergeable_state))
     return { action: 'WAIT_MERGEABILITY', reason: 'unknown-mergeability' };
-  const labels = (pr.labels || []).map(v => typeof v === 'string' ? v : v.name);
+  const labels = [...(pr.labels || []), ...issueLabels].map(v => typeof v === 'string' ? v : v.name);
   if (labels.some(x => x?.startsWith('gate:')))
     return { action: 'REVIEW_REQUIRED', reason: 'explicit-human-gate' };
+  if ((pr.requested_reviewers || []).length || (pr.requested_teams || []).length)
+    return { action: 'REVIEW_REQUIRED', reason: 'outstanding-requested-review' };
   const latestReviews = new Map();
   for (const review of reviews) {
     const login = review?.user?.login;
@@ -77,13 +83,22 @@ async function report({ github, context, core }) {
   const reviews = await freezePolicy.listPages(args => github.rest.pulls.listReviews(args),
     { owner, repo, pull_number: number }, 'reviews');
   const freeze = await freezePolicy.resolve(github, { owner, repo, prNumber: number, currentHead: pr.head.sha });
+  const integration = await github.rest.repos.getBranch({ owner, repo, branch: 'Foodex_V2' });
+  const integrationHead = integration.data?.commit?.sha || '';
+  const issueMatch = String(pr.head?.ref || '').match(/^(?:feat|feature|fix|test|chore|ci|docs|refactor|worker)\/([1-9][0-9]*)-/);
+  const issueNumber = issueMatch ? Number(issueMatch[1]) : null;
+  const issue = issueNumber ? (await github.rest.issues.get({ owner, repo, issue_number: issueNumber })).data : null;
+  const issueVerified = Boolean(issue && issue.state === 'open' && !issue.pull_request);
+  const issueLabels = issue?.labels || [];
   const body = String(pr.body || '');
   const sourceComplete = /(?:^|\n)SOURCE_COMPLETE:\s*YES\b/im.test(body);
   const technicalReview = exactTechnicalReview(body, pr.head.sha);
   const result = decision({ pr, expectedHead: event.head.sha, expectedBase: event.base.sha,
-    checks, reviews, freeze, sourceComplete, technicalReview });
+    integrationHead, checks, reviews, freeze, sourceComplete, technicalReview,
+    issueVerified, issueLabels });
   const reportData = { ...result, pr: number, expected_head: event.head.sha,
-    live_head: pr.head.sha, base: pr.base?.sha, freeze: freeze.state, read_only: true };
+    live_head: pr.head.sha, base: pr.base?.sha, live_integration_base: integrationHead,
+    issue_number: issueNumber, freeze: freeze.state, read_only: true };
   core.info('V2 PR Merge Readiness: ' + JSON.stringify(reportData));
   await core.summary.addHeading('FOODEX V2 merge readiness')
     .addCodeBlock(JSON.stringify(reportData, null, 2), 'json')
