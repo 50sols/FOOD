@@ -56,7 +56,9 @@ final class V2RestaurantWorkspaceProfileHttpIsolationTest extends TestCase
                 ->get($this->customersUrl(['store_id' => $ownedStore, 'channel' => 'b2b']))
                 ->assertOk();
 
-            foreach (['products', 'inventory', 'orders', 'finance', 'drivers', 'storefront', 'content'] as $retailOnlyModule) {
+            // Orders is a separate canonical OrderOperationsController route, not
+            // a B2cWorkspaceController module; cover that boundary independently.
+            foreach (['products', 'inventory', 'finance', 'drivers', 'storefront', 'content'] as $retailOnlyModule) {
                 $this->actingAs($retailActor->fresh())
                     ->get(route('admin.b2c.module', ['module' => $retailOnlyModule, 'store_id' => $ownedStore], false))
                     ->assertNotFound();
