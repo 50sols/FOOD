@@ -42,6 +42,13 @@ final class NotificationController extends Controller
             404,
         );
 
+        // Preserve authorization and the existing nested-selector 404 boundary
+        // before validating scalar pagination and publication review IDs.
+        $request->validate([
+            'page' => ['nullable', 'integer', 'min:1'],
+            'review_notification' => ['nullable', 'integer', 'min:0'],
+        ]);
+
         $search = trim($requestedSearch);
         $status = trim($requestedStatus);
 
