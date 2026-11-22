@@ -94,6 +94,19 @@ final class SmartOrderingAnalyticsController extends Controller
         ]);
     }
 
+    private function positiveFilterId(mixed $value): ?int
+    {
+        if (! is_int($value) && ! (is_string($value) && ctype_digit($value))) {
+            return null;
+        }
+
+        // Preserve the validator's 422 for out-of-range numeric selectors;
+        // a saturated integer cast would wrongly turn them into scoped 404s.
+        $id = filter_var($value, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
+
+        return $id === false ? null : $id;
+    }
+
     /**
      * @return array{0:User,1:list<int>,2:array<string,mixed>}
      */
@@ -107,6 +120,25 @@ final class SmartOrderingAnalyticsController extends Controller
 
         $allowed = app(RestaurantSaasStoreAccess::class)
             ->allowedStoreIds($actor, $permission, $request);
+
+        // Resolve explicit tenant selectors before unrelated date, fulfillment
+        // and other analytics filter validation, for reports and CSV exports.
+        // Malformed selectors retain their existing validation responses.
+        $requestedStore = $this->positiveFilterId($request->query('store_id'));
+        if ($requestedStore !== null) {
+            abort_unless(in_array($requestedStore, $allowed, true), 404);
+        }
+
+        $selectedStoreIds = $requestedStore === null ? $allowed : [$requestedStore];
+        $requestedBranch = $this->positiveFilterId($request->query('branch_id'));
+        if ($requestedBranch !== null) {
+            $branchAllowed = DB::table('smart_ordering_branches as b')
+                ->join('smart_ordering_sites as s', 's.id', '=', 'b.site_id')
+                ->where('b.id', $requestedBranch)
+                ->whereIn('s.store_id', $selectedStoreIds)
+                ->exists();
+            abort_unless($branchAllowed, 404);
+        }
 
         $filters = $request->validate([
             'from' => ['nullable', 'date_format:Y-m-d'],
