@@ -35,6 +35,17 @@ final class SmartOrderingQrController extends Controller
         $canCreate = collect($storeIds)
             ->contains(fn (int $storeId): bool => $actor->hasPermission('smart_ordering.qr.manage', $storeId));
 
+        // A valid explicit store selector must be authorized before unrelated
+        // search filters reveal validation behavior. Malformed or overflowing
+        // selectors retain their original Laravel validation responses.
+        $requestedStore = $request->query('store_id');
+        if (is_int($requestedStore) || (is_string($requestedStore) && ctype_digit($requestedStore))) {
+            $storeId = filter_var($requestedStore, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
+            if ($storeId !== false) {
+                abort_unless(in_array($storeId, $storeIds, true), 404);
+            }
+        }
+
         $filters = $request->validate([
             'store_id' => ['nullable', 'integer', 'min:1'],
             'type' => ['nullable', Rule::in(SmartOrderingQrManager::TYPES)],
