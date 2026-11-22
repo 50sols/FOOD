@@ -100,14 +100,14 @@ function harness({mode='merged',acceptance='in_progress',multiple=false,crossRef
       get:async ({pull_number})=>{calls.push('pr:'+pull_number); return {data:pull_number===4153?unrelatedPR:thePR};},
     },
     actions:{
-      listWorkflowRunsForRepo:async()=>({data:{workflow_runs:[
+      listWorkflowRunsForRepo:async args=>{calls.push({workflowQuery:args}); return {data:{workflow_runs:[
         {id:1200,name:'FOODEX V2 Integrated Backend Acceptance',
          status:acceptance==='success'?'completed':acceptance,
          conclusion:acceptance==='success'?'success':null,
          head_sha:'latest-v2'},
         ...(multiple?[{id:1199,name:'FOODEX V2 Integrated Backend Acceptance',
           status:'completed',conclusion:'success',head_sha:'older'}]:[]),
-      ]}}),
+      ]}}; },
     },
   }};
   return {gh,calls};
@@ -127,6 +127,15 @@ test('actual merged #4117 style case holds on latest integrated CI, not stale PR
   assert.equal(result.integration_acceptance.status,'in_progress');
   assert.equal(result.integration_accepted,false);
 });
+test('operator-dispatched acceptance can certify exact latest SHA without push-only filter', async () => {
+  const {gh,calls}=harness({acceptance:'success'});
+  const result=await buildPlan({github:gh,owner:'o',repo:'FOOD',issueNumber:4151});
+  assert.equal(result.integration_accepted,true);
+  const query=calls.find(item=>item.workflowQuery)?.workflowQuery;
+  assert.equal(query.branch,'Foodex_V2');
+  assert.equal(query.event,undefined);
+});
+
 test('latest full integrated success is valid; older success never substitutes', async () => {
   const {gh}=harness({acceptance:'success',multiple:true});
   const result=await buildPlan({github:gh,owner:'o',repo:'FOOD',issueNumber:4151});
