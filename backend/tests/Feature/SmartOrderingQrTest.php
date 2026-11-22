@@ -285,6 +285,7 @@ class SmartOrderingQrTest extends TestCase
                 [],
                 ['store_id' => 0],
                 ['store_id' => 'invalid'],
+                ['store_id' => '999999999999999999999999999999'],
                 ['store_id' => $ownedStore],
                 $this->payload($ownedStore, ['type' => 'invalid']),
             ] as $invalidPayload) {
