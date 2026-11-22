@@ -277,8 +277,11 @@ final class SmartOrderingOperationsController extends Controller
         // Invalid or absent store selectors retain the existing 422 validation.
         $requestedStore = $request->input('store_id');
         if (is_int($requestedStore) || (is_string($requestedStore) && ctype_digit($requestedStore))) {
-            if ((int) $requestedStore > 0) {
-                $this->restaurantAccess->assertStore($actor, (int) $requestedStore, 'orders.manage', 'b2c');
+            // Do not coerce out-of-range numeric strings into PHP_INT_MAX:
+            // invalid store selectors must retain Laravel's 422 response.
+            $storeId = filter_var($requestedStore, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
+            if ($storeId !== false) {
+                $this->restaurantAccess->assertStore($actor, $storeId, 'orders.manage', 'b2c');
             }
         }
 
