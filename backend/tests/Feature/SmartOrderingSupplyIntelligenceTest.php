@@ -792,7 +792,7 @@ class SmartOrderingSupplyIntelligenceTest extends TestCase
 
                 foreach (['?branch_id=invalid', '?branch_id=0', '?branch_id=-1',
                     '?branch_id=999999999999999999999999'] as $invalid) {
-                    $this->actingAs($actor->fresh())->get($url.$invalid)
+                    $this->actingAs($actor->fresh())->getJson($url.$invalid)
                         ->assertUnprocessable();
                 }
                 foreach ([$foreignBranch, $missingBranch] as $notOwned) {
