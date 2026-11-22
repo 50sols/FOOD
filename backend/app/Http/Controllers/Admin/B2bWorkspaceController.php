@@ -845,12 +845,14 @@ class B2bWorkspaceController extends Controller
     public function savePricingMode(Request $request): RedirectResponse
     {
         $actor = $this->actor($request);
+        $storeId = $this->principal->storeId();
+        // Authorize the concrete Wholesale store before validating any input:
+        // Retail or out-of-scope actors must always receive 403.
+        $this->operationalScope->assertStore($actor, $storeId, 'settings.manage', 'b2b');
         $data = $request->validate([
             'enabled' => ['required', 'boolean'],
             'setup_action' => ['sometimes', 'in:save,test'],
         ]);
-        $storeId = $this->principal->storeId();
-        $this->operationalScope->assertStore($actor, $storeId, 'settings.manage', 'b2b');
         $enabled = (bool) $data['enabled'];
 
         // Server-side Test uses the same authorized Wholesale store scope,
