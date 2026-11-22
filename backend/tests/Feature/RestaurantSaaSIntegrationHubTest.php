@@ -282,7 +282,7 @@ class RestaurantSaaSIntegrationHubTest extends TestCase
         $own = $service->createWebhook($adminA, $siteA, 'https://example.test/own', ['orders.created']);
         $foreign = $service->createWebhook($adminB, $siteB, 'https://example.test/foreign', ['orders.created']);
 
-        $url = fn (string $id): string => route('admin.smart-ordering.webhooks.status', [
+        $url = fn (string $id): string => route('admin.smart-ordering.integrations.webhooks.status', [
             'site' => $siteA->getKey(),
             'webhook' => $id,
         ]);
