@@ -44,6 +44,13 @@ final class PromotionalNotificationCampaignController extends Controller
             abort_if(is_array($request->query($key)), 404);
         }
 
+        // Keep authorization and pre-existing nested-filter 404 precedence
+        // before validating explicit list and publication-review selectors.
+        $request->validate([
+            'page' => ['nullable', 'integer', 'min:1'],
+            'review_campaign' => ['nullable', 'integer', 'min:0'],
+        ]);
+
         $canManage = $this->canAccess($actor, 'notifications.manage');
         $search = trim((string) $request->query('q', ''));
         $status = trim((string) $request->query('status', ''));
