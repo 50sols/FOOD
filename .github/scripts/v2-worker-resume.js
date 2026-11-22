@@ -167,7 +167,7 @@ async function buildPlan({ github, owner, repo, issueNumber }) {
     const sha = integration.data.commit?.sha || '';
     if (!sha) throw Error('missing-v2-integration-head');
     const runs = await pages(args => github.rest.actions.listWorkflowRunsForRepo(args),
-      { owner, repo, branch: 'Foodex_V2' }, 'workflow_runs');
+      { owner, repo, branch: 'Foodex_V2', event: 'push' }, 'workflow_runs');
     const relevant = runs.filter(r => r.name === 'FOODEX V2 Integrated Backend Acceptance'
       && r.head_sha === sha).sort((a,b) => b.id-a.id);
     plan.integration_head = sha;
