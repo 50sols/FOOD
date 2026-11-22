@@ -37,15 +37,20 @@ final class V2WorkforceClockShiftScopeTest extends TestCase
         $foreignStore = $createStore('WORKFORCE-FOREIGN');
 
         $createBranch = function (int $storeId, string $code): SmartOrderingBranch {
-            $siteId = (int) DB::table('smart_ordering_sites')->insertGetId([
-                'public_id' => (string) Str::uuid(),
-                'store_id' => $storeId,
-                'slug' => strtolower($code).'-'.Str::lower(Str::random(8)),
-                'runtime_state' => 'ENABLED',
-                'master_enabled' => true,
-                'created_at' => now(),
-                'updated_at' => now(),
-            ]);
+            // A Smart Ordering site is unique per store. Sibling branches
+            // share that site; only a different store gets a new one.
+            $siteId = DB::table('smart_ordering_sites')->where('store_id', $storeId)->value('id');
+            if ($siteId === null) {
+                $siteId = DB::table('smart_ordering_sites')->insertGetId([
+                    'public_id' => (string) Str::uuid(),
+                    'store_id' => $storeId,
+                    'slug' => strtolower($code).'-'.Str::lower(Str::random(8)),
+                    'runtime_state' => 'ENABLED',
+                    'master_enabled' => true,
+                    'created_at' => now(),
+                    'updated_at' => now(),
+                ]);
+            }
 
             return SmartOrderingBranch::query()->create([
                 'public_id' => (string) Str::uuid(),
@@ -67,6 +72,8 @@ final class V2WorkforceClockShiftScopeTest extends TestCase
         $ownedBranch = $createBranch($ownedStore, 'OWN');
         $siblingBranch = $createBranch($ownedStore, 'SIBLING');
         $foreignBranch = $createBranch($foreignStore, 'FOREIGN');
+        $this->assertSame((int) $ownedBranch->site_id, (int) $siblingBranch->site_id);
+        $this->assertNotSame((int) $ownedBranch->site_id, (int) $foreignBranch->site_id);
 
         $actor = User::query()->create([
             'name' => 'Clock scope test manager',
