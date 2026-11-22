@@ -196,5 +196,90 @@ class V2RestaurantTableRoutePrevalidationTest extends TestCase
         $this->assertDatabaseHas('smart_ordering_tables', [
             'id' => $tables[1]['id'], 'label' => 'Original Table', 'position_x' => 60,
         ]);
+        // Table combination has TWO scoped identifiers: the route primary
+        // and the user-supplied member. The member must be checked before
+        // unrelated note validation, even when it names another branch.
+        $memberPublicId = (string) Str::uuid();
+        $memberId = (int) DB::table('smart_ordering_tables')->insertGetId([
+            'public_id' => $memberPublicId,
+            'branch_id' => $ownedBranch->getKey(),
+            'floor_area_id' => $floors[0]['id'],
+            'label' => 'Owned Member Table',
+            'capacity' => 2,
+            'position_x' => 140,
+            'position_y' => 140,
+            'visual_width' => 160,
+            'visual_height' => 120,
+            'shape' => 'rectangle',
+            'qr_reference' => (string) Str::uuid(),
+            'token_hash' => hash('sha256', (string) Str::uuid()),
+            'is_active' => true,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        $combineUrl = route('admin.smart-ordering.tables.combine', [
+            $ownedBranch->public_id, $tables[0]['public_id'],
+        ]);
+        $beforeCombinationCount = DB::table('smart_ordering_table_combinations')->count();
+        $beforeAuditCount = DB::table('audit_logs')->count();
+        $originalLocale = app()->getLocale();
+
+        try {
+            foreach (['ar', 'en'] as $locale) {
+                app()->setLocale($locale);
+                $actor->forceFill(['locale' => $locale])->saveQuietly();
+
+                foreach ([$tables[1]['public_id'], (string) Str::uuid()] as $deniedMember) {
+                    foreach ([
+                        ['other_table_public_id' => $deniedMember],
+                        ['other_table_public_id' => $deniedMember, 'note' => ['bad' => 'nested']],
+                        ['other_table_public_id' => $deniedMember, 'note' => 'unauthorized combine'],
+                    ] as $payload) {
+                        $this->actingAs($actor->fresh())
+                            ->postJson($combineUrl, $payload)
+                            ->assertNotFound();
+                    }
+                }
+
+                foreach ([
+                    [],
+                    ['other_table_public_id' => 'not-a-uuid', 'note' => ['bad']],
+                    ['other_table_public_id' => $memberPublicId, 'note' => ['bad']],
+                ] as $invalidPayload) {
+                    $this->actingAs($actor->fresh())
+                        ->postJson($combineUrl, $invalidPayload)
+                        ->assertUnprocessable();
+                }
+
+                // Existing route-primary protection still wins over bad
+                // member/note fields before attempting any combination.
+                $this->actingAs($actor->fresh())
+                    ->postJson(route('admin.smart-ordering.tables.combine', [
+                        $ownedBranch->public_id, $tables[1]['public_id'],
+                    ]), ['other_table_public_id' => $memberPublicId, 'note' => ['bad']])
+                    ->assertNotFound();
+            }
+        } finally {
+            app()->setLocale($originalLocale);
+        }
+
+        $this->assertSame($beforeCombinationCount, DB::table('smart_ordering_table_combinations')->count());
+        $this->assertSame($beforeAuditCount, DB::table('audit_logs')->count());
+
+        $this->actingAs($actor->fresh())->post($combineUrl, [
+            'other_table_public_id' => $memberPublicId,
+            'note' => 'Authorized family seating',
+        ])->assertRedirect();
+
+        $this->assertDatabaseHas('smart_ordering_table_combinations', [
+            'branch_id' => $ownedBranch->getKey(),
+            'primary_table_id' => $tables[0]['id'],
+            'member_table_id' => $memberId,
+            'note' => 'Authorized family seating',
+        ]);
+        $this->assertSame($beforeCombinationCount + 1, DB::table('smart_ordering_table_combinations')->count());
+        $this->assertSame($beforeAuditCount + 1, DB::table('audit_logs')->count());
+        $this->assertSame(0, DB::table('smart_ordering_table_combinations')
+            ->where('branch_id', $siblingBranch->getKey())->count());
     }
 }
