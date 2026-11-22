@@ -152,11 +152,18 @@ async function buildPlan({ github, owner, repo, issueNumber }) {
     const pr = (await github.rest.pulls.get({ owner, repo, pull_number: number })).data;
     // Title/body issue link or matching original issue branch is required.
     if (pr.base?.ref !== 'Foodex_V2') continue;
-    const hasIssue = new RegExp('(?:^|[^\\d])#' + issueNumber + '(?:\\b|$)')
-      .test((pr.title || '') + '\n' + (pr.body || ''));
+    // GitHub search returns incidental mentions of this issue in parent and
+    // dependency lists. Only title ownership, an explicit PR closing/ref line,
+    // an issue-scoped branch or the original claim can establish provenance.
+    const titleOwnsIssue = new RegExp('(?:^|[^\\d])#' + issueNumber + '(?:\\b|$)')
+      .test(pr.title || '');
+    const bodyOwnsIssue = new RegExp(
+      '^\\s*(?:refs?|closes?|fix(?:es)?|resolves?)\\s*:?\\s*#' + issueNumber + '(?:\\b|$)', 'im'
+    ).test(pr.body || '');
     const hasBranch = branchPattern.test(pr.head?.ref || '') ||
       branches.includes(pr.head?.ref);
-    if (hasIssue || hasBranch || refs.some(r => r.pr === number)) prs.push(pr);
+    if (titleOwnsIssue || bodyOwnsIssue || hasBranch ||
+        refs.some(r => r.pr === number)) prs.push(pr);
   }
   const result = decide({ issue, branches, prs, refs, checkpoint });
   const plan = { schema: 1, issue: issueNumber, base: 'Foodex_V2',
