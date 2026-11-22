@@ -2084,6 +2084,13 @@ class SmartOrderingCoreTest extends TestCase
                     $this->actingAs($admin->fresh())
                         ->putJson($url($unavailable), [])
                         ->assertNotFound();
+                    // A well-formed update must not mutate a sibling or unknown shift either.
+                    $this->actingAs($admin->fresh())
+                        ->putJson($url($unavailable), [
+                            'user_id' => $staff->id,
+                            'starts_at' => '2026-10-20T11:00',
+                            'ends_at' => '2026-10-20T19:00',
+                        ])->assertNotFound();
                 }
 
                 $this->actingAs($admin->fresh())
