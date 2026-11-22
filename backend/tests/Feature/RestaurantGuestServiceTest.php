@@ -287,6 +287,13 @@ final class RestaurantGuestServiceTest extends TestCase
                             'status' => ['invalid'],
                             'guest_name' => ['invalid'],
                         ])->assertNotFound();
+                        // Valid mutation fields still cannot access a sibling or nonexistent reservation.
+                        $this->actingAs($this->admin->fresh())->$verb($url, [
+                            'guest_name' => 'Updated Guest',
+                            'party_size' => 2,
+                            'service_at' => '2026-10-18T19:00',
+                            'status' => 'CONFIRMED',
+                        ])->assertNotFound();
                     }
                 }
                 foreach ([$entry, (string) Str::uuid()] as $id) {
@@ -301,6 +308,13 @@ final class RestaurantGuestServiceTest extends TestCase
                             'status' => ['invalid'],
                             'seat_now' => ['invalid'],
                             'guest_name' => ['invalid'],
+                        ])->assertNotFound();
+                        // Well-typed update, status and conversion fields cannot bypass waitlist scope.
+                        $this->actingAs($this->admin->fresh())->$verb($url, [
+                            'guest_name' => 'Updated Waitlist Guest',
+                            'party_size' => 2,
+                            'status' => 'CONTACTED',
+                            'seat_now' => false,
                         ])->assertNotFound();
                     }
                 }
