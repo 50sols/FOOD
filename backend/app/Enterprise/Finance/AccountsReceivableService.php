@@ -661,6 +661,15 @@ final class AccountsReceivableService
                 ->lockForUpdate()
                 ->firstOrFail();
 
+            // The allocation may outlive a valid parent AR document. Recheck
+            // the LOCKED parent on both the initial post and idempotent
+            // replay; a draft/cancelled document is not a postable receivable.
+            if ($document->status !== 'posted') {
+                throw ValidationException::withMessages([
+                    'status' => [__('finance_workbench.receivables.document_not_posted')],
+                ]);
+            }
+
             // A typed operational receipt is already associated with a
             // collected payment. Until the independent accounting handoff is
             // certified, NEVER post it via this manual AR cash/GL service,
