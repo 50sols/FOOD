@@ -10,6 +10,7 @@ use App\Models\User;
 use App\Services\AuditLogger;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Str;
 use Illuminate\Validation\Rule;
 
 final class SmartOrderingTableController extends Controller
@@ -115,6 +116,14 @@ final class SmartOrderingTableController extends Controller
     {
         [$actor, $branchModel] = $this->authorizedBranch($branch, $request);
         $this->tables->assertTableInBranch($branchModel, $table);
+        // A valid explicit member UUID must belong to this branch before
+        // unrelated combine fields (such as note) can disclose validation.
+        // Malformed or absent member selectors still receive Laravel's 422.
+        $member = $request->input('other_table_public_id');
+        if (is_string($member) && Str::isUuid($member)) {
+            $this->tables->assertTableInBranch($branchModel, $member);
+        }
+
         $data = $request->validate([
             'other_table_public_id' => ['required', 'uuid'],
             'note' => ['nullable', 'string', 'max:500'],
