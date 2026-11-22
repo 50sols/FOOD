@@ -263,6 +263,20 @@ class CustomerServiceWorkspaceTest extends TestCase
         $this->assertDatabaseMissing('customer_service_case_notes', ['case_id' => $caseB->id]);
         $this->assertSame($beforeNotes + 1, DB::table('customer_service_case_notes')->count());
         $this->assertSame($beforeAudits + 1, DB::table('audit_logs')->count());
+
+        // The early scope check must not block a legitimate attachment upload.
+        $this->actingAs($actorA->fresh())
+            ->post(route('admin.erp.customer-service.cases.notes.store', ['case' => $caseA->id]), [
+                'attachment' => UploadedFile::fake()->createWithContent('own-evidence.txt', 'authorized-file'),
+            ])->assertRedirect(route('admin.erp.customer-service.cases.show', ['case' => $caseA->id]));
+
+        $this->assertSame($beforeNotes + 2, DB::table('customer_service_case_notes')->count());
+        $this->assertSame($beforeAudits + 2, DB::table('audit_logs')->count());
+        $this->assertCount(1, Storage::disk('local')->allFiles('customer-service/cases'));
+        $this->assertDatabaseHas('customer_service_case_notes', [
+            'case_id' => $caseA->id,
+            'original_name' => 'own-evidence.txt',
+        ]);
     }
 
     public function test_chatbot_case_authority_is_promoted_to_customer_service_cases(): void
