@@ -69,6 +69,17 @@ class V2SmartOrderingBranchStoreScopeTest extends TestCase
                 $this->actingAs($admin->fresh())->postJson($url, [
                     'store_id' => $foreign,
                 ])->assertNotFound();
+                // Valid branch inputs and a numeric-string store selector still fail tenant scope.
+                foreach ([$foreign, (string) $foreign] as $foreignSelector) {
+                    $this->actingAs($admin->fresh())->postJson($url, [
+                        'store_id' => $foreignSelector,
+                        'name' => 'Forbidden Branch',
+                        'timezone' => 'Asia/Kuwait',
+                        'pickup_lead_minutes' => 0,
+                        'max_schedule_days' => 7,
+                        'service_charge' => 0,
+                    ])->assertNotFound();
+                }
 
                 $this->actingAs($admin->fresh())->postJson($url, [
                     'store_id' => $owned,
