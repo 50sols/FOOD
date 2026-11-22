@@ -721,6 +721,18 @@ final class RestaurantGuestService
         }
     }
 
+    /** Confirm route record belongs to the authorized branch before body validation. */
+    public function assertReservationInBranch(SmartOrderingBranch $branch, string $publicId): void
+    {
+        $this->reservation($branch, $publicId);
+    }
+
+    /** Confirm route waitlist entry belongs to the authorized branch before body validation. */
+    public function assertWaitlistInBranch(SmartOrderingBranch $branch, string $publicId): void
+    {
+        $this->waitlist($branch, $publicId);
+    }
+
     private function reservation(SmartOrderingBranch $branch, string $publicId, bool $lock = false): object
     {
         $query = DB::table('smart_ordering_reservations')
