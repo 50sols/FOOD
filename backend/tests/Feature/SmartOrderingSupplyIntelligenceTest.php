@@ -856,6 +856,7 @@ class SmartOrderingSupplyIntelligenceTest extends TestCase
                     '?from=invalid',
                     '?to=invalid',
                     '?from=2026-02-30',
+                    '?from=2026-02-29', // 2026 is not a leap year.
                     '?to=2026-13-01',
                     '?from=2026-12-31&to=2026-01-01',
                     '?from=2026-01-01T12%3A00%3A00',
