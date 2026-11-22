@@ -85,11 +85,11 @@ test('incomplete or oversized search pagination fails closed', async () => {
   await assert.rejects(pages(async()=>({data:Array(100).fill({})}),{},'branches',2),/cap/);
 });
 
-function harness({mode='merged',acceptance='in_progress',multiple=false,crossReference=false,forkOriginal=false,ancestry='ahead',issueState=issue}={}) {
+function harness({mode='merged',acceptance='in_progress',multiple=false,crossReference=false,forkOriginal=false,missingHeadRepo=false,mixedCaseHeadRepo=false,ancestry='ahead',issueState=issue}={}) {
   const calls=[];
   const thePR = { ...pr(mode, 'ci/4151-resume'),
     head: { ...pr(mode, 'ci/4151-resume').head,
-      repo: { full_name: forkOriginal ? 'external/FOOD' : 'o/FOOD' } } };
+      repo: missingHeadRepo ? null : { full_name: forkOriginal ? 'external/FOOD' : mixedCaseHeadRepo ? 'O/food' : 'o/FOOD' } } };
   const unrelatedPR = { ...pr('open', 'fix/9999-unrelated', 4153),
     title: 'V2 #9999 — dependent on #4151', body: 'Parent #4151; follows #4151' };
   const c=[{id:7,body:'<!-- foodex-worker-state:v1 -->\nSTATE: MERGED\n'
@@ -128,6 +128,18 @@ test('fork PR with matching branch and issue must not become the original V2 PR'
   assert.equal(result.action,'BLOCK_MISSING_ORIGINAL_BRANCH');
   assert.deepEqual(result.original_prs,[]);
   assert.equal(result.integration_accepted,undefined);
+});
+
+test('deleted fork without head repository identity fails closed; same repo name is case insensitive', async () => {
+  const {gh}=harness({missingHeadRepo:true});
+  const missing=await buildPlan({github:gh,owner:'o',repo:'FOOD',issueNumber:4151});
+  assert.equal(missing.action,'BLOCK_MISSING_ORIGINAL_BRANCH');
+  assert.deepEqual(missing.original_prs,[]);
+
+  const {gh:sameRepo}=harness({mixedCaseHeadRepo:true});
+  const accepted=await buildPlan({github:sameRepo,owner:'o',repo:'FOOD',issueNumber:4151});
+  assert.equal(accepted.action,'VERIFY_INTEGRATION_ACCEPTANCE');
+  assert.deepEqual(accepted.original_prs.map(pr=>pr.number),[4152]);
 });
 
 test('dependency-only mention is not mistaken for an original PR', async () => {
