@@ -131,6 +131,7 @@ final class SmartOrderingSupplyController extends Controller
     ): RedirectResponse {
         $actor = $this->authorizeSite($request, $site, $tenants, 'smart_ordering.manage');
         $this->assertEntitled($site);
+        $this->preflightBranchScope($request, $site, $supply);
         $data = $request->validate([
             'menu_item_public_id' => ['required', 'uuid'],
             'branch_id' => ['nullable', 'integer', 'min:1'],
@@ -229,6 +230,7 @@ final class SmartOrderingSupplyController extends Controller
     ): RedirectResponse {
         $actor = $this->authorizeSite($request, $site, $tenants, 'smart_ordering.manage');
         $this->assertEntitled($site);
+        $this->preflightBranchScope($request, $site, $supply);
         $data = $request->validate([
             'branch_id' => ['nullable', 'integer', 'min:1'],
             'quantities' => ['required', 'array', 'min:1'],
@@ -259,6 +261,7 @@ final class SmartOrderingSupplyController extends Controller
     ): RedirectResponse {
         $actor = $this->authorizeSite($request, $site, $tenants, 'smart_ordering.manage');
         $this->assertEntitled($site);
+        $this->preflightBranchScope($request, $site, $supply);
         $data = $request->validate([
             'branch_id' => ['nullable', 'integer', 'min:1'],
             'days' => ['nullable', 'integer', 'between:1,90'],
