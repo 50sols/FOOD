@@ -24,10 +24,6 @@ final class CustomerGroupManagementController extends Controller
     public function index(Request $request): View
     {
         [$actor, $storeId, $channel] = $this->authorizedStore($request, 'customers.view');
-        // The authenticated store/channel scope is enforced above. A nested
-        // explicit GET selector must not silently choose the default store
-        // after integer() coerces it to zero.
-        abort_if(is_array($request->query('store_id')), 404);
         // Reject nested GET search data after store authorization and before
         // string coercion, query construction, or rendering the search input.
         $searchInput = $request->query('q', '');
@@ -310,6 +306,11 @@ final class CustomerGroupManagementController extends Controller
         }
         abort_unless($storeId > 0, 404);
         $this->scope->assertStore($actor, $storeId, $permission, $channel);
+
+        // A nested explicit store selector must never silently fall back to
+        // an authorized default store, especially on group/member writes.
+        // Keep the real actor, channel and store authorization first.
+        abort_if(is_array($request->input('store_id')), 404);
 
         return [$actor, $storeId, $channel];
     }
