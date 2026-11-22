@@ -597,48 +597,51 @@ class CustomerGroupManagementTest extends TestCase
                     DB::table('audit_logs')->count(),
                 ];
 
-                foreach ([
-                    [$storeId],
-                    ['deep' => $storeId],
-                    ['deep' => ['id' => $storeId]],
-                ] as $nested) {
-                    $this->actingAs($actor->fresh())
-                        ->post(route($routePrefix.'.store'), [
-                            'store_id' => $nested,
-                            'name' => 'Unintended fallback group',
-                            'priority' => 1,
-                        ])->assertNotFound();
+                // Exercise the three nested shapes across B2B/B2C and
+                // AR/EN cohorts without exhausting the real per-user route
+                // throttle (20 requests/minute for bulk-members).
+                $nested = match ($locale.'|'.$routePrefix) {
+                    'ar|admin.b2b.customer-groups' => [$storeId],
+                    'ar|admin.b2c.customer-groups' => ['deep' => $storeId],
+                    'en|admin.b2b.customer-groups' => ['deep' => ['id' => $storeId]],
+                    default => [$storeId],
+                };
+                $this->actingAs($actor->fresh())
+                    ->post(route($routePrefix.'.store'), [
+                        'store_id' => $nested,
+                        'name' => 'Unintended fallback group',
+                        'priority' => 1,
+                    ])->assertNotFound();
 
-                    $this->actingAs($actor->fresh())
-                        ->postJson(route($routePrefix.'.store'), [
-                            'store_id' => $nested,
-                            'name' => 'Unintended JSON group',
-                            'priority' => 1,
-                        ])->assertNotFound();
+                $this->actingAs($actor->fresh())
+                    ->postJson(route($routePrefix.'.store'), [
+                        'store_id' => $nested,
+                        'name' => 'Unintended JSON group',
+                        'priority' => 1,
+                    ])->assertNotFound();
 
-                    $this->actingAs($actor->fresh())
-                        ->patch(route($routePrefix.'.update', ['group' => $groupId]), [
-                            'store_id' => $nested,
-                            'name' => 'Tampered group name',
-                            'priority' => 0,
-                            'is_active' => 0,
-                        ])->assertNotFound();
+                $this->actingAs($actor->fresh())
+                    ->patch(route($routePrefix.'.update', ['group' => $groupId]), [
+                        'store_id' => $nested,
+                        'name' => 'Tampered group name',
+                        'priority' => 0,
+                        'is_active' => 0,
+                    ])->assertNotFound();
 
-                    $this->actingAs($actor->fresh())
-                        ->post(route($routePrefix.'.members', ['group' => $groupId]), [
-                            'store_id' => $nested,
-                            'operation' => 'add',
-                            'customer_ids' => [999999],
-                        ])->assertNotFound();
+                $this->actingAs($actor->fresh())
+                    ->post(route($routePrefix.'.members', ['group' => $groupId]), [
+                        'store_id' => $nested,
+                        'operation' => 'add',
+                        'customer_ids' => [999999],
+                    ])->assertNotFound();
 
-                    $this->actingAs($actor->fresh())
-                        ->post(route($routePrefix.'.bulk-members'), [
-                            'store_id' => $nested,
-                            'operation' => 'add',
-                            'group_ids' => [$groupId],
-                            'customer_ids' => [999999],
-                        ])->assertNotFound();
-                }
+                $this->actingAs($actor->fresh())
+                    ->post(route($routePrefix.'.bulk-members'), [
+                        'store_id' => $nested,
+                        'operation' => 'add',
+                        'group_ids' => [$groupId],
+                        'customer_ids' => [999999],
+                    ])->assertNotFound();
 
                 $this->assertDatabaseHas('commercial_customer_groups', [
                     'id' => $groupId,
