@@ -117,6 +117,15 @@ final class SmartOrderingQrController extends Controller
         AuditLogger $audit,
     ): RedirectResponse {
         $actor = $this->actor($request);
+        // Check an explicit, syntactically valid store selector before unrelated
+        // QR fields. Missing/malformed selectors still receive the normal 422.
+        $requestedStore = $request->input('store_id');
+        if (is_int($requestedStore) || (is_string($requestedStore) && ctype_digit($requestedStore))) {
+            if ((int) $requestedStore > 0) {
+                app(RestaurantSaasStoreAccess::class)->assertStore($actor, (int) $requestedStore, 'smart_ordering.qr.manage', 'b2c');
+            }
+        }
+
         $data = $this->payload($request, true);
         app(RestaurantSaasStoreAccess::class)->assertStore($actor, (int) $data['store_id'], 'smart_ordering.qr.manage', 'b2c');
 
