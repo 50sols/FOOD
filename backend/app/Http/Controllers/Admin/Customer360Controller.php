@@ -55,6 +55,7 @@ final class Customer360Controller extends Controller
         $access = $this->access($actor);
         $filters = $request->validate([
             'q' => ['nullable', 'string', 'max:120'],
+            'page' => ['nullable', 'integer', 'min:1'],
             'origin_channel' => ['nullable', Rule::in(['b2b', 'b2c', 'unknown'])],
             'registration_source' => ['nullable', Rule::in(['customer_app', 'dashboard', 'import', 'migration'])],
             'active' => ['nullable', Rule::in(['0', '1'])],
