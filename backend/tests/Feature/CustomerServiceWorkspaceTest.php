@@ -9,7 +9,9 @@ use App\Models\User;
 use App\Services\CustomerServiceCaseManager;
 use Database\Seeders\CoreReferenceSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 use Tests\TestCase;
 
@@ -205,6 +207,7 @@ class CustomerServiceWorkspaceTest extends TestCase
 
         $beforeNotes = DB::table('customer_service_case_notes')->count();
         $beforeAudits = DB::table('audit_logs')->count();
+        Storage::fake('local');
 
         foreach (['ar', 'en'] as $locale) {
             $actorA->forceFill(['locale' => $locale])->save();
@@ -218,6 +221,13 @@ class CustomerServiceWorkspaceTest extends TestCase
 
                 $this->actingAs($actorA->fresh())
                     ->postJson(route('admin.erp.customer-service.cases.notes.store', ['case' => $unavailableId]))
+                    ->assertNotFound();
+
+                // A real multipart upload must be rejected before any file is persisted.
+                $this->actingAs($actorA->fresh())
+                    ->post(route('admin.erp.customer-service.cases.notes.store', ['case' => $unavailableId]), [
+                        'attachment' => UploadedFile::fake()->createWithContent('foreign-evidence.txt', 'do-not-store'),
+                    ], ['Accept' => 'application/json'])
                     ->assertNotFound();
             }
 
@@ -236,6 +246,7 @@ class CustomerServiceWorkspaceTest extends TestCase
             ])
             ->assertForbidden();
 
+        $this->assertSame([], Storage::disk('local')->allFiles('customer-service/cases'));
         $this->assertSame($beforeNotes, DB::table('customer_service_case_notes')->count());
         $this->assertSame($beforeAudits, DB::table('audit_logs')->count());
 
