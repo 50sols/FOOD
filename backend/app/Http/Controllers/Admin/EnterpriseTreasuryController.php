@@ -708,6 +708,11 @@ final class EnterpriseTreasuryController extends Controller
         $options = $this->storeOptions($actor);
         abort_if($options === [], 403);
 
+        // An explicitly nested selector must never coerce to zero and choose
+        // a different authorized default store for Treasury reads or writes.
+        // Resolve the actor's allowed stores first; keep the auth precedence.
+        abort_if(is_array($request->input('store_id')), 404);
+
         $requested = $request->integer('store_id');
         $selected = collect($options)->firstWhere('id', $requested > 0 ? $requested : $options[0]['id']);
         abort_unless(is_array($selected), 403);
