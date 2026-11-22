@@ -129,6 +129,66 @@ final class EnterpriseInventoryLotFoundationTest extends TestCase
         }
     }
 
+    public function test_lot_status_http_route_enforces_warehouse_scope_before_validation_in_arabic_and_english(): void
+    {
+        $this->seed(CoreReferenceSeeder::class);
+        $fixture = $this->fixture();
+        $actor = $this->inventoryUser($fixture['store_id']);
+        $service = app(InventoryLotService::class);
+        $ownLot = $service->upsert(
+            $actor,
+            $fixture['warehouse_id'],
+            $fixture['product_id'],
+            ['identifier' => 'SCOPE-OWN-LOT'],
+        );
+        $foreignLotId = (int) DB::table('enterprise_inventory_lots')->insertGetId([
+            'store_id' => $fixture['other_store_id'],
+            'warehouse_id' => $fixture['other_store_warehouse_id'],
+            'product_id' => $fixture['other_store_product_id'],
+            'identifier' => 'SCOPE-FOREIGN-LOT',
+            'normalized_identifier' => 'SCOPE-FOREIGN-LOT',
+            'status' => 'active',
+            'created_by' => $actor->id,
+            'updated_by' => $actor->id,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $auditCount = DB::table('audit_logs')->count();
+        $invalid = [
+            'store_id' => $fixture['store_id'],
+            'warehouse_id' => $fixture['warehouse_id'],
+            'status' => ['not-a-status'],
+        ];
+        foreach (['ar', 'en'] as $locale) {
+            $actor->forceFill(['locale' => $locale])->save();
+            foreach ([$foreignLotId, $foreignLotId + 1000000] as $unavailableId) {
+                $this->actingAs($actor->fresh())
+                    ->postJson(route('admin.erp.wms.lots.status', ['lot' => $unavailableId]), $invalid)
+                    ->assertNotFound();
+            }
+            $this->actingAs($actor->fresh())
+                ->postJson(route('admin.erp.wms.lots.status', ['lot' => $ownLot->id]), $invalid)
+                ->assertUnprocessable()
+                ->assertJsonValidationErrors('status');
+        }
+
+        $this->assertDatabaseHas('enterprise_inventory_lots', ['id' => $foreignLotId, 'status' => 'active']);
+        $this->assertDatabaseHas('enterprise_inventory_lots', ['id' => $ownLot->id, 'status' => 'active']);
+        $this->assertSame($auditCount, DB::table('audit_logs')->count());
+
+        $this->actingAs($actor->fresh())
+            ->post(route('admin.erp.wms.lots.status', ['lot' => $ownLot->id]), [
+                'store_id' => $fixture['store_id'],
+                'warehouse_id' => $fixture['warehouse_id'],
+                'status' => 'quarantined',
+            ])->assertRedirect();
+
+        $this->assertDatabaseHas('enterprise_inventory_lots', ['id' => $ownLot->id, 'status' => 'quarantined']);
+        $this->assertDatabaseHas('enterprise_inventory_lots', ['id' => $foreignLotId, 'status' => 'active']);
+        $this->assertSame($auditCount + 1, DB::table('audit_logs')->count());
+    }
+
     public function test_expiry_window_is_date_bounded_authorized_and_limited_to_one_hundred_rows(): void
     {
         $this->seed(CoreReferenceSeeder::class);
