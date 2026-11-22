@@ -53,6 +53,10 @@ final class SmartOrderingCustomerGrowthController extends Controller
         TenantContextResolver $tenants,
     ): JsonResponse {
         $this->authorizeSite($request, $site, $tenants, 'smart_ordering.manage');
+
+        // Resolve the authorized source order before exposing field validation.
+        $repeat->assertSourceOrderInScope($site, $customer, $order);
+
         $data = $request->validate([
             'order_item_ids' => ['nullable', 'array', 'max:100'],
             'order_item_ids.*' => ['integer', 'min:1'],
