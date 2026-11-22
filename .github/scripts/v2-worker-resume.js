@@ -93,8 +93,16 @@ function decide({ issue, branches, prs, refs, checkpoint }) {
   const original = [...originals][0] || null;
   if (pr) {
     const state = stateForPR(pr);
-    if (state === 'OPEN') return { action: 'RESUME_ORIGINAL_PR', branch: pr.head.ref,
-      pr: pr.number, head: pr.head.sha, reason: 'existing-pr-must-be-resumed' };
+    if (state === 'OPEN') {
+      // A missing canonical head SHA is not a safe restart point. Never
+      // convert incomplete PR metadata into permission to resume or write.
+      if (typeof pr.head?.ref !== 'string' || !pr.head.ref ||
+          typeof pr.head?.sha !== 'string' || !pr.head.sha) {
+        return { action: 'BLOCK_UNKNOWN_PR_HEAD', reason: 'missing-authoritative-pr-ref-or-sha' };
+      }
+      return { action: 'RESUME_ORIGINAL_PR', branch: pr.head.ref,
+        pr: pr.number, head: pr.head.sha, reason: 'existing-pr-must-be-resumed' };
+    }
     if (state === 'MERGED') return { action: 'VERIFY_INTEGRATION_ACCEPTANCE',
       branch: original, pr: pr.number, head: pr.merge_commit_sha || null,
       reason: 'original-pr-already-merged-no-new-pr' };
