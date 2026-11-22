@@ -449,6 +449,67 @@ class SmartOrderingMenuDomainTest extends TestCase
         $this->assertNotNull(app(SmartOrderingMenuRevisionService::class)->published($site));
     }
 
+    public function test_menu_editor_rejects_malformed_focus_before_draft_mutation_in_ar_en(): void
+    {
+        $owned = $this->fixture('FOCUS-INVALID-A', 5.000);
+        $foreign = $this->fixture('FOCUS-INVALID-B', 7.000);
+        [$draft, $menu] = $this->draftItem($owned, app(SmartOrderingMenuWriteService::class));
+        $url = route('admin.smart-ordering.menu.index');
+        $tables = ['smart_ordering_revisions', 'smart_ordering_menus', 'smart_ordering_menu_items', 'audit_logs'];
+        $before = [];
+        foreach ($tables as $table) {
+            $before[$table] = DB::table($table)->count();
+        }
+        $originalLocale = app()->getLocale();
+
+        try {
+            foreach (['ar', 'en'] as $locale) {
+                $owned['admin']->forceFill(['locale' => $locale])->saveQuietly();
+                app()->setLocale($locale);
+                foreach ([
+                    '?menu_id=invalid',
+                    '?menu_id=0',
+                    '?menu_id=-1',
+                    '?menu_id=1.5',
+                    '?menu_id=99999999999999999999999999',
+                    '?menu_id%5B%5D='.$menu->id,
+                ] as $invalid) {
+                    $this->actingAs($owned['admin']->fresh())
+                        ->getJson($url.'?store_id='.$owned['store_id'].'&'.ltrim($invalid, '?'))
+                        ->assertUnprocessable();
+                }
+                $this->actingAs($foreign['admin']->fresh())
+                    ->getJson($url.'?store_id='.$owned['store_id'].'&menu_id=invalid')
+                    ->assertNotFound();
+            }
+        } finally {
+            app()->setLocale($originalLocale);
+        }
+
+        $roleless = User::factory()->create(['is_active' => true, 'locale' => 'en']);
+        $this->actingAs($roleless)
+            ->getJson($url.'?store_id='.$owned['store_id'].'&menu_id=invalid')
+            ->assertForbidden();
+        foreach ($tables as $table) {
+            $this->assertSame($before[$table], DB::table($table)->count(), $table.' unchanged');
+        }
+
+        try {
+            foreach (['ar', 'en'] as $locale) {
+                $owned['admin']->forceFill(['locale' => $locale])->saveQuietly();
+                app()->setLocale($locale);
+                foreach (['', '&menu_id=', '&menu_id='.$menu->id] as $valid) {
+                    $this->actingAs($owned['admin']->fresh())
+                        ->get($url.'?store_id='.$owned['store_id'].$valid)
+                        ->assertOk()
+                        ->assertSee('id="menu-'.$menu->id.'"', false);
+                }
+            }
+        } finally {
+            app()->setLocale($originalLocale);
+        }
+    }
+
     public function test_menu_builder_bounds_default_editor_and_opens_focused_records_directly(): void
     {
         $fixture = $this->fixture('FOCUS', 5.000);
