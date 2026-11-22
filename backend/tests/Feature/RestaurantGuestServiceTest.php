@@ -232,6 +232,90 @@ final class RestaurantGuestServiceTest extends TestCase
         ]);
     }
 
+    public function test_guest_mutation_route_scope_precedes_body_validation_in_ar_and_en(): void
+    {
+        $service = app(RestaurantGuestService::class);
+        $sibling = $this->branch($this->storeA, 'guest-sibling-route');
+        DB::table('smart_ordering_entitlements')->insert([
+            'site_id' => $sibling->site_id,
+            'branch_id' => null,
+            'scope_key' => 'site',
+            'module' => 'reservations',
+            'enabled' => true,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        $reservation = $service->createReservation($sibling, [
+            'guest_name' => 'Other Branch Guest',
+            'guest_phone' => null,
+            'guest_email' => null,
+            'party_size' => 2,
+            'service_at' => '2026-10-18T19:00',
+            'table_public_id' => null,
+            'notes' => null,
+        ], $this->admin);
+        $entry = $service->createWaitlist($sibling, [
+            'guest_name' => 'Other Branch Waiting',
+            'guest_phone' => null,
+            'guest_email' => null,
+            'party_size' => 2,
+            'quoted_wait_minutes' => 15,
+            'priority' => 0,
+            'priority_reason' => null,
+            'notes' => null,
+        ], $this->admin);
+
+        $before = [
+            'reservation' => DB::table('smart_ordering_reservations')
+                ->where('public_id', $reservation)->first(),
+            'waitlist' => DB::table('smart_ordering_waitlist_entries')
+                ->where('public_id', $entry)->first(),
+            'audit_count' => DB::table('audit_logs')->count(),
+        ];
+        $previousLocale = app()->getLocale();
+        try {
+            foreach (['ar', 'en'] as $locale) {
+                app()->setLocale($locale);
+                $this->admin->forceFill(['locale' => $locale])->saveQuietly();
+
+                foreach ([$reservation, (string) Str::uuid()] as $id) {
+                    foreach (['admin.smart-ordering.reservations.update' => 'putJson',
+                        'admin.smart-ordering.reservations.transition' => 'postJson'] as $route => $verb) {
+                        $url = route($route, [$this->branchA->public_id, $id]);
+                        $this->actingAs($this->admin->fresh())->$verb($url, [])->assertNotFound();
+                        $this->actingAs($this->admin->fresh())->$verb($url, [
+                            'status' => ['invalid'],
+                            'guest_name' => ['invalid'],
+                        ])->assertNotFound();
+                    }
+                }
+                foreach ([$entry, (string) Str::uuid()] as $id) {
+                    foreach ([
+                        'admin.smart-ordering.waitlist.update' => 'putJson',
+                        'admin.smart-ordering.waitlist.transition' => 'postJson',
+                        'admin.smart-ordering.waitlist.convert' => 'postJson',
+                    ] as $route => $verb) {
+                        $url = route($route, [$this->branchA->public_id, $id]);
+                        $this->actingAs($this->admin->fresh())->$verb($url, [])->assertNotFound();
+                        $this->actingAs($this->admin->fresh())->$verb($url, [
+                            'status' => ['invalid'],
+                            'seat_now' => ['invalid'],
+                            'guest_name' => ['invalid'],
+                        ])->assertNotFound();
+                    }
+                }
+            }
+        } finally {
+            app()->setLocale($previousLocale);
+        }
+
+        $this->assertEquals($before['reservation'], DB::table('smart_ordering_reservations')
+            ->where('public_id', $reservation)->first());
+        $this->assertEquals($before['waitlist'], DB::table('smart_ordering_waitlist_entries')
+            ->where('public_id', $entry)->first());
+        $this->assertSame($before['audit_count'], DB::table('audit_logs')->count());
+    }
+
     public function test_cross_tenant_exact_record_actions_fail_closed(): void
     {
         $service = app(RestaurantGuestService::class);
