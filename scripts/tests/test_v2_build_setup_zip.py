@@ -70,6 +70,52 @@ class DeterministicSetupZipTest(unittest.TestCase):
             with self.assertRaisesRegex(SetupBuildError, "inside its staging root"):
                 build_setup_zip(root, root / "embedded.zip", SOURCE_DATE_EPOCH)
 
+    def test_destination_created_after_preflight_is_never_overwritten(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            root = base / "source"
+            root.mkdir()
+            (root / "VERSION").write_bytes(b"1.0.1\\n")
+            output = base / "setup.zip"
+            original_link = os.link
+
+            def competing_publisher(source, destination):
+                # Simulate another publisher winning the race between the
+                # initial output.exists() check and final ZIP publication.
+                output.write_bytes(b"other-worker-zip")
+                return original_link(source, destination)
+
+            with mock.patch("v2_build_setup_zip.os.link", side_effect=competing_publisher):
+                with self.assertRaisesRegex(SetupBuildError, "existing Setup ZIP"):
+                    build_setup_zip(root, output, SOURCE_DATE_EPOCH)
+            self.assertEqual(output.read_bytes(), b"other-worker-zip")
+            self.assertEqual(list(base.glob(".v2-setup-*.zip")), [])
+
+    def test_destination_symlink_created_after_preflight_is_never_followed(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            root = base / "source"
+            root.mkdir()
+            (root / "VERSION").write_bytes(b"1.0.1\\n")
+            outside = base / "outside"
+            outside.write_bytes(b"preserve-secret")
+            output = base / "setup.zip"
+            original_link = os.link
+
+            def competing_symlink(source, destination):
+                try:
+                    output.symlink_to(outside)
+                except (OSError, NotImplementedError) as exc:
+                    self.skipTest(f"Symlinks unavailable: {exc}")
+                return original_link(source, destination)
+
+            with mock.patch("v2_build_setup_zip.os.link", side_effect=competing_symlink):
+                with self.assertRaisesRegex(SetupBuildError, "existing Setup ZIP"):
+                    build_setup_zip(root, output, SOURCE_DATE_EPOCH)
+            self.assertTrue(output.is_symlink())
+            self.assertEqual(outside.read_bytes(), b"preserve-secret")
+            self.assertEqual(list(base.glob(".v2-setup-*.zip")), [])
+
     def test_symlink_and_hardlink_cannot_smuggle_data(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary) / "source"
