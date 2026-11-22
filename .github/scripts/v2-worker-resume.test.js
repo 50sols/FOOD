@@ -119,3 +119,15 @@ test('read-only preflight never writes, closed original retains audit', async ()
   assert.equal(x.action,'BLOCK_CLOSED_ORIGINAL_PR');
   assert.equal(x.original_pr,4152);
 });
+
+test('the V2 PR isolation gate calls resume-first before merge, not main', () => {
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const workflow = fs.readFileSync(path.join(__dirname,
+    '../workflows/v2-isolation-gate.yml'), 'utf8');
+  assert.match(workflow, /Resume-first historical PR gate/);
+  assert.match(workflow, /buildPlan\(\{/);
+  assert.match(workflow, /plan\.original_pr === context\.payload\.pull_request\.number/);
+  assert.match(workflow, /branches:\s*\n\s*- Foodex_V2/);
+  assert.doesNotMatch(workflow, /\n\s*- main\b/);
+});
