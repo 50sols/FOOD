@@ -169,6 +169,16 @@ final class EnterpriseInventoryLotFoundationTest extends TestCase
                 $this->actingAs($actor->fresh())
                     ->postJson(route('admin.erp.wms.lots.status', ['lot' => $unavailableId]), $invalid)
                     ->assertNotFound();
+                // Even valid and empty payloads cannot bypass route-lot warehouse scope.
+                $this->actingAs($actor->fresh())
+                    ->postJson(route('admin.erp.wms.lots.status', ['lot' => $unavailableId]), [
+                        'store_id' => $fixture['store_id'],
+                        'warehouse_id' => $fixture['warehouse_id'],
+                        'status' => 'quarantined',
+                    ])->assertNotFound();
+                $this->actingAs($actor->fresh())
+                    ->postJson(route('admin.erp.wms.lots.status', ['lot' => $unavailableId]), [])
+                    ->assertNotFound();
             }
             $this->actingAs($actor->fresh())
                 ->postJson(route('admin.erp.wms.lots.status', ['lot' => $ownLot->id]), $invalid)
