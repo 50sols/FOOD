@@ -85,13 +85,26 @@ final class SmartOrderingAnalyticsController extends Controller
             fputcsv($out, []);
             fputcsv($out, ['qr_public_id', 'source', 'campaign', 'views', 'orders', 'conversion', 'revenue', 'aov']);
             foreach ($dashboard['sources'] as $row) {
-                fputcsv($out, [$row['qr_public_id'], $row['source'], $row['campaign'], $row['views'], $row['orders'], $row['conversion'], $row['revenue'], $row['aov']]);
+                fputcsv($out, array_map(self::csvSafeCell(...), [
+                    $row['qr_public_id'], $row['source'], $row['campaign'], $row['views'],
+                    $row['orders'], $row['conversion'], $row['revenue'], $row['aov'],
+                ]));
             }
             fclose($out);
         }, 'smart-ordering-analytics-'.now()->format('Ymd-His').'.csv', [
             'Content-Type' => 'text/csv; charset=UTF-8',
             'Cache-Control' => 'private, no-store',
         ]);
+    }
+
+    /** Prevent spreadsheet formula evaluation while preserving numeric CSV cells. */
+    private static function csvSafeCell(mixed $value): mixed
+    {
+        if (is_string($value) && preg_match('/^[\\s\\p{C}]*[=+\\-@]/u', $value) === 1) {
+            return "'".$value;
+        }
+
+        return $value;
     }
 
     private function positiveFilterId(mixed $value): ?int
