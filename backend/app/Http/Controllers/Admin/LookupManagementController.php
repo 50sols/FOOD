@@ -119,6 +119,10 @@ final class LookupManagementController extends Controller
             $query->where($table.'.is_active', false);
         }
 
+        // Validate pagination only after permission, tenant and malformed
+        // filter/store guards; never silently fall back to page one.
+        $request->validate(['page' => ['nullable', 'integer', 'min:1']]);
+
         $storeId = $isSuperAdmin ? $requestedStoreId : ($currentStoreId ?? 0);
         if ($isSuperAdmin && $storeId > 0) {
             $query->where($table.'.store_id', $storeId);
