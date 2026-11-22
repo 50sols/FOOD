@@ -48,6 +48,13 @@ final class SmartOrderingMenuAdminController extends Controller
         RestaurantTemplateSelectionService $templateSelection,
     ): View {
         [$actor, $site, $stores] = $this->context($request, $tenants, $sites);
+
+        // Authenticate and scope the selected store first, then validate the
+        // explicit editor selector before loading or creating any draft.
+        // A malformed menu_id must not silently focus the first menu.
+        $focusFilter = $request->validate(['menu_id' => ['nullable', 'integer', 'min:1']]);
+        $requestedMenuId = isset($focusFilter['menu_id']) ? (int) $focusFilter['menu_id'] : 0;
+
         $draft = $revisions->draft($actor, $site, $request);
         $publishedRevision = $revisions->published($site);
         $scheduledRevision = $revisions->scheduled($site);
@@ -76,7 +83,6 @@ final class SmartOrderingMenuAdminController extends Controller
             ->get(['id', 'public_id', 'name_ar', 'name_en', 'sort_order', 'is_default', 'is_visible']);
 
         $reviewMode = $request->boolean('review') || ($setupFlow && in_array($setupStep, ['review', 'publish'], true));
-        $requestedMenuId = $request->integer('menu_id');
         $focusedMenuId = $menuIndex->contains(fn (SmartOrderingMenu $menu): bool => (int) $menu->id === $requestedMenuId)
             ? $requestedMenuId
             : ($menuIndex->first() === null ? null : (int) $menuIndex->first()->id);
