@@ -94,9 +94,6 @@ final class SmartOrderingAnalyticsController extends Controller
         ]);
     }
 
-    /**
-     * @return array{0:User,1:list<int>,2:array<string,mixed>}
-     */
     private function positiveFilterId(mixed $value): ?int
     {
         if (! is_int($value) && ! (is_string($value) && ctype_digit($value))) {
@@ -108,6 +105,9 @@ final class SmartOrderingAnalyticsController extends Controller
         return $id > 0 ? $id : null;
     }
 
+    /**
+     * @return array{0:User,1:list<int>,2:array<string,mixed>}
+     */
     private function context(
         Request $request,
         OperationalTenantScope $scope,
