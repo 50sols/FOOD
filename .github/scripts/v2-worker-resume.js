@@ -71,6 +71,42 @@ function stateForPR(pr) {
   return 'UNKNOWN';
 }
 
+// A CLOSED_UNMERGED PR is immutable audit evidence, but not a live worker
+// when its branch has been deleted. Never let it replace an older open
+// original, nor waive the live-branch or historic-provenance checks.
+function reconcileClosedDuplicateHistory({ branches, prs, refs, checkpoint }) {
+  const actual = prs.filter(pr => pr.base?.ref === 'Foodex_V2');
+  const active = actual.filter(pr => stateForPR(pr) === 'OPEN');
+  const closed = actual.filter(pr => stateForPR(pr) === 'CLOSED_UNMERGED');
+  if (active.length !== 1 || closed.length === 0 ||
+      active.length + closed.length !== actual.length) return null;
+  const original = active[0];
+  const head = original.head?.ref;
+  if (typeof head !== 'string' || !head ||
+      typeof original.head?.sha !== 'string' || !original.head.sha ||
+      !Number.isSafeInteger(original.number) || original.number <= 0 ||
+      branches.length !== 1 || branches[0] !== head) return null;
+
+  const historicalHeads = new Set();
+  const knownPrs = new Set([original.number]);
+  for (const pr of closed) {
+    const oldHead = pr.head?.ref;
+    // A later closed duplicate may be ignored only after its remote ref
+    // disappears. An older closed original cannot be silently replaced.
+    if (!Number.isSafeInteger(pr.number) || pr.number <= original.number ||
+        typeof oldHead !== 'string' || !oldHead || oldHead === head ||
+        branches.includes(oldHead) || historicalHeads.has(oldHead)) return null;
+    knownPrs.add(pr.number);
+    historicalHeads.add(oldHead);
+  }
+  const knownHeads = new Set([head, ...historicalHeads]);
+  if (refs.some(ref => (ref.branch && !knownHeads.has(ref.branch)) ||
+      (ref.pr && !knownPrs.has(ref.pr)))) return null;
+  if (checkpoint?.branch && !knownHeads.has(checkpoint.branch)) return null;
+  return { action: 'RESUME_ORIGINAL_PR', branch: head, pr: original.number,
+    head: original.head.sha, reason: 'older-open-original-after-closed-duplicate-cleanup' };
+}
+
 function decide({ issue, branches, prs, refs, checkpoint }) {
   if (!issue || issue.state !== 'open' || !/^V2(?:\s|[:|\[-])/i.test(issue.title || '')) {
     return { action: 'BLOCK_NOT_OPEN_V2', reason: 'not-active-v2-issue' };
@@ -79,6 +115,8 @@ function decide({ issue, branches, prs, refs, checkpoint }) {
   if (labels.some(l => l.startsWith('gate:'))) {
     return { action: 'BLOCK_HUMAN_GATE', reason: 'explicit-approval-or-environment-gate' };
   }
+  const reconciled = reconcileClosedDuplicateHistory({ branches, prs, refs, checkpoint });
+  if (reconciled) return reconciled;
   const originals = new Set([...branches, ...refs.map(r => r.branch).filter(Boolean),
     ...(checkpoint?.branch ? [checkpoint.branch] : []),
     ...prs.map(pr => pr.head?.ref).filter(Boolean)]);
