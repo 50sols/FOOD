@@ -9,6 +9,7 @@ import tempfile
 import unittest
 import zipfile
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from v2_build_setup_zip import SetupBuildError, build_setup_zip  # noqa: E402
@@ -87,6 +88,55 @@ class DeterministicSetupZipTest(unittest.TestCase):
                 self.skipTest(f"Hardlinks unavailable: {exc}")
             with self.assertRaisesRegex(SetupBuildError, "Hard-linked"):
                 build_setup_zip(root, Path(temporary) / "output.zip", SOURCE_DATE_EPOCH)
+
+    def test_file_replacement_between_scan_and_open_never_publishes_zip(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            stage = base / "source"
+            stage.mkdir()
+            (stage / "VERSION").write_bytes(b"1.0.1\\n")
+            replacement_file = base / "replacement"
+            replacement_file.write_bytes(b"not-original")
+            output = base / "setup.zip"
+
+            from v2_build_setup_zip import _open_verified_member
+
+            def replace_before_open(path, meta, name):
+                if name == "VERSION":
+                    os.replace(replacement_file, path)
+                return _open_verified_member(path, meta, name)
+
+            with mock.patch("v2_build_setup_zip._open_verified_member", side_effect=replace_before_open):
+                with self.assertRaisesRegex(SetupBuildError, "changed before packaging"):
+                    build_setup_zip(stage, output, SOURCE_DATE_EPOCH)
+            self.assertFalse(output.exists(), "An unsafe staging snapshot cannot publish a ZIP")
+
+    def test_symlink_swap_between_scan_and_open_never_publishes_zip(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            stage = base / "source"
+            stage.mkdir()
+            original = stage / "VERSION"
+            original.write_bytes(b"1.0.1\\n")
+            secret = base / "outside-secret"
+            secret.write_bytes(b"should-not-appear")
+            output = base / "setup.zip"
+
+            from v2_build_setup_zip import _open_verified_member
+
+            def swap_to_symlink(path, meta, name):
+                if name == "VERSION":
+                    path.unlink()
+                    try:
+                        path.symlink_to(secret)
+                    except (OSError, NotImplementedError) as exc:
+                        self.skipTest(f"Symlinks unavailable: {exc}")
+                return _open_verified_member(path, meta, name)
+
+            with mock.patch("v2_build_setup_zip._open_verified_member", side_effect=swap_to_symlink):
+                with self.assertRaisesRegex(SetupBuildError, "changed before packaging"):
+                    build_setup_zip(stage, output, SOURCE_DATE_EPOCH)
+            self.assertFalse(output.exists(), "Symlinked secrets must not be archived")
 
     def test_canonical_release_factory_reuses_the_verified_zip_writer(self) -> None:
         # Regression for G004: a green CI-only staging ZIP is not evidence
