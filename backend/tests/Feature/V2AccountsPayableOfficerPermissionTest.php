@@ -1,0 +1,77 @@
+<?php
+
+namespace Tests\Feature;
+
+use App\Models\Role;
+use App\Models\User;
+use Database\Seeders\CoreReferenceSeeder;
+use Illuminate\Foundation\Testing\RefreshDatabase;
+use Tests\TestCase;
+
+/**
+ * T122R17: AP Officer baseline must not accidentally inherit approval,
+ * posting, security administration, or unrelated channel privileges.
+ *
+ * This is a bounded role-catalog regression, not full AP workflow acceptance.
+ */
+final class V2AccountsPayableOfficerPermissionTest extends TestCase
+{
+    use RefreshDatabase;
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        config()->set('security.mfa.enforce_privileged', false);
+        $this->seed(CoreReferenceSeeder::class);
+    }
+
+    public function test_ap_officer_catalog_is_tenant_scoped_and_does_not_grant_post_or_approval(): void
+    {
+        $definition = config('job_roles.roles.AP_OFFICER');
+
+        $this->assertSame('finance', $definition['domain']);
+        $this->assertSame('tenant', $definition['business_scope']);
+        $this->assertSame('operator', $definition['level']);
+        $this->assertContains('finance', $definition['required_modules']);
+        $this->assertContains('finance.view', $definition['permissions']);
+        $this->assertContains('finance.manage', $definition['permissions']);
+
+        foreach ([
+            '*',
+            'finance.post',
+            'finance.approve',
+            'reports.export',
+            'roles.manage',
+            'users.roles.manage',
+            'security.approve',
+            'procurement.purchase_orders.issue',
+            'procurement.goods_receipts.post',
+            'orders.dispatch',
+        ] as $forbidden) {
+            $this->assertNotContains($forbidden, $definition['permissions'], $forbidden);
+        }
+    }
+
+    public function test_ap_officer_effective_permissions_do_not_include_finance_post_or_security_management(): void
+    {
+        $role = Role::query()->where('code', 'AP_OFFICER')->firstOrFail();
+        $actor = User::factory()->create(['is_active' => true]);
+        $actor->roles()->attach($role);
+
+        $this->assertTrue($actor->fresh()->hasPermission('finance.view'));
+        $this->assertTrue($actor->fresh()->hasPermission('finance.manage'));
+
+        foreach ([
+            'finance.post',
+            'finance.approve',
+            'roles.manage',
+            'users.roles.manage',
+            'security.approve',
+            'procurement.goods_receipts.post',
+            'orders.dispatch',
+        ] as $forbidden) {
+            $this->assertFalse($actor->fresh()->hasPermission($forbidden), $forbidden);
+        }
+    }
+}
