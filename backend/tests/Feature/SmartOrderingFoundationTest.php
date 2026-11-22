@@ -79,6 +79,11 @@ class SmartOrderingFoundationTest extends TestCase
                         'action' => 'bump',
                         'operation_key' => (string) Str::uuid(),
                     ])->assertNotFound();
+                    // A valid action with a malformed idempotency key must not disclose validation.
+                    $this->actingAs($admin->fresh())->postJson($url, [
+                        'action' => 'bump',
+                        'operation_key' => ['invalid-nested-key'],
+                    ])->assertNotFound();
                 }
             }
         } finally {
