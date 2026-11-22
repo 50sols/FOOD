@@ -67,13 +67,20 @@ final class V2RetailIncomingOrdersSelectorIsolationTest extends TestCase
             }
 
             $this->actingAs($retailActor->fresh())
+                ->get($this->incomingOrdersUrl(['store_id' => $ownedStore, 'store' => $ownedStore]))
+                ->assertOk()
+                ->assertViewHas('storeIds', [$ownedStore]);
+
+            $this->actingAs($retailActor->fresh())
                 ->get($this->incomingOrdersUrl(['store_id' => $ownedStore, 'store' => $foreignStore]))
                 ->assertNotFound();
 
             foreach (['0', '-1', 'not-an-id', '01'] as $invalidSelector) {
-                $this->actingAs($retailActor->fresh())
-                    ->get($this->incomingOrdersUrl(['store_id' => $invalidSelector]))
-                    ->assertNotFound();
+                foreach (['store_id', 'store'] as $selector) {
+                    $this->actingAs($retailActor->fresh())
+                        ->get($this->incomingOrdersUrl([$selector => $invalidSelector]))
+                        ->assertNotFound();
+                }
             }
 
             $this->actingAs($wholesaleActor)
