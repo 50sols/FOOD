@@ -117,7 +117,7 @@ class V2DeploymentRiskTest(unittest.TestCase):
     def test_post_merge_full_backend_acceptance(self):
         workflow = (ROOT / ".github/workflows/v2-integrated-backend-acceptance.yml").read_text()
         for item in ("push:", "Foodex_V2", "uses: ./.github/workflows/backend-ci.yml",
-                     "cancel-in-progress: true"):
+                     "cancel-in-progress: false"):
             self.assertIn(item, workflow)
 
 if __name__ == "__main__":
