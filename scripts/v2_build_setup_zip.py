@@ -28,6 +28,34 @@ def _zip_timestamp(epoch: int) -> tuple[int, int, int, int, int, int]:
     return moment.year, moment.month, moment.day, moment.hour, moment.minute, moment.second // 2 * 2
 
 
+def _member_identity(meta: os.stat_result) -> tuple[int, int, int, int, int]:
+    """Reject a replaced or modified source inode, even if size/mtime are restored."""
+    return meta.st_dev, meta.st_ino, meta.st_size, meta.st_mtime_ns, meta.st_ctime_ns
+
+
+def _open_verified_member(path: Path, meta: os.stat_result, name: str):
+    """Open the exact regular inode scanned earlier, refusing symlink substitutions."""
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(path, flags)
+    except OSError as exc:
+        raise SetupBuildError(f"Setup staging member changed before packaging: {name}") from exc
+    try:
+        opened = os.fstat(descriptor)
+        current = path.lstat()
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or not stat.S_ISREG(current.st_mode)
+            or _member_identity(opened) != _member_identity(meta)
+            or _member_identity(current) != _member_identity(meta)
+        ):
+            raise SetupBuildError(f"Setup staging member changed before packaging: {name}")
+        return os.fdopen(descriptor, "rb")
+    except BaseException:
+        os.close(descriptor)
+        raise
+
+
 def build_setup_zip(source_root: Path, output: Path, source_epoch: int) -> str:
     """Write a fresh, sorted, timestamp-normalized archive; return SHA-256."""
     if not source_root.is_dir() or source_root.is_symlink():
@@ -71,12 +99,12 @@ def build_setup_zip(source_root: Path, output: Path, source_epoch: int) -> str:
                 if is_dir:
                     archive.writestr(info, b"")
                 else:
-                    with path.open("rb") as source, archive.open(info, "w", force_zip64=False) as target:
+                    with _open_verified_member(path, meta, name) as source, archive.open(info, "w", force_zip64=False) as target:
                         shutil.copyfileobj(source, target, length=1024 * 1024)
+                        if _member_identity(os.fstat(source.fileno())) != _member_identity(meta):
+                            raise SetupBuildError(f"Setup staging member changed during packaging: {name}")
                     latest = path.lstat()
-                    if (latest.st_size, latest.st_mtime_ns, latest.st_ino) != (
-                        meta.st_size, meta.st_mtime_ns, meta.st_ino
-                    ):
+                    if not stat.S_ISREG(latest.st_mode) or _member_identity(latest) != _member_identity(meta):
                         raise SetupBuildError(f"Setup staging member changed during packaging: {name}")
         os.replace(temporary, output)
     finally:
