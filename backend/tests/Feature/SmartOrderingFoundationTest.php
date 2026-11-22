@@ -34,6 +34,67 @@ class SmartOrderingFoundationTest extends TestCase
         config()->set('smart_ordering.pilot_key', 'pilot-secret');
     }
 
+    public function test_kitchen_action_missing_ticket_scope_precedes_validation_in_ar_and_en(): void
+    {
+        $storeId = $this->retailStore('SO-KITCHEN-ROUTE');
+        $admin = $this->storeAdmin($storeId);
+        $site = app(SmartOrderingSiteService::class)->ensureForStore($storeId, $admin);
+        $branch = $this->branch((int) $site->id, 'KITCHEN-ROUTE');
+
+        DB::table('smart_ordering_entitlements')->updateOrInsert(
+            [
+                'site_id' => $site->id,
+                'branch_id' => null,
+                'scope_key' => 'site',
+                'module' => 'kitchen_display',
+            ],
+            ['enabled' => true, 'created_at' => now(), 'updated_at' => now()],
+        );
+
+        $missingReference = (string) Str::uuid();
+        $ticketUrl = route('admin.smart-ordering.kitchen.ticket-action', [
+            $branch->public_id, $missingReference,
+        ]);
+        $itemUrl = route('admin.smart-ordering.kitchen.item-action', [
+            $branch->public_id, $missingReference, 99999,
+        ]);
+        $ticketEventsBefore = DB::table('smart_ordering_kitchen_ticket_events')->count();
+        $ticketStatesBefore = DB::table('smart_ordering_kitchen_ticket_states')->count();
+        $itemStatesBefore = DB::table('smart_ordering_kitchen_item_states')->count();
+        $previousLocale = app()->getLocale();
+
+        try {
+            foreach (['ar', 'en'] as $locale) {
+                app()->setLocale($locale);
+                $admin->forceFill(['locale' => $locale])->saveQuietly();
+
+                foreach ([$ticketUrl, $itemUrl] as $url) {
+                    $this->actingAs($admin->fresh())->postJson($url, [])
+                        ->assertNotFound();
+                    $this->actingAs($admin->fresh())->postJson($url, [
+                        'action' => ['invalid'],
+                        'operation_key' => 'malformed',
+                    ])->assertNotFound();
+                    $this->actingAs($admin->fresh())->postJson($url, [
+                        'action' => 'bump',
+                        'operation_key' => (string) Str::uuid(),
+                    ])->assertNotFound();
+                    // A valid action with a malformed idempotency key must not disclose validation.
+                    $this->actingAs($admin->fresh())->postJson($url, [
+                        'action' => 'bump',
+                        'operation_key' => ['invalid-nested-key'],
+                    ])->assertNotFound();
+                }
+            }
+        } finally {
+            app()->setLocale($previousLocale);
+        }
+
+        $this->assertSame($ticketEventsBefore, DB::table('smart_ordering_kitchen_ticket_events')->count());
+        $this->assertSame($ticketStatesBefore, DB::table('smart_ordering_kitchen_ticket_states')->count());
+        $this->assertSame($itemStatesBefore, DB::table('smart_ordering_kitchen_item_states')->count());
+    }
+
     public function test_new_restaurant_is_provisioned_fail_closed_with_every_module_off(): void
     {
         $storeId = $this->retailStore('SO-OFF', false);

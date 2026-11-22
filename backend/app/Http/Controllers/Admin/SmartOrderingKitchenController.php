@@ -70,6 +70,7 @@ final class SmartOrderingKitchenController extends Controller
         $actor = $this->actor($request);
         $model = $this->branch($branch, $actor);
         $this->assertEntitled($model);
+        $this->kitchen->assertTicketInBranch($model, $reference);
 
         $data = $request->validate([
             'action' => ['required', Rule::in(['bump', 'recall', 'expedite'])],
@@ -91,6 +92,7 @@ final class SmartOrderingKitchenController extends Controller
         $actor = $this->actor($request);
         $model = $this->branch($branch, $actor);
         $this->assertEntitled($model);
+        $this->kitchen->assertTicketInBranch($model, $reference);
 
         $data = $request->validate([
             'action' => ['required', Rule::in(['bump', 'recall'])],
