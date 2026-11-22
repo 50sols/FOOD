@@ -63,6 +63,17 @@ class V2RestaurantAnalyticsSidebarAuthorityTest extends TestCase
                         'store_id' => $owned, 'branch_id' => $foreignBranch,
                         'fulfillment' => 'malformed-mode',
                     ]))->assertNotFound();
+                    // Well-formed filters also must not reveal unauthorized stores or branches.
+                    $this->actingAs($operator->fresh())->getJson(route($route, [
+                        'store_id' => $foreign,
+                        'from' => '2026-10-01',
+                        'to' => '2026-10-31',
+                    ]))->assertNotFound();
+                    $this->actingAs($operator->fresh())->getJson(route($route, [
+                        'store_id' => $owned,
+                        'branch_id' => $foreignBranch,
+                        'from' => '2026-10-01',
+                    ]))->assertNotFound();
                     $this->actingAs($operator->fresh())->getJson(route($route, [
                         'store_id' => $owned, 'from' => 'malformed-date',
                     ]))->assertUnprocessable()->assertJsonValidationErrors('from');
