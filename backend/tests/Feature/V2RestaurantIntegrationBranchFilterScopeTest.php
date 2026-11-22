@@ -97,7 +97,7 @@ final class V2RestaurantIntegrationBranchFilterScopeTest extends TestCase
                 ]))->assertUnprocessable()->assertJsonValidationErrors('status');
                 // Invalid selectors must stay on the normal validator path (422),
                 // never be coerced into an authorization lookup.
-                foreach ([0, 'not-a-branch', ['nested']] as $invalidBranch) {
+                foreach ([0, 'not-a-branch', '99999999999999999999999999999', ['nested']] as $invalidBranch) {
                     $this->actingAs($admin->fresh())->getJson(route($route, [
                         'site' => $siteA->getKey(),
                         'branch_id' => $invalidBranch,
