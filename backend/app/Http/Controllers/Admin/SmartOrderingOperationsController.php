@@ -44,6 +44,20 @@ final class SmartOrderingOperationsController extends Controller
     {
         $actor = $this->actor($request);
 
+        // Permission and an explicitly valid Retail store selector are authority
+        // boundaries: resolve them before unrelated search-filter validation.
+        // Keep the payments tab on its stricter finance.view permission.
+        $tabSelector = $request->query('tab');
+        $permission = $tabSelector === 'payments' ? 'finance.view' : 'orders.view';
+        $storeIds = $this->restaurantAccess->allowedStoreIds($actor, $permission, $request);
+        $storeSelector = $request->query('store_id');
+        if (is_string($storeSelector) && ctype_digit($storeSelector)) {
+            $selectedStore = filter_var($storeSelector, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
+            if ($selectedStore !== false) {
+                abort_unless(in_array($selectedStore, $storeIds, true), 404);
+            }
+        }
+
         $validated = $request->validate([
             'store_id' => ['nullable', 'integer', 'min:1'],
             'status' => ['nullable', Rule::in(['NEW', 'CONFIRMED', 'PREPARING', 'READY', 'OUT_FOR_DELIVERY', 'COMPLETED', 'CANCELLED'])],
@@ -58,8 +72,6 @@ final class SmartOrderingOperationsController extends Controller
         ]);
 
         $tab = (string) ($validated['tab'] ?? 'orders');
-        $permission = $tab === 'payments' ? 'finance.view' : 'orders.view';
-        $storeIds = $this->restaurantAccess->allowedStoreIds($actor, $permission, $request);
 
         // The selected Retail store is an authority boundary, not an ignored
         // display filter. Never silently return another authorized store's
