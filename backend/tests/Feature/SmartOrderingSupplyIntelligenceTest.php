@@ -135,6 +135,129 @@ class SmartOrderingSupplyIntelligenceTest extends TestCase
         }
     }
 
+    public function test_supply_stock_and_waste_scope_explicit_branch_before_payload_validation_ar_en(): void
+    {
+        $f = $this->fixture();
+        $actor = $f['actor'];
+        $role = Role::query()->where('code', 'B2C_STORE_ADMIN')->firstOrFail();
+        DB::table('user_store_roles')->insert([
+            'user_id' => $actor->id,
+            'store_id' => $f['restaurant_store_id'],
+            'role_id' => $role->id,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $foreignStoreId = $this->store('B2C', 'SO-SUPPLY-FOREIGN-'.Str::upper(Str::random(6)));
+        $foreignSiteId = (int) DB::table('smart_ordering_sites')->insertGetId([
+            'public_id' => (string) Str::uuid(),
+            'store_id' => $foreignStoreId,
+            'slug' => 'supply-foreign-'.Str::lower(Str::random(10)),
+            'runtime_state' => 'ENABLED',
+            'master_enabled' => true,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        $foreignBranchId = $this->smartBranch($foreignSiteId, 'FOREIGN');
+        $missingBranchId = (int) DB::table('smart_ordering_branches')->max('id') + 10000;
+
+        $cases = [
+            [
+                'method' => 'PUT',
+                'route' => 'admin.smart-ordering.supply.stock',
+                'payload' => [
+                    'foodex_product_id' => $f['wholesale_product_id'],
+                    'on_hand_quantity' => 10,
+                    'source' => 'physical_count',
+                    'counted_at' => now('Asia/Kuwait')->toIso8601String(),
+                ],
+                'invalid_field' => 'on_hand_quantity',
+            ],
+            [
+                'method' => 'POST',
+                'route' => 'admin.smart-ordering.supply.waste',
+                'payload' => [
+                    'foodex_product_id' => $f['wholesale_product_id'],
+                    'quantity' => 0.5,
+                    'reason' => 'prep_loss',
+                    'occurred_at' => now('Asia/Kuwait')->toIso8601String(),
+                ],
+                'invalid_field' => 'quantity',
+            ],
+        ];
+        $stockBefore = DB::table('smart_ordering_supply_stock_snapshots')->count();
+        $wasteBefore = DB::table('smart_ordering_supply_waste_events')->count();
+
+        foreach (['ar', 'en'] as $locale) {
+            $actor->forceFill(['locale' => $locale])->save();
+            app()->setLocale($locale);
+
+            foreach ($cases as $case) {
+                $url = route($case['route'], $f['site']);
+                $ownedPayload = [
+                    ...$case['payload'],
+                    'branch_id' => $f['branch_id'],
+                ];
+                // Numeric-string selectors must enforce the same branch scope.
+                $this->actingAs($actor->fresh())
+                    ->json($case['method'], $url, [
+                        ...$case['payload'],
+                        'branch_id' => (string) $foreignBranchId,
+                    ])->assertNotFound();
+
+                foreach ([$foreignBranchId, $missingBranchId] as $deniedBranch) {
+                    foreach ([
+                        ['branch_id' => $deniedBranch],
+                        ['branch_id' => $deniedBranch, $case['invalid_field'] => -1],
+                        [...$case['payload'], 'branch_id' => $deniedBranch],
+                    ] as $deniedPayload) {
+                        $this->actingAs($actor->fresh())
+                            ->json($case['method'], $url, $deniedPayload)
+                            ->assertNotFound();
+                    }
+                }
+
+                foreach ([
+                    [],
+                    ['branch_id' => 0],
+                    ['branch_id' => 'invalid'],
+                    ['branch_id' => '999999999999999999999999999999'],
+                    ['branch_id' => $f['branch_id']],
+                    [...$ownedPayload, $case['invalid_field'] => -1],
+                ] as $invalidPayload) {
+                    $this->actingAs($actor->fresh())
+                        ->json($case['method'], $url, $invalidPayload)
+                        ->assertUnprocessable();
+                }
+
+                $this->actingAs($actor->fresh())
+                    ->json($case['method'], $url, $ownedPayload)
+                    ->assertRedirect();
+            }
+        }
+
+        $this->assertSame($stockBefore + 2, DB::table('smart_ordering_supply_stock_snapshots')->count());
+        $this->assertSame($wasteBefore + 2, DB::table('smart_ordering_supply_waste_events')->count());
+        $this->assertDatabaseHas('smart_ordering_supply_stock_snapshots', [
+            'site_id' => $f['site_id'],
+            'branch_id' => $f['branch_id'],
+            'source' => 'physical_count',
+        ]);
+        $this->assertDatabaseHas('smart_ordering_supply_waste_events', [
+            'site_id' => $f['site_id'],
+            'branch_id' => $f['branch_id'],
+            'reason' => 'prep_loss',
+        ]);
+        $this->assertDatabaseMissing('smart_ordering_supply_stock_snapshots', [
+            'site_id' => $f['site_id'],
+            'branch_id' => $foreignBranchId,
+        ]);
+        $this->assertDatabaseMissing('smart_ordering_supply_waste_events', [
+            'site_id' => $f['site_id'],
+            'branch_id' => $foreignBranchId,
+        ]);
+    }
+
     public function test_reorder_is_deterministic_uses_authoritative_stock_only_when_present_and_blocks_stale_sku(): void
     {
         $f = $this->fixture();

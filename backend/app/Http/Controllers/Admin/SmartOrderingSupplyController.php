@@ -169,6 +169,7 @@ final class SmartOrderingSupplyController extends Controller
     ): RedirectResponse {
         $actor = $this->authorizeSite($request, $site, $tenants, 'smart_ordering.manage');
         $this->assertEntitled($site);
+        $this->preflightBranchScope($request, $site, $supply);
         $data = $request->validate([
             'foodex_product_id' => ['required', 'integer', 'min:1'],
             'branch_id' => ['nullable', 'integer', 'min:1'],
@@ -198,6 +199,7 @@ final class SmartOrderingSupplyController extends Controller
     ): RedirectResponse {
         $actor = $this->authorizeSite($request, $site, $tenants, 'smart_ordering.manage');
         $this->assertEntitled($site);
+        $this->preflightBranchScope($request, $site, $supply);
         $data = $request->validate([
             'foodex_product_id' => ['required', 'integer', 'min:1'],
             'branch_id' => ['nullable', 'integer', 'min:1'],
@@ -273,6 +275,22 @@ final class SmartOrderingSupplyController extends Controller
         );
 
         return back()->with('status', $this->msg('تم إخفاء التوصية مؤقتاً.', 'Recommendation dismissed temporarily.'));
+    }
+
+    private function preflightBranchScope(
+        Request $request,
+        SmartOrderingSite $site,
+        SupplyIntelligenceService $supply,
+    ): void {
+        // Resolve only valid explicit branch selectors before unrelated stock
+        // and waste fields. Invalid/missing selectors retain Laravel's 422.
+        $requestedBranch = $request->input('branch_id');
+        if (is_int($requestedBranch) || (is_string($requestedBranch) && ctype_digit($requestedBranch))) {
+            $branchId = filter_var($requestedBranch, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
+            if ($branchId !== false) {
+                $supply->assertBranchInSite($site, $branchId);
+            }
+        }
     }
 
     private function authorizeSite(

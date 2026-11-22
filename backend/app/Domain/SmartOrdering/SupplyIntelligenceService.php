@@ -1101,6 +1101,12 @@ final class SupplyIntelligenceService
         return $id === null ? null : B2bCustomer::query()->find((int) $id);
     }
 
+    /** Read-only preflight: mutation methods still recheck this canonical site scope. */
+    public function assertBranchInSite(SmartOrderingSite $site, int $branchId): void
+    {
+        $this->assertBranch($site, $branchId);
+    }
+
     private function assertBranch(SmartOrderingSite $site, int $branchId): void
     {
         abort_unless(
