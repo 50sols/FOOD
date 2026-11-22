@@ -654,6 +654,74 @@ class SmartOrderingCustomerGrowthTest extends TestCase
         ]);
     }
 
+    public function test_loyalty_adjust_checks_scoped_customer_before_post_validation_in_both_locales(): void
+    {
+        [$storeA, $adminA, $siteA] = $this->restaurant('V2-LOYALTY-ADJUST-A');
+        [$storeB, $adminB, $siteB] = $this->restaurant('V2-LOYALTY-ADJUST-B');
+        $customerA = $this->customer($storeA, 'Local Loyalty A', '+96550000981');
+        $customerB = $this->customer($storeB, 'Foreign Loyalty B', '+96550000982');
+        $this->enable($adminA, $siteA, Module::LOYALTY);
+        $this->enable($adminB, $siteB, Module::LOYALTY);
+
+        $url = fn (int $customerId): string => route('admin.smart-ordering.customers.loyalty.adjust', [
+            'site' => $siteA->getKey(),
+            'customer' => $customerId,
+        ]);
+        $ownedUrl = $url($customerA['legacy_id']);
+        $foreignUrl = $url($customerB['legacy_id']);
+        $missingUrl = $url(max($customerA['legacy_id'], $customerB['legacy_id']) + 1000000);
+        $invalid = ['points' => ['nested' => 1], 'reason' => ['nested' => 'invalid']];
+        $beforeLedger = DB::table('smart_ordering_loyalty_ledger')->count();
+        $beforeAccounts = DB::table('smart_ordering_loyalty_accounts')->count();
+        $beforeAudits = DB::table('audit_logs')->count();
+        $initialLocale = app()->getLocale();
+
+        try {
+            foreach (['ar', 'en'] as $locale) {
+                $adminA->forceFill(['locale' => $locale])->saveQuietly();
+                app()->setLocale($locale);
+
+                $this->actingAs($adminA->fresh())->postJson($foreignUrl, $invalid)->assertNotFound();
+                $this->actingAs($adminA->fresh())->postJson($missingUrl, [])->assertNotFound();
+            }
+        } finally {
+            app()->setLocale($initialLocale);
+        }
+
+        // A foreign restaurant operator cannot access site A even with a bad body.
+        $this->actingAs($adminB)->postJson($ownedUrl, $invalid)->assertNotFound();
+        $this->assertSame($beforeLedger, DB::table('smart_ordering_loyalty_ledger')->count());
+        $this->assertSame($beforeAccounts, DB::table('smart_ordering_loyalty_accounts')->count());
+        $this->assertSame($beforeAudits, DB::table('audit_logs')->count());
+
+        $this->actingAs($adminA->fresh())->postJson($ownedUrl, $invalid)
+            ->assertUnprocessable()->assertJsonValidationErrors(['points', 'reason']);
+        $this->assertSame($beforeLedger, DB::table('smart_ordering_loyalty_ledger')->count());
+
+        $this->actingAs($adminA->fresh())->postJson($ownedUrl, [
+            'points' => 12,
+            'reason' => 'Approved correction',
+        ])->assertOk()->assertJsonPath('points', 12)->assertJsonPath('balance', 12);
+
+        $this->assertDatabaseHas('smart_ordering_loyalty_accounts', [
+            'site_id' => $siteA->id,
+            'customer_id' => $customerA['legacy_id'],
+            'balance' => 12,
+        ]);
+        $this->assertDatabaseHas('smart_ordering_loyalty_ledger', [
+            'site_id' => $siteA->id,
+            'customer_id' => $customerA['legacy_id'],
+            'type' => 'ADJUSTMENT',
+            'points' => 12,
+            'balance_after' => 12,
+        ]);
+        $this->assertSame($beforeLedger + 1, DB::table('smart_ordering_loyalty_ledger')->count());
+        $this->assertSame($beforeAccounts + 1, DB::table('smart_ordering_loyalty_accounts')->count());
+        $this->assertSame($beforeAudits + 1, DB::table('audit_logs')->count());
+        $this->assertSame(0, DB::table('smart_ordering_loyalty_accounts')->where('site_id', $siteB->id)->count());
+        $this->assertSame(0, DB::table('smart_ordering_loyalty_ledger')->where('site_id', $siteB->id)->count());
+    }
+
     public function test_admin_loyalty_rewards_reject_nested_branch_get_after_site_authorization(): void
     {
         [, $admin, $site] = $this->restaurant('V2-LOYALTY-GET-A');
