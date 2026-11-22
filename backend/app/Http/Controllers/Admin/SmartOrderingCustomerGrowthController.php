@@ -153,8 +153,15 @@ final class SmartOrderingCustomerGrowthController extends Controller
         // not be coerced to an unintended branch ID or an unfiltered list.
         abort_if(is_array($request->query('branch_id')), 404);
 
+        // An explicit invalid scalar must not silently become an unfiltered
+        // rewards query through Request::integer() coercion to zero.
+        $filtered = $request->validate([
+            'branch_id' => ['nullable', 'integer', 'min:1'],
+        ]);
+        $branchId = isset($filtered['branch_id']) ? (int) $filtered['branch_id'] : null;
+
         return response()->json([
-            'rewards' => $admin->rewards($site, $request->integer('branch_id') ?: null),
+            'rewards' => $admin->rewards($site, $branchId),
         ]);
     }
 
