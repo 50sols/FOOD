@@ -97,6 +97,17 @@ final class SmartOrderingAnalyticsController extends Controller
     /**
      * @return array{0:User,1:list<int>,2:array<string,mixed>}
      */
+    private function positiveFilterId(mixed $value): ?int
+    {
+        if (! is_int($value) && ! (is_string($value) && ctype_digit($value))) {
+            return null;
+        }
+
+        $id = (int) $value;
+
+        return $id > 0 ? $id : null;
+    }
+
     private function context(
         Request $request,
         OperationalTenantScope $scope,
@@ -107,6 +118,25 @@ final class SmartOrderingAnalyticsController extends Controller
 
         $allowed = app(RestaurantSaasStoreAccess::class)
             ->allowedStoreIds($actor, $permission, $request);
+
+        // Resolve explicit tenant selectors before unrelated date, fulfillment
+        // and other analytics filter validation, for reports and CSV exports.
+        // Malformed selectors retain their existing validation responses.
+        $requestedStore = $this->positiveFilterId($request->query('store_id'));
+        if ($requestedStore !== null) {
+            abort_unless(in_array($requestedStore, $allowed, true), 404);
+        }
+
+        $selectedStoreIds = $requestedStore === null ? $allowed : [$requestedStore];
+        $requestedBranch = $this->positiveFilterId($request->query('branch_id'));
+        if ($requestedBranch !== null) {
+            $branchAllowed = DB::table('smart_ordering_branches as b')
+                ->join('smart_ordering_sites as s', 's.id', '=', 'b.site_id')
+                ->where('b.id', $requestedBranch)
+                ->whereIn('s.store_id', $selectedStoreIds)
+                ->exists();
+            abort_unless($branchAllowed, 404);
+        }
 
         $filters = $request->validate([
             'from' => ['nullable', 'date_format:Y-m-d'],
