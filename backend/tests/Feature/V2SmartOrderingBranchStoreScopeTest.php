@@ -88,6 +88,11 @@ class V2SmartOrderingBranchStoreScopeTest extends TestCase
                 $this->actingAs($admin->fresh())->postJson($url, [
                     'name' => 'Missing Store',
                 ])->assertUnprocessable()->assertJsonValidationErrors('store_id');
+                // Numeric overflow is invalid input, never a tenant-scope oracle.
+                $this->actingAs($admin->fresh())->postJson($url, [
+                    'store_id' => '999999999999999999999999999999',
+                    'name' => ['invalid'],
+                ])->assertUnprocessable()->assertJsonValidationErrors('store_id');
             }
         } finally {
             app()->setLocale($localeBefore);
