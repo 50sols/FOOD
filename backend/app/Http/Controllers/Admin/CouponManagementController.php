@@ -43,6 +43,10 @@ final class CouponManagementController extends Controller
             abort_unless($value === null || is_string($value), 404);
         }
 
+        // Keep tenant authorization and nested-filter 404 precedence before
+        // rejecting malformed explicit pagination rather than falling back.
+        $request->validate(['page' => ['nullable', 'integer', 'min:1']]);
+
         $search = trim((string) $request->query('q', ''));
         $channel = strtolower(trim((string) $request->query('channel', '')));
         $status = trim((string) $request->query('status', ''));
