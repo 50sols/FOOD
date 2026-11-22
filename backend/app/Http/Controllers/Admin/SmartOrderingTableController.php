@@ -63,6 +63,7 @@ final class SmartOrderingTableController extends Controller
     public function updatePosition(string $branch, string $table, Request $request): RedirectResponse
     {
         [$actor, $branchModel] = $this->authorizedBranch($branch, $request);
+        $this->tables->assertTableInBranch($branchModel, $table);
         $data = $request->validate([
             'position_x' => ['required', 'integer', 'between:0,1000'],
             'position_y' => ['required', 'integer', 'between:0,1000'],
@@ -111,6 +112,7 @@ final class SmartOrderingTableController extends Controller
     public function combine(string $branch, string $table, Request $request): RedirectResponse
     {
         [$actor, $branchModel] = $this->authorizedBranch($branch, $request);
+        $this->tables->assertTableInBranch($branchModel, $table);
         $data = $request->validate([
             'other_table_public_id' => ['required', 'uuid'],
             'note' => ['nullable', 'string', 'max:500'],

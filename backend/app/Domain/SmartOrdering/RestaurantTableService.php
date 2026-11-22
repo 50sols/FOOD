@@ -377,6 +377,12 @@ final class RestaurantTableService
             ]);
     }
 
+    /** Assert route-table membership before parsing untrusted Admin mutation payloads. */
+    public function assertTableInBranch(SmartOrderingBranch $branch, string $tablePublicId): void
+    {
+        $this->table($branch, $tablePublicId);
+    }
+
     public function combine(
         SmartOrderingBranch $branch,
         string $primaryPublicId,
