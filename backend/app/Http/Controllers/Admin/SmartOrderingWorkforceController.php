@@ -65,6 +65,7 @@ final class SmartOrderingWorkforceController extends Controller
     public function updateShift(string $branch, string $shift, Request $request): RedirectResponse
     {
         [$actor, $branchModel] = $this->authorizedBranch($branch, $request, 'smart_ordering.manage');
+        $this->workforce->assertShiftInBranch($branchModel, $shift);
         $data = $this->shiftData($request);
         $this->workforce->updateShift($branchModel, $shift, $data, $actor);
         $this->audit->record('smart_ordering.workforce.shift.updated', $actor, null, null, [
