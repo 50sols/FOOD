@@ -39,6 +39,13 @@ final class SmartOrderingCustomerGrowthController extends Controller
     ): JsonResponse {
         $this->authorizeSite($request, $site, $tenants, 'smart_ordering.view');
 
+        // Preserve customer-scoped 404 before rejecting an unrelated malformed
+        // selector; never coerce nested GET arrays into a numeric limit.
+        if (is_array($request->query('limit'))) {
+            $customers->orderHistory($site, $customer, 1);
+            abort(422);
+        }
+
         return response()->json([
             'orders' => $customers->orderHistory($site, $customer, $request->integer('limit', 20)),
         ]);
