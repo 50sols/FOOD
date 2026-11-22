@@ -1103,6 +1103,31 @@ class SmartOrderingCoreTest extends TestCase
             ->where('site_id', $foreignSiteId)->count());
         $this->assertSame(0, DB::table('smart_ordering_recommendation_rules')
             ->where('site_id', $foreignSiteId)->count());
+
+        // Authorized updates must retain their site and branch after denied
+        // cross-tenant requests, without creating additional records.
+        $this->actingAs($actor->fresh())->putJson(route(
+            'admin.smart-ordering.merchandising.offers.update',
+            ['site' => $siteId, 'offer' => $offer],
+        ), [...$validOffer, 'name' => 'Updated scoped offer', 'branch_id' => $ownedBranchId])
+            ->assertOk();
+        $this->actingAs($actor->fresh())->putJson(route(
+            'admin.smart-ordering.merchandising.recommendations.update',
+            ['site' => $siteId, 'recommendation' => $recommendation],
+        ), [...$validRecommendation, 'name' => 'Updated scoped recommendation', 'branch_id' => $ownedBranchId])
+            ->assertOk();
+        $this->assertDatabaseHas('smart_ordering_offer_rules', [
+            'public_id' => $offer, 'site_id' => $siteId,
+            'branch_id' => $ownedBranchId, 'name' => 'Updated scoped offer',
+        ]);
+        $this->assertDatabaseHas('smart_ordering_recommendation_rules', [
+            'public_id' => $recommendation, 'site_id' => $siteId,
+            'branch_id' => $ownedBranchId, 'name' => 'Updated scoped recommendation',
+        ]);
+        $this->assertSame($before['smart_ordering_offer_rules'],
+            DB::table('smart_ordering_offer_rules')->count());
+        $this->assertSame($before['smart_ordering_recommendation_rules'],
+            DB::table('smart_ordering_recommendation_rules')->count());
     }
 
     public function test_merchandising_precedence_and_cart_recalculation_are_server_authoritative(): void
