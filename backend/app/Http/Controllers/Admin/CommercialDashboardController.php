@@ -38,6 +38,10 @@ final class CommercialDashboardController extends Controller
             ->where('catalogs.channel', 'b2b')
             ->count();
 
+        // Resolve the store permission before accepting a product selector.
+        // Explicit malformed values must never cast into a different product.
+        $request->validate(['product' => ['nullable', 'integer', 'min:0']]);
+
         $selectedProduct = null;
         $selectedProductId = max(0, (int) $request->query('product', 0));
         if ($selectedProductId > 0) {
