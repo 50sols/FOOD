@@ -158,6 +158,11 @@ async function buildPlan({ github, owner, repo, issueNumber }) {
   const prs = [];
   for (const number of [...prIds].sort((a,b)=>a-b)) {
     const pr = (await github.rest.pulls.get({ owner, repo, pull_number: number })).data;
+    // Same branch name in a fork is not the canonical repository branch.
+    // Only the original FOOD repository may own a resumable V2 issue PR.
+    if (pr.head?.repo?.full_name && pr.head.repo.full_name !== owner + '/' + repo) {
+      continue;
+    }
     // Title/body issue link or matching original issue branch is required.
     if (pr.base?.ref !== 'Foodex_V2') continue;
     // GitHub search returns incidental mentions of this issue in parent and
