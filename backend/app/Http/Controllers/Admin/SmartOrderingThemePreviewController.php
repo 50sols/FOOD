@@ -36,6 +36,7 @@ final class SmartOrderingThemePreviewController extends Controller
         $storeIds = app(RestaurantSaasStoreAccess::class)
             ->allowedStoreIds($actor, 'smart_ordering.view', $request);
 
+        $this->rejectNestedQuery($request, ['site', 'theme', 'appearance', 'lang', 'revision', 'device']);
         $siteKey = trim((string) $request->query('site', ''));
         $currentTheme = null;
         $canApply = false;
@@ -150,6 +151,8 @@ final class SmartOrderingThemePreviewController extends Controller
     {
         $actor = $request->user();
         abort_unless($actor instanceof User, 401);
+        // A nested site cannot be resolved to an authorized tenant.
+        $this->rejectNestedQuery($request, ['site']);
         $siteKey = trim((string) $request->query('site', ''));
         abort_if($siteKey === '', 404);
         $storeId = DB::table('smart_ordering_sites')
@@ -164,6 +167,9 @@ final class SmartOrderingThemePreviewController extends Controller
             'smart_ordering.view',
             'b2c',
         );
+        // For a scalar site, preserve store authorization precedence over
+        // malformed visual selectors before invoking typed theme APIs.
+        $this->rejectNestedQuery($request, ['theme', 'appearance', 'lang', 'revision', 'device']);
 
         $revision = $request->query('revision') === 'published' ? 'published' : 'draft';
         $snapshot = $this->provider()->revision($siteKey, $revision);
@@ -189,6 +195,7 @@ final class SmartOrderingThemePreviewController extends Controller
         $actor = $request->user();
         abort_unless($actor instanceof User, 401);
 
+        $this->rejectNestedQuery($request, ['theme', 'appearance', 'lang']);
         $requestedTheme = strtolower(trim((string) $request->query('theme')));
         abort_unless(in_array($requestedTheme, $themes->productionIds(), true), 404);
 
@@ -207,6 +214,16 @@ final class SmartOrderingThemePreviewController extends Controller
         $prepared['revision'] = 'demo';
 
         return $this->privatePreviewResponse($renderer, $prepared, 'demo');
+    }
+
+    /** @param list<string> $keys */
+    private function rejectNestedQuery(Request $request, array $keys): void
+    {
+        foreach ($keys as $key) {
+            // An explicit array selector is never a valid storefront preview
+            // choice; do not coerce it to a default or pass it to typed APIs.
+            abort_if(is_array($request->query($key)), 404);
+        }
     }
 
     private function provider(): StorefrontSnapshotProvider
