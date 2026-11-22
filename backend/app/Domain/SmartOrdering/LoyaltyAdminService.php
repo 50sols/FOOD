@@ -12,7 +12,6 @@ final class LoyaltyAdminService
 {
     public function __construct(private readonly AuditLogger $audit) {}
 
-    /** @return array<string,mixed> */
     /**
      * Read-only site/branch authority check for mutation preflight.
      * Configure/create/update still recheck the same scope before writes.
@@ -28,6 +27,7 @@ final class LoyaltyAdminService
         );
     }
 
+    /** @return array<string,mixed> */
     public function configureRule(
         User $actor,
         SmartOrderingSite $site,
@@ -42,7 +42,7 @@ final class LoyaltyAdminService
         abort_if($expiryDays !== null && $expiryDays < 1, 422);
 
         if ($branchId !== null) {
-$this->assertBranchInSite($site, $branchId);
+            $this->assertBranchInSite($site, $branchId);
         }
 
         $scopeKey = $branchId === null ? 'site' : 'branch:'.$branchId;
@@ -118,7 +118,7 @@ $this->assertBranchInSite($site, $branchId);
         abort_if($pointsCost <= 0, 422);
 
         if ($branchId !== null) {
-$this->assertBranchInSite($site, $branchId);
+            $this->assertBranchInSite($site, $branchId);
         }
 
         $publicId = (string) Str::uuid();
@@ -168,7 +168,7 @@ $this->assertBranchInSite($site, $branchId);
         abort_if($pointsCost <= 0, 422);
 
         if ($branchId !== null) {
-$this->assertBranchInSite($site, $branchId);
+            $this->assertBranchInSite($site, $branchId);
         }
 
         $reward = DB::table('smart_ordering_loyalty_rewards')
