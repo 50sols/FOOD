@@ -71,6 +71,11 @@ final class SystemLookupController extends Controller
         $search = trim($requestedSearch);
         $literalSearch = '%'.str_replace(['!', '%', '_'], ['!!', '!%', '!_'], $search).'%';
 
+        // Both reference values and pricing tiers use Laravel's default page
+        // selector. Validate explicit navigation after the canonical permission,
+        // tab and scalar-filter gates, rather than silently showing page one.
+        $request->validate(['page' => ['nullable', 'integer', 'min:1']]);
+
         if ($definition['type'] === OperationalLookupService::PRICE_TIER) {
             $query = B2bPriceTier::query()
                 ->when($status === 'active', fn ($query) => $query->where('is_active', true))
