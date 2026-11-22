@@ -1128,6 +1128,27 @@ class SmartOrderingCoreTest extends TestCase
             DB::table('smart_ordering_offer_rules')->count());
         $this->assertSame($before['smart_ordering_recommendation_rules'],
             DB::table('smart_ordering_recommendation_rules')->count());
+        // Authorized UPDATE paths must still mutate only the owned site/branch.
+        $this->actingAs($actor->fresh())->putJson(
+            route('admin.smart-ordering.merchandising.offers.update', [
+                'site' => $siteId, 'offer' => $offer,
+            ]),
+            [...$validOffer, 'name' => 'Owned offer updated', 'branch_id' => $ownedBranchId],
+        )->assertOk();
+        $this->actingAs($actor->fresh())->putJson(
+            route('admin.smart-ordering.merchandising.recommendations.update', [
+                'site' => $siteId, 'recommendation' => $recommendation,
+            ]),
+            [...$validRecommendation, 'name' => 'Owned recommendation updated', 'branch_id' => $ownedBranchId],
+        )->assertOk();
+        $this->assertDatabaseHas('smart_ordering_offer_rules', [
+            'public_id' => $offer, 'site_id' => $siteId,
+            'branch_id' => $ownedBranchId, 'name' => 'Owned offer updated',
+        ]);
+        $this->assertDatabaseHas('smart_ordering_recommendation_rules', [
+            'public_id' => $recommendation, 'site_id' => $siteId,
+            'branch_id' => $ownedBranchId, 'name' => 'Owned recommendation updated',
+        ]);
     }
 
     public function test_merchandising_precedence_and_cart_recalculation_are_server_authoritative(): void
