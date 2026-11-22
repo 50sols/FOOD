@@ -99,6 +99,13 @@ final class SmartOrderingSupplyController extends Controller
             );
         }
 
+        // Validate scalar date filters after canonical site/branch scoping and
+        // before Carbon parsing; invalid dates must yield a bounded 422.
+        $request->validate([
+            'from' => ['nullable', 'date_format:Y-m-d'],
+            'to' => ['nullable', 'date_format:Y-m-d', 'after_or_equal:from'],
+        ]);
+
         $from = $request->filled('from')
             ? CarbonImmutable::parse($request->string('from')->toString(), 'Asia/Kuwait')->startOfDay()
             : CarbonImmutable::now('Asia/Kuwait')->subDays(27)->startOfDay();
