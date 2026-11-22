@@ -85,10 +85,12 @@ test('incomplete or oversized search pagination fails closed', async () => {
   await assert.rejects(pages(async()=>({data:Array(100).fill({})}),{},'branches',2),/cap/);
 });
 
-function harness({mode='merged',acceptance='in_progress',multiple=false,crossReference=false,forkOriginal=false,missingHeadRepo=false,mixedCaseHeadRepo=false,featureBranch=false,ancestry='ahead',issueState=issue}={}) {
+function harness({mode='merged',acceptance='in_progress',multiple=false,crossReference=false,forkOriginal=false,missingHeadRepo=false,mixedCaseHeadRepo=false,featureBranch=false,claimOnlyUnrelated=false,ancestry='ahead',issueState=issue}={}) {
   const calls=[];
-  const thePR = { ...pr(mode, 'ci/4151-resume'),
-    head: { ...pr(mode, 'ci/4151-resume').head,
+  const thePR = { ...pr(mode, claimOnlyUnrelated ? 'fix/9999-other-task' : 'ci/4151-resume'),
+    title: claimOnlyUnrelated ? 'V2 #9999 — unrelated issue' : 'V2 #4151 — test',
+    body: claimOnlyUnrelated ? 'Refs #9999; dependent on #4151' : 'Closes #4151',
+    head: { ...pr(mode, claimOnlyUnrelated ? 'fix/9999-other-task' : 'ci/4151-resume').head,
       repo: missingHeadRepo ? null : { full_name: forkOriginal ? 'external/FOOD' : mixedCaseHeadRepo ? 'O/food' : 'o/FOOD' } } };
   const unrelatedPR = { ...pr('open', 'fix/9999-unrelated', 4153),
     title: 'V2 #9999 — dependent on #4151', body: 'Parent #4151; follows #4151' };
@@ -147,6 +149,17 @@ test('historical feature/ issue branches are discovered instead of treating the 
   const result=await buildPlan({github:gh,owner:'o',repo:'FOOD',issueNumber:4151});
   assert.deepEqual(result.actual_branches,['feature/4151-original']);
   assert.equal(result.action,'BLOCK_CONFLICTING_ORIGINALS');
+});
+
+test('comment-only claim PR id cannot adopt an unrelated V2 PR as original', async () => {
+  const {gh}=harness({claimOnlyUnrelated:true});
+  const result=await buildPlan({github:gh,owner:'o',repo:'FOOD',issueNumber:4151});
+  assert.deepEqual(result.original_prs,[]);
+  // Preserve the historic claim as an ambiguity blocker, not authorization
+  // to resume or merge someone else's unrelated pull request.
+  assert.equal(result.action,'BLOCK_MISSING_ORIGINAL_BRANCH');
+  assert.equal(result.original_branch,'ci/4151-resume');
+  assert.equal(result.original_pr,null);
 });
 
 test('dependency-only mention is not mistaken for an original PR', async () => {
