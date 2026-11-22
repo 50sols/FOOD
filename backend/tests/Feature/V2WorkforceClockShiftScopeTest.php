@@ -65,6 +65,7 @@ final class V2WorkforceClockShiftScopeTest extends TestCase
             ]);
         };
         $ownedBranch = $createBranch($ownedStore, 'OWN');
+        $siblingBranch = $createBranch($ownedStore, 'SIBLING');
         $foreignBranch = $createBranch($foreignStore, 'FOREIGN');
 
         $actor = User::query()->create([
@@ -103,6 +104,7 @@ final class V2WorkforceClockShiftScopeTest extends TestCase
             return $uuid;
         };
         $ownedShift = $createShift($ownedBranch, (int) $actor->id);
+        $siblingShift = $createShift($siblingBranch, (int) $actor->id);
         $foreignShift = $createShift($foreignBranch, (int) $actor->id);
         $missingShift = (string) Str::uuid();
         $url = route('admin.smart-ordering.workforce.clock', $ownedBranch->public_id);
@@ -114,7 +116,7 @@ final class V2WorkforceClockShiftScopeTest extends TestCase
             foreach (['ar', 'en'] as $locale) {
                 $actor->forceFill(['locale' => $locale])->saveQuietly();
                 app()->setLocale($locale);
-                foreach ([$foreignShift, $missingShift] as $deniedShift) {
+                foreach ([$siblingShift, $foreignShift, $missingShift] as $deniedShift) {
                     foreach ([
                         ['shift_public_id' => $deniedShift],
                         ['shift_public_id' => $deniedShift, 'action' => 'unknown'],
