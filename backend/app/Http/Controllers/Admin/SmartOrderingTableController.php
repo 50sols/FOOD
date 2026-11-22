@@ -31,6 +31,7 @@ final class SmartOrderingTableController extends Controller
     public function updateFloor(string $branch, string $floor, Request $request): RedirectResponse
     {
         [$actor, $branchModel] = $this->authorizedBranch($branch, $request);
+        $this->tables->assertFloorInBranch($branchModel, $floor);
         $this->tables->updateFloor($branchModel, $floor, $this->floorData($request));
 
         return $this->backToTables($branchModel, __('smart_ordering.tables.floor_saved'));
@@ -55,6 +56,7 @@ final class SmartOrderingTableController extends Controller
     public function updateTable(string $branch, string $table, Request $request): RedirectResponse
     {
         [$actor, $branchModel] = $this->authorizedBranch($branch, $request);
+        $this->tables->assertTableInBranch($branchModel, $table);
         $this->tables->updateTable($branchModel, $table, $this->tableData($request));
 
         return $this->backToTables($branchModel, __('smart_ordering.tables.table_saved'));
