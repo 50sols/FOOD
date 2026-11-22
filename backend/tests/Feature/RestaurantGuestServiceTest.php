@@ -235,15 +235,24 @@ final class RestaurantGuestServiceTest extends TestCase
     public function test_guest_mutation_route_scope_precedes_body_validation_in_ar_and_en(): void
     {
         $service = app(RestaurantGuestService::class);
-        $sibling = $this->branch($this->storeA, 'guest-sibling-route');
-        DB::table('smart_ordering_entitlements')->insert([
-            'site_id' => $sibling->site_id,
-            'branch_id' => null,
-            'scope_key' => 'site',
-            'module' => 'reservations',
-            'enabled' => true,
-            'created_at' => now(),
-            'updated_at' => now(),
+        // A store owns one Smart Ordering site; create the sibling branch
+        // under that existing site rather than violating sites.store_id UNIQUE.
+        $sibling = SmartOrderingBranch::query()->create([
+            'public_id' => (string) Str::uuid(),
+            'site_id' => $this->branchA->site_id,
+            'code' => 'guest-sibling-route',
+            'name_ar' => 'فرع حجوزات آخر',
+            'name_en' => 'Other guest branch',
+            'timezone' => 'Asia/Kuwait',
+            'is_active' => true,
+            'accepting_orders' => true,
+            'supports_dine_in' => true,
+            'supports_pickup' => true,
+            'supports_delivery' => true,
+            'allow_scheduled' => true,
+            'pickup_lead_minutes' => 0,
+            'max_schedule_days' => 30,
+            'service_charge' => 0,
         ]);
         $reservation = $service->createReservation($sibling, [
             'guest_name' => 'Other Branch Guest',
