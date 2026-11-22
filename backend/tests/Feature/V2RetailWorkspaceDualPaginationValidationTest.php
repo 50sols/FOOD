@@ -61,7 +61,7 @@ final class V2RetailWorkspaceDualPaginationValidationTest extends TestCase
                     '?rows_page=invalid&assignments_page=1',
                 ] as $selector) {
                     $this->actingAs($actor->fresh())
-                        ->getJson($root.$selector)
+                        ->getJson($root.'&'.ltrim($selector, '?'))
                         ->assertUnprocessable();
                 }
 
@@ -80,7 +80,7 @@ final class V2RetailWorkspaceDualPaginationValidationTest extends TestCase
                     '?rows_page=2&assignments_page=3',
                 ] as $selector) {
                     $this->actingAs($actor->fresh())
-                        ->get($root.$selector)
+                        ->get($root.($selector === '' ? '' : '&'.ltrim($selector, '?')))
                         ->assertOk()
                         ->assertViewHas('storeId', $ownedStore)
                         ->assertViewHas('storeIds', [$ownedStore])
