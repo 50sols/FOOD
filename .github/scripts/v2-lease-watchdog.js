@@ -246,7 +246,7 @@ async function run({ github, context, core, nowMs = Date.now() }) {
               + 'Obsolete worker-active/waiting labels were cleared; no handoff-ready label was added.\n'
               + 'The Issue remains OPEN for any unaccepted source requirements. '
               + 'Do not recreate the merged PR; preflight a distinct atomic follow-up if necessary. '
-            : 'Original PR #' + claim.pr + ' was independently verified CLOSED / NOT MERGED '
+            : 'Original PR #' + originalPrNumber + ' was independently verified CLOSED / NOT MERGED '
               + 'against Foodex_V2. The issue is approval-gated, not handed off as normal coding work.\n'
               + 'The Issue and original PR/branch history remain untouched. '
               + 'Obtain owner-authorized reconciliation before reopening the original PR; never create a duplicate. ';
