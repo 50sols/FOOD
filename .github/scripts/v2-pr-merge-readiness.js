@@ -56,6 +56,27 @@ function decision({ pr, expectedHead, expectedBase, integrationHead, checks, rev
   }
   if ([...latestReviews.values()].includes('CHANGES_REQUESTED'))
     return { action: 'REVIEW_REQUIRED', reason: 'review-changes-requested' };
+  if (pr.mergeable_state === 'unstable') {
+    // The advisory job itself is a still-running check while it prepares this
+    // report. Never mislabel the self-generated unstable state as a human gate.
+    // Every other exact-head check must be terminal and nonfailing; otherwise
+    // defer readiness. This is advice, not a GitHub merge authorization.
+    const self = status.get('V2 merge readiness monitor');
+    if (!self || self.status === 'completed')
+      return { action: 'WAIT_MERGEABILITY', reason: 'unstable-without-running-monitor' };
+    for (const check of status.values()) {
+      if (check.name === 'V2 merge readiness monitor' ||
+          check.name === 'Detect stale workers and external gates') continue;
+      if (check.head_sha && check.head_sha !== sha)
+        return { action: 'STALE_HEAD', reason: check.name + '-different-sha' };
+      if (RED.has(check.conclusion))
+        return { action: 'FIX_CI', reason: check.name + '-' + check.conclusion };
+      if (check.status !== 'completed' ||
+          !['success', 'skipped', 'neutral'].includes(check.conclusion))
+        return { action: 'WAIT_CI', reason: check.name + '-not-terminal-green' };
+    }
+    return { action: 'READY_FOR_MERGE_REVIEW', reason: 'all-other-checks-green-monitor-self-pending' };
+  }
   if (pr.mergeable_state !== 'clean')
     return { action: 'REVIEW_REQUIRED', reason: 'github-merge-gate-' + pr.mergeable_state };
   // Advice only. GitHub review protection, source authority and human approvals

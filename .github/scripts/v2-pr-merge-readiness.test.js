@@ -52,3 +52,18 @@ test('live Foodex_V2 tip and owning issue must be independently verified',()=>{
   assert.equal(action({pr:{...pr,requested_reviewers:[{login:'independent-reviewer'}]}}), 'REVIEW_REQUIRED');
   assert.equal(action({pr:{...pr,requested_teams:[{slug:'ci-review'}]}}), 'REVIEW_REQUIRED');
 });
+
+test('self-running monitor is not mistaken for missing human review, but any other pending/red check blocks',()=>{
+  const self={id:99,name:'V2 merge readiness monitor',head_sha:SHA,
+    status:'in_progress',conclusion:null};
+  const unstable={...pr,mergeable:true,mergeable_state:'unstable'};
+  assert.equal(action({pr:unstable,checks:[...green,self]}),'READY_FOR_MERGE_REVIEW');
+  assert.equal(action({pr:unstable,checks:green}),'WAIT_MERGEABILITY');
+  assert.equal(action({pr:unstable,checks:[...green,{...self,status:'completed',conclusion:'success'}]}),'WAIT_MERGEABILITY');
+  const pending={id:11,name:'Independent required review check',head_sha:SHA,status:'in_progress',conclusion:null};
+  assert.equal(action({pr:unstable,checks:[...green,self,pending]}),'WAIT_CI');
+  assert.equal(action({pr:unstable,checks:[...green,self,{...pending,status:'completed',conclusion:'failure'}]}),'FIX_CI');
+  assert.equal(action({pr:unstable,checks:[...green,self,{...pending,head_sha:PREV,status:'completed',conclusion:'success'}]}),'STALE_HEAD');
+  assert.equal(action({pr:{...unstable,requested_reviewers:[{login:'reviewer'}]},checks:[...green,self]}),'REVIEW_REQUIRED');
+  assert.equal(action({pr:{...unstable,labels:[{name:'gate:approval'}]},checks:[...green,self]}),'REVIEW_REQUIRED');
+});
