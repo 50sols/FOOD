@@ -945,6 +945,7 @@ class SmartOrderingCustomerGrowthTest extends TestCase
             ],
         ];
         $beforeAudits = DB::table('audit_logs')->count();
+        $beforeForeignAdminAudits = DB::table('audit_logs')->where('user_id', $foreignAdmin->getKey())->count();
         $beforeRewards = DB::table('smart_ordering_loyalty_rewards')->count();
         $beforeRules = DB::table('smart_ordering_loyalty_rules')->count();
         $initialLocale = app()->getLocale();
@@ -1010,7 +1011,7 @@ class SmartOrderingCustomerGrowthTest extends TestCase
             ->where('site_id', $siteId)->where('branch_id', $foreignBranchId)->count());
         $this->assertSame(0, DB::table('smart_ordering_loyalty_rules')->where('site_id', $foreignSite->getKey())->count());
         $this->assertSame(0, DB::table('smart_ordering_loyalty_rewards')->where('site_id', $foreignSite->getKey())->count());
-        $this->assertSame(0, DB::table('audit_logs')->where('user_id', $foreignAdmin->getKey())->count());
+        $this->assertSame($beforeForeignAdminAudits, DB::table('audit_logs')->where('user_id', $foreignAdmin->getKey())->count());
     }
 
     /** @return array{0:int,1:User,2:SmartOrderingSite} */
