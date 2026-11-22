@@ -449,6 +449,7 @@ class RestaurantSaaSIntegrationHubTest extends TestCase
             $this->assertArrayNotHasKey('secret_ciphertext', $item);
         }
     }
+
     /** @return array{0:User,1:SmartOrderingSite} */
     private function integrationAdminSite(string $code): array
     {
@@ -479,5 +480,4 @@ class RestaurantSaaSIntegrationHubTest extends TestCase
 
         return [$admin, $site];
     }
-
 }
