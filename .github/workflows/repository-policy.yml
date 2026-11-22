@@ -5,6 +5,9 @@ on:
     branches: ["chore/1-bootstrap-foundation"]
 permissions:
   contents: read
+  checks: read
+  pull-requests: read
+  issues: read
 
 concurrency:
   group: repository-policy-${{ github.event.pull_request.number || github.ref }}
@@ -18,6 +21,17 @@ jobs:
         with:
           fetch-depth: 0
       - run: ./scripts/validate-repo.sh
+
+      - name: Test V2 CI freeze and readiness contracts
+        run: node --test .github/scripts/v2-pr-ci-freeze.test.js .github/scripts/v2-pr-merge-readiness.test.js
+
+      - name: Enforce V2 PR final CI freeze
+        if: ${{ github.event_name == 'pull_request' && github.base_ref == 'Foodex_V2' }}
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const { guardGithub } = require('./.github/scripts/v2-pr-ci-freeze.js');
+            await guardGithub({ github, context, core });
 
       - name: Validate One-Push Green tooling
         shell: bash
