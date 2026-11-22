@@ -78,6 +78,12 @@ jobs:
       - name: Validate repository foundation
         run: ./scripts/validate-repo.sh
 
+      - name: Verify V2 worker continuity and original PR resumption
+        run: |
+          node --check .github/scripts/v2-lease-watchdog.js
+          node --check .github/scripts/v2-worker-resume.js
+          node --test .github/scripts/v2-lease-watchdog.test.js .github/scripts/v2-lease-watchdog.reconciliation.test.js .github/scripts/v2-worker-resume.test.js
+
       - name: Validate One-Push Green contracts
         shell: bash
         run: |
