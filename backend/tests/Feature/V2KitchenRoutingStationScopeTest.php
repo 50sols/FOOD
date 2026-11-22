@@ -36,24 +36,30 @@ final class V2KitchenRoutingStationScopeTest extends TestCase
         $storeId = $makeStore('KITCHEN-SCOPE-OWN');
         $otherStoreId = $makeStore('KITCHEN-SCOPE-FOREIGN');
         $makeBranch = function (int $forStore, string $code): SmartOrderingBranch {
-            $siteId = (int) DB::table('smart_ordering_sites')->insertGetId([
-                'public_id' => (string) Str::uuid(),
-                'store_id' => $forStore,
-                'slug' => 'kitchen-'.Str::lower(Str::random(8)),
-                'runtime_state' => 'ENABLED',
-                'master_enabled' => true,
-                'created_at' => now(),
-                'updated_at' => now(),
-            ]);
-            DB::table('smart_ordering_entitlements')->insert([
-                'site_id' => $siteId,
-                'branch_id' => null,
-                'scope_key' => 'site',
-                'module' => 'kitchen_routing',
-                'enabled' => true,
-                'created_at' => now(),
-                'updated_at' => now(),
-            ]);
+            // The schema allows one Smart Ordering site per store. A sibling
+            // branch in the same store must reuse its existing site.
+            $siteId = (int) (DB::table('smart_ordering_sites')
+                ->where('store_id', $forStore)->value('id') ?? 0);
+            if ($siteId === 0) {
+                $siteId = (int) DB::table('smart_ordering_sites')->insertGetId([
+                    'public_id' => (string) Str::uuid(),
+                    'store_id' => $forStore,
+                    'slug' => 'kitchen-'.Str::lower(Str::random(8)),
+                    'runtime_state' => 'ENABLED',
+                    'master_enabled' => true,
+                    'created_at' => now(),
+                    'updated_at' => now(),
+                ]);
+                DB::table('smart_ordering_entitlements')->insert([
+                    'site_id' => $siteId,
+                    'branch_id' => null,
+                    'scope_key' => 'site',
+                    'module' => 'kitchen_routing',
+                    'enabled' => true,
+                    'created_at' => now(),
+                    'updated_at' => now(),
+                ]);
+            }
 
             return SmartOrderingBranch::query()->create([
                 'public_id' => (string) Str::uuid(),
