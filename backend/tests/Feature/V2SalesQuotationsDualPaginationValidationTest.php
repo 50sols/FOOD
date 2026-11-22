@@ -46,8 +46,6 @@ final class V2SalesQuotationsDualPaginationValidationTest extends TestCase
             'created_at' => now(),
             'updated_at' => now(),
         ]);
-        $index = route('admin.sales-quotations.index', ['store_id' => $storeId]);
-        $show = route('admin.sales-quotations.show', ['quotation' => $quoteId]);
         $before = [
             'quotes' => DB::table('sales_quotations')->count(),
             'contracts' => DB::table('customer_sales_contracts')->count(),
