@@ -59,6 +59,7 @@ final class CustomerServiceWorkspaceController extends Controller
     public function addNote(Request $request, int $case): RedirectResponse
     {
         $actor = $this->actor($request);
+        $this->cases->assertCanManageCase($actor, $case);
         $validated = $request->validate([
             'body' => ['nullable', 'string', 'max:8000'],
             'attachment' => ['nullable', 'file', 'max:10240', 'mimes:pdf,png,jpg,jpeg,txt,csv'],
