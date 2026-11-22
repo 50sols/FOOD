@@ -305,6 +305,9 @@ class RestaurantSaaSIntegrationHubTest extends TestCase
                 $this->actingAs($adminA->fresh())->patchJson($foreignUrl, [])->assertNotFound();
                 $this->actingAs($adminA->fresh())->patchJson($missingUrl, $invalid)->assertNotFound();
                 $this->actingAs($adminA->fresh())->patchJson($missingUrl, [])->assertNotFound();
+                // Valid mutation payloads must also be rejected for unavailable targets.
+                $this->actingAs($adminA->fresh())->patchJson($foreignUrl, ['status' => 'enabled'])->assertNotFound();
+                $this->actingAs($adminA->fresh())->patchJson($missingUrl, ['status' => 'enabled'])->assertNotFound();
             }
         } finally {
             app()->setLocale($initialLocale);
