@@ -134,6 +134,19 @@ async function ciInProgress(github, owner, repo, head, branch) {
     && !['FOODEX V2 Idle Lease Watchdog', 'Worker Watchdog'].includes(run.name));
   return checkActive || workflowActive;
 }
+async function integratedAcceptanceInProgress(github, owner, repo) {
+  // An original issue may already be merged while full acceptance is still
+  // running against Foodex_V2. Protect the lease until terminal CI evidence.
+  // Read-only, SHA-scoped and fail-closed on missing/malformed API results.
+  const v2 = await github.rest.repos.getBranch({ owner, repo, branch: 'Foodex_V2' });
+  const head = v2?.data?.commit?.sha;
+  if (typeof head !== 'string' || !head) throw Error('missing-current-v2-head');
+  const runs = await listPages(args => github.rest.actions.listWorkflowRunsForRepo(args), {
+    owner, repo, branch: 'Foodex_V2',
+  }, 15, 'workflow_runs');
+  return runs.some(r => r.name === 'FOODEX V2 Integrated Backend Acceptance'
+    && r.head_sha === head && r.status !== 'completed');
+}
 function humanGate(labels, claim) {
   return labels.some(l => l === 'gate:human' || l.startsWith('gate:'))
     || ['human', 'approval', 'credentials', 'device', 'production', 'deploy'].includes(claim?.blocker);
@@ -211,7 +224,11 @@ async function run({ github, context, core, nowMs = Date.now() }) {
       const mergedOriginal = isMatchingMergedPr(resolved.data, claim);
       const closedUnmergedOriginal = isMatchingClosedUnmergedPr(resolved.data, claim);
       if (mergedOriginal || closedUnmergedOriginal) {
-        if (ciRunning) { active += 1; continue; }
+        if (ciRunning || (mergedOriginal
+            && await integratedAcceptanceInProgress(github, owner, repo))) {
+          active += 1;
+          continue;
+        }
         const current = await listPages(args => github.rest.issues.listComments(args), {
           owner, repo, issue_number: issue.number,
         }, 10);
