@@ -892,12 +892,14 @@ class B2bWorkspaceController extends Controller
     public function saveWholesaleMinimumOrder(Request $request, MinimumOrderPolicy $minimumOrders): RedirectResponse
     {
         $actor = $this->actor($request);
+        $storeId = $this->principal->storeId();
+        // Do not expose minimum-order validation feedback outside the authorized
+        // Wholesale settings scope, for either the read-only Test or Save action.
+        $this->operationalScope->assertStore($actor, $storeId, 'settings.manage', 'b2b');
         $data = $request->validate([
             'minimum_order_egp' => ['required', 'numeric', 'min:0', 'max:99999999.99', 'decimal:0,2'],
             'setup_action' => ['sometimes', 'in:save,test'],
         ]);
-        $storeId = $this->principal->storeId();
-        $this->operationalScope->assertStore($actor, $storeId, 'settings.manage', 'b2b');
 
         // Precheck is scoped and read-only. A candidate value is not a published policy.
         if (($data['setup_action'] ?? 'save') === 'test') {
