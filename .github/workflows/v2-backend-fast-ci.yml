@@ -113,6 +113,9 @@ jobs:
             composer install --no-interaction --prefer-dist --no-progress
           fi
 
+      - name: Validate complete Laravel shard partition contract
+        run: python3 -m unittest discover -s ../scripts/tests -p 'test_laravel_test_shards.py'
+
       - name: Prepare test environment
         run: |
           cp .env.example .env
