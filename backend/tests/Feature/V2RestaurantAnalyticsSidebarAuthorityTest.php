@@ -21,6 +21,61 @@ class V2RestaurantAnalyticsSidebarAuthorityTest extends TestCase
         $this->seed(CoreReferenceSeeder::class);
     }
 
+    public function test_analytics_report_and_export_scope_filters_precede_unrelated_validation_in_both_locales(): void
+    {
+        $owned = $this->retailStore('V2-ANALYTICS-PREVALID-OWNED');
+        $foreign = $this->retailStore('V2-ANALYTICS-PREVALID-FOREIGN');
+        $this->enableRestaurantSaasForTestStore($owned);
+        $this->enableRestaurantSaasForTestStore($foreign);
+        $operator = $this->retailOperator([$owned]);
+
+        $siteId = (int) DB::table('smart_ordering_sites')->insertGetId([
+            'public_id' => (string) \\Illuminate\\Support\\Str::uuid(),
+            'store_id' => $foreign,
+            'slug' => 'foreign-report-scope',
+            'runtime_state' => 'ENABLED',
+            'master_enabled' => true,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        $foreignBranch = (int) DB::table('smart_ordering_branches')->insertGetId([
+            'public_id' => (string) \\Illuminate\\Support\\Str::uuid(),
+            'site_id' => $siteId,
+            'code' => 'foreign-analytics',
+            'name_en' => 'Foreign Analytics Branch',
+            'timezone' => 'Asia/Kuwait',
+            'is_active' => true,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $previousLocale = app()->getLocale();
+        try {
+            foreach (['ar', 'en'] as $locale) {
+                app()->setLocale($locale);
+                $operator->forceFill(['locale' => $locale])->saveQuietly();
+
+                foreach (['admin.smart-ordering.analytics.index', 'admin.smart-ordering.analytics.export'] as $route) {
+                    $this->actingAs($operator->fresh())->getJson(route($route, [
+                        'store_id' => $foreign, 'from' => 'malformed-date',
+                    ]))->assertNotFound();
+                    $this->actingAs($operator->fresh())->getJson(route($route, [
+                        'store_id' => $owned, 'branch_id' => $foreignBranch,
+                        'fulfillment' => 'malformed-mode',
+                    ]))->assertNotFound();
+                    $this->actingAs($operator->fresh())->getJson(route($route, [
+                        'store_id' => $owned, 'from' => 'malformed-date',
+                    ]))->assertUnprocessable()->assertJsonValidationErrors('from');
+                }
+                $this->actingAs($operator->fresh())->get(route('admin.smart-ordering.analytics.index', [
+                    'store_id' => $owned,
+                ]))->assertOk();
+            }
+        } finally {
+            app()->setLocale($previousLocale);
+        }
+    }
+
     public function test_p328_analytics_reuses_the_authorized_restaurant_workspace_in_both_locales(): void
     {
         $storeId = $this->retailStore('V2-P328-ALLOWED');
