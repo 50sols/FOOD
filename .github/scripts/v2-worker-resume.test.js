@@ -53,6 +53,19 @@ test('orphan branch and stale claim force safe reuse or block', () => {
   assert.equal(decide({issue,branches:[],prs:[],refs:[{branch:'ci/4151-resume'}],checkpoint:null}).action,
     'BLOCK_MISSING_ORIGINAL_BRANCH');
 });
+test('active or waiting CI lease blocks takeover of existing original branch without PR', () => {
+  for (const label of ['worker:active', 'worker:waiting-ci']) {
+    const d=decide({issue:{...issue,labels:[{name:label}]},
+      branches:['ci/4151-resume'],prs:[],
+      refs:[{branch:'ci/4151-resume'}],checkpoint:null});
+    assert.equal(d.action,'BLOCK_CURRENT_LEASE');
+    assert.equal(d.branch,'ci/4151-resume');
+  }
+  const available=decide({issue,branches:['ci/4151-resume'],
+    prs:[],refs:[],checkpoint:null});
+  assert.equal(available.action,'RESUME_ORIGINAL_BRANCH');
+});
+
 test('multiple branches, duplicate PRs, human gates and leases fail closed', () => {
   assert.equal(decide({issue,branches:['ci/4151-a','ci/4151-b'],prs:[],refs:[],checkpoint:null}).action,
     'BLOCK_CONFLICTING_ORIGINALS');
