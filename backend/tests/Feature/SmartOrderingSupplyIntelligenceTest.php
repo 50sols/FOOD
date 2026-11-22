@@ -817,6 +817,62 @@ class SmartOrderingSupplyIntelligenceTest extends TestCase
         ]);
     }
 
+    public function test_supply_scalar_date_filters_reject_invalid_ranges_after_scope_ar_en(): void
+    {
+        $f = $this->fixture();
+        $actor = $f['actor'];
+        $role = Role::query()->where('code', 'B2C_STORE_ADMIN')->firstOrFail();
+        DB::table('user_store_roles')->insert([
+            'user_id' => $actor->id,
+            'store_id' => $f['restaurant_store_id'],
+            'role_id' => $role->id,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        $url = route('admin.smart-ordering.supply.index', ['site' => $f['site_id']]);
+        $tables = ['smart_ordering_supply_mappings', 'smart_ordering_supply_stock_snapshots',
+            'smart_ordering_supply_reorder_drafts', 'audit_logs'];
+        $before = [];
+        foreach ($tables as $table) {
+            $before[$table] = DB::table($table)->count();
+        }
+        $originalLocale = app()->getLocale();
+        try {
+            foreach (['ar' => 'rtl', 'en' => 'ltr'] as $locale => $direction) {
+                $actor->forceFill(['locale' => $locale])->saveQuietly();
+                app()->setLocale($locale);
+                foreach ([
+                    '?from=invalid',
+                    '?to=invalid',
+                    '?from=2026-02-30',
+                    '?to=2026-13-01',
+                    '?from=2026-12-31&to=2026-01-01',
+                    '?from=2026-01-01T12%3A00%3A00',
+                ] as $invalid) {
+                    $this->actingAs($actor->fresh())->getJson($url.$invalid)
+                        ->assertUnprocessable();
+                }
+                foreach (['', '?from=&to=', '?from=2026-01-01&to=2026-01-31'] as $valid) {
+                    $this->actingAs($actor->fresh())->get($url.$valid)
+                        ->assertOk()->assertSee('dir="'.$direction.'"', false);
+                }
+            }
+        } finally {
+            app()->setLocale($originalLocale);
+        }
+        $roleless = User::query()->create([
+            'name' => 'Supply date roleless',
+            'email' => 'v2-supply-date-roleless@example.test',
+            'password' => 'password',
+            'locale' => 'en',
+            'is_active' => true,
+        ]);
+        $this->actingAs($roleless)->getJson($url.'?from=invalid')->assertForbidden();
+        foreach ($tables as $table) {
+            $this->assertSame($before[$table], DB::table($table)->count(), $table.' unchanged');
+        }
+    }
+
     public function test_supply_index_invalid_scalar_branch_never_falls_back_to_full_site_ar_en(): void
     {
         $f = $this->fixture();
