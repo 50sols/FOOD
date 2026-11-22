@@ -190,6 +190,7 @@ class CommercialDashboardContractTest extends TestCase
         $productId = $this->flashProduct($storeId, 'b2b');
         $roleless = User::factory()->create(['is_active' => true, 'locale' => 'en']);
         $url = route('admin.commercial.sales-control', ['store_id' => $storeId]);
+        $querySeparator = str_contains($url, '?') ? '&' : '?';
         $initialLocale = app()->getLocale();
 
         try {
@@ -207,22 +208,22 @@ class CommercialDashboardContractTest extends TestCase
                     '?product=1.5',
                     '?product=999999999999999999999999',
                 ] as $invalid) {
-                    $this->actingAs($manager->fresh())->getJson($url.$invalid)
+                    $this->actingAs($manager->fresh())->getJson($url.$querySeparator.ltrim($invalid, '?'))
                         ->assertUnprocessable();
                     $this->assertSame($productCount, DB::table('products')->count());
                     $this->assertSame($auditCount, DB::table('audit_logs')->count());
                 }
 
-                $this->actingAs($roleless)->getJson($url.'?product[]=1')
+                $this->actingAs($roleless)->getJson($url.$querySeparator.'product[]=1')
                     ->assertForbidden();
 
                 foreach (['', '?product=', '?product=0'] as $empty) {
-                    $this->actingAs($manager->fresh())->get($url.$empty)
+                    $this->actingAs($manager->fresh())->get($url.$querySeparator.ltrim($empty, '?'))
                         ->assertOk()
                         ->assertSee('dir="'.$direction.'"', false);
                 }
 
-                $this->actingAs($manager->fresh())->get($url.'?product='.$productId)
+                $this->actingAs($manager->fresh())->get($url.$querySeparator.'product='.$productId)
                     ->assertOk()
                     ->assertSee('dir="'.$direction.'"', false)
                     ->assertSee('Flash Product');
