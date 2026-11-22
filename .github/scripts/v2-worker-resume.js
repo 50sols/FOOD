@@ -103,9 +103,17 @@ function decide({ issue, branches, prs, refs, checkpoint }) {
       return { action: 'RESUME_ORIGINAL_PR', branch: pr.head.ref,
         pr: pr.number, head: pr.head.sha, reason: 'existing-pr-must-be-resumed' };
     }
-    if (state === 'MERGED') return { action: 'VERIFY_INTEGRATION_ACCEPTANCE',
-      branch: original, pr: pr.number, head: pr.merge_commit_sha || null,
-      reason: 'original-pr-already-merged-no-new-pr' };
+    if (state === 'MERGED') {
+      // Without the authoritative merge SHA the completed work cannot be
+      // reconciled to V2 history or certified by a newer integration run.
+      if (typeof pr.merge_commit_sha !== 'string' || !pr.merge_commit_sha) {
+        return { action: 'BLOCK_UNKNOWN_MERGE_SHA',
+          reason: 'merged-original-has-no-authoritative-merge-commit' };
+      }
+      return { action: 'VERIFY_INTEGRATION_ACCEPTANCE',
+        branch: original, pr: pr.number, head: pr.merge_commit_sha,
+        reason: 'original-pr-already-merged-no-new-pr' };
+    }
     if (state === 'CLOSED_UNMERGED') return { action: 'BLOCK_CLOSED_ORIGINAL_PR',
       branch: original, pr: pr.number, reason: 'owner-reconciliation-required' };
     return { action: 'BLOCK_UNKNOWN_PR_STATE', reason: 'not-authoritative' };
