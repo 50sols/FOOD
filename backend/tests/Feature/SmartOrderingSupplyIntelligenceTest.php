@@ -198,6 +198,13 @@ class SmartOrderingSupplyIntelligenceTest extends TestCase
                     ...$case['payload'],
                     'branch_id' => $f['branch_id'],
                 ];
+                // Numeric-string selectors must enforce the same branch scope.
+                $this->actingAs($actor->fresh())
+                    ->json($case['method'], $url, [
+                        ...$case['payload'],
+                        'branch_id' => (string) $foreignBranchId,
+                    ])->assertNotFound();
+
                 foreach ([$foreignBranchId, $missingBranchId] as $deniedBranch) {
                     foreach ([
                         ['branch_id' => $deniedBranch],
