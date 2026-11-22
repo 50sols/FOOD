@@ -39,7 +39,7 @@ final class SmartOrderingQrController extends Controller
         // search filters reveal validation behavior. Malformed or overflowing
         // selectors retain their original Laravel validation responses.
         $requestedStore = $request->query('store_id');
-        if (is_int($requestedStore) || (is_string($requestedStore) && ctype_digit($requestedStore))) {
+        if (is_string($requestedStore) && ctype_digit($requestedStore)) {
             $storeId = filter_var($requestedStore, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
             if ($storeId !== false) {
                 abort_unless(in_array($storeId, $storeIds, true), 404);
