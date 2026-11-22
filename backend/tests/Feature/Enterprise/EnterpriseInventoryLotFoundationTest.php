@@ -2,6 +2,7 @@
 
 namespace Tests\Feature\Enterprise;
 
+use App\Enterprise\Modules\ModuleRegistry;
 use App\Enterprise\Wms\InventoryLotService;
 use App\Models\Role;
 use App\Models\User;
@@ -134,7 +135,7 @@ final class EnterpriseInventoryLotFoundationTest extends TestCase
         $this->seed(CoreReferenceSeeder::class);
         // This is an HTTP route regression: admit the fixture through the
         // existing ERP gateway without changing production authorization.
-        config()->set('enterprise_module_readiness.certified_versions.inventory_wms', app(\\App\\Enterprise\\Modules\\ModuleRegistry::class)->manifest('inventory_wms')->version);
+        config()->set('enterprise_module_readiness.certified_versions.inventory_wms', app(ModuleRegistry::class)->manifest('inventory_wms')->version);
         $fixture = $this->fixture();
         $actor = $this->inventoryUser($fixture['store_id']);
         $this->grantPlatformErpAccess($actor);
