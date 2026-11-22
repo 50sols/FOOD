@@ -7,7 +7,9 @@ on:
 
 concurrency:
   group: v2-integrated-backend-acceptance
-  cancel-in-progress: true
+  # Preserve full-backend acceptance for every queued Foodex_V2 integration SHA.
+  # New pushes queue behind the running job rather than cancelling its evidence.
+  cancel-in-progress: false
 
 permissions:
   contents: read
