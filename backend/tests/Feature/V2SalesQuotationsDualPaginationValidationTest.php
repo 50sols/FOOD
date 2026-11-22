@@ -46,12 +46,6 @@ final class V2SalesQuotationsDualPaginationValidationTest extends TestCase
             'created_at' => now(),
             'updated_at' => now(),
         ]);
-        $before = [
-            'quotes' => DB::table('sales_quotations')->count(),
-            'contracts' => DB::table('customer_sales_contracts')->count(),
-            'orders' => DB::table('orders')->count(),
-            'audits' => DB::table('audit_logs')->count(),
-        ];
 
         $roleless = User::factory()->create(['is_active' => true]);
         $foreignStore = (int) DB::table('stores')->insertGetId([
@@ -71,6 +65,13 @@ final class V2SalesQuotationsDualPaginationValidationTest extends TestCase
             'created_at' => now(),
             'updated_at' => now(),
         ]);
+        $before = [
+            'quotes' => DB::table('sales_quotations')->count(),
+            'contracts' => DB::table('customer_sales_contracts')->count(),
+            'orders' => DB::table('orders')->count(),
+            'audits' => DB::table('audit_logs')->count(),
+        ];
+
         $originalLocale = app()->getLocale();
 
         try {
