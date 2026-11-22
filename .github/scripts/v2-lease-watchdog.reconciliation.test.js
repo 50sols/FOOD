@@ -166,8 +166,12 @@ function harness(opts={}) {
         return {data:{workflow_runs:(opts.integratedRunning ||
             (opts.integratedStartsMidSweep && integrationReads > 1))
           ? [{name:'FOODEX V2 Integrated Backend Acceptance',head_sha:'v2-head',status:'in_progress'}]
-          : opts.integratedOtherSha ? [{name:'FOODEX V2 Integrated Backend Acceptance',
-              head_sha:'older-v2',status:'in_progress'}] : []}};
+          : opts.integratedOtherSha ? [{id:19,name:'FOODEX V2 Integrated Backend Acceptance',
+              head_sha:'older-v2',status:'in_progress'}]
+            : opts.integratedMissing ? []
+            : [{id:20,name:'FOODEX V2 Integrated Backend Acceptance',
+                head_sha:'v2-head',status:'completed',
+                conclusion:opts.integratedFailed ? 'failure' : 'success'}]}};
       }
       if (opts.malformedWorkflowsPageTwo && args.page===2) return {data:{wrong_collection:[]}};
       if (opts.tooManyWorkflows) return {data:{workflow_runs:terminalRuns}};
@@ -212,7 +216,17 @@ test('merged original stays claimed while latest integrated Foodex_V2 acceptance
   assert.equal(active.result.released,0);
   assert.deepEqual(active.mutations,[]);
   const obsolete=await sweep({claimPr:true,mergedPr:true,integratedOtherSha:true});
-  assert.deepEqual(obsolete.mutations,['remove:worker:active','comment']);
+  assert.deepEqual(obsolete.mutations,[]);
+  assert.equal(obsolete.result.released,0);
+});
+
+test('missing or failed latest integration cannot clear merged issue ownership', async () => {
+  for (const mode of [{integratedMissing:true},{integratedFailed:true},
+    {integratedOtherSha:true}]) {
+    const out=await sweep({claimPr:true,mergedPr:true,...mode});
+    assert.deepEqual(out.mutations,[],JSON.stringify(mode));
+    assert.equal(out.result.released,0);
+  }
 });
 
 test('integrated CI starting after first check prevents merged lease release', async () => {
