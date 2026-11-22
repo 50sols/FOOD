@@ -300,7 +300,10 @@ class RestaurantSaaSIntegrationHubTest extends TestCase
                 $adminA->forceFill(['locale' => $locale])->saveQuietly();
                 app()->setLocale($locale);
 
+                // Both foreign and missing connectors must stay 404 regardless of payload validity.
                 $this->actingAs($adminA->fresh())->patchJson($foreignUrl, $invalid)->assertNotFound();
+                $this->actingAs($adminA->fresh())->patchJson($foreignUrl, [])->assertNotFound();
+                $this->actingAs($adminA->fresh())->patchJson($missingUrl, $invalid)->assertNotFound();
                 $this->actingAs($adminA->fresh())->patchJson($missingUrl, [])->assertNotFound();
             }
         } finally {
