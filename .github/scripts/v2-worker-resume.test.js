@@ -19,6 +19,19 @@ test('open original PR must be resumed on its exact SHA', () => {
   const d=decide({issue,branches:['ci/4151-resume'],prs:[pr()],refs:[],checkpoint:null});
   assert.deepEqual([d.action,d.pr,d.head],['RESUME_ORIGINAL_PR',4152,'head-sha']);
 });
+test('open original with missing head metadata blocks resumption instead of guessing', () => {
+  for (const incomplete of [
+    { ...pr(), head: null },
+    { ...pr(), head: { ref: 'ci/4151-resume' } },
+    { ...pr(), head: { ref: '', sha: 'head-sha' } },
+    { ...pr(), head: { ref: 'ci/4151-resume', sha: '' } },
+  ]) {
+    const x = decide({ issue, branches: ['ci/4151-resume'], prs: [incomplete],
+      refs: [], checkpoint: null });
+    assert.equal(x.action, 'BLOCK_UNKNOWN_PR_HEAD');
+  }
+});
+
 test('merged original PR cannot be re-created even when issue is open', () => {
   const d=decide({issue,branches:[],prs:[pr('merged')],refs:[],checkpoint:null});
   assert.deepEqual([d.action,d.head],['VERIFY_INTEGRATION_ACCEPTANCE','integration-sha']);
