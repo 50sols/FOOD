@@ -32,6 +32,7 @@ final class SmartOrderingGuestServiceController extends Controller
         Request $request,
     ): RedirectResponse {
         [$actor, $branchModel] = $this->authorizedBranch($branch, $request);
+        $this->guests->assertReservationInBranch($branchModel, $reservation);
         $this->guests->updateReservation(
             $branchModel,
             $reservation,
@@ -48,6 +49,7 @@ final class SmartOrderingGuestServiceController extends Controller
         Request $request,
     ): RedirectResponse {
         [$actor, $branchModel] = $this->authorizedBranch($branch, $request);
+        $this->guests->assertReservationInBranch($branchModel, $reservation);
         $data = $request->validate([
             'status' => ['required', Rule::in(['CONFIRMED', 'SEATED', 'COMPLETED', 'CANCELLED', 'NO_SHOW'])],
         ]);
@@ -70,6 +72,7 @@ final class SmartOrderingGuestServiceController extends Controller
         Request $request,
     ): RedirectResponse {
         [$actor, $branchModel] = $this->authorizedBranch($branch, $request);
+        $this->guests->assertWaitlistInBranch($branchModel, $entry);
         $this->guests->updateWaitlist($branchModel, $entry, $this->waitlistData($request), $actor);
 
         return $this->back($branchModel, 'waitlist', __('smart_ordering.guest_service.waitlist_saved'));
@@ -81,6 +84,7 @@ final class SmartOrderingGuestServiceController extends Controller
         Request $request,
     ): RedirectResponse {
         [$actor, $branchModel] = $this->authorizedBranch($branch, $request);
+        $this->guests->assertWaitlistInBranch($branchModel, $entry);
         $data = $request->validate([
             'status' => ['required', Rule::in(['WAITING', 'CONTACTED', 'CANCELLED'])],
         ]);
@@ -95,6 +99,7 @@ final class SmartOrderingGuestServiceController extends Controller
         Request $request,
     ): RedirectResponse {
         [$actor, $branchModel] = $this->authorizedBranch($branch, $request);
+        $this->guests->assertWaitlistInBranch($branchModel, $entry);
         $data = $request->validate([
             'table_public_id' => ['nullable', 'uuid'],
             'seat_now' => ['required', 'boolean'],
