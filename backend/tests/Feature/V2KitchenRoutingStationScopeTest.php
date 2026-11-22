@@ -103,6 +103,10 @@ final class V2KitchenRoutingStationScopeTest extends TestCase
                 ->where('name_en', $name)->value('public_id');
         };
         $ownedStation = $stationFor($owned, 'Owned grill');
+        $inactiveStation = $stationFor($owned, 'Inactive grill');
+        DB::table('smart_ordering_kitchen_stations')
+            ->where('public_id', $inactiveStation)
+            ->update(['is_active' => false, 'updated_at' => now()]);
         $siblingStation = $stationFor($sibling, 'Sibling grill');
         $foreignStation = $stationFor($foreign, 'Foreign grill');
         $url = route('admin.smart-ordering.kitchen.rules.store', $owned->public_id);
@@ -119,7 +123,7 @@ final class V2KitchenRoutingStationScopeTest extends TestCase
             foreach (['ar', 'en'] as $locale) {
                 $actor->forceFill(['locale' => $locale])->saveQuietly();
                 app()->setLocale($locale);
-                foreach ([$foreignStation, $siblingStation, (string) Str::uuid()] as $notOwned) {
+                foreach ([$foreignStation, $siblingStation, $inactiveStation, (string) Str::uuid()] as $notOwned) {
                     foreach ([
                         ['station_public_id' => $notOwned],
                         ['station_public_id' => $notOwned, 'match_type' => 'INVALID'],
