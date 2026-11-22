@@ -261,6 +261,17 @@ final class SmartOrderingCustomerGrowthController extends Controller
         TenantContextResolver $tenants,
     ): JsonResponse {
         $actor = $this->authorizeSite($request, $site, $tenants, 'smart_ordering.manage');
+
+        // A missing or foreign recovery case must not expose body-validation
+        // feedback. The service rechecks the same site scope before mutation.
+        abort_unless(
+            DB::table('smart_ordering_service_recovery_cases')
+                ->where('site_id', $site->getKey())
+                ->where('public_id', $case)
+                ->exists(),
+            404,
+        );
+
         $data = $request->validate(['resolution_note' => ['required', 'string', 'max:5000']]);
         $feedback->resolveCase($actor, $site, $case, (string) $data['resolution_note']);
 
