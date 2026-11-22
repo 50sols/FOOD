@@ -43,6 +43,109 @@ class SmartOrderingMenuDomainTest extends TestCase
         $this->seed(CoreReferenceSeeder::class);
     }
 
+    public function test_appearance_preview_rejects_nested_selectors_after_authorization_without_changing_draft(): void
+    {
+        $fixture = $this->fixture('PREVIEW-SHAPE-A', 5.750);
+        $foreign = $this->fixture('PREVIEW-SHAPE-B', 7.500);
+        [$draft] = $this->draftItem($fixture, app(SmartOrderingMenuWriteService::class));
+        $siteKey = (string) $fixture['site']->slug;
+        $foreignKey = (string) $foreign['site']->slug;
+        $roleless = User::factory()->create(['is_active' => true, 'locale' => 'en']);
+        $before = [
+            DB::table('smart_ordering_sites')->count(),
+            DB::table('smart_ordering_revisions')->count(),
+            DB::table('smart_ordering_menus')->count(),
+            DB::table('audit_logs')->count(),
+        ];
+        $draftPayload = $draft->fresh()->payload;
+
+        $selectors = [
+            'site' => 'site%5B%5D='.$siteKey,
+            'theme' => 'theme%5B0%5D=modern-minimal',
+            'appearance' => 'appearance%5Bdark%5D=1',
+            'lang' => 'lang%5Bdeep%5D%5B0%5D=ar',
+            'revision' => 'revision%5B%5D=published',
+            'device' => 'device%5Bdeep%5D=desktop',
+        ];
+
+        foreach (['ar' => 'rtl', 'en' => 'ltr'] as $locale => $direction) {
+            $fixture['admin']->forceFill(['locale' => $locale])->save();
+            $actor = $fixture['admin']->fresh();
+            $params = [
+                'site' => $siteKey,
+                'theme' => 'modern-minimal',
+                'appearance' => 'light',
+                'lang' => $locale,
+                'revision' => 'draft',
+                'device' => 'desktop',
+            ];
+
+            $this->actingAs($actor)
+                ->get(route('admin.smart-ordering.appearance.index', $params))
+                ->assertOk()
+                ->assertSee('data-builder', false);
+
+            $this->actingAs($actor)
+                ->get(route('admin.smart-ordering.appearance.preview', $params))
+                ->assertOk()
+                ->assertHeader('X-FOODEX-Preview-State', 'draft')
+                ->assertHeader('X-Robots-Tag', 'noindex, nofollow, noarchive')
+                ->assertSee('dir="'.$direction.'"', false);
+
+            $this->actingAs($actor)
+                ->get(route('admin.smart-ordering.appearance.demo-preview', [
+                    'theme' => 'modern-minimal', 'appearance' => 'light', 'lang' => $locale,
+                ]))
+                ->assertOk()
+                ->assertHeader('X-FOODEX-Preview-State', 'demo')
+                ->assertSee('dir="'.$direction.'"', false);
+
+            foreach (['admin.smart-ordering.appearance.index', 'admin.smart-ordering.appearance.preview'] as $routeName) {
+                foreach ($selectors as $field => $nested) {
+                    $validParams = $params;
+                    unset($validParams[$field]);
+                    $this->actingAs($actor)
+                        ->get(route($routeName, $validParams).'&'.$nested)
+                        ->assertNotFound();
+                }
+            }
+
+            foreach (['theme', 'appearance', 'lang'] as $field) {
+                $validDemoParams = [
+                    'theme' => 'modern-minimal', 'appearance' => 'light', 'lang' => $locale,
+                ];
+                unset($validDemoParams[$field]);
+                $this->actingAs($actor)
+                    ->get(route('admin.smart-ordering.appearance.demo-preview', $validDemoParams).'&'.$selectors[$field])
+                    ->assertNotFound();
+            }
+
+            $this->actingAs($actor)
+                ->get(route('admin.smart-ordering.appearance.index', ['site' => $foreignKey]))
+                ->assertNotFound();
+            $this->actingAs($actor)
+                ->get(route('admin.smart-ordering.appearance.preview', ['site' => $foreignKey]))
+                ->assertNotFound();
+
+            $this->actingAs($roleless)
+                ->get(route('admin.smart-ordering.appearance.index', $params))
+                ->assertForbidden();
+            $this->actingAs($roleless)
+                ->get(route('admin.smart-ordering.appearance.demo-preview', [
+                    'theme' => 'modern-minimal',
+                ]))
+                ->assertForbidden();
+        }
+
+        $this->assertSame($draftPayload, $draft->fresh()->payload);
+        $this->assertSame($before, [
+            DB::table('smart_ordering_sites')->count(),
+            DB::table('smart_ordering_revisions')->count(),
+            DB::table('smart_ordering_menus')->count(),
+            DB::table('audit_logs')->count(),
+        ]);
+    }
+
     public function test_appearance_builder_creates_a_starter_menu_with_categories_and_images(): void
     {
         Storage::fake('public');
