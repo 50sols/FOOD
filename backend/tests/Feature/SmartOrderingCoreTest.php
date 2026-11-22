@@ -2459,6 +2459,116 @@ class SmartOrderingCoreTest extends TestCase
         ]);
     }
 
+    public function test_time_clock_correction_checks_branch_session_before_validation_in_ar_and_en(): void
+    {
+        $admin = $this->storeAdmin($this->storeId);
+        $sibling = SmartOrderingBranch::query()->create([
+            'public_id' => (string) Str::uuid(),
+            'site_id' => $this->branch->site_id,
+            'code' => 'correction-sibling',
+            'name_ar' => 'فرع تصحيح آخر',
+            'name_en' => 'Other correction branch',
+            'timezone' => 'Asia/Kuwait',
+            'is_active' => true,
+        ]);
+        $ownedId = (string) Str::uuid();
+        $foreignId = (string) Str::uuid();
+        $missingId = (string) Str::uuid();
+
+        foreach ([
+            [$ownedId, (int) $this->branch->id],
+            [$foreignId, (int) $sibling->id],
+        ] as [$publicId, $branchId]) {
+            DB::table('restaurant_time_clock_sessions')->insert([
+                'public_id' => $publicId,
+                'branch_id' => $branchId,
+                'user_id' => $admin->id,
+                'status' => 'CLOSED',
+                'clocked_in_at' => '2026-10-18 07:00:00',
+                'clocked_out_at' => '2026-10-18 15:00:00',
+                'total_break_seconds' => 1200,
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+        }
+
+        $url = fn (string $publicId): string => route('admin.smart-ordering.workforce.sessions.correct', [
+            $this->branch->public_id,
+            $publicId,
+        ]);
+        $valid = [
+            'clocked_in_at' => '2026-10-18T11:00',
+            'clocked_out_at' => '2026-10-18T19:00',
+            'total_break_minutes' => 30,
+            'reason' => 'Approved manager paper timesheet correction.',
+        ];
+        $auditBefore = DB::table('audit_logs')
+            ->where('event', 'smart_ordering.workforce.time_clock.corrected')->count();
+        $localeBefore = app()->getLocale();
+
+        try {
+            foreach (['ar', 'en'] as $locale) {
+                app()->setLocale($locale);
+                $admin->forceFill(['locale' => $locale])->saveQuietly();
+
+                foreach ([$foreignId, $missingId] as $unavailableId) {
+                    $this->actingAs($admin->fresh())
+                        ->putJson($url($unavailableId), [])
+                        ->assertNotFound();
+                    $this->actingAs($admin->fresh())
+                        ->putJson($url($unavailableId), ['clocked_in_at' => ['malformed']])
+                        ->assertNotFound();
+                    $this->actingAs($admin->fresh())
+                        ->putJson($url($unavailableId), $valid)
+                        ->assertNotFound();
+                }
+
+                $this->actingAs($admin->fresh())
+                    ->putJson($url($ownedId), [])
+                    ->assertUnprocessable()
+                    ->assertJsonValidationErrors([
+                        'clocked_in_at',
+                        'clocked_out_at',
+                        'total_break_minutes',
+                        'reason',
+                    ]);
+            }
+        } finally {
+            app()->setLocale($localeBefore);
+        }
+
+        $staff = $this->workforceUser($this->storeId, 'Time Clock Staff');
+        $this->actingAs($staff)
+            ->putJson($url($ownedId), [])
+            ->assertForbidden();
+
+        $this->assertDatabaseHas('restaurant_time_clock_sessions', [
+            'public_id' => $foreignId,
+            'clocked_in_at' => '2026-10-18 07:00:00',
+            'total_break_seconds' => 1200,
+        ]);
+        $this->assertSame($auditBefore, DB::table('audit_logs')
+            ->where('event', 'smart_ordering.workforce.time_clock.corrected')->count());
+
+        $this->actingAs($admin->fresh())
+            ->put($url($ownedId), $valid)
+            ->assertRedirect();
+
+        $this->assertDatabaseHas('restaurant_time_clock_sessions', [
+            'public_id' => $ownedId,
+            'total_break_seconds' => 1800,
+            'corrected_by_user_id' => $admin->id,
+            'correction_note' => $valid['reason'],
+        ]);
+        $this->assertDatabaseHas('restaurant_time_clock_sessions', [
+            'public_id' => $foreignId,
+            'clocked_in_at' => '2026-10-18 07:00:00',
+            'total_break_seconds' => 1200,
+        ]);
+        $this->assertSame($auditBefore + 1, DB::table('audit_logs')
+            ->where('event', 'smart_ordering.workforce.time_clock.corrected')->count());
+    }
+
     private function workforceUser(int $storeId, string $name, bool $manager = false): User
     {
         $user = User::query()->create([
