@@ -273,6 +273,15 @@ final class SmartOrderingOperationsController extends Controller
     public function storeBranch(Request $request): RedirectResponse
     {
         $actor = $this->actor($request);
+        // Resolve explicit Retail store authority before unrelated branch fields.
+        // Invalid or absent store selectors retain the existing 422 validation.
+        $requestedStore = $request->input('store_id');
+        if (is_int($requestedStore) || (is_string($requestedStore) && ctype_digit($requestedStore))) {
+            if ((int) $requestedStore > 0) {
+                $this->restaurantAccess->assertStore($actor, (int) $requestedStore, 'orders.manage', 'b2c');
+            }
+        }
+
         $data = $this->branchData($request);
         $storeId = (int) $data['store_id'];
         $this->restaurantAccess->assertStore($actor, $storeId, 'orders.manage', 'b2c');
