@@ -141,8 +141,11 @@ final class EnterpriseInventoryLotFoundationTest extends TestCase
             $fixture['product_id'],
             ['identifier' => 'SCOPE-OWN-LOT'],
         );
+        $foreignStoreId = (int) DB::table('warehouses')
+            ->where('id', $fixture['other_store_warehouse_id'])
+            ->value('store_id');
         $foreignLotId = (int) DB::table('enterprise_inventory_lots')->insertGetId([
-            'store_id' => $fixture['other_store_id'],
+            'store_id' => $foreignStoreId,
             'warehouse_id' => $fixture['other_store_warehouse_id'],
             'product_id' => $fixture['other_store_product_id'],
             'identifier' => 'SCOPE-FOREIGN-LOT',
