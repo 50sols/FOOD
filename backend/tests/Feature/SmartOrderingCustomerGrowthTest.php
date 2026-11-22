@@ -434,6 +434,95 @@ class SmartOrderingCustomerGrowthTest extends TestCase
             ->assertJsonPath('cases.0.id', $result['service_recovery']['case_id']);
     }
 
+    public function test_service_recovery_post_resolves_scoped_case_before_payload_validation(): void
+    {
+        [$storeA, $adminA, $siteA] = $this->restaurant('V2-RECOVERY-POST-A');
+        [$storeB, $adminB, $siteB] = $this->restaurant('V2-RECOVERY-POST-B');
+        $customerA = $this->customer($storeA, 'Recovery A', '+96550000961');
+        $customerB = $this->customer($storeB, 'Recovery B', '+96550000962');
+
+        $caseIds = [];
+        foreach ([
+            [$storeA, $adminA, $siteA, $customerA],
+            [$storeB, $adminB, $siteB, $customerB],
+        ] as [$store, $admin, $site, $customer]) {
+            $this->enable($admin, $site, Module::REVIEWS);
+            $order = $this->order($store, $customer['legacy_id'], $customer['b2c_id'], 'COMPLETED', 5.000);
+            $response = app(FeedbackService::class)->submit(
+                $site,
+                $customer['legacy_id'],
+                $order,
+                1,
+                'Please investigate.',
+            );
+            $this->assertNotNull($response['service_recovery']);
+            $caseIds[] = $response['service_recovery']['case_id'];
+        }
+
+        [$ownId, $foreignId] = $caseIds;
+        $route = fn (string $id): string => route('admin.smart-ordering.service-recovery.resolve', [
+            'site' => $siteA->getKey(),
+            'case' => $id,
+        ]);
+        $ownUrl = $route($ownId);
+        $foreignUrl = $route($foreignId);
+        $missingUrl = $route((string) Str::uuid());
+        $badPayload = ['resolution_note' => ['unexpected' => 'nested']];
+        $baselineCases = DB::table('smart_ordering_service_recovery_cases')
+            ->orderBy('id')
+            ->get(['id', 'site_id', 'public_id', 'status', 'resolution_note', 'resolved_at'])
+            ->toArray();
+        $baselineAudits = DB::table('audit_logs')->count();
+        $initialLocale = app()->getLocale();
+
+        try {
+            foreach (['ar', 'en'] as $locale) {
+                $adminA->forceFill(['locale' => $locale])->saveQuietly();
+                app()->setLocale($locale);
+
+                $this->actingAs($adminA->fresh())->postJson($foreignUrl, $badPayload)
+                    ->assertNotFound();
+                $this->actingAs($adminA->fresh())->postJson($missingUrl, [])
+                    ->assertNotFound();
+            }
+        } finally {
+            app()->setLocale($initialLocale);
+        }
+
+        // Tenant authentication/authorization must also fail before input checks.
+        $this->actingAs($adminB)->postJson($ownUrl, $badPayload)->assertNotFound();
+        $this->assertEquals(
+            $baselineCases,
+            DB::table('smart_ordering_service_recovery_cases')
+                ->orderBy('id')
+                ->get(['id', 'site_id', 'public_id', 'status', 'resolution_note', 'resolved_at'])
+                ->toArray(),
+        );
+        $this->assertSame($baselineAudits, DB::table('audit_logs')->count());
+
+        $this->actingAs($adminA->fresh())->postJson($ownUrl, $badPayload)
+            ->assertUnprocessable()->assertJsonValidationErrors('resolution_note');
+        $this->assertSame($baselineAudits, DB::table('audit_logs')->count());
+
+        $this->actingAs($adminA->fresh())->postJson($ownUrl, [
+            'resolution_note' => 'Follow-up completed.',
+        ])->assertOk()->assertJsonPath('status', 'RESOLVED');
+
+        $this->assertDatabaseHas('smart_ordering_service_recovery_cases', [
+            'site_id' => $siteA->id,
+            'public_id' => $ownId,
+            'status' => 'RESOLVED',
+            'resolution_note' => 'Follow-up completed.',
+        ]);
+        $this->assertDatabaseHas('smart_ordering_service_recovery_cases', [
+            'site_id' => $siteB->id,
+            'public_id' => $foreignId,
+            'status' => 'OPEN',
+            'resolution_note' => null,
+        ]);
+        $this->assertSame($baselineAudits + 1, DB::table('audit_logs')->count());
+    }
+
     public function test_high_rating_can_offer_external_review_without_reward_conditioning(): void
     {
         [$store, $admin, $site] = $this->restaurant('REVIEWS-HIGH');
