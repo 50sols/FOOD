@@ -31,6 +31,7 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
+use PHPUnit\Framework\Attributes\DataProvider;
 use Symfony\Component\HttpKernel\Exception\HttpException;
 use Tests\TestCase;
 
@@ -462,7 +463,7 @@ final class V2ReceivableSettlementWorkbenchTest extends TestCase
         ];
     }
 
-    #[\PHPUnit\Framework\Attributes\DataProvider('staleParentCases')]
+    #[DataProvider('staleParentCases')]
     public function test_stale_parent_ar_state_blocks_new_post_and_posted_idempotent_replay_without_financial_writes(
         string $parentStatus,
         string $allocationStatus,
