@@ -47,6 +47,43 @@ test('closed unmerged original needs reconciliation, not replacement branch', ()
   assert.equal(decide({issue,branches:[],prs:[pr('closed')],refs:[],checkpoint:null}).action,
     'BLOCK_CLOSED_ORIGINAL_PR');
 });
+test('closed later duplicate with deleted remote ref preserves older open original', () => {
+  const original=pr('open', 'fix/4151-original', 4152);
+  const duplicate=pr('closed', 'fix/4151-duplicate', 4153);
+  const refs=[
+    {branch: 'fix/4151-duplicate', pr: 4153, state: 'ACTIVE'},
+    {branch: 'fix/4151-original', pr: 4152, state: 'WAITING_CI'},
+  ];
+  const d=decide({issue,branches:['fix/4151-original'],
+    prs:[original,duplicate],refs,checkpoint:null});
+  assert.deepEqual([d.action,d.pr,d.branch,d.head],
+    ['RESUME_ORIGINAL_PR',4152,'fix/4151-original','head-sha']);
+});
+
+test('closed-duplicate reconciliation fails closed on live, missing and ambiguous ownership', () => {
+  const original=pr('open','fix/4151-original',4152);
+  const duplicate=pr('closed','fix/4151-duplicate',4153);
+  const safe={issue,branches:['fix/4151-original'],
+    prs:[original,duplicate],refs:[],checkpoint:null};
+  const reject=[
+    {...safe,branches:['fix/4151-original','fix/4151-duplicate']},
+    {...safe,branches:[]},
+    {...safe,branches:['fix/4151-other']},
+    {...safe,prs:[original,pr('open','fix/4151-duplicate',4153)]},
+    {...safe,prs:[original,pr('merged','fix/4151-duplicate',4153)]},
+    {...safe,prs:[pr('closed','fix/4151-duplicate',4151),original]},
+    {...safe,refs:[{branch:'fix/4151-unrelated',pr:null,state:'ACTIVE'}]},
+    {...safe,refs:[{branch:'fix/4151-original',pr:9999,state:'ACTIVE'}]},
+    {...safe,checkpoint:{branch:'fix/4151-unrelated'}},
+    {...safe,prs:[{...original,head:{ref:original.head.ref,sha:''}},duplicate]},
+    {...safe,prs:[original,{...duplicate,head:{ref:original.head.ref,sha:'old'}}]},
+  ];
+  for (const input of reject) {
+    assert.notEqual(decide(input).action,'RESUME_ORIGINAL_PR',
+      'conflicting or unverifiable original must remain blocked');
+  }
+});
+
 test('orphan branch and stale claim force safe reuse or block', () => {
   assert.equal(decide({issue,branches:['ci/4151-resume'],prs:[],refs:[],checkpoint:null}).action,
     'RESUME_ORIGINAL_BRANCH');
