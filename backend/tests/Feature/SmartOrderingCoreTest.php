@@ -1848,10 +1848,10 @@ class SmartOrderingCoreTest extends TestCase
                         ->postJson($combineUrl($unavailable), [])
                         ->assertNotFound();
                     $this->actingAs($admin->fresh())
-                        ->patchJson($positionUrl($unavailable), ['position_x' => ['invalid']])
+                        ->postJson($positionUrl($unavailable), ['position_x' => ['invalid']])
                         ->assertNotFound();
                     $this->actingAs($admin->fresh())
-                        ->patchJson($positionUrl($unavailable), [])
+                        ->postJson($positionUrl($unavailable), [])
                         ->assertNotFound();
                 }
 
@@ -1859,7 +1859,7 @@ class SmartOrderingCoreTest extends TestCase
                     ->postJson($combineUrl((string) $owned->public_id), [])
                     ->assertUnprocessable()->assertJsonValidationErrors('other_table_public_id');
                 $this->actingAs($admin->fresh())
-                    ->patchJson($positionUrl((string) $owned->public_id), [])
+                    ->postJson($positionUrl((string) $owned->public_id), [])
                     ->assertUnprocessable()->assertJsonValidationErrors(['position_x', 'position_y']);
             }
         } finally {
@@ -1877,7 +1877,7 @@ class SmartOrderingCoreTest extends TestCase
         ]);
 
         $this->actingAs($admin->fresh())
-            ->patch($positionUrl((string) $owned->public_id), ['position_x' => 220, 'position_y' => 320])
+            ->post($positionUrl((string) $owned->public_id), ['position_x' => 220, 'position_y' => 320])
             ->assertRedirect();
         $this->assertDatabaseHas('smart_ordering_tables', [
             'id' => $owned->id, 'position_x' => 220, 'position_y' => 320,
