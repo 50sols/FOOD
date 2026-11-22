@@ -881,6 +881,139 @@ class SmartOrderingCustomerGrowthTest extends TestCase
         $this->assertSame($beforeLedger, DB::table('smart_ordering_loyalty_ledger')->count());
     }
 
+    public function test_loyalty_rule_and_reward_writes_scope_branch_before_validation_in_ar_and_en(): void
+    {
+        [, $admin, $site] = $this->restaurant('V2-LOYALTY-BRANCH-A');
+        [, $foreignAdmin, $foreignSite] = $this->restaurant('V2-LOYALTY-BRANCH-B');
+
+        $makeBranch = static function (SmartOrderingSite $branchSite, string $code): int {
+            return (int) DB::table('smart_ordering_branches')->insertGetId([
+                'public_id' => (string) Str::uuid(),
+                'site_id' => $branchSite->getKey(),
+                'code' => $code,
+                'name_en' => $code,
+                'timezone' => 'Asia/Kuwait',
+                'is_default' => false,
+                'is_active' => true,
+                'accepting_orders' => true,
+                'supports_dine_in' => true,
+                'supports_pickup' => true,
+                'supports_delivery' => true,
+                'allow_scheduled' => true,
+                'pickup_lead_minutes' => 0,
+                'max_schedule_days' => 7,
+                'service_charge' => 0,
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+        };
+        $ownedBranchId = $makeBranch($site, 'OWNED');
+        $foreignBranchId = $makeBranch($foreignSite, 'FOREIGN');
+        $missingBranchId = (int) DB::table('smart_ordering_branches')->max('id') + 10000;
+        $existingReward = app(LoyaltyAdminService::class)->createReward(
+            $admin,
+            $site,
+            'Existing Reward',
+            'مكافأة قائمة',
+            11,
+            $ownedBranchId,
+        );
+        $siteId = (int) $site->getKey();
+        $cases = [
+            [
+                'method' => 'PUT',
+                'route' => route('admin.smart-ordering.loyalty.rule', ['site' => $siteId]),
+                'required' => 'points_per_currency_unit',
+                'valid' => ['points_per_currency_unit' => 2, 'minimum_spend' => 0],
+                'status' => 200,
+            ],
+            [
+                'method' => 'POST',
+                'route' => route('admin.smart-ordering.loyalty.rewards.store', ['site' => $siteId]),
+                'required' => 'name_en',
+                'valid' => ['name_en' => 'Branch Reward', 'name_ar' => 'مكافأة الفرع', 'points_cost' => 13],
+                'status' => 201,
+            ],
+            [
+                'method' => 'PUT',
+                'route' => route('admin.smart-ordering.loyalty.rewards.update', [
+                    'site' => $siteId, 'reward' => $existingReward['public_id'],
+                ]),
+                'required' => 'name_en',
+                'valid' => ['name_en' => 'Updated Reward', 'name_ar' => 'مكافأة محدثة', 'points_cost' => 19, 'is_active' => true],
+                'status' => 200,
+            ],
+        ];
+        $beforeAudits = DB::table('audit_logs')->count();
+        $beforeForeignAdminAudits = DB::table('audit_logs')->where('user_id', $foreignAdmin->getKey())->count();
+        $beforeRewards = DB::table('smart_ordering_loyalty_rewards')->count();
+        $beforeRules = DB::table('smart_ordering_loyalty_rules')->count();
+        $initialLocale = app()->getLocale();
+
+        try {
+            foreach (['ar', 'en'] as $locale) {
+                $admin->forceFill(['locale' => $locale])->saveQuietly();
+                app()->setLocale($locale);
+
+                foreach ($cases as $case) {
+                    $url = $case['route'];
+                    foreach ([$foreignBranchId, $missingBranchId, (string) $foreignBranchId] as $deniedBranch) {
+                        foreach ([
+                            ['branch_id' => $deniedBranch],
+                            ['branch_id' => $deniedBranch, $case['required'] => ['nested' => 'bad']],
+                            [...$case['valid'], 'branch_id' => $deniedBranch],
+                        ] as $payload) {
+                            $this->actingAs($admin->fresh())
+                                ->json($case['method'], $url, $payload)
+                                ->assertNotFound();
+                        }
+                    }
+
+                    foreach ([
+                        [],
+                        ['branch_id' => 0],
+                        ['branch_id' => 'invalid'],
+                        ['branch_id' => '999999999999999999999999999999'],
+                        ['branch_id' => $ownedBranchId],
+                        [...$case['valid'], 'branch_id' => $ownedBranchId, $case['required'] => ['nested' => 'bad']],
+                    ] as $payload) {
+                        $this->actingAs($admin->fresh())
+                            ->json($case['method'], $url, $payload)
+                            ->assertUnprocessable();
+                    }
+
+                    $this->actingAs($admin->fresh())
+                        ->json($case['method'], $url, [...$case['valid'], 'branch_id' => $ownedBranchId])
+                        ->assertStatus($case['status']);
+                }
+            }
+        } finally {
+            app()->setLocale($initialLocale);
+        }
+
+        $this->assertSame($beforeRules + 1, DB::table('smart_ordering_loyalty_rules')->count());
+        $this->assertSame($beforeRewards + 2, DB::table('smart_ordering_loyalty_rewards')->count());
+        $this->assertSame($beforeAudits + 6, DB::table('audit_logs')->count());
+
+        $this->assertDatabaseHas('smart_ordering_loyalty_rules', [
+            'site_id' => $siteId,
+            'branch_id' => $ownedBranchId,
+        ]);
+        $this->assertDatabaseHas('smart_ordering_loyalty_rewards', [
+            'site_id' => $siteId,
+            'public_id' => $existingReward['public_id'],
+            'branch_id' => $ownedBranchId,
+            'name_en' => 'Updated Reward',
+        ]);
+        $this->assertSame(0, DB::table('smart_ordering_loyalty_rules')
+            ->where('site_id', $siteId)->where('branch_id', $foreignBranchId)->count());
+        $this->assertSame(0, DB::table('smart_ordering_loyalty_rewards')
+            ->where('site_id', $siteId)->where('branch_id', $foreignBranchId)->count());
+        $this->assertSame(0, DB::table('smart_ordering_loyalty_rules')->where('site_id', $foreignSite->getKey())->count());
+        $this->assertSame(0, DB::table('smart_ordering_loyalty_rewards')->where('site_id', $foreignSite->getKey())->count());
+        $this->assertSame($beforeForeignAdminAudits, DB::table('audit_logs')->where('user_id', $foreignAdmin->getKey())->count());
+    }
+
     /** @return array{0:int,1:User,2:SmartOrderingSite} */
     private function restaurant(string $code): array
     {
