@@ -183,6 +183,75 @@ class SmartOrderingCustomerGrowthTest extends TestCase
         ]);
     }
 
+    public function test_admin_repeat_rejects_unscoped_source_order_before_invalid_items_in_both_locales(): void
+    {
+        [$storeA, $adminA, $siteA] = $this->restaurant('V2-REPEAT-SCOPE-A');
+        [$storeB, $adminB, $siteB] = $this->restaurant('V2-REPEAT-SCOPE-B');
+        $customerA = $this->customer($storeA, 'Scoped Repeat Customer', '+96550000971');
+        $otherCustomerA = $this->customer($storeA, 'Other Customer A', '+96550000972');
+        $customerB = $this->customer($storeB, 'Foreign Repeat Customer', '+96550000973');
+
+        $productA = $this->sellableProduct($storeA, 'V2-REP-SCOPE-A', 'Owned Meal', 4.500, 20);
+        $productB = $this->sellableProduct($storeB, 'V2-REP-SCOPE-B', 'Foreign Meal', 9.000, 20);
+        $ownedOrder = $this->order($storeA, $customerA['legacy_id'], $customerA['b2c_id'], 'COMPLETED', 4.500);
+        $ownedItem = $this->orderItem($ownedOrder, $productA, 'Owned Meal', 1, 4.500);
+        $otherCustomerOrder = $this->order($storeA, $otherCustomerA['legacy_id'], $otherCustomerA['b2c_id'], 'COMPLETED', 4.500);
+        $this->orderItem($otherCustomerOrder, $productA, 'Other Meal', 1, 4.500);
+        $foreignOrder = $this->order($storeB, $customerB['legacy_id'], $customerB['b2c_id'], 'COMPLETED', 9.000);
+        $this->orderItem($foreignOrder, $productB, 'Foreign Meal', 1, 9.000);
+
+        $url = fn (int $sourceOrderId): string => route('admin.smart-ordering.customers.repeat', [
+            'site' => $siteA->getKey(),
+            'customer' => $customerA['legacy_id'],
+            'order' => $sourceOrderId,
+        ]);
+
+        $ownedUrl = $url($ownedOrder);
+        $invalid = ['order_item_ids' => ['not-an-integer']];
+        $auditBefore = DB::table('audit_logs')->count();
+        $draftsBefore = DB::table('smart_ordering_repeat_drafts')->count();
+        $initialLocale = app()->getLocale();
+
+        try {
+            foreach (['ar', 'en'] as $locale) {
+                $adminA->forceFill(['locale' => $locale])->saveQuietly();
+                app()->setLocale($locale);
+
+                foreach ([$foreignOrder, $otherCustomerOrder, $foreignOrder + 1000000] as $unavailable) {
+                    $this->actingAs($adminA->fresh())->postJson($url($unavailable), $invalid)
+                        ->assertNotFound();
+                }
+            }
+        } finally {
+            app()->setLocale($initialLocale);
+        }
+
+        // Restaurant-B operator does not gain access to restaurant-A source.
+        $this->actingAs($adminB)->postJson($ownedUrl, $invalid)->assertNotFound();
+        $this->assertSame($draftsBefore, DB::table('smart_ordering_repeat_drafts')->count());
+        $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+
+        // Validation remains intact for an order legitimately in scope.
+        $this->actingAs($adminA->fresh())->postJson($ownedUrl, $invalid)
+            ->assertUnprocessable()->assertJsonValidationErrors('order_item_ids.0');
+        $this->assertSame($draftsBefore, DB::table('smart_ordering_repeat_drafts')->count());
+
+        $this->actingAs($adminA->fresh())->postJson($ownedUrl, ['order_item_ids' => [$ownedItem]])
+            ->assertCreated()
+            ->assertJsonPath('source_order_id', $ownedOrder)
+            ->assertJsonPath('pricing_notice', 'LIVE_PRICE_AND_AVAILABILITY_REVALIDATED');
+
+        $this->assertDatabaseHas('smart_ordering_repeat_drafts', [
+            'site_id' => $siteA->id,
+            'customer_id' => $customerA['legacy_id'],
+            'source_order_id' => $ownedOrder,
+            'status' => 'DRAFT',
+        ]);
+        $this->assertSame($draftsBefore + 1, DB::table('smart_ordering_repeat_drafts')->count());
+        $this->assertSame(0, DB::table('smart_ordering_repeat_drafts')->where('site_id', $siteB->id)->count());
+        $this->assertSame(0, DB::table('smart_ordering_repeat_drafts')->where('source_order_id', $otherCustomerOrder)->count());
+    }
+
     public function test_noncompleted_repeat_http_409_is_bilingual_and_never_creates_a_draft(): void
     {
         [$store, $admin, $site] = $this->restaurant('REPEAT-409-LOCALE');
