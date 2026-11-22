@@ -17,6 +17,27 @@ final class EnterpriseSavedViewController extends Controller
         $actor = $request->user();
         abort_unless($actor instanceof User, 401);
 
+        // Resolve authoritative surface and tenant scope before exposing
+        // validation details for unrelated name, visibility or token fields.
+        $selector = $request->validate([
+            'surface_key' => ['required', 'string', 'max:120', 'regex:/^[a-z][a-z0-9._-]{0,119}$/'],
+            'scope_type' => ['required', Rule::in([
+                'platform',
+                'organization',
+                'company',
+                'legal_entity',
+                'business_unit',
+                'store',
+            ])],
+            'scope_id' => ['nullable', 'integer', 'min:1'],
+        ]);
+        $savedViews->assertCanAccessScope(
+            $actor,
+            (string) $selector['surface_key'],
+            (string) $selector['scope_type'],
+            isset($selector['scope_id']) ? (int) $selector['scope_id'] : null,
+        );
+
         $validated = $request->validate([
             'surface_key' => ['required', 'string', 'max:120', 'regex:/^[a-z][a-z0-9._-]{0,119}$/'],
             'scope_type' => ['required', Rule::in([

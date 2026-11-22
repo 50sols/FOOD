@@ -160,6 +160,102 @@ final class EnterpriseSavedViewFoundationTest extends TestCase
         }
     }
 
+    public function test_foreign_store_saved_view_post_denies_before_unrelated_validation_in_ar_and_en(): void
+    {
+        [$owner, $storeA] = $this->retailUser('STORE-SAVED-POST-A', 'saved-post-a@example.test');
+        [, $storeB] = $this->retailUser('STORE-SAVED-POST-B', 'saved-post-b@example.test');
+
+        // Exercise the actual Dashboard POST with a legitimate scoped Retail role.
+        DB::table('user_store_roles')->where('user_id', $owner->id)->update([
+            'role_id' => Role::query()->where('code', 'B2C_STORE_ADMIN')->firstOrFail()->id,
+        ]);
+        $state = EnterpriseGridState::fromSavedState(['columns' => ['status']]);
+        $token = app(EnterpriseSavedViewService::class)->stateToken(
+            'enterprise.orders',
+            'store',
+            $storeA->id,
+            $state,
+        );
+
+        foreach (['ar', 'en'] as $locale) {
+            $owner->forceFill(['locale' => $locale])->save();
+
+            $this->actingAs($owner->fresh())
+                ->withHeader('Accept', 'application/json')
+                ->post(route('admin.enterprise-saved-views.store'), [
+                    'surface_key' => 'enterprise.orders',
+                    'scope_type' => 'store',
+                    'scope_id' => $storeB->id,
+                    'name' => '',
+                    'visibility' => 'invalid-visibility',
+                    'state_token' => 'invalid-token',
+                ])
+                ->assertForbidden();
+
+            $this->actingAs($owner->fresh())
+                ->post(route('admin.enterprise-saved-views.store'), [
+                    'surface_key' => 'enterprise.orders',
+                    'scope_type' => 'store',
+                    'scope_id' => $storeB->id,
+                    'name' => 'Foreign scope',
+                    'visibility' => 'private',
+                    'state_token' => $token,
+                ])
+                ->assertForbidden();
+
+            $this->assertDatabaseCount('enterprise_saved_views', 0);
+            $this->assertDatabaseMissing('audit_logs', ['event' => 'enterprise.saved_view.created']);
+        }
+    }
+
+    public function test_allowed_store_saved_view_post_retains_field_validation_and_persists(): void
+    {
+        [$owner, $storeA] = $this->retailUser('STORE-SAVED-POST-VALID', 'saved-post-allowed@example.test');
+        DB::table('user_store_roles')->where('user_id', $owner->id)->update([
+            'role_id' => Role::query()->where('code', 'B2C_STORE_ADMIN')->firstOrFail()->id,
+        ]);
+        $state = EnterpriseGridState::fromSavedState(['columns' => ['status']]);
+        $token = app(EnterpriseSavedViewService::class)->stateToken(
+            'enterprise.orders',
+            'store',
+            $storeA->id,
+            $state,
+        );
+
+        $this->actingAs($owner->fresh())
+            ->withHeader('Accept', 'application/json')
+            ->post(route('admin.enterprise-saved-views.store'), [
+                'surface_key' => 'enterprise.orders',
+                'scope_type' => 'store',
+                'scope_id' => $storeA->id,
+                'name' => '',
+                'visibility' => 'invalid-visibility',
+                'state_token' => 'invalid-token',
+            ])
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors(['name', 'visibility']);
+        $this->assertDatabaseCount('enterprise_saved_views', 0);
+
+        $this->actingAs($owner->fresh())
+            ->post(route('admin.enterprise-saved-views.store'), [
+                'surface_key' => 'enterprise.orders',
+                'scope_type' => 'store',
+                'scope_id' => $storeA->id,
+                'name' => 'My authorized view',
+                'visibility' => 'private',
+                'state_token' => $token,
+            ])
+            ->assertRedirect()
+            ->assertSessionHasNoErrors();
+        $this->assertDatabaseHas('enterprise_saved_views', [
+            'user_id' => $owner->id,
+            'scope_type' => 'store',
+            'scope_id' => $storeA->id,
+            'name' => 'My authorized view',
+        ]);
+        $this->assertDatabaseHas('audit_logs', ['event' => 'enterprise.saved_view.created']);
+    }
+
     public function test_grid_state_rejects_unbounded_query_values_and_keeps_export_handoff_bounded(): void
     {
         $state = EnterpriseGridState::fromRequest(
