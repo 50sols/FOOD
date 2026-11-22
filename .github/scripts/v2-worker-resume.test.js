@@ -85,7 +85,7 @@ test('incomplete or oversized search pagination fails closed', async () => {
   await assert.rejects(pages(async()=>({data:Array(100).fill({})}),{},'branches',2),/cap/);
 });
 
-function harness({mode='merged',acceptance='in_progress',multiple=false,crossReference=false,issueState=issue}={}) {
+function harness({mode='merged',acceptance='in_progress',multiple=false,crossReference=false,ancestry='ahead',issueState=issue}={}) {
   const calls=[];
   const thePR = pr(mode, 'ci/4151-resume');
   const unrelatedPR = { ...pr('open', 'fix/9999-unrelated', 4153),
@@ -101,6 +101,7 @@ function harness({mode='merged',acceptance='in_progress',multiple=false,crossRef
     repos:{
       listBranches:async()=>({data:[]}),
       getBranch:async()=>({data:{commit:{sha:'latest-v2'}}}),
+      compareCommits:async()=>({data:{status:ancestry}}),
     },
     pulls:{
       list:async()=>({data:[]}),
@@ -151,6 +152,21 @@ test('latest full integrated success is valid; older success never substitutes',
   const other=await buildPlan({github:second,owner:'o',repo:'FOOD',issueNumber:4151});
   assert.equal(other.integration_accepted,false);
 });
+test('integrated acceptance rejects green CI when merge commit is not in current V2 history', async () => {
+  for (const ancestry of ['diverged', 'behind']) {
+    const {gh}=harness({acceptance:'success',ancestry});
+    const result=await buildPlan({github:gh,owner:'o',repo:'FOOD',issueNumber:4151});
+    assert.equal(result.action,'VERIFY_INTEGRATION_ACCEPTANCE');
+    assert.equal(result.integration_merge_reachable,false);
+    assert.equal(result.integration_accepted,false);
+    assert.equal(result.integration_acceptance.status,'blocked');
+  }
+  const {gh}=harness({acceptance:'success',ancestry:'identical'});
+  const result=await buildPlan({github:gh,owner:'o',repo:'FOOD',issueNumber:4151});
+  assert.equal(result.integration_merge_reachable,true);
+  assert.equal(result.integration_accepted,true);
+});
+
 test('read-only preflight never writes, closed original retains audit', async () => {
   const {gh}=harness({mode:'closed'});
   const x=await buildPlan({github:gh,owner:'o',repo:'FOOD',issueNumber:4151});
