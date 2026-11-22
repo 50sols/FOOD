@@ -52,6 +52,7 @@ final class V2CustomerServiceWorkspaceReadSelectorsTest extends TestCase
                 '?page=-1', '?page=1.5', '?page=99999999999999999999999',
                 '?case_id=invalid', '?case_id=0', '?case_id=-1',
                 '?case_id=1.5', '?case_id=99999999999999999999999',
+                '?page=1&case_id=invalid', '?page=invalid&case_id=1',
             ] as $invalid) {
                 $this->actingAs($actor->fresh())
                     ->getJson($url.$invalid)
