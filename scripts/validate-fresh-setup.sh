@@ -417,12 +417,33 @@ PHP
 # The unpacked ZIP must be installed via real /install HTTP Next -> Finish.
 # The PHP CLI helper below only verifies completed state and seeds QA fixtures.
 
+# Artisan serve supervises a child php -S listener; killing only its parent
+# may orphan the listener during .env reload. Kill ONLY descendants of the
+# PID that this acceptance run recorded, never arbitrary port listeners.
+stop_server_descendants() {
+  local parent_pid="$1" child
+  local children_file="/proc/$parent_pid/task/$parent_pid/children"
+  local -a children=()
+  [[ -r "$children_file" ]] || return 0
+  read -r -a children < "$children_file" || true
+  for child in "${children[@]}"; do
+    [[ "$child" =~ ^[1-9][0-9]*$ ]] || continue
+    stop_server_descendants "$child"
+    kill "$child" 2>/dev/null || true
+  done
+}
+
 stop_server() {
   local pid_file="$1"
   [[ -f "$pid_file" ]] || return 0
   local pid
   pid="$(cat "$pid_file")"
+  if [[ ! "$pid" =~ ^[1-9][0-9]*$ ]] || (( pid <= 1 )); then
+    echo "::error::Refusing unsafe acceptance server PID file." >&2
+    return 1
+  fi
   if kill -0 "$pid" 2>/dev/null; then
+    stop_server_descendants "$pid"
     kill "$pid" 2>/dev/null || true
     for _ in {1..20}; do
       kill -0 "$pid" 2>/dev/null || break
