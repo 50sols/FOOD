@@ -91,6 +91,16 @@ final class OrderOperationsController extends Controller
         }
         abort_if(count(array_unique($explicitStoreIds)) > 1, 404);
 
+        // Both legacy `store` and canonical `store_id` are validated above.
+        // Normalize the single explicit selector before either the Restaurant
+        // admission decision or the generic index query. Otherwise `store`
+        // silently becomes an unfiltered request and can disclose other
+        // authorized store rows despite the caller selecting one store.
+        $selectedStoreId = $explicitStoreIds[0] ?? null;
+        if ($selectedStoreId !== null) {
+            $request->merge(['store_id' => $selectedStoreId]);
+        }
+
         // A Restaurant store-admin may use its dedicated workspace, but its
         // profile does not expose Retail Orders. The canonical compatibility
         // route must enforce that same boundary before the generic list query.
@@ -99,10 +109,7 @@ final class OrderOperationsController extends Controller
         $actor = $this->actor($request);
         if (! $actor->hasRole('SUPER_ADMIN')) {
             $allowed = $this->scope->allowedStoreIds($actor, 'orders.view', 'b2c');
-            // The generic index filters only store_id, not the legacy store alias.
-            // A store-only query cannot narrow an otherwise unscoped order list.
-            $selected = $request->query->has('store_id') ? $explicitStoreIds[0] : null;
-            $candidateStores = $selected === null ? $allowed : [$selected];
+            $candidateStores = $selectedStoreId === null ? $allowed : [$selectedStoreId];
             foreach ($candidateStores as $storeId) {
                 if ($actor->hasRole('B2C_STORE_ADMIN', (int) $storeId)
                     && app(StoreBusinessProfileService::class)->isRestaurant((int) $storeId)) {
