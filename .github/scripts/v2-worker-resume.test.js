@@ -223,7 +223,7 @@ test('historical P135 inline metadata reuses its one original PR without hiding 
     original + ' | BASE Foodex_V2 ONLY',
   ];
   const claims = claimReferences(annotations.map(branch => ({
-    body: '<!-- foodex-worker-state:v1 -->\\nSTATE: HANDOFF_READY\\n'
+    body: '<!-- foodex-worker-state:v1 -->\nSTATE: HANDOFF_READY\n'
       + 'BRANCH: ' + branch,
   })));
   assert.deepEqual(claims.map(ref => ref.branch), Array(annotations.length).fill(original));
@@ -249,8 +249,8 @@ test('historical P135 inline metadata reuses its one original PR without hiding 
     original + '; ORIGINAL_PR: #3065 OPEN/DRAFT -> main ONLY',
     'feat/2858-other | BASE Foodex_V2 ONLY',
   ]) {
-    const refs = claimReferences([{body:'<!-- foodex-worker-state:v1 -->\\n'
-      + 'STATE: ACTIVE\\nBRANCH: ' + decorated}]);
+    const refs = claimReferences([{body:'<!-- foodex-worker-state:v1 -->\n'
+      + 'STATE: ACTIVE\nBRANCH: ' + decorated}]);
     assert.equal(decide({ ...shared, refs }).action, 'BLOCK_CONFLICTING_ORIGINALS',
       'Untrusted P135 branch/PR annotation must not be silently accepted: ' + decorated);
   }
