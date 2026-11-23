@@ -17,6 +17,7 @@ final class StoreAccess
             ->where('roles.code', 'SUPER_ADMIN')
             ->where('roles.scope', 'global')
             ->where('roles.is_active', true)
+            ->whereNull('roles.archived_at')
             ->where('scoped_actor.is_active', true)
             ->exists();
     }
@@ -40,6 +41,7 @@ final class StoreAccess
                 ->whereHas('storeType', fn ($type) => $type->where('code', 'B2C')))
             ->whereHas('role', fn ($query) => $query
                 ->where('is_active', true)
+                ->whereNull('archived_at')
                 ->whereIn('scope', ['store', 'both']))
             ->exists();
     }
@@ -91,6 +93,7 @@ final class StoreAccess
             ->where('user_store_roles.user_id', $user->getKey())
             ->where('scoped_actor.is_active', true)
             ->where('roles.is_active', true)
+            ->whereNull('roles.archived_at')
             ->where('roles.scope', 'store')
             ->where('stores.is_active', true)
             ->where('store_types.code', 'B2C')
