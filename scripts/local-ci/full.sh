@@ -32,8 +32,12 @@ if [[ "$profile" == backend || "$profile" == all ]]; then
   # Preserve every PHP syntax failure while using GCC's four allocated CPUs.
   # Zero-delimited paths avoid shell injection and spaces in filenames.
   find app routes tests -type f -name '*.php' -print0 | xargs -0 -r -n1 -P4 php -l >/dev/null
-  composer lint
-  composer analyse
+  # Windows Docker Desktop is slower than hosted Linux for Pint/PHPStan.
+  # Extend Composer's 300s child-process limit without suppressing failures;
+  # an outer bound still fails closed if either check hangs.
+  export COMPOSER_PROCESS_TIMEOUT=900
+  timeout --kill-after=15s 930s composer lint
+  timeout --kill-after=15s 930s composer analyse
   python3 ../scripts/laravel-test-shards.py --verify --count 4
   step=sqlite-migration-seeder
   cp .env.example .env
