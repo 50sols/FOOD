@@ -210,6 +210,60 @@ test('historical P110 display notes do not fabricate alternate issue branches', 
   }
 });
 
+test('historical P135 inline metadata reuses its one original PR without hiding conflicting identities', () => {
+  const original = 'feat/2858-v2-erp-operational-workflow-evidence';
+  const sha = '4abd782507851c52e7de74680de0557141ec208c';
+  const annotations = [
+    original + '; ORIGINAL_PR: #3065 OPEN/DRAFT -> Foodex_V2 ONLY; latest verified source HEAD '
+      + sha + '. Previous worker WAITING_CI/EDITING_RELEASED. No peer-active file overlap, 26 other OPEN PRs inspected.',
+    original + '; PR #3065 OPEN/DRAFT → Foodex_V2 ONLY',
+    original + '; EXACT_START_HEAD: ' + sha,
+    original + '; EXACT_START_HEAD: ' + '9'.repeat(40),
+    original + ' | START_HEAD: ' + sha,
+    original + ' | BASE Foodex_V2 ONLY',
+  ];
+  const claims = claimReferences(annotations.map(branch => ({
+    body: '<!-- foodex-worker-state:v1 -->\nSTATE: HANDOFF_READY\n'
+      + 'BRANCH: ' + branch,
+  })));
+  assert.deepEqual(claims.map(ref => ref.branch), Array(annotations.length).fill(original));
+  assert.deepEqual(claims.slice(0, 2).map(ref => ref.pr), [3065, 3065]);
+  const shared = {
+    issue: { number: 2858, state: 'open', title: 'V2 | P135', labels: [] },
+    branches: [original],
+    prs: [{ number: 3065, state: 'open', head: { ref: original, sha: 'current-head' },
+      base: { ref: 'Foodex_V2' } }],
+    checkpoint: null,
+  };
+  const decision = decide({ ...shared, refs: claims });
+  assert.deepEqual([decision.action, decision.pr, decision.head],
+    ['RESUME_ORIGINAL_PR', 3065, 'current-head']);
+
+  const wrongExplicitId = claimReferences([{body:
+    '<!-- foodex-worker-state:v1 -->\nSTATE: ACTIVE\n'
+      + 'BRANCH: ' + original + '\nPR: #9999',
+  }]);
+  assert.equal(decide({ ...shared, refs: wrongExplicitId }).action,
+    'BLOCK_CONFLICTING_ORIGINALS',
+    'A genuine original branch cannot override a contradictory historical PR ID');
+
+  for (const decorated of [
+    original + '; ORIGINAL_PR: #9999 OPEN/DRAFT -> Foodex_V2 ONLY; latest verified source HEAD '
+      + sha + '. Previous worker WAITING_CI/EDITING_RELEASED. No peer-active file overlap, 26 other OPEN PRs inspected.',
+    original + '; PR #9999 OPEN/DRAFT → Foodex_V2 ONLY',
+    original + '; EXACT_START_HEAD: invalid',
+    original + ' | START_HEAD: ' + 'b'.repeat(39),
+    original + ' | BASE Foodex_V2 ONLY plus permissions',
+    original + '; ORIGINAL_PR: #3065 OPEN/DRAFT -> main ONLY',
+    'feat/2858-other | BASE Foodex_V2 ONLY',
+  ]) {
+    const refs = claimReferences([{body:'<!-- foodex-worker-state:v1 -->\n'
+      + 'STATE: ACTIVE\nBRANCH: ' + decorated}]);
+    assert.equal(decide({ ...shared, refs }).action, 'BLOCK_CONFLICTING_ORIGINALS',
+      'Untrusted P135 branch/PR annotation must not be silently accepted: ' + decorated);
+  }
+});
+
 test('unknown annotations, actual alternate branches and nonmatching claims still block', () => {
   const original='fix/2746-v2-updater-host-readiness-ui';
   const untrusted=[
@@ -271,6 +325,7 @@ test('unrecognized historical claim suffixes never silently become the original 
     canonical+' | BASE: other_branch',
     canonical+' (ORIGINAL; KEEP) extra',
     canonical+'; PR #9999 unrelated; BASE Foodex_V2',
+    canonical+'; PR #9999 original DRAFT; BASE Foodex_V2',
   ];
   for (const value of invalid) {
     const refs=claimReferences([{body:'<!-- foodex-worker-state:v1 -->\n'

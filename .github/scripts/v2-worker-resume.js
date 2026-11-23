@@ -56,17 +56,44 @@ function claimReferences(comments) {
       const m = line.match(/^\s*([A-Z_]+):\s*(.*?)\s*$/);
       if (m) fields[m[1]] = m[2];
     }
-    // Normalize only verified historical worker display suffixes.
-    // Unknown, malformed, or unrelated refs must remain fail-closed.
-    const branch = (fields.BRANCH || fields.ORIGINAL_BRANCH || '')
+    // Some historical owner claims appended known display-only notes to
+    // the real branch. A Git ref cannot contain whitespace, but do not
+    // strip arbitrary suffixes: unknown provenance must still block.
+    // The P110 variants below are grounded in actual original Issue comments
+    // whose exact branch/PR also exist on GitHub.
+    const rawBranch = fields.BRANCH || fields.ORIGINAL_BRANCH || '';
+    // P135 #2858 historic claims append one of these *verified* display
+    // annotations to a single real branch. Keep exact tails only; arbitrary
+    // prose, unknown checksums and actual alternate branches remain blocked.
+    const p135OriginalPr = rawBranch.match(/;\s*ORIGINAL_PR:\s*#([1-9]\d*) OPEN\/DRAFT -> Foodex_V2 ONLY; latest verified source HEAD [a-f0-9]{40}\. Previous worker WAITING_CI\/EDITING_RELEASED\. No peer-active file overlap, 26 other OPEN PRs inspected\.$/i);
+    const p135Pr = rawBranch.match(/;\s*PR #([1-9]\d*) OPEN\/DRAFT → Foodex_V2 ONLY$/i);
+    // Other historical issue claims include a PR number in descriptive
+    // branch prose. Retain it as a provenance constraint, never as authority.
+    const legacyOriginalPr = rawBranch.match(/;\s*PR\s+#([1-9]\d*)\s+original\s+DRAFT;\s*BASE\s+Foodex_V2\.?$/i);
+    const inlinePr = p135OriginalPr || p135Pr || legacyOriginalPr;
+    const explicitPr = (fields.PR || fields.ORIGINAL_PR || '').match(/^#?([1-9]\d*)(?:\b|$)/);
+    const branch = rawBranch
       .replace(/;\s*(?:BASE|TARGET):.*$/i, '')
-      .replace(/;\s*PR\s+#\d+\s+original\s+DRAFT;\s*BASE\s+Foodex_V2\.?$/i, '')
+      .replace(/;\s*PR\s+#[1-9]\d*\s+original\s+DRAFT;\s*BASE\s+Foodex_V2\.?$/i, '')
       .replace(/\s+\|\s*BASE:\s*Foodex_V2(?:\s+ONLY)?$/i, '')
       .trim()
       .replace(/\s+\((?:EXISTING|preserve original|PRESERVE|ORIGINAL; KEEP|ORIGINAL|created, no code commit; preserve for successor|planned; base Foodex_V2 ONLY|EXISTING; preserve|preserved|ORIGINAL; PRESERVE|ORIGINAL, KEEP|ORIGINAL, PRESERVE|EXISTING ORIGINAL ONLY|PRESERVE ORIGINAL|ORIGINAL; NO NEW BRANCH)\)$/i, '')
-      .replace(/\s+\|\s+FINAL_HEAD:\s+[a-f0-9]{40}$/i, '');
-    const pr = (fields.PR || fields.ORIGINAL_PR || '').match(/^#?([1-9]\d*)(?:\b|$)/);
-    if (branch || pr) refs.push({ branch, pr: pr ? Number(pr[1]) : null, state: fields.STATE || '' });
+      .replace(/\s+\|\s+FINAL_HEAD:\s+[a-f0-9]{40}$/i, '')
+      .replace(/;\s*ORIGINAL_PR:\s*#[1-9]\d* OPEN\/DRAFT -> Foodex_V2 ONLY; latest verified source HEAD [a-f0-9]{40}\. Previous worker WAITING_CI\/EDITING_RELEASED\. No peer-active file overlap, 26 other OPEN PRs inspected\.$/i, '')
+      .replace(/;\s*PR #[1-9]\d* OPEN\/DRAFT → Foodex_V2 ONLY$/i, '')
+      .replace(/;\s*EXACT_START_HEAD:\s*[a-f0-9]{40}$/i, '')
+      .replace(/\s+\|\s+START_HEAD:\s+[a-f0-9]{40}$/i, '')
+      .replace(/\s+\|\s+BASE Foodex_V2 ONLY$/i, '');
+    // Inlined PR identities are provenance constraints, not decoration.
+    // Never turn conflicting explicit and annotated PR references into a pass.
+    const claimedPr = explicitPr ? Number(explicitPr[1]) : null;
+    const annotatedPr = inlinePr ? Number(inlinePr[1]) : null;
+    const conflictingIds = claimedPr && annotatedPr && claimedPr !== annotatedPr;
+    if (branch || explicitPr || inlinePr) refs.push({
+      branch: conflictingIds ? rawBranch : branch,
+      pr: claimedPr || annotatedPr,
+      state: fields.STATE || '',
+    });
   }
   return refs;
 }
@@ -136,6 +163,11 @@ function decide({ issue, branches, prs, refs, checkpoint }) {
   }
   const pr = actual[0];
   const original = [...originals][0] || null;
+  // An archived inline PR identity still constrains the original, even
+  // when its display-only branch suffix was normalized.
+  if (pr && refs.some(ref => ref.pr && ref.pr !== pr.number)) {
+    return { action: 'BLOCK_CONFLICTING_ORIGINALS', reason: 'historical-pr-id-conflict' };
+  }
   if (pr) {
     const state = stateForPR(pr);
     if (state === 'OPEN') {
