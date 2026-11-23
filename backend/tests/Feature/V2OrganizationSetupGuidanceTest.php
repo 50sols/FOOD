@@ -83,6 +83,42 @@ final class V2OrganizationSetupGuidanceTest extends TestCase
         $this->assertDatabaseMissing('enterprise_organizations', ['name' => 'Duplicate']);
     }
 
+    public function test_setup_preview_and_save_reject_blank_names_without_writing_and_trim_valid_names(): void
+    {
+        $admin = $this->actor('SUPER_ADMIN', 'en');
+        $beforeAudit = DB::table('audit_logs')->count();
+
+        foreach ([true, false] as $preview) {
+            $payload = [
+                'code' => $preview ? 'preview_blank_name' : 'save_blank_name',
+                'name' => " \t ",
+                'is_active' => '1',
+            ];
+            if ($preview) {
+                $payload['_setup_test'] = '1';
+            }
+
+            $this->actingAs($admin)->post(route('admin.enterprise-organizations.store'), $payload)
+                ->assertSessionHasErrors('name');
+        }
+
+        $this->assertDatabaseMissing('enterprise_organizations', ['code' => 'preview_blank_name']);
+        $this->assertDatabaseMissing('enterprise_organizations', ['code' => 'save_blank_name']);
+        $this->assertSame($beforeAudit, DB::table('audit_logs')->count());
+
+        $this->actingAs($admin)->post(route('admin.enterprise-organizations.store'), [
+            'code' => 'trimmed_valid_name',
+            'name' => '  Canonical Organization  ',
+            'is_active' => '1',
+        ])->assertRedirect();
+
+        $this->assertDatabaseHas('enterprise_organizations', [
+            'code' => 'trimmed_valid_name',
+            'name' => 'Canonical Organization',
+        ]);
+        $this->assertSame($beforeAudit + 1, DB::table('audit_logs')->count());
+    }
+
     public function test_business_codes_are_normalized_before_preview_and_save_uniqueness_validation(): void
     {
         $admin = $this->actor('SUPER_ADMIN', 'en');
