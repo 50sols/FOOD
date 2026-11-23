@@ -53,6 +53,29 @@ final class SignedUpdatePublisherCliTest extends TestCase
         $this->assertSame('2.0.0', $envelope->manifest->targetVersion);
     }
 
+    public function test_nonfilesystem_stream_wrapper_cannot_be_reported_as_a_published_sidecar(): void
+    {
+        $package = $this->directory.'/wrapper-output.zip';
+        $this->zip($package, ['backend/app/Example.php' => '<?php // update']);
+
+        // php://temp can accept fopen(..., 'x') without creating a real
+        // release artifact, so a successful exit here would be misleading.
+        foreach (['php://temp', 'php://memory'] as $wrapper) {
+            $this->assertSame(1, $this->runPublisher($package, $wrapper, '0'), $wrapper);
+        }
+    }
+
+    public function test_existing_sidecar_is_not_clobbered_on_repeat_publication(): void
+    {
+        $package = $this->directory.'/existing.zip';
+        $this->zip($package, ['backend/app/Example.php' => '<?php // update']);
+        $output = $this->directory.'/already-signed.json';
+        file_put_contents($output, 'existing publisher output');
+
+        $this->assertSame(1, $this->runPublisher($package, $output, '0'));
+        $this->assertSame('existing publisher output', file_get_contents($output));
+    }
+
     public function test_non_zip_payload_cannot_be_signed_or_leave_a_sidecar(): void
     {
         $package = $this->directory.'/invalid.zip';
