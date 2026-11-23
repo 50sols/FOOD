@@ -196,6 +196,7 @@ def build_setup_zip(source_root: Path, output: Path, source_epoch: int) -> str:
     handle, temporary_name = tempfile.mkstemp(prefix=".v2-setup-", suffix=".zip", dir=output.parent)
     os.close(handle)
     temporary = Path(temporary_name)
+    verification_fd = None
     try:
         total_size = 0
         with zipfile.ZipFile(temporary, "w", allowZip64=True) as archive:
@@ -253,6 +254,9 @@ def build_setup_zip(source_root: Path, output: Path, source_epoch: int) -> str:
                 checksum.update(chunk)
             if _member_identity(os.fstat(archive_file.fileno())) != _member_identity(before):
                 raise SetupBuildError("Setup ZIP staging output changed during checksum.")
+            # Hold a descriptor to the exact hashed inode across publication:
+            # the temporary pathname itself could be replaced by a rival.
+            verification_fd = os.dup(archive_file.fileno())
         # Publishing must be exclusive: a second builder (or symlink) can
         # create the destination after the initial existence preflight.
         # The completed temporary archive and target share a directory, so
@@ -277,7 +281,20 @@ def build_setup_zip(source_root: Path, output: Path, source_epoch: int) -> str:
                 != (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns)
             or _member_identity(published) != _member_identity(staged)):
             raise SetupBuildError("Published Setup ZIP changed during checksum verification.")
+        # os.link legitimately changes ctime. Comparing only inode, length and
+        # restored mtime after that cannot identify a same-inode write between
+        # the original hash and publication. Re-read the *same open inode*.
+        with os.fdopen(verification_fd, "rb") as verification_file:
+            verification_fd = None
+            verification_file.seek(0)
+            published_checksum = hashlib.sha256()
+            for chunk in iter(lambda: verification_file.read(1024 * 1024), b""):
+                published_checksum.update(chunk)
+            if published_checksum.digest() != checksum.digest():
+                raise SetupBuildError("Published Setup ZIP contents changed after checksum.")
     finally:
+        if verification_fd is not None:
+            os.close(verification_fd)
         temporary.unlink(missing_ok=True)
 
     return checksum.hexdigest()
