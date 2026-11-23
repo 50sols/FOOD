@@ -165,6 +165,47 @@ test('historical annotated BRANCH claims reuse the one authoritative original PR
     ['RESUME_ORIGINAL_PR',3968,'exact-head']);
 });
 
+test('P111 past missing-branch sentence resolves only the real original issue branch and PR', () => {
+  const original = 'test/2845-v2-erp-entitlement-maker-checker-boundaries';
+  const sha = 'ad4dbc638ec181e2d82bf7cafbcd65e112bbe7b4';
+  const narrative = 'original ' + original + ' absent; historical commit ' + sha
+    + ' still fetchable. Restore exact original branch name at original historical commit, '
+    + 'reopen original PR #3206 to Foodex_V2, keep Draft.';
+  const comment = value => ({body:'<!-- foodex-worker-state:v1 -->\nSTATE: HANDOFF_READY\nBRANCH: '+value});
+  const refs = claimReferences([comment(narrative)]);
+  assert.deepEqual(refs, [{branch:original,pr:3206,state:'HANDOFF_READY'}]);
+  const scope = {issue:{number:2845,state:'open',title:'V2 | ERP P111',labels:[]},
+    branches:[original],prs:[{number:3206,state:'open',
+      head:{ref:original,sha:'current-authoritative-pr-sha'},base:{ref:'Foodex_V2'}}],
+    checkpoint:null};
+  const result = decide({...scope,refs});
+  assert.deepEqual([result.action,result.pr,result.head],
+    ['RESUME_ORIGINAL_PR',3206,'current-authoritative-pr-sha']);
+
+  // Never launder a different PR, old branch, malformed hash, or extra prose.
+  for (const altered of [
+    narrative.replace('PR #3206','PR #3207'),
+    narrative.replace(original,'test/2845-fake-original'),
+    narrative.replace(sha,'not-a-sha'),
+    narrative + ' UNKNOWN',
+    narrative.replace('keep Draft.','keep Draft. Overridden'),
+  ]) {
+    assert.equal(decide({...scope,refs:claimReferences([comment(altered)])}).action,
+      'BLOCK_CONFLICTING_ORIGINALS',altered);
+  }
+  const conflictingExplicitPr = claimReferences([{
+    body:comment(narrative).body+'\nPR: #3207'
+  }]);
+  assert.equal(decide({...scope,refs:conflictingExplicitPr}).action,
+    'BLOCK_CONFLICTING_ORIGINALS');
+  assert.equal(decide({...scope,refs,branches:[original,'test/2845-other-live']}).action,
+    'BLOCK_CONFLICTING_ORIGINALS');
+  assert.equal(decide({...scope,refs,prs:[...scope.prs,{...scope.prs[0],number:3207}]}).action,
+    'BLOCK_DUPLICATE_PRS');
+  assert.equal(decide({...scope,refs,issue:{...scope.issue,labels:[{name:'gate:approval'}]}}).action,
+    'BLOCK_HUMAN_GATE');
+});
+
 test('historical P110 display notes do not fabricate alternate issue branches', () => {
   const original = 'test/2844-v2-vendor-ledger-ownership-isolation';
   const notes = [
