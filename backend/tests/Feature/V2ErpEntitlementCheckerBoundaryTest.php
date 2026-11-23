@@ -1863,6 +1863,17 @@ final class V2ErpEntitlementCheckerBoundaryTest extends TestCase
                     ...$payload,
                     'store_id' => [$store->id],
                 ])->assertForbidden();
+
+            // JSON input uses a different bag than x-www-form-urlencoded.
+            // It cannot override a contradictory URL store selector either.
+            $this->actingAs($buyer->fresh())
+                ->postJson($url.'?store_id='.($store->id + 100000), $payload)
+                ->assertForbidden();
+            $this->actingAs($buyer->fresh())
+                ->postJson($url.'?store_id='.$store->id, [
+                    ...$payload,
+                    'store_id' => [$store->id],
+                ])->assertForbidden();
         }
 
         $this->assertSame($requestsBefore, DB::table('enterprise_purchase_requests')->count());
