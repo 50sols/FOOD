@@ -361,7 +361,13 @@ class SystemUpdateAuthorizationTest extends TestCase
         );
         $this->assertNotSame($canonical, $duplicateKey);
 
-        foreach ([$duplicateKey, ' '.$canonical] as $ambiguousJson) {
+        $reordered = json_encode(
+            array_reverse(json_decode($canonical, true, flags: JSON_THROW_ON_ERROR), true),
+            JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE,
+        );
+        $this->assertNotSame($canonical, $reordered);
+
+        foreach ([$duplicateKey, ' '.$canonical, $reordered] as $ambiguousJson) {
             $this->actingAs($actor)->post(route('admin.system-update.store'), [
                 'package' => UploadedFile::fake()->createWithContent('update.zip', $bytes),
                 'signed_manifest' => UploadedFile::fake()->createWithContent('update.signed.json', $ambiguousJson),
