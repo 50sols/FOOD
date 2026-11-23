@@ -95,6 +95,30 @@ final class V2RevokedStoreAccessScopeTest extends TestCase
         $this->assertSame([], Store::query()->accessibleTo($actor)->pluck('id')->all());
     }
 
+    public function test_inactive_store_role_or_disabled_initial_actor_cannot_obtain_store_scope(): void
+    {
+        $store = $this->store('STORE-ACCESS-INITIAL-DENY');
+        $actor = User::factory()->create(['is_active' => false]);
+        $role = Role::query()->where('code', 'B2C_STORE_ADMIN')->firstOrFail();
+        DB::table('user_store_roles')->insert([
+            'user_id' => $actor->id,
+            'store_id' => $store->id,
+            'role_id' => $role->id,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        $access = app(StoreAccess::class);
+        $this->assertFalse($access->canAccess($actor, $store));
+        $this->assertSame([], Store::query()->accessibleTo($actor)->pluck('id')->all());
+
+        DB::table('users')->where('id', $actor->id)->update(['is_active' => true]);
+        $this->assertTrue($access->canAccess($actor->fresh(), $store));
+
+        DB::table('roles')->where('id', $role->id)->update(['is_active' => false]);
+        $this->assertFalse($access->canAccess($actor->fresh(), $store));
+        $this->assertSame([], Store::query()->accessibleTo($actor->fresh())->pluck('id')->all());
+    }
+
     private function store(string $code): Store
     {
         return Store::query()->create([
