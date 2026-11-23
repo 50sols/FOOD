@@ -2,6 +2,7 @@
 """CI-only ZIP byte stability, member type, and refusal regression for G004."""
 from __future__ import annotations
 
+import io
 import os
 import stat
 import sys
@@ -12,12 +13,32 @@ from pathlib import Path
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from v2_build_setup_zip import SetupBuildError, build_setup_zip  # noqa: E402
+from v2_build_setup_zip import SetupBuildError, _copy_exact_member, build_setup_zip  # noqa: E402
 
 SOURCE_DATE_EPOCH = 1731758400
 
 
 class DeterministicSetupZipTest(unittest.TestCase):
+    def test_exact_source_copy_rejects_growth_and_truncation_without_overreading(self) -> None:
+        for payload, expected_size, error in (
+            (b"abcd", 4, None),
+            (b"abc", 4, "shrank during packaging"),
+            (b"abcdef", 4, "grew during packaging"),
+            (b"", 0, None),
+            (b"extra", 0, "grew during packaging"),
+        ):
+            with self.subTest(size=len(payload), expected=expected_size):
+                source = io.BytesIO(payload)
+                destination = io.BytesIO()
+                if error:
+                    with self.assertRaisesRegex(SetupBuildError, error):
+                        _copy_exact_member(source, destination, expected_size, "VERSION")
+                    self.assertLessEqual(source.tell(), expected_size + 1)
+                else:
+                    _copy_exact_member(source, destination, expected_size, "VERSION")
+                    self.assertEqual(destination.getvalue(), payload)
+                    self.assertEqual(source.tell(), len(payload))
+
     def test_same_payload_has_identical_bytes_across_mtime_and_creation_order(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             base = Path(temporary)
