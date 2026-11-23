@@ -108,6 +108,32 @@ function Trusted-Toolkit {
  }
  return $kit
 }
+# Do not pipe native Docker stderr through Windows PowerShell with
+# ErrorActionPreference=Stop: successful BuildKit progress is printed on stderr
+# and can be promoted to NativeCommandError before LASTEXITCODE is inspected.
+# Capture both streams as files and use the native process exit code.
+function Invoke-DockerLogged([string[]]$DockerArgs,[string]$LogPath,[string]$Stage) {
+ $bin=(Get-Command docker.exe -ErrorAction Stop).Source
+ $cmd=(@($DockerArgs | ForEach-Object {
+  $item=[string]$_
+  if($item -match '[\s"]') { '"' + $item.Replace('"','\"') + '"' } else { $item }
+ }) -join ' ')
+ $out="$LogPath.stdout"
+ $err="$LogPath.stderr"
+ Add-Content -LiteralPath $LogPath -Value "=== GCC docker stage $Stage ==="
+ $process=Start-Process -FilePath $bin -ArgumentList $cmd -Wait -PassThru -NoNewWindow -RedirectStandardOutput $out -RedirectStandardError $err
+ if(Test-Path -LiteralPath $out) {
+  Get-Content -LiteralPath $out | Add-Content -LiteralPath $LogPath
+  Remove-Item -LiteralPath $out -Force -ErrorAction SilentlyContinue
+ }
+ if(Test-Path -LiteralPath $err) {
+  Get-Content -LiteralPath $err | Add-Content -LiteralPath $LogPath
+  Remove-Item -LiteralPath $err -Force -ErrorAction SilentlyContinue
+ }
+ Add-Content -LiteralPath $LogPath -Value "=== GCC docker exit $($process.ExitCode) stage $Stage ==="
+ return [int]$process.ExitCode
+}
+
 function Full-CI([int]$Pr,[string]$Sha,[long]$Request,[string]$Checkout,[ValidateSet('all','backend','setup','packages')][string]$Profile) {
  if(-not (Test-Path (Join-Path $Checkout 'backend/composer.lock'))) {
   $script:GccLastFailedStage='missing-composer-lock'
@@ -130,30 +156,30 @@ function Full-CI([int]$Pr,[string]$Sha,[long]$Request,[string]$Checkout,[Validat
  $exit=1
  $stage='cache'
  try {
-  & docker volume create foodex-gcc-composer-cache *> $null
-  if($LASTEXITCODE -ne 0) { throw 'Composer cache volume unavailable' }
-  & docker volume create foodex-gcc-flutter-cache *> $null
-  if($LASTEXITCODE -ne 0) { throw 'Flutter pub cache volume unavailable' }
+  $rc=Invoke-DockerLogged -DockerArgs @('volume','create','foodex-gcc-composer-cache') -LogPath $log -Stage 'cache-composer'
+  if($rc -ne 0) { throw 'Composer cache Docker volume unavailable' }
+  $rc=Invoke-DockerLogged -DockerArgs @('volume','create','foodex-gcc-flutter-cache') -LogPath $log -Stage 'cache-flutter'
+  if($rc -ne 0) { throw 'Flutter cache Docker volume unavailable' }
   $targets=@('preparer','runner')
   if($Profile -ne 'backend') { $targets+= 'preview' }
   $stage='docker-image-build'
-  & docker compose -p $project -f $compose build @targets *> $log
-  if($LASTEXITCODE -ne 0) { throw "Trusted GCC toolchain build failed; see $log" }
+  $buildArgs=@('compose','-p',$project,'-f',$compose,'build') + $targets
+  $rc=Invoke-DockerLogged -DockerArgs $buildArgs -LogPath $log -Stage $stage
+  if($rc -ne 0) { throw "Trusted GCC toolchain Docker build exited $rc" }
   $stage='composer-dependencies'
-  & docker compose -p $project -f $compose run --rm --no-deps preparer *>> $log
-  if($LASTEXITCODE -ne 0) { throw "Composer/Redocly preparation failed; see $log" }
+  $rc=Invoke-DockerLogged -DockerArgs @('compose','-p',$project,'-f',$compose,'run','--rm','--no-deps','preparer') -LogPath $log -Stage $stage
+  if($rc -ne 0) { throw "Composer preparation exited $rc" }
   if($Profile -ne 'backend') {
    $stage='flutter-web-previews'
-   & docker compose -p $project -f $compose run --rm --no-deps preview *>> $log
-   if($LASTEXITCODE -ne 0) { throw "Flutter Web preview build failed; see $log" }
+   $rc=Invoke-DockerLogged -DockerArgs @('compose','-p',$project,'-f',$compose,'run','--rm','--no-deps','preview') -LogPath $log -Stage $stage
+   if($rc -ne 0) { throw "Flutter preview build exited $rc" }
   }
   $stage='mysql-redis-startup'
-  & docker compose -p $project -f $compose up -d --wait mysql redis *>> $log
-  if($LASTEXITCODE -ne 0) { throw "MySQL/Redis startup failed; see $log" }
+  $rc=Invoke-DockerLogged -DockerArgs @('compose','-p',$project,'-f',$compose,'up','-d','--wait','mysql','redis') -LogPath $log -Stage $stage
+  if($rc -ne 0) { throw "Disposable MySQL/Redis startup exited $rc" }
   $stage='laravel-and-package-suite'
-  & docker compose -p $project -f $compose run --rm runner *>> $log
-  $exit=[int]$LASTEXITCODE
-  if($exit -ne 0) { throw "Full Laravel/package acceptance failed; see $log" }
+  $rc=Invoke-DockerLogged -DockerArgs @('compose','-p',$project,'-f',$compose,'run','--rm','runner') -LogPath $log -Stage $stage
+  if($rc -ne 0) { throw "Laravel/package runner exited $rc" }
   $stage='validate-exact-head-results'
   $resultFile=Join-Path $report 'result.json'
   if(-not (Test-Path -LiteralPath $resultFile)) { throw 'Missing full CI result manifest.' }
@@ -185,7 +211,9 @@ function Full-CI([int]$Pr,[string]$Sha,[long]$Request,[string]$Checkout,[Validat
   Write-Warning "GCC full acceptance: $($_.Exception.Message)"
   return 1
  } finally {
-  & docker compose -p $project -f $compose down --volumes --remove-orphans *> $null
+  try {
+   $null=Invoke-DockerLogged -DockerArgs @('compose','-p',$project,'-f',$compose,'down','--volumes','--remove-orphans') -LogPath $log -Stage 'cleanup'
+  } catch { Write-Warning 'GCC compose cleanup failed; manual isolated-project cleanup may be required.' }
   Remove-Item Env:\GCC_SOURCE_DIR,Env:\GCC_EVIDENCE_DIR,Env:\GCC_EXPECTED_SHA,Env:\GCC_PROFILE -ErrorAction SilentlyContinue
  }
 }
