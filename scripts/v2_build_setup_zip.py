@@ -166,7 +166,7 @@ def build_setup_zip(source_root: Path, output: Path, source_epoch: int) -> str:
             folded = part.casefold()
             if folded == ".git":
                 raise SetupBuildError(f"Source control metadata in Setup staging: {name}")
-            if folded in ("auth.json", ".npmrc"):
+            if folded in ("auth.json", ".npmrc", ".netrc", ".pypirc", ".yarnrc.yml"):
                 raise SetupBuildError(f"Package manager credentials in Setup staging: {name}")
             if folded == ".env" or (folded.startswith(".env.") and folded not in allowed_templates):
                 raise SetupBuildError(f"Secret environment configuration in Setup staging: {name}")
@@ -250,7 +250,7 @@ def build_setup_zip(source_root: Path, output: Path, source_epoch: int) -> str:
                     folded = component.casefold()
                     if folded == ".git":
                         raise SetupBuildError(f"Source control metadata in Setup staging: {name}")
-                    if folded in ("auth.json", ".npmrc"):
+                    if folded in ("auth.json", ".npmrc", ".netrc", ".pypirc", ".yarnrc.yml"):
                         raise SetupBuildError(f"Package manager credentials in Setup staging: {name}")
                     if folded == ".env" or (folded.startswith(".env.") and folded not in allowed_templates):
                         raise SetupBuildError(f"Secret environment configuration in Setup staging: {name}")
