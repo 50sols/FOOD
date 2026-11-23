@@ -165,6 +165,51 @@ test('historical annotated BRANCH claims reuse the one authoritative original PR
     ['RESUME_ORIGINAL_PR',3968,'exact-head']);
 });
 
+test('historical P110 display notes do not fabricate alternate issue branches', () => {
+  const original = 'test/2844-v2-vendor-ledger-ownership-isolation';
+  const notes = [
+    original + ' (created, no code commit; preserve for successor)',
+    original + ' (ORIGINAL)',
+    original + ' | FINAL_HEAD: 1c72dfe8f7eab2de9458b57404a290c200a2648a',
+  ];
+  const refs = claimReferences(notes.map(branch => ({
+    body: '<!-- foodex-worker-state:v1 -->\nSTATE: HANDOFF_READY\n'
+      + 'BRANCH: ' + branch + '\nPR: #3921',
+  })));
+  assert.deepEqual(refs.map(ref => ref.branch), [original, original, original]);
+  const shared = {
+    issue: { number: 2844, state: 'open', title: 'V2 | ERP P110', labels: [] },
+    branches: [original],
+    prs: [{
+      number: 3921, state: 'open',
+      head: { ref: original, sha: 'exact-head' },
+      base: { ref: 'Foodex_V2' },
+    }],
+    refs,
+    checkpoint: null,
+  };
+  const result = decide(shared);
+  assert.deepEqual([result.action, result.pr, result.head],
+    ['RESUME_ORIGINAL_PR', 3921, 'exact-head']);
+
+  // Similar text must not excuse another branch, malformed SHA, or
+  // unapproved suffix. All unknown provenance stays fail-closed.
+  for (const decorated of [
+    original + ' | FINAL_HEAD: not-a-sha',
+    original + ' | FINAL_HEAD: ' + 'a'.repeat(39),
+    original + ' (ORIGINAL) extra',
+    original + ' (created, no code commit; preserve for successor) trailing',
+    'test/2844-unrelated (ORIGINAL)',
+  ]) {
+    const conflicting = claimReferences([{
+      body: '<!-- foodex-worker-state:v1 -->\nSTATE: ACTIVE\n'
+        + 'BRANCH: ' + decorated + '\nPR: #3921',
+    }]);
+    assert.equal(decide({ ...shared, refs: conflicting }).action,
+      'BLOCK_CONFLICTING_ORIGINALS');
+  }
+});
+
 test('unknown annotations, actual alternate branches and nonmatching claims still block', () => {
   const original='fix/2746-v2-updater-host-readiness-ui';
   const untrusted=[

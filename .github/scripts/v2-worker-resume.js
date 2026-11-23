@@ -56,16 +56,16 @@ function claimReferences(comments) {
       const m = line.match(/^\s*([A-Z_]+):\s*(.*?)\s*$/);
       if (m) fields[m[1]] = m[2];
     }
-    // Historical owners sometimes appended one of these two explicit display
-    // notes to a *real* branch ref. Neither note is part of a Git ref (which
-    // cannot contain whitespace); accepting it literally falsely creates
-    // multiple originals when the remote branch and PR are both unique.
-    // Do not strip arbitrary parentheticals, extra suffixes or other refs:
-    // unknown claims must continue to block safe resumption.
+    // Some historical owner claims appended known display-only notes to
+    // the real branch. A Git ref cannot contain whitespace, but do not
+    // strip arbitrary suffixes: unknown provenance must still block.
+    // The P110 variants below are grounded in actual original Issue comments
+    // whose exact branch/PR also exist on GitHub.
     const branch = (fields.BRANCH || fields.ORIGINAL_BRANCH || '')
       .replace(/;\s*(?:BASE|TARGET):.*$/i, '')
       .trim()
-      .replace(/\s+\((?:EXISTING|preserve original)\)$/i, '');
+      .replace(/\s+\((?:EXISTING|preserve original|ORIGINAL|created, no code commit; preserve for successor)\)$/i, '')
+      .replace(/\s+\|\s+FINAL_HEAD:\s+[a-f0-9]{40}$/i, '');
     const pr = (fields.PR || fields.ORIGINAL_PR || '').match(/^#?([1-9]\d*)(?:\b|$)/);
     if (branch || pr) refs.push({ branch, pr: pr ? Number(pr[1]) : null, state: fields.STATE || '' });
   }
