@@ -45,9 +45,9 @@ class V2UpdaterPostExitRollbackMaintenanceTest extends TestCase
         $this->assertSame([
             'preflight',
             'backup_files',
+            'enter_maintenance_mode',
             'backup_database',
             'verify_database_backup',
-            'enter_maintenance_mode',
             'extract_release',
             'rebuild_caches',
             'health_check',
@@ -77,9 +77,9 @@ class V2UpdaterPostExitRollbackMaintenanceTest extends TestCase
         $this->assertSame([
             'preflight',
             'backup_files',
+            'enter_maintenance_mode',
             'backup_database',
             'verify_database_backup',
-            'enter_maintenance_mode',
             'extract_release',
             'rebuild_caches',
             'health_check',
