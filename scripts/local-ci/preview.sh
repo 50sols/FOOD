@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 test -n "$GCC_EXPECTED_SHA"
-test "$(git -C /workspace rev-parse HEAD)" = "$GCC_EXPECTED_SHA"
+# The preparer deliberately chowns the disposable volume to the runner UID.
+# Flutter builder runs as root; allow ONLY this exact isolated checkout path
+# rather than a global trust bypass or safe.directory=*.
+test "$(git -c safe.directory=/workspace -C /workspace rev-parse HEAD)" = "$GCC_EXPECTED_SHA"
 export PUB_CACHE=/flutter-cache
 cd /workspace
 flutter --version
