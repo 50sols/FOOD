@@ -84,6 +84,9 @@ body{margin:0;background:var(--foodex-background);color:var(--foodex-ink)}
 @if(session('success'))
 <div class="finance-flash" role="status">{{ session('success') }}</div>
 @endif
+@if(session('status'))
+<div class="finance-flash" role="status">{{ session('status') }}</div>
+@endif
 @if($errors->any())
 <div class="finance-errors" role="alert">
 <strong>{{ __('finance_workbench.errors_title') }}</strong>

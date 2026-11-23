@@ -184,6 +184,7 @@ final class V2AccountingDiscountFinanceInboxTest extends TestCase
     private function order(Store $store, string $channel, string $number): int
     {
         $customer = app(B2bCustomerService::class)->create(['name' => $number.' customer']);
+
         return (int) DB::table('orders')->insertGetId([
             'store_id' => $store->id, 'customer_id' => (int) $customer->legacy_customer_id,
             'b2b_customer_id' => (int) $customer->getKey(), 'order_number' => $number,
