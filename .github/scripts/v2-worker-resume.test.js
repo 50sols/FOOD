@@ -143,6 +143,33 @@ test('issue claim references survive newer status checkpoints', () => {
   assert.equal(c[0].branch,'ci/4151-resume');
   assert.equal(c[0].pr,4152);
 });
+test('annotated historic claims resolve to one original without masking true duplicate branches', () => {
+  const originals = [
+    'ci/4151-resume (PRESERVE)',
+    'ci/4151-resume (ORIGINAL; KEEP)',
+    'ci/4151-resume | BASE: Foodex_V2 ONLY',
+    'ci/4151-resume; PR #4152 original DRAFT; BASE Foodex_V2',
+    'ci/4151-resume',
+  ];
+  const comments = originals.map((branch, id) => ({
+    id,
+    body: '<!-- foodex-worker-state:v1 -->\nSTATE: HANDOFF_READY\nBRANCH: ' + branch
+      + '\nPR: #4152\n',
+  }));
+  const refs = claimReferences(comments);
+  assert.deepEqual([...new Set(refs.map(x => x.branch))], ['ci/4151-resume']);
+  const safe = decide({issue, branches:['ci/4151-resume'], prs:[pr()], refs, checkpoint:null});
+  assert.equal(safe.action,'RESUME_ORIGINAL_PR');
+  assert.equal(safe.pr,4152);
+
+  const conflicting = claimReferences([
+    ...comments,
+    {id:99, body:'<!-- foodex-worker-state:v1 -->\nBRANCH: ci/4151-other (PRESERVE)\n'},
+  ]);
+  assert.equal(decide({issue, branches:['ci/4151-resume'], prs:[pr()],
+    refs:conflicting, checkpoint:null}).action,'BLOCK_CONFLICTING_ORIGINALS');
+});
+
 test('incomplete or oversized search pagination fails closed', async () => {
   await assert.rejects(pages(async()=>({data:{items:[],total_count:2}}),{},'items'),/incomplete/);
   await assert.rejects(pages(async()=>({data:{wrong:[]}}),{},'items'),/payload/);
