@@ -163,9 +163,13 @@ def build_setup_zip(source_root: Path, output: Path, source_epoch: int) -> str:
         # returned digest into an attestation for unrelated public bytes.
         staged = temporary.lstat()
         published = output.lstat()
+        # Creating a hard link legitimately updates st_ctime_ns. Compare
+        # size/mtime and inode to the pre-publication snapshot, then compare
+        # the full post-link identities of both directory entries.
         if (not stat.S_ISREG(published.st_mode)
-            or _member_identity(staged) != _member_identity(before)
-            or _member_identity(published) != _member_identity(before)):
+            or (staged.st_dev, staged.st_ino, staged.st_size, staged.st_mtime_ns)
+                != (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns)
+            or _member_identity(published) != _member_identity(staged)):
             raise SetupBuildError("Published Setup ZIP changed during checksum verification.")
     finally:
         temporary.unlink(missing_ok=True)
