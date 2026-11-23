@@ -254,3 +254,14 @@ trusted runner now binds both to the immutable requested source and its
 isolated writable Linux /workspace volume; a mismatched provided SHA is
 rejected. The canonical 24 Playwright screenshots and source SHA are not
 skipped or replaced with synthetic evidence.
+
+### Full-shard failure evidence, no test masking
+
+The first real GCC backend suite ran 1207 cases in shard 0 and found one
+failure in the time-sensitive SchedulerRuntimeTest throttle assertion (the
+underlying scheduler call took 62 seconds in Docker). The test is NOT
+waived. GCC now executes each of the four deterministic PHPunit partitions
+even if a previous partition fails, captures each JUnit result, enforces a
+30-minute bound per shard, and refuses overall PASS when ANY shard fails.
+Fix the original flaky clock assumption under its owning code change,
+or obtain a genuinely green test; do not fake successful parity.
