@@ -63,7 +63,7 @@ The agent additionally accepts an owner-authored comment on an open same-reposit
     /gcc-ci full <exact 40-character current PR head SHA>
 
 The full profile uses the **pinned, immutable** local toolkit from repository commit
-`767348b7453a2218d51012221614be0cb5b32144` (container build and execution scripts), verifying each
+`465f765b72af87e838384efc01247f7ac38ca7c5` (container build and execution scripts), verifying each
 Git blob SHA before running. The toolkit is downloaded once, locally cached and
 checked again for integrity at every full job. The agent first validates the
 PR owner/base/head, fetches the exact PR commit and the v1.0.125 update base,
@@ -123,3 +123,28 @@ The trust-preserving rollout order is:
 GitHub Actions minutes are **not yet reduced** simply by installing this
 local worker: the repository's existing hosted Required CI continues until
 the verification and ruleset migration is independently complete.
+
+
+### Flutter preview / release prerequisites on isolated V2
+
+The full GCC job additionally runs a pinned official Flutter 3.47.5 SDK
+checkout inside a dedicated Docker image and builds the **existing**
+Customer+Driver Flutter Web previews from the PR's exact SHA. It does not
+modify deployed mobile apps or create Android APKs. This fills the runtime
+preview input directories required by the existing Update ZIP packager and
+uses a persistent Flutter pub download cache to reduce repeated pulls.
+
+**Verified current blockers on Foodex_V2 (2026-11-23):**
+- backend/composer.lock is absent from the integration branch. PR #3444
+  (original G004/#2745, still DRAFT) owns the pending reproducible lockfile.
+  GCC intentionally refuses to build/test full unsigned packages without
+  the lock; do not merge #3444 merely to accelerate CI or duplicate its work.
+- The source-tracked Preview Web build folders are absent; the GCC preview
+  phase now builds them from source, but cannot be marked PASS until run.
+- Actual signed Setup and Update ZIP artifacts, full same-Update-ZIP upgrade,
+  and independent release provenance remain REQUIRED before production.
+  Docker contract tests and image creation are not installation evidence.
+
+The full pipeline will only be **activated on GCC after the exact-head
+PowerShell script and pinned toolkit are verified on the authorized machine**.
+An open PR containing the tools alone is not evidence of a running job.
