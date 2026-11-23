@@ -2,8 +2,8 @@
 
 namespace App\Services;
 
-use App\Models\Order;
 use App\Models\Invoice;
+use App\Models\Order;
 use App\Models\Payment;
 use App\Models\User;
 use Illuminate\Http\Request;
