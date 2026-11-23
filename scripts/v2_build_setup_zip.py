@@ -33,14 +33,30 @@ def _member_identity(meta: os.stat_result) -> tuple[int, int, int, int, int]:
     return meta.st_dev, meta.st_ino, meta.st_size, meta.st_mtime_ns, meta.st_ctime_ns
 
 
-def _open_verified_member(path: Path, meta: os.stat_result, name: str):
-    """Open the exact regular inode scanned earlier, refusing symlink substitutions."""
-    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+def _open_verified_member(path: Path, meta: os.stat_result, name: str, source_root: Path):
+    """Open scanned file through verified directories, never following parent links."""
+    # O_NOFOLLOW on the final file alone does not protect against a parent
+    # directory being swapped for a symlink after the rglob scan. Traverse
+    # from the trusted root using dirfd-relative opens; each component must
+    # still be a real directory when it is opened.
+    if not hasattr(os, "O_DIRECTORY") or not hasattr(os, "O_NOFOLLOW") or os.open not in os.supports_dir_fd:
+        raise SetupBuildError("Safe directory-relative Setup staging opens are unavailable.")
+    parts = Path(name).parts
+    if not parts or any(part in ("", ".", "..") for part in parts):
+        raise SetupBuildError(f"Unsafe Setup staging member name: {name}")
+    directory_fd = None
+    descriptor = None
+    directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
     try:
-        descriptor = os.open(path, flags)
-    except OSError as exc:
-        raise SetupBuildError(f"Setup staging member changed before packaging: {name}") from exc
-    try:
+        directory_fd = os.open(source_root, directory_flags)
+        for component in parts[:-1]:
+            child_fd = os.open(component, directory_flags, dir_fd=directory_fd)
+            os.close(directory_fd)
+            directory_fd = child_fd
+        descriptor = os.open(
+            parts[-1], os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_BINARY", 0),
+            dir_fd=directory_fd,
+        )
         opened = os.fstat(descriptor)
         current = path.lstat()
         if (
@@ -50,11 +66,16 @@ def _open_verified_member(path: Path, meta: os.stat_result, name: str):
             or _member_identity(current) != _member_identity(meta)
         ):
             raise SetupBuildError(f"Setup staging member changed before packaging: {name}")
-        return os.fdopen(descriptor, "rb")
-    except BaseException:
-        os.close(descriptor)
-        raise
-
+        source = os.fdopen(descriptor, "rb")
+        descriptor = None
+        return source
+    except (OSError, ValueError) as exc:
+        raise SetupBuildError(f"Setup staging member changed before packaging: {name}") from exc
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+        if directory_fd is not None:
+            os.close(directory_fd)
 
 def build_setup_zip(source_root: Path, output: Path, source_epoch: int) -> str:
     """Write a fresh, sorted, timestamp-normalized archive; return SHA-256."""
@@ -109,7 +130,7 @@ def build_setup_zip(source_root: Path, output: Path, source_epoch: int) -> str:
                 if is_dir:
                     archive.writestr(info, b"")
                 else:
-                    with _open_verified_member(path, meta, name) as source, archive.open(info, "w", force_zip64=False) as target:
+                    with _open_verified_member(path, meta, name, source_root) as source, archive.open(info, "w", force_zip64=False) as target:
                         shutil.copyfileobj(source, target, length=1024 * 1024)
                         if _member_identity(os.fstat(source.fileno())) != _member_identity(meta):
                             raise SetupBuildError(f"Setup staging member changed during packaging: {name}")
