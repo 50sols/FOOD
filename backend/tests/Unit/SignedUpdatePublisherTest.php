@@ -78,6 +78,18 @@ final class SignedUpdatePublisherTest extends TestCase
             }
         }
 
+        // Correct length alone is insufficient: a mismatched seed/public
+        // portion must not publish an Ed25519 signature that fails installer verification.
+        $pair = sodium_crypto_sign_keypair();
+        $badKey = sodium_crypto_sign_secretkey($pair);
+        $badKey[63] = chr(ord($badKey[63]) ^ 1);
+        try {
+            $publisher->issue($manifest, 'owner-key', base64_encode($badKey));
+            $this->fail('Inconsistent signing key was accepted.');
+        } catch (InvalidArgumentException $e) {
+            $this->assertStringContainsString('inconsistent', $e->getMessage());
+        }
+
         $this->expectException(InvalidArgumentException::class);
         $publisher->issue($manifest, '../invalid', base64_encode(sodium_crypto_sign_secretkey(sodium_crypto_sign_keypair())));
     }
