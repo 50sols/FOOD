@@ -27,6 +27,11 @@ function requiredOption(array $args, string $name): string
 
 function rejectLinkedPath(string $path): void
 {
+    // PHP stream wrappers (e.g. php://temp) can accept exclusive 'x' opens
+    // without creating a real release sidecar on disk.
+    if (str_contains($path, '://')) {
+        throw new RuntimeException('Release path must be a filesystem path.');
+    }
     for ($candidate = $path; ; $candidate = dirname($candidate)) {
         if (is_link($candidate)) {
             throw new RuntimeException('Symlinked release path.');
