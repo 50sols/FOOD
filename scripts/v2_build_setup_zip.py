@@ -114,6 +114,22 @@ def build_setup_zip(source_root: Path, output: Path, source_epoch: int) -> str:
     preflight_total = 0
     for source_path in paths:
         source_meta = source_path.lstat()
+        name = source_path.relative_to(source_root).as_posix()
+        if stat.S_ISLNK(source_meta.st_mode) or not (
+            stat.S_ISDIR(source_meta.st_mode) or stat.S_ISREG(source_meta.st_mode)
+        ):
+            raise SetupBuildError(f"Unsafe non-regular Setup staging member: {name}")
+        if stat.S_ISREG(source_meta.st_mode) and source_meta.st_nlink > 1:
+            raise SetupBuildError(f"Hard-linked Setup staging member: {name}")
+        # Fail before creating the temporary archive. Keep the same checks
+        # in the packaging loop to detect a later swap of the staged member.
+        allowed_templates = {".env.example", ".env.production.example"}
+        for part in source_path.relative_to(source_root).parts:
+            folded = part.casefold()
+            if folded == ".git":
+                raise SetupBuildError(f"Source control metadata in Setup staging: {name}")
+            if folded == ".env" or (folded.startswith(".env.") and folded not in allowed_templates):
+                raise SetupBuildError(f"Secret environment configuration in Setup staging: {name}")
         if stat.S_ISREG(source_meta.st_mode):
             if source_meta.st_size > MAX_ENTRY_SIZE:
                 raise SetupBuildError("Setup ZIP staging entry exceeds size budget.")
