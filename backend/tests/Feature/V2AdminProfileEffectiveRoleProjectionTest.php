@@ -87,6 +87,15 @@ final class V2AdminProfileEffectiveRoleProjectionTest extends TestCase
         $this->actingAs($actor)->get(route('admin.profile.index'))
             ->assertOk()
             ->assertViewHas('storeAssignments', fn ($assignments) => ! $assignments->contains('store_id', $storeId));
+        // An inactive role must also disappear even when it has not been archived.
+        DB::table('roles')->where('id', $retailRole->id)->update([
+            'archived_at' => null,
+            'is_active' => false,
+        ]);
+        $this->actingAs($actor)->get(route('admin.profile.index'))
+            ->assertOk()
+            ->assertViewHas('storeAssignments', fn ($assignments) => ! $assignments->contains('store_id', $storeId));
+
         $this->assertDatabaseHas('user_store_roles', [
             'user_id' => $actor->id,
             'store_id' => $storeId,
