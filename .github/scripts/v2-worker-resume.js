@@ -60,10 +60,10 @@ function claimReferences(comments) {
     // Unknown, malformed, or unrelated refs must remain fail-closed.
     const branch = (fields.BRANCH || fields.ORIGINAL_BRANCH || '')
       .replace(/;\s*(?:BASE|TARGET):.*$/i, '')
-      .replace(/;\s*PR\s+#\d+\s+original\s+DRAFT;\s*BASE\s+Foodex_V2$/i, '')
+      .replace(/;\s*PR\s+#\d+\s+original\s+DRAFT;\s*BASE\s+Foodex_V2\.?$/i, '')
       .replace(/\s+\|\s*BASE:\s*Foodex_V2(?:\s+ONLY)?$/i, '')
       .trim()
-      .replace(/\s+\((?:EXISTING|preserve original|PRESERVE|ORIGINAL; KEEP|ORIGINAL|created, no code commit; preserve for successor)\)$/i, '')
+      .replace(/\s+\((?:EXISTING|preserve original|PRESERVE|ORIGINAL; KEEP|ORIGINAL|created, no code commit; preserve for successor|planned; base Foodex_V2 ONLY|EXISTING; preserve|preserved|ORIGINAL; PRESERVE|ORIGINAL, KEEP|ORIGINAL, PRESERVE|EXISTING ORIGINAL ONLY|PRESERVE ORIGINAL|ORIGINAL; NO NEW BRANCH)\)$/i, '')
       .replace(/\s+\|\s+FINAL_HEAD:\s+[a-f0-9]{40}$/i, '');
     const pr = (fields.PR || fields.ORIGINAL_PR || '').match(/^#?([1-9]\d*)(?:\b|$)/);
     if (branch || pr) refs.push({ branch, pr: pr ? Number(pr[1]) : null, state: fields.STATE || '' });
