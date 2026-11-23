@@ -63,7 +63,7 @@ The agent additionally accepts an owner-authored comment on an open same-reposit
     /gcc-ci full <exact 40-character current PR head SHA>
 
 The full profile uses the **pinned, immutable** local toolkit from repository commit
-`f42553ea19d1d75347bedea35863bcf0c7b3f811` (container build and execution scripts), verifying each
+`2034d988ccabac2a520712fa3d20e8ed7d2946fc` (container build and execution scripts), verifying each
 Git blob SHA before running. The toolkit is downloaded once, locally cached and
 checked again for integrity at every full job. The agent first validates the
 PR owner/base/head, fetches the exact PR commit and the v1.0.125 update base,
@@ -229,3 +229,7 @@ tree used only for ZIP packaging, and skips the unrelated update-base Git
 tag fetch. The Setup/packages/full profiles still build the production
 vendor tree and pin the exact TCPDF source. This reduces local runtime,
 Composer traffic, and GitHub API/remote communication per acceptance job.
+
+Backend PHP syntax-checking on GCC is parallelized across its four allowed
+container CPUs using zero-delimited filenames and fail-closed xargs status;
+this reduces startup overhead without skipping any PHP source file.
