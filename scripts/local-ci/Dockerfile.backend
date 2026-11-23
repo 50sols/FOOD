@@ -1,0 +1,23 @@
+# Trusted GCC local CI image; build only from a pinned, reviewed source revision.
+# Playwright base supplies Chromium/browser deps for the *actual* fresh-install test.
+FROM mcr.microsoft.com/playwright:v1.55.0-noble
+
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      bash ca-certificates curl git python3 rsync zip unzip jq \
+      php8.3-cli php8.3-common php8.3-mbstring php8.3-intl php8.3-xml \
+      php8.3-mysql php8.3-sqlite3 php8.3-zip php8.3-curl php8.3-redis \
+      php8.3-bcmath php8.3-gd default-mysql-client \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=composer:2.8 /usr/bin/composer /usr/local/bin/composer
+RUN npm install --global playwright@1.55.0 \
+    && mkdir -p /node_modules \
+    && ln -s /usr/local/lib/node_modules/playwright /node_modules/playwright \
+    && groupadd --gid 10001 foodexci \
+    && useradd --uid 10001 --gid foodexci --home-dir /home/foodexci --create-home foodexci \
+    && mkdir -p /workspace /evidence /composer-cache \
+    && chown -R foodexci:foodexci /workspace /evidence /composer-cache
+ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+ENV COMPOSER_CACHE_DIR=/composer-cache
+ENV COMPOSER_ALLOW_SUPERUSER=1
+WORKDIR /workspace
