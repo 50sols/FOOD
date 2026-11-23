@@ -148,7 +148,7 @@ final class UpdatePackageValidator
                 $versionName = $archive->getNameIndex($versionIndex);
                 $versionStat = $archive->statIndex($versionIndex);
                 if ($versionName !== 'VERSION' || ! is_array($versionStat)
-                    || ($versionStat['size'] ?? PHP_INT_MAX) > 128) {
+                    || $versionStat['size'] > 128) {
                     throw new InvalidArgumentException('Update archive contains an invalid embedded VERSION.');
                 }
 
