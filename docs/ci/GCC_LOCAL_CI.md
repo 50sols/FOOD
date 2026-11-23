@@ -39,7 +39,7 @@ It keeps a cursor in cursor.json to avoid repeating handled comments. Requests t
 
 ## Isolation
 
-Docker image: python:3.12-slim. Security options: offline network, read-only code mount, read-only container filesystem, no host credentials, no Docker socket, no elevated capabilities, CPU/memory/PID limits. Test command is fixed in the agent script.
+Docker image: python:3.12 (includes Git for planner regression tests). Security options: offline network, read-only code mount, read-only container filesystem, no host credentials, no Docker socket, no elevated capabilities, CPU/memory/PID limits. Test command is fixed in the agent script.
 
 This initial profile does not validate Laravel, Composer, Flutter, MySQL, Redis, signed Setup ZIP, Update ZIP, or real installer/recovery. Add backend and full test profiles only after review of isolated execution and parity. Never treat this local advisory evidence as equivalent to GitHub Required CI, product acceptance or production readiness.
 
