@@ -139,7 +139,9 @@ jobs:
           # Disposable CI keys prove signer/verifier parity; never publish
           # these keys or confuse this staging run with a trusted release.
           php -l scripts/v2_setup_signature.php
-          python3 -m unittest discover -s scripts/tests -p 'test_v2_setup_signature.py'
+          FOODEX_SETUP_STAGING_ZIP_PATH="$GITHUB_WORKSPACE/Release/FOODEX-Laravel-Setup.zip" \
+            FOODEX_SETUP_SOURCE_SHA="$PR_HEAD_SHA" \
+            python3 -m unittest discover -s scripts/tests -p 'test_v2_setup_signature.py'
           test "$(git rev-parse HEAD)" = "$PR_HEAD_SHA"
           python3 scripts/v2_setup_staging_verify.py \
             --zip Release/FOODEX-Laravel-Setup.zip \
