@@ -38,7 +38,7 @@ class GccHeavyExecutionContracts(unittest.TestCase):
         self.assertIn("COPY prepare.sh /ci/prepare.sh", DOCKERFILE)
         self.assertIn("Dockerfile.flutter", COMPOSE)
         self.assertIn("foodex-gcc-flutter-cache", COMPOSE)
-        self.assertIn("Flutter Web preview build failed", AGENT)
+        self.assertIn("Flutter preview build exited", AGENT)
         self.assertIn("function Invoke-DockerLogged", AGENT)
         self.assertIn("Start-Process -FilePath $bin", AGENT)
         self.assertIn("RedirectStandardError", AGENT)
