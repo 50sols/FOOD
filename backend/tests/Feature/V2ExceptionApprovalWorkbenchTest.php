@@ -30,7 +30,8 @@ final class V2ExceptionApprovalWorkbenchTest extends TestCase
     public function test_scoped_pending_inbox_opens_real_independent_review_in_arabic_and_english(): void
     {
         $agent = $this->roleUser('CUSTOMER_SERVICE_AGENT');
-        $reviewer = $this->roleUser('CUSTOMER_SERVICE_MANAGER');
+        $supportManager = $this->roleUser('CUSTOMER_SERVICE_MANAGER');
+        $accountant = $this->roleUser('FINANCE');
         $superAdmin = $this->roleUser('SUPER_ADMIN');
         $orderId = $this->makeOrder();
         $unrelatedOrderId = $this->makeOrder();
@@ -43,7 +44,7 @@ final class V2ExceptionApprovalWorkbenchTest extends TestCase
         foreach (['ar' => 'rtl', 'en' => 'ltr'] as $locale => $direction) {
             app()->setLocale($locale);
             $superAdmin->forceFill(['locale' => $locale])->save();
-            $reviewer->forceFill(['locale' => $locale])->save();
+            $supportManager->forceFill(['locale' => $locale])->save();
 
             $this->actingAs($superAdmin->fresh())
                 ->get(route('admin.commercial.sales-control', ['store_id' => $storeId]))
@@ -54,7 +55,7 @@ final class V2ExceptionApprovalWorkbenchTest extends TestCase
                 ->assertSee('discount_view=pending', false)
                 ->assertSee(__('customer_service_discount.pending_review'));
 
-            $this->actingAs($reviewer->fresh())->get($this->inboxUrl())
+            $this->actingAs($supportManager->fresh())->get($this->inboxUrl())
                 ->assertOk()
                 ->assertSee('data-v2-pending-discounts-workbench', false)
                 ->assertSee('data-v2-pending-discounts-tab', false)
@@ -62,7 +63,7 @@ final class V2ExceptionApprovalWorkbenchTest extends TestCase
                 ->assertDontSee('data-order-row="'.$unrelatedOrderId.'"', false)
                 ->assertSee(__('customer_service_discount.pending_description'));
 
-            $this->actingAs($reviewer->fresh())
+            $this->actingAs($supportManager->fresh())
                 ->get(route('admin.operations.orders.index', [
                     'channel' => 'b2b', 'store_id' => $storeId, 'order' => $orderId,
                     'discount_view' => 'pending', 'action_required' => 0,
@@ -72,7 +73,13 @@ final class V2ExceptionApprovalWorkbenchTest extends TestCase
                 ->assertSee('data-discount-request-id="'.$requestId.'"', false);
         }
 
-        $this->actingAs($reviewer->fresh())
+        // The legacy CS inbox is readable, but the manager is not the independent checker.
+        $this->actingAs($supportManager->fresh())
+            ->post(route('admin.operations.orders.customer-service-discount.review', [
+                'order' => $orderId, 'discountRequest' => $requestId,
+            ]), ['decision' => 'approve'])
+            ->assertNotFound();
+        $this->actingAs($accountant->fresh())
             ->post(route('admin.operations.orders.customer-service-discount.review', [
                 'order' => $orderId, 'discountRequest' => $requestId,
             ]), ['decision' => 'approve'])
@@ -80,19 +87,19 @@ final class V2ExceptionApprovalWorkbenchTest extends TestCase
 
         $this->assertDatabaseHas('order_customer_service_discount_requests', [
             'id' => $requestId, 'status' => 'approved',
-            'reviewed_by_user_id' => $reviewer->getKey(),
+            'reviewed_by_user_id' => $accountant->getKey(),
         ]);
         $this->assertDatabaseHas('orders', ['id' => $orderId, 'grand_total' => 7.875]);
         $this->assertSame(1, DB::table('order_customer_service_discounts')->where('order_id', $orderId)->count());
         $this->assertDatabaseHas('audit_logs', [
             'event' => 'order.customer_service_discount.approved',
-            'user_id' => $reviewer->getKey(),
+            'user_id' => $accountant->getKey(),
         ]);
 
-        $this->actingAs($reviewer->fresh())->get($this->inboxUrl())
+        $this->actingAs($supportManager->fresh())->get($this->inboxUrl())
             ->assertOk()
             ->assertDontSee('data-order-row="'.$orderId.'"', false);
-        $this->actingAs($reviewer->fresh())->get(route('admin.operations.orders.index', [
+        $this->actingAs($supportManager->fresh())->get(route('admin.operations.orders.index', [
             'channel' => 'b2b', 'discount_view' => 'approved', 'action_required' => 0,
         ]))->assertOk()->assertSee('data-v2-approved-discount-id="'.$requestId.'"', false);
     }
@@ -137,24 +144,30 @@ final class V2ExceptionApprovalWorkbenchTest extends TestCase
     public function test_rejected_exception_exits_inbox_without_price_mutation_or_replay(): void
     {
         $agent = $this->roleUser('CUSTOMER_SERVICE_AGENT');
-        $reviewer = $this->roleUser('CUSTOMER_SERVICE_MANAGER');
+        $supportManager = $this->roleUser('CUSTOMER_SERVICE_MANAGER');
+        $accountant = $this->roleUser('FINANCE');
         $orderId = $this->makeOrder();
         $requestId = $this->submitRequest($agent, $orderId);
         $url = route('admin.operations.orders.customer-service-discount.review', [
             'order' => $orderId, 'discountRequest' => $requestId,
         ]);
 
-        $this->actingAs($reviewer)->get($this->inboxUrl())->assertOk()
+        $this->actingAs($supportManager)->get($this->inboxUrl())->assertOk()
             ->assertSee('data-order-row="'.$orderId.'"', false);
-        $this->actingAs($reviewer)->post($url, [
+        // A CS manager may locate the exception but cannot reject it.
+        $this->actingAs($supportManager)->post($url, [
+            'decision' => 'reject', 'review_reason' => 'Pricing exception is unsupported',
+        ])->assertNotFound();
+        $this->actingAs($accountant)->post($url, [
             'decision' => 'reject', 'review_reason' => 'Pricing exception is unsupported',
         ])->assertRedirect();
-        $this->actingAs($reviewer)->get($this->inboxUrl())->assertOk()
+        $this->actingAs($supportManager)->get($this->inboxUrl())->assertOk()
             ->assertDontSee('data-order-row="'.$orderId.'"', false);
-        $this->actingAs($reviewer)->post($url, ['decision' => 'approve'])->assertStatus(409);
+        $this->actingAs($accountant)->post($url, ['decision' => 'approve'])->assertStatus(409);
 
         $this->assertDatabaseHas('order_customer_service_discount_requests', [
             'id' => $requestId, 'status' => 'rejected',
+            'reviewed_by_user_id' => $accountant->getKey(),
         ]);
         $this->assertDatabaseHas('orders', ['id' => $orderId, 'grand_total' => 9]);
         $this->assertSame(0, DB::table('order_customer_service_discounts')->where('order_id', $orderId)->count());
