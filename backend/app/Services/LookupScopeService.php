@@ -28,6 +28,18 @@ final class LookupScopeService
      */
     public function visible(Builder $query, User $user, string $table): Builder
     {
+        // Constrain the existing SELECT to the currently persisted user record.
+        // The actor model may still say active after a separate revocation.
+        $query->whereExists(static fn ($active) => $active
+            ->selectRaw('1')
+            ->from('users as lookup_actor')
+            ->where('lookup_actor.id', $user->getKey())
+            ->where('lookup_actor.is_active', true));
+
+        if (! $user->is_active) {
+            return $query->whereRaw('1 = 0');
+        }
+
         if ($user->hasRole('SUPER_ADMIN')) {
             return $query;
         }
@@ -62,6 +74,8 @@ final class LookupScopeService
         bool $supportAccess,
         Request $request,
     ): string {
+        abort_unless($this->activeActor($user), 403);
+
         if ($scope === self::GLOBAL) {
             abort_unless($user->hasRole('SUPER_ADMIN'), 403);
 
@@ -84,6 +98,10 @@ final class LookupScopeService
 
     public function canManage(User $user, string $scope, ?int $storeId): bool
     {
+        if (! $this->activeActor($user)) {
+            return false;
+        }
+
         if ($user->hasRole('SUPER_ADMIN')) {
             return true;
         }
@@ -107,6 +125,10 @@ final class LookupScopeService
     /** @return list<string> */
     public function manageableScopes(User $user): array
     {
+        if (! $this->activeActor($user)) {
+            return [];
+        }
+
         if ($user->hasRole('SUPER_ADMIN')) {
             return [self::GLOBAL, self::B2B, self::STORE];
         }
@@ -161,9 +183,15 @@ final class LookupScopeService
 
     public function canAccessWholesale(User $user): bool
     {
+        if (! $user->is_active) {
+            return false;
+        }
+
         $roles = array_values((array) config('admin.channels.b2b.global_roles', []));
 
         return $user->roles()
+            ->join('users as lookup_actor', 'lookup_actor.id', '=', 'role_user.user_id')
+            ->where('lookup_actor.is_active', true)
             ->where('roles.is_active', true)
             ->where('roles.scope', 'global')
             ->whereIn('roles.code', $roles)
@@ -173,6 +201,10 @@ final class LookupScopeService
     /** @return Collection<int, stdClass> */
     public function visibleRetailStores(User $user): Collection
     {
+        if (! $this->activeActor($user)) {
+            return collect();
+        }
+
         $storeIds = array_values(array_filter(
             $this->tenants->retailStoreIds($user),
             static fn (int $storeId): bool => $user->hasPermission('lookups.view', $storeId),
@@ -189,5 +221,13 @@ final class LookupScopeService
             ->where('store_types.code', 'B2C')
             ->orderBy('stores.name')
             ->get(['stores.id', 'stores.code', 'stores.name']);
+    }
+
+    private function activeActor(User $user): bool
+    {
+        return $user->is_active && DB::table('users')
+            ->where('id', $user->getKey())
+            ->where('is_active', true)
+            ->exists();
     }
 }
