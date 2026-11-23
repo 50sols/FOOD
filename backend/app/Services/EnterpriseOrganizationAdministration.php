@@ -155,6 +155,26 @@ final class EnterpriseOrganizationAdministration
         $this->assertDefaultRoutingIdentityPreserved($model, $data);
 
         if ((bool) ($data['is_active'] ?? true)) {
+            // An inactive child cannot be reactivated beneath a disabled
+            // parent or ancestor. Preview and Save share this preflight, and
+            // direct service callers must not bypass it.
+            $parent = match (true) {
+                $model instanceof EnterpriseCompany => $model->organization,
+                $model instanceof EnterpriseLegalEntity => $model->company,
+                $model instanceof EnterpriseBusinessUnit => $model->legalEntity,
+                default => null,
+            };
+
+            if (! $model instanceof EnterpriseOrganization) {
+                if (! $parent instanceof Model) {
+                    throw ValidationException::withMessages([
+                        'parent' => [__('enterprise_organization.inactive_parent')],
+                    ]);
+                }
+
+                $this->assertCreationParentActive($parent);
+            }
+
             return;
         }
 
