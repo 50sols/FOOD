@@ -180,6 +180,65 @@ class UpdatePackageValidatorTest extends TestCase
         (new UpdatePackageValidator)->validate($manifest, '1.1.0', $this->packagePath);
     }
 
+    public function test_matching_digest_cannot_verify_protected_live_data_or_executable_public_paths(): void
+    {
+        // The extractor already denies these targets. A valid SHA-256 must
+        // not let Verify Package or the release signer approve them first.
+        $unsafe = [
+            'backend/.env' => 'protected runtime path',
+            'backend/.ENV.production' => 'protected runtime path',
+            'backend/.env.example/child.php' => 'protected runtime path',
+            '.env.local' => 'protected runtime path',
+            'backend/storage/app/private/customer.csv' => 'protected runtime path',
+            'backend/vendor/autoload.php' => 'protected runtime path',
+            'backend/.git/config' => 'protected runtime path',
+            'assets/shell.php.jpg' => 'executable public asset path',
+            'brand/.htaccess.extra' => 'executable public asset path',
+            'preview/web.config' => 'executable public asset path',
+            'backend/public/evil.phtml' => 'executable public asset path',
+            'backend/public/.user.ini' => 'executable public asset path',
+        ];
+
+        foreach ($unsafe as $path => $reason) {
+            $this->createZipPackage([$path]);
+            $manifest = new UpdatePackageManifest(
+                '1.2.0', '1.0.0',
+                hash_file('sha256', $this->packagePath),
+                'Signed update should not overwrite live configuration', true,
+            );
+
+            try {
+                (new UpdatePackageValidator)->validate($manifest, '1.1.0', $this->packagePath);
+                $this->fail('Protected or executable update target was verified: '.$path);
+            } catch (InvalidArgumentException $exception) {
+                $this->assertStringContainsString($reason, $exception->getMessage(), $path);
+            }
+        }
+    }
+
+    public function test_source_templates_and_canonical_laravel_public_bootstrap_remain_verifiable(): void
+    {
+        // A fresh deploy can legitimately update examples, versioned static
+        // assets and Laravel's exact front controller/rewrite configuration.
+        $this->createZipPackage([
+            'backend/.env.example',
+            'backend/.env.testing.example',
+            'backend/public/index.php',
+            'backend/public/.htaccess',
+            'assets/app.css',
+            'backend/app/Release.php',
+        ]);
+
+        $manifest = new UpdatePackageManifest(
+            '1.2.0', '1.0.0',
+            hash_file('sha256', $this->packagePath),
+            'Safe source and public bootstrap update', false,
+        );
+
+        $result = (new UpdatePackageValidator)->validate($manifest, '1.1.0', $this->packagePath);
+        $this->assertSame('1.2.0', $result['target_version']);
+    }
+
     public function test_migration_zip_cannot_bypass_database_backup_when_manifest_flag_is_false(): void
     {
         $this->createZipPackage(['backend/database/migrations/2026_11_13_000000_test.php']);

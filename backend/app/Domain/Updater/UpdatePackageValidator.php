@@ -104,6 +104,12 @@ final class UpdatePackageValidator
                     }
                 }
 
+                // Package verification and build-host publishing must not
+                // mark a signed ZIP as installable when runtime preflight
+                // would later refuse its protected target. Match the canonical
+                // LaravelUpdateRuntime::normalizeEntry release-path policy.
+                $this->assertUnprotectedReleaseTarget($relativePath);
+
                 $foldedPath = strtolower($relativePath);
                 if (isset($knownPaths[$foldedPath])) {
                     throw new InvalidArgumentException('Update archive contains ambiguous member aliases.');
@@ -161,6 +167,44 @@ final class UpdatePackageValidator
             'package_hash' => strtolower($manifest->sha256),
             'contains_migrations' => $manifest->containsMigrations,
         ];
+    }
+
+    /**
+     * Reject update members that would replace live data/secrets or introduce
+     * executable public assets before the ZIP is verified or signed.
+     * This mirrors LaravelUpdateRuntime::normalizeEntry; runtime independently
+     * rechecks each target immediately before backup and extraction.
+     */
+    private function assertUnprotectedReleaseTarget(string $relativePath): void
+    {
+        $components = explode('/', $relativePath);
+        $lastIndex = array_key_last($components);
+
+        foreach ($components as $index => $component) {
+            $isExampleTemplate = $index === $lastIndex
+                && preg_match('/^\\.env(?:\\.[A-Za-z0-9_-]+)*\\.example$/', $component) === 1;
+
+            if (preg_match('/^\\.env(?:\\..*)?$/i', $component) === 1 && ! $isExampleTemplate) {
+                throw new InvalidArgumentException('Update archive targets a protected runtime path.');
+            }
+        }
+
+        if (preg_match('#(^|/)(storage|vendor|\\.git)(/|$)#i', $relativePath) === 1) {
+            throw new InvalidArgumentException('Update archive targets a protected runtime path.');
+        }
+
+        $staticMirror = preg_match('#^(assets|brand|demo|preview)/#i', $relativePath) === 1;
+        $laravelPublic = preg_match('#^backend/public/#i', $relativePath) === 1;
+        $laravelBootstrap = in_array($relativePath, [
+            'backend/public/index.php',
+            'backend/public/.htaccess',
+        ], true);
+
+        if (($staticMirror || ($laravelPublic && ! $laravelBootstrap))
+            && (preg_match('#(?:^|/)[^/]*\\.(?:php[0-9]*|phtml|phar|cgi|pl|py|sh|asp|aspx|jsp)(?:\\.|$)#i', $relativePath) === 1
+                || preg_match('#(?:^|/)(?:\\.htaccess|\\.user\\.ini|web\\.config)(?:\\.|$)#i', $relativePath) === 1)) {
+            throw new InvalidArgumentException('Update archive targets an executable public asset path.');
+        }
     }
 
     /**
