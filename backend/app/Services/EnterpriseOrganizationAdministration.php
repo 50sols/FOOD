@@ -158,9 +158,23 @@ final class EnterpriseOrganizationAdministration
             return;
         }
 
+        // Legacy imports can contain inactive intermediate parents with active
+        // descendants. Refuse deactivation until the entire lower hierarchy is
+        // inactive; checking only immediate children would orphan live scopes.
         $hasActiveChildren = match (true) {
-            $model instanceof EnterpriseOrganization => $model->companies()->where('is_active', true)->exists(),
-            $model instanceof EnterpriseCompany => $model->legalEntities()->where('is_active', true)->exists(),
+            $model instanceof EnterpriseOrganization => $model->companies()
+                ->where(function ($query): void {
+                    $query->where('is_active', true)
+                        ->orWhereHas('legalEntities', function ($entities): void {
+                            $entities->where('is_active', true)
+                                ->orWhereHas('businessUnits', fn ($units) => $units->where('is_active', true));
+                        });
+                })->exists(),
+            $model instanceof EnterpriseCompany => $model->legalEntities()
+                ->where(function ($query): void {
+                    $query->where('is_active', true)
+                        ->orWhereHas('businessUnits', fn ($units) => $units->where('is_active', true));
+                })->exists(),
             $model instanceof EnterpriseLegalEntity => $model->businessUnits()->where('is_active', true)->exists(),
             default => false,
         };
