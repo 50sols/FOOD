@@ -143,7 +143,7 @@ final class UpdatePackageValidator
             // signed target before Verify Package reports an installable ZIP.
             // Historical partial code-only ZIPs with no VERSION remain valid;
             // they are not evidence of a full source-built release.
-            $versionIndex = $archive->locateName('VERSION', \\ZipArchive::FL_NOCASE);
+            $versionIndex = $archive->locateName('VERSION', \ZipArchive::FL_NOCASE);
             if ($versionIndex !== false) {
                 $versionName = $archive->getNameIndex($versionIndex);
                 $versionStat = $archive->statIndex($versionIndex);
@@ -156,8 +156,8 @@ final class UpdatePackageValidator
                 if (! is_string($embeddedVersion)
                     || ! in_array($embeddedVersion, [
                         $manifest->targetVersion,
-                        $manifest->targetVersion."\\n",
-                        $manifest->targetVersion."\\r\\n",
+                        $manifest->targetVersion."\n",
+                        $manifest->targetVersion."\r\n",
                     ], true)) {
                     throw new InvalidArgumentException('Update archive VERSION does not match signed target version.');
                 }
