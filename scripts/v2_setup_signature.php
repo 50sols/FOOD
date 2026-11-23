@@ -214,11 +214,16 @@ try {
         // writes this exact compact, ordered representation; accepting a
         // different byte stream could let another consumer interpret the
         // supposedly authenticated manifest differently.
-        if (! is_array($sidecar) ||
-            json_encode($sidecar, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) !== $sidecarBytes) {
+        if (! is_array($sidecar)) {
+            throw new RuntimeException('Invalid signed Setup sidecar.');
+        }
+        if (json_encode(
+            $sidecar,
+            JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE,
+        ) !== $sidecarBytes) {
             throw new RuntimeException('Noncanonical signed Setup sidecar.');
         }
-        if (! is_array($sidecar) ||
+        if (
             array_keys($sidecar) !== [
                 'format', 'signer_key_id', 'version',
                 'source_commit', 'archive_sha256', 'signature',
