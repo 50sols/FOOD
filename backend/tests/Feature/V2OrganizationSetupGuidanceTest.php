@@ -213,6 +213,57 @@ final class V2OrganizationSetupGuidanceTest extends TestCase
         $this->assertSame($before, DB::table('audit_logs')->count());
     }
 
+    public function test_child_setup_preview_and_save_both_reject_inactive_parent_or_ancestor(): void
+    {
+        $admin = $this->actor('SUPER_ADMIN', 'en');
+        $organization = EnterpriseOrganization::query()->create([
+            'code' => 'v2_inactive_create_org',
+            'name' => 'Inactive Parent Organization',
+            'is_active' => false,
+        ]);
+        $company = EnterpriseCompany::query()->create([
+            'organization_id' => $organization->id,
+            'code' => 'v2_inactive_create_company',
+            'name' => 'Inactive Parent Company',
+            'is_active' => false,
+        ]);
+        $entity = EnterpriseLegalEntity::query()->create([
+            'company_id' => $company->id,
+            'code' => 'v2_inactive_create_entity',
+            'name' => 'Inactive Parent Entity',
+            'is_active' => false,
+        ]);
+        $before = DB::table('audit_logs')->count();
+
+        foreach ([
+            route('admin.enterprise-companies.store', $organization),
+            route('admin.enterprise-legal-entities.store', $company),
+            route('admin.enterprise-business-units.store', $entity),
+        ] as $index => $url) {
+            foreach (['en', 'ar'] as $locale) {
+                $admin->forceFill(['locale' => $locale])->save();
+                foreach ([true, false] as $preview) {
+                    $payload = [
+                        'code' => 'v2_inactive_child_'.$index,
+                        'name' => 'Must Not Be Created',
+                        'is_active' => '1',
+                    ];
+                    if ($preview) {
+                        $payload['_setup_test'] = '1';
+                    }
+
+                    $this->actingAs($admin->fresh())->post($url, $payload)
+                        ->assertSessionHasErrors('parent');
+                }
+            }
+        }
+
+        $this->assertDatabaseMissing('enterprise_companies', ['code' => 'v2_inactive_child_0']);
+        $this->assertDatabaseMissing('enterprise_legal_entities', ['code' => 'v2_inactive_child_1']);
+        $this->assertDatabaseMissing('enterprise_business_units', ['code' => 'v2_inactive_child_2']);
+        $this->assertSame($before, DB::table('audit_logs')->count());
+    }
+
     public function test_failed_create_save_restores_values_only_to_create_form(): void
     {
         $admin = $this->actor('SUPER_ADMIN', 'en');
