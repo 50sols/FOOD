@@ -154,7 +154,15 @@ final class EnterpriseOrganizationAdministration
     {
         $this->assertDefaultRoutingIdentityPreserved($model, $data);
 
-        if ((bool) ($data['is_active'] ?? true)) {
+        // Non-HTTP callers can change display metadata without submitting an
+        // activation flag. Do not treat this as a reactivation of an inactive
+        // legacy branch beneath an inactive ancestor: fill($data) preserves
+        // the current active state when the field is absent.
+        if (! array_key_exists('is_active', $data)) {
+            return;
+        }
+
+        if ((bool) $data['is_active']) {
             // An inactive child cannot be reactivated beneath a disabled
             // parent or ancestor. Preview and Save share this preflight, and
             // direct service callers must not bypass it.
