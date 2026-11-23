@@ -4,6 +4,8 @@ namespace Tests\Feature;
 
 use App\Enterprise\Organization\OrganizationHierarchyService;
 use App\Models\EnterpriseBusinessUnit;
+use App\Models\EnterpriseCompany;
+use App\Models\EnterpriseLegalEntity;
 use App\Models\EnterpriseOrganization;
 use App\Models\Role;
 use App\Models\Store;
@@ -156,6 +158,59 @@ final class V2OrganizationSetupGuidanceTest extends TestCase
             'name' => 'Canonical New Organization',
         ]);
         $this->assertSame($before + 1, DB::table('audit_logs')->count());
+    }
+
+    public function test_setup_preview_rejects_deactivation_with_active_descendants_before_save(): void
+    {
+        $admin = $this->actor('SUPER_ADMIN', 'en');
+        $organization = EnterpriseOrganization::query()->create([
+            'code' => 'v2_preview_org',
+            'name' => 'Preview Parent',
+            'is_active' => true,
+        ]);
+        $company = EnterpriseCompany::query()->create([
+            'organization_id' => $organization->id,
+            'code' => 'v2_preview_company',
+            'name' => 'Preview Company',
+            'is_active' => true,
+        ]);
+        $entity = EnterpriseLegalEntity::query()->create([
+            'company_id' => $company->id,
+            'code' => 'v2_preview_entity',
+            'name' => 'Preview Entity',
+            'is_active' => true,
+        ]);
+        $unit = EnterpriseBusinessUnit::query()->create([
+            'legal_entity_id' => $entity->id,
+            'code' => 'v2_preview_unit',
+            'name' => 'Preview Unit',
+            'is_active' => true,
+        ]);
+        $before = DB::table('audit_logs')->count();
+
+        foreach ([
+            [route('admin.enterprise-organizations.update', $organization), $organization],
+            [route('admin.enterprise-companies.update', $company), $company],
+            [route('admin.enterprise-legal-entities.update', $entity), $entity],
+        ] as [$url, $record]) {
+            foreach ([true, false] as $preview) {
+                $payload = [
+                    'code' => $record->code,
+                    'name' => $record->name,
+                    'is_active' => '0',
+                ];
+                if ($preview) {
+                    $payload['_setup_test'] = 'edit';
+                }
+
+                $this->actingAs($admin)->patch($url, $payload)
+                    ->assertSessionHasErrors('is_active');
+                $this->assertTrue((bool) $record->fresh()->is_active);
+            }
+        }
+
+        $this->assertTrue((bool) $unit->fresh()->is_active);
+        $this->assertSame($before, DB::table('audit_logs')->count());
     }
 
     public function test_failed_create_save_restores_values_only_to_create_form(): void
