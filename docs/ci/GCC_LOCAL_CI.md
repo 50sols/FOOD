@@ -239,3 +239,9 @@ Pint exceeding Composer's default 300-second child process timeout. The
 optimized backend profile now omits the package-only TCPDF tree, parallelizes
 PHP lint, and allows Pint/PHPStan up to 900 seconds with a separate bounded
 outer timeout. Checks must actually pass; timeouts remain failures.
+
+The first real Setup run progressed to the Flutter preview stage, where Git
+refused /workspace as dubious ownership because its files are intentionally
+chowned to the unprivileged runner UID. The trusted preview script now uses
+only `git -c safe.directory=/workspace` for the exact commit verification,
+not a global ownership or safety bypass.
