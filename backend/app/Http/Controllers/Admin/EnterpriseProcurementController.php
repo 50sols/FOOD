@@ -867,6 +867,16 @@ final class EnterpriseProcurementController extends Controller
         // An explicitly supplied malformed or cross-channel store must never
         // be coerced into an authorized integer ID or silently fall back.
         // Request::integer casts "1junk" and nonempty arrays to positive IDs.
+        // Never allow a POST body to shadow a conflicting query selector.
+        // Each transport is client-controlled; ambiguity must fail closed
+        // before resolving another store's entitlement or enterprise scope.
+        if (array_key_exists('store_id', $request->query()) &&
+            array_key_exists('store_id', $request->request->all())) {
+            abort_unless(
+                $request->query('store_id') === $request->request->get('store_id'),
+                403,
+            );
+        }
         $requested = 0;
         if ($request->exists('store_id')) {
             $rawStoreId = $request->input('store_id');
