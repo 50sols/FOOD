@@ -86,7 +86,7 @@ function Smoke([int]$Pr,[string]$Sha,[long]$Request) {
 
 # Full backend execution uses immutable trusted tooling, not Compose files from PRs.
 function Trusted-Toolkit {
- $pin='a63f277a267ef0a9bfe2a78c62aac6ff9aed4770'
+ $pin='e35e705c46ea74f85297d9f7c7d773b9c22ea5f6'
  $kit=Join-Path $Root "trusted\$pin"
  $expected=@{
   'Dockerfile.backend'='7809e482cee0e446f3aab09174d1a53a634853c6'
@@ -94,7 +94,7 @@ function Trusted-Toolkit {
   'Dockerfile.flutter'='2125d8138a9eb1956d67224f6ce652d9ba1a4815'
   'preview.sh'='358cc4be8d947316a3255f0e5d81bf590e3432af'
   'prepare.sh'='384d4cca67e2ef5123892a16a09fa4ea1cb4c2bb'
-  'full.sh'='e1cf90f494163dfea994f2e22f6edf39a634f6d1'
+  'full.sh'='1a579163c43aabe7967e77f30e6b4e1a86692ad3'
  }
  New-Item -ItemType Directory -Path $kit -Force | Out-Null
  foreach($name in @('Dockerfile.backend','Dockerfile.flutter','compose.backend.yaml','prepare.sh','full.sh','preview.sh')) {
