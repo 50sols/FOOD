@@ -17,7 +17,9 @@ DOCKERFILE = (BASE / "Dockerfile.backend").read_text(encoding="utf-8")
 
 class GccHeavyExecutionContracts(unittest.TestCase):
     def test_full_command_is_owner_exact_head_and_not_arbitrary_shell(self):
-        self.assertIn("/gcc-ci (run|full)", AGENT)
+        self.assertIn("/gcc-ci (run|full|backend|setup|packages)", AGENT)
+        self.assertIn("$script:GccLastFailedStage", AGENT)
+        self.assertIn("profile=$Profile expected=$requiredPackages", AGENT)
         self.assertIn("$Comment.user.login -cne $Owner", AGENT)
         self.assertIn("$pr.head.sha -cne $sha", AGENT)
         self.assertIn("$pr.base.ref -cne $Base", AGENT)
@@ -28,7 +30,7 @@ class GccHeavyExecutionContracts(unittest.TestCase):
         self.assertNotIn("iex ", AGENT.lower())
 
     def test_trusted_immutable_local_scripts_are_never_read_from_pr_checkout(self):
-        self.assertIn("465f765b72af87e838384efc01247f7ac38ca7c5", AGENT)
+        self.assertIn("a63f277a267ef0a9bfe2a78c62aac6ff9aed4770", AGENT)
         self.assertIn("raw.githubusercontent.com", AGENT)
         self.assertIn("git hash-object $file", AGENT)
         self.assertIn("context: .", COMPOSE)
@@ -71,6 +73,8 @@ class GccHeavyExecutionContracts(unittest.TestCase):
         self.assertIn("Update ZIP touches protected files", FULL)
         self.assertIn("Incomplete canonical update ZIP/manifest/checksum set", FULL)
         self.assertIn("full_upgrade_acceptance=False", FULL)
+        self.assertIn("all|backend|packages|setup", FULL)
+        self.assertIn("if [[ \"$profile\" != setup ]]", FULL)
         self.assertIn("trusted_release=False", FULL)
         self.assertIn("signed=False", FULL)
         self.assertIn("Get-FileHash", AGENT)
