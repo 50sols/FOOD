@@ -100,6 +100,22 @@ final class V2CustomerServiceDiscountApprovalTest extends TestCase
         $this->assertDatabaseHas('orders', [
             'id' => $orderId, 'discount_total' => 1, 'grand_total' => 9,
         ]);
+
+        // A valid padded rationale is accepted only after normalization;
+        // both the queue and the audit event must contain the same text.
+        $this->actingAs($manager)->post($url, [
+            'percentage' => 15,
+            'reason' => '  Authorized customer recovery  ',
+            'idempotency_key' => (string) Str::uuid(),
+        ])->assertRedirect();
+        $this->assertDatabaseHas('order_customer_service_discount_requests', [
+            'order_id' => $orderId,
+            'reason' => 'Authorized customer recovery',
+            'status' => 'pending',
+        ]);
+        $this->assertDatabaseHas('orders', [
+            'id' => $orderId, 'discount_total' => 1, 'grand_total' => 9,
+        ]);
     }
 
     public function test_unprivileged_reviewer_cannot_approve_and_self_approval_is_forbidden(): void
@@ -163,11 +179,12 @@ final class V2CustomerServiceDiscountApprovalTest extends TestCase
             'user_id' => $finance->getKey(),
         ]);
         $this->actingAs($finance)->post($url, [
-            'decision' => 'reject', 'review_reason' => 'Pricing not justified',
+            'decision' => 'reject', 'review_reason' => '  Pricing not justified  ',
         ])->assertRedirect();
         $this->assertDatabaseHas('order_customer_service_discount_requests', [
             'id' => $requestId, 'status' => 'rejected',
             'reviewed_by_user_id' => $finance->getKey(),
+            'review_reason' => 'Pricing not justified',
         ]);
         $this->assertDatabaseHas('audit_logs', [
             'event' => 'order.customer_service_discount.rejected', 'user_id' => $finance->getKey(),
