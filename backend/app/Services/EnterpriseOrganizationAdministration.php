@@ -170,7 +170,7 @@ final class EnterpriseOrganizationAdministration
                         ->orWhereHas('legalEntities', function ($entities): void {
                             $entities->where('is_active', true)
                                 ->orWhereHas('businessUnits', fn ($units) => $units->where('is_active', true)
-                                    ->orWhereHas('storeScopes'));
+                            ->orWhereHas('storeScopes'));
                         });
                 })->exists(),
             $model instanceof EnterpriseCompany => $model->legalEntities()
