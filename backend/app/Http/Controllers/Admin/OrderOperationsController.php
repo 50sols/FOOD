@@ -2061,7 +2061,7 @@ final class OrderOperationsController extends Controller
         // for this channel AND its effective, store-scoped Finance authority.
         $accountingRole = match ($channel) {
             'b2b' => $actor->hasRole('FINANCE'),
-            'b2c' => $actor->hasRole('RETAIL_FINANCE'),
+            'b2c' => $actor->hasRole('RETAIL_FINANCE', $storeId),
             default => false,
         };
         abort_unless(
