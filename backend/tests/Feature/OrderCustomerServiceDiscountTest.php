@@ -49,7 +49,7 @@ class OrderCustomerServiceDiscountTest extends TestCase
             ->where('order_id', $id)->where('idempotency_key', $firstKey)->value('id');
         $this->actingAs($manager)->post(route('admin.operations.orders.customer-service-discount.review', [
             'order' => $id, 'discountRequest' => $requestId,
-        ]), ['decision' => 'approve'])->assertForbidden();
+        ]), ['decision' => 'approve'])->assertNotFound();
         $this->actingAs($accountant)->post(route('admin.operations.orders.customer-service-discount.review', [
             'order' => $id, 'discountRequest' => $requestId,
         ]), ['decision' => 'approve'])->assertRedirect();
@@ -228,7 +228,7 @@ class OrderCustomerServiceDiscountTest extends TestCase
         ]);
         $this->actingAs($this->userWithRole('FINANCE'))->post($reviewUrl, [
             'decision' => 'approve',
-        ])->assertForbidden();
+        ])->assertNotFound();
         $this->actingAs($finance)->post($reviewUrl, ['decision' => 'approve'])->assertRedirect();
         $this->assertDatabaseHas('orders', ['id' => $orders[0], 'grand_total' => 17.5]);
         $this->assertDatabaseHas('order_customer_service_discounts', [
