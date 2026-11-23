@@ -1,0 +1,87 @@
+# Only install/run this Compose config from an exact, reviewed commit on GCC.
+# The PR checkout is input data, never a source of Compose or Dockerfile authority.
+services:
+  mysql:
+    image: mysql:8.0
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: foodex_acceptance
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -proot --silent"]
+      interval: 4s
+      timeout: 3s
+      retries: 30
+    networks: [isolated]
+  redis:
+    image: redis:7
+    network_mode: service:mysql
+    depends_on:
+      mysql:
+        condition: service_healthy
+  preparer:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    network_mode: bridge
+    user: "0:0"
+    environment:
+      GCC_EXPECTED_SHA: ${GCC_EXPECTED_SHA:?missing_exact_sha}
+      COMPOSER_CACHE_DIR: /composer-cache
+    volumes:
+      - type: bind
+        source: ${GCC_SOURCE_DIR:?missing_source_directory}
+        target: /source
+        read_only: true
+      - type: volume
+        source: work
+        target: /workspace
+      - type: volume
+        source: composer-cache
+        target: /composer-cache
+    command: ["bash", "/ci/prepare.sh"]
+  runner:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    network_mode: service:mysql
+    user: "10001:10001"
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    read_only: true
+    pids_limit: 512
+    mem_limit: 6g
+    cpus: 4
+    shm_size: "1gb"
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,size=256m
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    environment:
+      GCC_EXPECTED_SHA: ${GCC_EXPECTED_SHA:?missing_exact_sha}
+      GCC_PROFILE: ${GCC_PROFILE:-all}
+      CURRENT_VERSION: "1.0.127"
+      APP_ENV: testing
+      DB_HOST: 127.0.0.1
+      REDIS_HOST: 127.0.0.1
+      FOODEX_DISPOSABLE_SERVICES: "true"
+      FOODEX_MYSQL_DUMP_BINARY: /usr/bin/mysqldump
+      FOODEX_MYSQL_CLIENT_BINARY: /usr/bin/mysql
+    volumes:
+      - type: volume
+        source: work
+        target: /workspace
+      - type: bind
+        source: ${GCC_EVIDENCE_DIR:?missing_evidence_directory}
+        target: /evidence
+    command: ["bash", "/ci/full.sh"]
+networks:
+  isolated:
+    internal: true
+volumes:
+  work: {}
+  composer-cache:
+    external: true
+    name: foodex-gcc-composer-cache
