@@ -43,9 +43,9 @@ final class V2UpdaterNonMigrationDatabaseBackupTest extends TestCase
         $this->assertSame([
             'preflight',
             'backup_files',
+            'enter_maintenance_mode',
             'backup_database',
             'verify_database_backup',
-            'enter_maintenance_mode',
             'extract_release',
             'rebuild_caches',
             'health_check',
@@ -60,7 +60,7 @@ final class V2UpdaterNonMigrationDatabaseBackupTest extends TestCase
         $this->assertDatabaseHas('audit_logs', ['event' => 'updater.completed']);
     }
 
-    public function test_missing_required_snapshot_fails_before_maintenance_or_file_activation(): void
+    public function test_missing_required_snapshot_exits_maintenance_before_any_release_activation(): void
     {
         $runtime = new V2NonMigrationBackupRecordingRuntime(omitBackup: true);
 
@@ -75,7 +75,13 @@ final class V2UpdaterNonMigrationDatabaseBackupTest extends TestCase
         }
 
         $this->assertTrue($runtime->requiredBackupRequested);
-        $this->assertSame(['preflight', 'backup_files', 'backup_database'], $runtime->calls);
+        $this->assertSame([
+            'preflight',
+            'backup_files',
+            'enter_maintenance_mode',
+            'backup_database',
+            'exit_maintenance_mode',
+        ], $runtime->calls);
 
         $history = UpdateHistory::query()->where('to_version', '1.1.0')->firstOrFail();
         $this->assertSame('failed', $history->status);
@@ -100,9 +106,9 @@ final class V2UpdaterNonMigrationDatabaseBackupTest extends TestCase
         $this->assertSame([
             'preflight',
             'backup_files',
+            'enter_maintenance_mode',
             'backup_database',
             'verify_database_backup',
-            'enter_maintenance_mode',
             'extract_release',
             'rebuild_caches',
             'rollback_files',
