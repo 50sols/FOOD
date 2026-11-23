@@ -5,6 +5,7 @@ namespace Tests\Feature;
 use App\Models\NotificationCampaign;
 use App\Services\SchedulerRuntime;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Artisan;
 use Tests\TestCase;
 
 class SchedulerRuntimeTest extends TestCase
@@ -74,6 +75,14 @@ class SchedulerRuntimeTest extends TestCase
 
     public function test_heartbeat_is_throttled_to_one_scheduler_tick_per_minute(): void
     {
+        // Verify the locking contract independently of how long Artisan's
+        // real command scheduler runs on slow Docker/shared-hosting machines.
+        // The separate test above exercises actual campaign dispatch.
+        Artisan::shouldReceive('call')
+            ->once()->with('foodex:dispatch-scheduled-notifications')->andReturn(0);
+        Artisan::shouldReceive('call')
+            ->once()->with('schedule:run')->andReturn(0);
+
         $scheduler = app(SchedulerRuntime::class);
 
         $scheduler->tickIfDue();
