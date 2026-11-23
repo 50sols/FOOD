@@ -339,6 +339,9 @@ final class V2ProcurementErpCenterHttpContractTest extends TestCase
         foreach (['ar', 'en'] as $locale) {
             foreach ([$manager, $inactive] as $actor) {
                 $actor->forceFill(['locale' => $locale])->save();
+                // A historical archived-but-still-active role or an inactive
+                // user cannot retain an ERP link through Sidebar preferences.
+                $this->assertNull($this->procurementSidebarItem($actor->fresh()));
                 $this->actingAs($actor->fresh())->get(route('admin.erp.index'))->assertForbidden();
                 $this->actingAs($actor->fresh())->get(route('admin.erp.procurement.index', [
                     'store_id' => $store->id, 'tab' => 'suppliers',
