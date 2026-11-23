@@ -475,6 +475,64 @@ final class V2OrganizationSetupGuidanceTest extends TestCase
         $this->assertSame($auditBefore + 2, DB::table('audit_logs')->count());
     }
 
+    public function test_direct_service_cannot_move_existing_enterprise_records_across_parents(): void
+    {
+        $admin = $this->actor('SUPER_ADMIN', 'en');
+        $service = app(EnterpriseOrganizationAdministration::class);
+        $originalOrg = EnterpriseOrganization::query()->create([
+            'code' => 'v2_immutable_original_org', 'name' => 'Original Org', 'is_active' => true,
+        ]);
+        $foreignOrg = EnterpriseOrganization::query()->create([
+            'code' => 'v2_immutable_foreign_org', 'name' => 'Foreign Org', 'is_active' => true,
+        ]);
+        $originalCompany = EnterpriseCompany::query()->create([
+            'organization_id' => $originalOrg->id,
+            'code' => 'v2_immutable_original_company', 'name' => 'Original Company', 'is_active' => true,
+        ]);
+        $foreignCompany = EnterpriseCompany::query()->create([
+            'organization_id' => $foreignOrg->id,
+            'code' => 'v2_immutable_foreign_company', 'name' => 'Foreign Company', 'is_active' => true,
+        ]);
+        $originalEntity = EnterpriseLegalEntity::query()->create([
+            'company_id' => $originalCompany->id,
+            'code' => 'v2_immutable_original_entity', 'name' => 'Original Entity', 'is_active' => true,
+        ]);
+        $foreignEntity = EnterpriseLegalEntity::query()->create([
+            'company_id' => $foreignCompany->id,
+            'code' => 'v2_immutable_foreign_entity', 'name' => 'Foreign Entity', 'is_active' => true,
+        ]);
+        $originalUnit = EnterpriseBusinessUnit::query()->create([
+            'legal_entity_id' => $originalEntity->id,
+            'code' => 'v2_immutable_original_unit', 'name' => 'Original Unit', 'is_active' => true,
+        ]);
+        $auditBefore = DB::table('audit_logs')->count();
+
+        // All models are unguarded, so a direct service update must enforce
+        // ownership ancestry instead of trusting the HTTP-only input schema.
+        foreach ([
+            [$originalCompany, 'updateCompany', 'organization_id', $foreignOrg->id],
+            [$originalEntity, 'updateLegalEntity', 'company_id', $foreignCompany->id],
+            [$originalUnit, 'updateBusinessUnit', 'legal_entity_id', $foreignEntity->id],
+        ] as [$record, $method, $key, $foreignId]) {
+            $originalParentId = (int) $record->getAttribute($key);
+            $originalName = $record->name;
+            foreach ([['name' => 'Unauthorized Scope Move'], [
+                'name' => 'Unauthorized Scope Move', 'is_active' => true,
+            ]] as $payload) {
+                try {
+                    $service->{$method}($record, [$key => $foreignId, ...$payload], $admin);
+                    $this->fail('Direct service updates must not change enterprise parent identity.');
+                } catch (ValidationException $exception) {
+                    $this->assertArrayHasKey('parent', $exception->errors());
+                }
+
+                $this->assertSame($originalParentId, (int) $record->fresh()->getAttribute($key));
+                $this->assertSame($originalName, $record->fresh()->name);
+            }
+        }
+        $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+    }
+
     public function test_reactivation_with_active_ancestors_succeeds_only_on_save(): void
     {
         $admin = $this->actor('SUPER_ADMIN', 'en');
