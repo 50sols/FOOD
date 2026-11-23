@@ -54,3 +54,72 @@ Do not register GCC as a general self-hosted runner on the public FOOD repositor
     Unregister-ScheduledTask -TaskName FOODEX-GCC-Local-CI -Confirm:$false
 
 No installation, test success, GitHub evidence, or scheduled service status should be claimed without verification.
+
+
+## GCC heavyweight execution (owner extension, same #4405/PR #4406)
+
+The agent additionally accepts an owner-authored comment on an open same-repository V2 PR:
+
+    /gcc-ci full <exact 40-character current PR head SHA>
+
+The full profile uses the **pinned, immutable** local toolkit from repository commit
+`767348b7453a2218d51012221614be0cb5b32144` (container build and execution scripts), verifying each
+Git blob SHA before running. The toolkit is downloaded once, locally cached and
+checked again for integrity at every full job. The agent first validates the
+PR owner/base/head, fetches the exact PR commit and the v1.0.125 update base,
+then uses Docker Compose with a unique per-request project name.
+
+The isolated containers cover:
+- PHP 8.3, Composer dependencies from the PR's exact lockfile, Composer audit,
+  static analysis, PHP lint, and the pinned OpenAPI linter;
+- deterministic exhaustive four-shard Laravel PHPUnit suite, SQLite
+  fresh migration/seed, Node live-map acceptance;
+- disposable MySQL 8 + Redis 7 deployment/installer/updater/recovery tests;
+- one **production-vendor** Setup ZIP (no dev Composer dependencies), path,
+  duplicate/symlink, environment-file checks, SHA256 and the existing
+  full clean-install HTTP/browser contract against that same ZIP;
+- the repository's canonical Update ZIP builder against v1.0.125, including
+  structural validation and staged SHA256 if the required preview/runtime
+  assets and version boundary are available.
+
+For safety, the Composer dependency acquisition phase is an isolated container
+with only the source checkout mounted read-only and an external network for
+downloads. It uses --no-scripts and --no-plugins with no host secrets. The
+actual Laravel tests and package acceptance run on the isolated database
+network only; the runner has no general outbound network, Docker socket, host
+profile or GitHub token. A dedicated Composer download volume persists between
+jobs; all per-job code, database and Redis volumes are discarded after use.
+
+Detailed logs and unsigned ZIP candidates remain exclusively on GCC:
+- %LOCALAPPDATA%\FoodexGccCI\full-<PR>-<COMMENT_ID>.log
+- %LOCALAPPDATA%\FoodexGccCI\evidence\<PR>-<COMMENT_ID>\
+
+GitHub receives the exact SHA, PASS/FAIL summary, and ZIP SHA-256 values as a
+PR comment. Never copy or publish logs containing installation tokens,
+generated credentials, or runtime secrets to the public repository.
+
+**Do not call an unsigned staging Setup/Update ZIP a signed production
+artifact.** The current runner explicitly records signed=false,
+trusted_release=false, and full_upgrade_acceptance=false. It checks the real
+fresh Setup ZIP and the updater's existing MySQL recovery tests; separate
+same-Update-ZIP version-to-version upgrade, trusted-signature provenance and
+independent production-grade cPanel acceptance remain release gates. Failures
+keep the PR and issue open. A local PASS is *advisory* and does not replace
+Required CI, V2 Isolation, branch protection or manual release approval.
+
+### Minutes and rollout switch
+
+The trust-preserving rollout order is:
+1. Keep the existing GitHub-hosted Required CI unmodified while proving the
+   local pipeline on the same exact commit and comparing all applicable jobs.
+2. After full parity and independently reviewed evidence exist, implement
+   an explicit opt-in branch-protection-aware migration to trusted local
+   checks, retaining fast hosted repository policy/isolation/last-commit
+   verification. Fail closed when GCC is offline; never mark a skipped
+   hosted job as passed without equivalent verified local acceptance.
+3. Monitor billed runner minutes and local execution time by workflow,
+   revise the routing map and keep rollback to hosted runners.
+
+GitHub Actions minutes are **not yet reduced** simply by installing this
+local worker: the repository's existing hosted Required CI continues until
+the verification and ruleset migration is independently complete.
