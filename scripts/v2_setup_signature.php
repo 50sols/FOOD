@@ -247,6 +247,31 @@ try {
         if (! sodium_crypto_sign_verify_detached($signature, $payload, $public)) {
             throw new RuntimeException('Setup publisher signature failed.');
         }
+
+        // A valid signature on a sidecar is not enough if its advertised
+        // version conflicts with the installer's own VERSION file. Verify
+        // the signed version against the exact archive being distributed.
+        if (! class_exists(ZipArchive::class)) {
+            throw new RuntimeException('ZIP extension unavailable for Setup verification.');
+        }
+        $archive = new ZipArchive();
+        if ($archive->open($package, ZipArchive::RDONLY) !== true) {
+            throw new RuntimeException('Signed Setup ZIP is unreadable.');
+        }
+        try {
+            $versionEntry = $archive->statName('VERSION');
+            if (! is_array($versionEntry) ||
+                ($versionEntry['size'] ?? PHP_INT_MAX) > 128) {
+                throw new RuntimeException('Signed Setup ZIP VERSION is missing or invalid.');
+            }
+            $embeddedVersion = $archive->getFromName('VERSION');
+            if (! is_string($embeddedVersion) ||
+                trim($embeddedVersion) !== $sidecar['version']) {
+                throw new RuntimeException('Signed Setup ZIP version mismatch.');
+            }
+        } finally {
+            $archive->close();
+        }
         fwrite(STDOUT, "Verified Setup archive signature and SHA-256.\n");
     }
 } catch (Throwable) {
