@@ -55,5 +55,15 @@ final class V2DisabledRetailDriverTenantScopeTest extends TestCase
 
         $store->forceFill(['is_active' => false])->save();
         $this->assertNull($scope->eligibleRetailDriver($user->fresh()));
+
+        $store->forceFill(['is_active' => true])->save();
+        $driver->forceFill(['is_active' => false])->save();
+        $this->assertNull($scope->eligibleRetailDriver($user->fresh()));
+
+        $driver->forceFill(['is_active' => true, 'driver_type' => 'b2b'])->save();
+        $this->assertNull($scope->eligibleRetailDriver($user->fresh()));
+
+        $driver->forceFill(['driver_type' => 'b2c'])->save();
+        $this->assertSame($driver->id, $scope->eligibleRetailDriver($user->fresh())?->id);
     }
 }
