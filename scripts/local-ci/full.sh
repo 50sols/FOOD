@@ -105,22 +105,74 @@ PY
   CURRENT_VERSION="$version" bash scripts/validate-fresh-setup.sh
   test -s Release/FRESH_INSTALL_EVIDENCE.json
   cp Release/FRESH_INSTALL_EVIDENCE.json /evidence/fresh-install-evidence.json
-  step=build-update-zip
+  step=verify-safe-update-dependency-boundary
   test "$(git show v1.0.125:VERSION | tr -d '[:space:]')" = 1.0.125
+  # Canonical updater excludes vendor/ from ZIP payload. If production
+  # Composer inputs changed, a plain dashboard ZIP cannot safely upgrade
+  # the installed dependencies. Fail closed; full redeploy is mandatory.
+  if ! git diff --quiet v1.0.125..HEAD -- backend/composer.json backend/composer.lock; then
+    echo "BLOCKED: Composer dependencies differ from v1.0.125; ZIP update cannot safely replace protected vendor. Require reviewed full-deploy transition." >&2
+    exit 42
+  fi
+  step=build-update-zip
   python3 scripts/build-update-bundle.py --base v1.0.125 \
     --target-version "$version" --minimum-current-version 1.0.125 \
     --output-dir /evidence/update --release-notes "UNTRUSTED GCC STAGING ONLY; not a signed release"
   step=verify-update-zip
-  python3 - <<'PY'
-import pathlib, zipfile, hashlib
+  python3 - "$GCC_EXPECTED_SHA" "$version" <<'PY'
+import pathlib, zipfile, hashlib, json, sys, stat
+source_sha, version = sys.argv[1:]
 folder=pathlib.Path("/evidence/update")
-zips=list(folder.glob("*.zip"))
-if len(zips)!=1: raise SystemExit(f"Expected one update ZIP, found {len(zips)}")
-with zipfile.ZipFile(zips[0]) as z:
+package=folder/"FOODEX-Update.zip"
+manifest_path=folder/"FOODEX-Update.json"
+hash_file=folder/"FOODEX-Update.sha256.txt"
+if not all(p.is_file() for p in (package,manifest_path,hash_file)):
+    raise SystemExit("Incomplete canonical update ZIP/manifest/checksum set")
+manifest=json.loads(manifest_path.read_text(encoding="utf-8"))
+digest=hashlib.sha256(package.read_bytes()).hexdigest()
+for key, expected in {
+    "target_version":version,
+    "minimum_current_version":"1.0.125",
+    "source_commit":source_sha,
+    "sha256":digest,
+    "requires_full_redeploy":False,
+}.items():
+    if manifest.get(key) != expected:
+        raise SystemExit(f"Invalid Update manifest {key}: {manifest.get(key)!r}")
+if hash_file.read_text(encoding="utf-8").split()[0]!=digest:
+    raise SystemExit("Update package SHA-256 sidecar does not match")
+with zipfile.ZipFile(package) as z:
     if z.testzip() is not None: raise SystemExit("Update ZIP CRC invalid")
-    if len(z.namelist()) != len(set(z.namelist())): raise SystemExit("Duplicate ZIP entries")
-if not list(folder.glob("*.json")): raise SystemExit("Update manifest missing")
-print("UPDATE_SHA256="+hashlib.sha256(zips[0].read_bytes()).hexdigest())
+    members=z.infolist()
+    names=[x.filename for x in members]
+    if len(names)!=len(set(names)): raise SystemExit("Duplicate ZIP entries")
+    if any(stat.S_ISLNK(x.external_attr >> 16) for x in members):
+        raise SystemExit("Update ZIP symlink entry")
+    if any(p.startswith("/") or ".." in pathlib.PurePosixPath(p).parts for p in names):
+        raise SystemExit("Update ZIP traversal")
+    forbidden=("backend/vendor/","backend/storage/",".git/")
+    if any(p.startswith(forbidden) or p.endswith("/.env") for p in names):
+        raise SystemExit("Update ZIP touches protected files")
+    required={
+       "VERSION", "backend/app/Domain/Installer/InstallerWorkflow.php",
+       "backend/app/Domain/Updater/LaravelUpdateRuntime.php",
+       "backend/app/ThirdParty/tcpdf/tcpdf.php",
+       "backend/app/ThirdParty/tcpdf/LICENSE.TXT",
+       "backend/app/ThirdParty/tcpdf/fonts/dejavusans.php",
+       "backend/app/ThirdParty/tcpdf/fonts/dejavusans.z",
+       "backend/bootstrap/app.php", "backend/public/.htaccess",
+    }
+    for app in ("customer","driver"):
+        required.update({
+            f"backend/public/preview/{app}/index.html",
+            f"backend/public/preview/{app}/main.dart.js",
+            f"backend/public/preview/{app}/flutter_bootstrap.js",
+            f"preview/{app}/index.html", f"preview/{app}/main.dart.js",
+            f"preview/{app}/flutter_bootstrap.js",
+        })
+    if required - set(names):
+        raise SystemExit(f"Missing Update runtime files: {sorted(required-set(names))}")
+print("UPDATE_SHA256="+digest)
 PY
 fi
 
