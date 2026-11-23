@@ -90,6 +90,24 @@ final class OrderOperationsController extends Controller
         }
         abort_if(count(array_unique($explicitStoreIds)) > 1, 404);
 
+        // A Restaurant store-admin may use its dedicated workspace, but its
+        // profile does not expose Retail Orders. The canonical compatibility
+        // route must enforce that same boundary before the generic list query.
+        // With no explicit selector, fail closed for mixed-profile assignments
+        // rather than allow the list to include a Restaurant store implicitly.
+        $actor = $this->actor($request);
+        if (! $actor->hasRole('SUPER_ADMIN')) {
+            $allowed = $this->scope->allowedStoreIds($actor, 'orders.view', 'b2c');
+            $selected = $explicitStoreIds[0] ?? null;
+            $candidateStores = $selected === null ? $allowed : [$selected];
+            foreach ($candidateStores as $storeId) {
+                if ($actor->hasRole('B2C_STORE_ADMIN', (int) $storeId)
+                    && app(\\App\\Services\\StoreBusinessProfileService::class)->isRestaurant((int) $storeId)) {
+                    abort(404);
+                }
+            }
+        }
+
         $request->merge(['channel' => 'b2c']);
 
         return $this->index($request);
