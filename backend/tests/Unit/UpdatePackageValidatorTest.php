@@ -37,6 +37,32 @@ class UpdatePackageValidatorTest extends TestCase
         $this->assertTrue($result['contains_migrations']);
     }
 
+    public function test_matching_digest_cannot_verify_directory_only_zip(): void
+    {
+        // A well-formed ZIP with directory entries passes the member-count
+        // check but cannot install any release source. Verification and the
+        // runtime extractor must agree before backups or maintenance begin.
+        $zip = new \ZipArchive;
+        $this->assertTrue(
+            $zip->open($this->packagePath, \ZipArchive::CREATE | \ZipArchive::OVERWRITE) === true,
+        );
+        $this->assertTrue($zip->addEmptyDir('backend'));
+        $this->assertTrue($zip->addEmptyDir('backend/app'));
+        $this->assertTrue($zip->close());
+
+        $manifest = new UpdatePackageManifest(
+            '1.2.0',
+            '1.0.0',
+            hash_file('sha256', $this->packagePath),
+            'Archive with directories but no deployable release files',
+            true,
+        );
+
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('no release files');
+        (new UpdatePackageValidator)->validate($manifest, '1.1.0', $this->packagePath);
+    }
+
     public function test_matching_digest_cannot_verify_an_empty_but_well_formed_zip(): void
     {
         // The ZIP End of Central Directory record is a complete valid
