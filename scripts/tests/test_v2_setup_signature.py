@@ -263,6 +263,62 @@ class SetupEd25519SignatureTest(unittest.TestCase):
         self.assertFalse(self.sidecar.exists())
         self.assertNotIn(self.key["private"], result.stderr)
 
+    def test_exclusive_sidecar_cleanup_keeps_replacement_and_only_removes_owned_file(self) -> None:
+        # The old signer unconditionally unlinked its output on short-write/
+        # close failure. Simulate a deterministic post-open path replacement
+        # rather than timing a fragile concurrent signer/write race.
+        helper = ROOT / "scripts" / "v2_setup_sidecar_fs.php"
+        sidecar = self.folder / "identity-check.sig.json"
+        check = r"""
+require $argv[1];
+$path = $argv[2];
+$created = fopen($path, 'x');
+if (!is_resource($created)) exit(11);
+$opened = fstat($created);
+fwrite($created, 'created-here');
+fclose($created);
+if (!setupSignatureMatchesExclusiveFile($path, $opened)) exit(12);
+rename($path, $path.'.moved');
+file_put_contents($path, 'preserve-replacement');
+if (setupSignatureMatchesExclusiveFile($path, $opened)) exit(13);
+setupSignatureRemoveOwnedIncompleteFile($path, $opened);
+if (file_get_contents($path) !== 'preserve-replacement') exit(14);
+unlink($path);
+rename($path.'.moved', $path);
+setupSignatureRemoveOwnedIncompleteFile($path, $opened);
+if (file_exists($path)) exit(15);
+"""
+        outcome = subprocess.run(
+            ["php", "-r", check, str(helper), str(sidecar)],
+            text=True, capture_output=True,
+        )
+        self.assertEqual(0, outcome.returncode, outcome.stderr)
+        self.assertFalse(sidecar.exists())
+
+    def test_exclusive_sidecar_identity_rejects_symlink_alias_after_create(self) -> None:
+        helper = ROOT / "scripts" / "v2_setup_sidecar_fs.php"
+        sidecar = self.folder / "alias-check.sig.json"
+        check = r"""
+require $argv[1];
+$path = $argv[2];
+$created = fopen($path, 'x');
+$opened = fstat($created);
+fwrite($created, 'original');
+fclose($created);
+rename($path, $path.'.moved');
+symlink($path.'.moved', $path);
+if (setupSignatureMatchesExclusiveFile($path, $opened)) exit(21);
+setupSignatureRemoveOwnedIncompleteFile($path, $opened);
+if (!is_link($path) || file_get_contents($path) !== 'original') exit(22);
+"""
+        outcome = subprocess.run(
+            ["php", "-r", check, str(helper), str(sidecar)],
+            text=True, capture_output=True,
+        )
+        self.assertEqual(0, outcome.returncode, outcome.stderr)
+        self.assertTrue(sidecar.is_symlink())
+        self.assertEqual("original", (self.folder / "alias-check.sig.json.moved").read_text())
+
     def test_existing_signature_is_never_overwritten(self) -> None:
         self.sidecar.write_text("do-not-replace", encoding="utf-8")
         failed = self.run_sign()

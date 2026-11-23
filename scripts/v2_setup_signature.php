@@ -3,6 +3,8 @@
 
 declare(strict_types=1);
 
+require_once __DIR__.'/v2_setup_sidecar_fs.php';
+
 /**
  * Build-host Setup ZIP detached Ed25519 sidecar signer and trust-root verifier.
  * No signing secrets are read from command-line arguments or release packages.
@@ -182,30 +184,40 @@ try {
         if ($stream === false) {
             throw new RuntimeException('Cannot exclusively publish signature.');
         }
-        // A short write or failed flush/close must not leave a sidecar that
-        // later tooling could mistake for a fully published signature.
-        $published = false;
+        $openedStat = fstat($stream);
+        $written = false;
+        $closed = false;
+        $sameOutput = false;
         try {
+            // An exclusive open is not sufficient: a stream wrapper, FIFO,
+            // or replaced output path must never certify a published Setup ZIP.
+            if (! is_array($openedStat) || ($openedStat['mode'] & 0170000) !== 0100000) {
+                throw new RuntimeException('Setup signature output must be a regular file.');
+            }
             $length = strlen($sidecar);
             $offset = 0;
             while ($offset < $length) {
-                $written = fwrite($stream, substr($sidecar, $offset));
-                if (! is_int($written) || $written <= 0) {
+                $bytes = fwrite($stream, substr($sidecar, $offset));
+                if (! is_int($bytes) || $bytes <= 0) {
                     throw new RuntimeException('Incomplete signed sidecar.');
                 }
-                $offset += $written;
+                $offset += $bytes;
             }
-            if (! fflush($stream) || ! fclose($stream)) {
+            if (! fflush($stream)) {
                 throw new RuntimeException('Incomplete signed sidecar.');
             }
-            $published = true;
+            $written = true;
         } finally {
-            if (is_resource($stream)) {
-                fclose($stream);
+            $closed = fclose($stream);
+            // Verify the final pathname still refers to the very inode this
+            // invocation created. Never unlink another actor's replacement.
+            $sameOutput = setupSignatureMatchesExclusiveFile($output, $openedStat);
+            if ((! $written || ! $closed) && $sameOutput) {
+                setupSignatureRemoveOwnedIncompleteFile($output, $openedStat);
             }
-            if (! $published) {
-                @unlink($output);
-            }
+        }
+        if (! $written || ! $closed || ! $sameOutput) {
+            throw new RuntimeException('Setup signature output could not be safely finalized.');
         }
         fwrite(STDOUT, "Setup sidecar signed; release acceptance is still required.\n");
     } else {
