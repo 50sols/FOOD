@@ -205,7 +205,19 @@ try {
         if (! is_file($sidecarPath) || filesize($sidecarPath) > 8192) {
             throw new RuntimeException('Signed Setup sidecar is invalid.');
         }
-        $sidecar = json_decode((string) file_get_contents($sidecarPath), true, 16, JSON_THROW_ON_ERROR);
+        $sidecarBytes = file_get_contents($sidecarPath);
+        if (! is_string($sidecarBytes)) {
+            throw new RuntimeException('Unreadable signed Setup sidecar.');
+        }
+        $sidecar = json_decode($sidecarBytes, true, 16, JSON_THROW_ON_ERROR);
+        // Reject duplicate JSON keys and alternate encodings. The signer
+        // writes this exact compact, ordered representation; accepting a
+        // different byte stream could let another consumer interpret the
+        // supposedly authenticated manifest differently.
+        if (! is_array($sidecar) ||
+            json_encode($sidecar, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) !== $sidecarBytes) {
+            throw new RuntimeException('Noncanonical signed Setup sidecar.');
+        }
         if (! is_array($sidecar) ||
             array_keys($sidecar) !== [
                 'format', 'signer_key_id', 'version',
