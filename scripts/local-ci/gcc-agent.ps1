@@ -86,16 +86,18 @@ function Smoke([int]$Pr,[string]$Sha,[long]$Request) {
 
 # Full backend execution uses immutable trusted tooling, not Compose files from PRs.
 function Trusted-Toolkit {
- $pin='767348b7453a2218d51012221614be0cb5b32144'
+ $pin='465f765b72af87e838384efc01247f7ac38ca7c5'
  $kit=Join-Path $Root "trusted\$pin"
  $expected=@{
   'Dockerfile.backend'='7809e482cee0e446f3aab09174d1a53a634853c6'
-  'compose.backend.yaml'='d8754d606cb250849dd325b47f37cab32dd98624'
+  'compose.backend.yaml'='20ce6bc17294287afe48a6d1cd0c033c94057bcb'
+  'Dockerfile.flutter'='2125d8138a9eb1956d67224f6ce652d9ba1a4815'
+  'preview.sh'='358cc4be8d947316a3255f0e5d81bf590e3432af'
   'prepare.sh'='1142146e0e9b0bcb7f39be6ac873ee5e85c7c93a'
   'full.sh'='478eb8e0774d69bdced71ef4fbcfc2745b4f5ae2'
  }
  New-Item -ItemType Directory -Path $kit -Force | Out-Null
- foreach($name in @('Dockerfile.backend','compose.backend.yaml','prepare.sh','full.sh')) {
+ foreach($name in @('Dockerfile.backend','Dockerfile.flutter','compose.backend.yaml','prepare.sh','full.sh','preview.sh')) {
   $file=Join-Path $kit $name
   if(-not (Test-Path -LiteralPath $file)) {
    $url="https://raw.githubusercontent.com/$Repo/$pin/scripts/local-ci/$name"
@@ -107,6 +109,10 @@ function Trusted-Toolkit {
  return $kit
 }
 function Full-CI([int]$Pr,[string]$Sha,[long]$Request,[string]$Checkout) {
+ if(-not (Test-Path (Join-Path $Checkout 'backend/composer.lock'))) {
+  Write-Warning 'Fail closed: exact PR head lacks backend/composer.lock; canonical dependency #3444 must be resolved first.'
+  return 1
+ }
  $kit=Trusted-Toolkit
  $report=Join-Path $Root "evidence\$Pr-$Request"
  New-Item -ItemType Directory -Path $report -Force | Out-Null
@@ -124,10 +130,14 @@ function Full-CI([int]$Pr,[string]$Sha,[long]$Request,[string]$Checkout) {
  try {
   & docker volume create foodex-gcc-composer-cache *> $null
   if($LASTEXITCODE -ne 0) { throw 'Composer cache volume unavailable' }
-  & docker compose -p $project -f $compose build preparer runner *> $log
+  & docker volume create foodex-gcc-flutter-cache *> $null
+  if($LASTEXITCODE -ne 0) { throw 'Flutter pub cache volume unavailable' }
+  & docker compose -p $project -f $compose build preparer preview runner *> $log
   if($LASTEXITCODE -ne 0) { throw "Trusted GCC toolchain build failed; see $log" }
   & docker compose -p $project -f $compose run --rm --no-deps preparer *>> $log
   if($LASTEXITCODE -ne 0) { throw "Composer/Redocly preparation failed; see $log" }
+  & docker compose -p $project -f $compose run --rm --no-deps preview *>> $log
+  if($LASTEXITCODE -ne 0) { throw "Flutter Web preview build failed; see $log" }
   & docker compose -p $project -f $compose up -d --wait mysql redis *>> $log
   if($LASTEXITCODE -ne 0) { throw "MySQL/Redis startup failed; see $log" }
   & docker compose -p $project -f $compose run --rm runner *>> $log
