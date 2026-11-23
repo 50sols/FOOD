@@ -23,5 +23,11 @@ On authorized GCC Windows, disposable exact Git checkout:
 - HEAD `60140cc0929ed3507cf85c9f6df462fdf5e69d7f`: syntax PASS; signature suite 4 PASS + 1 CI-only integration SKIP when full staged artifact environment is absent, 6.266 seconds.
 - Same HEAD: tested the actual-CI-ZIP test mode with a constructed staging ZIP fixture whose VERSION matches repo 1.0.127 and source SHA matches exact HEAD; 1/1 PASS, 5.076 seconds. This is NOT the full Laravel/vendor Setup production artifact.
 
+## G004 signed-archive TOCTOU boundary (original PR #3444)
+
+A valid Ed25519 signature authenticates exactly the digest supplied by the canonical staging verifier. Formerly `v2_setup_staging_verify.py` opened the ZIP pathname once to check the envelope/member paths/CRC and **again** to calculate the digest. A concurrent path replacement, or in-place mutation between those operations, could attach successful validation evidence to bytes never safety-checked.
+
+The verifier now pins a regular ZIP file descriptor for the entire envelope check, member validation, CRC and SHA-256 stream; before accepting evidence it compares device, inode, size, mtime and ctime with both the original descriptor and the actual final pathname. The published evidence length is taken from that pinned file, not a third pathname lookup. Two deterministic adversarial tests intercept the verified CRC boundary and (1) replace the pathname with a ZIP containing `../escape-from-setup.txt` and (2) append unvalidated bytes to the same inode. Either case must fail without a success digest. These tests use disposable inputs; they do not provision a production signing key or prove actual cPanel deployment, nor can they prevent a future external publisher from changing files **after** this validation process exits.
+
 ## Acceptance still required
 Full Linux GitHub checks on exact final PR head (Policy, Isolation, Required and G004), trusted signature/public-key provisioning, real one-ZIP release package, no-SSH cPanel fresh MySQL install and installer lockdown, signed upgrade plus backup/recovery, authorization/SoD and owner UAT. Original PR #3444 is DRAFT and must not merge or close #2745 before all applicable gates pass. No changes to `main`, release tags, production or Customer/Driver/Van Flutter.
