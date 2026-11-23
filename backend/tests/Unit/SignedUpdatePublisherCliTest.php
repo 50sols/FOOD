@@ -95,6 +95,25 @@ final class SignedUpdatePublisherCliTest extends TestCase
         }
     }
 
+    public function test_portable_zip_aliases_and_reserved_names_cannot_be_signed(): void
+    {
+        $cases = [
+            ['backend/App.php' => 'first', 'backend/app.php' => 'second'],
+            ['backend/CON.txt' => 'device'],
+            ['backend/com1.php' => 'device'],
+            ['backend/settings. ' => 'ambiguous'],
+            ['backend/storage.php' => 'file', 'backend/storage.php/nested.php' => 'child'],
+            ['backend/A.php' => 'file', 'backend/a.php/nested.php' => 'child'],
+        ];
+        foreach ($cases as $index => $entries) {
+            $package = $this->directory.'/portable-'.$index.'.zip';
+            $this->zip($package, $entries);
+            $output = $this->directory.'/portable-'.$index.'.sig.json';
+            $this->assertSame(1, $this->runPublisher($package, $output, '0'), 'Ambiguous ZIP member was signed: '.$index);
+            $this->assertFileDoesNotExist($output);
+        }
+    }
+
     private function zip(string $path, array $entries): void
     {
         $archive = new ZipArchive;
