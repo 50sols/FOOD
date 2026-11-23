@@ -31,6 +31,13 @@ final class OrganizationHierarchyService
             ->join('enterprise_business_units', 'enterprise_business_units.id', '=', 'enterprise_store_scopes.business_unit_id')
             ->join('enterprise_legal_entities', 'enterprise_legal_entities.id', '=', 'enterprise_business_units.legal_entity_id')
             ->join('enterprise_companies', 'enterprise_companies.id', '=', 'enterprise_legal_entities.company_id')
+            ->join('enterprise_organizations', 'enterprise_organizations.id', '=', 'enterprise_companies.organization_id')
+            // Historical store mappings remain persisted, but a disabled
+            // enterprise ancestor can no longer be used as live authority.
+            ->where('enterprise_business_units.is_active', true)
+            ->where('enterprise_legal_entities.is_active', true)
+            ->where('enterprise_companies.is_active', true)
+            ->where('enterprise_organizations.is_active', true)
             ->where('enterprise_store_scopes.store_id', $storeId)
             ->select([
                 'enterprise_companies.organization_id',
