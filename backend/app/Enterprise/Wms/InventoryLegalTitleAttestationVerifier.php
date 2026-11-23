@@ -91,13 +91,10 @@ final class InventoryLegalTitleAttestationVerifier
             return false;
         }
 
-        try {
-            $signedAt = CarbonImmutable::parse((string) $attestation->signed_at, 'UTC');
-            $expiry = CarbonImmutable::parse((string) $attestation->expires_at, 'UTC');
-            if ($signedAt->isFuture() || $expiry->isPast() || $expiry->equalTo($signedAt)) {
-                return false;
-            }
-        } catch (Throwable) {
+        if (! self::hasValidSignedWindow(
+            (string) $attestation->signed_at,
+            (string) $attestation->expires_at,
+        )) {
             return false;
         }
 
@@ -164,6 +161,34 @@ final class InventoryLegalTitleAttestationVerifier
             $publicKey,
             OPENSSL_ALGO_SHA256,
         ) === 1;
+    }
+
+    /**
+     * SQL TIMESTAMP legal-title proof must carry two exact UTC instants.
+     * Carbon::parse('') silently interprets a blank signing time as "now";
+     * relative or normalized calendar text is not an immutable signed instant.
+     */
+    private static function hasValidSignedWindow(string $signedAtRaw, string $expiresAtRaw): bool
+    {
+        foreach ([$signedAtRaw, $expiresAtRaw] as $value) {
+            if (preg_match('/\\A[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}\\z/D', $value) !== 1) {
+                return false;
+            }
+        }
+
+        try {
+            $signedAt = CarbonImmutable::createFromFormat('!Y-m-d H:i:s', $signedAtRaw, 'UTC');
+            $expiresAt = CarbonImmutable::createFromFormat('!Y-m-d H:i:s', $expiresAtRaw, 'UTC');
+
+            return $signedAt !== null && $expiresAt !== null
+                && $signedAt->format('Y-m-d H:i:s') === $signedAtRaw
+                && $expiresAt->format('Y-m-d H:i:s') === $expiresAtRaw
+                && ! $signedAt->isFuture()
+                && $expiresAt->isFuture()
+                && $expiresAt->greaterThan($signedAt);
+        } catch (Throwable) {
+            return false;
+        }
     }
 
     /**

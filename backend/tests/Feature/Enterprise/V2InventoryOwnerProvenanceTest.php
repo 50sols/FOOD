@@ -2192,6 +2192,33 @@ SQL);
         $this->assertLessThanOrEqual(64, max(array_map('strlen', $names)));
     }
 
+    public function test_signed_title_time_window_refuses_blank_relative_and_invalid_calendar_values(): void
+    {
+        $check = new \\ReflectionMethod(InventoryLegalTitleAttestationVerifier::class, 'hasValidSignedWindow');
+        $signedAt = now('UTC')->subMinute()->toDateTimeString();
+        $expiresAt = now('UTC')->addDay()->toDateTimeString();
+
+        $this->assertTrue($check->invoke(null, $signedAt, $expiresAt));
+
+        foreach ([
+            ['', $expiresAt],
+            [$signedAt, ''],
+            ['now', $expiresAt],
+            [$signedAt, 'tomorrow'],
+            ['2026-02-30 12:00:00', $expiresAt],
+            ['2026-11-23T12:00:00Z', $expiresAt],
+            [$expiresAt, $signedAt],
+            [$signedAt, $signedAt],
+            [now('UTC')->addMinute()->toDateTimeString(), $expiresAt],
+            [now('UTC')->subDays(2)->toDateTimeString(), now('UTC')->subDay()->toDateTimeString()],
+        ] as [$invalidSignedAt, $invalidExpiresAt]) {
+            $this->assertFalse(
+                $check->invoke(null, $invalidSignedAt, $invalidExpiresAt),
+                'Unverifiable signed-title timestamps must never be accepted.',
+            );
+        }
+    }
+
     public function test_signed_supplier_consignment_requires_scoped_independent_certificate(): void
     {
         $this->seed(CoreReferenceSeeder::class);
