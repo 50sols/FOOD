@@ -20,6 +20,53 @@ SOURCE_DATE_EPOCH = 1731758400
 
 
 class DeterministicSetupZipTest(unittest.TestCase):
+    def test_package_manager_credentials_are_rejected_before_any_zip_creation(self) -> None:
+        # Composer/npm tokens must never reach the temporary ZIP. Match file
+        # names case-insensitively at any depth, including hidden config dirs.
+        cases = (
+            "backend/auth.json",
+            "backend/.composer/auth.json",
+            "backend/.npmrc",
+            "backend/.config/NPMRC",
+            "AUTH.JSON",
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            for index, member in enumerate(cases):
+                with self.subTest(member=member):
+                    root = base / f"credentials-{index}"
+                    root.mkdir()
+                    (root / "VERSION").write_text("1.0.1\\n", encoding="utf-8")
+                    credential_file = root / member
+                    credential_file.parent.mkdir(parents=True, exist_ok=True)
+                    credential_file.write_text("_authToken=live-secret\\n", encoding="utf-8")
+                    output = base / f"setup-creds-{index}.zip"
+
+                    with mock.patch(
+                        "v2_build_setup_zip.tempfile.mkstemp",
+                        side_effect=AssertionError("Temporary ZIP created before credential rejection"),
+                    ):
+                        with self.assertRaisesRegex(SetupBuildError, "Package manager credentials"):
+                            build_setup_zip(root, output, SOURCE_DATE_EPOCH)
+                    self.assertFalse(output.exists())
+                    self.assertEqual(list(base.glob(".v2-setup-*.zip")), [])
+
+    def test_package_manager_manifest_names_remain_allowed(self) -> None:
+        # The restriction is narrowly about credential files, not a blanket
+        # prohibition on reproducible package manifests and lockfiles.
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            root = base / "safe"
+            (root / "backend").mkdir(parents=True)
+            (root / "VERSION").write_text("1.0.1\\n", encoding="utf-8")
+            (root / "backend/composer.json").write_text('{"name":"foodex/erp"}\\n', encoding="utf-8")
+            (root / "backend/composer.lock").write_text('{"packages":[]}\\n', encoding="utf-8")
+            output = base / "safe.zip"
+            self.assertEqual(len(build_setup_zip(root, output, SOURCE_DATE_EPOCH)), 64)
+            with zipfile.ZipFile(output) as archive:
+                self.assertIn("backend/composer.json", archive.namelist())
+                self.assertIn("backend/composer.lock", archive.namelist())
+
     def test_secret_bearing_env_templates_rejected_before_zip_creation(self) -> None:
         # Rejection must happen before mkstemp or public ZIP publication; the
         # verifier cannot unpublish bytes that were already staged.
