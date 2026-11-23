@@ -68,7 +68,7 @@ final class SignedUpdateEnvelopeTest extends TestCase
             $canonical."\n",
             json_encode(array_reverse($fields, true), JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE),
             str_replace('"target_version":"99.0.0"', '"target_version":"99.0.0","target_version":"99.0.0"', $canonical),
-            str_replace('"owner-key"', '"owner\\\\u002dkey"', $canonical),
+            str_replace('"owner-key"', '"owner\u002dkey"', $canonical),
         ];
 
         foreach ($cases as $index => $raw) {
