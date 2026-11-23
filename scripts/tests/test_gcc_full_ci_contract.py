@@ -11,6 +11,7 @@ BASE = ROOT / "scripts/local-ci"
 AGENT = (BASE / "gcc-agent.ps1").read_text(encoding="utf-8")
 COMPOSE = (BASE / "compose.backend.yaml").read_text(encoding="utf-8")
 PREPARE = (BASE / "prepare.sh").read_text(encoding="utf-8")
+PREVIEW = (BASE / "preview.sh").read_text(encoding="utf-8")
 FULL = (BASE / "full.sh").read_text(encoding="utf-8")
 DOCKERFILE = (BASE / "Dockerfile.backend").read_text(encoding="utf-8")
 
@@ -38,6 +39,8 @@ class GccHeavyExecutionContracts(unittest.TestCase):
         self.assertIn("COPY full.sh /ci/full.sh", DOCKERFILE)
         self.assertIn("COPY prepare.sh /ci/prepare.sh", DOCKERFILE)
         self.assertIn("Dockerfile.flutter", COMPOSE)
+        self.assertIn("git -c safe.directory=/workspace -C /workspace rev-parse HEAD", PREVIEW)
+        self.assertNotIn("safe.directory=*", PREVIEW)
         self.assertIn("foodex-gcc-flutter-cache", COMPOSE)
         self.assertIn("Flutter preview build exited", AGENT)
         self.assertIn("function Invoke-DockerLogged", AGENT)
