@@ -77,6 +77,63 @@ class UpdatePackageValidatorTest extends TestCase
         (new UpdatePackageValidator)->validate($manifest, '1.1.0', $this->packagePath);
     }
 
+    public function test_a_matching_digest_cannot_verify_unsafe_zip_member_paths(): void
+    {
+        $unsafeArchives = [
+            ['../escape.php'],
+            ['/absolute.php'],
+            ['backend//duplicate-separator.php'],
+            ['backend/./dot-segment.php'],
+            ['backend/app/../escape.php'],
+            ['backend\app\legacy.php'],
+            ['backend/CON.php'],
+            ['backend/trailing-space. '],
+            ['backend/App.php', 'backend/app.php'],
+            ['backend/app.php', 'backend/app.php/child.php'],
+        ];
+
+        foreach ($unsafeArchives as $paths) {
+            $this->createZipPackage($paths);
+            $manifest = new UpdatePackageManifest(
+                '1.2.0', '1.0.0',
+                hash_file('sha256', $this->packagePath),
+                'A SHA-256-matched archive with an unsafe member',
+                true,
+            );
+
+            try {
+                (new UpdatePackageValidator)->validate($manifest, '1.1.0', $this->packagePath);
+                $this->fail('Unsafe ZIP member unexpectedly passed package verification: '.implode(', ', $paths));
+            } catch (InvalidArgumentException $exception) {
+                $this->assertStringContainsString('Update archive contains', $exception->getMessage());
+            }
+        }
+    }
+
+    public function test_matching_digest_does_not_verify_unix_symlink_zip_member(): void
+    {
+        $this->createZipPackage(['backend/linked.php']);
+        $archive = new \ZipArchive;
+        $this->assertTrue($archive->open($this->packagePath) === true);
+        $this->assertTrue($archive->setExternalAttributesName(
+            'backend/linked.php',
+            \ZipArchive::OPSYS_UNIX,
+            (0120777 << 16),
+        ));
+        $this->assertTrue($archive->close());
+
+        $manifest = new UpdatePackageManifest(
+            '1.2.0', '1.0.0',
+            hash_file('sha256', $this->packagePath),
+            'Symlink must not be verified',
+            true,
+        );
+
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('unsafe non-regular member');
+        (new UpdatePackageValidator)->validate($manifest, '1.1.0', $this->packagePath);
+    }
+
     public function test_migration_zip_cannot_bypass_database_backup_when_manifest_flag_is_false(): void
     {
         $this->createZipPackage(['backend/database/migrations/2026_11_13_000000_test.php']);
