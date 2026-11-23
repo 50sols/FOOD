@@ -210,3 +210,13 @@ diffs and blocked Composer before installation. The preparation script now
 re-checks SHA, regenerates the *disposable* Linux working tree from exact
 Git blobs with `core.autocrlf=false` and LF, and then checks for true content
 diffs. It does not reset or edit the GCC host checkout.
+
+### Network-backed security audit separation
+
+On GCC, Composer lock install remains mandatory. The Packagist security advisory
+API timed out with curl error 28 on GCC after all packages installed. The
+local preparation now avoids that live endpoint and a second npx OpenAPI lint.
+Both Composer security audit and pinned Redocly remain mandatory in the
+existing GitHub Backend fast-fail workflow for the same exact PR head.
+No green local security result is inferred from this split. Do not remove
+GitHub Required CI before independent trusted local parity is verified.
