@@ -196,10 +196,10 @@ class DeterministicSetupZipTest(unittest.TestCase):
 
             from v2_build_setup_zip import _open_verified_member
 
-            def replace_before_open(path, meta, name):
+            def replace_before_open(path, meta, name, source_root):
                 if name == "VERSION":
                     os.replace(replacement_file, path)
-                return _open_verified_member(path, meta, name)
+                return _open_verified_member(path, meta, name, source_root)
 
             with mock.patch("v2_build_setup_zip._open_verified_member", side_effect=replace_before_open):
                 with self.assertRaisesRegex(SetupBuildError, "changed before packaging"):
@@ -219,19 +219,52 @@ class DeterministicSetupZipTest(unittest.TestCase):
 
             from v2_build_setup_zip import _open_verified_member
 
-            def swap_to_symlink(path, meta, name):
+            def swap_to_symlink(path, meta, name, source_root):
                 if name == "VERSION":
                     path.unlink()
                     try:
                         path.symlink_to(secret)
                     except (OSError, NotImplementedError) as exc:
                         self.skipTest(f"Symlinks unavailable: {exc}")
-                return _open_verified_member(path, meta, name)
+                return _open_verified_member(path, meta, name, source_root)
 
             with mock.patch("v2_build_setup_zip._open_verified_member", side_effect=swap_to_symlink):
                 with self.assertRaisesRegex(SetupBuildError, "changed before packaging"):
                     build_setup_zip(stage, output, SOURCE_DATE_EPOCH)
             self.assertFalse(output.exists(), "Symlinked secrets must not be archived")
+
+    def test_parent_directory_symlink_swap_never_packages_external_file(self) -> None:
+        if not hasattr(os, "O_DIRECTORY") or not hasattr(os, "O_NOFOLLOW") or os.open not in os.supports_dir_fd:
+            self.skipTest("Safe dirfd-relative opens unavailable on this platform")
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            stage = base / "source"
+            subdir = stage / "backend"
+            subdir.mkdir(parents=True)
+            (subdir / "VERSION").write_bytes(b"1.0.1\\n")
+            moved = base / "original-backend"
+            outside = base / "outside"
+            outside.mkdir()
+            (outside / "VERSION").write_bytes(b"external-sensitive-data")
+            output = base / "setup.zip"
+
+            from v2_build_setup_zip import _open_verified_member
+
+            def swap_parent_before_open(path, meta, name, source_root):
+                if name == "backend/VERSION":
+                    subdir.rename(moved)
+                    try:
+                        subdir.symlink_to(outside, target_is_directory=True)
+                    except (OSError, NotImplementedError) as exc:
+                        self.skipTest(f"Symlinks unavailable: {exc}")
+                return _open_verified_member(path, meta, name, source_root)
+
+            with mock.patch("v2_build_setup_zip._open_verified_member", side_effect=swap_parent_before_open):
+                with self.assertRaisesRegex(SetupBuildError, "changed before packaging"):
+                    build_setup_zip(stage, output, SOURCE_DATE_EPOCH)
+            self.assertFalse(output.exists(), "Replaced ancestor must never publish a ZIP")
+            self.assertEqual((outside / "VERSION").read_bytes(), b"external-sensitive-data")
+            self.assertEqual(list(base.glob(".v2-setup-*.zip")), [])
 
     def test_canonical_release_factory_reuses_the_verified_zip_writer(self) -> None:
         # Regression for G004: a green CI-only staging ZIP is not evidence
