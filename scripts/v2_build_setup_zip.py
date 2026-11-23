@@ -9,8 +9,10 @@ import argparse
 import datetime as dt
 import hashlib
 import os
+import re
 import shutil
 import stat
+import unicodedata
 import tempfile
 import zipfile
 from pathlib import Path
@@ -25,6 +27,12 @@ class SetupBuildError(ValueError):
 MAX_ENTRIES = 100_000
 MAX_ENTRY_SIZE = 512 * 1024 * 1024
 MAX_TOTAL_SIZE = 4 * 1024 * 1024 * 1024
+
+# Shared-host extractors may interpret these names differently or refuse them.
+RESERVED_DEVICE = re.compile(
+    r"^(?:con|conin\\$|conout\\$|prn|aux|nul|com[1-9¹²³]|lpt[1-9¹²³])(?:\\..*)?$",
+    re.IGNORECASE,
+)
 
 
 def _zip_timestamp(epoch: int) -> tuple[int, int, int, int, int, int]:
@@ -112,9 +120,22 @@ def build_setup_zip(source_root: Path, output: Path, source_epoch: int) -> str:
     # member or allocating a temporary ZIP. Checking only in the packaging
     # loop can start compressing an oversized tree before rejecting it.
     preflight_total = 0
+    portable_paths = set()
     for source_path in paths:
-        source_meta = source_path.lstat()
         name = source_path.relative_to(source_root).as_posix()
+        components = name.split("/")
+        if any(
+            not part or part in (".", "..") or part != part.rstrip(" .")
+            or any(ch in '<>:"|?*\\\\' or ord(ch) < 32 or ord(ch) == 127 for ch in part)
+            or RESERVED_DEVICE.fullmatch(part)
+            for part in components
+        ):
+            raise SetupBuildError(f"Unsafe cross-platform Setup staging member: {name}")
+        portable = unicodedata.normalize("NFC", name).casefold()
+        if portable in portable_paths:
+            raise SetupBuildError(f"Duplicate portable Setup staging member: {name}")
+        portable_paths.add(portable)
+        source_meta = source_path.lstat()
         if stat.S_ISLNK(source_meta.st_mode) or not (
             stat.S_ISDIR(source_meta.st_mode) or stat.S_ISREG(source_meta.st_mode)
         ):
