@@ -62,14 +62,14 @@ class SetupEd25519SignatureTest(unittest.TestCase):
             "FOODEX_SETUP_VERIFIER_PYTHON": sys.executable,
         }
 
-    def run_sign(self, **env_overrides: str) -> subprocess.CompletedProcess:
+    def run_sign(self, output_override: str | None = None, **env_overrides: str) -> subprocess.CompletedProcess:
         return subprocess.run(
             [
                 "php", str(SCRIPT), "--mode=sign",
                 "--package=" + str(self.archive),
                 "--version-file=" + str(self.version),
                 "--source-commit=" + self.source_sha,
-                "--output=" + str(self.sidecar),
+                "--output=" + (output_override if output_override is not None else str(self.sidecar)),
             ],
             text=True, capture_output=True,
             env={**self.env, **env_overrides},
@@ -175,6 +175,14 @@ class SetupEd25519SignatureTest(unittest.TestCase):
         linked.symlink_to(genuine)
         self.sidecar = linked
         self.assertNotEqual(0, self.run_verify().returncode)
+
+    def test_php_stream_wrapper_cannot_claim_signed_output_without_a_file(self) -> None:
+        # PHP accepts fopen("php://temp", "x"), but that stream is not a
+        # signature artifact. Never report a successful publication for it.
+        result = self.run_sign(output_override="php://temp")
+        self.assertNotEqual(0, result.returncode)
+        self.assertFalse(self.sidecar.exists())
+        self.assertNotIn(self.key["private"], result.stderr)
 
     def test_existing_signature_is_never_overwritten(self) -> None:
         self.sidecar.write_text("do-not-replace", encoding="utf-8")
