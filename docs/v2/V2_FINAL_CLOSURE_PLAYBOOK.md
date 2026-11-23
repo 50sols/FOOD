@@ -2,6 +2,8 @@
 
 **Effective owner directive:** 2026-11-23, master [#2503](https://github.com/walidatiyaai2025-gif/FOOD/issues/2503#issuecomment-7095299490). **Governance implementation:** #4387. **Sole integration branch:** Foodex_V2. This is a finite *release-scope freeze and sequencing rule*, not an announcement that V2 is ready to deploy.
 
+**MOBILE IMPACT — Customer / Driver / Van:** NO_DIRECT_SOURCE_IMPACT. This owner-governance documentation PR changes no Flutter source, mobile/API runtime, dispatch, notifications, binary packaging or deployed endpoint. Existing app API safety contracts and the B2B/Van and B2C/Driver routing invariants remain required regression coverage.
+
 ## 0. Mandatory precedence and scope
 
 At every fresh or resumed worker session, read the latest #2503 owner directives, this playbook, AGENTS.md, docs/v2/V2_ISOLATION_GOVERNANCE.md and the original issue/PR/CI; use live GitHub data instead of this document for current statuses. Where previous V2_CLOSE_NEXT instructions tell workers to choose arbitrary small leaves, **prioritize final delivery gates and their existing blocking prerequisites instead**. Keep the existing worker lease, one-issue/one-owner/one-branch/one-PR, no-double-ownership, 10-minute checkpoint and exact-head review/CI contracts. This does not activate or create autonomous scheduled workers.
