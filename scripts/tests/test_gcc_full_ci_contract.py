@@ -30,7 +30,7 @@ class GccHeavyExecutionContracts(unittest.TestCase):
         self.assertNotIn("iex ", AGENT.lower())
 
     def test_trusted_immutable_local_scripts_are_never_read_from_pr_checkout(self):
-        self.assertIn("e35e705c46ea74f85297d9f7c7d773b9c22ea5f6", AGENT)
+        self.assertIn("68b3d17b32478f17e45e3fcd0c42fc79f1f4618e", AGENT)
         self.assertIn("raw.githubusercontent.com", AGENT)
         self.assertIn("git hash-object $file", AGENT)
         self.assertIn("context: .", COMPOSE)
@@ -66,6 +66,8 @@ class GccHeavyExecutionContracts(unittest.TestCase):
 
     def test_locked_production_setup_and_actual_update(self):
         self.assertIn("--no-scripts --no-plugins", PREPARE)
+        self.assertIn("core.autocrlf=false -c core.eol=lf reset --hard", PREPARE)
+        self.assertIn("git -c core.autocrlf=false diff --quiet HEAD", PREPARE)
         self.assertIn("composer audit", PREPARE)
         self.assertIn("composer validate --strict", PREPARE)
         self.assertIn("b18f6119161019916c5bb07cb8da5205ae5c1b63", PREPARE)
