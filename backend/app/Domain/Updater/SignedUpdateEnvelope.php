@@ -34,6 +34,18 @@ final readonly class SignedUpdateEnvelope
             throw new InvalidArgumentException('Signed update manifest has invalid structure.');
         }
 
+        // The publisher emits one exact, compact UTF-8 JSON representation.
+        // Reject duplicate properties and alternate encodings before checking
+        // the signature: json_decode silently overwrites duplicate keys.
+        try {
+            $canonical = json_encode($data, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+        } catch (JsonException) {
+            throw new InvalidArgumentException('Signed update manifest encoding is invalid.');
+        }
+        if (! hash_equals($canonical, $bytes)) {
+            throw new InvalidArgumentException('Signed update manifest is not canonical.');
+        }
+
         $required = [
             'format',
             'signer_key_id',
