@@ -137,6 +137,35 @@ class DeterministicSetupZipTest(unittest.TestCase):
             self.assertEqual(outside.read_bytes(), b"preserve-secret")
             self.assertEqual(list(base.glob(".v2-setup-*.zip")), [])
 
+    def test_posthash_same_inode_mutation_cannot_attest_published_zip(self) -> None:
+        # Even a mutation that restores the original mtime and size cannot
+        # pass as the SHA-256 of the original staged archive. os.link updates
+        # ctime, which makes a pre/post ctime-only test insufficient.
+        if not hasattr(os, "O_DIRECTORY") or not hasattr(os, "O_NOFOLLOW") or os.open not in os.supports_dir_fd:
+            self.skipTest("Secure ZIP staging opens require POSIX dirfd support")
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            root = base / "source"
+            root.mkdir()
+            (root / "VERSION").write_bytes(b"1.0.1\\n")
+            output = base / "setup.zip"
+            original_link = os.link
+
+            def mutate_original_inode(source, destination):
+                initial = os.stat(source)
+                with open(source, "r+b") as target:
+                    target.seek(0)
+                    first = target.read(1)
+                    target.seek(0)
+                    target.write(b"X" if first != b"X" else b"Y")
+                os.utime(source, ns=(initial.st_atime_ns, initial.st_mtime_ns))
+                return original_link(source, destination)
+
+            with mock.patch("v2_build_setup_zip.os.link", side_effect=mutate_original_inode):
+                with self.assertRaisesRegex(SetupBuildError, "contents changed after checksum"):
+                    build_setup_zip(root, output, SOURCE_DATE_EPOCH)
+            self.assertEqual(list(base.glob(".v2-setup-*.zip")), [])
+
     def test_checksum_refuses_output_replaced_after_exclusive_publish(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             base = Path(temporary)
