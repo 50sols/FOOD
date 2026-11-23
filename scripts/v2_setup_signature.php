@@ -168,12 +168,30 @@ try {
         if ($stream === false) {
             throw new RuntimeException('Cannot exclusively publish signature.');
         }
+        // A short write or failed flush/close must not leave a sidecar that
+        // later tooling could mistake for a fully published signature.
+        $published = false;
         try {
-            if (fwrite($stream, $sidecar) !== strlen($sidecar) || ! fflush($stream)) {
+            $length = strlen($sidecar);
+            $offset = 0;
+            while ($offset < $length) {
+                $written = fwrite($stream, substr($sidecar, $offset));
+                if (! is_int($written) || $written <= 0) {
+                    throw new RuntimeException('Incomplete signed sidecar.');
+                }
+                $offset += $written;
+            }
+            if (! fflush($stream) || ! fclose($stream)) {
                 throw new RuntimeException('Incomplete signed sidecar.');
             }
+            $published = true;
         } finally {
-            fclose($stream);
+            if (is_resource($stream)) {
+                fclose($stream);
+            }
+            if (! $published) {
+                @unlink($output);
+            }
         }
         fwrite(STDOUT, "Setup sidecar signed; release acceptance is still required.\n");
     } else {
