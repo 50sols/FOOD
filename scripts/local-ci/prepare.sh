@@ -17,12 +17,41 @@ test "$(git rev-parse HEAD)" = "$GCC_EXPECTED_SHA"
 git diff --check HEAD
 
 cd backend
-composer validate --strict --no-check-lock
+composer validate --strict
 composer install --no-interaction --prefer-dist --no-progress --no-scripts --no-plugins
 composer audit --no-interaction
 
 cd /workspace
 REDOCLY_TELEMETRY=off REDOCLY_SUPPRESS_UPDATE_NOTICE=true npx --yes @redocly/cli@2.59.0 lint docs/api/openapi.yaml
+
+# Same exact pinned TCPDF source and cURL fallback patch as the canonical
+# release-update-bundle workflow. No mutable branch or unreviewed git HEAD.
+tcpdf=/tmp/foodex-gcc-tcpdf
+mkdir -p "$tcpdf"
+git -C "$tcpdf" init --quiet
+git -C "$tcpdf" remote add origin https://github.com/tecnickcom/TCPDF.git
+git -C "$tcpdf" fetch --quiet --depth=1 origin b18f6119161019916c5bb07cb8da5205ae5c1b63
+test "$(git -C "$tcpdf" rev-parse FETCH_HEAD)" = b18f6119161019916c5bb07cb8da5205ae5c1b63
+git -C "$tcpdf" checkout --quiet --detach FETCH_HEAD
+target=/workspace/backend/app/ThirdParty/tcpdf
+mkdir -p "$target"
+rsync -a --exclude=.git --exclude=examples --exclude=tests --exclude=test \
+  "$tcpdf/" "$target/"
+python3 - <<'PY'
+from pathlib import Path
+import re
+p=Path("/workspace/backend/app/ThirdParty/tcpdf/include/tcpdf_static.php")
+s=p.read_text(encoding="utf-8")
+s, a=re.subn(r"protected const CURLOPT_DEFAULT = \[.*?\n    \];",
+    "protected const CURLOPT_DEFAULT = [];",s,count=1,flags=re.DOTALL)
+s, b=re.subn(r"protected const CURLOPT_FIXED = \[.*?\n    \];",
+    "protected const CURLOPT_FIXED = [];",s,count=1,flags=re.DOTALL)
+if a!=1 or b!=1: raise SystemExit("TCPDF pinned cURL patch drift")
+p.write_text(s,encoding="utf-8")
+PY
+for required in tcpdf.php LICENSE.TXT fonts/dejavusans.php fonts/dejavusans.z; do
+  test -s "$target/$required"
+done
 
 # Separate locked PRODUCTION vendor: no-dev + no scripts/plugins.
 # Never package the dev/vendor tree.
