@@ -17,8 +17,14 @@
 - validation exceptions identify `code`;
 - supplier record, supplier count and audit count remain unchanged after denial.
 
-## Cross-client impact
-Customer: no direct impact. Driver: no direct impact. Van: no direct impact. This is an existing Admin ERP supplier service input-validation fix only; no Flutter or public API payload contract changes.
+## Mobile impact — Customer / Driver / Van
+- Customer: NO_DIRECT_IMPACT. No public Customer API, authorization, shopping, pricing or app runtime changes.
+- Driver: NO_DIRECT_IMPACT. No delivery, assignment, route or Driver app changes.
+- Van: NO_DIRECT_IMPACT. No Van-only sales, offline, stock or app runtime changes.
+- Only existing Admin ERP supplier service input-validation changes; no Flutter or public API payload contract changes.
+
+## CI retry provenance
+The first Isolation run was started before the PR-body mobile-impact matrix was recorded. GitHub reran the original event payload, so metadata edits did not repair that historical run. This documentation commit follows the corrected PR body, causing a **new exact-head PR event** to validate the current body; historical red runs are not evidence of current source regression.
 
 ## CI / merge acceptance
 Required: exact HEAD Repository Policy, FOODEX V2 Isolation, FOODEX Required CI including Laravel/Pint/PHPStan/MySQL/Redis. Protected merge only after complete successful checks and any required independent review. No main/release/production promotion. Do not close until verified merged into `Foodex_V2`.
