@@ -57,6 +57,10 @@ class DriverOrdersController extends Controller
             ]);
         abort_unless($driverRow !== null, 404);
 
+        // Pagination is presentation-only; preserve channel, tenant and driver
+        // authority checks before rejecting malformed explicit page selectors.
+        $request->validate(['page' => ['nullable', 'integer', 'min:1']]);
+
         // Only posted, invoice-allocated collections belonging to this driver
         // count towards the driver total. Never attribute an order's other
         // collectors or online payments to this driver.

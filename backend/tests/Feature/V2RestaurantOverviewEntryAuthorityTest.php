@@ -22,6 +22,63 @@ final class V2RestaurantOverviewEntryAuthorityTest extends TestCase
         $this->seed(CoreReferenceSeeder::class);
     }
 
+    public function test_overview_store_selector_is_validated_before_site_initialization_in_ar_en(): void
+    {
+        $owned = $this->store('V2-OVERVIEW-SCALAR-OWNED', StoreBusinessProfile::RESTAURANT);
+        $foreign = $this->store('V2-OVERVIEW-SCALAR-FOREIGN', StoreBusinessProfile::RESTAURANT);
+        $this->enableRestaurantSaasForTestStore($owned->id);
+        $this->enableRestaurantSaasForTestStore($foreign->id);
+        $manager = $this->manager($owned);
+        $url = route('admin.smart-ordering.index');
+        $tables = ['smart_ordering_sites', 'smart_ordering_revisions', 'audit_logs'];
+        $before = [];
+        foreach ($tables as $table) {
+            $before[$table] = DB::table($table)->count();
+        }
+
+        $originalLocale = app()->getLocale();
+        try {
+            foreach (['ar', 'en'] as $locale) {
+                $manager->forceFill(['locale' => $locale])->saveQuietly();
+                app()->setLocale($locale);
+                foreach ([
+                    '?store_id=invalid',
+                    '?store_id=0',
+                    '?store_id=-1',
+                    '?store_id=1.5',
+                    '?store_id=9999999999999999999999999',
+                    '?store_id%5B%5D='.$owned->id,
+                ] as $invalid) {
+                    $this->actingAs($manager->fresh())
+                        ->getJson($url.$invalid)
+                        ->assertUnprocessable();
+                }
+                $this->actingAs($manager->fresh())
+                    ->getJson($url.'?store_id='.$foreign->id)
+                    ->assertNotFound();
+            }
+        } finally {
+            app()->setLocale($originalLocale);
+        }
+
+        $roleless = User::factory()->create(['is_active' => true, 'locale' => 'en']);
+        $this->actingAs($roleless)->getJson($url.'?store_id=invalid')->assertForbidden();
+        foreach ($tables as $table) {
+            $this->assertSame($before[$table], DB::table($table)->count(), $table.' must not change on invalid selectors');
+        }
+
+        foreach (['ar' => 'rtl', 'en' => 'ltr'] as $locale => $direction) {
+            app()->setLocale($locale);
+            $manager->forceFill(['locale' => $locale])->saveQuietly();
+            foreach (['?store_id='.$owned->id, '', '?store_id='] as $valid) {
+                $this->actingAs($manager->fresh())->get($url.$valid)
+                    ->assertOk()
+                    ->assertSee('dir="'.$direction.'"', false);
+            }
+        }
+        app()->setLocale($originalLocale);
+    }
+
     public function test_restaurant_entry_is_a_single_localized_live_destination(): void
     {
         $store = $this->store('V2-P183-LIVE', StoreBusinessProfile::RESTAURANT);

@@ -1,0 +1,10 @@
+# P031 — Retail Products workspace HTTP tenant isolation (#4276)
+
+- **Ownership:** bounded security regression leaf #4276; parent #2782, master #2503. Original branch `test/4276-v2-retail-products-workspace-http-isolation` targets `Foodex_V2` only.
+- **Canonical route/permission:** GET `/admin/b2c/products` via `admin.b2c.module` with `module=products`, `catalog.view`, selected store from `B2cWorkspaceController`.
+- **Allow:** seeded `B2C_STORE_ADMIN` assigned to Retail Store A receives HTTP 200 with an explicit Store A selector in Arabic RTL and English LTR; client-forged `channel=b2b` does not replace trusted Retail authority.
+- **Deny:** authenticated actor assigned to Retail Store A cannot select Retail Store B or a Wholesale Store (404). Contradictory `store_id` and `store` alias selectors or malformed store IDs fail 404. Wholesale-only `B2B_ADMIN` and roleless users receive 403 even for Retail Store A.
+- **No writes:** GET across positive and negative cases leaves `orders`, `payments`, `invoices`, and `driver_assignments` row counts unchanged.
+- **Distinct scopes:** Retail Products is separate from Retail Inventory #4274, Retail Customers #4270, Retail Finance #4244, Retail Orders #4238, and Wholesale Products #4254. Reuse canonical existing runtime controller; this PR adds an isolated real Laravel HTTP feature test and this QA file only.
+- **Mobile impact:** Customer NO_DIRECT_IMPACT; Driver NO_DIRECT_IMPACT; Van NO_DIRECT_IMPACT. No Flutter, mobile API, fulfillment/dispatch or notification changes; preserve B2B VAN ONLY and B2C DRIVER ONLY.
+- **Risk/acceptance:** HIGH tenant/RBAC risk. Verify final source diff and security negative tests with exact final PR HEAD Repository Policy, V2 Isolation and full Required CI including Laravel four shards and MySQL/Redis installation/upgrade/recovery. Same-account technical COMMENT is not independent GitHub APPROVED. Only protected SHA-guarded merge to `Foodex_V2`, verify integrated files and close leaf #4276; parent #2782/master #2503 remain OPEN. No `main`, production, tag, release, ZIP or APK.

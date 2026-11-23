@@ -747,6 +747,80 @@ final class EnterpriseFinanceFoundationTest extends TestCase
         );
     }
 
+    public function test_finance_master_codes_reject_structured_values_without_creating_records_or_audits(): void
+    {
+        [$actor, , $context] = $this->scopedUser(
+            ['finance.view', 'finance.manage'], 'FIN-CODE-TYPE',
+        );
+        $this->enableFinance($actor, $context);
+        $finance = app(FinanceFoundationService::class);
+
+        $account = $finance->createAccount($actor, $context, [
+            'code' => ' acc-001 ', 'name' => 'Cash',
+            'type' => 'asset', 'normal_balance' => 'debit',
+        ]);
+        $costCenter = $finance->createCostCenter($actor, $context, [
+            'code' => ' cc-001 ', 'name' => 'Operations',
+        ]);
+        $year = $finance->createFiscalYear($actor, $context, [
+            'code' => ' fy2032 ', 'name' => 'Fiscal Year',
+            'starts_on' => '2032-01-01', 'ends_on' => '2032-12-31',
+        ]);
+        $period = $finance->createFiscalPeriod($actor, $context, $year->id, [
+            'sequence' => 1, 'code' => ' jan ', 'name' => 'January',
+            'starts_on' => '2032-01-01', 'ends_on' => '2032-01-31',
+        ]);
+        $this->assertSame('ACC-001', $account->code);
+        $this->assertSame('CC-001', $costCenter->code);
+        $this->assertSame('FY2032', $year->code);
+        $this->assertSame('JAN', $period->code);
+
+        $tables = [
+            'enterprise_finance_accounts',
+            'enterprise_cost_centers',
+            'enterprise_fiscal_years',
+            'enterprise_fiscal_periods',
+            'audit_logs',
+        ];
+        $counts = [];
+        foreach ($tables as $table) {
+            $counts[$table] = DB::table($table)->count();
+        }
+
+        foreach ([['nested'], ['nested' => 'code'], 123] as $invalidCode) {
+            $operations = [
+                fn () => $finance->createAccount($actor, $context, [
+                    'code' => $invalidCode, 'name' => 'Rejected Account',
+                    'type' => 'asset', 'normal_balance' => 'debit',
+                ]),
+                fn () => $finance->createCostCenter($actor, $context, [
+                    'code' => $invalidCode, 'name' => 'Rejected Cost Center',
+                ]),
+                fn () => $finance->createFiscalYear($actor, $context, [
+                    'code' => $invalidCode, 'name' => 'Rejected Year',
+                    'starts_on' => '2033-01-01', 'ends_on' => '2033-12-31',
+                ]),
+                fn () => $finance->createFiscalPeriod($actor, $context, $year->id, [
+                    'sequence' => 2, 'code' => $invalidCode, 'name' => 'Rejected Period',
+                    'starts_on' => '2032-02-01', 'ends_on' => '2032-02-29',
+                ]),
+            ];
+
+            foreach ($operations as $operation) {
+                try {
+                    $operation();
+                    $this->fail('Non-string finance master code was accepted.');
+                } catch (ValidationException $exception) {
+                    $this->assertArrayHasKey('code', $exception->errors());
+                }
+            }
+
+            foreach ($counts as $table => $count) {
+                $this->assertSame($count, DB::table($table)->count(), $table.' mutated after invalid code.');
+            }
+        }
+    }
+
     /**
      * @param  list<string>  $permissions
      * @return array{User,Store,ResolvedTenantContext}

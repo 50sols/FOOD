@@ -62,6 +62,10 @@ final class SecurityController extends Controller
             abort_unless(! $request->has($filter) || is_string($request->query($filter)), 404);
         }
 
+        // Validate explicit user-grid pagination only after security authorization
+        // and the existing nested-filter 404 boundary.
+        $request->validate(['page' => ['nullable', 'integer', 'min:1']]);
+
         $search = trim((string) $request->query('q', ''));
         $literalSearch = '%'.str_replace(['!', '%', '_'], ['!!', '!%', '!_'], $search).'%';
         $status = (string) $request->query('status', 'all');

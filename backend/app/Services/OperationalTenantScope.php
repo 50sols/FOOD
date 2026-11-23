@@ -14,24 +14,27 @@ final class OperationalTenantScope
     {
         $channel = $channel === null ? null : strtoupper($channel);
 
-        // A disabled account must never acquire operational tenant scopes,
-        // including through the Super Admin shortcut.
+        // Reject in-memory disabled actors immediately; every store-candidate query
+        // independently checks persisted users.is_active without an extra round trip.
         if (! $user->is_active) {
             return [];
         }
 
         if ($user->hasRole('SUPER_ADMIN')) {
-            return $this->storeIdsForChannels($channel === null ? ['B2B', 'B2C'] : [$channel]);
+            return $this->storeIdsForChannels($channel === null ? ['B2B', 'B2C'] : [$channel], $user);
         }
 
         $ids = DB::table('user_store_roles')
+            ->join('users', 'users.id', '=', 'user_store_roles.user_id')
             ->join('roles', 'roles.id', '=', 'user_store_roles.role_id')
             ->join('permission_role', 'permission_role.role_id', '=', 'roles.id')
             ->join('permissions', 'permissions.id', '=', 'permission_role.permission_id')
             ->join('stores', 'stores.id', '=', 'user_store_roles.store_id')
             ->join('store_types', 'store_types.id', '=', 'stores.store_type_id')
             ->where('user_store_roles.user_id', $user->getKey())
+            ->where('users.is_active', true)
             ->where('roles.is_active', true)
+            ->whereNull('roles.archived_at')
             ->where('roles.scope', 'store')
             ->where('permissions.code', $permission)
             ->where('stores.is_active', true)
@@ -49,6 +52,7 @@ final class OperationalTenantScope
             && ($channel === null || $channel === 'B2C')
             && $user->permissionFitsStoreChannel($permission, 'b2c')) {
             $storeAllows = DB::table('user_permission_overrides as overrides')
+                ->join('users', 'users.id', '=', 'overrides.user_id')
                 ->join('permissions as allowed_permissions', 'allowed_permissions.id', '=', 'overrides.permission_id')
                 ->join('user_store_roles as assigned', function ($join): void {
                     $join->on('assigned.user_id', '=', 'overrides.user_id')
@@ -58,9 +62,11 @@ final class OperationalTenantScope
                 ->join('stores', 'stores.id', '=', 'assigned.store_id')
                 ->join('store_types', 'store_types.id', '=', 'stores.store_type_id')
                 ->where('overrides.user_id', $user->getKey())
+                ->where('users.is_active', true)
                 ->where('overrides.effect', 'allow')
                 ->where('allowed_permissions.code', $permission)
                 ->where('assigned_roles.is_active', true)
+                ->whereNull('assigned_roles.archived_at')
                 ->where('assigned_roles.scope', 'store')
                 ->where('stores.is_active', true)
                 ->where('store_types.code', 'B2C')
@@ -75,6 +81,7 @@ final class OperationalTenantScope
         if ($user->hasPermission($permission)) {
             $globalRoles = $user->roles()
                 ->where('roles.is_active', true)
+                ->whereNull('roles.archived_at')
                 ->where('roles.scope', 'global')
                 ->pluck('roles.code')
                 ->all();
@@ -95,7 +102,7 @@ final class OperationalTenantScope
                 ->all();
 
             if ($globalChannels !== []) {
-                $ids = $ids->merge($this->storeIdsForChannels($globalChannels));
+                $ids = $ids->merge($this->storeIdsForChannels($globalChannels, $user));
             }
         }
 
@@ -172,10 +179,13 @@ final class OperationalTenantScope
     /** @param list<string> $channels
      * @return list<int>
      */
-    private function storeIdsForChannels(array $channels): array
+    private function storeIdsForChannels(array $channels, User $user): array
     {
         return DB::table('stores')
+            ->crossJoin('users')
             ->join('store_types', 'store_types.id', '=', 'stores.store_type_id')
+            ->where('users.id', $user->getKey())
+            ->where('users.is_active', true)
             ->where('stores.is_active', true)
             ->whereIn('store_types.code', $channels)
             ->pluck('stores.id')

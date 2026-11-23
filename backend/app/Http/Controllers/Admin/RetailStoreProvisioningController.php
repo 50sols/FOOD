@@ -45,6 +45,9 @@ final class RetailStoreProvisioningController extends Controller
     public function index(Request $request): View|StreamedResponse
     {
         $actor = $this->superAdmin($request);
+        // Validate explicit pagination after authorization and before the
+        // store-channel dashboard or export can be queried.
+        $request->validate(['page' => ['nullable', 'integer', 'min:1']]);
         $search = trim((string) $request->query('q', ''));
         $from = $request->query('from');
         $to = $request->query('to');

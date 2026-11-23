@@ -989,6 +989,147 @@ class SmartOrderingCoreTest extends TestCase
         $this->assertSame($this->extraProductId, $selection['modifiers'][0]['product_id']);
     }
 
+    public function test_merchandising_site_branch_preflight_precedes_unrelated_validation_in_ar_en(): void
+    {
+        $actor = $this->storeAdmin($this->storeId);
+        $siteId = (int) $this->branch->site_id;
+        $ownedBranchId = (int) $this->branch->getKey();
+        $foreignStoreId = (int) DB::table('stores')->insertGetId([
+            'store_type_id' => DB::table('store_types')->where('code', 'B2C')->value('id'),
+            'code' => 'MERCH-FOREIGN-'.Str::upper(Str::random(8)),
+            'name' => 'Merchandising foreign store',
+            'is_active' => true,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        $foreignSiteId = (int) DB::table('smart_ordering_sites')->insertGetId([
+            'public_id' => (string) Str::uuid(),
+            'store_id' => $foreignStoreId,
+            'slug' => 'merch-foreign-'.Str::lower(Str::random(8)),
+            'runtime_state' => 'ENABLED',
+            'master_enabled' => true,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        $foreignBranch = SmartOrderingBranch::query()->create([
+            'public_id' => (string) Str::uuid(),
+            'site_id' => $foreignSiteId,
+            'code' => 'FOREIGN',
+            'name_en' => 'Foreign',
+            'timezone' => 'Asia/Kuwait',
+            'is_active' => true,
+            'accepting_orders' => true,
+            'supports_dine_in' => true,
+            'supports_pickup' => true,
+            'supports_delivery' => true,
+            'allow_scheduled' => true,
+            'pickup_lead_minutes' => 0,
+            'max_schedule_days' => 7,
+            'service_charge' => 0,
+        ]);
+        $foreignBranchId = (int) $foreignBranch->getKey();
+        $missingBranchId = $foreignBranchId + 10000;
+        $offerUrl = route('admin.smart-ordering.merchandising.offers.store', ['site' => $siteId]);
+        $recommendationUrl = route('admin.smart-ordering.merchandising.recommendations.store', ['site' => $siteId]);
+        $validOffer = ['name' => 'Scoped offer', 'type' => 'fixed'];
+        $validRecommendation = [
+            'name' => 'Scoped recommendation',
+            'placement' => 'cart_upsell',
+            'recommended_product_id' => $this->productId,
+        ];
+
+        $offer = $this->actingAs($actor)->postJson($offerUrl,
+            [...$validOffer, 'branch_id' => $ownedBranchId])
+            ->assertCreated()->json('id');
+        $recommendation = $this->actingAs($actor)->postJson($recommendationUrl,
+            [...$validRecommendation, 'branch_id' => $ownedBranchId])
+            ->assertCreated()->json('id');
+
+        $cases = [
+            ['method' => 'POST', 'url' => $offerUrl, 'valid' => $validOffer, 'required' => 'name'],
+            ['method' => 'PUT', 'url' => route('admin.smart-ordering.merchandising.offers.update',
+                ['site' => $siteId, 'offer' => $offer]), 'valid' => $validOffer, 'required' => 'name'],
+            ['method' => 'POST', 'url' => $recommendationUrl,
+                'valid' => $validRecommendation, 'required' => 'name'],
+            ['method' => 'PUT', 'url' => route('admin.smart-ordering.merchandising.recommendations.update',
+                ['site' => $siteId, 'recommendation' => $recommendation]),
+                'valid' => $validRecommendation, 'required' => 'name'],
+        ];
+        $tables = ['smart_ordering_offer_rules', 'smart_ordering_recommendation_rules', 'audit_logs'];
+        $before = [];
+        foreach ($tables as $table) {
+            $before[$table] = DB::table($table)->count();
+        }
+        $originalLocale = app()->getLocale();
+        try {
+            foreach (['ar', 'en'] as $locale) {
+                $actor->forceFill(['locale' => $locale])->saveQuietly();
+                app()->setLocale($locale);
+                foreach ($cases as $case) {
+                    foreach ([$foreignBranchId, (string) $foreignBranchId, $missingBranchId] as $denied) {
+                        foreach ([
+                            ['branch_id' => $denied],
+                            ['branch_id' => $denied, $case['required'] => ['invalid']],
+                            [...$case['valid'], 'branch_id' => $denied],
+                        ] as $payload) {
+                            $this->actingAs($actor->fresh())
+                                ->json($case['method'], $case['url'], $payload)->assertNotFound();
+                        }
+                    }
+                    foreach ([
+                        ['branch_id' => 0],
+                        ['branch_id' => 'bad'],
+                        ['branch_id' => '9999999999999999999999999999999'],
+                        ['branch_id' => $ownedBranchId, $case['required'] => ['invalid']],
+                    ] as $payload) {
+                        $this->actingAs($actor->fresh())
+                            ->json($case['method'], $case['url'], $payload)->assertUnprocessable();
+                    }
+                }
+            }
+        } finally {
+            app()->setLocale($originalLocale);
+        }
+        foreach ($tables as $table) {
+            $this->assertSame($before[$table], DB::table($table)->count(), $table.' unchanged');
+        }
+        $this->assertDatabaseHas('smart_ordering_offer_rules', [
+            'public_id' => $offer, 'site_id' => $siteId, 'branch_id' => $ownedBranchId,
+        ]);
+        $this->assertDatabaseHas('smart_ordering_recommendation_rules', [
+            'public_id' => $recommendation, 'site_id' => $siteId, 'branch_id' => $ownedBranchId,
+        ]);
+        $this->assertSame(0, DB::table('smart_ordering_offer_rules')
+            ->where('site_id', $foreignSiteId)->count());
+        $this->assertSame(0, DB::table('smart_ordering_recommendation_rules')
+            ->where('site_id', $foreignSiteId)->count());
+
+        // Authorized updates must retain their site and branch after denied
+        // cross-tenant requests, without creating additional records.
+        $this->actingAs($actor->fresh())->putJson(route(
+            'admin.smart-ordering.merchandising.offers.update',
+            ['site' => $siteId, 'offer' => $offer],
+        ), [...$validOffer, 'name' => 'Updated scoped offer', 'branch_id' => $ownedBranchId])
+            ->assertOk();
+        $this->actingAs($actor->fresh())->putJson(route(
+            'admin.smart-ordering.merchandising.recommendations.update',
+            ['site' => $siteId, 'recommendation' => $recommendation],
+        ), [...$validRecommendation, 'name' => 'Updated scoped recommendation', 'branch_id' => $ownedBranchId])
+            ->assertOk();
+        $this->assertDatabaseHas('smart_ordering_offer_rules', [
+            'public_id' => $offer, 'site_id' => $siteId,
+            'branch_id' => $ownedBranchId, 'name' => 'Updated scoped offer',
+        ]);
+        $this->assertDatabaseHas('smart_ordering_recommendation_rules', [
+            'public_id' => $recommendation, 'site_id' => $siteId,
+            'branch_id' => $ownedBranchId, 'name' => 'Updated scoped recommendation',
+        ]);
+        $this->assertSame($before['smart_ordering_offer_rules'],
+            DB::table('smart_ordering_offer_rules')->count());
+        $this->assertSame($before['smart_ordering_recommendation_rules'],
+            DB::table('smart_ordering_recommendation_rules')->count());
+    }
+
     public function test_merchandising_precedence_and_cart_recalculation_are_server_authoritative(): void
     {
         $winner = $this->offer([
@@ -1808,6 +1949,214 @@ class SmartOrderingCoreTest extends TestCase
             ->assertNotFound();
     }
 
+    public function test_table_selected_floor_scope_precedes_unrelated_validation_in_ar_and_en(): void
+    {
+        $admin = $this->storeAdmin($this->storeId);
+        $ownedTable = $this->restaurantTable('Floor Scope Own', 'floor-scope-own-token');
+        $siblingBranch = SmartOrderingBranch::query()->create([
+            'public_id' => (string) Str::uuid(),
+            'site_id' => $this->branch->site_id,
+            'code' => 'floor-payload-sibling',
+            'name_ar' => 'فرع طابق شقيق',
+            'name_en' => 'Sibling floor branch',
+            'timezone' => 'Asia/Kuwait',
+            'is_active' => true,
+        ]);
+        $insertFloor = static function (SmartOrderingBranch $branch, string $name): string {
+            $uuid = (string) Str::uuid();
+            DB::table('smart_ordering_floor_areas')->insert([
+                'public_id' => $uuid,
+                'branch_id' => $branch->getKey(),
+                'name_en' => $name,
+                'name_ar' => $name,
+                'sort_order' => 0,
+                'is_active' => true,
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+
+            return $uuid;
+        };
+        $ownedFloor = $insertFloor($this->branch, 'Owned Floor');
+        $foreignFloor = $insertFloor($siblingBranch, 'Sibling Floor');
+        $storeUrl = route('admin.smart-ordering.tables.store', $this->branch->public_id);
+        $updateUrl = route('admin.smart-ordering.tables.update', [
+            $this->branch->public_id, $ownedTable->public_id,
+        ]);
+        $beforeTables = DB::table('smart_ordering_tables')->count();
+        $beforeAudits = DB::table('audit_logs')->count();
+        $originalLocale = app()->getLocale();
+
+        try {
+            foreach (['ar', 'en'] as $locale) {
+                app()->setLocale($locale);
+                $admin->forceFill(['locale' => $locale])->saveQuietly();
+
+                foreach ([$foreignFloor, (string) Str::uuid()] as $unavailableFloor) {
+                    foreach ([$storeUrl, $updateUrl] as $url) {
+                        $payload = ['floor_public_id' => $unavailableFloor, 'capacity' => ['invalid']];
+                        $response = $this->actingAs($admin->fresh());
+                        ($url === $storeUrl
+                            ? $response->postJson($url, $payload)
+                            : $response->putJson($url, $payload))->assertNotFound();
+                    }
+                }
+
+                foreach ([$storeUrl, $updateUrl] as $url) {
+                    $payload = ['floor_public_id' => ['nested'], 'capacity' => ['invalid']];
+                    $response = $this->actingAs($admin->fresh());
+                    ($url === $storeUrl
+                        ? $response->postJson($url, $payload)
+                        : $response->putJson($url, $payload))->assertUnprocessable();
+
+                    $payload = ['floor_public_id' => $ownedFloor, 'capacity' => ['invalid']];
+                    $response = $this->actingAs($admin->fresh());
+                    ($url === $storeUrl
+                        ? $response->postJson($url, $payload)
+                        : $response->putJson($url, $payload))->assertUnprocessable();
+                }
+            }
+        } finally {
+            app()->setLocale($originalLocale);
+        }
+
+        $this->assertSame($beforeTables, DB::table('smart_ordering_tables')->count());
+        $this->assertSame($beforeAudits, DB::table('audit_logs')->count());
+        $this->assertDatabaseHas('smart_ordering_tables', [
+            'id' => $ownedTable->id, 'floor_area_id' => null,
+        ]);
+
+        $this->actingAs($admin->fresh())
+            ->put($updateUrl, [
+                'floor_public_id' => $ownedFloor,
+                'label' => 'Floor Scope Own',
+                'capacity' => 3,
+                'position_x' => 60,
+                'position_y' => 60,
+                'visual_width' => 160,
+                'visual_height' => 120,
+                'shape' => 'rectangle',
+                'is_active' => true,
+            ])->assertRedirect();
+        $this->assertDatabaseHas('smart_ordering_tables', [
+            'id' => $ownedTable->id,
+            'floor_area_id' => DB::table('smart_ordering_floor_areas')->where('public_id', $ownedFloor)->value('id'),
+            'capacity' => 3,
+        ]);
+
+        $this->actingAs($admin->fresh())
+            ->post($storeUrl, [
+                'floor_public_id' => $ownedFloor,
+                'label' => 'Floor Scope New',
+                'capacity' => 2,
+                'position_x' => 90,
+                'position_y' => 90,
+                'visual_width' => 160,
+                'visual_height' => 120,
+                'shape' => 'rectangle',
+                'is_active' => true,
+            ])->assertRedirect();
+        $this->assertDatabaseHas('smart_ordering_tables', [
+            'branch_id' => $this->branch->id,
+            'floor_area_id' => DB::table('smart_ordering_floor_areas')->where('public_id', $ownedFloor)->value('id'),
+            'label' => 'Floor Scope New',
+            'capacity' => 2,
+        ]);
+    }
+
+    public function test_table_position_and_combine_scope_precedes_body_validation_in_ar_and_en(): void
+    {
+        $admin = $this->storeAdmin($this->storeId);
+        $owned = $this->restaurantTable('Scope Own', 'scope-owned-token');
+        $member = $this->restaurantTable('Scope Member', 'scope-member-token');
+
+        $siblingBranch = SmartOrderingBranch::query()->create([
+            'public_id' => (string) Str::uuid(),
+            'site_id' => $this->branch->site_id,
+            'code' => 'prevalidation-sibling-table',
+            'name_ar' => 'فرع طاولات آخر',
+            'name_en' => 'Other tables branch',
+            'timezone' => 'Asia/Kuwait',
+            'is_active' => true,
+        ]);
+        $foreign = $this->restaurantTable('Scope Foreign', 'scope-foreign-token', null, $siblingBranch);
+
+        $positionUrl = fn (string $id): string => route('admin.smart-ordering.tables.position', [
+            $this->branch->public_id, $id,
+        ]);
+        $combineUrl = fn (string $id): string => route('admin.smart-ordering.tables.combine', [
+            $this->branch->public_id, $id,
+        ]);
+        $auditCount = DB::table('audit_logs')->where('event', 'smart_ordering.tables.combined')->count();
+        $beforeCombinationCount = DB::table('smart_ordering_table_combinations')->count();
+        $previousLocale = app()->getLocale();
+
+        try {
+            foreach (['ar', 'en'] as $locale) {
+                app()->setLocale($locale);
+                $admin->forceFill(['locale' => $locale])->saveQuietly();
+
+                foreach ([(string) $foreign->public_id, (string) Str::uuid()] as $unavailable) {
+                    $this->actingAs($admin->fresh())
+                        ->postJson($combineUrl($unavailable), ['other_table_public_id' => ['invalid']])
+                        ->assertNotFound();
+                    $this->actingAs($admin->fresh())
+                        ->postJson($combineUrl($unavailable), [])
+                        ->assertNotFound();
+                    $this->actingAs($admin->fresh())
+                        ->postJson($positionUrl($unavailable), ['position_x' => ['invalid']])
+                        ->assertNotFound();
+                    $this->actingAs($admin->fresh())
+                        ->postJson($positionUrl($unavailable), [])
+                        ->assertNotFound();
+                }
+
+                $this->actingAs($admin->fresh())
+                    ->postJson($combineUrl((string) $owned->public_id), [])
+                    ->assertUnprocessable()->assertJsonValidationErrors('other_table_public_id');
+                $this->actingAs($admin->fresh())
+                    ->postJson($positionUrl((string) $owned->public_id), [])
+                    ->assertUnprocessable()->assertJsonValidationErrors(['position_x', 'position_y']);
+            }
+        } finally {
+            app()->setLocale($previousLocale);
+        }
+
+        $this->assertSame($beforeCombinationCount, DB::table('smart_ordering_table_combinations')->count());
+        $this->assertSame($auditCount, DB::table('audit_logs')
+            ->where('event', 'smart_ordering.tables.combined')->count());
+        $this->assertDatabaseHas('smart_ordering_tables', [
+            'id' => $foreign->id, 'position_x' => 60, 'position_y' => 60,
+        ]);
+        $this->assertDatabaseHas('smart_ordering_tables', [
+            'id' => $owned->id, 'position_x' => 60, 'position_y' => 60,
+        ]);
+
+        $this->actingAs($admin->fresh())
+            ->post($positionUrl((string) $owned->public_id), ['position_x' => 220, 'position_y' => 320])
+            ->assertRedirect();
+        $this->assertDatabaseHas('smart_ordering_tables', [
+            'id' => $owned->id, 'position_x' => 220, 'position_y' => 320,
+        ]);
+        $this->assertDatabaseHas('smart_ordering_tables', [
+            'id' => $foreign->id, 'position_x' => 60, 'position_y' => 60,
+        ]);
+
+        $this->actingAs($admin->fresh())
+            ->post($combineUrl((string) $owned->public_id), [
+                'other_table_public_id' => (string) $member->public_id,
+            ])->assertRedirect();
+
+        $this->assertDatabaseHas('smart_ordering_table_combinations', [
+            'branch_id' => $this->branch->id,
+            'primary_table_id' => $owned->id,
+            'member_table_id' => $member->id,
+        ]);
+        $this->assertSame($beforeCombinationCount + 1, DB::table('smart_ordering_table_combinations')->count());
+        $this->assertSame($auditCount + 1, DB::table('audit_logs')
+            ->where('event', 'smart_ordering.tables.combined')->count());
+    }
+
     public function test_table_combine_split_is_auditable_without_rewriting_order_identity(): void
     {
         $admin = $this->storeAdmin($this->storeId);
@@ -1931,6 +2280,208 @@ class SmartOrderingCoreTest extends TestCase
             ->assertSee('الطاولات ومخطط الصالة')
             ->assertSee('صالة العائلات')
             ->assertSee('متاحة');
+    }
+
+    public function test_shift_update_rejects_unscoped_route_before_body_validation_in_ar_and_en(): void
+    {
+        $admin = $this->storeAdmin($this->storeId);
+        $staff = $this->workforceUser($this->storeId, 'Update Scope Staff', true);
+
+        $this->actingAs($admin)
+            ->post(route('admin.smart-ordering.workforce.staff.store', $this->branch->public_id), [
+                'user_id' => $staff->id,
+            ])->assertRedirect();
+        $this->actingAs($admin)
+            ->post(route('admin.smart-ordering.workforce.shifts.store', $this->branch->public_id), [
+                'user_id' => $staff->id,
+                'starts_at' => '2026-10-18T10:00',
+                'ends_at' => '2026-10-18T18:00',
+            ])->assertRedirect();
+
+        $owned = DB::table('restaurant_shifts')
+            ->where('branch_id', $this->branch->id)->where('user_id', $staff->id)->first();
+        $this->assertNotNull($owned);
+        $sibling = SmartOrderingBranch::query()->create([
+            'public_id' => (string) Str::uuid(),
+            'site_id' => $this->branch->site_id,
+            'code' => 'shift-update-sibling',
+            'name_ar' => 'فرع ورديات آخر',
+            'name_en' => 'Other shifts branch',
+            'timezone' => 'Asia/Kuwait',
+            'is_active' => true,
+        ]);
+        $foreignId = (string) Str::uuid();
+        DB::table('restaurant_shifts')->insert([
+            'public_id' => $foreignId,
+            'branch_id' => $sibling->id,
+            'user_id' => $staff->id,
+            'starts_at' => '2026-10-19 07:00:00',
+            'ends_at' => '2026-10-19 15:00:00',
+            'status' => 'DRAFT',
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        $url = fn (string $shift): string => route('admin.smart-ordering.workforce.shifts.update', [
+            $this->branch->public_id, $shift,
+        ]);
+        $auditBefore = DB::table('audit_logs')
+            ->where('event', 'smart_ordering.workforce.shift.updated')->count();
+        $localeBefore = app()->getLocale();
+
+        try {
+            foreach (['ar', 'en'] as $locale) {
+                app()->setLocale($locale);
+                $admin->forceFill(['locale' => $locale])->saveQuietly();
+
+                foreach ([$foreignId, (string) Str::uuid()] as $unavailable) {
+                    $this->actingAs($admin->fresh())
+                        ->putJson($url($unavailable), ['user_id' => ['invalid']])
+                        ->assertNotFound();
+                    $this->actingAs($admin->fresh())
+                        ->putJson($url($unavailable), [])
+                        ->assertNotFound();
+                    // A well-formed update must not mutate a sibling or unknown shift either.
+                    $this->actingAs($admin->fresh())
+                        ->putJson($url($unavailable), [
+                            'user_id' => $staff->id,
+                            'starts_at' => '2026-10-20T11:00',
+                            'ends_at' => '2026-10-20T19:00',
+                        ])->assertNotFound();
+                }
+
+                $this->actingAs($admin->fresh())
+                    ->putJson($url((string) $owned->public_id), [])
+                    ->assertUnprocessable()
+                    ->assertJsonValidationErrors(['user_id', 'starts_at', 'ends_at']);
+            }
+        } finally {
+            app()->setLocale($localeBefore);
+        }
+
+        $this->assertDatabaseHas('restaurant_shifts', [
+            'public_id' => $foreignId,
+            'status' => 'DRAFT',
+            'starts_at' => '2026-10-19 07:00:00',
+        ]);
+        $this->assertDatabaseHas('restaurant_shifts', [
+            'id' => $owned->id,
+            'status' => 'DRAFT',
+        ]);
+        $this->assertSame($auditBefore, DB::table('audit_logs')
+            ->where('event', 'smart_ordering.workforce.shift.updated')->count());
+
+        $this->actingAs($admin->fresh())
+            ->put($url((string) $owned->public_id), [
+                'user_id' => $staff->id,
+                'starts_at' => '2026-10-18T11:00',
+                'ends_at' => '2026-10-18T19:00',
+            ])->assertRedirect();
+
+        $this->assertNotSame((string) $owned->starts_at, (string) DB::table('restaurant_shifts')
+            ->where('id', $owned->id)->value('starts_at'));
+        $this->assertNotSame((string) $owned->ends_at, (string) DB::table('restaurant_shifts')
+            ->where('id', $owned->id)->value('ends_at'));
+        $this->assertSame($auditBefore + 1, DB::table('audit_logs')
+            ->where('event', 'smart_ordering.workforce.shift.updated')->count());
+        $this->assertDatabaseHas('restaurant_shifts', [
+            'public_id' => $foreignId,
+            'status' => 'DRAFT',
+            'starts_at' => '2026-10-19 07:00:00',
+        ]);
+    }
+
+    public function test_shift_transition_rejects_unscoped_route_before_action_validation_in_ar_and_en(): void
+    {
+        $admin = $this->storeAdmin($this->storeId);
+        $staff = $this->workforceUser($this->storeId, 'Scoped Shift Staff', true);
+
+        $this->actingAs($admin)
+            ->post(route('admin.smart-ordering.workforce.staff.store', $this->branch->public_id), [
+                'user_id' => $staff->id,
+            ])->assertRedirect();
+
+        $this->actingAs($admin)
+            ->post(route('admin.smart-ordering.workforce.shifts.store', $this->branch->public_id), [
+                'user_id' => $staff->id,
+                'starts_at' => '2026-10-18T10:00',
+                'ends_at' => '2026-10-18T18:00',
+            ])->assertRedirect();
+
+        $owned = DB::table('restaurant_shifts')
+            ->where('branch_id', $this->branch->id)
+            ->where('user_id', $staff->id)->first();
+        $this->assertNotNull($owned);
+
+        $otherBranch = SmartOrderingBranch::query()->create([
+            'public_id' => (string) Str::uuid(),
+            'site_id' => $this->branch->site_id,
+            'code' => 'separate-workforce-branch',
+            'name_ar' => 'فرع ورديات مختلف',
+            'name_en' => 'Separate workforce branch',
+            'timezone' => 'Asia/Kuwait',
+            'is_active' => true,
+        ]);
+        $otherShiftId = (string) Str::uuid();
+        DB::table('restaurant_shifts')->insert([
+            'public_id' => $otherShiftId,
+            'branch_id' => $otherBranch->id,
+            'user_id' => $staff->id,
+            'starts_at' => '2026-10-19 07:00:00',
+            'ends_at' => '2026-10-19 15:00:00',
+            'status' => 'DRAFT',
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $url = fn (string $shift): string => route('admin.smart-ordering.workforce.shifts.transition', [
+            $this->branch->public_id,
+            $shift,
+        ]);
+        $beforeAudits = DB::table('audit_logs')
+            ->where('event', 'smart_ordering.workforce.shift.transitioned')->count();
+        $beforeShiftCount = DB::table('restaurant_shifts')->count();
+        $previousLocale = app()->getLocale();
+
+        try {
+            foreach (['ar', 'en'] as $locale) {
+                app()->setLocale($locale);
+                $admin->forceFill(['locale' => $locale])->saveQuietly();
+
+                foreach ([$otherShiftId, (string) Str::uuid()] as $unavailable) {
+                    $this->actingAs($admin->fresh())
+                        ->postJson($url($unavailable), ['action' => ['invalid']])
+                        ->assertNotFound();
+                    $this->actingAs($admin->fresh())
+                        ->postJson($url($unavailable), [])
+                        ->assertNotFound();
+                }
+
+                $this->actingAs($admin->fresh())
+                    ->postJson($url((string) $owned->public_id), [])
+                    ->assertUnprocessable()
+                    ->assertJsonValidationErrors('action');
+                $this->actingAs($admin->fresh())
+                    ->postJson($url((string) $owned->public_id), ['action' => ['invalid']])
+                    ->assertUnprocessable()
+                    ->assertJsonValidationErrors('action');
+            }
+        } finally {
+            app()->setLocale($previousLocale);
+        }
+
+        $this->assertSame($beforeAudits, DB::table('audit_logs')
+            ->where('event', 'smart_ordering.workforce.shift.transitioned')->count());
+        $this->assertSame($beforeShiftCount, DB::table('restaurant_shifts')->count());
+        $this->assertDatabaseHas('restaurant_shifts', ['public_id' => $otherShiftId, 'status' => 'DRAFT']);
+        $this->assertDatabaseHas('restaurant_shifts', ['id' => $owned->id, 'status' => 'DRAFT']);
+
+        $this->actingAs($admin->fresh())
+            ->post($url((string) $owned->public_id), ['action' => 'publish'])
+            ->assertRedirect();
+        $this->assertDatabaseHas('restaurant_shifts', ['id' => $owned->id, 'status' => 'PUBLISHED']);
+        $this->assertDatabaseHas('restaurant_shifts', ['public_id' => $otherShiftId, 'status' => 'DRAFT']);
+        $this->assertSame($beforeAudits + 1, DB::table('audit_logs')
+            ->where('event', 'smart_ordering.workforce.shift.transitioned')->count());
     }
 
     public function test_restaurant_workforce_reuses_store_identity_rejects_overlap_and_cross_scope(): void
@@ -2162,6 +2713,117 @@ class SmartOrderingCoreTest extends TestCase
             'user_id' => $admin->id,
             'event' => 'smart_ordering.workforce.time_clock.corrected',
         ]);
+    }
+
+    public function test_time_clock_correction_checks_branch_session_before_validation_in_ar_and_en(): void
+    {
+        $admin = $this->storeAdmin($this->storeId);
+        $sibling = SmartOrderingBranch::query()->create([
+            'public_id' => (string) Str::uuid(),
+            'site_id' => $this->branch->site_id,
+            'code' => 'correction-sibling',
+            'name_ar' => 'فرع تصحيح آخر',
+            'name_en' => 'Other correction branch',
+            'timezone' => 'Asia/Kuwait',
+            'is_active' => true,
+        ]);
+        $ownedId = (string) Str::uuid();
+        $foreignId = (string) Str::uuid();
+        $missingId = (string) Str::uuid();
+
+        foreach ([
+            [$ownedId, (int) $this->branch->id],
+            [$foreignId, (int) $sibling->id],
+        ] as [$publicId, $branchId]) {
+            DB::table('restaurant_time_clock_sessions')->insert([
+                'public_id' => $publicId,
+                'branch_id' => $branchId,
+                'user_id' => $admin->id,
+                'status' => 'CLOSED',
+                'clocked_in_at' => '2026-10-18 07:00:00',
+                'clocked_out_at' => '2026-10-18 15:00:00',
+                'total_break_seconds' => 1200,
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+        }
+
+        $url = fn (string $publicId): string => route('admin.smart-ordering.workforce.sessions.correct', [
+            $this->branch->public_id,
+            $publicId,
+        ]);
+        $valid = [
+            'clocked_in_at' => '2026-10-18T11:00',
+            'clocked_out_at' => '2026-10-18T19:00',
+            'total_break_minutes' => 30,
+            'reason' => 'Approved manager paper timesheet correction.',
+        ];
+        $auditBefore = DB::table('audit_logs')
+            ->where('event', 'smart_ordering.workforce.time_clock.corrected')->count();
+        $localeBefore = app()->getLocale();
+
+        try {
+            foreach (['ar', 'en'] as $locale) {
+                app()->setLocale($locale);
+                $admin->forceFill(['locale' => $locale])->saveQuietly();
+
+                foreach ([$foreignId, $missingId] as $unavailableId) {
+                    $this->actingAs($admin->fresh())
+                        ->putJson($url($unavailableId), [])
+                        ->assertNotFound();
+                    $this->actingAs($admin->fresh())
+                        ->putJson($url($unavailableId), ['clocked_in_at' => ['malformed']])
+                        ->assertNotFound();
+                    $this->actingAs($admin->fresh())
+                        ->putJson($url($unavailableId), $valid)
+                        ->assertNotFound();
+                }
+
+                $this->actingAs($admin->fresh())
+                    ->putJson($url($ownedId), [])
+                    ->assertUnprocessable()
+                    ->assertJsonValidationErrors([
+                        'clocked_in_at',
+                        'clocked_out_at',
+                        'total_break_minutes',
+                        'reason',
+                    ]);
+            }
+        } finally {
+            app()->setLocale($localeBefore);
+        }
+
+        $staff = $this->workforceUser($this->storeId, 'Time Clock Staff');
+        // Canonical OperationalTenantScope::assertStore conceals ungranted store authority as 404.
+        $this->actingAs($staff)
+            ->putJson($url($ownedId), [])
+            ->assertNotFound();
+
+        $this->assertDatabaseHas('restaurant_time_clock_sessions', [
+            'public_id' => $foreignId,
+            'clocked_in_at' => '2026-10-18 07:00:00',
+            'total_break_seconds' => 1200,
+        ]);
+        $this->assertSame($auditBefore, DB::table('audit_logs')
+            ->where('event', 'smart_ordering.workforce.time_clock.corrected')->count());
+
+        $this->actingAs($admin->fresh())
+            ->put($url($ownedId), $valid)
+            ->assertRedirect();
+
+        $this->assertDatabaseHas('restaurant_time_clock_sessions', [
+            'public_id' => $ownedId,
+            'total_break_seconds' => 1800,
+            'corrected_by_user_id' => $admin->id,
+            'correction_note' => $valid['reason'],
+        ]);
+        $this->assertDatabaseHas('restaurant_time_clock_sessions', [
+            'public_id' => $foreignId,
+            'clocked_in_at' => '2026-10-18 07:00:00',
+            'total_break_seconds' => 1200,
+        ]);
+        $this->assertSame($auditBefore + 1, DB::table('audit_logs')
+            ->where('event', 'smart_ordering.workforce.time_clock.corrected')->count());
     }
 
     private function workforceUser(int $storeId, string $name, bool $manager = false): User

@@ -108,7 +108,7 @@ test('paginated exact-head check and workflow collections include later pages', 
 function harness(opts={}) {
   const issue = { number:2929, title:'V2 | AUTO-LEASE example', state:'open',
     labels: [{name:'worker:active'}, ...(opts.humanGate ? [{name:'gate:human'}] : [])] };
-  const mutations=[]; let branchReads=0, commentReads=0, prReads=0;
+  const mutations=[]; let branchReads=0, commentReads=0, prReads=0, integrationReads=0;
   const branchNames=[];
   const oldState = state(1,'2026-11-10T09:20:00Z');
   if (opts.inlineBranchBase) {
@@ -134,7 +134,7 @@ function harness(opts={}) {
   const terminalRuns=Array.from({length:100},(_,i)=>({id:i,head_sha:'old-head',status:'completed'}));
   const github = { rest: {
     search:{issuesAndPullRequests:async()=>({data:{items:[issue]}})},
-    pulls:{list:async()=>({data:[]}),get:async()=>{
+    pulls:{list:async args=>({data:args.state==='all' && opts.historicalPr ? [matchingPr] : []}),get:async()=>{
       prReads++;
       return {data:opts.originalPrClosesMidSweep&&prReads>1
         ? {...matchingPr,state:'closed',merged:false,merged_at:null} : matchingPr};
@@ -147,7 +147,8 @@ function harness(opts={}) {
       createComment:async()=>{mutations.push('comment');return {data:{}};},
     },
     repos:{
-      getBranch:async args=>{branchNames.push(args.branch);branchReads++;if(opts.apiError)throw Object.assign(new Error('permission denied'),{status:403});
+      getBranch:async args=>{if(args.branch==='Foodex_V2') return {data:{commit:{sha:'v2-head'}}};
+        branchNames.push(args.branch);branchReads++;if(opts.apiError)throw Object.assign(new Error('permission denied'),{status:403});
         return {data:{commit:{sha:opts.branchMoves&&branchReads>1?'new-head':'old-head'}}};},
       getCommit:async()=>({data:{commit:{committer:{date:opts.recentCommit?
         '2026-11-10T09:50:00Z':'2026-11-10T09:20:00Z'}}}}),
@@ -160,6 +161,18 @@ function harness(opts={}) {
       return {data:{check_runs:opts.queuedCi?[{name:'required-ci-gate',status:'queued'}]:[]}};
     }},
     actions:{listWorkflowRunsForRepo:async args=>{
+      if (args.branch === 'Foodex_V2') {
+        integrationReads++;
+        return {data:{workflow_runs:(opts.integratedRunning ||
+            (opts.integratedStartsMidSweep && integrationReads > 1))
+          ? [{name:'FOODEX V2 Integrated Backend Acceptance',head_sha:'v2-head',status:'in_progress'}]
+          : opts.integratedOtherSha ? [{id:19,name:'FOODEX V2 Integrated Backend Acceptance',
+              head_sha:'older-v2',status:'in_progress'}]
+            : opts.integratedMissing ? []
+            : [{id:20,name:'FOODEX V2 Integrated Backend Acceptance',
+                head_sha:'v2-head',status:'completed',
+                conclusion:opts.integratedFailed ? 'failure' : 'success'}]}};
+      }
       if (opts.malformedWorkflowsPageTwo && args.page===2) return {data:{wrong_collection:[]}};
       if (opts.tooManyWorkflows) return {data:{workflow_runs:terminalRuns}};
       if (opts.activeWorkflowPageTwo || opts.unrelatedWorkflowPageTwo)
@@ -198,6 +211,30 @@ test('merged PR does not override active queued CI or a racing successor lease',
     assert.deepEqual(out.mutations,[],JSON.stringify(opts));
   }
 });
+test('merged original stays claimed while latest integrated Foodex_V2 acceptance runs', async () => {
+  const active=await sweep({claimPr:true,mergedPr:true,integratedRunning:true});
+  assert.equal(active.result.released,0);
+  assert.deepEqual(active.mutations,[]);
+  const obsolete=await sweep({claimPr:true,mergedPr:true,integratedOtherSha:true});
+  assert.deepEqual(obsolete.mutations,[]);
+  assert.equal(obsolete.result.released,0);
+});
+
+test('missing or failed latest integration cannot clear merged issue ownership', async () => {
+  for (const mode of [{integratedMissing:true},{integratedFailed:true},
+    {integratedOtherSha:true}]) {
+    const out=await sweep({claimPr:true,mergedPr:true,...mode});
+    assert.deepEqual(out.mutations,[],JSON.stringify(mode));
+    assert.equal(out.result.released,0);
+  }
+});
+
+test('integrated CI starting after first check prevents merged lease release', async () => {
+  const out=await sweep({claimPr:true,mergedPr:true,integratedStartsMidSweep:true});
+  assert.equal(out.result.released,0);
+  assert.deepEqual(out.mutations,[]);
+});
+
 test('unmerged original PR keeps normal stale lease release behavior', async () => {
   const out=await sweep({claimPr:true,mergedPr:false});
   assert.deepEqual(out.mutations,['remove:worker:active','add:worker:handoff-ready','comment']);
@@ -333,4 +370,19 @@ test('inline BASE annotation probes the real branch and preserves recent-commit 
     ['feat/2929-lease-tests', 'feat/2929-lease-tests']);
   assert.deepEqual(stale.mutations,
     ['remove:worker:active','add:worker:handoff-ready','comment']);
+});
+
+test('merged original PR discoverable only via historical search is not a fresh handoff', async () => {
+  const out = await sweep({historicalPr:true,mergedPr:true});
+  assert.equal(out.result.released,0);
+  assert.deepEqual(out.mutations,['remove:worker:active','comment']);
+});
+test('historically closed unmerged PR without claim PR is approval gated', async () => {
+  const out = await sweep({historicalPr:true,closedOriginalPr:true});
+  assert.equal(out.result.released,0);
+  assert.deepEqual(out.mutations,['remove:worker:active','add:gate:approval','comment']);
+});
+test('foreign historical PR cannot suppress a legitimate stale handoff', async () => {
+  const out = await sweep({historicalPr:true,mergedPr:true,foreignPr:true});
+  assert.equal(out.result.released,1);
 });

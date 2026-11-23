@@ -55,6 +55,7 @@ final class Customer360Controller extends Controller
         $access = $this->access($actor);
         $filters = $request->validate([
             'q' => ['nullable', 'string', 'max:120'],
+            'page' => ['nullable', 'integer', 'min:1'],
             'origin_channel' => ['nullable', Rule::in(['b2b', 'b2c', 'unknown'])],
             'registration_source' => ['nullable', Rule::in(['customer_app', 'dashboard', 'import', 'migration'])],
             'active' => ['nullable', Rule::in(['0', '1'])],
@@ -1178,8 +1179,11 @@ final class Customer360Controller extends Controller
         $access = $this->access($actor);
         $customer = $this->findVisible($platformCustomer, $access);
         $this->assertCanManageAddresses($actor, $customer, $access);
-        $validated = $request->validate($this->addressRules(true));
+        // Resolve the scoped address before inspecting the PATCH payload.
+        // A malformed request must not reveal validation feedback for another
+        // customer's address or a missing address identifier.
         $model = $this->addressQuery($customer)->whereKey($address)->firstOrFail();
+        $validated = $request->validate($this->addressRules(true));
         $this->assertLocationSemantics($validated, $model);
         $before = $model->only([
             'label', 'line1', 'city', 'area', 'country_code',

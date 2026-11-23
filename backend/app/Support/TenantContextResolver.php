@@ -19,9 +19,14 @@ final class TenantContextResolver
 
     public function wholesale(User $user, ?int $storeId = null): ResolvedTenantContext
     {
+        // A revoked identity must never resolve a tenant, even with a
+        // historical global role assignment.
+        abort_unless($this->activeIdentity($user), 403);
+
         $allowedRoles = array_values((array) config('admin.channels.b2b.global_roles', []));
         $canAccessWholesale = $user->roles()
             ->where('roles.is_active', true)
+            ->whereNull('roles.archived_at')
             ->where('roles.scope', 'global')
             ->whereIn('roles.code', $allowedRoles)
             ->exists();
@@ -47,6 +52,10 @@ final class TenantContextResolver
         bool $supportAccess = false,
         ?Request $request = null,
     ): ResolvedTenantContext {
+        // Reject revoked identities before both store lookup and SUPER_ADMIN
+        // support-access audit, regardless of historical role bindings.
+        abort_unless($this->activeIdentity($user), 403);
+
         $store = $this->storeForChannel($storeId, 'B2C');
 
         if ($user->hasRole('SUPER_ADMIN')) {
@@ -85,6 +94,10 @@ final class TenantContextResolver
      */
     public function retailStoreIds(User $user): array
     {
+        if (! $this->activeIdentity($user)) {
+            return [];
+        }
+
         if ($user->hasRole('SUPER_ADMIN')) {
             return $this->storesForChannelQuery('B2C')
                 ->pluck('stores.id')
@@ -127,6 +140,15 @@ final class TenantContextResolver
         $this->storeForChannel($storeId, strtoupper($channel));
     }
 
+    private function activeIdentity(User $user): bool
+    {
+        // A previously-loaded User instance may still say active after a
+        // concurrent offboarding write. Require the persisted identity to
+        // remain active before resolving any tenant or support context.
+        return (bool) $user->is_active
+            && User::query()->whereKey($user->getKey())->where('is_active', true)->exists();
+    }
+
     private function enterpriseScopeForStore(int $storeId): ?EnterpriseDataScope
     {
         $scope = $this->organizations->scopeForStore($storeId);
@@ -166,6 +188,7 @@ final class TenantContextResolver
             ->join('store_types', 'store_types.id', '=', 'stores.store_type_id')
             ->where('user_store_roles.user_id', $user->getKey())
             ->where('roles.is_active', true)
+            ->whereNull('roles.archived_at')
             ->where('roles.scope', 'store')
             ->where('stores.is_active', true)
             ->where('store_types.code', 'B2C')
