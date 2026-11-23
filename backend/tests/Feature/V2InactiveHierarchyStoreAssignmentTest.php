@@ -94,6 +94,32 @@ final class V2InactiveHierarchyStoreAssignmentTest extends TestCase
         $this->assertSame($beforeAudit, DB::table('audit_logs')->count());
     }
 
+    public function test_existing_scope_cannot_be_silently_reassigned_across_organizations(): void
+    {
+        [$firstUnit, $store] = $this->hierarchy('source_org', null);
+        [$secondUnit] = $this->hierarchy('target_org', null);
+        $service = app(OrganizationHierarchyService::class);
+        $existing = $service->assignStore($store, $firstUnit);
+        $beforeAudit = DB::table('audit_logs')->count();
+
+        try {
+            $service->assignStore($store, $secondUnit);
+            $this->fail('Existing scope must not move silently between organizations.');
+        } catch (LogicException $exception) {
+            $this->assertSame(
+                'A store cannot be silently moved across enterprise organizations.',
+                $exception->getMessage(),
+            );
+        }
+
+        $this->assertDatabaseHas('enterprise_store_scopes', [
+            'id' => $existing->id,
+            'store_id' => $store->id,
+            'business_unit_id' => $firstUnit->id,
+        ]);
+        $this->assertSame($beforeAudit, DB::table('audit_logs')->count());
+    }
+
     /** @return array{EnterpriseBusinessUnit, Store} */
     private function hierarchy(string $suffix, ?string $inactiveLevel): array
     {
