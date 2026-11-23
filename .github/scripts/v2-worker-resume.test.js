@@ -280,6 +280,44 @@ test('unrecognized historical claim suffixes never silently become the original 
   }
 });
 
+test('actual G004 original historic branch claims normalize exactly without weakening unknown-claim denial', () => {
+  const original='fix/2745-v2-deterministic-setup-composer-lock';
+  const suffixes=[
+    ' (planned; base Foodex_V2 ONLY)', '',
+    ' (PRESERVE)', ' (EXISTING; preserve)', ' (preserved)',
+    ' (ORIGINAL)', ' (ORIGINAL; PRESERVE)', ' (ORIGINAL, KEEP)',
+    ' (ORIGINAL, PRESERVE)', ' (EXISTING ORIGINAL ONLY)',
+    ' (PRESERVE ORIGINAL)', ' (EXISTING)',
+    ' (ORIGINAL; NO NEW BRANCH)', ' | BASE: Foodex_V2 ONLY',
+    '; PR #3444 original DRAFT; BASE Foodex_V2.',
+  ];
+  const refs=claimReferences(suffixes.map(suffix=>({
+    body:'<!-- foodex-worker-state:v1 -->\nSTATE: HANDOFF_READY\nBRANCH: '
+      +original+suffix+'\nPR: #3444',
+  })));
+  assert.equal(refs.length,suffixes.length);
+  assert.deepEqual([...new Set(refs.map(x=>x.branch))],[original]);
+  const shared={
+    issue:{number:2745,state:'open',title:'V2 | G004',labels:[]},
+    branches:[original],
+    prs:[{number:3444,state:'open',head:{ref:original,sha:'current-head'},
+      base:{ref:'Foodex_V2'}}],checkpoint:null,
+  };
+  assert.equal(decide({...shared,refs}).action,'RESUME_ORIGINAL_PR');
+  for(const bad of [
+    original+' (EXISTING; preserve unknown)',
+    original+' (planned; base main ONLY)',
+    original+' (ORIGINAL; PRESERVE) extra',
+    original+'; PR #3444 unrelated; BASE Foodex_V2.',
+    'fix/2745-second-branch (ORIGINAL)',
+  ]) {
+    const forged=claimReferences([{body:'<!-- foodex-worker-state:v1 -->\n'
+      +'STATE: ACTIVE\nBRANCH: '+bad+'\nPR: #3444'}]);
+    assert.equal(decide({...shared,refs:forged}).action,
+      'BLOCK_CONFLICTING_ORIGINALS',bad);
+  }
+});
+
 test('incomplete or oversized search pagination fails closed', async () => {
   await assert.rejects(pages(async()=>({data:{items:[],total_count:2}}),{},'items'),/incomplete/);
   await assert.rejects(pages(async()=>({data:{wrong:[]}}),{},'items'),/payload/);
