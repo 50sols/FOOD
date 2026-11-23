@@ -69,7 +69,7 @@ class UpdatePackageValidatorTest extends TestCase
 
     public function test_exact_signed_version_file_remains_installable(): void
     {
-        foreach (["1.2.0", "1.2.0\n", "1.2.0\r\n"] as $contents) {
+        foreach (['1.2.0', "1.2.0\n", "1.2.0\r\n"] as $contents) {
             $archive = new \ZipArchive;
             $this->assertTrue($archive->open($this->packagePath, \ZipArchive::CREATE | \ZipArchive::OVERWRITE) === true);
             $this->assertTrue($archive->addFromString('backend/app/Release.php', '<?php // release'));
