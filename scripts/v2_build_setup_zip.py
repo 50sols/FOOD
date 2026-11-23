@@ -137,6 +137,16 @@ def build_setup_zip(source_root: Path, output: Path, source_epoch: int) -> str:
                     latest = path.lstat()
                     if not stat.S_ISREG(latest.st_mode) or _member_identity(latest) != _member_identity(meta):
                         raise SetupBuildError(f"Setup staging member changed during packaging: {name}")
+        # Hash the completed, private staging inode, not the public output
+        # pathname. Opening output after publication is a substitution race:
+        # the published ZIP might be replaced before the checksum is read.
+        checksum = hashlib.sha256()
+        with temporary.open("rb") as archive_file:
+            before = os.fstat(archive_file.fileno())
+            for chunk in iter(lambda: archive_file.read(1024 * 1024), b""):
+                checksum.update(chunk)
+            if _member_identity(os.fstat(archive_file.fileno())) != _member_identity(before):
+                raise SetupBuildError("Setup ZIP staging output changed during checksum.")
         # Publishing must be exclusive: a second builder (or symlink) can
         # create the destination after the initial existence preflight.
         # The completed temporary archive and target share a directory, so
@@ -148,13 +158,18 @@ def build_setup_zip(source_root: Path, output: Path, source_epoch: int) -> str:
             raise SetupBuildError("Refusing to replace an existing Setup ZIP.") from exc
         except OSError as exc:
             raise SetupBuildError("Unable to publish Setup ZIP without overwrite.") from exc
+        # Both names must still reference the same unmodified regular inode.
+        # A rival os.replace(output, ...) after publication must not turn the
+        # returned digest into an attestation for unrelated public bytes.
+        staged = temporary.lstat()
+        published = output.lstat()
+        if (not stat.S_ISREG(published.st_mode)
+            or _member_identity(staged) != _member_identity(before)
+            or _member_identity(published) != _member_identity(before)):
+            raise SetupBuildError("Published Setup ZIP changed during checksum verification.")
     finally:
         temporary.unlink(missing_ok=True)
 
-    checksum = hashlib.sha256()
-    with output.open("rb") as archive_file:
-        for chunk in iter(lambda: archive_file.read(1024 * 1024), b""):
-            checksum.update(chunk)
     return checksum.hexdigest()
 
 
