@@ -12,6 +12,7 @@ require __DIR__.'/../backend/vendor/autoload.php';
 use App\Domain\Updater\SignedUpdatePublisher;
 use App\Domain\Updater\TrustedUpdateSignatureVerifier;
 use App\Domain\Updater\UpdatePackageManifest;
+use App\Domain\Updater\UpdatePackageValidator;
 use App\Domain\Updater\SignedUpdateEnvelope;
 
 try {
@@ -63,6 +64,12 @@ try {
     $manifest = new UpdatePackageManifest(
         $options['target-version'], $options['minimum-current-version'],
         $sha, $notes, $options['contains-migrations'] === '1',
+    );
+    // Never issue a trusted-looking signature for corrupt/non-ZIP bytes or a
+    // false migration declaration. This is the same domain validator used
+    // during installation, and must pass before any sidecar is created.
+    (new UpdatePackageValidator)->validate(
+        $manifest, $manifest->minimumCurrentVersion, $zipPath,
     );
     $verifier = new TrustedUpdateSignatureVerifier;
     $json = (new SignedUpdatePublisher($verifier))->issue($manifest, $keyId, $secret);
