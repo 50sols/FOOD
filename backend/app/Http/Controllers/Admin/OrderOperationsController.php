@@ -890,17 +890,16 @@ final class OrderOperationsController extends Controller
                 continue;
             }
 
-            $customerName = trim((string) data_get($notification->data, 'customer_name', ''));
-            $customerPhone = trim((string) data_get($notification->data, 'customer_phone', ''));
-
-            if ($customerName === '') {
-                $customer = $channel === 'b2b'
-                    ? DB::table('b2b_customers')->where('id', $order->b2b_customer_id)->first(['name', 'phone'])
-                    : DB::table('b2c_customers')->where('id', $order->b2c_customer_id)->first(['name', 'phone']);
-
-                $customerName = trim((string) data_get($customer, 'name', ''));
-                $customerPhone = trim((string) data_get($customer, 'phone', ''));
-            }
+            // Notification payloads are historical, independently persisted
+            // metadata. Never render customer PII from their cached name/phone:
+            // it can become stale or refer to a different customer. Resolve
+            // both fields solely from the order's current authoritative B2B/B2C
+            // identity, after tenant, channel and profile admission checks.
+            $customer = $channel === 'b2b'
+                ? DB::table('b2b_customers')->where('id', $order->b2b_customer_id)->first(['name', 'phone'])
+                : DB::table('b2c_customers')->where('id', $order->b2c_customer_id)->first(['name', 'phone']);
+            $customerName = trim((string) data_get($customer, 'name', ''));
+            $customerPhone = trim((string) data_get($customer, 'phone', ''));
 
             $storeName = DB::table('stores')->where('id', $storeId)->value('name');
 
