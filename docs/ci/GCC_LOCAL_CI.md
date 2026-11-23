@@ -63,7 +63,7 @@ The agent additionally accepts an owner-authored comment on an open same-reposit
     /gcc-ci full <exact 40-character current PR head SHA>
 
 The full profile uses the **pinned, immutable** local toolkit from repository commit
-`465f765b72af87e838384efc01247f7ac38ca7c5` (container build and execution scripts), verifying each
+`a63f277a267ef0a9bfe2a78c62aac6ff9aed4770` (container build and execution scripts), verifying each
 Git blob SHA before running. The toolkit is downloaded once, locally cached and
 checked again for integrity at every full job. The agent first validates the
 PR owner/base/head, fetches the exact PR commit and the v1.0.125 update base,
@@ -148,3 +148,42 @@ uses a persistent Flutter pub download cache to reduce repeated pulls.
 The full pipeline will only be **activated on GCC after the exact-head
 PowerShell script and pinned toolkit are verified on the authorized machine**.
 An open PR containing the tools alone is not evidence of a running job.
+
+
+## Scoped full-test commands and safe diagnostic output
+
+The agent also accepts these *exact-SHA*, owner-authorized PR commands:
+
+    /gcc-ci backend <40-character PR head>
+    /gcc-ci setup <40-character PR head>
+    /gcc-ci packages <40-character PR head>
+
+- backend validates PHP/Composer, lint/static analysis, all four exhaustive
+  PHPUnit shards, SQLite migration/seed and MySQL 8/Redis 7 deployment and
+  recovery, producing local JUnit files (not raw public log uploads).
+- setup builds Customer/Driver Web previews and the real production-dependency
+  Setup ZIP, verifies its contents and exercises the existing clean-install
+  HTTP/Playwright installer contract using that same ZIP. Does **not** claim
+  that an Update ZIP works.
+- packages runs setup acceptance and then attempts the canonical Update ZIP.
+  It must **fail closed** when vendor/Composer inputs differ from the supported
+  base. This is necessary because the existing updater protects vendor/ and
+  does not implement a proven atomic dependency transition.
+- full runs backend + setup + update; it is PASS only if every applicable stage
+  succeeds. All profiles verify exact PR source SHA, preserve evidence locally
+  and leave the existing GitHub Required CI authoritative.
+
+On a failure, the PR comment contains a bounded stage label (for example,
+docker-image-build, composer-dependencies or mysql-redis-startup), but no
+server logs, credentials or test account tokens.
+
+The canonical release-update-bundle workflow also stages TCPDF from the
+immutable commit b18f6119161019916c5bb07cb8da5205ae5c1b63. The updated
+GCC toolkit reproduces this pinned asset plus its cURL fallback, checks
+Composer lock consistency and verifies the complete canonical Update ZIP
+manifest/checksum and critical public/preview/PDF files.
+
+**Actual results, not projected outcomes:** First Docker images downloaded and
+built locally on #3444, but the first full test returned FAIL before confirmed
+Laravel/ZIP acceptance. The diagnostic version must be tested on GCC, and
+no online runner-minutes reduction or release certification is yet proven.
