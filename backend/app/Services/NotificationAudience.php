@@ -194,11 +194,13 @@ final class NotificationAudience
         $dashboardRoles = array_values((array) config('admin.dashboard_roles', []));
         $isDashboardUser = $user->roles()
             ->where('roles.is_active', true)
+            ->whereNull('roles.archived_at')
             ->whereIn('roles.code', $dashboardRoles)
             ->exists()
             || $user->storeRoleAssignments()
                 ->whereHas('role', fn (Builder $roles) => $roles
                     ->where('is_active', true)
+                    ->whereNull('archived_at')
                     ->whereIn('code', $dashboardRoles))
                 ->exists();
 
@@ -221,8 +223,16 @@ final class NotificationAudience
         }
 
         $storeIds = collect(DB::table('user_store_roles')
-            ->where('user_id', $user->id)
-            ->pluck('store_id'))
+            ->join('roles', 'roles.id', '=', 'user_store_roles.role_id')
+            ->join('stores', 'stores.id', '=', 'user_store_roles.store_id')
+            ->join('store_types', 'store_types.id', '=', 'stores.store_type_id')
+            ->where('user_store_roles.user_id', $user->id)
+            ->where('roles.is_active', true)
+            ->whereNull('roles.archived_at')
+            ->where('roles.scope', 'store')
+            ->where('stores.is_active', true)
+            ->where('store_types.code', 'B2C')
+            ->pluck('user_store_roles.store_id'))
             ->merge(DB::table('b2c_customers')->where('user_id', $user->id)->pluck('store_id'))
             ->merge($eligibleDriver === null ? [] : [(int) $eligibleDriver->store_id])
             ->merge($vanStoreIds)

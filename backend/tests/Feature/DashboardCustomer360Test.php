@@ -532,6 +532,88 @@ class DashboardCustomer360Test extends TestCase
         ]);
     }
 
+    public function test_address_patch_resolves_scoped_record_before_validating_payload_in_both_locales(): void
+    {
+        $storeA = $this->store('B2C', 'ADDRESS-PATCH-A', 'Address Patch A');
+        $storeB = $this->store('B2C', 'ADDRESS-PATCH-B', 'Address Patch B');
+        $customerA = $this->customer('Patch Customer A', 'patch-a@example.test', $storeA);
+        $customerB = $this->customer('Patch Customer B', 'patch-b@example.test', $storeB);
+        $platformA = PlatformCustomer::query()->where('user_id', $customerA->id)->firstOrFail();
+        $platformB = PlatformCustomer::query()->where('user_id', $customerB->id)->firstOrFail();
+        $super = $this->globalAdmin('SUPER_ADMIN');
+
+        foreach ([$platformA, $platformB] as $platform) {
+            $this->actingAs($super)
+                ->post(route('admin.customer-360.addresses.store', [
+                    'platformCustomer' => $platform->id,
+                ]), [
+                    'line1' => 'Original Street',
+                    'city' => 'Cairo',
+                    'country_code' => 'EG',
+                    'location_source' => 'manual',
+                ])
+                ->assertRedirect();
+        }
+
+        $own = Address::query()->where('platform_customer_id', $platformA->id)->firstOrFail();
+        $foreign = Address::query()->where('platform_customer_id', $platformB->id)->firstOrFail();
+        $ownUrl = route('admin.customer-360.addresses.update', [
+            'platformCustomer' => $platformA->id,
+            'address' => $own->id,
+        ]);
+        $foreignUrl = route('admin.customer-360.addresses.update', [
+            'platformCustomer' => $platformA->id,
+            'address' => $foreign->id,
+        ]);
+        $missingUrl = route('admin.customer-360.addresses.update', [
+            'platformCustomer' => $platformA->id,
+            'address' => $foreign->id + 99999,
+        ]);
+        $otherCustomerUrl = route('admin.customer-360.addresses.update', [
+            'platformCustomer' => $platformB->id,
+            'address' => $foreign->id,
+        ]);
+        $retailAdmin = $this->retailAdmin($storeA);
+        $initialLocale = app()->getLocale();
+        $originalAuditCount = DB::table('audit_logs')->count();
+        $originalAddressCount = DB::table('addresses')->count();
+
+        try {
+            foreach (['en', 'ar'] as $locale) {
+                $retailAdmin->forceFill(['locale' => $locale])->saveQuietly();
+                app()->setLocale($locale);
+                $this->actingAs($retailAdmin->fresh())
+                    ->patch($foreignUrl, ['line1' => ['nested', 'invalid']])
+                    ->assertNotFound();
+                $this->actingAs($retailAdmin->fresh())
+                    ->patch($missingUrl, ['line1' => ['nested', 'invalid']])
+                    ->assertNotFound();
+                $this->actingAs($retailAdmin->fresh())
+                    ->patch($otherCustomerUrl, ['line1' => ['nested', 'invalid']])
+                    ->assertNotFound();
+            }
+        } finally {
+            app()->setLocale($initialLocale);
+        }
+
+        $this->assertSame($originalAddressCount, DB::table('addresses')->count());
+        $this->assertSame($originalAuditCount, DB::table('audit_logs')->count());
+        $this->assertSame('Original Street', $own->fresh()->line1);
+        $this->assertSame('Original Street', $foreign->fresh()->line1);
+
+        $this->actingAs($retailAdmin->fresh())
+            ->patch($ownUrl, ['line1' => ['nested', 'invalid']])
+            ->assertSessionHasErrors('line1');
+        $this->assertSame($originalAuditCount, DB::table('audit_logs')->count());
+
+        $this->actingAs($retailAdmin->fresh())
+            ->patch($ownUrl, ['line1' => 'Authorized Street'])
+            ->assertRedirect();
+        $this->assertSame('Authorized Street', $own->fresh()->line1);
+        $this->assertSame('Original Street', $foreign->fresh()->line1);
+        $this->assertSame($originalAuditCount + 1, DB::table('audit_logs')->count());
+    }
+
     public function test_retail_admin_can_fully_manage_visible_customer_addresses_only(): void
     {
         $storeA = $this->store('B2C', 'ADDRESS-A', 'Address Store A');

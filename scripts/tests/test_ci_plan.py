@@ -158,10 +158,10 @@ class CiPlanTest(unittest.TestCase):
 
     def test_required_laravel_jobs_cache_exact_composer_vendor_with_install_fallback(self):
         workflow=(ROOT/".github/workflows/backend-ci.yml").read_text(encoding="utf-8")
-        self.assertEqual(3,workflow.count("- name: Cache installed Composer dependencies"))
-        self.assertEqual(3,workflow.count("composer-vendor-v1-${{ runner.os }}-php-8.3-${{ hashFiles('backend/composer.json', 'backend/composer.lock') }}"))
-        self.assertEqual(3,workflow.count("if [[ ! -f vendor/autoload.php ]]; then"))
-        self.assertEqual(3,workflow.count("composer install --no-interaction --prefer-dist --no-progress"))
+        self.assertEqual(4,workflow.count("- name: Cache installed Composer dependencies"))
+        self.assertEqual(4,workflow.count("composer-vendor-v1-${{ runner.os }}-php-8.3-${{ hashFiles('backend/composer.json', 'backend/composer.lock') }}"))
+        self.assertEqual(4,workflow.count("if [[ ! -f vendor/autoload.php ]]; then"))
+        self.assertEqual(4,workflow.count("composer install --no-interaction --prefer-dist --no-progress"))
         self.assertNotIn("restore-keys:",workflow.split("- name: Cache installed Composer dependencies",1)[1].split("- name:",1)[0])
 
     @staticmethod
@@ -242,6 +242,9 @@ class CiPlanTest(unittest.TestCase):
             "docs/v2/qa/4026-orders-analytics-filter-touch.md":{"backend","dashboard_ui"},
             "docs/v2/qa/4028-customer360-list-return-context.md":{"backend","dashboard_ui"},
             "docs/v2/qa/2846-organization-setup-guidance.md":{"backend","dashboard_ui"},
+            "docs/v2/qa/4238-retail-canonical-orders-route-isolation.md":{"backend"},
+            "docs/v2/qa/4244-retail-finance-workspace-isolation.md":{"backend"},
+            "docs/v2/qa/4248-wholesale-reports-workspace-isolation.md":{"backend"},
             "docs/v2/qa/4007-treasury-page-tab-rail.md":{"backend","dashboard_ui"},
             "docs/v2/qa/4000-archived-active-role-authority.md":{"backend"},
             "docs/v2/qa/2732-wholesale-financial-parity.md":{"backend","customer"},

@@ -274,6 +274,19 @@ final class TreasuryChequeService
         }, 3);
     }
 
+    /**
+     * Reject inaccessible cheque route targets before inspecting mutation input.
+     * Transition retains its own transactional, locked scoped relookup.
+     */
+    public function assertTransitionTargetInScope(
+        User $actor,
+        ResolvedTenantContext $context,
+        int $chequeId,
+    ): void {
+        $scope = $this->authorizedScope($actor, $context, self::APPROVE_PERMISSION, self::APPROVE_CAPABILITY);
+        abort_unless($this->chequeQuery($scope)->whereKey($chequeId)->exists(), 404);
+    }
+
     /** @param array<string, mixed> $attributes */
     public function transition(
         User $actor,

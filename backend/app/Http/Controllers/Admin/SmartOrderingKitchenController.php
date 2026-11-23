@@ -9,6 +9,8 @@ use App\Http\Controllers\Controller;
 use App\Models\User;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Str;
 use Illuminate\Validation\Rule;
 
 final class SmartOrderingKitchenController extends Controller
@@ -42,6 +44,17 @@ final class SmartOrderingKitchenController extends Controller
         $model = $this->branch($branch, $actor);
         $this->assertEntitled($model, 'kitchen_routing');
 
+        // Scope an explicit valid station before unrelated routing fields. The
+        // mutation service still rechecks active station membership on write.
+        $requestedStation = $request->input('station_public_id');
+        if (is_string($requestedStation) && Str::isUuid($requestedStation)) {
+            abort_unless(DB::table('smart_ordering_kitchen_stations')
+                ->where('branch_id', $model->getKey())
+                ->where('public_id', $requestedStation)
+                ->where('is_active', true)
+                ->exists(), 404);
+        }
+
         $data = $request->validate([
             'station_public_id' => ['required', 'uuid'],
             'match_type' => ['required', Rule::in(['all', 'product', 'category'])],
@@ -70,6 +83,7 @@ final class SmartOrderingKitchenController extends Controller
         $actor = $this->actor($request);
         $model = $this->branch($branch, $actor);
         $this->assertEntitled($model);
+        $this->kitchen->assertTicketInBranch($model, $reference);
 
         $data = $request->validate([
             'action' => ['required', Rule::in(['bump', 'recall', 'expedite'])],
@@ -91,6 +105,7 @@ final class SmartOrderingKitchenController extends Controller
         $actor = $this->actor($request);
         $model = $this->branch($branch, $actor);
         $this->assertEntitled($model);
+        $this->kitchen->assertTicketInBranch($model, $reference);
 
         $data = $request->validate([
             'action' => ['required', Rule::in(['bump', 'recall'])],

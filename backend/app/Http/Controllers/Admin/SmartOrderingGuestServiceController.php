@@ -9,6 +9,7 @@ use App\Http\Controllers\Controller;
 use App\Models\User;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Str;
 use Illuminate\Validation\Rule;
 
 final class SmartOrderingGuestServiceController extends Controller
@@ -21,6 +22,7 @@ final class SmartOrderingGuestServiceController extends Controller
     public function storeReservation(string $branch, Request $request): RedirectResponse
     {
         [$actor, $branchModel] = $this->authorizedBranch($branch, $request);
+        $this->preflightSelectedTable($branchModel, $request);
         $this->guests->createReservation($branchModel, $this->reservationData($request), $actor);
 
         return $this->back($branchModel, 'reservations', __('smart_ordering.guest_service.reservation_saved'));
@@ -32,6 +34,8 @@ final class SmartOrderingGuestServiceController extends Controller
         Request $request,
     ): RedirectResponse {
         [$actor, $branchModel] = $this->authorizedBranch($branch, $request);
+        $this->guests->assertReservationInBranch($branchModel, $reservation);
+        $this->preflightSelectedTable($branchModel, $request);
         $this->guests->updateReservation(
             $branchModel,
             $reservation,
@@ -48,6 +52,7 @@ final class SmartOrderingGuestServiceController extends Controller
         Request $request,
     ): RedirectResponse {
         [$actor, $branchModel] = $this->authorizedBranch($branch, $request);
+        $this->guests->assertReservationInBranch($branchModel, $reservation);
         $data = $request->validate([
             'status' => ['required', Rule::in(['CONFIRMED', 'SEATED', 'COMPLETED', 'CANCELLED', 'NO_SHOW'])],
         ]);
@@ -70,6 +75,7 @@ final class SmartOrderingGuestServiceController extends Controller
         Request $request,
     ): RedirectResponse {
         [$actor, $branchModel] = $this->authorizedBranch($branch, $request);
+        $this->guests->assertWaitlistInBranch($branchModel, $entry);
         $this->guests->updateWaitlist($branchModel, $entry, $this->waitlistData($request), $actor);
 
         return $this->back($branchModel, 'waitlist', __('smart_ordering.guest_service.waitlist_saved'));
@@ -81,6 +87,7 @@ final class SmartOrderingGuestServiceController extends Controller
         Request $request,
     ): RedirectResponse {
         [$actor, $branchModel] = $this->authorizedBranch($branch, $request);
+        $this->guests->assertWaitlistInBranch($branchModel, $entry);
         $data = $request->validate([
             'status' => ['required', Rule::in(['WAITING', 'CONTACTED', 'CANCELLED'])],
         ]);
@@ -95,6 +102,8 @@ final class SmartOrderingGuestServiceController extends Controller
         Request $request,
     ): RedirectResponse {
         [$actor, $branchModel] = $this->authorizedBranch($branch, $request);
+        $this->guests->assertWaitlistInBranch($branchModel, $entry);
+        $this->preflightSelectedTable($branchModel, $request);
         $data = $request->validate([
             'table_public_id' => ['nullable', 'uuid'],
             'seat_now' => ['required', 'boolean'],
@@ -149,6 +158,16 @@ final class SmartOrderingGuestServiceController extends Controller
             'priority_reason' => ['nullable', 'string', 'max:255'],
             'notes' => ['nullable', 'string', 'max:1000'],
         ]);
+    }
+
+    private function preflightSelectedTable(SmartOrderingBranch $branch, Request $request): void
+    {
+        // Conceal an unavailable but well-formed table before validating
+        // unrelated guest/seat fields. Invalid/missing UUIDs retain the 422.
+        $tableId = $request->input('table_public_id');
+        if (is_string($tableId) && Str::isUuid($tableId)) {
+            $this->guests->assertActiveTableInBranch($branch, $tableId);
+        }
     }
 
     private function actor(Request $request): User

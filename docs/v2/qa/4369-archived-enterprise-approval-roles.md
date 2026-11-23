@@ -1,0 +1,7 @@
+# P033 #4369 — archived enterprise approval roles
+
+- Independent P033 leaf under #2784 / #2503, integration base Foodex_V2 only.
+- EnterpriseSecurityAccessResolver::rolesWithPermission previously selected historical archived roles if still is_active; the active role can grant a base permission while an archived second role supplies a more permissive scope/limit evaluation. Reject archived roles in both global-role query and Retail store candidate filtering. Existing direct permission, amount, organizational hierarchy and delegation rules remain unchanged.
+- Seeded DB regressions: two roles share orders.approve; active role restricted to org A and historical role unrestricted; before archive both organizations permitted; after archive active role still grants base permission but org B is denied (including stale actor), org A remains valid; no audit mutations. Retail store candidates use real seeded RETAIL_CUSTOMER_SUPPORT and B2C_STORE_ADMIN; archive latter without toggling is_active, preserve active candidate and exclude archived even for stale user.
+- HIGH-risk technical security review; no claim this leaf covers all enterprise role entry points or concurrent transaction race. Require terminal exact-head Repository Policy, V2 Isolation and Required CI four Laravel shards/MySQL Redis, SHA protected squash merge and verified issue closure. Parent #2784 remains OPEN.
+- MOBILE IMPACT: Customer NO_DIRECT_SOURCE_IMPACT, Driver NO_DIRECT_SOURCE_IMPACT, Van NO_DIRECT_SOURCE_IMPACT. No mobile code, main, production, releases or tags.

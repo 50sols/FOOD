@@ -74,6 +74,19 @@ final class EnterpriseTreasuryController extends Controller
         abort_unless(is_string($tab) && in_array($tab, self::TABS, true), 404);
         abort_unless($this->allowed($actor, $storeId, 'finance.view'), 403);
 
+        // Reject nested IDs after Treasury authorization, before integer()
+        // can coerce an array into an unrelated facility/account/cashbox ID.
+        // Only inspect the filter owned by the selected panel.
+        $idFilters = match ($tab) {
+            'financing' => ['facility_id'],
+            'cheques', 'reconciliation' => ['bank_account_id'],
+            'cash_closing' => ['cashbox_id'],
+            default => [],
+        };
+        foreach ($idFilters as $filter) {
+            abort_if(is_array($request->query($filter)), 404);
+        }
+
         $cashboxes = EnterpriseCashbox::query()
             ->where('store_id', $storeId)
             ->where('is_active', true)
@@ -403,6 +416,7 @@ final class EnterpriseTreasuryController extends Controller
     public function transitionCheque(Request $request, int $cheque): RedirectResponse
     {
         [$actor, $context, $storeId] = $this->mutationContext($request);
+        $this->cheques->assertTransitionTargetInScope($actor, $context, $cheque);
         $data = $request->validate([
             '_operation_key' => ['required', 'string', 'max:128', 'regex:/^[A-Za-z0-9][A-Za-z0-9._:-]*$/'],
             'to_status' => ['required', Rule::in([
@@ -694,6 +708,11 @@ final class EnterpriseTreasuryController extends Controller
     {
         $options = $this->storeOptions($actor);
         abort_if($options === [], 403);
+
+        // An explicitly nested selector must never coerce to zero and choose
+        // a different authorized default store for Treasury reads or writes.
+        // Resolve the actor's allowed stores first; keep the auth precedence.
+        abort_if(is_array($request->input('store_id')), 404);
 
         $requested = $request->integer('store_id');
         $selected = collect($options)->firstWhere('id', $requested > 0 ? $requested : $options[0]['id']);

@@ -345,6 +345,349 @@ class CustomerGroupManagementTest extends TestCase
         $this->assertSame($before, DB::table('commercial_customer_groups')->count());
     }
 
+    public function test_nested_group_search_filters_are_rejected_after_store_authorization_without_writes(): void
+    {
+        $global = $this->admin();
+        $wholesaleStoreId = app(WholesalePrincipal::class)->storeId();
+        $retailTypeId = (int) DB::table('store_types')->where('code', 'B2C')->value('id');
+        $retailRoleId = (int) Role::query()->where('code', 'B2C_STORE_ADMIN')->value('id');
+        $stores = [];
+        foreach (['A', 'B'] as $letter) {
+            $stores[] = (int) DB::table('stores')->insertGetId([
+                'store_type_id' => $retailTypeId,
+                'code' => 'GROUP-SHAPE-'.$letter,
+                'name' => 'Group Shape Store '.$letter,
+                'is_active' => true,
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+        }
+
+        $retail = User::factory()->create(['is_active' => true, 'locale' => 'en']);
+        DB::table('user_store_roles')->insert([
+            'user_id' => $retail->id,
+            'store_id' => $stores[0],
+            'role_id' => $retailRoleId,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        foreach ([
+            [$wholesaleStoreId, 'Wholesale%_VIP'],
+            [$stores[0], 'Retail%_VIP'],
+            [$stores[1], 'Foreign%_VIP'],
+        ] as [$storeId, $name]) {
+            DB::table('commercial_customer_groups')->insert([
+                'store_id' => $storeId,
+                'name' => $name,
+                'priority' => 1,
+                'is_active' => true,
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+        }
+
+        $before = [
+            DB::table('commercial_customer_groups')->count(),
+            DB::table('commercial_customer_group_members')->count(),
+            DB::table('audit_logs')->count(),
+        ];
+        $roleless = User::factory()->create(['is_active' => true, 'locale' => 'en']);
+
+        foreach (['ar' => 'rtl', 'en' => 'ltr'] as $locale => $direction) {
+            app()->setLocale($locale);
+            $global->forceFill(['locale' => $locale])->save();
+            $retail->forceFill(['locale' => $locale])->save();
+
+            foreach ([
+                [$global, 'admin.b2b.customer-groups.index', $wholesaleStoreId, 'Wholesale%_VIP'],
+                [$retail, 'admin.b2c.customer-groups.index', $stores[0], 'Retail%_VIP'],
+            ] as [$actor, $routeName, $storeId, $visible]) {
+                $url = route($routeName, ['store_id' => $storeId]);
+
+                $this->actingAs($actor->fresh())->get($url.'&q=%25_')
+                    ->assertOk()
+                    ->assertSee($visible)
+                    ->assertSee('dir="'.$direction.'"', false);
+                $this->actingAs($actor->fresh())->get($url.'&q=')->assertOk();
+                $this->actingAs($actor->fresh())->get($url.'&q=unmatched')->assertOk();
+
+                foreach (['&q%5B%5D=VIP', '&q%5Bdeep%5D%5B0%5D=VIP'] as $nested) {
+                    $this->actingAs($actor->fresh())->get($url.$nested)->assertNotFound();
+                }
+            }
+
+            $this->actingAs($retail->fresh())
+                ->get(route('admin.b2c.customer-groups.index', ['store_id' => $stores[1]]).'&q%5B%5D=VIP')
+                ->assertNotFound();
+            $this->actingAs($roleless)
+                ->get(route('admin.b2c.customer-groups.index', ['store_id' => $stores[0]]).'&q%5B%5D=VIP')
+                ->assertForbidden();
+        }
+
+        $this->assertSame($before, [
+            DB::table('commercial_customer_groups')->count(),
+            DB::table('commercial_customer_group_members')->count(),
+            DB::table('audit_logs')->count(),
+        ]);
+    }
+
+    public function test_nested_group_store_get_selectors_fail_closed_after_b2b_b2c_scope_checks(): void
+    {
+        $global = $this->admin();
+        $wholesaleStoreId = app(WholesalePrincipal::class)->storeId();
+        $retailTypeId = (int) DB::table('store_types')->where('code', 'B2C')->value('id');
+        $retailRoleId = (int) Role::query()->where('code', 'B2C_STORE_ADMIN')->value('id');
+        $stores = [];
+        foreach (['A', 'B'] as $letter) {
+            $stores[] = (int) DB::table('stores')->insertGetId([
+                'store_type_id' => $retailTypeId,
+                'code' => 'GROUP-ID-SHAPE-'.$letter,
+                'name' => 'Group ID Shape Store '.$letter,
+                'is_active' => true,
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+        }
+
+        $retail = User::factory()->create(['is_active' => true, 'locale' => 'en']);
+        DB::table('user_store_roles')->insert([
+            'user_id' => $retail->id,
+            'store_id' => $stores[0],
+            'role_id' => $retailRoleId,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        foreach ([
+            [$wholesaleStoreId, 'Wholesale ID Shape Group'],
+            [$stores[0], 'Retail ID Shape Group'],
+            [$stores[1], 'Foreign ID Shape Group'],
+        ] as [$storeId, $name]) {
+            DB::table('commercial_customer_groups')->insert([
+                'store_id' => $storeId,
+                'name' => $name,
+                'priority' => 1,
+                'is_active' => true,
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+        }
+
+        $before = [
+            DB::table('commercial_customer_groups')->count(),
+            DB::table('commercial_customer_group_members')->count(),
+            DB::table('audit_logs')->count(),
+        ];
+        $roleless = User::factory()->create(['is_active' => true, 'locale' => 'en']);
+
+        foreach (['ar' => 'rtl', 'en' => 'ltr'] as $locale => $direction) {
+            $global->forceFill(['locale' => $locale])->save();
+            $retail->forceFill(['locale' => $locale])->save();
+
+            foreach ([
+                [$global, 'admin.b2b.customer-groups.index', $wholesaleStoreId, 'Wholesale ID Shape Group'],
+                [$retail, 'admin.b2c.customer-groups.index', $stores[0], 'Retail ID Shape Group'],
+            ] as [$actor, $routeName, $storeId, $visible]) {
+                $url = route($routeName);
+
+                foreach (['', '?store_id='] as $fallback) {
+                    $this->actingAs($actor->fresh())
+                        ->get($url.$fallback)
+                        ->assertOk()
+                        ->assertSee('dir="'.$direction.'"', false);
+                }
+
+                $this->actingAs($actor->fresh())
+                    ->get($url.'?store_id='.$storeId)
+                    ->assertOk()
+                    ->assertSee($visible)
+                    ->assertDontSee('Foreign ID Shape Group')
+                    ->assertSee('dir="'.$direction.'"', false);
+
+                foreach ([
+                    '?store_id%5B%5D='.$storeId,
+                    '?store_id%5Bdeep%5D='.$storeId,
+                    '?store_id%5Bdeep%5D%5Bid%5D='.$storeId,
+                ] as $nested) {
+                    $this->actingAs($actor->fresh())
+                        ->get($url.$nested)
+                        ->assertNotFound();
+                }
+            }
+
+            $this->actingAs($retail->fresh())
+                ->get(route('admin.b2c.customer-groups.index', ['store_id' => $stores[1]]))
+                ->assertNotFound();
+            $this->actingAs($roleless)
+                ->get(route('admin.b2c.customer-groups.index').'?store_id='.$stores[0])
+                ->assertForbidden();
+            $this->actingAs($roleless)
+                ->get(route('admin.b2c.customer-groups.index').'?store_id%5B%5D='.$stores[0])
+                ->assertForbidden();
+        }
+
+        $this->assertSame($before, [
+            DB::table('commercial_customer_groups')->count(),
+            DB::table('commercial_customer_group_members')->count(),
+            DB::table('audit_logs')->count(),
+        ]);
+    }
+
+    public function test_nested_group_mutation_store_selectors_fail_closed_without_writes_in_both_channels(): void
+    {
+        $global = $this->admin();
+        $wholesaleStoreId = app(WholesalePrincipal::class)->storeId();
+        $retailTypeId = (int) DB::table('store_types')->where('code', 'B2C')->value('id');
+        $retailRoleId = (int) Role::query()->where('code', 'B2C_STORE_ADMIN')->value('id');
+        $stores = [];
+        foreach (['A', 'B'] as $letter) {
+            $stores[] = (int) DB::table('stores')->insertGetId([
+                'store_type_id' => $retailTypeId,
+                'code' => 'GROUP-WRITE-SHAPE-'.$letter,
+                'name' => 'Group Write Shape Store '.$letter,
+                'is_active' => true,
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+        }
+
+        $retail = User::factory()->create(['is_active' => true, 'locale' => 'en']);
+        DB::table('user_store_roles')->insert([
+            'user_id' => $retail->id,
+            'store_id' => $stores[0],
+            'role_id' => $retailRoleId,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        $roleless = User::factory()->create(['is_active' => true, 'locale' => 'en']);
+
+        foreach (['ar', 'en'] as $locale) {
+            $global->forceFill(['locale' => $locale])->save();
+            $retail->forceFill(['locale' => $locale])->save();
+
+            foreach ([
+                [$global, 'admin.b2b.customer-groups', $wholesaleStoreId],
+                [$retail, 'admin.b2c.customer-groups', $stores[0]],
+            ] as [$actor, $routePrefix, $storeId]) {
+                $name = 'Group shape '.($storeId).'-'.$locale;
+                $this->actingAs($actor->fresh())
+                    ->post(route($routePrefix.'.store'), [
+                        'store_id' => $storeId,
+                        'name' => $name,
+                        'priority' => 1,
+                    ])->assertRedirect();
+
+                $groupId = (int) DB::table('commercial_customer_groups')
+                    ->where('store_id', $storeId)->where('name', $name)->value('id');
+                $this->assertGreaterThan(0, $groupId);
+
+                // Existing scalar update remains supported, including AR/EN actors.
+                $this->actingAs($actor->fresh())
+                    ->patch(route($routePrefix.'.update', ['group' => $groupId]), [
+                        'store_id' => $storeId,
+                        'name' => $name,
+                        'priority' => 2,
+                        'is_active' => 1,
+                    ])->assertRedirect();
+
+                $before = [
+                    DB::table('commercial_customer_groups')->count(),
+                    DB::table('commercial_customer_group_members')->count(),
+                    DB::table('audit_logs')->count(),
+                ];
+
+                // Exercise the three nested shapes across B2B/B2C and
+                // AR/EN cohorts without exhausting the real per-user route
+                // throttle (20 requests/minute for bulk-members).
+                $nested = match ($locale.'|'.$routePrefix) {
+                    'ar|admin.b2b.customer-groups' => [$storeId],
+                    'ar|admin.b2c.customer-groups' => ['deep' => $storeId],
+                    'en|admin.b2b.customer-groups' => ['deep' => ['id' => $storeId]],
+                    default => [$storeId],
+                };
+                $this->actingAs($actor->fresh())
+                    ->post(route($routePrefix.'.store'), [
+                        'store_id' => $nested,
+                        'name' => 'Unintended fallback group',
+                        'priority' => 1,
+                    ])->assertNotFound();
+
+                $this->actingAs($actor->fresh())
+                    ->postJson(route($routePrefix.'.store'), [
+                        'store_id' => $nested,
+                        'name' => 'Unintended JSON group',
+                        'priority' => 1,
+                    ])->assertNotFound();
+
+                $this->actingAs($actor->fresh())
+                    ->patch(route($routePrefix.'.update', ['group' => $groupId]), [
+                        'store_id' => $nested,
+                        'name' => 'Tampered group name',
+                        'priority' => 0,
+                        'is_active' => 0,
+                    ])->assertNotFound();
+
+                $this->actingAs($actor->fresh())
+                    ->post(route($routePrefix.'.members', ['group' => $groupId]), [
+                        'store_id' => $nested,
+                        'operation' => 'add',
+                        'customer_ids' => [999999],
+                    ])->assertNotFound();
+
+                $this->actingAs($actor->fresh())
+                    ->post(route($routePrefix.'.bulk-members'), [
+                        'store_id' => $nested,
+                        'operation' => 'add',
+                        'group_ids' => [$groupId],
+                        'customer_ids' => [999999],
+                    ])->assertNotFound();
+
+                $this->assertDatabaseHas('commercial_customer_groups', [
+                    'id' => $groupId,
+                    'store_id' => $storeId,
+                    'name' => $name,
+                    'priority' => 2,
+                    'is_active' => true,
+                ]);
+                $this->assertDatabaseMissing('commercial_customer_groups', [
+                    'name' => 'Unintended fallback group',
+                ]);
+                $this->assertDatabaseMissing('commercial_customer_groups', [
+                    'name' => 'Unintended JSON group',
+                ]);
+                $this->assertSame($before, [
+                    DB::table('commercial_customer_groups')->count(),
+                    DB::table('commercial_customer_group_members')->count(),
+                    DB::table('audit_logs')->count(),
+                ]);
+            }
+
+            // An explicitly foreign Retail store stays denied before writes,
+            // even though the actor is allowed in another active Retail store.
+            $this->actingAs($retail->fresh())
+                ->post(route('admin.b2c.customer-groups.store'), [
+                    'store_id' => $stores[1],
+                    'name' => 'Foreign Retail Tamper',
+                ])->assertNotFound();
+
+            // Dashboard middleware authorization wins over malformed input.
+            $this->actingAs($roleless)
+                ->post(route('admin.b2c.customer-groups.store'), [
+                    'store_id' => $stores[0],
+                    'name' => 'Roleless Tamper',
+                ])->assertForbidden();
+            $this->actingAs($roleless)
+                ->post(route('admin.b2c.customer-groups.store'), [
+                    'store_id' => ['nested' => $stores[0]],
+                    'name' => 'Roleless Nested Tamper',
+                ])->assertForbidden();
+        }
+        $this->assertDatabaseMissing('commercial_customer_groups', ['name' => 'Foreign Retail Tamper']);
+        $this->assertDatabaseMissing('commercial_customer_groups', ['name' => 'Roleless Tamper']);
+        $this->assertDatabaseMissing('commercial_customer_groups', ['name' => 'Roleless Nested Tamper']);
+    }
+
     private function admin(): User
     {
         $admin = User::query()->create([

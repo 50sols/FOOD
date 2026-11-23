@@ -289,6 +289,17 @@ final class LoyaltyService
         }, 3);
     }
 
+    /**
+     * Reject a foreign or unavailable customer before unrelated Admin input
+     * validation. The actual adjustment repeats the authoritative checks.
+     */
+    public function assertAdjustmentTargetInScope(User $actor, SmartOrderingSite $site, int $customerId): void
+    {
+        $this->assertEnabled($site);
+        abort_unless($actor->hasPermission('smart_ordering.manage', (int) $site->store_id), 403);
+        $this->assertTenantCustomer($site, $customerId);
+    }
+
     /** @return array<string,int> */
     public function adjust(
         User $actor,

@@ -8,6 +8,11 @@ Read `AGENTS.md` first. These conventions help an agent choose the expected impl
 - Before a new V2 worker claim, count independently verified current active/waiting leases and any active coordinator, validate disjoint Issue/file fences, fail closed on unknown state, and recheck after claiming. Do not invent live workers, weaken CI, or allow `main` merges or deployment.
 - The configuration reserves capacity; it does not run GitHub Actions or ChatGPT worker sessions. The historical independent six-lane #1034 mission limit remains scoped to that mission only.
 
+## PR CI Freeze & merge readiness (V2 pre-merge)
+
+- Batch changes and use focused feedback before explicitly freezing an original Foodex_V2 PR at its exact HEAD SHA. Trust only the documented GitHub PR comment marker and permitted red-CI fix/reasoned unfreeze lineage; never bypass Required CI. See `docs/worker-rules/PR_CI_FREEZE_AND_MERGE_READINESS.md`.
+- The read-only V2 merge readiness report runs after `required-ci-gate` and differentiates stale/red CI, incomplete source, Draft needing review, conflicts, human review gates and candidates ready for merge *review*. It never approves, closes, or merges automatically. Keep all original Issue/branch/PR ownership and exact-head review rules intact.
+
 ## Branch / task
 - Use the existing Issue-defined branch when one exists.
 - New work: create/claim an atomic Issue before a branch.

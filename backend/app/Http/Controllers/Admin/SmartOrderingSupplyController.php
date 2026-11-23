@@ -28,6 +28,13 @@ final class SmartOrderingSupplyController extends Controller
         $storeIds = app(RestaurantSaasStoreAccess::class)
             ->allowedStoreIds($actor, 'smart_ordering.view', $request);
 
+        // A nested explicit selector must not coerce to zero and redirect to
+        // an unrelated default authorized store. Store authorization runs first.
+        abort_if(is_array($request->query('store_id')), 404);
+
+        // Never interpret an explicitly malformed scalar as a request for the
+        // default store. Absent and empty selectors still use normal fallback.
+        $request->validate(['store_id' => ['nullable', 'integer', 'min:1']]);
         $requested = $request->integer('store_id');
         if ($requested > 0 && ! in_array($requested, $storeIds, true)) {
             abort(404);
@@ -68,7 +75,20 @@ final class SmartOrderingSupplyController extends Controller
         $this->authorizeSite($request, $site, $tenants, 'smart_ordering.view');
         $this->assertEntitled($site);
 
-        $branchId = $request->integer('branch_id') ?: null;
+        // Only scalar GET selectors may reach date parsing, branch lookups or
+        // the product search. Authorization and module entitlement run first.
+        foreach (['from', 'to', 'branch_id', 'q'] as $filter) {
+            $value = $request->query($filter);
+            abort_unless($value === null || is_string($value), 404);
+        }
+
+        // An explicit invalid scalar must not become an unfiltered site-wide
+        // dashboard through Request::integer() coercion to zero. Empty/absent
+        // remains unfiltered; the ownership check below still hides foreign IDs.
+        $branchFilter = $request->validate([
+            'branch_id' => ['nullable', 'integer', 'min:1'],
+        ]);
+        $branchId = isset($branchFilter['branch_id']) ? (int) $branchFilter['branch_id'] : null;
         if ($branchId !== null) {
             abort_unless(
                 DB::table('smart_ordering_branches')
@@ -78,6 +98,13 @@ final class SmartOrderingSupplyController extends Controller
                 404,
             );
         }
+
+        // Validate scalar date filters after canonical site/branch scoping and
+        // before Carbon parsing; invalid dates must yield a bounded 422.
+        $request->validate([
+            'from' => ['nullable', 'date_format:Y-m-d'],
+            'to' => ['nullable', 'date_format:Y-m-d', 'after_or_equal:from'],
+        ]);
 
         $from = $request->filled('from')
             ? CarbonImmutable::parse($request->string('from')->toString(), 'Asia/Kuwait')->startOfDay()
@@ -120,6 +147,7 @@ final class SmartOrderingSupplyController extends Controller
     ): RedirectResponse {
         $actor = $this->authorizeSite($request, $site, $tenants, 'smart_ordering.manage');
         $this->assertEntitled($site);
+        $this->preflightBranchScope($request, $site, $supply);
         $data = $request->validate([
             'menu_item_public_id' => ['required', 'uuid'],
             'branch_id' => ['nullable', 'integer', 'min:1'],
@@ -158,6 +186,7 @@ final class SmartOrderingSupplyController extends Controller
     ): RedirectResponse {
         $actor = $this->authorizeSite($request, $site, $tenants, 'smart_ordering.manage');
         $this->assertEntitled($site);
+        $this->preflightBranchScope($request, $site, $supply);
         $data = $request->validate([
             'foodex_product_id' => ['required', 'integer', 'min:1'],
             'branch_id' => ['nullable', 'integer', 'min:1'],
@@ -187,6 +216,7 @@ final class SmartOrderingSupplyController extends Controller
     ): RedirectResponse {
         $actor = $this->authorizeSite($request, $site, $tenants, 'smart_ordering.manage');
         $this->assertEntitled($site);
+        $this->preflightBranchScope($request, $site, $supply);
         $data = $request->validate([
             'foodex_product_id' => ['required', 'integer', 'min:1'],
             'branch_id' => ['nullable', 'integer', 'min:1'],
@@ -216,6 +246,7 @@ final class SmartOrderingSupplyController extends Controller
     ): RedirectResponse {
         $actor = $this->authorizeSite($request, $site, $tenants, 'smart_ordering.manage');
         $this->assertEntitled($site);
+        $this->preflightBranchScope($request, $site, $supply);
         $data = $request->validate([
             'branch_id' => ['nullable', 'integer', 'min:1'],
             'quantities' => ['required', 'array', 'min:1'],
@@ -246,6 +277,7 @@ final class SmartOrderingSupplyController extends Controller
     ): RedirectResponse {
         $actor = $this->authorizeSite($request, $site, $tenants, 'smart_ordering.manage');
         $this->assertEntitled($site);
+        $this->preflightBranchScope($request, $site, $supply);
         $data = $request->validate([
             'branch_id' => ['nullable', 'integer', 'min:1'],
             'days' => ['nullable', 'integer', 'between:1,90'],
@@ -262,6 +294,22 @@ final class SmartOrderingSupplyController extends Controller
         );
 
         return back()->with('status', $this->msg('تم إخفاء التوصية مؤقتاً.', 'Recommendation dismissed temporarily.'));
+    }
+
+    private function preflightBranchScope(
+        Request $request,
+        SmartOrderingSite $site,
+        SupplyIntelligenceService $supply,
+    ): void {
+        // Resolve only valid explicit branch selectors before unrelated stock
+        // and waste fields. Invalid/missing selectors retain Laravel's 422.
+        $requestedBranch = $request->input('branch_id');
+        if (is_int($requestedBranch) || (is_string($requestedBranch) && ctype_digit($requestedBranch))) {
+            $branchId = filter_var($requestedBranch, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
+            if ($branchId !== false) {
+                $supply->assertBranchInSite($site, $branchId);
+            }
+        }
     }
 
     private function authorizeSite(

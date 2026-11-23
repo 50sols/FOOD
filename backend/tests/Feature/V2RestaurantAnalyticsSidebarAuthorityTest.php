@@ -9,6 +9,7 @@ use App\Models\User;
 use Database\Seeders\CoreReferenceSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Str;
 use Tests\TestCase;
 
 class V2RestaurantAnalyticsSidebarAuthorityTest extends TestCase
@@ -19,6 +20,79 @@ class V2RestaurantAnalyticsSidebarAuthorityTest extends TestCase
     {
         parent::setUp();
         $this->seed(CoreReferenceSeeder::class);
+    }
+
+    public function test_analytics_report_and_export_scope_filters_precede_unrelated_validation_in_both_locales(): void
+    {
+        $owned = $this->retailStore('V2-ANALYTICS-PREVALID-OWNED');
+        $foreign = $this->retailStore('V2-ANALYTICS-PREVALID-FOREIGN');
+        $this->enableRestaurantSaasForTestStore($owned);
+        $this->enableRestaurantSaasForTestStore($foreign);
+        $operator = $this->retailOperator([$owned]);
+
+        $siteId = (int) DB::table('smart_ordering_sites')->insertGetId([
+            'public_id' => (string) Str::uuid(),
+            'store_id' => $foreign,
+            'slug' => 'foreign-report-scope',
+            'runtime_state' => 'ENABLED',
+            'master_enabled' => true,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        $foreignBranch = (int) DB::table('smart_ordering_branches')->insertGetId([
+            'public_id' => (string) Str::uuid(),
+            'site_id' => $siteId,
+            'code' => 'foreign-analytics',
+            'name_en' => 'Foreign Analytics Branch',
+            'timezone' => 'Asia/Kuwait',
+            'is_active' => true,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $previousLocale = app()->getLocale();
+        try {
+            foreach (['ar', 'en'] as $locale) {
+                app()->setLocale($locale);
+                $operator->forceFill(['locale' => $locale])->saveQuietly();
+
+                foreach (['admin.smart-ordering.analytics.index', 'admin.smart-ordering.analytics.export'] as $route) {
+                    $this->actingAs($operator->fresh())->getJson(route($route, [
+                        'store_id' => $foreign, 'from' => 'malformed-date',
+                    ]))->assertNotFound();
+                    $this->actingAs($operator->fresh())->getJson(route($route, [
+                        'store_id' => $owned, 'branch_id' => $foreignBranch,
+                        'fulfillment' => 'malformed-mode',
+                    ]))->assertNotFound();
+                    // Well-formed filters also must not reveal unauthorized stores or branches.
+                    $this->actingAs($operator->fresh())->getJson(route($route, [
+                        'store_id' => $foreign,
+                        'from' => '2026-10-01',
+                        'to' => '2026-10-31',
+                    ]))->assertNotFound();
+                    $this->actingAs($operator->fresh())->getJson(route($route, [
+                        'store_id' => $owned,
+                        'branch_id' => $foreignBranch,
+                        'from' => '2026-10-01',
+                    ]))->assertNotFound();
+                    $this->actingAs($operator->fresh())->getJson(route($route, [
+                        'store_id' => $owned, 'from' => 'malformed-date',
+                    ]))->assertUnprocessable()->assertJsonValidationErrors('from');
+                    // Oversized numeric selectors are malformed, not valid foreign IDs.
+                    foreach (['store_id', 'branch_id'] as $selector) {
+                        $this->actingAs($operator->fresh())->getJson(route($route, [
+                            'store_id' => $owned,
+                            $selector => '999999999999999999999999999999',
+                        ]))->assertUnprocessable()->assertJsonValidationErrors($selector);
+                    }
+                }
+                $this->actingAs($operator->fresh())->get(route('admin.smart-ordering.analytics.index', [
+                    'store_id' => $owned,
+                ]))->assertOk();
+            }
+        } finally {
+            app()->setLocale($previousLocale);
+        }
     }
 
     public function test_p328_analytics_reuses_the_authorized_restaurant_workspace_in_both_locales(): void
