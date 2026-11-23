@@ -88,11 +88,20 @@ function verifiedStaging(string $package, string $versionFile, string $commit): 
             $python, $script, '--zip', $package, '--version-file', $versionFile,
             '--source-commit', $commit, '--evidence', $evidence,
         ];
+        // The build-time signer holds a protected Ed25519 secret in its own
+        // environment. The independent archive validator only needs public
+        // inputs; never expose signing material to this child process.
+        $verifierEnvironment = getenv();
+        if (! is_array($verifierEnvironment)) {
+            throw new RuntimeException('Cannot isolate signing key from verifier.');
+        }
+        unset($verifierEnvironment['FOODEX_SETUP_SIGNING_SECRET_KEY_B64']);
         $process = proc_open(
             $command,
             [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']],
             $pipes,
             __DIR__,
+            $verifierEnvironment,
         );
         if (! is_resource($process)) {
             throw new RuntimeException('Setup verifier unavailable.');
