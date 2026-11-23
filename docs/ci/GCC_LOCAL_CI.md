@@ -63,7 +63,7 @@ The agent additionally accepts an owner-authored comment on an open same-reposit
     /gcc-ci full <exact 40-character current PR head SHA>
 
 The full profile uses the **pinned, immutable** local toolkit from repository commit
-`e35e705c46ea74f85297d9f7c7d773b9c22ea5f6` (container build and execution scripts), verifying each
+`68b3d17b32478f17e45e3fcd0c42fc79f1f4618e` (container build and execution scripts), verifying each
 Git blob SHA before running. The toolkit is downloaded once, locally cached and
 checked again for integrity at every full job. The agent first validates the
 PR owner/base/head, fetches the exact PR commit and the v1.0.125 update base,
@@ -200,3 +200,13 @@ layers and ensuring the real Docker exit code determines PASS/FAIL.
 
 Do not infer runtime acceptance from successful Docker image construction;
 the corrected GCC backend, Setup and Update tests must actually pass.
+
+### Windows checkout line-ending parity
+
+The exact-SHA source is copied into an isolated Linux workspace. A Windows
+working tree may use CRLF even though tracked Git blobs use LF; the old
+`git diff --check HEAD` treated these EOL conversions as large whitespace
+diffs and blocked Composer before installation. The preparation script now
+re-checks SHA, regenerates the *disposable* Linux working tree from exact
+Git blobs with `core.autocrlf=false` and LF, and then checks for true content
+diffs. It does not reset or edit the GCC host checkout.
