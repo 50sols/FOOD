@@ -197,6 +197,9 @@ def build_setup_zip(source_root: Path, output: Path, source_epoch: int) -> str:
     os.close(handle)
     temporary = Path(temporary_name)
     verification_fd = None
+    published_own_inode = False
+    publication_verified = False
+    published_inode = None
     try:
         total_size = 0
         with zipfile.ZipFile(temporary, "w", allowZip64=True) as archive:
@@ -264,6 +267,8 @@ def build_setup_zip(source_root: Path, output: Path, source_epoch: int) -> str:
         # If the filesystem cannot guarantee this, fail closed.
         try:
             os.link(temporary, output)
+            published_own_inode = True
+            published_inode = (before.st_dev, before.st_ino)
         except FileExistsError as exc:
             raise SetupBuildError("Refusing to replace an existing Setup ZIP.") from exc
         except OSError as exc:
@@ -292,9 +297,22 @@ def build_setup_zip(source_root: Path, output: Path, source_epoch: int) -> str:
                 published_checksum.update(chunk)
             if published_checksum.digest() != checksum.digest():
                 raise SetupBuildError("Published Setup ZIP contents changed after checksum.")
+        publication_verified = True
     finally:
         if verification_fd is not None:
             os.close(verification_fd)
+        # Failed final verification must not leave a seemingly ready Setup ZIP.
+        # Only remove the exact inode we linked; never remove a concurrent
+        # replacement at that pathname. This is best-effort cleanup, not an
+        # atomic guarantee against a hostile pathname swap during unlink.
+        if published_own_inode and not publication_verified:
+            try:
+                current = output.lstat()
+                if (stat.S_ISREG(current.st_mode)
+                    and (current.st_dev, current.st_ino) == published_inode):
+                    output.unlink()
+            except FileNotFoundError:
+                pass
         temporary.unlink(missing_ok=True)
 
     return checksum.hexdigest()
