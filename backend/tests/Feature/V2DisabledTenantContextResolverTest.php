@@ -97,6 +97,35 @@ final class V2DisabledTenantContextResolverTest extends TestCase
         $this->assertSame($beforeAudit, DB::table('audit_logs')->count());
     }
 
+    public function test_preloaded_active_actor_cannot_resolve_retail_after_database_revocation(): void
+    {
+        $store = $this->retailStore('P031-STALE-USER');
+        $user = User::factory()->create(['is_active' => true]);
+        DB::table('user_store_roles')->insert([
+            'user_id' => $user->id,
+            'store_id' => $store->id,
+            'role_id' => Role::query()->where('code', 'B2C_STORE_ADMIN')->firstOrFail()->id,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        $resolver = app(TenantContextResolver::class);
+        $this->assertSame([(int) $store->id], $resolver->retailStoreIds($user));
+
+        // Another process offboards the identity, while this request retains
+        // a stale in-memory Eloquent model reporting is_active=true.
+        DB::table('users')->where('id', $user->id)->update(['is_active' => false]);
+        $this->assertTrue((bool) $user->is_active);
+        $this->assertSame([], $resolver->retailStoreIds($user));
+        $this->assertNull($resolver->defaultRetailStoreId($user));
+
+        try {
+            $resolver->retail($user, (int) $store->id);
+            $this->fail('Cached active User must not bypass persisted revocation.');
+        } catch (HttpException $e) {
+            $this->assertSame(403, $e->getStatusCode());
+        }
+    }
+
     private function retailStore(string $code): Store
     {
         return Store::query()->create([
