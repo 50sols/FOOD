@@ -105,6 +105,109 @@ final class FinanceWorkbenchTest extends TestCase
             ->assertOk();
     }
 
+    public function test_retail_finance_discount_review_inbox_is_store_scoped_and_independent(): void
+    {
+        [$manager, $store, $context] = $this->operator(
+            ['finance.view', 'finance.manage'], 'ERP-CS-FINANCE-OWN', 'en',
+        );
+        $this->enableFinance($manager, $context);
+        $foreignStore = $this->retailStore('ERP-CS-FINANCE-FOREIGN');
+
+        $makePending = static function (Store $forStore, string $reference): array {
+            $legacyId = (int) DB::table('customers')->insertGetId([
+                'type' => 'b2c', 'name' => 'Discount Reviewer Customer '.$reference,
+                'email' => strtolower($reference).'@example.test',
+                'created_at' => now(), 'updated_at' => now(),
+            ]);
+            $retailId = (int) DB::table('b2c_customers')->insertGetId([
+                'store_id' => $forStore->id, 'legacy_customer_id' => $legacyId,
+                'name' => 'Discount Reviewer Customer '.$reference,
+                'email' => strtolower($reference).'@example.test',
+                'created_at' => now(), 'updated_at' => now(),
+            ]);
+            $orderId = (int) DB::table('orders')->insertGetId([
+                'store_id' => $forStore->id, 'customer_id' => $legacyId,
+                'b2c_customer_id' => $retailId,
+                'order_number' => $reference, 'channel' => 'b2c', 'status' => 'pending',
+                'currency' => 'EGP', 'subtotal' => 20, 'discount_total' => 0,
+                'delivery_total' => 0, 'tax_total' => 0, 'grand_total' => 20,
+                'created_at' => now(), 'updated_at' => now(),
+            ]);
+            $requester = User::factory()->create(['is_active' => true]);
+            $requestId = (int) DB::table('order_customer_service_discount_requests')->insertGetId([
+                'order_id' => $orderId, 'requested_by_user_id' => $requester->id,
+                'idempotency_key' => (string) \Illuminate\Support\Str::uuid(),
+                'percentage' => 12.5,
+                'reason' => 'Customer care adjustment requiring independent accounting',
+                'status' => 'pending',
+                'created_at' => now(), 'updated_at' => now(),
+            ]);
+
+            return [$orderId, $requestId];
+        };
+
+        [$ownOrder, $ownRequest] = $makePending($store, 'FIN-CS-OWN');
+        [$foreignOrder, $foreignRequest] = $makePending($foreignStore, 'FIN-CS-FOREIGN');
+        $inbox = route('admin.erp.finance.index', [
+            'store_id' => $store->id, 'tab' => 'cs_discount_review',
+        ]);
+
+        // A Store Admin with both Finance permissions is NOT the authentic
+        // Retail Finance checker; role membership is mandatory.
+        $this->actingAs($manager)->get($inbox)->assertForbidden();
+
+        $accountant = User::factory()->create(['is_active' => true, 'locale' => 'en']);
+        $financeRole = Role::query()->where('code', 'RETAIL_FINANCE')->firstOrFail();
+        DB::table('user_store_roles')->insert([
+            'user_id' => $accountant->id, 'store_id' => $store->id,
+            'role_id' => $financeRole->id,
+            'created_at' => now(), 'updated_at' => now(),
+        ]);
+
+        foreach (['en' => 'ltr', 'ar' => 'rtl'] as $locale => $direction) {
+            app()->setLocale($locale);
+            $accountant->forceFill(['locale' => $locale])->save();
+            $this->actingAs($accountant->fresh())->get($inbox)
+                ->assertOk()
+                ->assertSee('dir="'.$direction.'"', false)
+                ->assertSee('data-finance-cs-discount-inbox="true"', false)
+                ->assertSee('data-finance-discount-request-id="'.$ownRequest.'"', false)
+                ->assertSee('FIN-CS-OWN')
+                ->assertDontSee('data-finance-discount-request-id="'.$foreignRequest.'"', false)
+                ->assertDontSee('FIN-CS-FOREIGN')
+                ->assertSee(__('customer_service_discount.accounting_inbox'))
+                ->assertSee('data-finance-discount-approve="'.$ownRequest.'"', false)
+                ->assertSee('data-finance-discount-reject="'.$ownRequest.'"', false);
+        }
+
+        $this->actingAs($accountant->fresh())->get(route('admin.erp.finance.index', [
+            'store_id' => $foreignStore->id, 'tab' => 'cs_discount_review',
+        ]))->assertNotFound();
+
+        $review = route('admin.operations.orders.customer-service-discount.review', [
+            'order' => $ownOrder, 'discountRequest' => $ownRequest,
+        ]);
+        $this->actingAs($manager)->post($review, [
+            'decision' => 'reject', 'review_reason' => 'Not a permitted finance reviewer',
+        ])->assertNotFound();
+        $this->actingAs($accountant->fresh())->post($review, [
+            'decision' => 'reject', 'review_reason' => 'Independent accountant rejected this discount',
+        ])->assertRedirect();
+
+        $this->assertDatabaseHas('order_customer_service_discount_requests', [
+            'id' => $ownRequest, 'status' => 'rejected',
+            'reviewed_by_user_id' => $accountant->id,
+        ]);
+        $this->assertDatabaseHas('orders', ['id' => $ownOrder, 'grand_total' => 20]);
+        $this->assertDatabaseHas('order_customer_service_discount_requests', [
+            'id' => $foreignRequest, 'order_id' => $foreignOrder, 'status' => 'pending',
+        ]);
+        $this->assertDatabaseMissing('order_customer_service_discounts', ['order_id' => $ownOrder]);
+        $this->actingAs($accountant->fresh())->get($inbox)->assertOk()
+            ->assertDontSee('data-finance-discount-request-id="'.$ownRequest.'"', false);
+        $this->actingAs($accountant->fresh())->post($review, ['decision' => 'approve'])->assertStatus(409);
+    }
+
     public function test_full_finance_workbench_route_surface_is_registered(): void
     {
         foreach ([
