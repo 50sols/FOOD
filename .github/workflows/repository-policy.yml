@@ -61,6 +61,7 @@ jobs:
           python3 -m unittest discover -s scripts/tests -p 'test_gcc_agent_policy.py'
           python3 -m unittest discover -s scripts/tests -p 'test_gcc_full_ci_contract.py'
           python3 -m unittest discover -s scripts/tests -p 'test_gcc_attestation.py'
+          python3 -m unittest discover -s scripts/tests -p 'test_gcc_sign_attestation.py'
 
       - name: Prevent post-merge main release failures
         if: github.event_name == 'pull_request'
