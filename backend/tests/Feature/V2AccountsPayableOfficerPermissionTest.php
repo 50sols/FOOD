@@ -2,10 +2,15 @@
 
 namespace Tests\Feature;
 
+use App\Enterprise\Modules\ModuleLifecycleManager;
+use App\Enterprise\Modules\ModuleRegistry;
+use App\Enterprise\Modules\ModuleState;
 use App\Models\Role;
+use App\Models\Store;
 use App\Models\User;
 use Database\Seeders\CoreReferenceSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Route;
 use Tests\TestCase;
 
@@ -83,6 +88,26 @@ final class V2AccountsPayableOfficerPermissionTest extends TestCase
         $actor = User::factory()->create(['is_active' => true, 'locale' => 'en']);
         $actor->roles()->attach(Role::query()->where('code', 'AP_OFFICER')->firstOrFail());
 
+        $registry = app(ModuleRegistry::class);
+        if ($registry->registration('finance') === null) {
+            $registry->syncManifest('finance');
+        }
+        if (! $registry->isEnabled('finance')) {
+            app(ModuleLifecycleManager::class)->transition('finance', ModuleState::ENABLING);
+            app(ModuleLifecycleManager::class)->transition('finance', ModuleState::ENABLED);
+        }
+
+        $b2bTypeId = (int) DB::table('store_types')->where('code', 'B2B')->value('id');
+        $this->assertGreaterThan(0, $b2bTypeId);
+        $store = Store::query()->create([
+            'store_type_id' => $b2bTypeId,
+            'code' => 'V2-AP-OFFICER-DENY',
+            'name' => 'AP Officer isolated wholesale security boundary',
+            'is_active' => true,
+        ]);
+        $beforeJournals = DB::table('enterprise_finance_journals')->count();
+        $beforeLedger = DB::table('enterprise_finance_ledger_entries')->count();
+
         $attempts = [
             ['admin.erp.finance.journals.store', []],
             ['admin.erp.finance.journals.approval', ['journal' => 999999]],
@@ -98,7 +123,7 @@ final class V2AccountsPayableOfficerPermissionTest extends TestCase
                 $this->assertTrue(Route::has($routeName), $routeName);
                 $response = $this->actingAs($actor->fresh())->post(
                     route($routeName, $parameters, false),
-                    ['idempotency_key' => '2697-ap-denied'],
+                    ['store_id' => $store->id, 'idempotency_key' => '2697-ap-denied'],
                 );
                 $this->assertContains(
                     $response->getStatusCode(),
@@ -107,6 +132,8 @@ final class V2AccountsPayableOfficerPermissionTest extends TestCase
                 );
             }
         }
+        $this->assertSame($beforeJournals, DB::table('enterprise_finance_journals')->count());
+        $this->assertSame($beforeLedger, DB::table('enterprise_finance_ledger_entries')->count());
     }
 
     public function test_ap_officer_cannot_open_security_role_management_in_arabic_or_english(): void
