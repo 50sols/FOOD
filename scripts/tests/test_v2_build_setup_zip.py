@@ -145,6 +145,22 @@ class DeterministicSetupZipTest(unittest.TestCase):
                 self.assertIn("backend/.env.example", archive.namelist())
                 self.assertIn("backend/.env.production.example", archive.namelist())
 
+    def test_git_control_metadata_is_rejected_before_archive_publication(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "source"
+            root.mkdir()
+            (root / "VERSION").write_text("1.0.1\\n", encoding="utf-8")
+            output = Path(temporary) / "setup.zip"
+            for name in (".git/config", "backend/.GIT/packed-refs", "backend/nested/.git/config"):
+                file = root / name
+                file.parent.mkdir(parents=True, exist_ok=True)
+                file.write_bytes(b"confidential-git-config")
+                with self.assertRaisesRegex(SetupBuildError, "Source control metadata"):
+                    build_setup_zip(root, output, SOURCE_DATE_EPOCH)
+                self.assertFalse(output.exists())
+                self.assertEqual(list(Path(temporary).glob(".v2-setup-*.zip")), [])
+                file.unlink()
+
     def test_symlink_and_hardlink_cannot_smuggle_data(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary) / "source"
