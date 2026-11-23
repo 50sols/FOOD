@@ -667,6 +667,74 @@ final class V2OrganizationSetupGuidanceTest extends TestCase
         $this->assertSame($before, DB::table('audit_logs')->count());
     }
 
+    public function test_inactive_legacy_descendants_with_assigned_store_block_all_parent_deactivations(): void
+    {
+        $admin = $this->actor('SUPER_ADMIN', 'en');
+        $organization = EnterpriseOrganization::query()->create([
+            'code' => 'v2_scope_guard_org', 'name' => 'Scoped Organization', 'is_active' => true,
+        ]);
+        $company = EnterpriseCompany::query()->create([
+            'organization_id' => $organization->id,
+            'code' => 'v2_scope_guard_company', 'name' => 'Legacy Company', 'is_active' => false,
+        ]);
+        $entity = EnterpriseLegalEntity::query()->create([
+            'company_id' => $company->id,
+            'code' => 'v2_scope_guard_entity', 'name' => 'Legacy Entity', 'is_active' => false,
+        ]);
+        $unit = EnterpriseBusinessUnit::query()->create([
+            'legal_entity_id' => $entity->id,
+            'code' => 'v2_scope_guard_unit', 'name' => 'Legacy Unit', 'is_active' => false,
+        ]);
+        $typeId = DB::table('store_types')->where('code', 'B2B')->value('id');
+        $this->assertNotNull($typeId);
+        $store = Store::query()->create([
+            'store_type_id' => $typeId, 'code' => 'V2-SCOPE-GUARD-STORE',
+            'name' => 'Existing Scoped Store', 'is_active' => true,
+        ]);
+        $unit->storeScopes()->create(['store_id' => $store->id]);
+        $auditCount = DB::table('audit_logs')->count();
+
+        // Preview, Save and direct service must agree, even when the legacy
+        // descendants are all inactive but their store binding is still live.
+        foreach ([
+            [route('admin.enterprise-organizations.update', $organization), $organization],
+            [route('admin.enterprise-companies.update', $company), $company],
+            [route('admin.enterprise-legal-entities.update', $entity), $entity],
+        ] as [$url, $record]) {
+            foreach ([true, false] as $preview) {
+                $payload = [
+                    'code' => $record->code, 'name' => $record->name, 'is_active' => '0',
+                ];
+                if ($preview) {
+                    $payload['_setup_test'] = 'edit';
+                }
+                $this->actingAs($admin)->patch($url, $payload)
+                    ->assertSessionHasErrors('is_active');
+            }
+        }
+
+        $service = app(EnterpriseOrganizationAdministration::class);
+        foreach ([
+            [$organization, 'updateOrganization'],
+            [$company, 'updateCompany'],
+            [$entity, 'updateLegalEntity'],
+        ] as [$record, $method]) {
+            try {
+                $service->{$method}($record, [
+                    'code' => $record->code, 'name' => $record->name, 'is_active' => false,
+                ], $admin);
+                $this->fail('A store-scoped legacy descendant cannot be orphaned.');
+            } catch (ValidationException $exception) {
+                $this->assertArrayHasKey('is_active', $exception->errors());
+            }
+        }
+        $this->assertTrue((bool) $organization->fresh()->is_active);
+        $this->assertDatabaseHas('enterprise_store_scopes', [
+            'business_unit_id' => $unit->id, 'store_id' => $store->id,
+        ]);
+        $this->assertSame($auditCount, DB::table('audit_logs')->count());
+    }
+
     private function actor(string $roleCode, string $locale): User
     {
         $user = User::query()->create([
