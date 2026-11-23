@@ -68,6 +68,12 @@ final class V2RestaurantCanonicalOrdersAdmissionTest extends TestCase
             $this->actingAs($mixed->fresh())
                 ->get('/admin/b2c/orders?status=pending')
                 ->assertNotFound();
+            // Only store_id actually filters OrderOperationsController::index.
+            // A store alias alone must not let a mixed-profile actor bypass
+            // the no-selector Restaurant admission check.
+            $this->actingAs($mixed->fresh())
+                ->get('/admin/b2c/orders?status=pending&store='.$retail)
+                ->assertNotFound();
             $this->actingAs($mixed->fresh())
                 ->get('/admin/b2c/orders?status=pending&store_id='.$retail)
                 ->assertOk();
