@@ -450,7 +450,7 @@ PHP;
             'contains_migrations' => $containsMigrations,
             'release_notes' => $manifest->releaseNotes,
             'signature' => $signature,
-        ], JSON_THROW_ON_ERROR);
+        ], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
 
         return $this->actingAs($user)->post(route('admin.system-update.store'), [
             'package' => UploadedFile::fake()->createWithContent('update.zip', $bytes),
