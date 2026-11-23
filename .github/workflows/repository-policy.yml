@@ -60,6 +60,7 @@ jobs:
           bash -n scripts/local-ci/prepare.sh scripts/local-ci/full.sh scripts/local-ci/preview.sh
           python3 -m unittest discover -s scripts/tests -p 'test_gcc_agent_policy.py'
           python3 -m unittest discover -s scripts/tests -p 'test_gcc_full_ci_contract.py'
+          python3 -m unittest discover -s scripts/tests -p 'test_gcc_attestation.py'
 
       - name: Prevent post-merge main release failures
         if: github.event_name == 'pull_request'
