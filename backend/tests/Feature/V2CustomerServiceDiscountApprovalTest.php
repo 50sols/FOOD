@@ -123,9 +123,19 @@ final class V2CustomerServiceDiscountApprovalTest extends TestCase
         ])->assertRedirect();
         $requestId = (int) DB::table('order_customer_service_discount_requests')->where('order_id', $orderId)->value('id');
         $url = $this->reviewUrl($orderId, $requestId);
-        $this->actingAs($finance)->post($url, [
-            'decision' => 'reject', 'review_reason' => '',
-        ])->assertSessionHasErrors('review_reason');
+        foreach (['', '     ', '   no  '] as $invalidReason) {
+            $this->actingAs($finance)->post($url, [
+                'decision' => 'reject', 'review_reason' => $invalidReason,
+            ])->assertSessionHasErrors('review_reason');
+            $this->assertDatabaseHas('order_customer_service_discount_requests', [
+                'id' => $requestId, 'status' => 'pending',
+            ]);
+            $this->assertDatabaseHas('orders', ['id' => $orderId, 'grand_total' => 9]);
+        }
+        $this->assertDatabaseMissing('audit_logs', [
+            'event' => 'order.customer_service_discount.rejected',
+            'user_id' => $finance->getKey(),
+        ]);
         $this->actingAs($finance)->post($url, [
             'decision' => 'reject', 'review_reason' => 'Pricing not justified',
         ])->assertRedirect();
