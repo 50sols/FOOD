@@ -154,15 +154,17 @@ final class EnterpriseOrganizationAdministration
     {
         $this->assertDefaultRoutingIdentityPreserved($model, $data);
 
-        // Non-HTTP callers can change display metadata without submitting an
-        // activation flag. Do not treat this as a reactivation of an inactive
-        // legacy branch beneath an inactive ancestor: fill($data) preserves
-        // the current active state when the field is absent.
-        if (! array_key_exists('is_active', $data)) {
+        // A direct service caller may rename an inactive legacy record
+        // without submitting activation. Never extend this exemption to
+        // changing its routing identity code: that path must still pass the
+        // conservative ancestor preconditions before an update.
+        if (! array_key_exists('is_active', $data)
+            && (! array_key_exists('code', $data)
+                || (string) $data['code'] === (string) $model->getAttribute('code'))) {
             return;
         }
 
-        if ((bool) $data['is_active']) {
+        if ((bool) ($data['is_active'] ?? true)) {
             // An inactive child cannot be reactivated beneath a disabled
             // parent or ancestor. Preview and Save share this preflight, and
             // direct service callers must not bypass it.
