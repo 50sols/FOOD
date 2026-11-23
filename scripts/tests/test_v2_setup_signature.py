@@ -132,7 +132,7 @@ class SetupEd25519SignatureTest(unittest.TestCase):
             1,
         )
         escaped = canonical.replace('"signer_key_id"', '"signer\\u005fkey_id"', 1)
-        for altered in (duplicate, " " + canonical, canonical + "\\n", escaped):
+        for altered in (duplicate, " " + canonical, canonical + "\n", escaped):
             with self.subTest(altered=altered[:48]):
                 self.sidecar.write_text(altered, encoding="utf-8")
                 result = self.run_verify()
