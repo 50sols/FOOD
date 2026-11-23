@@ -131,64 +131,6 @@ body{margin:0;background:var(--foodex-background);color:var(--foodex-ink)}
 @endforeach
 </nav>
 
-@if($tab==='cs_discount_review')
-<section class="finance-panel" data-finance-cs-discount-inbox="true" aria-labelledby="finance-cs-discount-title">
-<div class="finance-panel-head">
-<div>
-<h2 id="finance-cs-discount-title">{{ __('customer_service_discount.accounting_inbox') }}</h2>
-<p>{{ __('customer_service_discount.accounting_inbox_help') }}</p>
-</div>
-</div>
-<div class="finance-table-wrap">
-<table class="finance-table">
-<caption>{{ __('customer_service_discount.pending_review') }}</caption>
-<thead><tr>
-<th scope="col">{{ __('customer_service_discount.accounting_order') }}</th>
-<th scope="col">{{ __('customer_service_discount.requester') }}</th>
-<th scope="col">{{ __('customer_service_discount.percentage') }}</th>
-<th scope="col">{{ __('customer_service_discount.reason') }}</th>
-<th scope="col">{{ __('customer_service_discount.accounting_total') }}</th>
-<th scope="col">{{ __('customer_service_discount.accounting_requested_at') }}</th>
-<th scope="col">{{ __('finance_workbench.actions.manage') }}</th>
-</tr></thead>
-<tbody>
-@forelse($data['requests'] as $pending)
-<tr data-finance-discount-request-id="{{ $pending->id }}">
-<td><strong>{{ $pending->order_number }}</strong></td>
-<td>{{ $pending->requested_by_name }}</td>
-<td class="finance-money">{{ $pending->percentage }}%</td>
-<td>{{ $pending->reason }}</td>
-<td class="finance-money">{{ number_format((float) $pending->grand_total, strtoupper((string) $pending->currency)==='KWD' ? 3 : 2, '.', ',') }} {{ $pending->currency }}</td>
-<td>{{ $pending->created_at }}</td>
-<td>
-<div class="finance-inline-actions">
-<form method="post" action="{{ route('admin.operations.orders.customer-service-discount.review', ['order'=>$pending->order_id,'discountRequest'=>$pending->id]) }}" data-finance-discount-approve="{{ $pending->id }}">
-@csrf
-<input type="hidden" name="decision" value="approve">
-<button type="submit" class="finance-button primary">{{ __('customer_service_discount.approve') }}</button>
-</form>
-<form method="post" action="{{ route('admin.operations.orders.customer-service-discount.review', ['order'=>$pending->order_id,'discountRequest'=>$pending->id]) }}" class="finance-filter" data-finance-discount-reject="{{ $pending->id }}">
-@csrf
-<input type="hidden" name="decision" value="reject">
-<div class="finance-field">
-<label for="finance-discount-reason-{{ $pending->id }}">{{ __('customer_service_discount.review_reason') }}</label>
-<input id="finance-discount-reason-{{ $pending->id }}" name="review_reason" type="text" minlength="5" maxlength="500" required aria-describedby="finance-discount-rejection-help">
-</div>
-<button type="submit" class="finance-button danger">{{ __('customer_service_discount.reject') }}</button>
-</form>
-</div>
-</td>
-</tr>
-@empty
-<tr><td colspan="7" class="finance-empty">{{ __('customer_service_discount.accounting_empty') }}</td></tr>
-@endforelse
-</tbody></table>
-</div>
-<p class="finance-muted" id="finance-discount-rejection-help">{{ __('customer_service_discount.accounting_rejection_hint') }}</p>
-<div class="finance-pagination">{{ $data['requests']->links() }}</div>
-</section>
-@endif
-
 @if($tab==='overview')
 <section class="foodex-module-overview" data-foodex-module-overview="finance">
 <form method="get" action="{{ route('admin.erp.finance.index') }}" class="foodex-module-toolbar">
