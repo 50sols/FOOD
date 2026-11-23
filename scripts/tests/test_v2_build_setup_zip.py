@@ -28,6 +28,10 @@ class DeterministicSetupZipTest(unittest.TestCase):
             "backend/.composer/auth.json",
             "backend/.npmrc",
             "backend/.config/.NPMRC",
+            "backend/.netrc",
+            "backend/.pypirc",
+            "backend/.yarnrc.yml",
+            ".NETRC",
             "AUTH.JSON",
         )
         with tempfile.TemporaryDirectory() as temporary:
