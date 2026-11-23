@@ -100,6 +100,10 @@ final class EnterpriseOrganizationAdministration
             throw ValidationException::withMessages(['store' => [__('enterprise_organization.inactive_parent')]]);
         }
 
+        // A live unit does not make an inactive legal entity, company or
+        // organization eligible for new store scope assignments.
+        $this->assertCreationParentActive($unit->legalEntity);
+
         try {
             $this->hierarchy->assignStore($store, $unit, $actor);
         } catch (\LogicException) {
