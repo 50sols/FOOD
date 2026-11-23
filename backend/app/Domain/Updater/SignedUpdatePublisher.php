@@ -33,6 +33,12 @@ final class SignedUpdatePublisher
 
         try {
             $signature = sodium_crypto_sign_detached($payload, $privateKey);
+            // A correctly sized but inconsistent Ed25519 secret/public key
+            // pair must never publish a signature installers cannot verify.
+            $publicKey = sodium_crypto_sign_publickey_from_secretkey($privateKey);
+            if (! sodium_crypto_sign_verify_detached($signature, $payload, $publicKey)) {
+                throw new InvalidArgumentException('Protected release signing key is inconsistent.');
+            }
         } finally {
             sodium_memzero($privateKey);
         }
