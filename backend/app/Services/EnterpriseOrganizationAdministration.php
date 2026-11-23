@@ -154,7 +154,7 @@ final class EnterpriseOrganizationAdministration
     {
         $this->assertDefaultRoutingIdentityPreserved($model, $data);
 
-        if (($data['is_active'] ?? true) !== false) {
+        if ((bool) ($data['is_active'] ?? true)) {
             return;
         }
 
@@ -203,7 +203,7 @@ final class EnterpriseOrganizationAdministration
             ]);
         }
 
-        if (($data['is_active'] ?? true) === false) {
+        if (! (bool) ($data['is_active'] ?? true)) {
             throw ValidationException::withMessages([
                 'is_active' => [__('enterprise_organization.default_routing_identity_protected')],
             ]);
