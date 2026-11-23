@@ -321,6 +321,51 @@ final class V2OrganizationSetupGuidanceTest extends TestCase
         $this->assertSame($auditCount, DB::table('audit_logs')->count());
     }
 
+    public function test_store_assignment_refuses_active_unit_beneath_inactive_organization(): void
+    {
+        $admin = $this->actor('SUPER_ADMIN', 'en');
+        $organization = EnterpriseOrganization::query()->create([
+            'code' => 'v2_inactive_scope_org',
+            'name' => 'Inactive Store Assignment Organization',
+            'is_active' => false,
+        ]);
+        $company = EnterpriseCompany::query()->create([
+            'organization_id' => $organization->id,
+            'code' => 'v2_active_scope_company',
+            'name' => 'Active Company',
+            'is_active' => true,
+        ]);
+        $entity = EnterpriseLegalEntity::query()->create([
+            'company_id' => $company->id,
+            'code' => 'v2_active_scope_entity',
+            'name' => 'Active Entity',
+            'is_active' => true,
+        ]);
+        $unit = EnterpriseBusinessUnit::query()->create([
+            'legal_entity_id' => $entity->id,
+            'code' => 'v2_active_scope_unit',
+            'name' => 'Active Unit',
+            'is_active' => true,
+        ]);
+        $store = Store::query()->create([
+            'store_type_id' => DB::table('store_types')->where('code', 'B2B')->value('id'),
+            'code' => 'v2-inactive-parent-store',
+            'name' => 'Denied Store Scope',
+            'is_active' => true,
+        ]);
+        $before = DB::table('audit_logs')->count();
+
+        try {
+            app(EnterpriseOrganizationAdministration::class)->assignStore($store, $unit, $admin);
+            $this->fail('Store assignment must reject an inactive enterprise ancestor.');
+        } catch (ValidationException $exception) {
+            $this->assertArrayHasKey('parent', $exception->errors());
+        }
+
+        $this->assertDatabaseMissing('enterprise_store_scopes', ['store_id' => $store->id]);
+        $this->assertSame($before, DB::table('audit_logs')->count());
+    }
+
     public function test_failed_create_save_restores_values_only_to_create_form(): void
     {
         $admin = $this->actor('SUPER_ADMIN', 'en');
