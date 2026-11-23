@@ -321,6 +321,71 @@ final class V2OrganizationSetupGuidanceTest extends TestCase
         $this->assertSame($auditCount, DB::table('audit_logs')->count());
     }
 
+    public function test_deactivation_rejects_active_deep_descendants_hidden_by_inactive_intermediate_records(): void
+    {
+        $admin = $this->actor('SUPER_ADMIN', 'en');
+        $service = app(EnterpriseOrganizationAdministration::class);
+
+        // Historical imports may contain inactive intermediate records with
+        // active descendants. An immediate-child-only check is insufficient.
+        $organization = EnterpriseOrganization::query()->create([
+            'code' => 'v2_hidden_active_org',
+            'name' => 'Legacy Organization',
+            'is_active' => true,
+        ]);
+        $company = EnterpriseCompany::query()->create([
+            'organization_id' => $organization->id,
+            'code' => 'v2_hidden_inactive_company',
+            'name' => 'Legacy Company',
+            'is_active' => false,
+        ]);
+        $entity = EnterpriseLegalEntity::query()->create([
+            'company_id' => $company->id,
+            'code' => 'v2_hidden_inactive_entity',
+            'name' => 'Legacy Entity',
+            'is_active' => false,
+        ]);
+        $unit = EnterpriseBusinessUnit::query()->create([
+            'legal_entity_id' => $entity->id,
+            'code' => 'v2_hidden_active_unit',
+            'name' => 'Active Legacy Unit',
+            'is_active' => true,
+        ]);
+
+        $beforeAudit = DB::table('audit_logs')->count();
+        foreach ([$organization, $company] as $record) {
+            try {
+                $service->assertUpdateAllowed($record, ['is_active' => '0']);
+                $this->fail('Active deeper descendants must prevent deactivation.');
+            } catch (ValidationException $exception) {
+                $this->assertArrayHasKey('is_active', $exception->errors());
+            }
+        }
+
+        // The setup preview and persisted Save must enforce the same rule.
+        foreach ([true, false] as $preview) {
+            $payload = [
+                'code' => $organization->code,
+                'name' => $organization->name,
+                'is_active' => '0',
+            ];
+            if ($preview) {
+                $payload['_setup_test'] = 'edit';
+            }
+
+            $this->actingAs($admin)->patch(
+                route('admin.enterprise-organizations.update', $organization),
+                $payload,
+            )->assertSessionHasErrors('is_active');
+        }
+
+        $this->assertTrue((bool) $organization->fresh()->is_active);
+        $this->assertFalse((bool) $company->fresh()->is_active);
+        $this->assertFalse((bool) $entity->fresh()->is_active);
+        $this->assertTrue((bool) $unit->fresh()->is_active);
+        $this->assertSame($beforeAudit, DB::table('audit_logs')->count());
+    }
+
     public function test_store_assignment_refuses_active_unit_beneath_inactive_organization(): void
     {
         $admin = $this->actor('SUPER_ADMIN', 'en');
