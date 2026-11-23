@@ -202,6 +202,23 @@ class DeterministicSetupZipTest(unittest.TestCase):
                 create.assert_not_called()
             self.assertFalse(output.exists())
 
+    def test_nonportable_zip_names_fail_before_temp_archive_creation(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            source = base / "source"
+            source.mkdir()
+            output = base / "setup.zip"
+            # Mock enumeration: Windows cannot create some invalid names,
+            # but a Linux runner could otherwise package them for cPanel.
+            for bad_name in ("CON", "COM1.txt", "trailing.", "bad:colon", "bad<name"):
+                with self.subTest(name=bad_name), mock.patch.object(
+                    Path, "rglob", autospec=True, return_value=iter([source / bad_name]),
+                ), mock.patch("v2_build_setup_zip.tempfile.mkstemp") as create:
+                    with self.assertRaisesRegex(SetupBuildError, "Unsafe cross-platform"):
+                        build_setup_zip(source, output, SOURCE_DATE_EPOCH)
+                    create.assert_not_called()
+                self.assertFalse(output.exists())
+
     def test_runtime_uploads_and_private_cache_are_denied_before_temp_zip(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             base = Path(temporary)
