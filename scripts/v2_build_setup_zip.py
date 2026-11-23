@@ -10,7 +10,6 @@ import datetime as dt
 import hashlib
 import os
 import re
-import shutil
 import stat
 import unicodedata
 import tempfile
@@ -91,6 +90,23 @@ def _open_verified_member(path: Path, meta: os.stat_result, name: str, source_ro
             os.close(descriptor)
         if directory_fd is not None:
             os.close(directory_fd)
+
+def _copy_exact_member(source, target, expected_size: int, name: str) -> None:
+    """Stream exactly the scanned bytes, rejecting truncation or growth."""
+    remaining = expected_size
+    while remaining:
+        chunk = source.read(min(1024 * 1024, remaining))
+        if not chunk:
+            raise SetupBuildError(f"Setup staging member shrank during packaging: {name}")
+        if len(chunk) > remaining:
+            raise SetupBuildError(f"Setup staging member grew during packaging: {name}")
+        target.write(chunk)
+        remaining -= len(chunk)
+    # Reading until EOF can consume unbounded newly appended data despite
+    # a prior lstat budget. Probe just one byte instead.
+    if source.read(1):
+        raise SetupBuildError(f"Setup staging member grew during packaging: {name}")
+
 
 def build_setup_zip(source_root: Path, output: Path, source_epoch: int) -> str:
     """Write a fresh, sorted, timestamp-normalized archive; return SHA-256."""
@@ -221,7 +237,7 @@ def build_setup_zip(source_root: Path, output: Path, source_epoch: int) -> str:
                     archive.writestr(info, b"")
                 else:
                     with _open_verified_member(path, meta, name, source_root) as source, archive.open(info, "w", force_zip64=False) as target:
-                        shutil.copyfileobj(source, target, length=1024 * 1024)
+                        _copy_exact_member(source, target, meta.st_size, name)
                         if _member_identity(os.fstat(source.fileno())) != _member_identity(meta):
                             raise SetupBuildError(f"Setup staging member changed during packaging: {name}")
                     latest = path.lstat()
