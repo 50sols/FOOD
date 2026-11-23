@@ -2267,6 +2267,35 @@ SQL);
         $this->assertSame('SUPPLIER', $certified['positions'][0]['owner_kind']);
         $this->assertSame($supplierId, $certified['positions'][0]['supplier_id']);
 
+        // The signed certificate must stop conferring stock-title authority
+        // if the owning hierarchy is deactivated after signature issuance.
+        // Restore each ancestor to prove the signature itself stays valid.
+        $hierarchy = DB::table('enterprise_store_scopes as scope')
+            ->join('enterprise_business_units as unit', 'unit.id', '=', 'scope.business_unit_id')
+            ->join('enterprise_legal_entities as entity', 'entity.id', '=', 'unit.legal_entity_id')
+            ->join('enterprise_companies as company', 'company.id', '=', 'entity.company_id')
+            ->where('scope.store_id', $stock['store_id'])
+            ->first([
+                'unit.id as unit_id', 'entity.id as entity_id',
+                'company.id as company_id', 'company.organization_id as organization_id',
+            ]);
+        $this->assertNotNull($hierarchy);
+
+        foreach ([
+            ['enterprise_business_units', $hierarchy->unit_id],
+            ['enterprise_legal_entities', $hierarchy->entity_id],
+            ['enterprise_companies', $hierarchy->company_id],
+            ['enterprise_organizations', $hierarchy->organization_id],
+        ] as [$table, $id]) {
+            $this->assertSame(1, DB::table($table)->where('id', $id)->update(['is_active' => false]));
+            $this->assertFalse(
+                $verifier->verifies($inventory, $position, $stock['store_id']),
+                'An inactive legal-title ancestor cannot retain a signed stock certificate.',
+            );
+            $this->assertSame(1, DB::table($table)->where('id', $id)->update(['is_active' => true]));
+            $this->assertTrue($verifier->verifies($inventory, $position, $stock['store_id']));
+        }
+
         // Revocation is tied to the exact signer ID in this verified
         // attestation. An unrelated revoked ID leaves the valid signature
         // usable, while revoking its signer fails closed without any write.
