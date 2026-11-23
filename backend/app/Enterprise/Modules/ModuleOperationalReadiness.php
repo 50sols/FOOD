@@ -48,6 +48,16 @@ final class ModuleOperationalReadiness
             return 'unhealthy';
         }
 
+        // A signed ERP workflow is not operational health evidence if its
+        // manifest declares no checks at all. Optional platform modules keep
+        // their existing independent zero-probe contract.
+        if ($requiredChecks === [] && in_array(
+            config('enterprise_modules.modules.'.$code.'.category'),
+            ['operations', 'finance', 'analytics'], true,
+        )) {
+            return 'unhealthy';
+        }
+
         // Empty/unconfigured probes are not a successful execution of the
         // health checks bound into an exact-version signed module manifest.
         // In particular Procurement declares 'database' and must really
