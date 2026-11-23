@@ -233,3 +233,9 @@ Composer traffic, and GitHub API/remote communication per acceptance job.
 Backend PHP syntax-checking on GCC is parallelized across its four allowed
 container CPUs using zero-delimited filenames and fail-closed xargs status;
 this reduces startup overhead without skipping any PHP source file.
+
+The first genuine GCC Backend run reached Laravel Pint but Compose reported
+Pint exceeding Composer's default 300-second child process timeout. The
+optimized backend profile now omits the package-only TCPDF tree, parallelizes
+PHP lint, and allows Pint/PHPStan up to 900 seconds with a separate bounded
+outer timeout. Checks must actually pass; timeouts remain failures.
