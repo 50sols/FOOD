@@ -118,6 +118,30 @@ class SetupEd25519SignatureTest(unittest.TestCase):
         verified = self.run_verify()
         self.assertEqual(0, verified.returncode, verified.stderr)
 
+    def test_noncanonical_sidecar_and_duplicate_json_keys_fail_closed(self) -> None:
+        self.assertEqual(0, self.run_sign().returncode)
+        canonical = self.sidecar.read_text(encoding="utf-8")
+        self.assertEqual(0, self.run_verify().returncode)
+
+        # PHP json_decode normally keeps the last duplicate JSON property.
+        # A second parser may instead keep the first, so reject the bytes
+        # even when the decoded last value and signature are valid.
+        duplicate = canonical.replace(
+            '"archive_sha256":',
+            '"archive_sha256":"0" , "archive_sha256":',
+            1,
+        )
+        escaped = canonical.replace('"signer_key_id"', '"signer\\u005fkey_id"', 1)
+        for altered in (duplicate, " " + canonical, canonical + "\\n", escaped):
+            with self.subTest(altered=altered[:48]):
+                self.sidecar.write_text(altered, encoding="utf-8")
+                result = self.run_verify()
+                self.assertNotEqual(0, result.returncode)
+                self.assertNotIn(self.key["private"], result.stderr)
+
+        self.sidecar.write_text(canonical, encoding="utf-8")
+        self.assertEqual(0, self.run_verify().returncode)
+
     def test_modified_archive_and_untrusted_publisher_fail_closed(self) -> None:
         self.assertEqual(0, self.run_sign().returncode)
         with zipfile.ZipFile(self.archive, "a") as archive:
