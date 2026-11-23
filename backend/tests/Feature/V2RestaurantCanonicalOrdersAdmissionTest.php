@@ -37,6 +37,8 @@ final class V2RestaurantCanonicalOrdersAdmissionTest extends TestCase
         $b2b = $this->actor();
         $b2b->roles()->attach(Role::where('code', 'B2B_ADMIN')->firstOrFail());
         $roleless = $this->actor();
+        $superAdmin = $this->actor();
+        $superAdmin->roles()->attach(Role::where('code', 'SUPER_ADMIN')->firstOrFail());
 
         $counts = [
             'orders' => DB::table('orders')->count(),
@@ -62,6 +64,11 @@ final class V2RestaurantCanonicalOrdersAdmissionTest extends TestCase
                 ->get('/admin/b2c/orders?store_id='.$wholesale)
                 ->assertNotFound();
 
+            // Explicit Super Admin support remains governed by its trusted
+            // operational scopes, independent of Restaurant store-admin denial.
+            $this->actingAs($superAdmin)
+                ->get('/admin/b2c/orders?status=pending&store_id='.$restaurant)
+                ->assertOk();
             $this->actingAs($retailActor->fresh())
                 ->get('/admin/b2c/orders?status=pending&store_id='.$retail)
                 ->assertOk();
