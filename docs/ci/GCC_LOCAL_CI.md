@@ -187,3 +187,16 @@ manifest/checksum and critical public/preview/PDF files.
 built locally on #3444, but the first full test returned FAIL before confirmed
 Laravel/ZIP acceptance. The diagnostic version must be tested on GCC, and
 no online runner-minutes reduction or release certification is yet proven.
+
+### Docker Desktop/Compose Bake compatibility (GCC regression)
+
+The first GCC Docker image build completed Dockerfile layers but Compose
+returned the known Buildx `failed to execute bake: read |0: file already closed`
+failure (docker/compose #13243). The local agent now builds backend once
+with `docker build --progress=plain`, aliases it for the runner, and builds
+Flutter separately only when required. It starts services with
+`COMPOSE_BAKE=false` and `docker compose up --no-build`, preserving cached
+layers and ensuring the real Docker exit code determines PASS/FAIL.
+
+Do not infer runtime acceptance from successful Docker image construction;
+the corrected GCC backend, Setup and Update tests must actually pass.
