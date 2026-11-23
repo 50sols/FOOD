@@ -21,7 +21,7 @@ final class V2RevokedGlobalSearchRegistryTest extends TestCase
             app(ModuleEntitlementResolver::class),
         );
 
-        $registry->registerCore('probe', function () use (&$factoryCalls): GlobalSearchProvider {
+        $coreFactory = function () use (&$factoryCalls): GlobalSearchProvider {
             $factoryCalls++;
 
             return new class implements GlobalSearchProvider
@@ -37,7 +37,8 @@ final class V2RevokedGlobalSearchRegistryTest extends TestCase
                     ]];
                 }
             };
-        });
+        };
+        $registry->registerCore('probe', $coreFactory);
         $registry->registerModule(
             'optional_probe',
             'sample_optional',
@@ -64,6 +65,15 @@ final class V2RevokedGlobalSearchRegistryTest extends TestCase
         $this->assertSame(0, $factoryCalls, 'Revoked identity must not resolve provider factories');
         $this->assertSame(0, $scopeCalls, 'Revoked identity must not resolve optional scope');
 
+        // The active regression checks a core-only registry; optional
+        // module discovery depends on migrated entitlement tables and is not
+        // part of this revocation boundary.
+        $activeRegistry = new GlobalSearchRegistry(
+            app(ModuleRegistry::class),
+            app(ModuleEntitlementResolver::class),
+        );
+        $activeRegistry->registerCore('probe', $coreFactory);
+
         $active = (new User())->forceFill(['is_active' => true]);
         $this->assertSame([[
             'type' => 'probe',
@@ -71,7 +81,7 @@ final class V2RevokedGlobalSearchRegistryTest extends TestCase
             'title' => 'safe',
             'subtitle' => '',
             'url' => '/admin/probe',
-        ]], $registry->search($active, 'safe', 2));
+        ]], $activeRegistry->search($active, 'safe', 2));
         $this->assertSame(1, $factoryCalls, 'Active core provider must remain callable');
     }
 }
