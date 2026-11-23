@@ -29,7 +29,9 @@ if [[ "$profile" == backend || "$profile" == all ]]; then
   cd /workspace/backend
   test -s vendor/autoload.php
   php artisan package:discover --ansi
-  while IFS= read -r -d '' file; do php -l "$file" >/dev/null; done < <(find app routes tests -type f -name '*.php' -print0)
+  # Preserve every PHP syntax failure while using GCC's four allocated CPUs.
+  # Zero-delimited paths avoid shell injection and spaces in filenames.
+  find app routes tests -type f -name '*.php' -print0 | xargs -0 -r -n1 -P4 php -l >/dev/null
   composer lint
   composer analyse
   python3 ../scripts/laravel-test-shards.py --verify --count 4
