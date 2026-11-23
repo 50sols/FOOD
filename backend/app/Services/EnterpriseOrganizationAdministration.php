@@ -181,11 +181,23 @@ final class EnterpriseOrganizationAdministration
             default => null,
         };
         $this->assertWritableRecordFields($data, $parentKey);
-        if ($parentKey !== null && array_key_exists($parentKey, $data)
-            && (int) $data[$parentKey] !== (int) $model->getAttribute($parentKey)) {
-            throw ValidationException::withMessages([
-                'parent' => [__('enterprise_organization.cross_scope_denied')],
-            ]);
+        if ($parentKey !== null && array_key_exists($parentKey, $data)) {
+            // Comparing integer casts is not sufficient: values such as
+            // "123suffix", "123.5" or 123.5 cast to 123, yet fill() would
+            // persist the original untrusted value into an unguarded model.
+            // Only the exact canonical positive identity can be accepted as
+            // an unchanged parent for historical service callers.
+            $suppliedParent = $data[$parentKey];
+            $isCanonical = is_int($suppliedParent)
+                || (is_string($suppliedParent)
+                    && preg_match('/^[1-9][0-9]*$/D', $suppliedParent) === 1);
+
+            if (! $isCanonical
+                || (string) $suppliedParent !== (string) $model->getAttribute($parentKey)) {
+                throw ValidationException::withMessages([
+                    'parent' => [__('enterprise_organization.cross_scope_denied')],
+                ]);
+            }
         }
 
         // A direct service caller may rename an inactive legacy record
