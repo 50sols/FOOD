@@ -10,6 +10,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       php8.3-bcmath php8.3-gd default-mysql-client \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=composer:2.8 /usr/bin/composer /usr/local/bin/composer
+COPY prepare.sh /ci/prepare.sh
+COPY full.sh /ci/full.sh
 RUN npm install --global playwright@1.55.0 \
     && mkdir -p /node_modules \
     && ln -s /usr/local/lib/node_modules/playwright /node_modules/playwright \
@@ -18,6 +20,8 @@ RUN npm install --global playwright@1.55.0 \
     && mkdir -p /workspace /evidence /composer-cache \
     && chown -R foodexci:foodexci /workspace /evidence /composer-cache
 ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+ENV HOME=/tmp
+ENV XDG_CACHE_HOME=/tmp/.cache
 ENV COMPOSER_CACHE_DIR=/composer-cache
 ENV COMPOSER_ALLOW_SUPERUSER=1
 WORKDIR /workspace
