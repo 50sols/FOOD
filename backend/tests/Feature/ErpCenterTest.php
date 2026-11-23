@@ -511,7 +511,7 @@ final class ErpCenterTest extends TestCase
     public function test_enabled_and_entitled_module_exposes_only_its_canonical_destination(): void
     {
         $actor = $this->userWithGlobalRole('SUPER_ADMIN', 'en', 'erp-enabled@example.test');
-        $this->wholesaleStore('P135-READY-ENABLED');
+        $store = $this->wholesaleStore('P135-READY-ENABLED');
 
         app(EnterpriseModuleAdministration::class)->perform('procurement', 'enable', $actor);
         app(ModuleEntitlementManager::class)->set(
@@ -535,7 +535,13 @@ final class ErpCenterTest extends TestCase
         $procurement = collect($procurementGroup['children'])->firstWhere('key', 'erp_procurement');
         $this->assertNotNull($procurement);
         $this->assertSame('admin.erp.procurement.index', $procurement['route']);
-        $this->assertSame([], $procurement['params']);
+        $this->assertArrayHasKey('store_id', $procurement['params']);
+        $this->assertGreaterThan(0, (int) $procurement['params']['store_id']);
+        $this->assertSame(
+            route('admin.erp.procurement.index', $procurement['params']),
+            collect($response->viewData('cards'))->firstWhere('key', 'procurement')['url'],
+        );
+        $this->actingAs($actor)->get(route($procurement['route'], $procurement['params']))->assertOk();
     }
 
     public function test_erp_navigation_source_uses_canonical_workbench_routes(): void
