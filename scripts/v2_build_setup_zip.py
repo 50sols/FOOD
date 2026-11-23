@@ -96,11 +96,17 @@ def build_setup_zip(source_root: Path, output: Path, source_epoch: int) -> str:
         raise SetupBuildError("Setup ZIP cannot be written inside its staging root.")
 
     timestamp = _zip_timestamp(source_epoch)
-    paths = sorted(source_root.rglob("*"), key=lambda p: p.relative_to(source_root).as_posix().encode("utf-8"))
+    # A post-sort count would allocate an unbounded path list before
+    # enforcing MAX_ENTRIES. Stop the directory walk at the first excess
+    # member, then sort only the bounded, accepted set.
+    paths = []
+    for candidate in source_root.rglob("*"):
+        if len(paths) >= MAX_ENTRIES:
+            raise SetupBuildError("Setup ZIP staging member count exceeds budget.")
+        paths.append(candidate)
     if not paths:
         raise SetupBuildError("Setup ZIP staging root is empty.")
-    if len(paths) > MAX_ENTRIES:
-        raise SetupBuildError("Setup ZIP staging member count exceeds budget.")
+    paths.sort(key=lambda p: p.relative_to(source_root).as_posix().encode("utf-8"))
 
     # Calculate the entire expanded-size budget before opening any staging
     # member or allocating a temporary ZIP. Checking only in the packaging
