@@ -2073,6 +2073,12 @@ final class OrderOperationsController extends Controller
         $this->scope->assertStore($actor, $storeId, 'finance.view', $channel);
         $this->scope->assertStore($actor, $storeId, 'finance.manage', $channel);
 
+        // Apply the same normalization used for the persisted audit reason
+        // BEFORE min-length validation; padded whitespace is not a review rationale.
+        if (is_string($request->input('review_reason'))) {
+            $request->merge(['review_reason' => trim($request->input('review_reason'))]);
+        }
+
         $validated = $request->validate([
             'decision' => ['required', Rule::in(['approve', 'reject'])],
             'review_reason' => ['nullable', 'required_if:decision,reject', 'string', 'min:5', 'max:500'],
