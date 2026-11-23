@@ -60,7 +60,7 @@ final class V2RevokedGlobalSearchRegistryTest extends TestCase
             },
         );
 
-        $revoked = (new User())->forceFill(['is_active' => false]);
+        $revoked = (new User)->forceFill(['is_active' => false]);
         $this->assertSame([], $registry->search($revoked, 'sensitive', 8));
         $this->assertSame(0, $factoryCalls, 'Revoked identity must not resolve provider factories');
         $this->assertSame(0, $scopeCalls, 'Revoked identity must not resolve optional scope');
@@ -74,7 +74,7 @@ final class V2RevokedGlobalSearchRegistryTest extends TestCase
         );
         $activeRegistry->registerCore('probe', $coreFactory);
 
-        $active = (new User())->forceFill(['is_active' => true]);
+        $active = (new User)->forceFill(['is_active' => true]);
         $this->assertSame([[
             'type' => 'probe',
             'type_label' => 'Probe',
