@@ -26,6 +26,7 @@ services:
     user: "0:0"
     environment:
       GCC_EXPECTED_SHA: ${GCC_EXPECTED_SHA:?missing_exact_sha}
+      GCC_PROFILE: ${GCC_PROFILE:-all}
       COMPOSER_CACHE_DIR: /composer-cache
     volumes:
       - type: bind
