@@ -17,6 +17,7 @@ use App\Support\TenantContextResolver;
 use Illuminate\Database\Eloquent\ModelNotFoundException;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Validation\ValidationException;
 use Tests\TestCase;
 
 final class EnterpriseSupplierFoundationTest extends TestCase
@@ -235,6 +236,55 @@ final class EnterpriseSupplierFoundationTest extends TestCase
 
         $this->assertSame($auditCount, DB::table('audit_logs')->count());
         $this->assertSame($supplierCount, DB::table('enterprise_suppliers')->count());
+    }
+
+    public function test_structured_supplier_codes_are_rejected_without_supplier_or_audit_mutation(): void
+    {
+        [$actor, , $context] = $this->scopedUser(
+            ['procurement.suppliers.view', 'procurement.suppliers.manage'],
+            'SUP-CODE-GUARD',
+        );
+        $directory = app(SupplierDirectory::class);
+        $supplier = $directory->create($actor, $context, [
+            'scope_type' => 'store',
+            'code' => ' legitimate-001 ',
+            'name_en' => 'Legitimate Supplier',
+        ]);
+        $this->assertSame('LEGITIMATE-001', $supplier->code);
+
+        $supplierCount = DB::table('enterprise_suppliers')->count();
+        $auditCount = DB::table('audit_logs')->count();
+
+        foreach ([['unexpected'], ['nested' => 'payload'], 123] as $invalidCode) {
+            try {
+                $directory->create($actor, $context, [
+                    'scope_type' => 'store',
+                    'code' => $invalidCode,
+                    'name_en' => 'Must Not Be Created',
+                ]);
+                $this->fail('Non-string supplier code was accepted on create.');
+            } catch (ValidationException $exception) {
+                $this->assertArrayHasKey('code', $exception->errors());
+            }
+
+            try {
+                $directory->update($actor, $context, $supplier->id, [
+                    'code' => $invalidCode,
+                    'name_en' => 'Must Not Be Updated',
+                ]);
+                $this->fail('Non-string supplier code was accepted on update.');
+            } catch (ValidationException $exception) {
+                $this->assertArrayHasKey('code', $exception->errors());
+            }
+
+            $this->assertSame($supplierCount, DB::table('enterprise_suppliers')->count());
+            $this->assertSame($auditCount, DB::table('audit_logs')->count());
+            $this->assertDatabaseHas('enterprise_suppliers', [
+                'id' => $supplier->id,
+                'code' => 'LEGITIMATE-001',
+                'name_en' => 'Legitimate Supplier',
+            ]);
+        }
     }
 
     /**
