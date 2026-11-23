@@ -32,10 +32,7 @@ final class EnterpriseOrganizationAdministration
 
     public function updateOrganization(EnterpriseOrganization $organization, array $data, Authenticatable $actor): EnterpriseOrganization
     {
-        $this->assertDefaultRoutingIdentityPreserved($organization, $data);
-        if (($data['is_active'] ?? true) === false && $organization->companies()->where('is_active', true)->exists()) {
-            throw ValidationException::withMessages(['is_active' => [__('enterprise_organization.active_children')]]);
-        }
+        $this->assertUpdateAllowed($organization, $data);
 
         return $this->update($organization, $data, $actor, 'enterprise.organization.updated');
     }
@@ -54,9 +51,7 @@ final class EnterpriseOrganizationAdministration
 
     public function updateCompany(EnterpriseCompany $company, array $data, Authenticatable $actor): EnterpriseCompany
     {
-        if (($data['is_active'] ?? true) === false && $company->legalEntities()->where('is_active', true)->exists()) {
-            throw ValidationException::withMessages(['is_active' => [__('enterprise_organization.active_children')]]);
-        }
+        $this->assertUpdateAllowed($company, $data);
 
         return $this->update($company, $data, $actor, 'enterprise.company.updated');
     }
@@ -76,9 +71,7 @@ final class EnterpriseOrganizationAdministration
 
     public function updateLegalEntity(EnterpriseLegalEntity $entity, array $data, Authenticatable $actor): EnterpriseLegalEntity
     {
-        if (($data['is_active'] ?? true) === false && $entity->businessUnits()->where('is_active', true)->exists()) {
-            throw ValidationException::withMessages(['is_active' => [__('enterprise_organization.active_children')]]);
-        }
+        $this->assertUpdateAllowed($entity, $data);
 
         return $this->update($entity, $data, $actor, 'enterprise.legal_entity.updated');
     }
@@ -100,10 +93,7 @@ final class EnterpriseOrganizationAdministration
 
     public function updateBusinessUnit(EnterpriseBusinessUnit $unit, array $data, Authenticatable $actor): EnterpriseBusinessUnit
     {
-        $this->assertDefaultRoutingIdentityPreserved($unit, $data);
-        if (($data['is_active'] ?? true) === false && $unit->storeScopes()->exists()) {
-            throw ValidationException::withMessages(['is_active' => [__('enterprise_organization.assigned_stores')]]);
-        }
+        $this->assertUpdateAllowed($unit, $data);
 
         return $this->update($unit, $data, $actor, 'enterprise.business_unit.updated');
     }
@@ -118,6 +108,36 @@ final class EnterpriseOrganizationAdministration
             $this->hierarchy->assignStore($store, $unit, $actor);
         } catch (\LogicException) {
             throw ValidationException::withMessages(['store' => [__('enterprise_organization.cross_scope_denied')]]);
+        }
+    }
+
+    /**
+     * Enforce identical update preconditions for guided no-write Preview
+     * and actual Save, including active descendants and assigned stores.
+     *
+     * @param array<string, mixed> $data
+     */
+    public function assertUpdateAllowed(Model $model, array $data): void
+    {
+        $this->assertDefaultRoutingIdentityPreserved($model, $data);
+
+        if (($data['is_active'] ?? true) !== false) {
+            return;
+        }
+
+        $hasActiveChildren = match (true) {
+            $model instanceof EnterpriseOrganization => $model->companies()->where('is_active', true)->exists(),
+            $model instanceof EnterpriseCompany => $model->legalEntities()->where('is_active', true)->exists(),
+            $model instanceof EnterpriseLegalEntity => $model->businessUnits()->where('is_active', true)->exists(),
+            default => false,
+        };
+
+        if ($hasActiveChildren) {
+            throw ValidationException::withMessages(['is_active' => [__('enterprise_organization.active_children')]]);
+        }
+
+        if ($model instanceof EnterpriseBusinessUnit && $model->storeScopes()->exists()) {
+            throw ValidationException::withMessages(['is_active' => [__('enterprise_organization.assigned_stores')]]);
         }
     }
 
