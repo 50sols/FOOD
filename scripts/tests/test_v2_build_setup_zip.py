@@ -155,6 +155,18 @@ class DeterministicSetupZipTest(unittest.TestCase):
                         build_setup_zip(source, output, SOURCE_DATE_EPOCH)
                     self.assertFalse(output.exists(), "Over-budget source must not publish ZIP")
                     self.assertEqual(list(base.glob(".v2-setup-*.zip")), [])
+    def test_staging_within_budgets_builds_valid_zip(self) -> None:
+        # Positive packaging requires the secure POSIX dirfd walk. Budget
+        # denials above remain independently testable on Windows.
+        if not hasattr(os, "O_DIRECTORY") or not hasattr(os, "O_NOFOLLOW") or os.open not in os.supports_dir_fd:
+            self.skipTest("Secure ZIP staging opens require POSIX dirfd support")
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            source = base / "source"
+            source.mkdir()
+            (source / "VERSION").write_bytes(b"1234")
+            (source / "README").write_bytes(b"5678")
+            output = base / "setup.zip"
             digest = build_setup_zip(source, output, SOURCE_DATE_EPOCH)
             self.assertEqual(len(digest), 64)
             with zipfile.ZipFile(output) as archive:
