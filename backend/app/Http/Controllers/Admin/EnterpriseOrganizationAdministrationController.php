@@ -268,6 +268,11 @@ final class EnterpriseOrganizationAdministrationController extends Controller
         if (is_string($input['code'] ?? null)) {
             $input['code'] = strtolower($input['code']);
         }
+        // Validate the same trimmed name that will be persisted. Otherwise a
+        // whitespace-only name passes "required" but becomes empty on save.
+        if (is_string($input['name'] ?? null)) {
+            $input['name'] = trim($input['name']);
+        }
 
         $validated = Validator::make($input, [
             'code' => ['required', 'string', 'max:100', 'regex:/^[A-Za-z][A-Za-z0-9_-]*$/', $unique],
