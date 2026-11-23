@@ -137,6 +137,32 @@ class DeterministicSetupZipTest(unittest.TestCase):
             self.assertEqual(output.read_bytes(), b"not-the-built-archive")
             self.assertEqual(list(base.glob(".v2-setup-*.zip")), [])
 
+    def test_member_enumeration_stops_at_limit_before_reading_entire_tree(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            source = base / "source"
+            source.mkdir()
+            for name in ("a", "b", "c"):
+                (source / name).write_bytes(b"small")
+            output = base / "setup.zip"
+            scanned = []
+
+            def bounded_walk(_root, pattern):
+                self.assertEqual(pattern, "*")
+                for name in ("a", "b", "c"):
+                    scanned.append(name)
+                    yield source / name
+                self.fail("Setup builder must stop enumeration at the limit")
+
+            with mock.patch("v2_build_setup_zip.MAX_ENTRIES", 2), mock.patch.object(
+                Path, "rglob", autospec=True, side_effect=bounded_walk,
+            ):
+                with self.assertRaisesRegex(SetupBuildError, "member count exceeds budget"):
+                    build_setup_zip(source, output, SOURCE_DATE_EPOCH)
+            self.assertEqual(scanned, ["a", "b", "c"])
+            self.assertFalse(output.exists())
+            self.assertEqual(list(base.glob(".v2-setup-*.zip")), [])
+
     def test_staging_member_count_and_expanded_size_budgets_fail_closed(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             base = Path(temporary)
