@@ -872,8 +872,10 @@ final class EnterpriseProcurementController extends Controller
         // before resolving another store's entitlement or enterprise scope.
         $queryInput = $request->query();
         $formInput = $request->request->all();
-        if (array_key_exists('store_id', $queryInput) &&
-            array_key_exists('store_id', $formInput)) {
+        if (
+            array_key_exists('store_id', $queryInput) &&
+            array_key_exists('store_id', $formInput)
+        ) {
             $queryStoreId = $queryInput['store_id'];
             $formStoreId = $formInput['store_id'];
             abort_unless(
