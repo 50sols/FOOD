@@ -144,8 +144,10 @@ function Full-CI([int]$Pr,[string]$Sha,[long]$Request,[string]$Checkout,[Validat
  $report=Join-Path $Root "evidence\$Pr-$Request"
  New-Item -ItemType Directory -Path $report -Force | Out-Null
  # The versioned source tag is required by the genuine update-bundle builder.
- & git -C $Checkout -c credential.helper= fetch --quiet --depth=1 origin tag v1.0.125
- if($LASTEXITCODE -ne 0) { throw 'Canonical update base v1.0.125 could not be fetched.' }
+ if($Profile -eq 'all' -or $Profile -eq 'packages') {
+  & git -C $Checkout -c credential.helper= fetch --quiet --depth=1 origin tag v1.0.125
+  if($LASTEXITCODE -ne 0) { throw 'Canonical update base v1.0.125 could not be fetched.' }
+ }
  $env:GCC_SOURCE_DIR=$Checkout
  $env:GCC_EVIDENCE_DIR=$report
  $env:GCC_EXPECTED_SHA=$Sha
