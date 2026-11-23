@@ -2,6 +2,7 @@
 """CI-only ZIP byte stability, member type, and refusal regression for G004."""
 from __future__ import annotations
 
+import hashlib
 import io
 import os
 import stat
