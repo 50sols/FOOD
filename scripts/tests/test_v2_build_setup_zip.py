@@ -116,6 +116,27 @@ class DeterministicSetupZipTest(unittest.TestCase):
             self.assertEqual(outside.read_bytes(), b"preserve-secret")
             self.assertEqual(list(base.glob(".v2-setup-*.zip")), [])
 
+    def test_checksum_refuses_output_replaced_after_exclusive_publish(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            root = base / "source"
+            root.mkdir()
+            (root / "VERSION").write_bytes(b"1.0.1\\n")
+            output = base / "setup.zip"
+            rival = base / "rival.zip"
+            rival.write_bytes(b"not-the-built-archive")
+            original_link = os.link
+
+            def replace_after_link(source, destination):
+                original_link(source, destination)
+                os.replace(rival, destination)
+
+            with mock.patch("v2_build_setup_zip.os.link", side_effect=replace_after_link):
+                with self.assertRaisesRegex(SetupBuildError, "changed during checksum verification"):
+                    build_setup_zip(root, output, SOURCE_DATE_EPOCH)
+            self.assertEqual(output.read_bytes(), b"not-the-built-archive")
+            self.assertEqual(list(base.glob(".v2-setup-*.zip")), [])
+
     def test_live_dotenv_is_rejected_before_archive_publication(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             base = Path(temporary)
