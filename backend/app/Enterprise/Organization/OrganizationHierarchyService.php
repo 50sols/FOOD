@@ -79,7 +79,20 @@ final class OrganizationHierarchyService
         ?Authenticatable $actor = null,
     ): EnterpriseStoreScope {
         return DB::transaction(function () use ($store, $businessUnit, $actor): EnterpriseStoreScope {
-            $businessUnit->loadMissing('legalEntity.company');
+            // Enforce the active enterprise lineage at the canonical scope
+            // writer, not only in optional Admin wrappers. Both explicit
+            // assignments and default provisioning pass through here.
+            // Refresh both the unit and its ancestry from the database.
+            // Previously preloaded relationships could remain stale after a
+            // parent was deactivated, bypassing this canonical write guard.
+            $businessUnit->refresh()->load('legalEntity.company.organization');
+            if (! $businessUnit->is_active
+                || ! $businessUnit->legalEntity->is_active
+                || ! $businessUnit->legalEntity->company->is_active
+                || ! $businessUnit->legalEntity->company->organization->is_active) {
+                throw new LogicException('Cannot assign a store to an inactive enterprise hierarchy.');
+            }
+
             $targetOrganizationId = (int) $businessUnit->legalEntity->company->organization_id;
 
             /** @var EnterpriseStoreScope|null $existing */
