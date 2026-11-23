@@ -143,6 +143,98 @@ test('issue claim references survive newer status checkpoints', () => {
   assert.equal(c[0].branch,'ci/4151-resume');
   assert.equal(c[0].pr,4152);
 });
+test('historical annotated BRANCH claims reuse the one authoritative original PR', () => {
+  const original='fix/2746-v2-updater-host-readiness-ui';
+  const claims=claimReferences([
+    {body:'<!-- foodex-worker-state:v1 -->\nSTATE: ACTIVE\n'
+      + 'BRANCH: '+original+' (EXISTING)\nPR: #3968'},
+    {body:'<!-- foodex-worker-state:v1 -->\nSTATE: HANDOFF_READY\n'
+      + 'ORIGINAL_BRANCH: '+original+' (preserve original)\nORIGINAL_PR: #3968'},
+    {body:'<!-- foodex-worker-state:v1 -->\nSTATE: HANDOFF_READY\n'
+      + 'BRANCH: '+original+'; TARGET: Foodex_V2 ONLY\nPR: #3968'},
+  ]);
+  assert.deepEqual(claims.map(ref => ref.branch),[original,original,original]);
+  const result=decide({
+    issue:{number:2746,state:'open',title:'V2 | signed update gate',labels:[]},
+    branches:[original],
+    prs:[{number:3968,state:'open',head:{ref:original,sha:'exact-head'},
+      base:{ref:'Foodex_V2'}}],
+    refs:claims,checkpoint:null,
+  });
+  assert.deepEqual([result.action,result.pr,result.head],
+    ['RESUME_ORIGINAL_PR',3968,'exact-head']);
+});
+
+test('historical P110 display notes do not fabricate alternate issue branches', () => {
+  const original = 'test/2844-v2-vendor-ledger-ownership-isolation';
+  const notes = [
+    original + ' (created, no code commit; preserve for successor)',
+    original + ' (ORIGINAL)',
+    original + ' | FINAL_HEAD: 1c72dfe8f7eab2de9458b57404a290c200a2648a',
+  ];
+  const refs = claimReferences(notes.map(branch => ({
+    body: '<!-- foodex-worker-state:v1 -->\nSTATE: HANDOFF_READY\n'
+      + 'BRANCH: ' + branch + '\nPR: #3921',
+  })));
+  assert.deepEqual(refs.map(ref => ref.branch), [original, original, original]);
+  const shared = {
+    issue: { number: 2844, state: 'open', title: 'V2 | ERP P110', labels: [] },
+    branches: [original],
+    prs: [{
+      number: 3921, state: 'open',
+      head: { ref: original, sha: 'exact-head' },
+      base: { ref: 'Foodex_V2' },
+    }],
+    refs,
+    checkpoint: null,
+  };
+  const result = decide(shared);
+  assert.deepEqual([result.action, result.pr, result.head],
+    ['RESUME_ORIGINAL_PR', 3921, 'exact-head']);
+
+  // Similar text must not excuse another branch, malformed SHA, or
+  // unapproved suffix. All unknown provenance stays fail-closed.
+  for (const decorated of [
+    original + ' | FINAL_HEAD: not-a-sha',
+    original + ' | FINAL_HEAD: ' + 'a'.repeat(39),
+    original + ' (ORIGINAL) extra',
+    original + ' (created, no code commit; preserve for successor) trailing',
+    'test/2844-unrelated (ORIGINAL)',
+  ]) {
+    const conflicting = claimReferences([{
+      body: '<!-- foodex-worker-state:v1 -->\nSTATE: ACTIVE\n'
+        + 'BRANCH: ' + decorated + '\nPR: #3921',
+    }]);
+    assert.equal(decide({ ...shared, refs: conflicting }).action,
+      'BLOCK_CONFLICTING_ORIGINALS');
+  }
+});
+
+test('unknown annotations, actual alternate branches and nonmatching claims still block', () => {
+  const original='fix/2746-v2-updater-host-readiness-ui';
+  const untrusted=[
+    original+' (different)',
+    original+' (preserve originals)',
+    original+' (EXISTING) trailing',
+    'fix/2746-other (EXISTING)',
+  ];
+  const shared={
+    issue:{number:2746,state:'open',title:'V2 | signed update gate',labels:[]},
+    branches:[original],
+    prs:[{number:3968,state:'open',head:{ref:original,sha:'exact-head'},
+      base:{ref:'Foodex_V2'}}],
+    checkpoint:null,
+  };
+  for (const branch of untrusted) {
+    const refs=claimReferences([{body:'<!-- foodex-worker-state:v1 -->\n'
+      + 'STATE: ACTIVE\nBRANCH: '+branch+'\nPR: #3968'}]);
+    assert.equal(decide({...shared,refs}).action,'BLOCK_CONFLICTING_ORIGINALS',
+      'Unrecognized or conflicting branch claim must fail closed: '+branch);
+  }
+  assert.equal(decide({...shared,branches:[original,'fix/2746-other'],refs:[]}).action,
+    'BLOCK_CONFLICTING_ORIGINALS');
+});
+
 test('incomplete or oversized search pagination fails closed', async () => {
   await assert.rejects(pages(async()=>({data:{items:[],total_count:2}}),{},'items'),/incomplete/);
   await assert.rejects(pages(async()=>({data:{wrong:[]}}),{},'items'),/payload/);
