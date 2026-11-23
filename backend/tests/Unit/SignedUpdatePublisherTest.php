@@ -49,7 +49,7 @@ final class SignedUpdatePublisherTest extends TestCase
             $altered = $decoded;
             $altered[$field] = $value;
             try {
-                SignedUpdateEnvelope::parse(json_encode($altered, JSON_THROW_ON_ERROR))
+                SignedUpdateEnvelope::parse(json_encode($altered, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE))
                     ->verify($verifier, $trustedKeys);
                 $this->fail('Tampered signed sidecar field was accepted: '.$field);
             } catch (InvalidArgumentException $e) {
