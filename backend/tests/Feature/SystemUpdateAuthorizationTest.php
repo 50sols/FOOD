@@ -340,6 +340,40 @@ class SystemUpdateAuthorizationTest extends TestCase
         $this->assertDatabaseCount('update_history', 0);
     }
 
+    public function test_ambiguous_signed_update_json_is_rejected_at_admin_http_boundary_before_history(): void
+    {
+        if (! function_exists('sodium_crypto_sign_keypair')) {
+            $this->markTestSkipped('Sodium support is required.');
+        }
+
+        $actor = $this->userWithRole('SUPER_ADMIN');
+        $bytes = 'disposable-unsigned-zip-content';
+        [$canonical, $public] = $this->signedManifestForBytes($bytes);
+        config([
+            'update_signatures.publisher_key_id' => 'ci-only-ephemeral',
+            'update_signatures.publisher_public_key_b64' => $public,
+        ]);
+
+        $duplicateKey = str_replace(
+            '"target_version":"99.0.0"',
+            '"target_version":"99.0.0","target_version":"99.0.0"',
+            $canonical,
+        );
+        $this->assertNotSame($canonical, $duplicateKey);
+
+        foreach ([$duplicateKey, ' '.$canonical] as $ambiguousJson) {
+            $this->actingAs($actor)->post(route('admin.system-update.store'), [
+                'package' => UploadedFile::fake()->createWithContent('update.zip', $bytes),
+                'signed_manifest' => UploadedFile::fake()->createWithContent('update.signed.json', $ambiguousJson),
+            ])
+                ->assertRedirect(route('admin.system-update.index'))
+                ->assertSessionHasErrors(['update']);
+
+            $this->assertDatabaseCount('update_history', 0);
+            $this->assertDatabaseMissing('system_versions', ['version' => '99.0.0']);
+        }
+    }
+
     public function test_signed_update_failing_file_move_cleans_partial_private_zip_and_returns_localized_host_error(): void
     {
         if (! function_exists('sodium_crypto_sign_keypair')) {
