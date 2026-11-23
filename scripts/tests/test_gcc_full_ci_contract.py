@@ -19,6 +19,7 @@ class GccHeavyExecutionContracts(unittest.TestCase):
     def test_full_command_is_owner_exact_head_and_not_arbitrary_shell(self):
         self.assertIn("/gcc-ci (run|full|backend|setup|packages)", AGENT)
         self.assertIn("$script:GccLastFailedStage", AGENT)
+        self.assertIn("Failed trusted runtime step", AGENT)
         self.assertIn("profile=$Profile expected=$requiredPackages", AGENT)
         self.assertIn("$Comment.user.login -cne $Owner", AGENT)
         self.assertIn("$pr.head.sha -cne $sha", AGENT)
