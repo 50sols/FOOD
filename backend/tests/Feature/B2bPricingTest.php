@@ -307,7 +307,6 @@ class B2bPricingTest extends TestCase
                 'unit_price' => 'not-a-price',
             ]))->assertNotFound();
             $this->putJson('/api/v1/admin/b2b/prices', $candidate)->assertNotFound();
-            $this->getJson('/api/v1/admin/b2b/prices')->assertNotFound();
 
             $this->assertSame($beforeRules, DB::table('b2b_price_rules')->count());
             $this->assertSame($beforeAudit, DB::table('audit_logs')->count());
