@@ -1110,8 +1110,7 @@ final class OrderOperationsController extends Controller
         // orders.create/manage. Use the same profile admission as the Orders
         // list, popup and feed. A mixed actor keeps its authorized Retail IDs.
         if ($channel === 'b2c' && ! $actor->hasRole('SUPER_ADMIN')) {
-            $ids = array_values(array_filter($ids, static fn (int $storeId): bool =>
-                ! ($actor->hasRole('B2C_STORE_ADMIN', $storeId)
+            $ids = array_values(array_filter($ids, static fn (int $storeId): bool => ! ($actor->hasRole('B2C_STORE_ADMIN', $storeId)
                     && app(StoreBusinessProfileService::class)->isRestaurant($storeId))
             ));
         }
