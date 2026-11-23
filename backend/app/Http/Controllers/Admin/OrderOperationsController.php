@@ -99,7 +99,9 @@ final class OrderOperationsController extends Controller
         $actor = $this->actor($request);
         if (! $actor->hasRole('SUPER_ADMIN')) {
             $allowed = $this->scope->allowedStoreIds($actor, 'orders.view', 'b2c');
-            $selected = $explicitStoreIds[0] ?? null;
+            // The generic index filters only store_id, not the legacy store alias.
+            // A store-only query cannot narrow an otherwise unscoped order list.
+            $selected = $request->query->has('store_id') ? $explicitStoreIds[0] : null;
             $candidateStores = $selected === null ? $allowed : [$selected];
             foreach ($candidateStores as $storeId) {
                 if ($actor->hasRole('B2C_STORE_ADMIN', (int) $storeId)
