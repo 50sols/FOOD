@@ -2025,6 +2025,12 @@ final class OrderOperationsController extends Controller
                 ->exists(), 403);
         }
 
+        // Validate the same trimmed reason we persist in the audit trail.
+        // Whitespace padding must not turn an empty rationale into a valid one.
+        if (is_string($request->input('reason'))) {
+            $request->merge(['reason' => trim($request->input('reason'))]);
+        }
+
         $validated = $request->validate([
             'percentage' => ['required', 'numeric', 'between:0,100', 'decimal:0,3'],
             'reason' => ['required', 'string', 'min:5', 'max:500'],
