@@ -1100,10 +1100,23 @@ final class OrderOperationsController extends Controller
     /** @return list<int> */
     private function orderCreateStoreIds(User $actor, string $channel): array
     {
-        return array_values(array_unique(array_merge(
+        $ids = array_values(array_unique(array_merge(
             $this->scope->allowedStoreIds($actor, 'orders.create', $channel),
             $this->scope->allowedStoreIds($actor, 'orders.manage', $channel),
         )));
+
+        // Central Operations is a Retail workspace; the dedicated Restaurant
+        // workspace must not be reachable merely because its store admin has
+        // orders.create/manage. Use the same profile admission as the Orders
+        // list, popup and feed. A mixed actor keeps its authorized Retail IDs.
+        if ($channel === 'b2c' && ! $actor->hasRole('SUPER_ADMIN')) {
+            $ids = array_values(array_filter($ids, static fn (int $storeId): bool =>
+                ! ($actor->hasRole('B2C_STORE_ADMIN', $storeId)
+                    && app(StoreBusinessProfileService::class)->isRestaurant($storeId))
+            ));
+        }
+
+        return $ids;
     }
 
     /** @return array<string,mixed> */
