@@ -57,6 +57,31 @@ final class SignedUpdateEnvelopeTest extends TestCase
         SignedUpdateEnvelope::parse(str_repeat('x', 16385));
     }
 
+    public function test_rejects_noncanonical_or_ambiguous_signed_update_json(): void
+    {
+        $fields = $this->unsignedEnvelope();
+        $canonical = json_encode($fields, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+        $this->assertInstanceOf(SignedUpdateEnvelope::class, SignedUpdateEnvelope::parse($canonical));
+
+        $cases = [
+            " ".$canonical,
+            $canonical."\n",
+            json_encode(array_reverse($fields, true), JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE),
+            str_replace('"target_version":"99.0.0"', '"target_version":"99.0.0","target_version":"99.0.0"', $canonical),
+            str_replace('"owner-key"', '"owner\\\\u002dkey"', $canonical),
+        ];
+
+        foreach ($cases as $index => $raw) {
+            $this->assertNotSame($canonical, $raw, 'Fixture must differ at case '.$index);
+            try {
+                SignedUpdateEnvelope::parse($raw);
+                $this->fail('Ambiguous signed sidecar was accepted at case '.$index);
+            } catch (InvalidArgumentException) {
+                $this->assertTrue(true);
+            }
+        }
+    }
+
     /** @return array<string, mixed> */
     private function unsignedEnvelope(): array
     {
