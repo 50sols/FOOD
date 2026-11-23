@@ -160,6 +160,10 @@ class DeterministicSetupZipTest(unittest.TestCase):
                 self.assertFalse(output.exists())
                 self.assertEqual(list(Path(temporary).glob(".v2-setup-*.zip")), [])
                 file.unlink()
+                for parent in file.parents:
+                    if parent == root:
+                        break
+                    parent.rmdir()
 
     def test_symlink_and_hardlink_cannot_smuggle_data(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
