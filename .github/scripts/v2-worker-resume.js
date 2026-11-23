@@ -56,14 +56,15 @@ function claimReferences(comments) {
       const m = line.match(/^\s*([A-Z_]+):\s*(.*?)\s*$/);
       if (m) fields[m[1]] = m[2];
     }
-    // Normalize only documented display notes. Arbitrary parentheticals,
-    // semicolon text and alternate refs must remain conflicts (fail closed).
+    // Normalize only verified historical worker display suffixes.
+    // Unknown, malformed, or unrelated refs must remain fail-closed.
     const branch = (fields.BRANCH || fields.ORIGINAL_BRANCH || '')
       .replace(/;\s*(?:BASE|TARGET):.*$/i, '')
       .replace(/;\s*PR\s+#\d+\s+original\s+DRAFT;\s*BASE\s+Foodex_V2$/i, '')
       .replace(/\s+\|\s*BASE:\s*Foodex_V2(?:\s+ONLY)?$/i, '')
       .trim()
-      .replace(/\s+\((?:EXISTING|preserve original|PRESERVE|ORIGINAL; KEEP)\)$/i, '');
+      .replace(/\s+\((?:EXISTING|preserve original|PRESERVE|ORIGINAL; KEEP|ORIGINAL|created, no code commit; preserve for successor)\)$/i, '')
+      .replace(/\s+\|\s+FINAL_HEAD:\s+[a-f0-9]{40}$/i, '');
     const pr = (fields.PR || fields.ORIGINAL_PR || '').match(/^#?([1-9]\d*)(?:\b|$)/);
     if (branch || pr) refs.push({ branch, pr: pr ? Number(pr[1]) : null, state: fields.STATE || '' });
   }
