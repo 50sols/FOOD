@@ -33,3 +33,6 @@
 - TECHNICAL_REVIEW: PENDING exact-head tests/review.
 - Required before merge: exact-final-HEAD Repository Policy, V2 Isolation, Required CI with backend/AR-EN/installer-upgrade as applicable; code security review; no file-ownership collision. Keep PR DRAFT while any gate fails.
 - Base `Foodex_V2` only. No main, tag, release, publish, cPanel or production.
+
+## 2026-11-23 — Whitespace-only business names validation hardening
+The existing guided preview and Save handlers previously validated the raw `name` string and then trimmed it before persistence. The shared validator now trims string names **before** the `required` check, matching the canonical value that is actually stored. The Feature regression `test_setup_preview_and_save_reject_blank_names_without_writing_and_trim_valid_names` covers whitespace-only preview and Save denial with no organization/audit writes, and normalizes padded valid names on Save. This bounded fix does not certify signed Setup ZIP, Update ZIP, installer deployment, upgrades, backup or recovery; the P112 parent and this Issue remain source-incomplete, pending full exact-head CI and independent applicable review. No mobile/API/main/production change.
