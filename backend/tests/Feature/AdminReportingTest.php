@@ -40,6 +40,51 @@ class AdminReportingTest extends TestCase
         $this->getJson('/api/v1/admin/reports/dashboard?store_id='.$storeA)->assertOk()->assertJsonPath('data.orders', 1);
     }
 
+    public function test_archived_or_disabled_store_role_cannot_admit_reporting_even_with_stale_actor(): void
+    {
+        $this->seed(CoreReferenceSeeder::class);
+        [$own, $foreign] = $this->storesWithOrders();
+        $actor = $this->userWithRole('B2C_STORE_ADMIN');
+        $role = Role::query()->where('code', 'B2C_STORE_ADMIN')->firstOrFail();
+        DB::table('user_store_roles')->insert([
+            'user_id' => $actor->id,
+            'store_id' => $own,
+            'role_id' => $role->id,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        Sanctum::actingAs($actor);
+
+        $url = '/api/v1/admin/reports/dashboard?store_id='.$own;
+        $this->getJson($url)->assertOk()->assertJsonPath('data.orders', 1);
+        $this->getJson('/api/v1/admin/reports/dashboard?store_id='.$foreign)->assertForbidden();
+
+        $auditBefore = DB::table('audit_logs')->count();
+        DB::table('roles')->where('id', $role->id)->update(['archived_at' => now()]);
+        $this->assertTrue((bool) DB::table('roles')->where('id', $role->id)->value('is_active'));
+        $this->getJson($url)->assertForbidden();
+
+        DB::table('roles')->where('id', $role->id)->update(['archived_at' => null, 'is_active' => false]);
+        $this->getJson($url)->assertForbidden();
+
+        DB::table('roles')->where('id', $role->id)->update(['is_active' => true]);
+        DB::table('stores')->where('id', $own)->update(['is_active' => false]);
+        $this->getJson($url)->assertForbidden();
+
+        DB::table('stores')->where('id', $own)->update(['is_active' => true]);
+        $this->getJson($url)->assertOk()->assertJsonPath('data.store_id', $own);
+
+        DB::table('users')->where('id', $actor->id)->update(['is_active' => false]);
+        $this->getJson($url)->assertForbidden();
+
+        $this->assertDatabaseHas('user_store_roles', [
+            'user_id' => $actor->id,
+            'store_id' => $own,
+            'role_id' => $role->id,
+        ]);
+        $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+    }
+
     private function storesWithOrders(): array
     {
         $type = (int) DB::table('store_types')->where('code', 'B2C')->value('id');
