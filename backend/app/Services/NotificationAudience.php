@@ -194,11 +194,13 @@ final class NotificationAudience
         $dashboardRoles = array_values((array) config('admin.dashboard_roles', []));
         $isDashboardUser = $user->roles()
             ->where('roles.is_active', true)
+            ->whereNull('roles.archived_at')
             ->whereIn('roles.code', $dashboardRoles)
             ->exists()
             || $user->storeRoleAssignments()
                 ->whereHas('role', fn (Builder $roles) => $roles
                     ->where('is_active', true)
+                    ->whereNull('archived_at')
                     ->whereIn('code', $dashboardRoles))
                 ->exists();
 
