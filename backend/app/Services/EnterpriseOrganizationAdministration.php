@@ -154,11 +154,29 @@ final class EnterpriseOrganizationAdministration
     {
         $this->assertDefaultRoutingIdentityPreserved($model, $data);
 
+        // A record's legal organization ancestry is immutable in a metadata
+        // update. All three Eloquent models are unguarded, so a direct service
+        // caller must not be able to re-parent a company, legal entity or
+        // business unit by passing its foreign-key column to fill($data).
+        $parentKey = match (true) {
+            $model instanceof EnterpriseCompany => 'organization_id',
+            $model instanceof EnterpriseLegalEntity => 'company_id',
+            $model instanceof EnterpriseBusinessUnit => 'legal_entity_id',
+            default => null,
+        };
+        if ($parentKey !== null && array_key_exists($parentKey, $data)
+            && (int) $data[$parentKey] !== (int) $model->getAttribute($parentKey)) {
+            throw ValidationException::withMessages([
+                'parent' => [__('enterprise_organization.cross_scope_denied')],
+            ]);
+        }
+
         // A direct service caller may rename an inactive legacy record
-        // without submitting activation. Never extend this exemption to
-        // changing its routing identity code: that path must still pass the
-        // conservative ancestor preconditions before an update.
+        // without submitting activation. Only harmless display metadata with
+        // unchanged identity is eligible; all other payloads retain the
+        // conservative hierarchy activation preconditions.
         if (! array_key_exists('is_active', $data)
+            && array_diff(array_keys($data), ['name', 'code']) === []
             && (! array_key_exists('code', $data)
                 || (string) $data['code'] === (string) $model->getAttribute('code'))) {
             return;
