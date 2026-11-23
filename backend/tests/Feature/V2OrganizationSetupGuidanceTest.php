@@ -529,8 +529,52 @@ final class V2OrganizationSetupGuidanceTest extends TestCase
                 $this->assertSame($originalParentId, (int) $record->fresh()->getAttribute($key));
                 $this->assertSame($originalName, $record->fresh()->name);
             }
+
+            // An integer-cast comparison used to accept these forms as
+            // "unchanged" and pass their original bytes to an unguarded FK.
+            // Rejection must happen before touching DB state or audit logs.
+            foreach ([
+                $originalParentId.'alias',
+                $originalParentId.'.5',
+                '0'.$originalParentId,
+                ' '.$originalParentId,
+                $originalParentId + 0.5,
+                true,
+                null,
+            ] as $spoofedParent) {
+                try {
+                    $service->{$method}($record, [
+                        $key => $spoofedParent,
+                        'name' => 'Unauthorized Cast-Equivalent Identity',
+                    ], $admin);
+                    $this->fail('Noncanonical parent ID aliases must not reach Eloquent fill().');
+                } catch (ValidationException $exception) {
+                    $this->assertArrayHasKey('parent', $exception->errors());
+                }
+
+                $stored = $record->fresh();
+                $this->assertSame($originalParentId, (int) $stored->getAttribute($key));
+                $this->assertSame($originalName, $stored->name);
+            }
         }
         $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+
+        // Canonical, exactly unchanged parent IDs remain supported by the
+        // historical service API even when submitted as decimal strings.
+        foreach ([
+            [$originalCompany, 'updateCompany', 'organization_id'],
+            [$originalEntity, 'updateLegalEntity', 'company_id'],
+            [$originalUnit, 'updateBusinessUnit', 'legal_entity_id'],
+        ] as [$record, $method, $key]) {
+            $originalParent = (int) $record->getAttribute($key);
+            $updated = $service->{$method}($record, [
+                $key => (string) $originalParent,
+                'name' => 'Authorized Canonical Metadata',
+            ], $admin);
+            $this->assertSame($originalParent, (int) $updated->getAttribute($key));
+            $this->assertSame('Authorized Canonical Metadata', $updated->name);
+        }
+        $this->assertSame($auditBefore + 3, DB::table('audit_logs')->count());
     }
 
     public function test_reactivation_with_active_ancestors_succeeds_only_on_save(): void
