@@ -156,6 +156,38 @@ class SystemUpdateAuthorizationTest extends TestCase
         $this->assertDatabaseCount('update_history', 0);
     }
 
+    public function test_backup_and_restore_reject_padded_or_empty_audit_reasons_before_any_operation(): void
+    {
+        $this->withoutMiddleware(ThrottleRequests::class);
+
+        $admin = $this->userWithRole('SUPER_ADMIN');
+        $backupReference = '20261017-120000-database-aaaaaaaaaa';
+
+        foreach (['en', 'ar'] as $locale) {
+            $admin->forceFill(['locale' => $locale])->save();
+
+            foreach (['     ', '  ab  '] as $reason) {
+                $this->actingAs($admin->fresh())
+                    ->post(route('admin.system-update.backups.store'), [
+                        'reason' => $reason,
+                    ])
+                    ->assertSessionHasErrors(['reason']);
+
+                $this->actingAs($admin->fresh())
+                    ->post(route('admin.system-update.backups.restore', [
+                        'backupReference' => $backupReference,
+                    ]), [
+                        'reason' => $reason,
+                        'confirm_reference' => $backupReference,
+                    ])
+                    ->assertSessionHasErrors(['reason']);
+            }
+        }
+
+        $this->assertDatabaseCount('update_history', 0);
+        $this->assertDatabaseCount('system_versions', 0);
+    }
+
     public function test_super_admin_reaches_validation_for_update_backup_and_restore_actions(): void
     {
         $this->withoutMiddleware(ThrottleRequests::class);
