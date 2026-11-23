@@ -137,6 +137,32 @@ final class UpdatePackageValidator
                 throw new InvalidArgumentException('Update archive contains no release files.');
             }
 
+            // An authenticated checksum alone cannot make a ZIP with a
+            // conflicting VERSION a valid target release. Source-built Update
+            // ZIPs contain root VERSION; compare its actual bytes with the
+            // signed target before Verify Package reports an installable ZIP.
+            // Historical partial code-only ZIPs with no VERSION remain valid;
+            // they are not evidence of a full source-built release.
+            $versionIndex = $archive->locateName('VERSION', \\ZipArchive::FL_NOCASE);
+            if ($versionIndex !== false) {
+                $versionName = $archive->getNameIndex($versionIndex);
+                $versionStat = $archive->statIndex($versionIndex);
+                if ($versionName !== 'VERSION' || ! is_array($versionStat)
+                    || ($versionStat['size'] ?? PHP_INT_MAX) > 128) {
+                    throw new InvalidArgumentException('Update archive contains an invalid embedded VERSION.');
+                }
+
+                $embeddedVersion = $archive->getFromIndex($versionIndex, 129);
+                if (! is_string($embeddedVersion)
+                    || ! in_array($embeddedVersion, [
+                        $manifest->targetVersion,
+                        $manifest->targetVersion."\\n",
+                        $manifest->targetVersion."\\r\\n",
+                    ], true)) {
+                    throw new InvalidArgumentException('Update archive VERSION does not match signed target version.');
+                }
+            }
+
             // Files cannot also be parent directories, even on case-insensitive
             // or shared-hosting filesystems with different normalization rules.
             foreach ($knownPaths as $path => $_) {

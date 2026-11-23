@@ -37,6 +37,54 @@ class UpdatePackageValidatorTest extends TestCase
         $this->assertTrue($result['contains_migrations']);
     }
 
+    public function test_embedded_version_must_match_signed_target_version(): void
+    {
+        // The SHA is recalculated for each complete, valid ZIP. Mismatched
+        // VERSION would be authenticated by a signer, but cannot represent
+        // the advertised software version on disk.
+        foreach ([
+            ['VERSION', "1.2.1\\n", 'does not match signed target version'],
+            ['VERSION', "1.2.0 \\n", 'does not match signed target version'],
+            ['VERSION', str_repeat('1', 129), 'invalid embedded VERSION'],
+            ['version', "1.2.0\\n", 'invalid embedded VERSION'],
+        ] as [$filename, $content, $expected]) {
+            $archive = new \\ZipArchive;
+            $this->assertTrue($archive->open($this->packagePath, \\ZipArchive::CREATE | \\ZipArchive::OVERWRITE) === true);
+            $this->assertTrue($archive->addFromString('backend/app/Release.php', '<?php // release'));
+            $this->assertTrue($archive->addFromString($filename, $content));
+            $this->assertTrue($archive->close());
+
+            $manifest = new UpdatePackageManifest(
+                '1.2.0', '1.0.0', hash_file('sha256', $this->packagePath),
+                'Actual ZIP VERSION mismatch', false,
+            );
+            try {
+                (new UpdatePackageValidator)->validate($manifest, '1.1.0', $this->packagePath);
+                $this->fail('Mismatched signed target/version ZIP must not verify.');
+            } catch (InvalidArgumentException $exception) {
+                $this->assertStringContainsString($expected, $exception->getMessage());
+            }
+        }
+    }
+
+    public function test_exact_signed_version_file_remains_installable(): void
+    {
+        foreach (["1.2.0", "1.2.0\\n", "1.2.0\\r\\n"] as $contents) {
+            $archive = new \\ZipArchive;
+            $this->assertTrue($archive->open($this->packagePath, \\ZipArchive::CREATE | \\ZipArchive::OVERWRITE) === true);
+            $this->assertTrue($archive->addFromString('backend/app/Release.php', '<?php // release'));
+            $this->assertTrue($archive->addFromString('VERSION', $contents));
+            $this->assertTrue($archive->close());
+
+            $manifest = new UpdatePackageManifest(
+                '1.2.0', '1.0.0', hash_file('sha256', $this->packagePath),
+                'Valid source release marker', false,
+            );
+            $verified = (new UpdatePackageValidator)->validate($manifest, '1.1.0', $this->packagePath);
+            $this->assertSame('1.2.0', $verified['target_version']);
+        }
+    }
+
     public function test_matching_digest_cannot_verify_directory_only_zip(): void
     {
         // A well-formed ZIP with directory entries passes the member-count
