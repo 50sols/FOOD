@@ -94,6 +94,58 @@ final class V2InactiveHierarchyStoreAssignmentTest extends TestCase
         $this->assertSame($beforeAudit, DB::table('audit_logs')->count());
     }
 
+    public function test_preloaded_active_ancestry_cannot_bypass_a_later_database_deactivation(): void
+    {
+        [$unit, $store] = $this->hierarchy('stale_relations', null);
+        // Deliberately cache each level before an independent DB update.
+        $unit->load('legalEntity.company.organization');
+        $this->assertTrue((bool) $unit->legalEntity->company->organization->is_active);
+
+        DB::table('enterprise_organizations')
+            ->where('id', $unit->legalEntity->company->organization->id)
+            ->update(['is_active' => false]);
+
+        // The caller still holds stale Eloquent relations with is_active=true.
+        $this->assertTrue((bool) $unit->legalEntity->company->organization->is_active);
+        $beforeAudit = DB::table('audit_logs')->count();
+
+        try {
+            app(OrganizationHierarchyService::class)->assignStore($store, $unit);
+            $this->fail('A cached active hierarchy must not bypass database deactivation.');
+        } catch (LogicException $exception) {
+            $this->assertSame(
+                'Cannot assign a store to an inactive enterprise hierarchy.',
+                $exception->getMessage(),
+            );
+        }
+
+        $this->assertDatabaseMissing('enterprise_store_scopes', ['store_id' => $store->id]);
+        $this->assertSame($beforeAudit, DB::table('audit_logs')->count());
+    }
+
+    public function test_stale_active_unit_object_cannot_bypass_current_disabled_unit(): void
+    {
+        [$unit, $store] = $this->hierarchy('stale_unit', null);
+        $this->assertTrue((bool) $unit->is_active);
+        DB::table('enterprise_business_units')->where('id', $unit->id)
+            ->update(['is_active' => false]);
+        $this->assertTrue((bool) $unit->is_active);
+        $beforeAudit = DB::table('audit_logs')->count();
+
+        try {
+            app(OrganizationHierarchyService::class)->assignStore($store, $unit);
+            $this->fail('An outdated Eloquent unit flag must not allow assignment.');
+        } catch (LogicException $exception) {
+            $this->assertSame(
+                'Cannot assign a store to an inactive enterprise hierarchy.',
+                $exception->getMessage(),
+            );
+        }
+
+        $this->assertDatabaseMissing('enterprise_store_scopes', ['store_id' => $store->id]);
+        $this->assertSame($beforeAudit, DB::table('audit_logs')->count());
+    }
+
     public function test_default_scope_provisioning_rejects_inactive_default_organization(): void
     {
         $organization = EnterpriseOrganization::query()
