@@ -451,6 +451,16 @@ final class V2OrganizationSetupGuidanceTest extends TestCase
         $this->assertFalse((bool) $unit->fresh()->is_active);
         $this->assertSame($auditBefore + 2, DB::table('audit_logs')->count());
 
+        // Changing the canonical hierarchy identity is not a display-name
+        // edit; the inactive parent must still block that service path.
+        try {
+            $service->updateCompany($company, ['code' => 'v2_changed_legacy_identity'], $admin);
+            $this->fail('Identity changes must not inherit the metadata-only exemption.');
+        } catch (ValidationException $exception) {
+            $this->assertArrayHasKey('parent', $exception->errors());
+        }
+        $this->assertSame('v2_legacy_metadata_company', $company->fresh()->code);
+
         foreach ([[$company, 'updateCompany'], [$unit, 'updateBusinessUnit']] as [$record, $method]) {
             try {
                 $service->{$method}($record, ['is_active' => true], $admin);
