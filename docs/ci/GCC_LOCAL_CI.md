@@ -245,3 +245,12 @@ refused /workspace as dubious ownership because its files are intentionally
 chowned to the unprivileged runner UID. The trusted preview script now uses
 only `git -c safe.directory=/workspace` for the exact commit verification,
 not a global ownership or safety bypass.
+
+### Canonical web installer evidence context
+
+The real scripts/validate-fresh-setup.sh acceptance also consumes the
+GITHUB_SHA and GITHUB_WORKSPACE variables used on GitHub Actions. GCC's
+trusted runner now binds both to the immutable requested source and its
+isolated writable Linux /workspace volume; a mismatched provided SHA is
+rejected. The canonical 24 Playwright screenshots and source SHA are not
+skipped or replaced with synthetic evidence.
