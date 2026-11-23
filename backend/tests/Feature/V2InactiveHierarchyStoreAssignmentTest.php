@@ -94,6 +94,35 @@ final class V2InactiveHierarchyStoreAssignmentTest extends TestCase
         $this->assertSame($beforeAudit, DB::table('audit_logs')->count());
     }
 
+    public function test_default_scope_provisioning_rejects_inactive_default_organization(): void
+    {
+        $organization = EnterpriseOrganization::query()
+            ->where('code', OrganizationHierarchyService::DEFAULT_ORGANIZATION)
+            ->firstOrFail();
+        $organization->forceFill(['is_active' => false])->save();
+
+        $store = Store::query()->create([
+            'store_type_id' => (int) DB::table('store_types')->where('code', 'B2B')->value('id'),
+            'code' => 'v2-inactive-default-scope',
+            'name' => 'Disabled Default Organization Scope',
+            'is_active' => true,
+        ]);
+        $beforeAudit = DB::table('audit_logs')->count();
+
+        try {
+            app(OrganizationHierarchyService::class)->ensureDefaultScopeForStore($store);
+            $this->fail('Disabled default enterprise organization must not receive a new store scope.');
+        } catch (LogicException $exception) {
+            $this->assertSame(
+                'Cannot assign a store to an inactive enterprise hierarchy.',
+                $exception->getMessage(),
+            );
+        }
+
+        $this->assertDatabaseMissing('enterprise_store_scopes', ['store_id' => $store->id]);
+        $this->assertSame($beforeAudit, DB::table('audit_logs')->count());
+    }
+
     public function test_existing_scope_cannot_be_silently_reassigned_across_organizations(): void
     {
         [$firstUnit, $store] = $this->hierarchy('source_org', null);
