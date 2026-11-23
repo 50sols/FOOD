@@ -101,10 +101,22 @@ final class UpdateManager
                     'backup_status' => 'partial',
                 ]);
 
+                $stage = 'maintenance_mode';
+                // The files-only backup may run while the site is live. A
+                // database rollback snapshot MUST NOT: accepting a legitimate
+                // user/order write between the snapshot and maintenance entry
+                // would cause data loss if a later migration/health check
+                // restores those old database bytes. Stop new public requests
+                // before capturing and verifying the recovery DB baseline.
+                $this->runtime->enterMaintenanceMode();
+                $maintenanceMode = true;
+                $this->checkpoint($history, ['maintenance_mode' => 'entered']);
+
                 $stage = 'backup_database';
                 // Cache rebuild reconciles persisted job-role grants even when
                 // this ZIP declares no migrations. Every update must therefore
-                // have a verified database snapshot before files are activated.
+                // have a verified QUIESCENT database snapshot before files are
+                // activated, after maintenance begins blocking public writes.
                 $databaseBackup = $this->runtime->backupDatabase(true);
                 if ($databaseBackup === null) {
                     throw new RuntimeException('Database backup is required for every system update.');
@@ -120,11 +132,6 @@ final class UpdateManager
                     'database_backup_reference' => $databaseBackup,
                     'backup_status' => 'available',
                 ]);
-
-                $stage = 'maintenance_mode';
-                $this->runtime->enterMaintenanceMode();
-                $maintenanceMode = true;
-                $this->checkpoint($history, ['maintenance_mode' => 'entered']);
 
                 $stage = 'extract_release';
                 // Extraction can partially replace files before throwing.
