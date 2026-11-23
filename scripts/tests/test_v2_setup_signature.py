@@ -106,6 +106,24 @@ class SetupEd25519SignatureTest(unittest.TestCase):
             json.loads(self.sidecar.read_text(encoding="utf-8"))["archive_sha256"],
         )
 
+    def test_archive_verifier_subprocess_never_receives_signing_secret(self) -> None:
+        # The publisher needs the ephemeral secret, but its external Python
+        # staging verifier must never inherit that credential.
+        verifier = self.folder / "python-verifier-with-secret-guard"
+        verifier.write_text(
+            "#!/usr/bin/env python3\\n"
+            "import os, subprocess, sys\\n"
+            "if os.getenv('FOODEX_SETUP_SIGNING_SECRET_KEY_B64') is not None:\\n"
+            "    sys.exit(81)\\n"
+            "sys.exit(subprocess.run([sys.executable, *sys.argv[1:]], check=False).returncode)\\n",
+            encoding="utf-8",
+        )
+        verifier.chmod(0o700)
+        signed = self.run_sign(FOODEX_SETUP_VERIFIER_PYTHON=str(verifier))
+        self.assertEqual(0, signed.returncode, signed.stderr)
+        self.assertTrue(self.sidecar.is_file())
+        self.assertEqual(0, self.run_verify().returncode)
+
     def test_exact_verified_archive_is_signed_and_trusted_by_public_key(self) -> None:
         signed = self.run_sign()
         self.assertEqual(0, signed.returncode, signed.stderr)
