@@ -71,6 +71,29 @@ try {
     (new UpdatePackageValidator)->validate(
         $manifest, $manifest->minimumCurrentVersion, $zipPath,
     );
+    // Reject extraction aliases before Ed25519 signing: a valid checksum and
+    // readable ZIP do not make an archive safe for cPanel/Windows extractors.
+    $archive = new ZipArchive;
+    if ($archive->open($zipPath) !== true) {
+        throw new RuntimeException('Unsafe update archive.');
+    }
+    try {
+        for ($index = 0; $index < $archive->numFiles; $index++) {
+            $name = $archive->getNameIndex($index);
+            if (! is_string($name) || $name === ''
+                || str_contains($name, "\\")
+                || preg_match('~\\A(?:/|[A-Za-z]:)|(?:\\A|/)\\.{1,2}(?:/|\\z)|//|[\\x00-\\x1F\\x7F]~D', $name) === 1) {
+                throw new RuntimeException('Unsafe update archive member path.');
+            }
+            if ($archive->getExternalAttributesIndex($index, $os, $attributes)
+                && $os === ZipArchive::OPSYS_UNIX
+                && (($attributes >> 16) & 0170000) === 0120000) {
+                throw new RuntimeException('Update archive must not contain symlinks.');
+            }
+        }
+    } finally {
+        $archive->close();
+    }
     $verifier = new TrustedUpdateSignatureVerifier;
     $json = (new SignedUpdatePublisher($verifier))->issue($manifest, $keyId, $secret);
     // Validate the final signed envelope format before publication.
