@@ -35,7 +35,9 @@ final class StoreAccess
         return $user->storeRoleAssignments()
             ->where('store_id', $storeId)
             ->whereHas('user', fn ($query) => $query->where('is_active', true))
-            ->whereHas('store', fn ($query) => $query->where('is_active', true))
+            ->whereHas('store', fn ($query) => $query
+                ->where('is_active', true)
+                ->whereHas('storeType', fn ($type) => $type->where('code', 'B2C')))
             ->whereHas('role', fn ($query) => $query
                 ->where('is_active', true)
                 ->whereIn('scope', ['store', 'both']))
