@@ -1,0 +1,8 @@
+# V2 #4345 — scoped store-role channel boundary
+
+- Parent P031 #2782 / master #2503. Integration branch **Foodex_V2 only**.
+- **Defect:** `StoreAccess::canAccess` accepted an active scoped role assignment to an active B2B (Wholesale) store. The matching `assignedStoreIdsQuery` already limits such retail-scoped assignments to active B2C stores, so the admission predicate could disagree with listing authorization.
+- **Fix:** add a persisted `storeType.code = B2C` predicate under the existing scoped store relationship. Do not touch the existing global Super Admin path; it intentionally admits active B2B/B2C stores. Keep active, role and persisted-user predicates.
+- **Regression:** `V2StoreAccessScopedChannelBoundaryTest` seeds B2C and B2B stores and a B2C_STORE_ADMIN, explicitly assigns both, proves B2C allowed/B2B denied/unknown denied, confirms `scopeStores` parity, stale deactivated store denial, revoked actor denial, read-only audit-log count, and Super Admin B2B active admission followed by inactive denial.
+- **Security:** High; no migration/data change, no new route or UI; denial is fail-closed for cross-channel scoped store assignments. Exact-final-head Repository Policy, V2 Isolation, full Laravel and MySQL/Redis Required CI, independent security review and protected SHA merge are required before closing this atomic leaf.
+- **Mobile impact:** Customer NO_DIRECT_SOURCE_IMPACT; Driver NO_DIRECT_SOURCE_IMPACT; Van NO_DIRECT_SOURCE_IMPACT. Existing Retail/Wholesale isolation contract strengthened only in ERP backend. No Flutter, main, tags, release or production deployment.
