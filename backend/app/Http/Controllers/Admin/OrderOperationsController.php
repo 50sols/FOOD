@@ -745,6 +745,15 @@ final class OrderOperationsController extends Controller
 
         $actor = $this->actor($request);
         $model = $this->managedOrder($actor, $order, 'orders.view');
+        // The per-store orders.view grant is necessary, but a Restaurant
+        // B2C_STORE_ADMIN does not have Retail Operations Orders admission.
+        // Keep popup/invoice/timeline aligned with the canonical and generic
+        // list routes; deny before constructing sensitive detail payloads.
+        if (! $actor->hasRole('SUPER_ADMIN')
+            && $actor->hasRole('B2C_STORE_ADMIN', (int) $model->store_id)
+            && app(StoreBusinessProfileService::class)->isRestaurant((int) $model->store_id)) {
+            abort(404);
+        }
         $channel = strtolower((string) $model->channel);
         $statusOptions = $this->orderStatusOptions();
         $statusLabels = collect($statusOptions)
