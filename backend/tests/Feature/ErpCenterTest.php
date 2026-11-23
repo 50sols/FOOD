@@ -511,7 +511,7 @@ final class ErpCenterTest extends TestCase
     public function test_enabled_and_entitled_module_exposes_only_its_canonical_destination(): void
     {
         $actor = $this->userWithGlobalRole('SUPER_ADMIN', 'en', 'erp-enabled@example.test');
-        $store = $this->wholesaleStore('P135-READY-ENABLED');
+        $this->wholesaleStore('P135-READY-ENABLED');
 
         app(EnterpriseModuleAdministration::class)->perform('procurement', 'enable', $actor);
         app(ModuleEntitlementManager::class)->set(
@@ -537,9 +537,11 @@ final class ErpCenterTest extends TestCase
         $this->assertSame('admin.erp.procurement.index', $procurement['route']);
         $this->assertArrayHasKey('store_id', $procurement['params']);
         $this->assertGreaterThan(0, (int) $procurement['params']['store_id']);
+        $card = collect($response->viewData('cards'))->firstWhere('key', 'procurement');
+        $this->assertIsArray($card);
         $this->assertSame(
             route('admin.erp.procurement.index', $procurement['params']),
-            collect($response->viewData('cards'))->firstWhere('key', 'procurement')['url'],
+            $card['url'],
         );
         $this->actingAs($actor)->get(route($procurement['route'], $procurement['params']))->assertOk();
     }
