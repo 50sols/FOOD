@@ -20,6 +20,55 @@ SOURCE_DATE_EPOCH = 1731758400
 
 
 class DeterministicSetupZipTest(unittest.TestCase):
+    def test_secret_bearing_env_templates_rejected_before_zip_creation(self) -> None:
+        # Rejection must happen before mkstemp or public ZIP publication; the
+        # verifier cannot unpublish bytes that were already staged.
+        cases = (
+            ("backend/.env.production.example", "APP_KEY=base64:secret\\n"),
+            ("backend/.env.example", "DB_PASSWORD='private-secret'\\n"),
+            ("backend/.env.production.example", "APP_KEY=\\nAPP_KEY=base64:second-secret\\n"),
+            ("backend/.env.production.example", "REDIS_PASSWORD=\"secret\"\\n"),
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            for index, (member, payload) in enumerate(cases):
+                with self.subTest(member=member, case=index):
+                    root = base / f"source-{index}"
+                    env_file = root / member
+                    env_file.parent.mkdir(parents=True)
+                    (root / "VERSION").write_text("1.0.1\\n")
+                    env_file.write_text(payload, encoding="utf-8")
+                    output = base / f"setup-{index}.zip"
+
+                    def opened_regular_member(path, meta, name, source_root):
+                        return path.open("rb")
+
+                    with mock.patch("v2_build_setup_zip._open_verified_member", side_effect=opened_regular_member):
+                        with mock.patch("v2_build_setup_zip.tempfile.mkstemp", side_effect=AssertionError("ZIP temp created before env rejection")):
+                            with self.assertRaisesRegex(SetupBuildError, "non-empty secret fields"):
+                                build_setup_zip(root, output, SOURCE_DATE_EPOCH)
+                    self.assertFalse(output.exists())
+                    self.assertEqual(list(base.glob(".v2-setup-*.zip")), [])
+
+    def test_empty_env_secrets_and_redis_null_are_allowed_in_setup_staging(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            root = base / "source"
+            env = root / "backend/.env.production.example"
+            env.parent.mkdir(parents=True)
+            (root / "VERSION").write_text("1.0.1\\n")
+            env.write_text("APP_KEY=\\nDB_PASSWORD=\\nREDIS_PASSWORD=null\\nMAIL_PASSWORD=\"\"\\n")
+            output = base / "setup.zip"
+
+            def opened_regular_member(path, meta, name, source_root):
+                return path.open("rb")
+
+            with mock.patch("v2_build_setup_zip._open_verified_member", side_effect=opened_regular_member):
+                digest = build_setup_zip(root, output, SOURCE_DATE_EPOCH)
+            self.assertEqual(len(digest), 64)
+            with zipfile.ZipFile(output) as archive:
+                self.assertEqual(archive.read("backend/.env.production.example"), env.read_bytes())
+
     def test_exact_source_copy_rejects_growth_and_truncation_without_overreading(self) -> None:
         for payload, expected_size, error in (
             (b"abcd", 4, None),
