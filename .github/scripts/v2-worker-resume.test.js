@@ -181,8 +181,8 @@ test('unrecognized historical claim suffixes never silently become the original 
     canonical+'; PR #9999 unrelated; BASE Foodex_V2',
   ];
   for (const value of invalid) {
-    const refs=claimReferences([{body:'<!-- foodex-worker-state:v1 -->\\n'
-      + 'STATE: HANDOFF_READY\\nBRANCH: '+value+'\\nPR: #4152'}]);
+    const refs=claimReferences([{body:'<!-- foodex-worker-state:v1 -->\n'
+      + 'STATE: HANDOFF_READY\nBRANCH: '+value+'\nPR: #4152'}]);
     assert.equal(decide({issue, branches:[canonical], prs:[pr()], refs,
       checkpoint:null}).action, 'BLOCK_CONFLICTING_ORIGINALS', value);
   }
