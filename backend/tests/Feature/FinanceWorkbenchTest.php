@@ -189,7 +189,7 @@ final class FinanceWorkbenchTest extends TestCase
         ]);
         $this->actingAs($manager)->post($review, [
             'decision' => 'reject', 'review_reason' => 'Not a permitted finance reviewer',
-        ])->assertNotFound();
+        ])->assertForbidden();
         $this->actingAs($accountant->fresh())->post($review, [
             'decision' => 'reject', 'review_reason' => 'Independent accountant rejected this discount',
         ])->assertRedirect();
