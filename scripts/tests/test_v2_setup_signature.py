@@ -142,6 +142,40 @@ class SetupEd25519SignatureTest(unittest.TestCase):
         self.assertNotEqual(0, unsafe.returncode)
         self.assertFalse(self.sidecar.exists())
 
+    def test_symlinked_archive_and_version_are_rejected_without_signature(self) -> None:
+        original_archive = self.archive
+        linked_archive = self.folder / "archive-link.zip"
+        linked_archive.symlink_to(original_archive)
+        self.archive = linked_archive
+        rejected_archive = self.run_sign()
+        self.assertNotEqual(0, rejected_archive.returncode)
+        self.assertFalse(self.sidecar.exists())
+
+        self.archive = original_archive
+        original_version = self.version
+        linked_version = self.folder / "version-link"
+        linked_version.symlink_to(original_version)
+        self.version = linked_version
+        rejected_version = self.run_sign()
+        self.assertNotEqual(0, rejected_version.returncode)
+        self.assertFalse(self.sidecar.exists())
+
+    def test_symlinked_signature_output_and_verification_input_fail_closed(self) -> None:
+        existing = self.folder / "existing-sidecar"
+        existing.write_text("preserve-me", encoding="utf-8")
+        self.sidecar.symlink_to(existing)
+        refused = self.run_sign()
+        self.assertNotEqual(0, refused.returncode)
+        self.assertEqual("preserve-me", existing.read_text(encoding="utf-8"))
+        self.sidecar.unlink()
+
+        self.assertEqual(0, self.run_sign().returncode)
+        genuine = self.sidecar
+        linked = self.folder / "linked-sidecar"
+        linked.symlink_to(genuine)
+        self.sidecar = linked
+        self.assertNotEqual(0, self.run_verify().returncode)
+
     def test_existing_signature_is_never_overwritten(self) -> None:
         self.sidecar.write_text("do-not-replace", encoding="utf-8")
         failed = self.run_sign()
