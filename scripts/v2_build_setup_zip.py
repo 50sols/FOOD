@@ -15,6 +15,7 @@ import unicodedata
 import tempfile
 import zipfile
 from pathlib import Path
+from v2_setup_staging_verify import ALLOWED_ENV_EXAMPLES, SENSITIVE_ENV_KEYS, _parse_env_template
 
 
 class SetupBuildError(ValueError):
@@ -185,6 +186,28 @@ def build_setup_zip(source_root: Path, output: Path, source_epoch: int) -> str:
             or folded_parts[:3] == ("backend", "bootstrap", "cache")
         ):
             raise SetupBuildError(f"Runtime storage/cache content in Setup staging: {name}")
+        if stat.S_ISREG(source_meta.st_mode) and source_path.name.casefold() in ALLOWED_ENV_EXAMPLES:
+            # The downstream ZIP verifier runs only after publication. Never
+            # serialize a filled dotenv template into even a private ZIP.
+            # Match its canonical sensitive-key and quoted-value policy.
+            if source_meta.st_size > 1024 * 1024:
+                raise SetupBuildError("Setup environment template exceeds preflight budget.")
+            with _open_verified_member(source_path, source_meta, name, source_root) as template:
+                payload = template.read(1024 * 1024 + 1)
+                if (len(payload) != source_meta.st_size
+                    or _member_identity(os.fstat(template.fileno())) != _member_identity(source_meta)):
+                    raise SetupBuildError("Setup environment template changed during preflight.")
+            latest_template = source_path.lstat()
+            if _member_identity(latest_template) != _member_identity(source_meta):
+                raise SetupBuildError("Setup environment template changed during preflight.")
+            try:
+                assignments = _parse_env_template(payload.decode("utf-8"))
+            except UnicodeDecodeError as exc:
+                raise SetupBuildError("Invalid Setup environment template encoding.") from exc
+            for secret_key in SENSITIVE_ENV_KEYS:
+                safe_values = {"", "null"} if secret_key == "REDIS_PASSWORD" else {""}
+                if any(value.casefold() not in safe_values for value in assignments.get(secret_key, [])):
+                    raise SetupBuildError("Setup environment template contains non-empty secret fields.")
         if stat.S_ISREG(source_meta.st_mode):
             if source_meta.st_size > MAX_ENTRY_SIZE:
                 raise SetupBuildError("Setup ZIP staging entry exceeds size budget.")
