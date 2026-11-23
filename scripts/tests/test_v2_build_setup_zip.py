@@ -163,6 +163,45 @@ class DeterministicSetupZipTest(unittest.TestCase):
             self.assertFalse(output.exists())
             self.assertEqual(list(base.glob(".v2-setup-*.zip")), [])
 
+    def test_unsafe_stage_is_rejected_before_creating_temp_archive(self) -> None:
+        # A dirty staging checkout must be rejected before any ZIP exists,
+        # even when the invalid entry sorts after a legitimate file.
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            source = base / "source"
+            source.mkdir()
+            (source / "VERSION").write_bytes(b"1.0.1\\n")
+            output = base / "setup.zip"
+            for unsafe, reason in (
+                (".env", "Secret environment configuration"),
+                (".git/config", "Source control metadata"),
+            ):
+                with self.subTest(unsafe=unsafe):
+                    candidate = source / unsafe
+                    candidate.parent.mkdir(parents=True, exist_ok=True)
+                    candidate.write_bytes(b"APP_KEY=private")
+                    with mock.patch("v2_build_setup_zip.tempfile.mkstemp") as create:
+                        with self.assertRaisesRegex(SetupBuildError, reason):
+                            build_setup_zip(source, output, SOURCE_DATE_EPOCH)
+                        create.assert_not_called()
+                    self.assertFalse(output.exists())
+                    candidate.unlink()
+                    if candidate.parent != source:
+                        candidate.parent.rmdir()
+            # A hard-link must not be copied into a staging archive either.
+            outside = base / "outside"
+            outside.write_bytes(b"private")
+            linked = source / "hardlinked"
+            try:
+                os.link(outside, linked)
+            except OSError as exc:
+                self.skipTest(f"Hardlinks unavailable: {exc}")
+            with mock.patch("v2_build_setup_zip.tempfile.mkstemp") as create:
+                with self.assertRaisesRegex(SetupBuildError, "Hard-linked"):
+                    build_setup_zip(source, output, SOURCE_DATE_EPOCH)
+                create.assert_not_called()
+            self.assertFalse(output.exists())
+
     def test_staging_member_count_and_expanded_size_budgets_fail_closed(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             base = Path(temporary)
