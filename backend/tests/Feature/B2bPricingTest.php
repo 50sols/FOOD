@@ -256,6 +256,64 @@ class B2bPricingTest extends TestCase
         $this->getJson("/api/v1/b2b/products/{$productId}?store_id={$storeId}")->assertForbidden();
     }
 
+    public function test_wholesale_price_rule_api_checks_store_deny_before_pricing_field_validation(): void
+    {
+        $this->seed(CoreReferenceSeeder::class);
+        [$storeId, $productId, $tierId] = $this->catalog();
+        $this->setPricingTiers($storeId, true);
+        $admin = $this->userWithRole('B2B_ADMIN', 'pricing-store-deny@example.test');
+
+        $candidate = [
+            'store_id' => $storeId,
+            'price_tier_id' => $tierId,
+            'product_id' => $productId,
+            'unit_price' => 7.250,
+            'minimum_quantity' => 1,
+        ];
+        Sanctum::actingAs($admin);
+        // An in-scope operator still receives ordinary field validation.
+        $this->putJson('/api/v1/admin/b2b/prices', array_replace($candidate, [
+            'price_tier_id' => 'invalid-tier',
+            'unit_price' => 'not-a-price',
+        ]))->assertUnprocessable()
+            ->assertJsonValidationErrors(['price_tier_id', 'unit_price']);
+
+        $permissionId = (int) DB::table('permissions')->where('code', 'b2b.pricing.manage')->value('id');
+        $this->assertGreaterThan(0, $permissionId);
+        DB::table('user_permission_overrides')->insert([
+            'user_id' => $admin->id,
+            'permission_id' => $permissionId,
+            'scope_key' => 'store:'.$storeId,
+            'store_id' => $storeId,
+            'effect' => 'deny',
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        $admin->forceFill(['has_permission_overrides' => true])->save();
+
+        $this->assertTrue($admin->fresh()->hasPermission('b2b.pricing.manage'));
+        $this->assertFalse($admin->fresh()->hasPermission('b2b.pricing.manage', $storeId));
+        $beforeRules = DB::table('b2b_price_rules')->count();
+        $beforeAudit = DB::table('audit_logs')->count();
+
+        foreach (['ar', 'en'] as $locale) {
+            $admin->forceFill(['locale' => $locale])->save();
+            Sanctum::actingAs($admin->fresh());
+
+            // A forbidden store must not expose its tier/product/price errors.
+            $this->putJson('/api/v1/admin/b2b/prices', array_replace($candidate, [
+                'price_tier_id' => 'invalid-tier',
+                'product_id' => 'invalid-product',
+                'unit_price' => 'not-a-price',
+            ]))->assertNotFound();
+            $this->putJson('/api/v1/admin/b2b/prices', $candidate)->assertNotFound();
+            $this->getJson('/api/v1/admin/b2b/prices')->assertNotFound();
+
+            $this->assertSame($beforeRules, DB::table('b2b_price_rules')->count());
+            $this->assertSame($beforeAudit, DB::table('audit_logs')->count());
+        }
+    }
+
     public function test_wholesale_app_order_and_stock_only_setting_control_product_feed(): void
     {
         $this->seed(CoreReferenceSeeder::class);
