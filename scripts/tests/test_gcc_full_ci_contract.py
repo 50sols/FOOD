@@ -64,6 +64,9 @@ class GccHeavyExecutionContracts(unittest.TestCase):
         self.assertIn("php artisan migrate:fresh", FULL)
         self.assertIn("php artisan db:seed", FULL)
         self.assertIn("xargs -0 -r -n1 -P4 php -l", FULL)
+        self.assertIn("COMPOSER_PROCESS_TIMEOUT=900", FULL)
+        self.assertIn("930s composer lint", FULL)
+        self.assertIn("930s composer analyse", FULL)
         self.assertIn("node --test", FULL)
 
     def test_locked_production_setup_and_actual_update(self):
