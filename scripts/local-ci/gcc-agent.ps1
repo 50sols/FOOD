@@ -86,15 +86,15 @@ function Smoke([int]$Pr,[string]$Sha,[long]$Request) {
 
 # Full backend execution uses immutable trusted tooling, not Compose files from PRs.
 function Trusted-Toolkit {
- $pin='465f765b72af87e838384efc01247f7ac38ca7c5'
+ $pin='a63f277a267ef0a9bfe2a78c62aac6ff9aed4770'
  $kit=Join-Path $Root "trusted\$pin"
  $expected=@{
   'Dockerfile.backend'='7809e482cee0e446f3aab09174d1a53a634853c6'
   'compose.backend.yaml'='20ce6bc17294287afe48a6d1cd0c033c94057bcb'
   'Dockerfile.flutter'='2125d8138a9eb1956d67224f6ce652d9ba1a4815'
   'preview.sh'='358cc4be8d947316a3255f0e5d81bf590e3432af'
-  'prepare.sh'='1142146e0e9b0bcb7f39be6ac873ee5e85c7c93a'
-  'full.sh'='478eb8e0774d69bdced71ef4fbcfc2745b4f5ae2'
+  'prepare.sh'='384d4cca67e2ef5123892a16a09fa4ea1cb4c2bb'
+  'full.sh'='e1cf90f494163dfea994f2e22f6edf39a634f6d1'
  }
  New-Item -ItemType Directory -Path $kit -Force | Out-Null
  foreach($name in @('Dockerfile.backend','Dockerfile.flutter','compose.backend.yaml','prepare.sh','full.sh','preview.sh')) {
@@ -108,7 +108,7 @@ function Trusted-Toolkit {
  }
  return $kit
 }
-function Full-CI([int]$Pr,[string]$Sha,[long]$Request,[string]$Checkout) {
+function Full-CI([int]$Pr,[string]$Sha,[long]$Request,[string]$Checkout,[ValidateSet('all','backend','setup','packages')][string]$Profile) {
  if(-not (Test-Path (Join-Path $Checkout 'backend/composer.lock'))) {
   Write-Warning 'Fail closed: exact PR head lacks backend/composer.lock; canonical dependency #3444 must be resolved first.'
   return 1
@@ -122,7 +122,7 @@ function Full-CI([int]$Pr,[string]$Sha,[long]$Request,[string]$Checkout) {
  $env:GCC_SOURCE_DIR=$Checkout
  $env:GCC_EVIDENCE_DIR=$report
  $env:GCC_EXPECTED_SHA=$Sha
- $env:GCC_PROFILE='all'
+ $env:GCC_PROFILE=$Profile
  $compose=Join-Path $kit 'compose.backend.yaml'
  $project="gcc$Pr$Request"
  $log=Join-Path $Root "full-$Pr-$Request.log"
@@ -132,12 +132,16 @@ function Full-CI([int]$Pr,[string]$Sha,[long]$Request,[string]$Checkout) {
   if($LASTEXITCODE -ne 0) { throw 'Composer cache volume unavailable' }
   & docker volume create foodex-gcc-flutter-cache *> $null
   if($LASTEXITCODE -ne 0) { throw 'Flutter pub cache volume unavailable' }
-  & docker compose -p $project -f $compose build preparer preview runner *> $log
+  $targets=@('preparer','runner')
+  if($Profile -ne 'backend') { $targets+= 'preview' }
+  & docker compose -p $project -f $compose build @targets *> $log
   if($LASTEXITCODE -ne 0) { throw "Trusted GCC toolchain build failed; see $log" }
   & docker compose -p $project -f $compose run --rm --no-deps preparer *>> $log
   if($LASTEXITCODE -ne 0) { throw "Composer/Redocly preparation failed; see $log" }
-  & docker compose -p $project -f $compose run --rm --no-deps preview *>> $log
-  if($LASTEXITCODE -ne 0) { throw "Flutter Web preview build failed; see $log" }
+  if($Profile -ne 'backend') {
+   & docker compose -p $project -f $compose run --rm --no-deps preview *>> $log
+   if($LASTEXITCODE -ne 0) { throw "Flutter Web preview build failed; see $log" }
+  }
   & docker compose -p $project -f $compose up -d --wait mysql redis *>> $log
   if($LASTEXITCODE -ne 0) { throw "MySQL/Redis startup failed; see $log" }
   & docker compose -p $project -f $compose run --rm runner *>> $log
@@ -146,12 +150,20 @@ function Full-CI([int]$Pr,[string]$Sha,[long]$Request,[string]$Checkout) {
   $resultFile=Join-Path $report 'result.json'
   if(-not (Test-Path -LiteralPath $resultFile)) { throw 'Missing full CI result manifest.' }
   $result=Get-Content -LiteralPath $resultFile -Raw | ConvertFrom-Json
-  if($result.result -cne 'PASS' -or $result.source_sha -cne $Sha -or $result.profile -cne 'all' -or
+  if($result.result -cne 'PASS' -or $result.source_sha -cne $Sha -or $result.profile -cne $Profile -or
      $result.signed -ne $false -or $result.trusted_release -ne $false) {
    throw 'Full CI manifest failed exact-head/profile/staging validation.'
   }
   $artifacts=Get-ChildItem -Path $report -Filter '*.zip' -Recurse
-  if(@($artifacts).Count -lt 2) { throw 'Setup + Update ZIP files are both required.' }
+  $requiredPackages=switch($Profile) { 'all' {2} 'packages' {2} 'setup' {1} default {0} }
+  if(@($artifacts).Count -lt $requiredPackages) {
+   throw "Missing expected package artifacts: profile=$Profile expected=$requiredPackages"
+  }
+  if($Profile -eq 'all' -or $Profile -eq 'backend') {
+   foreach($name in @('laravel-shard-0.xml','laravel-shard-1.xml','laravel-shard-2.xml','laravel-shard-3.xml','deployment.xml')) {
+    if(-not (Test-Path -LiteralPath (Join-Path $report $name))) { throw "Missing PHPUnit evidence: $name" }
+   }
+  }
   foreach($artifact in $artifacts) {
    $expectedHash=[string]$result.artifacts_sha256.($artifact.Name)
    $actualHash=(Get-FileHash -LiteralPath $artifact.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
@@ -168,7 +180,7 @@ function Full-CI([int]$Pr,[string]$Sha,[long]$Request,[string]$Checkout) {
   Remove-Item Env:\GCC_SOURCE_DIR,Env:\GCC_EVIDENCE_DIR,Env:\GCC_EXPECTED_SHA,Env:\GCC_PROFILE -ErrorAction SilentlyContinue
  }
 }
-function Report-Full([int]$Pr,[string]$Sha,[string]$Status,[int]$Exit,[long]$Request) {
+function Report-Full([int]$Pr,[string]$Sha,[string]$Status,[int]$Exit,[long]$Request,[string]$Profile) {
  $report=Join-Path $Root "evidence\$Pr-$Request"
  $summary=''
  $evidence=Join-Path $report 'result.json'
@@ -186,7 +198,7 @@ function Report-Full([int]$Pr,[string]$Sha,[string]$Status,[int]$Exit,[long]$Req
   }
  }
  $body="<!-- foodex-gcc-full:$Request -->" + [Environment]::NewLine +
- "**GCC full Laravel/MySQL/Redis/ZIP staging: $Status**" + [Environment]::NewLine +
+ "**GCC $Profile local Laravel/MySQL/ZIP staging: $Status**" + [Environment]::NewLine +
  "- Exact PR head: $Sha" + [Environment]::NewLine +
  "- Process exit code: $Exit" + [Environment]::NewLine +
  "- Isolated GCC evidence directory: local only (no raw logs or secrets uploaded)" + $summary +
@@ -200,7 +212,7 @@ function Report-Full([int]$Pr,[string]$Sha,[string]$Status,[int]$Exit,[long]$Req
 
 function Process($Comment) {
  if($null -eq $Comment.user -or $Comment.user.login -cne $Owner) { return }
- if([string]$Comment.body -cnotmatch '(?m)^/gcc-ci (run|full) ([a-f0-9]{40})\s*$') { return }
+ if([string]$Comment.body -cnotmatch '(?m)^/gcc-ci (run|full|backend|setup|packages) ([a-f0-9]{40})\s*$') { return }
  $profile=$Matches[1]
  $sha=$Matches[2]
  if([string]$Comment.issue_url -notmatch '^https://api\.github\.com/repos/walidatiyaai2025-gif/FOOD/issues/([0-9]+)$') { return }
@@ -212,7 +224,8 @@ function Process($Comment) {
  if([string]$pr.head.ref -cnotmatch '^(ci|feat|fix|test|chore|refactor|docs|worker)/[0-9]+-[a-z0-9-]+$') { return }
  $status='FAIL'; $exit=1
  try {
-  if($profile -eq 'full') {
+  if($profile -ne 'run') {
+   $testProfile=if($profile -eq 'full') { 'all' } else { $profile }
    $work=Join-Path $Root "work\$n-$($Comment.id)"
    New-Item -ItemType Directory -Path $work -Force | Out-Null
    try {
@@ -224,7 +237,7 @@ function Process($Comment) {
     if($fetched -cne $sha) { throw 'Full CI fetched source SHA mismatch' }
     & git -C $work checkout -q --detach $sha | Out-Null
     if($LASTEXITCODE -ne 0) { throw 'Full CI checkout failed' }
-    $exit=Full-CI -Pr $n -Sha $sha -Request ([long]$Comment.id) -Checkout $work
+    $exit=Full-CI -Pr $n -Sha $sha -Request ([long]$Comment.id) -Checkout $work -Profile $testProfile
    } finally {
     if(Test-Path $work) { Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue }
    }
@@ -233,8 +246,8 @@ function Process($Comment) {
   }
   if($exit -eq 0) { $status='PASS' }
  } catch { Write-Warning "Smoke error: $($_.Exception.Message)" }
- if($profile -eq 'full') {
-  Report-Full -Pr $n -Sha $sha -Status $status -Exit $exit -Request ([long]$Comment.id)
+ if($profile -ne 'run') {
+  Report-Full -Pr $n -Sha $sha -Status $status -Exit $exit -Request ([long]$Comment.id) -Profile $testProfile
  } else {
   Report -Pr $n -Sha $sha -Status $status -Exit $exit -Request ([long]$Comment.id)
  }
