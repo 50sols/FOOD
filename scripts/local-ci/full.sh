@@ -56,11 +56,25 @@ if [[ "$profile" == backend || "$profile" == all ]]; then
   DB_CONNECTION=sqlite DB_DATABASE=database/database.sqlite php artisan db:seed --force
   node --test tests/Browser/driver-live-map.test.cjs
   step=complete-laravel-shards
+  shard_failures=0
   for shard in 0 1 2 3; do
     python3 ../scripts/laravel-test-shards.py --count 4 --index "$shard" --output ".phpunit-gcc-$shard.xml"
-    DB_CONNECTION=sqlite DB_DATABASE=database/database.sqlite vendor/bin/phpunit \
-      --configuration=".phpunit-gcc-$shard.xml" --log-junit="/evidence/laravel-shard-$shard.xml"
+    # Keep complete JUnit evidence for ALL shards even after an individual
+    # failure. This never turns red tests green; it avoids rerunning costly
+    # prior shards just to find a later failing fixture.
+    if DB_CONNECTION=sqlite DB_DATABASE=database/database.sqlite \
+      timeout --kill-after=15s 1800s vendor/bin/phpunit \
+        --configuration=".phpunit-gcc-$shard.xml" --log-junit="/evidence/laravel-shard-$shard.xml"; then
+      echo "GCC Laravel shard $shard PASS"
+    else
+      shard_failures=$((shard_failures+1))
+      echo "GCC Laravel shard $shard FAIL (retained JUnit evidence)" >&2
+    fi
   done
+  if (( shard_failures > 0 )); then
+    echo "GCC backend has $shard_failures failed shards; refusing a PASS" >&2
+    exit 1
+  fi
   step=mysql-redis-deployment-recovery
   mysqladmin ping --host=127.0.0.1 --port=3306 --user=root --password=root --silent
   DB_CONNECTION=mysql DB_HOST=127.0.0.1 DB_PORT=3306 \
