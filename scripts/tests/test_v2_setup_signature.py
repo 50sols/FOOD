@@ -142,6 +142,8 @@ class SetupEd25519SignatureTest(unittest.TestCase):
         self.sidecar.write_text(canonical, encoding="utf-8")
         self.assertEqual(0, self.run_verify().returncode)
 
+    def test_valid_signature_cannot_advertise_wrong_zip_version(self) -> None:
+        self.assertEqual(0, self.run_sign().returncode)
     def test_modified_archive_and_untrusted_publisher_fail_closed(self) -> None:
         self.assertEqual(0, self.run_sign().returncode)
         with zipfile.ZipFile(self.archive, "a") as archive:
