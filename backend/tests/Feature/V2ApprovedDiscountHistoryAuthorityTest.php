@@ -24,16 +24,16 @@ final class V2ApprovedDiscountHistoryAuthorityTest extends TestCase
 
     public function test_approved_history_is_visible_on_exact_order_after_fulfillment_changes_in_arabic_and_english(): void
     {
-        [$agent, $reviewer, $orderId, $requestId] = $this->approvedDiscount();
+        [$agent, $reviewer, $orderId, $requestId, $accountant] = $this->approvedDiscount();
 
         $this->assertDatabaseHas('order_customer_service_discount_requests', [
             'id' => $requestId,
             'status' => 'approved',
-            'reviewed_by_user_id' => $reviewer->getKey(),
+            'reviewed_by_user_id' => $accountant->getKey(),
         ]);
         $this->assertDatabaseHas('audit_logs', [
             'event' => 'order.customer_service_discount.approved',
-            'user_id' => $reviewer->getKey(),
+            'user_id' => $accountant->getKey(),
         ]);
 
         // Approval history remains visible after the pending-stage form closes.
@@ -153,7 +153,10 @@ final class V2ApprovedDiscountHistoryAuthorityTest extends TestCase
     private function approvedDiscount(): array
     {
         $agent = $this->roleUser('CUSTOMER_SERVICE_AGENT');
+        // Operational managers retain scoped read-only approved history,
+        // while only an independent Accounting actor records the approval.
         $reviewer = $this->roleUser('CUSTOMER_SERVICE_MANAGER');
+        $accountant = $this->roleUser('FINANCE');
         $orderId = $this->makeOrder();
 
         DB::table('order_customer_service_assignments')->insert([
@@ -177,7 +180,7 @@ final class V2ApprovedDiscountHistoryAuthorityTest extends TestCase
         $requestId = (int) DB::table('order_customer_service_discount_requests')
             ->where('order_id', $orderId)->value('id');
         $this->assertGreaterThan(0, $requestId);
-        $this->actingAs($reviewer)->post(
+        $this->actingAs($accountant)->post(
             route('admin.operations.orders.customer-service-discount.review', [
                 'order' => $orderId,
                 'discountRequest' => $requestId,
@@ -185,7 +188,7 @@ final class V2ApprovedDiscountHistoryAuthorityTest extends TestCase
             ['decision' => 'approve'],
         )->assertRedirect();
 
-        return [$agent, $reviewer, $orderId, $requestId];
+        return [$agent, $reviewer, $orderId, $requestId, $accountant];
     }
 
     private function roleUser(string $code): User
