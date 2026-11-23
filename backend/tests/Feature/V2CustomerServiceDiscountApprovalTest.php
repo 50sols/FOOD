@@ -22,10 +22,10 @@ final class V2CustomerServiceDiscountApprovalTest extends TestCase
         $this->seed(CoreReferenceSeeder::class);
     }
 
-    public function test_assigned_agent_request_does_not_mutate_prices_and_independent_manager_review_applies_once(): void
+    public function test_assigned_agent_request_does_not_mutate_prices_and_independent_accounting_review_applies_once(): void
     {
         $agent = $this->roleUser('CUSTOMER_SERVICE_AGENT');
-        $manager = $this->roleUser('CUSTOMER_SERVICE_MANAGER');
+        $finance = $this->roleUser('FINANCE');
         $orderId = $this->order();
         $this->assignAgent($orderId, $agent);
         $key = (string) Str::uuid();
@@ -55,34 +55,31 @@ final class V2CustomerServiceDiscountApprovalTest extends TestCase
         ])->assertRedirect();
         $this->assertSame(1, DB::table('order_customer_service_discount_requests')->where('order_id', $orderId)->count());
 
-        $this->actingAs($manager)
-            ->get(route('admin.operations.orders.index', ['order' => $orderId, 'channel' => 'b2b']))
-            ->assertOk()
-            ->assertSee('data-order-customer-service-review', false);
+        // Finance approvers are scoped by finance.view/manage rather than broad orders.view.
 
         $reviewUrl = $this->reviewUrl($orderId, (int) $request->id);
-        $this->actingAs($manager)->post($reviewUrl, ['decision' => 'approve'])->assertRedirect();
+        $this->actingAs($finance)->post($reviewUrl, ['decision' => 'approve'])->assertRedirect();
         $this->assertDatabaseHas('order_customer_service_discount_requests', [
             'id' => $request->id,
             'status' => 'approved',
-            'reviewed_by_user_id' => $manager->getKey(),
+            'reviewed_by_user_id' => $finance->getKey(),
         ]);
         $this->assertDatabaseHas('orders', ['id' => $orderId, 'grand_total' => 7.875]);
         $this->assertDatabaseHas('order_customer_service_discounts', [
             'order_id' => $orderId, 'idempotency_key' => $key,
-            'applied_by_user_id' => $manager->getKey(),
+            'applied_by_user_id' => $finance->getKey(),
         ]);
         $this->assertDatabaseHas('audit_logs', [
-            'event' => 'order.customer_service_discount.approved', 'user_id' => $manager->getKey(),
+            'event' => 'order.customer_service_discount.approved', 'user_id' => $finance->getKey(),
         ]);
-        $this->actingAs($manager)->post($reviewUrl, ['decision' => 'approve'])->assertStatus(409);
+        $this->actingAs($finance)->post($reviewUrl, ['decision' => 'approve'])->assertStatus(409);
         $this->assertSame(1, DB::table('order_customer_service_discounts')->where('order_id', $orderId)->count());
     }
 
     public function test_unprivileged_reviewer_cannot_approve_and_self_approval_is_forbidden(): void
     {
         $agent = $this->roleUser('CUSTOMER_SERVICE_AGENT');
-        $manager = $this->roleUser('CUSTOMER_SERVICE_MANAGER');
+        $finance = $this->roleUser('FINANCE');
         $otherAgent = $this->roleUser('CUSTOMER_SERVICE_AGENT');
         $orderId = $this->order();
         $this->assignAgent($orderId, $agent);
@@ -100,11 +97,13 @@ final class V2CustomerServiceDiscountApprovalTest extends TestCase
             $this->actingAs($otherAgent)->post($url, ['decision' => 'approve'])->assertForbidden();
         }
 
-        // This protects the service from privilege-combination self-review:
-        // a manager must not approve a request recorded under their own ID.
-        DB::table('order_customer_service_discount_requests')->where('id', $requestId)
-            ->update(['requested_by_user_id' => $manager->getKey()]);
+        // A Finance reviewer must not approve a request recorded under their own ID.
+        // Customer Service managers also never qualify as Accounting reviewers.
+        $manager = $this->roleUser('CUSTOMER_SERVICE_MANAGER');
         $this->actingAs($manager)->post($url, ['decision' => 'approve'])->assertForbidden();
+        DB::table('order_customer_service_discount_requests')->where('id', $requestId)
+            ->update(['requested_by_user_id' => $finance->getKey()]);
+        $this->actingAs($finance)->post($url, ['decision' => 'approve'])->assertForbidden();
         $this->assertDatabaseHas('order_customer_service_discount_requests', ['id' => $requestId, 'status' => 'pending']);
         $this->assertDatabaseHas('orders', ['id' => $orderId, 'grand_total' => 9]);
         $this->assertSame(0, DB::table('order_customer_service_discounts')->where('order_id', $orderId)->count());
@@ -113,7 +112,7 @@ final class V2CustomerServiceDiscountApprovalTest extends TestCase
     public function test_rejection_is_audited_without_price_change_and_replay_is_denied(): void
     {
         $agent = $this->roleUser('CUSTOMER_SERVICE_AGENT');
-        $manager = $this->roleUser('CUSTOMER_SERVICE_MANAGER');
+        $finance = $this->roleUser('FINANCE');
         $orderId = $this->order();
         $this->assignAgent($orderId, $agent);
 
@@ -124,20 +123,20 @@ final class V2CustomerServiceDiscountApprovalTest extends TestCase
         ])->assertRedirect();
         $requestId = (int) DB::table('order_customer_service_discount_requests')->where('order_id', $orderId)->value('id');
         $url = $this->reviewUrl($orderId, $requestId);
-        $this->actingAs($manager)->post($url, [
+        $this->actingAs($finance)->post($url, [
             'decision' => 'reject', 'review_reason' => '',
         ])->assertSessionHasErrors('review_reason');
-        $this->actingAs($manager)->post($url, [
+        $this->actingAs($finance)->post($url, [
             'decision' => 'reject', 'review_reason' => 'Pricing not justified',
         ])->assertRedirect();
         $this->assertDatabaseHas('order_customer_service_discount_requests', [
             'id' => $requestId, 'status' => 'rejected',
-            'reviewed_by_user_id' => $manager->getKey(),
+            'reviewed_by_user_id' => $finance->getKey(),
         ]);
         $this->assertDatabaseHas('audit_logs', [
-            'event' => 'order.customer_service_discount.rejected', 'user_id' => $manager->getKey(),
+            'event' => 'order.customer_service_discount.rejected', 'user_id' => $finance->getKey(),
         ]);
-        $this->actingAs($manager)->post($url, ['decision' => 'approve'])->assertStatus(409);
+        $this->actingAs($finance)->post($url, ['decision' => 'approve'])->assertStatus(409);
         $this->assertDatabaseHas('orders', ['id' => $orderId, 'grand_total' => 9]);
         $this->assertSame(0, DB::table('order_customer_service_discounts')->where('order_id', $orderId)->count());
     }
@@ -145,7 +144,7 @@ final class V2CustomerServiceDiscountApprovalTest extends TestCase
     public function test_stale_dispatched_or_completed_request_cannot_change_order_when_reviewed(): void
     {
         $agent = $this->roleUser('CUSTOMER_SERVICE_AGENT');
-        $manager = $this->roleUser('CUSTOMER_SERVICE_MANAGER');
+        $finance = $this->roleUser('FINANCE');
         $orderId = $this->order();
         $this->assignAgent($orderId, $agent);
 
@@ -157,9 +156,64 @@ final class V2CustomerServiceDiscountApprovalTest extends TestCase
         $requestId = (int) DB::table('order_customer_service_discount_requests')->where('order_id', $orderId)->value('id');
         DB::table('orders')->where('id', $orderId)->update(['status' => 'confirmed']);
 
-        $this->actingAs($manager)->post($this->reviewUrl($orderId, $requestId), [
+        $this->actingAs($finance)->post($this->reviewUrl($orderId, $requestId), [
             'decision' => 'approve',
         ])->assertSessionHasErrors('percentage');
+        $this->assertDatabaseHas('order_customer_service_discount_requests', [
+            'id' => $requestId, 'status' => 'pending',
+        ]);
+        $this->assertDatabaseHas('orders', ['id' => $orderId, 'grand_total' => 9]);
+        $this->assertSame(0, DB::table('order_customer_service_discounts')->where('order_id', $orderId)->count());
+    }
+
+
+    public function test_customer_service_manager_can_request_large_discount_but_cannot_apply_or_approve(): void
+    {
+        $manager = $this->roleUser('CUSTOMER_SERVICE_MANAGER');
+        $accountant = $this->roleUser('FINANCE');
+        $orderId = $this->order();
+        $key = (string) Str::uuid();
+        $this->actingAs($manager)->post(
+            route('admin.operations.orders.customer-service-discount', ['order' => $orderId]),
+            ['percentage' => 80, 'reason' => 'Accounting decides the discretionary concession', 'idempotency_key' => $key],
+        )->assertRedirect();
+
+        $request = DB::table('order_customer_service_discount_requests')
+            ->where('order_id', $orderId)->first();
+        $this->assertNotNull($request);
+        $this->assertSame('pending', $request->status);
+        $this->assertDatabaseHas('orders', ['id' => $orderId, 'grand_total' => 9, 'discount_total' => 1]);
+        $this->assertSame(0, DB::table('order_customer_service_discounts')->where('order_id', $orderId)->count());
+
+        $reviewUrl = $this->reviewUrl($orderId, (int) $request->id);
+        $this->actingAs($manager)->post($reviewUrl, ['decision' => 'approve'])->assertForbidden();
+        $this->actingAs($this->roleUser('SUPER_ADMIN'))->post($reviewUrl, ['decision' => 'approve'])->assertForbidden();
+        $this->actingAs($accountant)->post($reviewUrl, ['decision' => 'approve'])->assertRedirect();
+
+        $this->assertDatabaseHas('order_customer_service_discount_requests', [
+            'id' => $request->id, 'status' => 'approved',
+            'reviewed_by_user_id' => $accountant->getKey(),
+        ]);
+        $this->assertDatabaseHas('orders', ['id' => $orderId, 'grand_total' => 1.8]);
+    }
+
+    public function test_accounting_approval_does_not_waive_protection_against_full_write_off(): void
+    {
+        $agent = $this->roleUser('CUSTOMER_SERVICE_AGENT');
+        $accountant = $this->roleUser('FINANCE');
+        $orderId = $this->order();
+        $this->assignAgent($orderId, $agent);
+        $this->actingAs($agent)->post(
+            route('admin.operations.orders.customer-service-discount', ['order' => $orderId]),
+            ['percentage' => 100, 'reason' => 'Requested complete write-off', 'idempotency_key' => (string) Str::uuid()],
+        )->assertRedirect();
+
+        $requestId = (int) DB::table('order_customer_service_discount_requests')
+            ->where('order_id', $orderId)->value('id');
+        $this->actingAs($accountant)->post(
+            $this->reviewUrl($orderId, $requestId), ['decision' => 'approve'],
+        )->assertSessionHasErrors('percentage');
+
         $this->assertDatabaseHas('order_customer_service_discount_requests', [
             'id' => $requestId, 'status' => 'pending',
         ]);
