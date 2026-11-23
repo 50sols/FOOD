@@ -130,6 +130,24 @@ def build_setup_zip(source_root: Path, output: Path, source_epoch: int) -> str:
                 raise SetupBuildError(f"Source control metadata in Setup staging: {name}")
             if folded == ".env" or (folded.startswith(".env.") and folded not in allowed_templates):
                 raise SetupBuildError(f"Secret environment configuration in Setup staging: {name}")
+        # The verifier rejects runtime data, but that is too late if the
+        # builder has already serialized credentials or customer uploads to
+        # a temporary ZIP. Empty Laravel storage/cache directories are safe.
+        folded_parts = tuple(part.casefold() for part in source_path.relative_to(source_root).parts)
+        upload_roots = (
+            ("backend", "public", "storage"),
+            ("backend", "public", "uploads"),
+            ("public", "storage"),
+            ("public", "uploads"),
+            ("backend", "uploads"),
+        )
+        if any(folded_parts[:len(root)] == root for root in upload_roots):
+            raise SetupBuildError(f"Public uploaded/runtime content in Setup staging: {name}")
+        if stat.S_ISREG(source_meta.st_mode) and (
+            folded_parts[:2] == ("backend", "storage")
+            or folded_parts[:3] == ("backend", "bootstrap", "cache")
+        ):
+            raise SetupBuildError(f"Runtime storage/cache content in Setup staging: {name}")
         if stat.S_ISREG(source_meta.st_mode):
             if source_meta.st_size > MAX_ENTRY_SIZE:
                 raise SetupBuildError("Setup ZIP staging entry exceeds size budget.")
