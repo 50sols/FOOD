@@ -23,11 +23,14 @@ final class StoreAccess
 
     public function canAccess(User $user, Store|int $store): bool
     {
-        if ($this->hasGlobalStoreAccess($user)) {
-            return true;
-        }
-
         $storeId = $store instanceof Store ? $store->getKey() : $store;
+
+        // Privileged role membership never makes a disabled, deleted or
+        // fabricated store a valid tenant. Query the persisted store so a
+        // stale active Store model cannot bypass a concurrent deactivation.
+        if ($this->hasGlobalStoreAccess($user)) {
+            return Store::query()->whereKey($storeId)->where('is_active', true)->exists();
+        }
 
         return $user->storeRoleAssignments()
             ->where('store_id', $storeId)
