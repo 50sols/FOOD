@@ -220,3 +220,12 @@ Both Composer security audit and pinned Redocly remain mandatory in the
 existing GitHub Backend fast-fail workflow for the same exact PR head.
 No green local security result is inferred from this split. Do not remove
 GitHub Required CI before independent trusted local parity is verified.
+
+### Avoid repeat downloads in scoped Backend tests
+
+A backend-only GCC run now passes its requested profile to the trusted
+Composer preparer, skips the TCPDF Git fetch, skips the second no-dev vendor
+tree used only for ZIP packaging, and skips the unrelated update-base Git
+tag fetch. The Setup/packages/full profiles still build the production
+vendor tree and pin the exact TCPDF source. This reduces local runtime,
+Composer traffic, and GitHub API/remote communication per acceptance job.
