@@ -528,18 +528,18 @@ class DeterministicSetupZipTest(unittest.TestCase):
             base = Path(temporary)
             root = base / "source"
             root.mkdir()
-            (root / "VERSION").write_bytes(b"1.0.1\\n")
+            (root / "VERSION").write_bytes(b"1.0.1\n")
             output = base / "setup.zip"
             # Match the canonical verifier's exact allowed example templates.
             examples = ["backend/.env.example", "backend/.env.production.example"]
             for name in examples:
                 file = root / name
                 file.parent.mkdir(parents=True, exist_ok=True)
-                file.write_bytes(b"APP_KEY=\\n")
+                file.write_bytes(b"APP_KEY=\n")
             for name in (".env", "backend/.env", "backend/.ENV.local", "backend/.env.testing"):
                 file = root / name
                 file.parent.mkdir(parents=True, exist_ok=True)
-                file.write_bytes(b"APP_KEY=base64:live-secret\\n")
+                file.write_bytes(b"APP_KEY=base64:live-secret\n")
                 with self.assertRaisesRegex(SetupBuildError, "Secret environment configuration"):
                     build_setup_zip(root, output, SOURCE_DATE_EPOCH)
                 self.assertFalse(output.exists(), name)
