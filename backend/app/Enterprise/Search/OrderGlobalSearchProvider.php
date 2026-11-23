@@ -45,6 +45,11 @@ final class OrderGlobalSearchProvider implements GlobalSearchProvider
         $literalPattern = LiteralLikePattern::contains($query);
         $rows = DB::table('orders')
             ->join('stores', 'stores.id', '=', 'orders.store_id')
+            ->join('store_types', 'store_types.id', '=', 'stores.store_type_id')
+            // A store assignment is not authority for an order in a different
+            // persisted channel. Reject inconsistent legacy rows before LIMIT;
+            // never fabricate a channel from the authorized store.
+            ->whereRaw('UPPER(orders.channel) = store_types.code')
             ->whereIn('orders.store_id', $storeIds)
             ->where(function ($builder) use ($literalPattern, $displayId): void {
                 $builder->whereRaw("orders.order_number LIKE ? ESCAPE '!'", [$literalPattern]);
