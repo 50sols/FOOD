@@ -127,7 +127,7 @@ final class V2OrdersSidebarAuthorizationContractTest extends TestCase
             ->assertForbidden();
     }
 
-    public function test_inactive_store_is_denied_and_restaurant_uses_canonical_authorized_orders_alias(): void
+    public function test_inactive_store_is_denied_and_restaurant_cannot_use_canonical_orders_alias(): void
     {
         $restaurantId = $this->retailStore('P194-RESTAURANT', StoreBusinessProfile::RESTAURANT);
         $restaurantAdmin = $this->retailAdmin($restaurantId, 'p194-restaurant@example.test');
