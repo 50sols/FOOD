@@ -3,6 +3,8 @@
 namespace App\Services;
 
 use App\Models\Order;
+use App\Models\Invoice;
+use App\Models\Payment;
 use App\Models\User;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -37,7 +39,18 @@ final class OrderCustomerServiceDiscountApprovalService
                 return false;
             }
 
-            if (strtolower((string) $locked->status) !== 'pending') {
+            // A request must be actionable when created. An Accountant will
+            // recheck the same conditions under lock at review time.
+            if (strtolower((string) $locked->status) !== 'pending'
+                || $locked->commercial_locked_at !== null
+                || Invoice::query()->where('order_id', $locked->getKey())->whereIn('status', ['issued', 'reissued'])->exists()
+                || Payment::query()->where('order_id', $locked->getKey())->whereNotIn('status', ['pending', 'failed', 'cancelled'])->exists()
+                || DB::table('order_dispatch_states')->where('order_id', $locked->getKey())
+                    ->where('status', 'assigned')->whereNotNull('current_assignee_id')->exists()
+                || DB::table('driver_assignments')->where('order_id', $locked->getKey())
+                    ->whereNotIn('status', ['unassigned', 'reassigned', 'cancelled', 'delivered', 'failed'])->exists()
+                || DB::table('order_van_assignments')->where('order_id', $locked->getKey())
+                    ->where('status', 'active')->exists()) {
                 throw ValidationException::withMessages([
                     'percentage' => [__('customer_service_discount.not_allowed')],
                 ]);
