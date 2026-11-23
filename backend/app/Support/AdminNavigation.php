@@ -1063,18 +1063,28 @@ class AdminNavigation
             ];
         }
 
-        // Procurement's HTTP controller opens the first authorized tab, not
-        // necessarily Suppliers. A Buyer with a supplier-specific DENY can
-        // still open Requests at the same entitled store. Project that exact
-        // existing read route instead of hiding the whole business domain.
-        // This is navigation only: direct HTTP, readiness, RBAC and SoD remain
-        // authoritative and there is no fallback to another store.
-        if ($moduleCode === 'procurement'
-            && ! $user->isPlatformOwner()
-            && (! $this->enterpriseEntitlements->allows($moduleCode, EntitlementScope::platform())
-                || ! $this->hasPermission($user, $permission))) {
+        // A platform grant or Super Admin role is not an authorization for
+        // any particular Procurement store. Match the ERP Center's concrete
+        // readable store and the Workbench's server-side tenant/entitlement
+        // selector, including explicit STORE and GLOBAL DENY precedence.
+        // Never create an enabled business link that HTTP would reject.
+        if ($moduleCode === 'procurement') {
             $storeId = $this->procurementNavigationStoreId($user);
             if ($storeId === null || ! Route::has($route)) {
+                // Only the registered Platform Owner may inspect a module's
+                // diagnostics when no operational store can be entered.
+                // Diagnostics are not a substitute for business authority.
+                if ($storeId === null && $user->isPlatformOwner()
+                    && Route::has('admin.enterprise-modules.show')) {
+                    return [
+                        'key' => $key,
+                        'label' => $label,
+                        'route' => 'admin.enterprise-modules.show',
+                        'params' => ['module' => $moduleCode],
+                        'permission' => null,
+                    ];
+                }
+
                 return null;
             }
 
