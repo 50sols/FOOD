@@ -187,7 +187,7 @@ final class V2CustomerServiceDiscountApprovalTest extends TestCase
 
         $reviewUrl = $this->reviewUrl($orderId, (int) $request->id);
         $this->actingAs($manager)->post($reviewUrl, ['decision' => 'approve'])->assertNotFound();
-        $this->actingAs($this->roleUser('SUPER_ADMIN'))->post($reviewUrl, ['decision' => 'approve'])->assertNotFound();
+        $this->actingAs($this->roleUser('SUPER_ADMIN'))->post($reviewUrl, ['decision' => 'approve'])->assertForbidden();
         $this->actingAs($accountant)->post($reviewUrl, ['decision' => 'approve'])->assertRedirect();
 
         $this->assertDatabaseHas('order_customer_service_discount_requests', [
