@@ -188,9 +188,16 @@ class DeterministicSetupZipTest(unittest.TestCase):
                 original_link(source, destination)
                 os.replace(rival, destination)
 
-            with mock.patch("v2_build_setup_zip.os.link", side_effect=replace_after_link):
-                with self.assertRaisesRegex(SetupBuildError, "changed during checksum verification"):
-                    build_setup_zip(root, output, SOURCE_DATE_EPOCH)
+            # Only the POSIX-specific secure source opener is mocked. Test
+            # final publication/replacement semantics on both platforms.
+            def opened_regular_member(path, meta, name, source_root):
+                return path.open("rb")
+
+            with mock.patch("v2_build_setup_zip._open_verified_member", side_effect=opened_regular_member):
+                with mock.patch("v2_build_setup_zip.os.link", side_effect=replace_after_link):
+                    with self.assertRaisesRegex(SetupBuildError, "changed during checksum verification"):
+                        build_setup_zip(root, output, SOURCE_DATE_EPOCH)
+            # Cleanup must never delete the rival's replacement inode.
             self.assertEqual(output.read_bytes(), b"not-the-built-archive")
             self.assertEqual(list(base.glob(".v2-setup-*.zip")), [])
 
