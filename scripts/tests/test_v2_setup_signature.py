@@ -144,6 +144,41 @@ class SetupEd25519SignatureTest(unittest.TestCase):
 
     def test_valid_signature_cannot_advertise_wrong_zip_version(self) -> None:
         self.assertEqual(0, self.run_sign().returncode)
+        self.assertEqual(0, self.run_verify().returncode)
+        signed = json.loads(self.sidecar.read_text(encoding="utf-8"))
+
+        # This manifest has a VALID Ed25519 signature and correct archive digest,
+        # but it misrepresents the embedded VERSION and must be refused.
+        signed["version"] = "1.0.126"
+        payload = "FOODEX-SETUP-SIGNATURE-V1\\n" + json.dumps(
+            {
+                "format": "foodex-setup-manifest-v1",
+                "signer_key_id": signed["signer_key_id"],
+                "version": signed["version"],
+                "source_commit": signed["source_commit"],
+                "archive_sha256": signed["archive_sha256"],
+            },
+            separators=(",", ":"),
+            ensure_ascii=False,
+        )
+        resigned = subprocess.run(
+            [
+                "php", "-r",
+                'echo base64_encode(sodium_crypto_sign_detached('
+                'stream_get_contents(STDIN), '
+                'base64_decode(getenv("FOODEX_SETUP_SIGNING_SECRET_KEY_B64"), true)));',
+            ],
+            input=payload, text=True, capture_output=True, env=self.env,
+        )
+        self.assertEqual(0, resigned.returncode, resigned.stderr)
+        signed["signature"] = resigned.stdout
+        self.sidecar.write_text(
+            json.dumps(signed, separators=(",", ":"), ensure_ascii=False),
+            encoding="utf-8",
+        )
+        self.assertNotEqual(0, self.run_verify().returncode)
+        self.assertEqual("1.0.125\\n", self.version.read_text(encoding="utf-8"))
+
     def test_modified_archive_and_untrusted_publisher_fail_closed(self) -> None:
         self.assertEqual(0, self.run_sign().returncode)
         with zipfile.ZipFile(self.archive, "a") as archive:
