@@ -16,6 +16,7 @@ use App\Models\Role;
 use App\Models\Store;
 use App\Models\User;
 use App\Services\EnterpriseModuleAdministration;
+use App\Support\AdminNavigation;
 use Database\Seeders\CoreReferenceSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
@@ -264,6 +265,12 @@ final class V2ProcurementErpCenterHttpContractTest extends TestCase
             $this->assertIsArray($card);
             $this->assertNotSame('available', $card['status']);
             $this->assertNull($card['url']);
+            $this->assertNull($this->procurementSidebarItem($admin->fresh()));
+            $beforeAudit = DB::table('audit_logs')->count();
+            $this->actingAs($admin->fresh())->get(route('admin.erp.procurement.index', [
+                'store_id' => $deniedStore->id, 'tab' => 'suppliers',
+            ]))->assertForbidden();
+            $this->assertSame($beforeAudit, DB::table('audit_logs')->count());
         }
 
         // An independently permitted and entitled Wholesale store is a valid
@@ -286,6 +293,11 @@ final class V2ProcurementErpCenterHttpContractTest extends TestCase
                 route('admin.erp.procurement.index', ['store_id' => $allowedStore->id]),
                 $card['url'],
             );
+            $item = $this->procurementSidebarItem($admin->fresh());
+            $this->assertIsArray($item);
+            $this->assertSame('admin.erp.procurement.index', $item['route']);
+            $this->assertSame(['store_id' => (string) $allowedStore->id], $item['params']);
+            $this->actingAs($admin->fresh())->get(route($item['route'], $item['params']))->assertOk();
         }
 
         // GLOBAL DENY must take precedence even when another B2B store exists
@@ -300,6 +312,10 @@ final class V2ProcurementErpCenterHttpContractTest extends TestCase
             $this->assertIsArray($card);
             $this->assertNotSame('available', $card['status']);
             $this->assertNull($card['url']);
+            $this->assertNull($this->procurementSidebarItem($globallyDenied->fresh()));
+            $this->actingAs($globallyDenied->fresh())->get(route('admin.erp.procurement.index', [
+                'store_id' => $allowedStore->id, 'tab' => 'suppliers',
+            ]))->assertForbidden();
         }
         $this->assertDatabaseCount('enterprise_purchase_orders', 0);
         $this->assertDatabaseCount('enterprise_goods_receipts', 0);
@@ -565,6 +581,20 @@ final class V2ProcurementErpCenterHttpContractTest extends TestCase
 
         $this->actingAs($actor)->get($workbenchUrl)->assertForbidden();
         $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+    }
+
+    /** @return array<string, mixed>|null */
+    private function procurementSidebarItem(User $actor): ?array
+    {
+        foreach (app(AdminNavigation::class)->groupsFor($actor) as $group) {
+            foreach ((array) ($group['children'] ?? []) as $item) {
+                if (($item['key'] ?? null) === 'erp_procurement') {
+                    return $item;
+                }
+            }
+        }
+
+        return null;
     }
 
     private function enableAndEntitle(Store $store): User
