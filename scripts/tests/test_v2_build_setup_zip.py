@@ -27,7 +27,7 @@ class DeterministicSetupZipTest(unittest.TestCase):
             "backend/auth.json",
             "backend/.composer/auth.json",
             "backend/.npmrc",
-            "backend/.config/NPMRC",
+            "backend/.config/.NPMRC",
             "AUTH.JSON",
         )
         with tempfile.TemporaryDirectory() as temporary:
@@ -62,7 +62,13 @@ class DeterministicSetupZipTest(unittest.TestCase):
             (root / "backend/composer.json").write_text('{"name":"foodex/erp"}\\n', encoding="utf-8")
             (root / "backend/composer.lock").write_text('{"packages":[]}\\n', encoding="utf-8")
             output = base / "safe.zip"
-            self.assertEqual(len(build_setup_zip(root, output, SOURCE_DATE_EPOCH)), 64)
+            # Windows lacks POSIX dirfd; mock only the source opener in the
+            # disposable test fixture, not the production security guard.
+            def opened_regular_member(path, meta, name, source_root):
+                return path.open("rb")
+
+            with mock.patch("v2_build_setup_zip._open_verified_member", side_effect=opened_regular_member):
+                self.assertEqual(len(build_setup_zip(root, output, SOURCE_DATE_EPOCH)), 64)
             with zipfile.ZipFile(output) as archive:
                 self.assertIn("backend/composer.json", archive.namelist())
                 self.assertIn("backend/composer.lock", archive.namelist())
