@@ -171,7 +171,7 @@ final class InventoryLegalTitleAttestationVerifier
     private static function hasValidSignedWindow(string $signedAtRaw, string $expiresAtRaw): bool
     {
         foreach ([$signedAtRaw, $expiresAtRaw] as $value) {
-            if (preg_match('/\\A[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}\\z/D', $value) !== 1) {
+            if (preg_match('/\A[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}\z/D', $value) !== 1) {
                 return false;
             }
         }

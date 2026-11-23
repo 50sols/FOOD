@@ -2194,7 +2194,7 @@ SQL);
 
     public function test_signed_title_time_window_refuses_blank_relative_and_invalid_calendar_values(): void
     {
-        $check = new \\ReflectionMethod(InventoryLegalTitleAttestationVerifier::class, 'hasValidSignedWindow');
+        $check = new \ReflectionMethod(InventoryLegalTitleAttestationVerifier::class, 'hasValidSignedWindow');
         $signedAt = now('UTC')->subMinute()->toDateTimeString();
         $expiresAt = now('UTC')->addDay()->toDateTimeString();
 
