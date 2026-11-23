@@ -30,7 +30,7 @@ class GccHeavyExecutionContracts(unittest.TestCase):
         self.assertNotIn("iex ", AGENT.lower())
 
     def test_trusted_immutable_local_scripts_are_never_read_from_pr_checkout(self):
-        self.assertIn("1d0916d479ca6cac62216abb3360d4105a6a6b3c", AGENT)
+        self.assertIn("f42553ea19d1d75347bedea35863bcf0c7b3f811", AGENT)
         self.assertIn("raw.githubusercontent.com", AGENT)
         self.assertIn("git hash-object $file", AGENT)
         self.assertIn("context: .", COMPOSE)
