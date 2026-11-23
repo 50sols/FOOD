@@ -75,6 +75,26 @@ final class SignedUpdatePublisherCliTest extends TestCase
         $this->assertFileExists($output);
     }
 
+    public function test_traversal_and_alias_zip_entries_cannot_be_signed(): void
+    {
+        foreach ([
+            '../escaped.php',
+            'backend/../../escaped.php',
+            '/absolute/path.php',
+            'C:/windows/escaped.php',
+            'backend\\\\..\\\\escaped.php',
+            'backend//escaped.php',
+            'backend/./escaped.php',
+        ] as $index => $member) {
+            $package = $this->directory.'/bad-'.$index.'.zip';
+            $this->zip($package, [$member => '<?php // malicious name']);
+            $output = $this->directory.'/bad-'.$index.'.sig.json';
+
+            $this->assertSame(1, $this->runPublisher($package, $output, '0'), 'Unsafe ZIP member was signed: '.$member);
+            $this->assertFileDoesNotExist($output);
+        }
+    }
+
     private function zip(string $path, array $entries): void
     {
         $archive = new ZipArchive;
