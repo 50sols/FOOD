@@ -58,7 +58,7 @@ final class V2RevokedB2bCustomerPolicyTest extends TestCase
         $owner = User::factory()->create(['is_active' => true]);
         $customer = B2bCustomer::query()->create(['user_id' => $owner->id, 'name' => 'Wholesale profile']);
         $staff = User::factory()->create(['is_active' => true]);
-        $role = Role::query()->where('code', 'B2B_ADMIN')->firstOrFail();
+        $role = Role::query()->where('code', 'SUPER_ADMIN')->firstOrFail();
         $staff->roles()->attach($role);
         $policy = app(B2bCustomerPolicy::class);
 
