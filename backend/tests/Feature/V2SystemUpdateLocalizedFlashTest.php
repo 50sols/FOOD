@@ -107,7 +107,7 @@ final class V2SystemUpdateLocalizedFlashTest extends TestCase
             'signature' => base64_encode(sodium_crypto_sign_detached(
                 $canonical, sodium_crypto_sign_secretkey($keypair),
             )),
-        ], JSON_THROW_ON_ERROR);
+        ], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
 
         return [
             'package' => UploadedFile::fake()->createWithContent('v2-localized-success.zip', $bytes),
