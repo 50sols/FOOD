@@ -186,7 +186,7 @@ function Full-CI([int]$Pr,[string]$Sha,[long]$Request,[string]$Checkout,[Validat
    if($rc -ne 0) { throw "Flutter preview build exited $rc" }
   }
   $stage='mysql-redis-startup'
-  $rc=Invoke-DockerLogged -DockerArgs @('compose','-p',$project,'-f',$compose,'up','-d','--wait','mysql','redis') -LogPath $log -Stage $stage
+  $rc=Invoke-DockerLogged -DockerArgs @('compose','-p',$project,'-f',$compose,'up','-d','--wait','--no-build','mysql','redis') -LogPath $log -Stage $stage
   if($rc -ne 0) { throw "Disposable MySQL/Redis startup exited $rc" }
   $stage='laravel-and-package-suite'
   $rc=Invoke-DockerLogged -DockerArgs @('compose','-p',$project,'-f',$compose,'run','--rm','runner') -LogPath $log -Stage $stage
