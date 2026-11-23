@@ -6,6 +6,9 @@
 ## Implementation and authority
 `OrderOperationsController::popup` first validates allowed kinds and resolves the order with the established `managedOrder` tenant/channel/store check, then denies Restaurant-profile B2C_STORE_ADMIN before creating details, timeline or invoice payload. The same trusted SUPER_ADMIN exception as existing list endpoints remains. A mixed Restaurant+Retail user can still request an authorized Retail order; no foreign store permission is granted. Existing invoice-specific permission remains additional, not replaced.
 
+## Compatibility boundary
+A Restaurant-profile actor's `orders.view` store permission remains intact for its dedicated workspace; only the Retail Operations popup presentation is denied. `managedOrder` still rejects a mismatched order-channel/store assignment and unauthorized stores before this additional profile gate. Requesting an unsupported popup kind is still rejected by the existing kind allowlist before any order lookup.
+
 ## Real HTTP test
 `V2RestaurantOperationsOrderPopupAdmissionTest` seeds Restaurant, Retail and foreign Retail stores and real B2C orders. In AR and EN, Restaurant-only and mixed store-admin direct Restaurant popup requests fail 404 for details/timeline/invoice. Unauthorized foreign Retail access fails 404. Retail-only and mixed authorized Retail details/timeline succeed, and explicit SUPER_ADMIN can read Restaurant details/timeline. Assert Orders, Payments, Invoices counts unchanged after GET. Existing P031 isolation regression tests remain.
 
