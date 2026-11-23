@@ -170,6 +170,24 @@ test('annotated historic claims resolve to one original without masking true dup
     refs:conflicting, checkpoint:null}).action,'BLOCK_CONFLICTING_ORIGINALS');
 });
 
+test('unrecognized historical claim suffixes never silently become the original branch', () => {
+  const canonical='ci/4151-resume';
+  const invalid=[
+    canonical+' (UNKNOWN)',
+    canonical+' (PRESERVE) trailing',
+    canonical+'; anything goes',
+    canonical+' | BASE: other_branch',
+    canonical+' (ORIGINAL; KEEP) extra',
+    canonical+'; PR #9999 unrelated; BASE Foodex_V2',
+  ];
+  for (const value of invalid) {
+    const refs=claimReferences([{body:'<!-- foodex-worker-state:v1 -->\\n'
+      + 'STATE: HANDOFF_READY\\nBRANCH: '+value+'\\nPR: #4152'}]);
+    assert.equal(decide({issue, branches:[canonical], prs:[pr()], refs,
+      checkpoint:null}).action, 'BLOCK_CONFLICTING_ORIGINALS', value);
+  }
+});
+
 test('incomplete or oversized search pagination fails closed', async () => {
   await assert.rejects(pages(async()=>({data:{items:[],total_count:2}}),{},'items'),/incomplete/);
   await assert.rejects(pages(async()=>({data:{wrong:[]}}),{},'items'),/payload/);
