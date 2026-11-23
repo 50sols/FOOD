@@ -37,6 +37,26 @@ class UpdatePackageValidatorTest extends TestCase
         $this->assertTrue($result['contains_migrations']);
     }
 
+    public function test_matching_digest_cannot_verify_an_empty_but_well_formed_zip(): void
+    {
+        // The ZIP End of Central Directory record is a complete valid
+        // zero-member ZIP; a publisher must not sign a deployable-looking
+        // version bump that contains no release files.
+        file_put_contents($this->packagePath, "PK\x05\x06".str_repeat("\x00", 18));
+
+        $manifest = new UpdatePackageManifest(
+            '1.2.0',
+            '1.0.0',
+            hash_file('sha256', $this->packagePath),
+            'Empty but correctly checksummed ZIP',
+            true,
+        );
+
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('no release members');
+        (new UpdatePackageValidator)->validate($manifest, '1.1.0', $this->packagePath);
+    }
+
     public function test_matching_checksum_does_not_authorize_a_non_zip_update_package(): void
     {
         file_put_contents($this->packagePath, 'This is not a ZIP archive.');
