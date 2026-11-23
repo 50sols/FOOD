@@ -239,6 +239,116 @@ function Report-Full([int]$Pr,[string]$Sha,[string]$Status,[int]$Exit,[long]$Req
   try {
    $data=Get-Content -LiteralPath $evidence -Raw | ConvertFrom-Json
    if($data.source_sha -cne $Sha) { throw 'Result SHA mismatch' }
+   if($data.result -ceq 'FAIL' -and [string]$data.failed_stage -cmatch '^[a-z][a-z0-9-]{0,63}
+    foreach($item in $data.artifacts_sha256.PSObject.Properties) {
+     $summary += [Environment]::NewLine + "- $($item.Name): SHA256 $($item.Value)"
+    }
+   }
+  } catch {
+   $summary=[Environment]::NewLine + '- Evidence JSON could not be validated'
+  }
+ }
+ $body="<!-- foodex-gcc-full:$Request -->" + [Environment]::NewLine +
+ "**GCC $Profile local Laravel/MySQL/ZIP staging: $Status**" + [Environment]::NewLine +
+ "- Exact PR head: $Sha" + [Environment]::NewLine +
+ "- Process exit code: $Exit" + [Environment]::NewLine +
+ "- Stage: $stageLabel" + [Environment]::NewLine +
+ "- Isolated GCC evidence directory: local only (no raw logs or secrets uploaded)" + $summary +
+ [Environment]::NewLine + "**Staging, unsigned, untrusted for production.** A PASS does not prove a same-ZIP upgrade, digital signature, independent provenance, or production readiness. GitHub Required CI remains authoritative."
+ $response=& gh api "repos/$Repo/issues/$Pr/comments" -f "body=$body" 2>&1
+ if($LASTEXITCODE -ne 0) { throw "Failed to post GCC full CI evidence to PR #$Pr" }
+ $posted=$response | Out-String | ConvertFrom-Json
+ if(-not $posted.id) { throw 'GitHub did not confirm GCC full evidence.' }
+ Write-Output "GCC full PR #$Pr comment $($posted.id): $Status"
+}
+
+function Process($Comment) {
+ if($null -eq $Comment.user -or $Comment.user.login -cne $Owner) { return }
+ if([string]$Comment.body -cnotmatch '(?m)^/gcc-ci (run|full|backend|setup|packages) ([a-f0-9]{40})\s*$') { return }
+ $profile=$Matches[1]
+ $sha=$Matches[2]
+ if([string]$Comment.issue_url -notmatch '^https://api\.github\.com/repos/walidatiyaai2025-gif/FOOD/issues/([0-9]+)$') { return }
+ $n=[int]$Matches[1]
+ $pr=Api "repos/$Repo/pulls/$n"
+ if($pr.state -ne 'open' -or $pr.base.ref -cne $Base -or $pr.head.repo.full_name -cne $Repo -or $pr.head.sha -cne $sha) {
+  Write-Warning "Rejected non-V2, changed or foreign PR #$n"; return
+ }
+ if([string]$pr.head.ref -cnotmatch '^(ci|feat|fix|test|chore|refactor|docs|worker)/[0-9]+-[a-z0-9-]+$') { return }
+ $status='FAIL'; $exit=1
+ $script:GccLastFailedStage='checkout-or-dispatch'
+ try {
+  if($profile -ne 'run') {
+   $testProfile=if($profile -eq 'full') { 'all' } else { $profile }
+   $work=Join-Path $Root "work\$n-$($Comment.id)"
+   New-Item -ItemType Directory -Path $work -Force | Out-Null
+   try {
+    & git -C $work init -q | Out-Null
+    & git -C $work remote add origin "https://github.com/$Repo.git" | Out-Null
+    & git -C $work -c credential.helper= fetch --quiet --depth 1 origin "refs/pull/$n/head" | Out-Null
+    if($LASTEXITCODE -ne 0) { throw 'Full CI PR fetch failed' }
+    $fetched=(& git -C $work rev-parse FETCH_HEAD | Out-String).Trim()
+    if($fetched -cne $sha) { throw 'Full CI fetched source SHA mismatch' }
+    & git -C $work checkout -q --detach $sha | Out-Null
+    if($LASTEXITCODE -ne 0) { throw 'Full CI checkout failed' }
+    $exit=Full-CI -Pr $n -Sha $sha -Request ([long]$Comment.id) -Checkout $work -Profile $testProfile
+   } finally {
+    if(Test-Path $work) { Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue }
+   }
+  } else {
+   $exit=Smoke -Pr $n -Sha $sha -Request ([long]$Comment.id)
+  }
+  if($exit -eq 0) { $status='PASS' }
+ } catch { Write-Warning "Smoke error: $($_.Exception.Message)" }
+ if($profile -ne 'run') {
+  Report-Full -Pr $n -Sha $sha -Status $status -Exit $exit -Request ([long]$Comment.id) -Profile $testProfile
+ } else {
+  Report -Pr $n -Sha $sha -Status $status -Exit $exit -Request ([long]$Comment.id)
+ }
+}
+function Poll {
+ $mutex=New-Object System.Threading.Mutex($false,'Local\FOODEX_GCC_CI_AGENT')
+ $held=$false
+ try {
+  $held=$mutex.WaitOne(0)
+  if(-not $held) { return }
+  Initialize
+  $cursor=Cursor
+  $recent=@(Comments | Where-Object { [long]$_.id -gt $cursor } | Sort-Object { [long]$_.id })
+  foreach($comment in $recent) { Process $comment; Save ([long]$comment.id) }
+  Write-Output "GCC poll processed $($recent.Count) new comment(s)."
+ } finally {
+  if($held) { $mutex.ReleaseMutex() }
+  $mutex.Dispose()
+ }
+}
+switch($Mode) {
+ 'Doctor' { Doctor; Write-Output 'GCC prerequisites OK; no runner installed.' }
+ 'Once' { Doctor; Poll }
+ 'Loop' {
+  Doctor
+  while($true) {
+   try { Poll } catch { Write-Warning "GCC poll: $($_.Exception.Message)" }
+   Start-Sleep -Seconds $PollSeconds
+  }
+ }
+ 'Install' {
+  Doctor
+  New-Item -ItemType Directory -Path $Root -Force | Out-Null
+  Initialize
+  $user=[System.Security.Principal.WindowsIdentity]::GetCurrent().Name
+  $args='-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' + $MyInvocation.MyCommand.Path + '" -Mode Loop -PollSeconds ' + $PollSeconds
+  $action=New-ScheduledTaskAction -Execute (Get-Command powershell.exe).Source -Argument $args
+  $trigger=New-ScheduledTaskTrigger -AtLogOn -User $user
+  $principal=New-ScheduledTaskPrincipal -UserId $user -LogonType Interactive -RunLevel Limited
+  $settings=New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -StartWhenAvailable
+  Register-ScheduledTask -TaskName $Task -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Force | Out-Null
+  Start-ScheduledTask -TaskName $Task
+  Write-Output "Installed $Task. Owner PR comment trigger: /gcc-ci run <exact 40-char SHA>"
+ }
+}
+) {
+    $summary += [Environment]::NewLine + "- Failed trusted runtime step: $($data.failed_stage)"
+   }
    if($data.artifacts_sha256) {
     foreach($item in $data.artifacts_sha256.PSObject.Properties) {
      $summary += [Environment]::NewLine + "- $($item.Name): SHA256 $($item.Value)"
