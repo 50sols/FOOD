@@ -6,7 +6,9 @@ use App\Domain\Updater\UpdateManager;
 use App\Domain\Updater\UpdatePackageManifest;
 use App\Domain\Updater\UpdatePackageValidator;
 use App\Domain\Updater\UpdateRuntime;
+use App\Models\SystemVersion;
 use App\Models\UpdateHistory;
+use App\Models\User;
 use App\Services\AuditLogger;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use RuntimeException;
@@ -184,7 +186,7 @@ class UpdateManagerTest extends TestCase
         $email = 'post-maintenance-write@example.test';
         $runtime = new RecordingUpdateRuntime(
             afterMaintenanceExit: static function () use ($email): void {
-                \App\Models\User::factory()->create([
+                User::factory()->create([
                     'email' => $email,
                     'is_active' => true,
                 ]);
@@ -198,7 +200,7 @@ class UpdateManagerTest extends TestCase
 
         // Simulate a metadata persistence failure after the updater has
         // exited maintenance and a real new business write could occur.
-        \App\Models\SystemVersion::creating(static function ($version): void {
+        SystemVersion::creating(static function ($version): void {
             if ($version->version === '1.1.0') {
                 throw new RuntimeException('Simulated late version-recording failure.');
             }
@@ -211,7 +213,7 @@ class UpdateManagerTest extends TestCase
             $this->assertStringContainsString('record_version', $exception->getMessage());
             $this->assertStringContainsString('manual recovery is required', $exception->getMessage());
         } finally {
-            \App\Models\SystemVersion::flushEventListeners();
+            SystemVersion::flushEventListeners();
         }
 
         $this->assertSame(2, count(array_filter(
