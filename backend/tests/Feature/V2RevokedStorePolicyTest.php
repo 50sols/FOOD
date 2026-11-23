@@ -76,6 +76,20 @@ final class V2RevokedStorePolicyTest extends TestCase
         $this->assertFalse($policy->viewAny($actor));
     }
 
+    public function test_active_unassigned_identity_can_request_list_but_initially_disabled_identity_cannot(): void
+    {
+        $actor = User::factory()->create(['is_active' => true]);
+        $policy = app(StorePolicy::class);
+        $this->assertTrue($policy->viewAny($actor));
+
+        DB::table('users')->where('id', $actor->id)->update(['is_active' => false]);
+        $this->assertFalse($policy->viewAny($actor));
+        $this->assertFalse($policy->viewAny($actor->fresh()));
+
+        DB::table('users')->where('id', $actor->id)->update(['is_active' => true]);
+        $this->assertTrue($policy->viewAny($actor->fresh()));
+    }
+
     private function store(string $code): Store
     {
         return Store::query()->create([
