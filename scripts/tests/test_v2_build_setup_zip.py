@@ -116,6 +116,35 @@ class DeterministicSetupZipTest(unittest.TestCase):
             self.assertEqual(outside.read_bytes(), b"preserve-secret")
             self.assertEqual(list(base.glob(".v2-setup-*.zip")), [])
 
+    def test_live_dotenv_is_rejected_before_archive_publication(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            root = base / "source"
+            root.mkdir()
+            (root / "VERSION").write_bytes(b"1.0.1\\n")
+            output = base / "setup.zip"
+            # Match the canonical verifier's exact allowed example templates.
+            examples = ["backend/.env.example", "backend/.env.production.example"]
+            for name in examples:
+                file = root / name
+                file.parent.mkdir(parents=True, exist_ok=True)
+                file.write_bytes(b"APP_KEY=\\n")
+            for name in (".env", "backend/.env", "backend/.ENV.local", "backend/.env.testing"):
+                file = root / name
+                file.parent.mkdir(parents=True, exist_ok=True)
+                file.write_bytes(b"APP_KEY=base64:live-secret\\n")
+                with self.assertRaisesRegex(SetupBuildError, "Secret environment configuration"):
+                    build_setup_zip(root, output, SOURCE_DATE_EPOCH)
+                self.assertFalse(output.exists(), name)
+                self.assertEqual(list(base.glob(".v2-setup-*.zip")), [], name)
+                file.unlink()
+
+            digest = build_setup_zip(root, output, SOURCE_DATE_EPOCH)
+            self.assertEqual(len(digest), 64)
+            with zipfile.ZipFile(output) as archive:
+                self.assertIn("backend/.env.example", archive.namelist())
+                self.assertIn("backend/.env.production.example", archive.namelist())
+
     def test_symlink_and_hardlink_cannot_smuggle_data(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary) / "source"
