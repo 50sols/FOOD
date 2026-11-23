@@ -51,6 +51,11 @@ try {
             }
         }
     }
+    // A PHP stream wrapper (e.g. php://temp) can accept exclusive writes
+    // without producing a real on-disk release artifact.
+    if (str_contains($outputPath, '://')) {
+        throw new RuntimeException('Publisher output must be a filesystem path.');
+    }
     if (file_exists($outputPath) || is_link($outputPath)) {
         throw new RuntimeException('Publisher refuses to replace an existing sidecar.');
     }
@@ -131,12 +136,33 @@ try {
     if ($output === false) {
         throw new RuntimeException('Publisher cannot create an exclusive sidecar output.');
     }
+    $openedStat = fstat($output);
+    $written = false;
+    $closed = false;
+    $matchingPath = false;
     try {
+        if (! is_array($openedStat) || ($openedStat['mode'] & 0170000) !== 0100000) {
+            throw new RuntimeException('Publisher output is not a regular file.');
+        }
         if (fwrite($output, $json) !== strlen($json) || ! fflush($output)) {
             throw new RuntimeException('Publisher could not write signed sidecar.');
         }
+        $written = true;
     } finally {
-        fclose($output);
+        $closed = fclose($output);
+        // Only clean up the same inode created with exclusive mode. Never
+        // unlink an attacker-swapped path, symlink or pre-existing artifact.
+        $currentStat = @lstat($outputPath);
+        $matchingPath = is_array($openedStat) && is_array($currentStat)
+            && ($currentStat['mode'] & 0170000) === 0100000
+            && $currentStat['dev'] === $openedStat['dev']
+            && $currentStat['ino'] === $openedStat['ino'];
+        if ((! $written || ! $closed) && $matchingPath) {
+            @unlink($outputPath);
+        }
+    }
+    if (! $closed || ! $matchingPath) {
+        throw new RuntimeException('Publisher sidecar could not be safely finalized.');
     }
     fwrite(STDOUT, "Signed sidecar issued; distribute only after release acceptance.\n");
 } catch (Throwable $exception) {
