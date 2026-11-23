@@ -870,10 +870,16 @@ final class EnterpriseProcurementController extends Controller
         // Never allow a POST body to shadow a conflicting query selector.
         // Each transport is client-controlled; ambiguity must fail closed
         // before resolving another store's entitlement or enterprise scope.
-        if (array_key_exists('store_id', $request->query()) &&
-            array_key_exists('store_id', $request->request->all())) {
+        $queryInput = $request->query();
+        $formInput = $request->request->all();
+        if (array_key_exists('store_id', $queryInput) &&
+            array_key_exists('store_id', $formInput)) {
+            $queryStoreId = $queryInput['store_id'];
+            $formStoreId = $formInput['store_id'];
             abort_unless(
-                $request->query('store_id') === $request->request->get('store_id'),
+                (is_int($queryStoreId) || is_string($queryStoreId))
+                    && (is_int($formStoreId) || is_string($formStoreId))
+                    && (string) $queryStoreId === (string) $formStoreId,
                 403,
             );
         }
