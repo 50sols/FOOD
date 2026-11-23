@@ -867,6 +867,19 @@ final class OrderOperationsController extends Controller
                 continue;
             }
 
+            // Orders visibility in this dashboard feed must match the Retail
+            // Operations route. A Restaurant-profile B2C_STORE_ADMIN can have
+            // a valid orders.view store grant without admission to Retail
+            // Orders; never expose customer name, phone or total through an
+            // old published notification. Keep the cursor moving so clients
+            // do not repeatedly fetch skipped entries.
+            if (! $actor->hasRole('SUPER_ADMIN')
+                && $channel === 'b2c'
+                && $actor->hasRole('B2C_STORE_ADMIN', $storeId)
+                && app(StoreBusinessProfileService::class)->isRestaurant($storeId)) {
+                continue;
+            }
+
             $order = Order::query()
                 ->whereKey($orderId)
                 ->where('store_id', $storeId)
