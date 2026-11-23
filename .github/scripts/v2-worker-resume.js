@@ -56,8 +56,13 @@ function claimReferences(comments) {
       const m = line.match(/^\s*([A-Z_]+):\s*(.*?)\s*$/);
       if (m) fields[m[1]] = m[2];
     }
+    // Issue comments are descriptive audit prose, not branch refs. Historical
+    // workers appended "(PRESERVE)", "| BASE: ..." or "; PR #..." to the
+    // SAME canonical branch. Strip only such annotations; keep the literal
+    // branch token so a genuinely different live/historical ref still blocks.
     const branch = (fields.BRANCH || fields.ORIGINAL_BRANCH || '')
-      .replace(/;\s*(?:BASE|TARGET):.*$/i, '').trim();
+      .replace(/(?:\s+\([^\r\n]*\)|\s+\|\s*BASE:.*|;\s*.*)$/i, '')
+      .trim();
     const pr = (fields.PR || fields.ORIGINAL_PR || '').match(/^#?([1-9]\d*)(?:\b|$)/);
     if (branch || pr) refs.push({ branch, pr: pr ? Number(pr[1]) : null, state: fields.STATE || '' });
   }
