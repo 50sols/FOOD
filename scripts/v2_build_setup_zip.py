@@ -30,7 +30,7 @@ MAX_TOTAL_SIZE = 4 * 1024 * 1024 * 1024
 
 # Shared-host extractors may interpret these names differently or refuse them.
 RESERVED_DEVICE = re.compile(
-    r"^(?:con|conin\\$|conout\\$|prn|aux|nul|com[1-9¹²³]|lpt[1-9¹²³])(?:\\..*)?$",
+    r"^(?:con|conin\$|conout\$|prn|aux|nul|com[1-9¹²³]|lpt[1-9¹²³])(?:\..*)?$",
     re.IGNORECASE,
 )
 
