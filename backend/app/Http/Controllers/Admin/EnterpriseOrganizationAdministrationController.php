@@ -155,6 +155,7 @@ final class EnterpriseOrganizationAdministrationController extends Controller
             $request,
             Rule::unique('enterprise_companies', 'code')->where('organization_id', $organization->id),
         );
+        $this->administration->assertCreationParentActive($organization);
         if ($request->has('_setup_test')) {
             return back()->withInput($request->only(['name', 'code', 'is_active', '_setup_test', '_setup_form']))
                 ->with('status', __('enterprise_organization.setup_test_passed'));
@@ -190,6 +191,7 @@ final class EnterpriseOrganizationAdministrationController extends Controller
             $request,
             Rule::unique('enterprise_legal_entities', 'code')->where('company_id', $company->id),
         );
+        $this->administration->assertCreationParentActive($company);
         if ($request->has('_setup_test')) {
             return back()->withInput($request->only(['name', 'code', 'is_active', '_setup_test', '_setup_form']))
                 ->with('status', __('enterprise_organization.setup_test_passed'));
@@ -225,6 +227,7 @@ final class EnterpriseOrganizationAdministrationController extends Controller
             $request,
             Rule::unique('enterprise_business_units', 'code')->where('legal_entity_id', $legalEntity->id),
         );
+        $this->administration->assertCreationParentActive($legalEntity);
         if ($request->has('_setup_test')) {
             return back()->withInput($request->only(['name', 'code', 'is_active', '_setup_test', '_setup_form']))
                 ->with('status', __('enterprise_organization.setup_test_passed'));
