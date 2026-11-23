@@ -13,3 +13,6 @@ The canonical writer loads the business-unit → legal-entity → company → or
 - Existing scope remains unchanged and no new audit is written when an ancestor is disabled.
 
 Use exact-head Repository Policy, V2 Isolation, FOODEX Required CI (Laravel shards / MySQL+Redis / backend security), and file-level HIGH review. Merge only through guarded PR targeting `Foodex_V2`, verify integration and close this **leaf** only after all gates pass. Parent #2782/#2503 and partial #2846 remain open. Customer / Driver / Van: NO_DIRECT_IMPACT. No main, releases, production deployment.
+
+## Default-scoping regression
+`test_default_scope_provisioning_rejects_inactive_default_organization` disables the seeded default organization and calls `ensureDefaultScopeForStore` for a new B2B store. It asserts a fail-closed exception with no `enterprise_store_scopes` or audit write, proving the automatic path cannot bypass the canonical active-ancestry writer. This case must pass in the exact-head Laravel and MySQL acceptance workflows before closeout.
