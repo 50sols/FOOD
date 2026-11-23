@@ -47,6 +47,11 @@ final class V2ArchivedSavedViewTenantAccessTest extends TestCase
         $this->assertDenied(function () use ($service, $actor, $store): void {
             $service->assertCanAccessScope($actor->fresh(), 'enterprise.orders', 'store', (int) $store->id);
         });
+        $this->assertDenied(function () use ($service, $actor, $store): void {
+            $service->createFromToken($actor, 'enterprise.orders', 'store', (int) $store->id,
+                'Rejected archived Retail view', 'private', 'invalid-token');
+        });
+        $this->assertDatabaseCount('enterprise_saved_views', 0);
         $this->assertSame($auditBefore, DB::table('audit_logs')->count());
     }
 
@@ -69,6 +74,11 @@ final class V2ArchivedSavedViewTenantAccessTest extends TestCase
         $this->assertDenied(function () use ($service, $actor, $store): void {
             $service->visible($actor, 'enterprise.orders', 'store', (int) $store->id);
         });
+        $this->assertDenied(function () use ($service, $actor, $store): void {
+            $service->createFromToken($actor, 'enterprise.orders', 'store', (int) $store->id,
+                'Rejected archived Wholesale view', 'private', 'invalid-token');
+        });
+        $this->assertDatabaseCount('enterprise_saved_views', 0);
         $this->assertSame($auditBefore, DB::table('audit_logs')->count());
     }
 
