@@ -130,7 +130,7 @@ function harness(opts={}) {
     merged_at:opts.mergedPr?'2026-11-10T09:40:00Z':null,
     state:opts.closedOriginalPr || opts.mergedPr ? 'closed' : 'open',
     base:{ref:opts.foreignPr?'main':'Foodex_V2'},
-    head:{ref:opts.foreignPr?'feat/unrelated':'feat/2929-lease-tests',
+    head:{ref:opts.foreignPr||opts.mismatchedPrRef?'feat/unrelated':'feat/2929-lease-tests',
       sha:'old-head',repo:opts.missingPrRepo ? undefined
         : {owner:{login:'example'},name:'FOOD'}} };
   const terminalRuns=Array.from({length:100},(_,i)=>({id:i,head_sha:'old-head',status:'completed'}));
@@ -417,5 +417,18 @@ test('missing PR repository or unreadable commit fails closed with no mutation',
 test('new PR head during stale-lease scan prevents handoff', async () => {
   const out = await sweep({claimPr:true,openPr:true,missingBranch:true,prHeadMoves:true});
   assert.equal(out.result.released,0);
+  assert.deepEqual(out.mutations,[]);
+});
+
+test('in-progress exact-head checks prevent missing-branch PR lease release', async () => {
+  for (const opts of [{queuedCi:true},{runningWorkflow:true}]) {
+    const out = await sweep({claimPr:true,openPr:true,missingBranch:true,...opts});
+    assert.equal(out.result.released,0,JSON.stringify(opts));
+    assert.deepEqual(out.mutations,[],JSON.stringify(opts));
+  }
+});
+test('a PR claim with a mismatched source ref cannot release an absent branch', async () => {
+  const out = await sweep({claimPr:true,openPr:true,missingBranch:true,mismatchedPrRef:true});
+  assert.deepEqual(out.result,{scanned:1,released:0,active:1});
   assert.deepEqual(out.mutations,[]);
 });
