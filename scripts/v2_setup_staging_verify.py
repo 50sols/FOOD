@@ -347,100 +347,100 @@ def verify_setup_zip(zip_path: Path, version_path: Path, source_sha: str) -> dic
                 and pinned_identity == _file_identity(on_disk),
                 "Setup ZIP pathname changed before verification.",
             )
-        _reject_noncanonical_zip_envelope(source)
+            _reject_noncanonical_zip_envelope(source)
 
-        files: set[str] = set()
-        aliases: set[str] = set()
-        portable_files: set[str] = set()
-        size = 0
-        try:
-            with zipfile.ZipFile(source) as archive:
-                infos = archive.infolist()
-                _require(len(infos) <= MAX_ENTRIES, "Setup ZIP member count exceeds budget.")
-                for member in infos:
-                    name, portable, is_directory = _member_target(member)
-                    _verify_local_header(archive, member)
-                    _require(portable not in aliases, f"Duplicate/Unicode/case alias: {name!r}")
-                    aliases.add(portable)
-                    size += member.file_size
-                    _require(size <= MAX_TOTAL_SIZE, "Setup ZIP expanded size exceeds budget.")
-                    if not is_directory:
-                        files.add(name)
-                        portable_files.add(portable)
-                for name in aliases:
-                    components = name.split("/")
-                    for index in range(1, len(components)):
-                        _require("/".join(components[:index]) not in portable_files,
-                                 f"File/directory path collision in Setup ZIP: {name!r}")
-                _require(REQUIRED.issubset(files),
-                         f"Missing Setup ZIP files: {sorted(REQUIRED - files)}")
-                # These files are *already* served by existing Dashboard and
-                # storefront routes. They must be shipped with the one-ZIP
-                # Laravel install, not accidentally omitted by a build step.
-                _require(REQUIRED_PUBLIC_ASSETS.issubset(files),
-                         f"Missing compiled/public frontend assets: {sorted(REQUIRED_PUBLIC_ASSETS - files)}")
-                for asset_name in sorted(REQUIRED_PUBLIC_ASSETS):
-                    _require(archive.getinfo(asset_name).file_size > 0,
-                             f"Empty compiled/public frontend asset: {asset_name}")
-                try:
-                    instructions = archive.read("INSTALL-FIRST.txt").decode("utf-8").casefold()
-                except (KeyError, UnicodeDecodeError) as exc:
-                    raise SetupZipError("Invalid Setup ZIP first-install instructions.") from exc
-                _require(
-                    all(marker in instructions for marker in REQUIRED_INSTALL_INSTRUCTION_MARKERS),
-                    "Setup ZIP first-install instructions omit cPanel/PHP/storage/scheduler guidance.",
-                )
-                _require(
-                    not any(value in instructions for value in FORBIDDEN_INSTALL_INSTRUCTION_VALUES),
-                    "Setup ZIP first-install instructions contain deployment-specific production values.",
-                )
-                try:
-                    env_template = archive.read("backend/.env.production.example").decode("utf-8")
-                except (KeyError, UnicodeDecodeError) as exc:
-                    raise SetupZipError("Invalid Setup ZIP environment template.") from exc
-                env_values = _parse_env_template(env_template)
-                unsafe_secret_keys = []
-                for key in SENSITIVE_ENV_KEYS:
-                    allowed_values = {"", "null"} if key == "REDIS_PASSWORD" else {""}
-                    if any(value.casefold() not in allowed_values for value in env_values.get(key, [])):
-                        unsafe_secret_keys.append(key)
-                _require(
-                    not unsafe_secret_keys,
-                    "Setup ZIP environment template contains non-empty secret fields.",
-                )
-                _require(archive.read("VERSION").decode("utf-8").strip() == version,
-                         "ZIP VERSION differs from checked-out source.")
-                _require(archive.testzip() is None, "Setup ZIP CRC verification failed.")
-        except (OSError, ValueError, RuntimeError, NotImplementedError, zipfile.BadZipFile) as exc:
-            if isinstance(exc, SetupZipError):
-                raise
-            raise SetupZipError("Unreadable or invalid Setup ZIP content.") from exc
+            files: set[str] = set()
+            aliases: set[str] = set()
+            portable_files: set[str] = set()
+            size = 0
+            try:
+                with zipfile.ZipFile(source) as archive:
+                    infos = archive.infolist()
+                    _require(len(infos) <= MAX_ENTRIES, "Setup ZIP member count exceeds budget.")
+                    for member in infos:
+                        name, portable, is_directory = _member_target(member)
+                        _verify_local_header(archive, member)
+                        _require(portable not in aliases, f"Duplicate/Unicode/case alias: {name!r}")
+                        aliases.add(portable)
+                        size += member.file_size
+                        _require(size <= MAX_TOTAL_SIZE, "Setup ZIP expanded size exceeds budget.")
+                        if not is_directory:
+                            files.add(name)
+                            portable_files.add(portable)
+                    for name in aliases:
+                        components = name.split("/")
+                        for index in range(1, len(components)):
+                            _require("/".join(components[:index]) not in portable_files,
+                                     f"File/directory path collision in Setup ZIP: {name!r}")
+                    _require(REQUIRED.issubset(files),
+                             f"Missing Setup ZIP files: {sorted(REQUIRED - files)}")
+                    # These files are *already* served by existing Dashboard and
+                    # storefront routes. They must be shipped with the one-ZIP
+                    # Laravel install, not accidentally omitted by a build step.
+                    _require(REQUIRED_PUBLIC_ASSETS.issubset(files),
+                             f"Missing compiled/public frontend assets: {sorted(REQUIRED_PUBLIC_ASSETS - files)}")
+                    for asset_name in sorted(REQUIRED_PUBLIC_ASSETS):
+                        _require(archive.getinfo(asset_name).file_size > 0,
+                                 f"Empty compiled/public frontend asset: {asset_name}")
+                    try:
+                        instructions = archive.read("INSTALL-FIRST.txt").decode("utf-8").casefold()
+                    except (KeyError, UnicodeDecodeError) as exc:
+                        raise SetupZipError("Invalid Setup ZIP first-install instructions.") from exc
+                    _require(
+                        all(marker in instructions for marker in REQUIRED_INSTALL_INSTRUCTION_MARKERS),
+                        "Setup ZIP first-install instructions omit cPanel/PHP/storage/scheduler guidance.",
+                    )
+                    _require(
+                        not any(value in instructions for value in FORBIDDEN_INSTALL_INSTRUCTION_VALUES),
+                        "Setup ZIP first-install instructions contain deployment-specific production values.",
+                    )
+                    try:
+                        env_template = archive.read("backend/.env.production.example").decode("utf-8")
+                    except (KeyError, UnicodeDecodeError) as exc:
+                        raise SetupZipError("Invalid Setup ZIP environment template.") from exc
+                    env_values = _parse_env_template(env_template)
+                    unsafe_secret_keys = []
+                    for key in SENSITIVE_ENV_KEYS:
+                        allowed_values = {"", "null"} if key == "REDIS_PASSWORD" else {""}
+                        if any(value.casefold() not in allowed_values for value in env_values.get(key, [])):
+                            unsafe_secret_keys.append(key)
+                    _require(
+                        not unsafe_secret_keys,
+                        "Setup ZIP environment template contains non-empty secret fields.",
+                    )
+                    _require(archive.read("VERSION").decode("utf-8").strip() == version,
+                             "ZIP VERSION differs from checked-out source.")
+                    _require(archive.testzip() is None, "Setup ZIP CRC verification failed.")
+            except (OSError, ValueError, RuntimeError, NotImplementedError, zipfile.BadZipFile) as exc:
+                if isinstance(exc, SetupZipError):
+                    raise
+                raise SetupZipError("Unreadable or invalid Setup ZIP content.") from exc
 
-        digest = hashlib.sha256()
-        source.seek(0)
-        for block in iter(lambda: source.read(1024 * 1024), b""):
-            digest.update(block)
+            digest = hashlib.sha256()
+            source.seek(0)
+            for block in iter(lambda: source.read(1024 * 1024), b""):
+                digest.update(block)
 
-        try:
-            current_disk = zip_path.lstat()
-        except OSError as exc:
-            raise SetupZipError("Setup ZIP pathname changed during verification.") from exc
-        _require(
-            _file_identity(os.fstat(source.fileno())) == pinned_identity
-            and stat.S_ISREG(current_disk.st_mode)
-            and _file_identity(current_disk) == pinned_identity,
-            "Setup ZIP replaced or modified during verification.",
-        )
-        return {
-            "schema_version": 1,
-            "status": "UNTRUSTED_CI_STAGING_ONLY",
-            "signed": False,
-            "source_commit": source_sha,
-            "version": version,
-            "file": zip_path.name,
-            "bytes": zip_path.stat().st_size,
-            "sha256": digest.hexdigest(),
-        }
+            try:
+                current_disk = zip_path.lstat()
+            except OSError as exc:
+                raise SetupZipError("Setup ZIP pathname changed during verification.") from exc
+            _require(
+                _file_identity(os.fstat(source.fileno())) == pinned_identity
+                and stat.S_ISREG(current_disk.st_mode)
+                and _file_identity(current_disk) == pinned_identity,
+                "Setup ZIP replaced or modified during verification.",
+            )
+            return {
+                "schema_version": 1,
+                "status": "UNTRUSTED_CI_STAGING_ONLY",
+                "signed": False,
+                "source_commit": source_sha,
+                "version": version,
+                "file": zip_path.name,
+                "bytes": zip_path.stat().st_size,
+                "sha256": digest.hexdigest(),
+            }
 
     except OSError as exc:
         raise SetupZipError("Setup ZIP changed during verification.") from exc
