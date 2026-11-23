@@ -494,6 +494,59 @@ $trendMax=max(1,max(array_map(fn($r)=>max(abs((float)$r['revenue']),abs((float)$
 @endif
 @endif
 
+@if($tab==='discount_approvals')
+<section class="finance-panel" data-finance-discount-inbox="true" aria-labelledby="finance-discount-inbox-title">
+<div class="finance-panel-head"><div>
+<h2 id="finance-discount-inbox-title">{{ __('customer_service_discount.pending_review') }}</h2>
+<p>{{ __('customer_service_discount.pending_description') }}</p>
+</div></div>
+<div class="finance-notice">{{ __('customer_service_discount.accounting_review_only') }}</div>
+<div class="finance-table-wrap"><table class="finance-table">
+<thead><tr>
+<th>{{ __('finance_workbench.common.reference') }}</th>
+<th>{{ __('customer_service_discount.requester') }}</th>
+<th>{{ __('customer_service_discount.percentage') }}</th>
+<th>{{ __('customer_service_discount.reason') }}</th>
+<th>{{ __('finance_workbench.common.date') }}</th>
+<th>{{ __('finance_workbench.actions.view') }}</th>
+</tr></thead><tbody>
+@forelse($data['requests'] as $discountRequest)
+<tr>
+<td><strong>{{ $discountRequest->order_number }}</strong></td>
+<td>{{ $discountRequest->requested_by_name }}</td>
+<td class="finance-money">{{ number_format((float) $discountRequest->percentage, 2) }}%</td>
+<td>{{ $discountRequest->reason }}</td>
+<td>{{ $discountRequest->created_at }}</td>
+<td>
+@if((int)$discountRequest->requested_by_user_id !== (int)$user->getKey())
+<div class="finance-inline-actions">
+<form method="post" action="{{ route('admin.operations.orders.customer-service-discount.review',['order'=>$discountRequest->order_id,'discountRequest'=>$discountRequest->id]) }}">
+@csrf
+<input type="hidden" name="decision" value="approve">
+<button class="finance-button primary" type="submit">{{ __('customer_service_discount.approve') }}</button>
+</form>
+<form method="post" action="{{ route('admin.operations.orders.customer-service-discount.review',['order'=>$discountRequest->order_id,'discountRequest'=>$discountRequest->id]) }}">
+@csrf
+<input type="hidden" name="decision" value="reject">
+<div class="finance-field">
+<label for="discount-review-reason-{{ $discountRequest->id }}">{{ __('customer_service_discount.review_reason') }}</label>
+<textarea id="discount-review-reason-{{ $discountRequest->id }}" name="review_reason" required minlength="5" maxlength="500"></textarea>
+</div>
+<button class="finance-button danger" type="submit">{{ __('customer_service_discount.reject') }}</button>
+</form>
+</div>
+@else
+<span class="finance-muted">{{ __('customer_service_discount.accounting_review_only') }}</span>
+@endif
+</td></tr>
+@empty
+<tr><td colspan="6" class="finance-empty">{{ __('finance_workbench.common.no_data') }}</td></tr>
+@endforelse
+</tbody></table></div>
+<div class="finance-pagination">{{ $data['requests']->links() }}</div>
+</section>
+@endif
+
 @if($tab==='receivables')
 <section class="finance-panel">
 <div class="finance-panel-head"><div><h2>{{ __('finance_workbench.receivables.title') }}</h2><p>{{ __('finance_workbench.receivables.help') }}</p></div></div>

@@ -49,6 +49,7 @@ final class FinanceWorkbenchController extends Controller
         'journals',
         'opening_balances',
         'receivables',
+        'discount_approvals',
         'payables',
         'credit_terms',
         'budgets',
@@ -163,6 +164,7 @@ final class FinanceWorkbenchController extends Controller
             'journals' => $this->journalData($request, $actor, $context),
             'opening_balances' => $this->openingBalanceData($request, $actor, $context),
             'receivables' => $this->receivableData($request, $actor, $context),
+            'discount_approvals' => $this->customerServiceDiscountData($actor, $context),
             'payables' => $this->payableData($request, $actor, $context),
             'credit_terms' => $this->creditTermData($request, $actor, $context),
             'budgets' => $this->budgetData($request, $actor, $context),
@@ -898,6 +900,40 @@ final class FinanceWorkbenchController extends Controller
     }
 
     /** @return array<string, mixed> */
+    private function customerServiceDiscountData(User $actor, ResolvedTenantContext $context): array
+    {
+        $storeId = $context->requiresStore();
+        // Legal-entity entitlement is not a wildcard across operational
+        // stores/channels. Never enumerate another store's pending decisions.
+        $authorizedRole = $context->isRetail()
+            ? $actor->hasRole('RETAIL_FINANCE', $storeId)
+            : $actor->hasRole('FINANCE');
+        abort_unless(
+            $actor->is_active && $authorizedRole
+                && $actor->hasPermission('finance.view', $storeId)
+                && $actor->hasPermission('finance.manage', $storeId)
+                && $this->financeAccess->canRead($actor, $storeId),
+            403,
+        );
+
+        return [
+            'requests' => DB::table('order_customer_service_discount_requests as requests')
+                ->join('orders as customer_order', 'customer_order.id', '=', 'requests.order_id')
+                ->join('users as requester', 'requester.id', '=', 'requests.requested_by_user_id')
+                ->where('requests.status', 'pending')
+                ->where('customer_order.store_id', $storeId)
+                ->where('customer_order.channel', $context->isRetail() ? 'b2c' : 'b2b')
+                ->orderBy('requests.id')
+                ->paginate(20, [
+                    'requests.id', 'requests.order_id', 'requests.requested_by_user_id',
+                    'requests.percentage', 'requests.reason', 'requests.created_at',
+                    'customer_order.order_number', 'requester.name as requested_by_name',
+                ], 'discount_requests_page')
+                ->withQueryString(),
+        ];
+    }
+
+    /** @return array<string, mixed> */
     private function receivableData(Request $request, User $actor, ResolvedTenantContext $context): array
     {
         $filters = $request->only(['customer_id', 'status', 'date_from', 'date_to']);
@@ -1096,6 +1132,17 @@ final class FinanceWorkbenchController extends Controller
             'opening_manage' => $permitted('finance.manage') && $entitled('finance.opening_balances.manage'),
             'opening_post' => $permitted('finance.post') && $entitled('finance.opening_balances.post'),
             'ar_read' => $permitted('finance.view') && $entitled('finance.ar.read'),
+            // Inbox access never grants posting/approval: the existing Orders
+            // POST independently enforces exact role, scoped permissions,
+            // pending state and maker/checker separation under row locks.
+            'discount_review' => $actor->is_active
+                && ($context->isRetail()
+                    ? $actor->hasRole('RETAIL_FINANCE', $storeId)
+                    : $actor->hasRole('FINANCE'))
+                && $permitted('finance.view')
+                && $permitted('finance.manage')
+                && ($entitled('finance.foundation.read') || $entitled('finance.ar.read')
+                    || $entitled('finance.gl.read') || $entitled('finance.ap.read')),
             'ap_read' => $permitted('finance.view') && $entitled('finance.ap.read'),
             'credit_read' => $permitted('finance.view') && $entitled('finance.credit_terms.read'),
             'credit_manage' => $permitted('finance.manage') && $entitled('finance.credit_terms.manage'),
@@ -1121,6 +1168,7 @@ final class FinanceWorkbenchController extends Controller
             ['key' => 'journals', 'label' => 'finance_workbench.tabs.journals', 'available' => $available('gl_read')],
             ['key' => 'opening_balances', 'label' => 'finance_workbench.tabs.opening_balances', 'available' => $available('opening_read')],
             ['key' => 'receivables', 'label' => 'finance_workbench.tabs.receivables', 'available' => $available('ar_read')],
+            ['key' => 'discount_approvals', 'label' => 'finance_workbench.tabs.discount_approvals', 'available' => $available('discount_review')],
             ['key' => 'payables', 'label' => 'finance_workbench.tabs.payables', 'available' => $available('ap_read')],
             ['key' => 'credit_terms', 'label' => 'finance_workbench.tabs.credit_terms', 'available' => $available('credit_read')],
             ['key' => 'budgets', 'label' => 'finance_workbench.tabs.budgets', 'available' => $available('foundation_read')],
