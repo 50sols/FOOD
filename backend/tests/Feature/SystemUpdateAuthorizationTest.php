@@ -507,7 +507,7 @@ class SystemUpdateAuthorizationTest extends TestCase
                 'contains_migrations' => $manifest->containsMigrations,
                 'release_notes' => $manifest->releaseNotes,
                 'signature' => $signature,
-            ], JSON_THROW_ON_ERROR),
+            ], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE),
             base64_encode(sodium_crypto_sign_publickey($keypair)),
         ];
     }
