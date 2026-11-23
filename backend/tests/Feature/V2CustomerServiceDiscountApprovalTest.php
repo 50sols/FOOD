@@ -76,6 +76,32 @@ final class V2CustomerServiceDiscountApprovalTest extends TestCase
         $this->assertSame(1, DB::table('order_customer_service_discounts')->where('order_id', $orderId)->count());
     }
 
+    public function test_discount_request_rejects_whitespace_padded_rationale_before_audit_or_finance_queue(): void
+    {
+        $manager = $this->roleUser('CUSTOMER_SERVICE_MANAGER');
+        $orderId = $this->order();
+        $url = route('admin.operations.orders.customer-service-discount', ['order' => $orderId]);
+
+        foreach (['     ', '    no   '] as $invalidReason) {
+            $this->actingAs($manager)->post($url, [
+                'percentage' => 15,
+                'reason' => $invalidReason,
+                'idempotency_key' => (string) Str::uuid(),
+            ])->assertSessionHasErrors('reason');
+        }
+
+        $this->assertDatabaseMissing('order_customer_service_discount_requests', [
+            'order_id' => $orderId,
+        ]);
+        $this->assertDatabaseMissing('audit_logs', [
+            'event' => 'order.customer_service_discount.requested',
+            'user_id' => $manager->getKey(),
+        ]);
+        $this->assertDatabaseHas('orders', [
+            'id' => $orderId, 'discount_total' => 1, 'grand_total' => 9,
+        ]);
+    }
+
     public function test_unprivileged_reviewer_cannot_approve_and_self_approval_is_forbidden(): void
     {
         $agent = $this->roleUser('CUSTOMER_SERVICE_AGENT');
