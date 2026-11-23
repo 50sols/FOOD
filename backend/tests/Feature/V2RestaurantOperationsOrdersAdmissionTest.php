@@ -60,14 +60,14 @@ final class V2RestaurantOperationsOrdersAdmissionTest extends TestCase
                 ->assertNotFound();
             $this->actingAs($restaurantActor->fresh())
                 ->get(route('admin.operations.orders.index', ['channel' => 'all']))
-                ->assertNotFound();
+                ->assertForbidden();
 
             $this->actingAs($mixedActor->fresh())
                 ->get(route('admin.operations.orders.index', ['channel' => 'b2c']))
                 ->assertNotFound();
             $this->actingAs($mixedActor->fresh())
                 ->get(route('admin.operations.orders.index', ['channel' => 'all']))
-                ->assertNotFound();
+                ->assertForbidden();
             $this->actingAs($mixedActor->fresh())
                 ->get(route('admin.operations.orders.index', ['channel' => 'b2c', 'store_id' => $restaurant]))
                 ->assertNotFound();
