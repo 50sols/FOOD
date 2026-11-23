@@ -245,6 +245,7 @@ final class EnterpriseSavedViewService
             ->join('roles as saved_view_roles', 'saved_view_roles.id', '=', 'saved_view_usr.role_id')
             ->where('saved_view_usr.user_id', $actor->getKey())
             ->where('saved_view_roles.is_active', true)
+            ->whereNull('saved_view_roles.archived_at')
             ->where('saved_view_roles.scope', 'store')
             ->exists();
 
@@ -254,6 +255,7 @@ final class EnterpriseSavedViewService
 
         $globalRoles = $actor->roles()
             ->where('roles.is_active', true)
+            ->whereNull('roles.archived_at')
             ->where('roles.scope', 'global')
             ->pluck('roles.code')
             ->all();
