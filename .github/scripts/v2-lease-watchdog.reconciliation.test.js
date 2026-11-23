@@ -130,14 +130,19 @@ function harness(opts={}) {
     merged_at:opts.mergedPr?'2026-11-10T09:40:00Z':null,
     state:opts.closedOriginalPr || opts.mergedPr ? 'closed' : 'open',
     base:{ref:opts.foreignPr?'main':'Foodex_V2'},
-    head:{ref:opts.foreignPr?'feat/unrelated':'feat/2929-lease-tests'} };
+    head:{ref:opts.foreignPr||opts.mismatchedPrRef?'feat/unrelated':'feat/2929-lease-tests',
+      sha:'old-head',repo:opts.missingPrRepo ? undefined
+        : {owner:{login:'example'},name:'FOOD'}} };
   const terminalRuns=Array.from({length:100},(_,i)=>({id:i,head_sha:'old-head',status:'completed'}));
   const github = { rest: {
     search:{issuesAndPullRequests:async()=>({data:{items:[issue]}})},
-    pulls:{list:async args=>({data:args.state==='all' && opts.historicalPr ? [matchingPr] : []}),get:async()=>{
+    pulls:{list:async args=>({data:(args.state==='all' && opts.historicalPr)
+      || (args.state==='open' && opts.openPr) ? [matchingPr] : []}),get:async()=>{
       prReads++;
       return {data:opts.originalPrClosesMidSweep&&prReads>1
-        ? {...matchingPr,state:'closed',merged:false,merged_at:null} : matchingPr};
+        ? {...matchingPr,state:'closed',merged:false,merged_at:null}
+        : opts.prHeadMoves ? {...matchingPr,head:{...matchingPr.head,sha:'new-head'}}
+          : matchingPr};
     }},
     issues:{
       listComments:async()=>{commentReads++;return {data:commentReads>1&&opts.newClaim?[oldState,freshState]:[oldState]};},
@@ -149,9 +154,13 @@ function harness(opts={}) {
     repos:{
       getBranch:async args=>{if(args.branch==='Foodex_V2') return {data:{commit:{sha:'v2-head'}}};
         branchNames.push(args.branch);branchReads++;if(opts.apiError)throw Object.assign(new Error('permission denied'),{status:403});
+        if(opts.missingBranch)throw Object.assign(new Error('branch not in base repository'),{status:404});
         return {data:{commit:{sha:opts.branchMoves&&branchReads>1?'new-head':'old-head'}}};},
-      getCommit:async()=>({data:{commit:{committer:{date:opts.recentCommit?
-        '2026-11-10T09:50:00Z':'2026-11-10T09:20:00Z'}}}}),
+      getCommit:async()=>{
+        if(opts.unreadablePrCommit)throw Object.assign(new Error('missing PR commit'),{status:404});
+        return {data:{commit:{committer:{date:opts.recentCommit||opts.recentPrCommit?
+          '2026-11-10T09:50:00Z':'2026-11-10T09:20:00Z'}}}};
+      },
     },
     checks:{listForRef:async args=>{
       if (opts.malformedChecksPageTwo && args.page===2) return {data:{wrong_collection:[]}};
@@ -385,4 +394,41 @@ test('historically closed unmerged PR without claim PR is approval gated', async
 test('foreign historical PR cannot suppress a legitimate stale handoff', async () => {
   const out = await sweep({historicalPr:true,mergedPr:true,foreignPr:true});
   assert.equal(out.result.released,1);
+});
+
+test('fresh open PR commit protects lease when claimed branch is absent from base repo', async () => {
+  const out = await sweep({claimPr:true,openPr:true,missingBranch:true,recentPrCommit:true});
+  assert.deepEqual(out.result,{scanned:1,released:0,active:1});
+  assert.deepEqual(out.mutations,[]);
+});
+test('verified stale open PR commit can release missing-branch lease after 30 minutes', async () => {
+  const out = await sweep({claimPr:true,openPr:true,missingBranch:true});
+  assert.deepEqual(out.result,{scanned:1,released:1,active:0});
+  assert.deepEqual(out.mutations,
+    ['remove:worker:active','add:worker:handoff-ready','comment']);
+});
+test('missing PR repository or unreadable commit fails closed with no mutation', async () => {
+  for (const opts of [{missingPrRepo:true},{unreadablePrCommit:true}]) {
+    const out = await sweep({claimPr:true,openPr:true,missingBranch:true,...opts});
+    assert.deepEqual(out.result,{scanned:1,released:0,active:1},JSON.stringify(opts));
+    assert.deepEqual(out.mutations,[],JSON.stringify(opts));
+  }
+});
+test('new PR head during stale-lease scan prevents handoff', async () => {
+  const out = await sweep({claimPr:true,openPr:true,missingBranch:true,prHeadMoves:true});
+  assert.equal(out.result.released,0);
+  assert.deepEqual(out.mutations,[]);
+});
+
+test('in-progress exact-head checks prevent missing-branch PR lease release', async () => {
+  for (const opts of [{queuedCi:true},{runningWorkflow:true}]) {
+    const out = await sweep({claimPr:true,openPr:true,missingBranch:true,...opts});
+    assert.equal(out.result.released,0,JSON.stringify(opts));
+    assert.deepEqual(out.mutations,[],JSON.stringify(opts));
+  }
+});
+test('a PR claim with a mismatched source ref cannot release an absent branch', async () => {
+  const out = await sweep({claimPr:true,openPr:true,missingBranch:true,mismatchedPrRef:true});
+  assert.deepEqual(out.result,{scanned:1,released:0,active:1});
+  assert.deepEqual(out.mutations,[]);
 });
