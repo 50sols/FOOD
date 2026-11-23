@@ -97,7 +97,7 @@ final class OrderCustomerServiceDiscountApprovalService
             $channel = strtolower((string) $locked->channel);
             $accountingRole = match ($channel) {
                 'b2b' => $reviewer->hasRole('FINANCE'),
-                'b2c' => $reviewer->hasRole('RETAIL_FINANCE'),
+                'b2c' => $reviewer->hasRole('RETAIL_FINANCE', $storeId),
                 default => false,
             };
             abort_unless(
