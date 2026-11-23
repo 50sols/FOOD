@@ -28,6 +28,10 @@ final class OrganizationHierarchyService
     public function scopeForStore(int $storeId): ?array
     {
         $row = DB::table('enterprise_store_scopes')
+            // An inactive store has no live enterprise authority even when
+            // its historical mapping and every ancestor remain active.
+            ->join('stores', 'stores.id', '=', 'enterprise_store_scopes.store_id')
+            ->where('stores.is_active', true)
             ->join('enterprise_business_units', 'enterprise_business_units.id', '=', 'enterprise_store_scopes.business_unit_id')
             ->join('enterprise_legal_entities', 'enterprise_legal_entities.id', '=', 'enterprise_business_units.legal_entity_id')
             ->join('enterprise_companies', 'enterprise_companies.id', '=', 'enterprise_legal_entities.company_id')
