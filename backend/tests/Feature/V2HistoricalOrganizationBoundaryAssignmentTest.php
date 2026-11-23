@@ -63,6 +63,26 @@ final class V2HistoricalOrganizationBoundaryAssignmentTest extends TestCase
         DB::table('enterprise_organizations')->where('id', $sourceOrganization->id)
             ->update(['is_active' => true]);
         $this->assertSame((int) $source->id, $service->scopeForStore((int) $store->id)['business_unit_id']);
+
+        // A disabled store also makes effective scope null, but does not
+        // abandon the historical organization's ownership of the mapping.
+        DB::table('stores')->where('id', $store->id)->update(['is_active' => false]);
+        $this->assertNull($service->scopeForStore((int) $store->id));
+        try {
+            $service->assignStore($store, $target);
+            $this->fail('A disabled store must not bypass original organization ownership.');
+        } catch (LogicException $exception) {
+            $this->assertSame(
+                'A store cannot be silently moved across enterprise organizations.',
+                $exception->getMessage(),
+            );
+        }
+        $this->assertDatabaseHas('enterprise_store_scopes', [
+            'id' => $original->id,
+            'store_id' => $store->id,
+            'business_unit_id' => $source->id,
+        ]);
+        $this->assertSame($auditCount, DB::table('audit_logs')->count());
     }
 
     public function test_same_organization_active_unit_reassignment_remains_permitted_and_idempotent(): void
