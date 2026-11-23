@@ -4,6 +4,8 @@ set -Eeuo pipefail
 # Network is available ONLY for vetted dependency acquisition.
 # No GitHub tokens, host credentials, Docker socket, or arbitrary PR commands.
 test -n "$GCC_EXPECTED_SHA"
+profile="${GCC_PROFILE:-all}"
+case "$profile" in all|backend|setup|packages) ;; *) echo 'Invalid GCC profile' >&2; exit 2 ;; esac
 test "$(git -C /source rev-parse HEAD)" = "$GCC_EXPECTED_SHA"
 test -f /source/backend/composer.json
 test -f /source/backend/composer.lock
@@ -34,6 +36,9 @@ echo 'GCC: Composer audit and OpenAPI lint delegated to mandatory GitHub Backend
 
 cd /workspace
 
+# A backend-only run does not build release packages: do not download TCPDF
+# or install the second production Composer tree in that profile.
+if [[ "$profile" != backend ]]; then
 # Same exact pinned TCPDF source and cURL fallback patch as the canonical
 # release-update-bundle workflow. No mutable branch or unreviewed git HEAD.
 tcpdf=/tmp/foodex-gcc-tcpdf
@@ -71,6 +76,7 @@ rsync -a --exclude=vendor --exclude=.env --exclude=tests --exclude=storage/logs 
 composer install --working-dir=/workspace/production-backend --no-dev \
   --no-interaction --prefer-dist --no-progress --no-scripts --no-plugins
 test -s /workspace/production-backend/vendor/autoload.php
+fi
 
 # The sandbox runs unprivileged against the isolated MySQL+Redis namespace.
 chown -R 10001:10001 /workspace
