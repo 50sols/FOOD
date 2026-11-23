@@ -125,6 +125,89 @@ final class RestaurantTemplateGalleryPreviewTest extends TestCase
             ->assertSee(__('smart_ordering.appearance.apply_to_draft'));
     }
 
+    public function test_apply_authorizes_explicit_site_before_theme_body_in_arabic_and_english(): void
+    {
+        $typeId = (int) DB::table('store_types')->where('code', 'B2C')->value('id');
+        $foreignStore = (int) DB::table('stores')->insertGetId([
+            'store_type_id' => $typeId,
+            'code' => 'TEMPLATE-GALLERY-FOREIGN',
+            'name' => 'Foreign Template Restaurant',
+            'is_active' => true,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        $this->enableRestaurantSaasForTestStore($foreignStore);
+        $foreignSiteId = (int) DB::table('smart_ordering_sites')->insertGetId([
+            'public_id' => (string) Str::uuid(),
+            'store_id' => $foreignStore,
+            'slug' => 'template-gallery-foreign',
+            'runtime_state' => 'ENABLED',
+            'master_enabled' => true,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        $ownSiteId = (int) DB::table('smart_ordering_sites')
+            ->where('slug', 'template-gallery')->value('id');
+        $url = '/admin/smart-ordering/appearance/apply';
+        $valid = ['theme' => 'premium-arabic-dining', 'lang' => 'en', 'device' => 'tablet'];
+        $before = [
+            DB::table('smart_ordering_revisions')->count(),
+            DB::table('audit_logs')->count(),
+        ];
+        $initialLocale = app()->getLocale();
+
+        try {
+            foreach (['ar', 'en'] as $locale) {
+                $this->admin->forceFill(['locale' => $locale])->saveQuietly();
+                app()->setLocale($locale);
+
+                foreach ([
+                    ['site' => 'template-gallery-foreign'],
+                    ['site' => 'template-gallery-foreign', 'theme' => ['invalid' => 'nested']],
+                    ['site' => 'template-gallery-foreign', ...$valid],
+                    ['site' => 'unknown-restaurant-template', 'theme' => ['invalid']],
+                ] as $denied) {
+                    $this->actingAs($this->admin->fresh())->postJson($url, $denied)
+                        ->assertNotFound();
+                }
+
+                foreach ([
+                    [],
+                    ['site' => ['invalid'], ...$valid],
+                    ['site' => str_repeat('s', 101), ...$valid],
+                    ['site' => 'template-gallery'],
+                    ['site' => 'template-gallery', 'theme' => ['invalid' => 'nested']],
+                ] as $invalid) {
+                    $this->actingAs($this->admin->fresh())->postJson($url, $invalid)
+                        ->assertUnprocessable();
+                }
+            }
+        } finally {
+            app()->setLocale($initialLocale);
+        }
+
+        $this->assertSame($before, [
+            DB::table('smart_ordering_revisions')->count(),
+            DB::table('audit_logs')->count(),
+        ]);
+
+        foreach (['ar', 'en'] as $locale) {
+            $this->admin->forceFill(['locale' => $locale])->saveQuietly();
+            app()->setLocale($locale);
+            $this->actingAs($this->admin->fresh())->post($url, [
+                'site' => 'template-gallery',
+                ...$valid,
+            ])->assertRedirect();
+        }
+
+        $this->assertDatabaseHas('smart_ordering_revisions', [
+            'site_id' => $ownSiteId,
+            'status' => 'draft',
+        ]);
+        $this->assertSame(0, DB::table('smart_ordering_revisions')
+            ->where('site_id', $foreignSiteId)->count());
+    }
+
     public function test_demo_preview_rejects_non_production_theme_ids(): void
     {
         $this->actingAs($this->admin)

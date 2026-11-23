@@ -92,6 +92,24 @@ class B2cWorkspaceController extends Controller
         abort_unless($user instanceof User, 401);
         abort_unless(array_key_exists($module, self::MODULE_PERMISSIONS), 404);
 
+        // An explicitly supplied Retail store selector must never be silently
+        // coerced to zero, fall back to another store, or override its alias.
+        // This applies only to the existing web GET workspace; mutations and API
+        // routes keep their canonical authorization and input contracts.
+        $explicitStoreIds = [];
+        foreach (['store_id', 'store'] as $storeQueryKey) {
+            if (! $request->query->has($storeQueryKey)) {
+                continue;
+            }
+
+            $rawStoreId = $request->query($storeQueryKey);
+            abort_unless(is_string($rawStoreId) && preg_match('/^[1-9][0-9]*$/D', $rawStoreId) === 1, 404);
+            $parsedStoreId = filter_var($rawStoreId, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
+            abort_unless($parsedStoreId !== false && (string) $parsedStoreId === $rawStoreId, 404);
+            $explicitStoreIds[] = $parsedStoreId;
+        }
+        abort_if(count(array_unique($explicitStoreIds)) > 1, 404);
+
         if ($user->hasRole('SUPER_ADMIN')
             && $request->integer('store_id') <= 0
             && $request->integer('store') <= 0) {
@@ -107,6 +125,17 @@ class B2cWorkspaceController extends Controller
         $businessProfile = $this->businessProfiles->resolve($storeId) ?? StoreBusinessProfile::RETAIL_STORE;
         abort_unless($this->moduleAllowedForProfile($module, $businessProfile), 404);
         $this->authorizeModule($user, $module, $storeId);
+
+        // Rows and assignments are independently paginated GET-only lists.
+        // Validate navigation after the canonical store/profile/module gates,
+        // before the module queries, rather than coercing bad values to page 1.
+        if ($module !== 'dashboard') {
+            $request->validate([
+                'rows_page' => ['nullable', 'integer', 'min:1'],
+                'assignments_page' => ['nullable', 'integer', 'min:1'],
+            ]);
+        }
+
         // Dashboard tabs are GET-only presentation context, never a route/store selector.
         // Reject array/object query shapes before Blade can cast them into a warning/500.
         if ($module === 'dashboard') {

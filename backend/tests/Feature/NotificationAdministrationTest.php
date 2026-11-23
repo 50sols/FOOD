@@ -82,6 +82,92 @@ class NotificationAdministrationTest extends TestCase
         $this->assertSame(1, DB::table('audit_logs')->where('event', 'notification.published')->count());
     }
 
+    public function test_admin_notification_index_get_shapes_preserve_legacy_filters_and_authorization(): void
+    {
+        $admin = $this->user('v2-4068-super@example.test', 'en');
+        $admin->roles()->attach(Role::query()->where('code', 'SUPER_ADMIN')->firstOrFail());
+
+        $matching = Notification::query()->create([
+            'channel' => 'in_app',
+            'type' => 'general',
+            'title' => 'V2-4068 %_! search',
+            'body' => 'Test body',
+            'title_ar' => 'V2-4068 %_! search',
+            'title_en' => 'V2-4068 %_! search',
+            'body_ar' => 'نص اختبار',
+            'body_en' => 'Test body',
+            'audience' => 'all',
+            'app' => 'dashboard',
+            'target_channel' => 'all',
+            'status' => 'draft',
+        ]);
+        Notification::query()->create([
+            'channel' => 'in_app',
+            'type' => 'general',
+            'title' => 'Other announcement',
+            'body' => 'Other body',
+            'title_ar' => 'إعلان آخر',
+            'title_en' => 'Other announcement',
+            'body_ar' => 'نص آخر',
+            'body_en' => 'Other body',
+            'audience' => 'all',
+            'app' => 'dashboard',
+            'target_channel' => 'all',
+            'status' => 'draft',
+        ]);
+
+        $before = [
+            DB::table('notifications')->count(),
+            DB::table('audit_logs')->count(),
+        ];
+
+        foreach (['ar' => 'rtl', 'en' => 'ltr'] as $locale => $direction) {
+            $admin->forceFill(['locale' => $locale])->save();
+            app()->setLocale($locale);
+
+            $this->actingAs($admin->fresh())
+                ->get('/admin/notifications?q='.rawurlencode('%_!').'&status=draft')
+                ->assertOk()
+                ->assertSee('dir="'.$direction.'"', false)
+                ->assertViewHas('notifications', static function ($rows) use ($matching): bool {
+                    $ids = $rows->getCollection()->pluck('id')->all();
+
+                    return $ids === [$matching->id];
+                });
+
+            $this->actingAs($admin->fresh())
+                ->get('/admin/notifications?q=&status=&review_notification=')
+                ->assertOk();
+
+            $this->actingAs($admin->fresh())
+                ->get('/admin/notifications?review_notification='.$matching->id)
+                ->assertOk();
+
+            foreach ([
+                '?q%5B%5D=test',
+                '?q%5Bdeep%5D%5B0%5D=test',
+                '?status%5B%5D=draft',
+                '?status%5Bdeep%5D=draft',
+                '?review_notification%5B%5D='.$matching->id,
+                '?review_notification%5Bdeep%5D='.$matching->id,
+            ] as $malformed) {
+                $this->actingAs($admin->fresh())
+                    ->get('/admin/notifications'.$malformed)
+                    ->assertNotFound();
+            }
+        }
+
+        $roleless = $this->user('v2-4068-roleless@example.test', 'en');
+        $this->actingAs($roleless)->get('/admin/notifications?q=valid')->assertForbidden();
+        $this->actingAs($roleless)->get('/admin/notifications?review_notification%5B%5D=1')
+            ->assertForbidden();
+
+        $this->assertSame($before, [
+            DB::table('notifications')->count(),
+            DB::table('audit_logs')->count(),
+        ]);
+    }
+
     public function test_customer_receives_requested_locale_and_read_state_is_user_owned(): void
     {
         $ar = $this->user('customer-ar@example.test', 'ar');

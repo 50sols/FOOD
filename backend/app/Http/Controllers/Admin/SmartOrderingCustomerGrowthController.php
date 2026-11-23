@@ -14,6 +14,7 @@ use App\Models\User;
 use App\Support\TenantContextResolver;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 
 final class SmartOrderingCustomerGrowthController extends Controller
 {
@@ -38,6 +39,13 @@ final class SmartOrderingCustomerGrowthController extends Controller
     ): JsonResponse {
         $this->authorizeSite($request, $site, $tenants, 'smart_ordering.view');
 
+        // Preserve customer-scoped 404 before rejecting an unrelated malformed
+        // selector; never coerce nested GET arrays into a numeric limit.
+        if (is_array($request->query('limit'))) {
+            $customers->orderHistory($site, $customer, 1);
+            abort(422);
+        }
+
         return response()->json([
             'orders' => $customers->orderHistory($site, $customer, $request->integer('limit', 20)),
         ]);
@@ -52,6 +60,10 @@ final class SmartOrderingCustomerGrowthController extends Controller
         TenantContextResolver $tenants,
     ): JsonResponse {
         $this->authorizeSite($request, $site, $tenants, 'smart_ordering.manage');
+
+        // Resolve the authorized source order before exposing field validation.
+        $repeat->assertSourceOrderInScope($site, $customer, $order);
+
         $data = $request->validate([
             'order_item_ids' => ['nullable', 'array', 'max:100'],
             'order_item_ids.*' => ['integer', 'min:1'],
@@ -83,6 +95,10 @@ final class SmartOrderingCustomerGrowthController extends Controller
         TenantContextResolver $tenants,
     ): JsonResponse {
         $actor = $this->authorizeSite($request, $site, $tenants, 'smart_ordering.manage');
+
+        // A foreign customer must not disclose adjustment field validation.
+        $loyalty->assertAdjustmentTargetInScope($actor, $site, $customer);
+
         $data = $request->validate([
             'points' => ['required', 'integer', 'not_in:0'],
             'reason' => ['required', 'string', 'max:500'],
@@ -104,6 +120,8 @@ final class SmartOrderingCustomerGrowthController extends Controller
         TenantContextResolver $tenants,
     ): JsonResponse {
         $actor = $this->authorizeSite($request, $site, $tenants, 'smart_ordering.manage');
+        $this->preflightLoyaltyBranch($request, $site, $admin);
+
         $data = $request->validate([
             'points_per_currency_unit' => ['required', 'numeric', 'min:0'],
             'minimum_spend' => ['nullable', 'numeric', 'min:0'],
@@ -131,8 +149,19 @@ final class SmartOrderingCustomerGrowthController extends Controller
     ): JsonResponse {
         $this->authorizeSite($request, $site, $tenants, 'smart_ordering.view');
 
+        // Resolve the authorized restaurant first. Nested GET selectors must
+        // not be coerced to an unintended branch ID or an unfiltered list.
+        abort_if(is_array($request->query('branch_id')), 404);
+
+        // An explicit invalid scalar must not silently become an unfiltered
+        // rewards query through Request::integer() coercion to zero.
+        $filtered = $request->validate([
+            'branch_id' => ['nullable', 'integer', 'min:1'],
+        ]);
+        $branchId = isset($filtered['branch_id']) ? (int) $filtered['branch_id'] : null;
+
         return response()->json([
-            'rewards' => $admin->rewards($site, $request->integer('branch_id') ?: null),
+            'rewards' => $admin->rewards($site, $branchId),
         ]);
     }
 
@@ -143,6 +172,8 @@ final class SmartOrderingCustomerGrowthController extends Controller
         TenantContextResolver $tenants,
     ): JsonResponse {
         $actor = $this->authorizeSite($request, $site, $tenants, 'smart_ordering.manage');
+        $this->preflightLoyaltyBranch($request, $site, $admin);
+
         $data = $request->validate([
             'name_en' => ['required', 'string', 'max:255'],
             'name_ar' => ['nullable', 'string', 'max:255'],
@@ -170,6 +201,19 @@ final class SmartOrderingCustomerGrowthController extends Controller
         TenantContextResolver $tenants,
     ): JsonResponse {
         $actor = $this->authorizeSite($request, $site, $tenants, 'smart_ordering.manage');
+
+        // A foreign or unknown reward cannot disclose validation behavior.
+        // The service rechecks scope when applying the authorized mutation.
+        abort_unless(
+            DB::table('smart_ordering_loyalty_rewards')
+                ->where('site_id', $site->getKey())
+                ->where('public_id', $reward)
+                ->exists(),
+            404,
+        );
+
+        $this->preflightLoyaltyBranch($request, $site, $admin);
+
         $data = $request->validate([
             'name_en' => ['required', 'string', 'max:255'],
             'name_ar' => ['nullable', 'string', 'max:255'],
@@ -245,10 +289,37 @@ final class SmartOrderingCustomerGrowthController extends Controller
         TenantContextResolver $tenants,
     ): JsonResponse {
         $actor = $this->authorizeSite($request, $site, $tenants, 'smart_ordering.manage');
+
+        // A missing or foreign recovery case must not expose body-validation
+        // feedback. The service rechecks the same site scope before mutation.
+        abort_unless(
+            DB::table('smart_ordering_service_recovery_cases')
+                ->where('site_id', $site->getKey())
+                ->where('public_id', $case)
+                ->exists(),
+            404,
+        );
+
         $data = $request->validate(['resolution_note' => ['required', 'string', 'max:5000']]);
         $feedback->resolveCase($actor, $site, $case, (string) $data['resolution_note']);
 
         return response()->json(['status' => 'RESOLVED']);
+    }
+
+    private function preflightLoyaltyBranch(
+        Request $request,
+        SmartOrderingSite $site,
+        LoyaltyAdminService $admin,
+    ): void {
+        // Only valid explicit branch selectors are scoped before unrelated
+        // rule/reward fields; malformed selectors retain Laravel's 422.
+        $requestedBranch = $request->input('branch_id');
+        if (is_int($requestedBranch) || (is_string($requestedBranch) && ctype_digit($requestedBranch))) {
+            $branchId = filter_var($requestedBranch, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
+            if ($branchId !== false) {
+                $admin->assertBranchInSite($site, $branchId);
+            }
+        }
     }
 
     private function authorizeSite(

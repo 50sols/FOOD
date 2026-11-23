@@ -10,6 +10,7 @@ use App\Models\User;
 use App\Services\AuditLogger;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Str;
 use Illuminate\Validation\Rule;
 
 final class SmartOrderingTableController extends Controller
@@ -31,6 +32,7 @@ final class SmartOrderingTableController extends Controller
     public function updateFloor(string $branch, string $floor, Request $request): RedirectResponse
     {
         [$actor, $branchModel] = $this->authorizedBranch($branch, $request);
+        $this->tables->assertFloorInBranch($branchModel, $floor);
         $this->tables->updateFloor($branchModel, $floor, $this->floorData($request));
 
         return $this->backToTables($branchModel, __('smart_ordering.tables.floor_saved'));
@@ -47,6 +49,7 @@ final class SmartOrderingTableController extends Controller
     public function storeTable(string $branch, Request $request): RedirectResponse
     {
         [$actor, $branchModel] = $this->authorizedBranch($branch, $request);
+        $this->preflightSelectedFloor($branchModel, $request);
         $this->tables->createTable($branchModel, $this->tableData($request));
 
         return $this->backToTables($branchModel, __('smart_ordering.tables.table_saved'));
@@ -55,6 +58,8 @@ final class SmartOrderingTableController extends Controller
     public function updateTable(string $branch, string $table, Request $request): RedirectResponse
     {
         [$actor, $branchModel] = $this->authorizedBranch($branch, $request);
+        $this->tables->assertTableInBranch($branchModel, $table);
+        $this->preflightSelectedFloor($branchModel, $request);
         $this->tables->updateTable($branchModel, $table, $this->tableData($request));
 
         return $this->backToTables($branchModel, __('smart_ordering.tables.table_saved'));
@@ -63,6 +68,7 @@ final class SmartOrderingTableController extends Controller
     public function updatePosition(string $branch, string $table, Request $request): RedirectResponse
     {
         [$actor, $branchModel] = $this->authorizedBranch($branch, $request);
+        $this->tables->assertTableInBranch($branchModel, $table);
         $data = $request->validate([
             'position_x' => ['required', 'integer', 'between:0,1000'],
             'position_y' => ['required', 'integer', 'between:0,1000'],
@@ -111,6 +117,15 @@ final class SmartOrderingTableController extends Controller
     public function combine(string $branch, string $table, Request $request): RedirectResponse
     {
         [$actor, $branchModel] = $this->authorizedBranch($branch, $request);
+        $this->tables->assertTableInBranch($branchModel, $table);
+        // A valid explicit member UUID must belong to this branch before
+        // unrelated combine fields (such as note) can disclose validation.
+        // Malformed or absent member selectors still receive Laravel's 422.
+        $member = $request->input('other_table_public_id');
+        if (is_string($member) && Str::isUuid($member)) {
+            $this->tables->assertTableInBranch($branchModel, $member);
+        }
+
         $data = $request->validate([
             'other_table_public_id' => ['required', 'uuid'],
             'note' => ['nullable', 'string', 'max:500'],
@@ -156,6 +171,16 @@ final class SmartOrderingTableController extends Controller
         $this->scope->assertStore($actor, (int) $branch->store_id, 'orders.manage', 'b2c');
 
         return [$actor, $branch];
+    }
+
+    private function preflightSelectedFloor(SmartOrderingBranch $branch, Request $request): void
+    {
+        // Valid explicit floor UUIDs are scoped before unrelated table fields.
+        // Missing or malformed selectors retain the existing validator result.
+        $floorId = $request->input('floor_public_id');
+        if (is_string($floorId) && Str::isUuid($floorId)) {
+            $this->tables->assertFloorInBranch($branch, $floorId);
+        }
     }
 
     /** @return array<string,mixed> */

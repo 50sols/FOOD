@@ -1,0 +1,20 @@
+name: FOODEX V2 Integrated Backend Acceptance
+
+on:
+  push:
+    branches: [Foodex_V2]
+  workflow_dispatch:
+
+concurrency:
+  group: v2-integrated-backend-acceptance
+  # Preserve full-backend acceptance for every queued Foodex_V2 integration SHA.
+  # New pushes queue behind the running job rather than cancelling its evidence.
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  full-backend:
+    name: Full Laravel plus MySQL Redis after V2 integration
+    uses: ./.github/workflows/backend-ci.yml

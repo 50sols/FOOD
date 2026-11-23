@@ -62,6 +62,10 @@ final class SecurityController extends Controller
             abort_unless(! $request->has($filter) || is_string($request->query($filter)), 404);
         }
 
+        // Validate explicit user-grid pagination only after security authorization
+        // and the existing nested-filter 404 boundary.
+        $request->validate(['page' => ['nullable', 'integer', 'min:1']]);
+
         $search = trim((string) $request->query('q', ''));
         $literalSearch = '%'.str_replace(['!', '%', '_'], ['!!', '!%', '!_'], $search).'%';
         $status = (string) $request->query('status', 'all');
@@ -329,8 +333,14 @@ final class SecurityController extends Controller
             return [(int) $store->id => $groups];
         });
 
-        $globalCandidates = $roles->where('scope', 'global')->where('is_active', true)->values();
-        $storeCandidates = $roles->where('scope', 'store')->where('is_active', true)->values();
+        // Preserve archived roles in the historical Roles tab, but never
+        // offer one as an assignable candidate even if a legacy import left
+        // is_active=true alongside archived_at.
+        $assignableRoles = $roles->filter(
+            fn (Role $role): bool => $role->is_active && $role->archived_at === null,
+        );
+        $globalCandidates = $assignableRoles->where('scope', 'global')->values();
+        $storeCandidates = $assignableRoles->where('scope', 'store')->values();
 
         $jobRoleMeta = $jobRoles->presentationMap();
         $globalRoleAvailability = $globalCandidates->mapWithKeys(
@@ -370,41 +380,19 @@ final class SecurityController extends Controller
                 ->filter(fn (Role $role): bool => $role->permissions->pluck('code')->diff($grantablePermissionCodes ?? collect())->isEmpty())
                 ->values();
 
-        $allowedRetailGlobalRoles = array_values((array) config('admin.channels.b2c.global_roles', []));
-        $retailGlobalPermissionCodes = $isSuperAdmin
-            ? collect()
-            : $actor->roles
-                ->filter(fn (Role $role): bool => (bool) $role->is_active
-                    && $role->scope === 'global'
-                    && in_array($role->code, $allowedRetailGlobalRoles, true))
-                ->flatMap(fn (Role $role) => $role->permissions->pluck('code'))
-                ->unique()
-                ->values();
-
-        $retailStorePermissionCodes = $isSuperAdmin
-            ? collect()
-            : $actor->storeRoleAssignments
-                ->filter(fn ($assignment): bool => (bool) $assignment->role->is_active
-                    && $assignment->role->scope === 'store')
-                ->groupBy('store_id')
-                ->map(fn ($assignments) => $assignments
-                    ->flatMap(fn ($assignment) => $assignment->role->permissions->pluck('code'))
-                    ->unique()
-                    ->values());
-
         $grantableStoreRolesByStore = $stores->mapWithKeys(function (Store $store) use (
             $isSuperAdmin,
+            $actor,
             $storeCandidates,
-            $retailGlobalPermissionCodes,
-            $retailStorePermissionCodes,
         ): array {
             if ($isSuperAdmin) {
                 return [(int) $store->id => $storeCandidates];
             }
 
-            $effective = $retailGlobalPermissionCodes
-                ->merge($retailStorePermissionCodes->get((int) $store->id, collect()))
-                ->unique();
+            // The same effective store-scoped authority used by RbacManager,
+            // including explicit DENY, retired roles and channel boundaries.
+            // Raw stored role permissions cannot be treated as grant power.
+            $effective = collect($actor->effectivePermissionCodes((int) $store->id));
 
             return [
                 (int) $store->id => $storeCandidates

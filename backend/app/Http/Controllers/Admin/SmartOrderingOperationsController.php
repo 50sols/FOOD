@@ -44,6 +44,20 @@ final class SmartOrderingOperationsController extends Controller
     {
         $actor = $this->actor($request);
 
+        // Permission and an explicitly valid Retail store selector are authority
+        // boundaries: resolve them before unrelated search-filter validation.
+        // Keep the payments tab on its stricter finance.view permission.
+        $tabSelector = $request->query('tab');
+        $permission = $tabSelector === 'payments' ? 'finance.view' : 'orders.view';
+        $storeIds = $this->restaurantAccess->allowedStoreIds($actor, $permission, $request);
+        $storeSelector = $request->query('store_id');
+        if (is_string($storeSelector) && ctype_digit($storeSelector)) {
+            $selectedStore = filter_var($storeSelector, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
+            if ($selectedStore !== false) {
+                abort_unless(in_array($selectedStore, $storeIds, true), 404);
+            }
+        }
+
         $validated = $request->validate([
             'store_id' => ['nullable', 'integer', 'min:1'],
             'status' => ['nullable', Rule::in(['NEW', 'CONFIRMED', 'PREPARING', 'READY', 'OUT_FOR_DELIVERY', 'COMPLETED', 'CANCELLED'])],
@@ -55,11 +69,12 @@ final class SmartOrderingOperationsController extends Controller
             'payment_status' => ['nullable', Rule::in(['pending', 'authorized', 'captured', 'partially_refunded', 'refunded', 'voided', 'failed'])],
             'payment_provider' => ['nullable', 'string', 'max:80'],
             'reconciliation' => ['nullable', Rule::in(['mismatch'])],
+            // An explicitly invalid pagination selector must not silently
+            // select the first page of another query result.
+            'page' => ['nullable', 'integer', 'min:1'],
         ]);
 
         $tab = (string) ($validated['tab'] ?? 'orders');
-        $permission = $tab === 'payments' ? 'finance.view' : 'orders.view';
-        $storeIds = $this->restaurantAccess->allowedStoreIds($actor, $permission, $request);
 
         // The selected Retail store is an authority boundary, not an ignored
         // display filter. Never silently return another authorized store's
@@ -273,6 +288,18 @@ final class SmartOrderingOperationsController extends Controller
     public function storeBranch(Request $request): RedirectResponse
     {
         $actor = $this->actor($request);
+        // Resolve explicit Retail store authority before unrelated branch fields.
+        // Invalid or absent store selectors retain the existing 422 validation.
+        $requestedStore = $request->input('store_id');
+        if (is_int($requestedStore) || (is_string($requestedStore) && ctype_digit($requestedStore))) {
+            // Do not coerce out-of-range numeric strings into PHP_INT_MAX:
+            // invalid store selectors must retain Laravel's 422 response.
+            $storeId = filter_var($requestedStore, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
+            if ($storeId !== false) {
+                $this->restaurantAccess->assertStore($actor, $storeId, 'orders.manage', 'b2c');
+            }
+        }
+
         $data = $this->branchData($request);
         $storeId = (int) $data['store_id'];
         $this->restaurantAccess->assertStore($actor, $storeId, 'orders.manage', 'b2c');

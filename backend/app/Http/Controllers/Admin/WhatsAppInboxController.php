@@ -58,6 +58,8 @@ final class WhatsAppInboxController extends Controller
             'store_id' => ['nullable', 'integer', 'min:1'],
             'channel' => ['nullable', 'string', 'max:24'],
             'conversation' => ['nullable', 'integer', 'min:1'],
+            // Never silently fall back to a different conversation page.
+            'page' => ['nullable', 'integer', 'min:1'],
         ]);
 
         $query = $this->conversationQuery($actor, $allowedStoreIds);
