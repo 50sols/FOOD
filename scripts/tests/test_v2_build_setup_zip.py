@@ -24,10 +24,10 @@ class DeterministicSetupZipTest(unittest.TestCase):
         # Rejection must happen before mkstemp or public ZIP publication; the
         # verifier cannot unpublish bytes that were already staged.
         cases = (
-            ("backend/.env.production.example", "APP_KEY=base64:secret\\n"),
-            ("backend/.env.example", "DB_PASSWORD='private-secret'\\n"),
-            ("backend/.env.production.example", "APP_KEY=\\nAPP_KEY=base64:second-secret\\n"),
-            ("backend/.env.production.example", "REDIS_PASSWORD=\"secret\"\\n"),
+            ("backend/.env.production.example", "APP_KEY=base64:secret\n"),
+            ("backend/.env.example", "DB_PASSWORD='private-secret'\n"),
+            ("backend/.env.production.example", "APP_KEY=\nAPP_KEY=base64:second-secret\n"),
+            ("backend/.env.production.example", "REDIS_PASSWORD=\"secret\"\n"),
         )
         with tempfile.TemporaryDirectory() as temporary:
             base = Path(temporary)
@@ -36,7 +36,7 @@ class DeterministicSetupZipTest(unittest.TestCase):
                     root = base / f"source-{index}"
                     env_file = root / member
                     env_file.parent.mkdir(parents=True)
-                    (root / "VERSION").write_text("1.0.1\\n")
+                    (root / "VERSION").write_text("1.0.1\n")
                     env_file.write_text(payload, encoding="utf-8")
                     output = base / f"setup-{index}.zip"
 
@@ -56,8 +56,8 @@ class DeterministicSetupZipTest(unittest.TestCase):
             root = base / "source"
             env = root / "backend/.env.production.example"
             env.parent.mkdir(parents=True)
-            (root / "VERSION").write_text("1.0.1\\n")
-            env.write_text("APP_KEY=\\nDB_PASSWORD=\\nREDIS_PASSWORD=null\\nMAIL_PASSWORD=\"\"\\n")
+            (root / "VERSION").write_text("1.0.1\n")
+            env.write_text("APP_KEY=\nDB_PASSWORD=\nREDIS_PASSWORD=null\nMAIL_PASSWORD=\"\"\n")
             output = base / "setup.zip"
 
             def opened_regular_member(path, meta, name, source_root):
