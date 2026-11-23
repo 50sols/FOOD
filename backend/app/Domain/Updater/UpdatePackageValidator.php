@@ -57,24 +57,81 @@ final class UpdatePackageValidator
                 throw new InvalidArgumentException('Update archive exceeds the allowed member count.');
             }
 
-            if (! $manifest->containsMigrations) {
-                for ($index = 0; $index < $archive->numFiles; $index++) {
-                    $name = $archive->getNameIndex($index);
+            // A valid archive checksum does not make arbitrary ZIP members safe.
+            // The verify step must fail before it labels a traversal, symlink or
+            // portable-name alias as an installable update. The publisher and
+            // runtime preflight retain their independent enforcement.
+            $knownPaths = [];
+            $filePaths = [];
+            for ($index = 0; $index < $archive->numFiles; $index++) {
+                $name = $archive->getNameIndex($index);
+                if (! is_string($name)) {
+                    throw new InvalidArgumentException('Update archive contains an unreadable member name.');
+                }
 
-                    if (! is_string($name)) {
-                        continue;
-                    }
+                // Preserve the migration-declaration guard, including legacy
+                // Windows-style member spelling, before rejecting its alias.
+                $migrationPath = strtolower(str_replace('\\', '/', trim($name)));
+                if (! $manifest->containsMigrations
+                    && str_starts_with($migrationPath, 'backend/database/migrations/')
+                    && str_ends_with($migrationPath, '.php')) {
+                    throw new InvalidArgumentException(
+                        'Update package contains migrations but database backup was not declared.'
+                    );
+                }
 
-                    // Normalize source spellings before the backup declaration check.
-                    // Case-insensitive hosts can resolve Backend/Database/Migrations
-                    // to the canonical migration directory: fail closed for either.
-                    $relativePath = strtolower(str_replace('\\', '/', trim($name)));
-                    if (str_starts_with($relativePath, 'backend/database/migrations/')
-                        && str_ends_with($relativePath, '.php')) {
-                        throw new InvalidArgumentException(
-                            'Update package contains migrations but database backup was not declared.'
-                        );
+                if ($name === ''
+                    || $archive->getNameIndex($index, \ZipArchive::FL_ENC_RAW) !== $name
+                    || str_contains($name, '\\')
+                    || preg_match('~\A(?:/|[A-Za-z]:)|(?:\A|/)\.{1,2}(?:/|\z)|//|[\x00-\x1F\x7F]~D', $name) === 1
+                    || preg_match('/[^\x20-\x7E]/', $name) === 1) {
+                    throw new InvalidArgumentException('Update archive contains an unsafe member path.');
+                }
+
+                $isDirectory = str_ends_with($name, '/');
+                $relativePath = $isDirectory ? substr($name, 0, -1) : $name;
+                $components = explode('/', $relativePath);
+                foreach ($components as $component) {
+                    if ($component === ''
+                        || rtrim($component, ' .') !== $component
+                        || preg_match('/[<>:"|?*]/', $component) === 1
+                        || preg_match('/\A(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\..*)?\z/iD', $component) === 1) {
+                        throw new InvalidArgumentException('Update archive contains an unsafe portable member name.');
                     }
+                }
+
+                $foldedPath = strtolower($relativePath);
+                if (isset($knownPaths[$foldedPath])) {
+                    throw new InvalidArgumentException('Update archive contains ambiguous member aliases.');
+                }
+                $knownPaths[$foldedPath] = true;
+                if (! $isDirectory) {
+                    $filePaths[$foldedPath] = true;
+                }
+
+                $operatingSystem = 0;
+                $attributes = 0;
+                if ($archive->getExternalAttributesIndex($index, $operatingSystem, $attributes)
+                    && $operatingSystem === \ZipArchive::OPSYS_UNIX) {
+                    $entryType = ($attributes >> 16) & 0170000;
+                    if ($entryType === 0120000
+                        || ($entryType !== 0 && $entryType !== 0100000
+                            && ! ($entryType === 0040000 && $isDirectory))) {
+                        throw new InvalidArgumentException('Update archive contains an unsafe non-regular member.');
+                    }
+                }
+            }
+
+            // Files cannot also be parent directories, even on case-insensitive
+            // or shared-hosting filesystems with different normalization rules.
+            foreach ($knownPaths as $path => $_) {
+                $parts = explode('/', $path);
+                array_pop($parts);
+                while ($parts !== []) {
+                    if (isset($filePaths[implode('/', $parts)])) {
+                        throw new InvalidArgumentException('Update archive contains a file/directory collision.');
+                    }
+                    array_pop($parts);
                 }
             }
         } finally {
