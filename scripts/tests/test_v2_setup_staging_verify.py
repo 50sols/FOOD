@@ -107,6 +107,31 @@ class V2SetupStagingVerifierTest(unittest.TestCase):
         result = self.verify()
         self.assertEqual("UNTRUSTED_CI_STAGING_ONLY", result["status"])
 
+    def test_package_manager_credentials_cannot_pass_setup_zip_verification(self) -> None:
+        # A crafted ZIP must not bypass prepublication builder guards.
+        # SHA-256 and ZIP CRC prove bytes, not the absence of credentials.
+        credential_paths = (
+            "backend/auth.json",
+            "backend/.composer/auth.json",
+            "backend/.npmrc",
+            "backend/.config/.NPMRC",
+            "backend/.netrc",
+            "backend/.pypirc",
+            "backend/.yarnrc.yml",
+            ".NETRC",
+        )
+        for path in credential_paths:
+            with self.subTest(path=path):
+                self.pack({path: b"//registry.example/:_authToken=secret"})
+                with self.assertRaisesRegex(SetupZipError, "Package manager credentials"):
+                    self.verify()
+
+        self.pack({
+            "backend/composer.json": b'{"name":"foodex/erp"}',
+            "backend/composer.lock": b'{"packages":[]}',
+        })
+        self.assertEqual("UNTRUSTED_CI_STAGING_ONLY", self.verify()["status"])
+
     def test_secret_env_and_runtime_private_members_fail_closed(self) -> None:
         for entry in (
             "backend/.env",
