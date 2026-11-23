@@ -3,6 +3,14 @@ set -Eeuo pipefail
 umask 077
 test -n "$GCC_EXPECTED_SHA"
 test "$(git -C /workspace rev-parse HEAD)" = "$GCC_EXPECTED_SHA"
+# Canonical fresh-install acceptance was authored for GitHub Actions and
+# requires these exact-head context variables for 24 real UI screenshots
+# and immutable provenance. Supply the same contract in disposable GCC.
+if [[ -n "${GITHUB_SHA:-}" && "$GITHUB_SHA" != "$GCC_EXPECTED_SHA" ]]; then
+  echo 'Refusing GitHub source SHA mismatch in GCC acceptance' >&2; exit 2
+fi
+export GITHUB_SHA="$GCC_EXPECTED_SHA"
+export GITHUB_WORKSPACE=/workspace
 cd /workspace
 version="$(tr -d '[:space:]' < VERSION)"
 test -n "$version"
