@@ -1,0 +1,9 @@
+# #4383 — Archived roles cannot authorize notification Dashboard app audience
+
+- **Atomic P031 security leaf:** parent #2782/#2503; target `Foodex_V2` only, separate from completed #4375 store-ID revocation.
+- **Defect:** `NotificationAudience::context()` treated active-but-archived dashboard global/store roles as eligible for app=`dashboard`, even if the notification has channel=`all`, no store restriction, and the effective RBAC assignment was revoked.
+- **Fix:** require `archived_at IS NULL` in both global and store-role Dashboard audience predicates, preserving active-role and configured dashboard role conditions. No other customer/driver/van profile or store targeting path modified.
+- **Seeded tests:** active B2B global role allows Dashboard app targeting, archive while `is_active` remains true denies with stale and refreshed actor; active B2C store role positive then archived denies; independently active second dashboard role retains access after archiving another; no inherited Customer app grant; audit nonmutation.
+- **REVIEW_RISK: HIGH** security/privacy. Only role eligibility read-side filtering, no data write, session management, migration, notification delivery semantics, API routes, UI, build, or mobile application source change. Customer/Driver/Van independent application targeting is unchanged; no changes to VAN-only B2B and DRIVER-only B2C dispatch.
+- **Limits:** This closes only Dashboard app audience classification for archived roles. Do not claim full notification system, atomic concurrent revocation, live UAT, or entire #2782 acceptance.
+- **Merge gate:** exact final HEAD Policy, V2 Isolation, Required CI with Laravel shards/MySQL Redis, file-level technical audit, safeguarded squash merge to `Foodex_V2` only and verified issue closure. No `main`, releases, production.
