@@ -14,7 +14,13 @@ mkdir -p /workspace /composer-cache
 cp -a /source/. /workspace/
 cd /workspace
 test "$(git rev-parse HEAD)" = "$GCC_EXPECTED_SHA"
-git diff --check HEAD
+# Windows Git may checkout CRLF text although the indexed blobs are LF.
+# In this disposable Linux Docker volume, rematerialize the EXACT validated
+# SHA from Git objects with LF checkout. Never mutate the host /source mount.
+git -c core.autocrlf=false -c core.eol=lf reset --hard "$GCC_EXPECTED_SHA" >/dev/null
+test "$(git rev-parse HEAD)" = "$GCC_EXPECTED_SHA"
+git -c core.autocrlf=false diff --exit-code --check HEAD
+git -c core.autocrlf=false diff --quiet HEAD -- backend/composer.json backend/composer.lock
 
 cd backend
 composer validate --strict
