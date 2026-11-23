@@ -478,7 +478,9 @@ class SystemUpdateAuthorizationTest extends TestCase
 
             $this->assertSame('KEEP_UPLOAD_BYTES', file_get_contents($marker));
             $this->assertDatabaseMissing('system_versions', ['version' => '99.0.0']);
-            $this->assertDatabaseHas('update_history', ['to_version' => '99.0.0', 'status' => 'failed']);
+            // The signed upload boundary refuses ZIP dot segments before the updater
+            // starts an execution/history record or performs backup/maintenance.
+            $this->assertDatabaseCount('update_history', 0);
             $this->assertFileDoesNotExist(storage_path('app/private/updates/escape.txt'));
         } finally {
             @unlink($zipPath);
