@@ -34,6 +34,7 @@ class SetupEd25519SignatureTest(unittest.TestCase):
         self.version = self.folder / "VERSION"
         self.version.write_text("1.0.125\n", encoding="utf-8")
         self.sidecar = self.folder / "FOODEX-Setup-v1.0.125.sig.json"
+        self.source_sha = SHA
         with zipfile.ZipFile(self.archive, "w") as output:
             for name, data in BASE_ENTRIES.items():
                 info = zipfile.ZipInfo(name)
@@ -67,7 +68,7 @@ class SetupEd25519SignatureTest(unittest.TestCase):
                 "php", str(SCRIPT), "--mode=sign",
                 "--package=" + str(self.archive),
                 "--version-file=" + str(self.version),
-                "--source-commit=" + SHA,
+                "--source-commit=" + self.source_sha,
                 "--output=" + str(self.sidecar),
             ],
             text=True, capture_output=True,
@@ -83,6 +84,26 @@ class SetupEd25519SignatureTest(unittest.TestCase):
             ],
             text=True, capture_output=True,
             env={**self.env, **env_overrides},
+        )
+
+    def test_exact_ci_generated_setup_archive_signs_without_publishing_key(self) -> None:
+        # CI acceptance uses the REAL ZIP just assembled from the PR HEAD.
+        # Its disposable test signature is not a trusted release key or
+        # downloadable release signature artifact.
+        real_zip = os.environ.get("FOODEX_SETUP_STAGING_ZIP_PATH")
+        exact_sha = os.environ.get("FOODEX_SETUP_SOURCE_SHA")
+        if not real_zip or not exact_sha:
+            self.skipTest("Only the Linux G004 ZIP staging job has actual ZIP inputs.")
+        self.archive = Path(real_zip).resolve(strict=True)
+        self.version = ROOT / "VERSION"
+        self.source_sha = exact_sha
+        self.assertEqual(40, len(exact_sha))
+        signed = self.run_sign()
+        self.assertEqual(0, signed.returncode, signed.stderr)
+        self.assertEqual(0, self.run_verify().returncode)
+        self.assertEqual(
+            hashlib.sha256(self.archive.read_bytes()).hexdigest(),
+            json.loads(self.sidecar.read_text(encoding="utf-8"))["archive_sha256"],
         )
 
     def test_exact_verified_archive_is_signed_and_trusted_by_public_key(self) -> None:
