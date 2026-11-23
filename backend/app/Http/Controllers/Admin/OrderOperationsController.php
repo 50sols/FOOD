@@ -205,6 +205,23 @@ final class OrderOperationsController extends Controller
             abort(404);
         }
 
+        // This generic Operations GET must enforce the same Retail-only
+        // admission as the canonical B2C Orders route. Tenant orders.view alone
+        // does not authorize a Restaurant-profile B2C_STORE_ADMIN to inspect
+        // Retail Orders. A mixed-profile actor can explicitly select its
+        // authorized Retail store, but an unfiltered query must fail closed.
+        if (! $actor->hasRole('SUPER_ADMIN')) {
+            $candidateStores = $selectedStoreId === null
+                ? $scopes['b2c']
+                : (in_array($selectedStoreId, $scopes['b2c'], true) ? [$selectedStoreId] : []);
+            foreach ($candidateStores as $candidateStoreId) {
+                if ($actor->hasRole('B2C_STORE_ADMIN', (int) $candidateStoreId)
+                    && app(StoreBusinessProfileService::class)->isRestaurant((int) $candidateStoreId)) {
+                    abort(404);
+                }
+            }
+        }
+
         $orderQuery = Order::query()
             ->where(fn ($query) => $this->applyOperationalScopes($query, $scopes))
             // Sale provenance is an immutable commercial snapshot; being
