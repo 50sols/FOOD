@@ -871,7 +871,7 @@ final class EnterpriseProcurementController extends Controller
         // Each transport is client-controlled; ambiguity must fail closed
         // before resolving another store's entitlement or enterprise scope.
         $queryInput = $request->query();
-        $formInput = $request->request->all();
+        $formInput = $request->isJson() ? $request->json()->all() : $request->request->all();
         if (
             array_key_exists('store_id', $queryInput) &&
             array_key_exists('store_id', $formInput)
