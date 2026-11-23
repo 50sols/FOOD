@@ -19,6 +19,10 @@ final class TenantContextResolver
 
     public function wholesale(User $user, ?int $storeId = null): ResolvedTenantContext
     {
+        // A revoked identity must never resolve a tenant, even with a
+        // historical global role assignment.
+        abort_unless((bool) $user->is_active, 403);
+
         $allowedRoles = array_values((array) config('admin.channels.b2b.global_roles', []));
         $canAccessWholesale = $user->roles()
             ->where('roles.is_active', true)
@@ -47,6 +51,10 @@ final class TenantContextResolver
         bool $supportAccess = false,
         ?Request $request = null,
     ): ResolvedTenantContext {
+        // Reject revoked identities before both store lookup and SUPER_ADMIN
+        // support-access audit, regardless of historical role bindings.
+        abort_unless((bool) $user->is_active, 403);
+
         $store = $this->storeForChannel($storeId, 'B2C');
 
         if ($user->hasRole('SUPER_ADMIN')) {
@@ -85,6 +93,10 @@ final class TenantContextResolver
      */
     public function retailStoreIds(User $user): array
     {
+        if (! $user->is_active) {
+            return [];
+        }
+
         if ($user->hasRole('SUPER_ADMIN')) {
             return $this->storesForChannelQuery('B2C')
                 ->pluck('stores.id')
