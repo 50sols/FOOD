@@ -321,6 +321,137 @@ final class V2OrganizationSetupGuidanceTest extends TestCase
         $this->assertSame($auditCount, DB::table('audit_logs')->count());
     }
 
+    public function test_preview_save_and_direct_service_refuse_reactivation_beneath_inactive_ancestors(): void
+    {
+        $admin = $this->actor('SUPER_ADMIN', 'en');
+        $organization = EnterpriseOrganization::query()->create([
+            'code' => 'v2_reactivation_inactive_org',
+            'name' => 'Inactive Legacy Organization',
+            'is_active' => false,
+        ]);
+        $inactiveCompany = EnterpriseCompany::query()->create([
+            'organization_id' => $organization->id,
+            'code' => 'v2_reactivation_inactive_company',
+            'name' => 'Inactive Legacy Company',
+            'is_active' => false,
+        ]);
+        $activeCompany = EnterpriseCompany::query()->create([
+            'organization_id' => $organization->id,
+            'code' => 'v2_reactivation_active_company',
+            'name' => 'Active Legacy Company',
+            'is_active' => true,
+        ]);
+        $inactiveEntity = EnterpriseLegalEntity::query()->create([
+            'company_id' => $activeCompany->id,
+            'code' => 'v2_reactivation_inactive_entity',
+            'name' => 'Inactive Legacy Entity',
+            'is_active' => false,
+        ]);
+        $activeEntity = EnterpriseLegalEntity::query()->create([
+            'company_id' => $inactiveCompany->id,
+            'code' => 'v2_reactivation_active_entity',
+            'name' => 'Active Legacy Entity',
+            'is_active' => true,
+        ]);
+        $inactiveUnit = EnterpriseBusinessUnit::query()->create([
+            'legal_entity_id' => $activeEntity->id,
+            'code' => 'v2_reactivation_inactive_unit',
+            'name' => 'Inactive Legacy Unit',
+            'is_active' => false,
+        ]);
+        $beforeAudit = DB::table('audit_logs')->count();
+
+        // Include inactive direct parents and active immediate parents with
+        // disabled grandparents: both paths must fail closed.
+        $cases = [
+            [$inactiveCompany, 'admin.enterprise-companies.update', 'updateCompany'],
+            [$inactiveEntity, 'admin.enterprise-legal-entities.update', 'updateLegalEntity'],
+            [$inactiveUnit, 'admin.enterprise-business-units.update', 'updateBusinessUnit'],
+        ];
+
+        foreach ($cases as [$record, $routeName, $serviceMethod]) {
+            $payload = [
+                'code' => $record->code,
+                'name' => $record->name,
+                'is_active' => '1',
+                '_setup_form' => 'edit',
+            ];
+
+            foreach (['ar', 'en'] as $locale) {
+                $admin->forceFill(['locale' => $locale])->save();
+                foreach ([true, false] as $preview) {
+                    $requestData = $payload;
+                    if ($preview) {
+                        $requestData['_setup_test'] = 'edit';
+                    }
+
+                    $this->actingAs($admin->fresh())
+                        ->patch(route($routeName, $record), $requestData)
+                        ->assertSessionHasErrors('parent');
+                }
+            }
+
+            try {
+                app(EnterpriseOrganizationAdministration::class)->{$serviceMethod}(
+                    $record,
+                    ['code' => $record->code, 'name' => $record->name, 'is_active' => true],
+                    $admin,
+                );
+                $this->fail('A disabled ancestor must block service-level reactivation.');
+            } catch (ValidationException $exception) {
+                $this->assertArrayHasKey('parent', $exception->errors());
+            }
+
+            $this->assertFalse((bool) $record->fresh()->is_active);
+        }
+
+        $this->assertFalse((bool) $organization->fresh()->is_active);
+        $this->assertSame($beforeAudit, DB::table('audit_logs')->count());
+    }
+
+    public function test_reactivation_with_active_ancestors_succeeds_only_on_save(): void
+    {
+        $admin = $this->actor('SUPER_ADMIN', 'en');
+        $organization = EnterpriseOrganization::query()->create([
+            'code' => 'v2_reactivation_allowed_org',
+            'name' => 'Active Parent Organization',
+            'is_active' => true,
+        ]);
+        $company = EnterpriseCompany::query()->create([
+            'organization_id' => $organization->id,
+            'code' => 'v2_reactivation_allowed_company',
+            'name' => 'Active Parent Company',
+            'is_active' => true,
+        ]);
+        $entity = EnterpriseLegalEntity::query()->create([
+            'company_id' => $company->id,
+            'code' => 'v2_reactivation_allowed_entity',
+            'name' => 'Active Parent Entity',
+            'is_active' => true,
+        ]);
+        $unit = EnterpriseBusinessUnit::query()->create([
+            'legal_entity_id' => $entity->id,
+            'code' => 'v2_reactivation_allowed_unit',
+            'name' => 'Reactivatable Unit',
+            'is_active' => false,
+        ]);
+        $payload = ['code' => $unit->code, 'name' => $unit->name, 'is_active' => '1'];
+        $beforeAudit = DB::table('audit_logs')->count();
+
+        $this->actingAs($admin)->patch(route('admin.enterprise-business-units.update', $unit), [
+            ...$payload,
+            '_setup_test' => 'edit',
+        ])->assertRedirect()
+            ->assertSessionHas('status', __('enterprise_organization.setup_test_passed'));
+        $this->assertFalse((bool) $unit->fresh()->is_active);
+        $this->assertSame($beforeAudit, DB::table('audit_logs')->count());
+
+        $this->actingAs($admin)->patch(route('admin.enterprise-business-units.update', $unit), $payload)
+            ->assertRedirect();
+        $this->assertTrue((bool) $unit->fresh()->is_active);
+        $this->assertSame($beforeAudit + 1, DB::table('audit_logs')->count());
+    }
+
     public function test_deactivation_rejects_active_deep_descendants_hidden_by_inactive_intermediate_records(): void
     {
         $admin = $this->actor('SUPER_ADMIN', 'en');
