@@ -28,12 +28,16 @@ class GccHeavyExecutionContracts(unittest.TestCase):
         self.assertNotIn("iex ", AGENT.lower())
 
     def test_trusted_immutable_local_scripts_are_never_read_from_pr_checkout(self):
-        self.assertIn("767348b7453a2218d51012221614be0cb5b32144", AGENT)
+        self.assertIn("465f765b72af87e838384efc01247f7ac38ca7c5", AGENT)
         self.assertIn("raw.githubusercontent.com", AGENT)
         self.assertIn("git hash-object $file", AGENT)
         self.assertIn("context: .", COMPOSE)
         self.assertIn("COPY full.sh /ci/full.sh", DOCKERFILE)
         self.assertIn("COPY prepare.sh /ci/prepare.sh", DOCKERFILE)
+        self.assertIn("Dockerfile.flutter", COMPOSE)
+        self.assertIn("foodex-gcc-flutter-cache", COMPOSE)
+        self.assertIn("Flutter Web preview build failed", AGENT)
+        self.assertIn("backend/composer.lock", AGENT)
         self.assertIn("read_only: true", COMPOSE)
         self.assertIn("target: /source", COMPOSE)
 
