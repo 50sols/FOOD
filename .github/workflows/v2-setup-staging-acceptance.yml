@@ -11,6 +11,14 @@ on:
       - 'backend/composer.json'
       - 'backend/composer.lock'
       - 'backend/app/Domain/Installer/**'
+      - 'backend/app/Http/Controllers/Installer/**'
+      - 'backend/resources/views/install/**'
+      - 'backend/routes/web.php'
+      - 'backend/lang/ar/installer.php'
+      - 'backend/lang/en/installer.php'
+      - 'backend/config/foodex.php'
+      - 'backend/tests/Feature/InstallerWorkflowTest.php'
+      - 'scripts/tests/test_v2_setup_ci_coverage.py'
       - 'backend/database/**'
       - 'scripts/validate-fresh-setup.sh'
       - 'scripts/v2_setup_staging_verify.py'
@@ -136,6 +144,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          python3 -m unittest discover -s scripts/tests -p 'test_v2_setup_ci_coverage.py'
           python3 -m unittest discover -s scripts/tests -p 'test_v2_build_setup_zip.py'
           python3 -m unittest discover -s scripts/tests -p 'test_v2_setup_staging_verify.py'
           # Disposable CI keys prove signer/verifier parity; never publish
