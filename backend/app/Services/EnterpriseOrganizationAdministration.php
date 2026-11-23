@@ -148,7 +148,7 @@ final class EnterpriseOrganizationAdministration
      * Enforce identical update preconditions for guided no-write Preview
      * and actual Save, including active descendants and assigned stores.
      *
-     * @param array<string, mixed> $data
+     * @param  array<string, mixed>  $data
      */
     public function assertUpdateAllowed(Model $model, array $data): void
     {
