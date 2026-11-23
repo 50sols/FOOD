@@ -23,7 +23,12 @@ final class EnterpriseSecurityAccessResolver
         ?string $amount = null,
         ?string $currency = null,
     ): bool {
-        if (! $actor->is_active || $permission === '') {
+        // A previously loaded User can still report is_active=true after
+        // another request revokes the persisted identity. Deny before role
+        // shortcuts, provider/permission evaluation or delegations.
+        if (! $actor->is_active
+            || $permission === ''
+            || ! User::query()->whereKey($actor->getKey())->where('is_active', true)->exists()) {
             return false;
         }
 
