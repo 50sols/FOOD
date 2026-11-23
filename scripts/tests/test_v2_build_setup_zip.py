@@ -202,6 +202,56 @@ class DeterministicSetupZipTest(unittest.TestCase):
                 create.assert_not_called()
             self.assertFalse(output.exists())
 
+    def test_runtime_uploads_and_private_cache_are_denied_before_temp_zip(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            source = base / "source"
+            source.mkdir()
+            (source / "VERSION").write_bytes(b"1.0.1\\n")
+            output = base / "setup.zip"
+            for unsafe in (
+                "backend/storage/app/private/export.json",
+                "backend/storage/framework/sessions/session-1",
+                "backend/storage/exports/ledger.csv",
+                "backend/bootstrap/cache/config.php",
+                "backend/public/uploads/customer/photo.jpg",
+                "backend/public/storage",
+                "public/uploads",
+                "backend/uploads/tenant/receipt.pdf",
+            ):
+                with self.subTest(path=unsafe):
+                    target = source / unsafe
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    target.write_bytes(b"PRIVATE LIVE DATA")
+                    with mock.patch("v2_build_setup_zip.tempfile.mkstemp") as create:
+                        with self.assertRaisesRegex(SetupBuildError, "Runtime storage/cache|Public uploaded/runtime"):
+                            build_setup_zip(source, output, SOURCE_DATE_EPOCH)
+                        create.assert_not_called()
+                    self.assertFalse(output.exists())
+                    target.unlink()
+                    for parent in target.parents:
+                        if parent == source:
+                            break
+                        if any(parent.iterdir()):
+                            break
+                        parent.rmdir()
+
+    def test_empty_laravel_runtime_directories_not_classified_as_private_files(self) -> None:
+        # Preflight must preserve the directory-only structure Laravel needs.
+        with tempfile.TemporaryDirectory() as temporary:
+            source = Path(temporary) / "source"
+            source.mkdir()
+            for name in ("backend/storage/app/public", "backend/storage/framework/cache/data", "backend/bootstrap/cache"):
+                (source / name).mkdir(parents=True)
+            output = Path(temporary) / "setup.zip"
+            # Secure POSIX directory-relative opens are unavailable on Windows.
+            # Patch the file reader only to observe whether preflight accepts
+            # safe empty directories; packaging itself remains POSIX-gated.
+            with mock.patch("v2_build_setup_zip.tempfile.mkstemp", side_effect=RuntimeError("preflight reached archive creation")):
+                with self.assertRaisesRegex(RuntimeError, "preflight reached archive creation"):
+                    build_setup_zip(source, output, SOURCE_DATE_EPOCH)
+            self.assertFalse(output.exists())
+
     def test_staging_member_count_and_expanded_size_budgets_fail_closed(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             base = Path(temporary)
