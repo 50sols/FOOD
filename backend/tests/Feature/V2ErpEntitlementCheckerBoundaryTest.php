@@ -1852,6 +1852,17 @@ final class V2ErpEntitlementCheckerBoundaryTest extends TestCase
                     ->post($url.'?store_id='.$queryStoreId, $payload)
                     ->assertForbidden();
             }
+
+            // Duplicate selectors containing arrays must be 403, not a
+            // framework InputBag type exception or an authorized fallback.
+            $this->actingAs($buyer->fresh())
+                ->post($url.'?store_id%5B0%5D='.$store->id, $payload)
+                ->assertForbidden();
+            $this->actingAs($buyer->fresh())
+                ->post($url.'?store_id='.$store->id, [
+                    ...$payload,
+                    'store_id' => [$store->id],
+                ])->assertForbidden();
         }
 
         $this->assertSame($requestsBefore, DB::table('enterprise_purchase_requests')->count());
