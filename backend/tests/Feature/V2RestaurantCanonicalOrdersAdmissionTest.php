@@ -75,7 +75,22 @@ final class V2RestaurantCanonicalOrdersAdmissionTest extends TestCase
                 ->get('/admin/b2c/orders?status=pending&store_id='.$restaurant)
                 ->assertNotFound();
             $this->actingAs($retailActor->fresh())
+                ->get('/admin/b2c/orders?status=pending&store_id='.$retail.'&store='.$retail)
+                ->assertOk();
+            $this->actingAs($retailActor->fresh())
+                ->get('/admin/b2c/orders?status=pending&store_id='.$retail.'&channel=b2b')
+                ->assertOk();
+            $this->actingAs($retailActor->fresh())
                 ->get('/admin/b2c/orders?store_id='.$retail.'&store='.$restaurant)
+                ->assertNotFound();
+
+            foreach (['0', '-1', '01', 'not-an-id', '1.0'] as $invalidStore) {
+                $this->actingAs($retailActor->fresh())
+                    ->get('/admin/b2c/orders?store_id='.$invalidStore)
+                    ->assertNotFound();
+            }
+            $this->actingAs($retailActor->fresh())
+                ->get('/admin/b2c/orders?store_id%5B%5D='.$retail)
                 ->assertNotFound();
             $this->actingAs($b2b)
                 ->get('/admin/b2c/orders?store_id='.$restaurant)
