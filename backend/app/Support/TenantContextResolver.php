@@ -21,7 +21,7 @@ final class TenantContextResolver
     {
         // A revoked identity must never resolve a tenant, even with a
         // historical global role assignment.
-        abort_unless((bool) $user->is_active, 403);
+        abort_unless($this->activeIdentity($user), 403);
 
         $allowedRoles = array_values((array) config('admin.channels.b2b.global_roles', []));
         $canAccessWholesale = $user->roles()
@@ -53,7 +53,7 @@ final class TenantContextResolver
     ): ResolvedTenantContext {
         // Reject revoked identities before both store lookup and SUPER_ADMIN
         // support-access audit, regardless of historical role bindings.
-        abort_unless((bool) $user->is_active, 403);
+        abort_unless($this->activeIdentity($user), 403);
 
         $store = $this->storeForChannel($storeId, 'B2C');
 
@@ -93,7 +93,7 @@ final class TenantContextResolver
      */
     public function retailStoreIds(User $user): array
     {
-        if (! $user->is_active) {
+        if (! $this->activeIdentity($user)) {
             return [];
         }
 
@@ -137,6 +137,15 @@ final class TenantContextResolver
     public function assertStoreChannel(int $storeId, string $channel): void
     {
         $this->storeForChannel($storeId, strtoupper($channel));
+    }
+
+    private function activeIdentity(User $user): bool
+    {
+        // A previously-loaded User instance may still say active after a
+        // concurrent offboarding write. Require the persisted identity to
+        // remain active before resolving any tenant or support context.
+        return (bool) $user->is_active
+            && User::query()->whereKey($user->getKey())->where('is_active', true)->exists();
     }
 
     private function enterpriseScopeForStore(int $storeId): ?EnterpriseDataScope
