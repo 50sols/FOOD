@@ -78,6 +78,8 @@ try {
         throw new RuntimeException('Unsafe update archive.');
     }
     try {
+        $portableNames = [];
+        $portableFiles = [];
         for ($index = 0; $index < $archive->numFiles; $index++) {
             $name = $archive->getNameIndex($index);
             if (! is_string($name) || $name === ''
@@ -85,10 +87,37 @@ try {
                 || preg_match('~\\A(?:/|[A-Za-z]:)|(?:\\A|/)\\.{1,2}(?:/|\\z)|//|[\\x00-\\x1F\\x7F]~D', $name) === 1) {
                 throw new RuntimeException('Unsafe update archive member path.');
             }
+            $parts = explode('/', rtrim($name, '/'));
+            foreach ($parts as $part) {
+                if ($part !== rtrim($part, ' .')
+                    || preg_match('/[<>:"|?*]/', $part) === 1
+                    || preg_match('/\\A(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\\..*)?\\z/iD', $part) === 1) {
+                    throw new RuntimeException('Unsafe cross-platform update member name.');
+                }
+            }
+            $portableName = strtolower(rtrim($name, '/'));
+            if (isset($portableNames[$portableName])) {
+                throw new RuntimeException('Ambiguous duplicate update archive member.');
+            }
+            $portableNames[$portableName] = true;
+            if (! str_ends_with($name, '/')) {
+                $portableFiles[$portableName] = true;
+            }
             if ($archive->getExternalAttributesIndex($index, $os, $attributes)
                 && $os === ZipArchive::OPSYS_UNIX
                 && (($attributes >> 16) & 0170000) === 0120000) {
                 throw new RuntimeException('Update archive must not contain symlinks.');
+            }
+        }
+        // A file cannot also act as a parent directory on extraction.
+        foreach ($portableNames as $name => $_) {
+            $parts = explode('/', $name);
+            array_pop($parts);
+            while ($parts !== []) {
+                if (isset($portableFiles[implode('/', $parts)])) {
+                    throw new RuntimeException('Update archive file/directory path collision.');
+                }
+                array_pop($parts);
             }
         }
     } finally {
