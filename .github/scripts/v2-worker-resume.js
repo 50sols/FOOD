@@ -62,6 +62,13 @@ function claimReferences(comments) {
     // The P110 variants below are grounded in actual original Issue comments
     // whose exact branch/PR also exist on GitHub.
     const rawBranch = fields.BRANCH || fields.ORIGINAL_BRANCH || '';
+    // P111 #2845 historic comment #6939031180 describes a past missing
+    // branch, not a second Git ref. Accept only the exact SHA-bound
+    // narrative grammar; the current GitHub PR and branch still constrain it.
+    // Unknown prose, malformed SHA and mismatched PR remain blocked.
+    const historicMissingBranch = rawBranch.match(
+      /^original ((?:feat|feature|fix|test|chore|ci|docs|refactor|worker)\/[1-9]\d*-[A-Za-z0-9._-]+) absent; historical commit [a-f0-9]{40} still fetchable\. Restore exact original branch name at original historical commit, reopen original PR #([1-9]\d*) to Foodex_V2, keep Draft\.$/
+    );
     // P135 #2858 historic claims append one of these *verified* display
     // annotations to a single real branch. Keep exact tails only; arbitrary
     // prose, unknown checksums and actual alternate branches remain blocked.
@@ -69,7 +76,7 @@ function claimReferences(comments) {
     const p135Pr = rawBranch.match(/;\s*PR #([1-9]\d*) OPEN\/DRAFT → Foodex_V2 ONLY$/i);
     const inlinePr = p135OriginalPr || p135Pr;
     const explicitPr = (fields.PR || fields.ORIGINAL_PR || '').match(/^#?([1-9]\d*)(?:\b|$)/);
-    const branch = rawBranch
+    const branch = historicMissingBranch ? historicMissingBranch[1] : rawBranch
       .replace(/;\s*(?:BASE|TARGET):.*$/i, '')
       .trim()
       .replace(/\s+\((?:EXISTING|preserve original|ORIGINAL|created, no code commit; preserve for successor)\)$/i, '')
@@ -82,7 +89,8 @@ function claimReferences(comments) {
     // Inlined PR identities are provenance constraints, not decoration.
     // Never turn conflicting explicit and annotated PR references into a pass.
     const claimedPr = explicitPr ? Number(explicitPr[1]) : null;
-    const annotatedPr = inlinePr ? Number(inlinePr[1]) : null;
+    const annotatedPr = historicMissingBranch ? Number(historicMissingBranch[2])
+      : inlinePr ? Number(inlinePr[1]) : null;
     const conflictingIds = claimedPr && annotatedPr && claimedPr !== annotatedPr;
     if (branch || explicitPr || inlinePr) refs.push({
       branch: conflictingIds ? rawBranch : branch,
