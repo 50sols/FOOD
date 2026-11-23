@@ -56,8 +56,16 @@ function claimReferences(comments) {
       const m = line.match(/^\s*([A-Z_]+):\s*(.*?)\s*$/);
       if (m) fields[m[1]] = m[2];
     }
+    // Historical owners sometimes appended one of these two explicit display
+    // notes to a *real* branch ref. Neither note is part of a Git ref (which
+    // cannot contain whitespace); accepting it literally falsely creates
+    // multiple originals when the remote branch and PR are both unique.
+    // Do not strip arbitrary parentheticals, extra suffixes or other refs:
+    // unknown claims must continue to block safe resumption.
     const branch = (fields.BRANCH || fields.ORIGINAL_BRANCH || '')
-      .replace(/;\s*(?:BASE|TARGET):.*$/i, '').trim();
+      .replace(/;\s*(?:BASE|TARGET):.*$/i, '')
+      .trim()
+      .replace(/\s+\((?:EXISTING|preserve original)\)$/i, '');
     const pr = (fields.PR || fields.ORIGINAL_PR || '').match(/^#?([1-9]\d*)(?:\b|$)/);
     if (branch || pr) refs.push({ branch, pr: pr ? Number(pr[1]) : null, state: fields.STATE || '' });
   }
