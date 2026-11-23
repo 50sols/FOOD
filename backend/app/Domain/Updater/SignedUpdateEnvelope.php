@@ -34,18 +34,9 @@ final readonly class SignedUpdateEnvelope
             throw new InvalidArgumentException('Signed update manifest has invalid structure.');
         }
 
-        // The publisher emits one exact, compact UTF-8 JSON representation.
-        // Reject duplicate properties and alternate encodings before checking
-        // the signature: json_decode silently overwrites duplicate keys.
-        try {
-            $canonical = json_encode($data, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
-        } catch (JsonException) {
-            throw new InvalidArgumentException('Signed update manifest encoding is invalid.');
-        }
-        if (! hash_equals($canonical, $bytes)) {
-            throw new InvalidArgumentException('Signed update manifest is not canonical.');
-        }
-
+        // The publisher emits fields in this fixed order, not whatever
+        // insertion order a caller supplies. Re-encoding $data alone would
+        // silently accept reordered keys with the same valid signature.
         $required = [
             'format',
             'signer_key_id',
@@ -61,6 +52,25 @@ final readonly class SignedUpdateEnvelope
         sort($required);
         if ($keys !== $required || $data['format'] !== 'foodex-signed-update-v1') {
             throw new InvalidArgumentException('Signed update manifest format is unsupported.');
+        }
+
+        // Normalize against the publisher's authoritative field sequence,
+        // rejecting duplicate names, arbitrary whitespace, reordered names
+        // and alternate JSON escapes before verifying the Ed25519 signature.
+        try {
+            $ordered = [];
+            foreach ([
+                'format', 'signer_key_id', 'target_version', 'minimum_current_version',
+                'archive_sha256', 'contains_migrations', 'release_notes', 'signature',
+            ] as $field) {
+                $ordered[$field] = $data[$field];
+            }
+            $canonical = json_encode($ordered, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+        } catch (JsonException) {
+            throw new InvalidArgumentException('Signed update manifest encoding is invalid.');
+        }
+        if (! hash_equals($canonical, $bytes)) {
+            throw new InvalidArgumentException('Signed update manifest is not canonical.');
         }
 
         foreach (['signer_key_id', 'target_version', 'minimum_current_version', 'archive_sha256', 'release_notes', 'signature'] as $key) {
