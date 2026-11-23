@@ -30,7 +30,6 @@ use App\Services\InvoiceService;
 use App\Services\OperationalLookupService;
 use App\Services\OperationalTenantScope;
 use App\Services\OrderCustomerServiceDiscountApprovalService;
-use App\Services\OrderCustomerServiceDiscountService;
 use App\Services\OrderDeliveryAddressSnapshotService;
 use App\Services\OrderLifecycleNotificationService;
 use App\Services\OrderManualDispatchService;
@@ -2002,7 +2001,6 @@ final class OrderOperationsController extends Controller
     public function applyCustomerServiceDiscount(
         Request $request,
         int $order,
-        OrderCustomerServiceDiscountService $discounts,
         OrderCustomerServiceDiscountApprovalService $approvals,
     ): RedirectResponse {
         $actor = $this->actor($request);
@@ -2032,34 +2030,19 @@ final class OrderOperationsController extends Controller
             'reason' => ['required', 'string', 'min:5', 'max:500'],
             'idempotency_key' => ['required', 'uuid'],
         ]);
-        // Agents submit for a distinct supervisor/manager approval; they never
-        // mutate the order price merely by pressing the Customer Service action.
-        $agentOnly = $actor->hasRole('CUSTOMER_SERVICE_AGENT')
-            && ! $actor->hasRole('CUSTOMER_SERVICE_MANAGER')
-            && ! $actor->hasRole('CUSTOMER_SERVICE_SUPERVISOR')
-            && ! $actor->hasRole('SUPER_ADMIN');
-
-        if ($agentOnly) {
-            $submitted = $approvals->request(
-                $model, $actor, (float) $validated['percentage'],
-                trim((string) $validated['reason']), (string) $validated['idempotency_key'], $request,
-            );
-
-            return back()->with('status', __($submitted
-                ? 'customer_service_discount.request_submitted'
-                : 'customer_service_discount.request_duplicate'));
-        }
-
-        // Existing authorized manager/supervisor flow is preserved until a
-        // numerical policy cap is explicitly approved (P129 / T087R04).
-        $applied = $discounts->apply(
+        // The requester never applies a discount, even if they are a CS
+        // manager, supervisor or hold additional operational permissions.
+        // Accounting is the independent decision owner (T087R04/#2824).
+        // There is no discretionary percentage cap below the mathematical
+        // 100% bound; financial write-off and P129 protections still apply.
+        $submitted = $approvals->request(
             $model, $actor, (float) $validated['percentage'],
             trim((string) $validated['reason']), (string) $validated['idempotency_key'], $request,
         );
 
-        return back()->with('status', $applied
-            ? $this->msg('تم تطبيق الخصم وإرسال إشعار للعميل.', 'Discount applied and customer notified.')
-            : $this->msg('تم تجاهل الطلب المكرر دون تغيير الإجمالي.', 'Duplicate discount request safely ignored.'));
+        return back()->with('status', __($submitted
+            ? 'customer_service_discount.request_submitted'
+            : 'customer_service_discount.request_duplicate'));
     }
 
     public function reviewCustomerServiceDiscountRequest(
@@ -2069,18 +2052,26 @@ final class OrderOperationsController extends Controller
         OrderCustomerServiceDiscountApprovalService $approvals,
     ): RedirectResponse {
         $actor = $this->actor($request);
-        $model = $this->managedOrder($actor, $order, 'orders.view');
+        $model = $this->managedOrder($actor, $order, 'finance.view');
         $storeId = (int) $model->store_id;
         $channel = strtolower((string) $model->channel);
 
+        // A generic manager/Super Admin order approval grant is never a
+        // finance discount-review grant. Require the authentic Accounting role
+        // for this channel AND its effective, store-scoped Finance authority.
+        $accountingRole = match ($channel) {
+            'b2b' => $actor->hasRole('FINANCE'),
+            'b2c' => $actor->hasRole('RETAIL_FINANCE'),
+            default => false,
+        };
         abort_unless(
-            $actor->is_active
-            && $actor->hasPermission('orders.customer_service_discount', $storeId)
-            && $actor->hasPermission('orders.approve', $storeId),
+            $actor->is_active && $accountingRole
+            && $actor->hasPermission('finance.view', $storeId)
+            && $actor->hasPermission('finance.manage', $storeId),
             403,
         );
-        $this->scope->assertStore($actor, $storeId, 'orders.customer_service_discount', $channel);
-        $this->scope->assertStore($actor, $storeId, 'orders.approve', $channel);
+        $this->scope->assertStore($actor, $storeId, 'finance.view', $channel);
+        $this->scope->assertStore($actor, $storeId, 'finance.manage', $channel);
 
         $validated = $request->validate([
             'decision' => ['required', Rule::in(['approve', 'reject'])],
