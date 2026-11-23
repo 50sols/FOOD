@@ -94,13 +94,13 @@ final class V2CustomerServiceDiscountApprovalTest extends TestCase
         foreach (['ar', 'en'] as $locale) {
             app()->setLocale($locale);
             $otherAgent->forceFill(['locale' => $locale])->save();
-            $this->actingAs($otherAgent)->post($url, ['decision' => 'approve'])->assertForbidden();
+            $this->actingAs($otherAgent)->post($url, ['decision' => 'approve'])->assertNotFound();
         }
 
         // A Finance reviewer must not approve a request recorded under their own ID.
-        // Customer Service managers also never qualify as Accounting reviewers.
+        // Customer Service managers receive a tenant-safe 404, not Finance approval data.
         $manager = $this->roleUser('CUSTOMER_SERVICE_MANAGER');
-        $this->actingAs($manager)->post($url, ['decision' => 'approve'])->assertForbidden();
+        $this->actingAs($manager)->post($url, ['decision' => 'approve'])->assertNotFound();
         DB::table('order_customer_service_discount_requests')->where('id', $requestId)
             ->update(['requested_by_user_id' => $finance->getKey()]);
         $this->actingAs($finance)->post($url, ['decision' => 'approve'])->assertForbidden();
@@ -186,8 +186,8 @@ final class V2CustomerServiceDiscountApprovalTest extends TestCase
         $this->assertSame(0, DB::table('order_customer_service_discounts')->where('order_id', $orderId)->count());
 
         $reviewUrl = $this->reviewUrl($orderId, (int) $request->id);
-        $this->actingAs($manager)->post($reviewUrl, ['decision' => 'approve'])->assertForbidden();
-        $this->actingAs($this->roleUser('SUPER_ADMIN'))->post($reviewUrl, ['decision' => 'approve'])->assertForbidden();
+        $this->actingAs($manager)->post($reviewUrl, ['decision' => 'approve'])->assertNotFound();
+        $this->actingAs($this->roleUser('SUPER_ADMIN'))->post($reviewUrl, ['decision' => 'approve'])->assertNotFound();
         $this->actingAs($accountant)->post($reviewUrl, ['decision' => 'approve'])->assertRedirect();
 
         $this->assertDatabaseHas('order_customer_service_discount_requests', [
