@@ -20,6 +20,13 @@ class SetupBuildError(ValueError):
     """Unsafe or non-reproducible staging archive input."""
 
 
+# Match the staging ZIP verifier's limits *before* compressed packaging, so
+# an unsafe/dirty source tree cannot exhaust the builder's CI runner first.
+MAX_ENTRIES = 100_000
+MAX_ENTRY_SIZE = 512 * 1024 * 1024
+MAX_TOTAL_SIZE = 4 * 1024 * 1024 * 1024
+
+
 def _zip_timestamp(epoch: int) -> tuple[int, int, int, int, int, int]:
     moment = dt.datetime.fromtimestamp(epoch, tz=dt.timezone.utc)
     if not 1980 <= moment.year <= 2107:
@@ -92,12 +99,15 @@ def build_setup_zip(source_root: Path, output: Path, source_epoch: int) -> str:
     paths = sorted(source_root.rglob("*"), key=lambda p: p.relative_to(source_root).as_posix().encode("utf-8"))
     if not paths:
         raise SetupBuildError("Setup ZIP staging root is empty.")
+    if len(paths) > MAX_ENTRIES:
+        raise SetupBuildError("Setup ZIP staging member count exceeds budget.")
 
     output.parent.mkdir(parents=True, exist_ok=True)
     handle, temporary_name = tempfile.mkstemp(prefix=".v2-setup-", suffix=".zip", dir=output.parent)
     os.close(handle)
     temporary = Path(temporary_name)
     try:
+        total_size = 0
         with zipfile.ZipFile(temporary, "w", allowZip64=True) as archive:
             for path in paths:
                 meta = path.lstat()
@@ -105,6 +115,12 @@ def build_setup_zip(source_root: Path, output: Path, source_epoch: int) -> str:
                     raise SetupBuildError(f"Unsafe non-regular Setup staging member: {path.relative_to(source_root)!s}")
                 if stat.S_ISREG(meta.st_mode) and meta.st_nlink > 1:
                     raise SetupBuildError(f"Hard-linked Setup staging member: {path.relative_to(source_root)!s}")
+                if stat.S_ISREG(meta.st_mode):
+                    if meta.st_size > MAX_ENTRY_SIZE:
+                        raise SetupBuildError("Setup ZIP staging entry exceeds size budget.")
+                    total_size += meta.st_size
+                    if total_size > MAX_TOTAL_SIZE:
+                        raise SetupBuildError("Setup ZIP staging expanded size exceeds budget.")
 
                 name = path.relative_to(source_root).as_posix()
                 # Never stage live dotenv configuration, even briefly. The
