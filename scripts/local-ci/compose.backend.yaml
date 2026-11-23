@@ -39,6 +39,23 @@ services:
         source: composer-cache
         target: /composer-cache
     command: ["bash", "/ci/prepare.sh"]
+  preview:
+    build:
+      context: .
+      dockerfile: Dockerfile.flutter
+    network_mode: bridge
+    user: "0:0"
+    environment:
+      GCC_EXPECTED_SHA: ${GCC_EXPECTED_SHA:?missing_exact_sha}
+      PUB_CACHE: /flutter-cache
+    volumes:
+      - type: volume
+        source: work
+        target: /workspace
+      - type: volume
+        source: flutter-cache
+        target: /flutter-cache
+    command: ["bash", "/ci/preview.sh"]
   runner:
     build:
       context: .
@@ -62,7 +79,6 @@ services:
     environment:
       GCC_EXPECTED_SHA: ${GCC_EXPECTED_SHA:?missing_exact_sha}
       GCC_PROFILE: ${GCC_PROFILE:-all}
-      CURRENT_VERSION: "1.0.127"
       APP_ENV: testing
       DB_HOST: 127.0.0.1
       REDIS_HOST: 127.0.0.1
@@ -85,3 +101,6 @@ volumes:
   composer-cache:
     external: true
     name: foodex-gcc-composer-cache
+  flutter-cache:
+    external: true
+    name: foodex-gcc-flutter-cache
