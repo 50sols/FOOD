@@ -1818,6 +1818,46 @@ final class V2ErpEntitlementCheckerBoundaryTest extends TestCase
         $this->assertSame($auditBefore, DB::table('audit_logs')->count());
     }
 
+    public function test_conflicting_query_and_form_store_selectors_fail_closed_without_mutation(): void
+    {
+        $store = $this->wholesaleStore();
+        $owner = $this->actor('SUPER_ADMIN');
+        $buyer = $this->actor('PROCUREMENT_BUYER');
+
+        app(EnterpriseModuleAdministration::class)->perform('procurement', 'enable', $owner);
+        app(ModuleEntitlementManager::class)->set(
+            'procurement', EntitlementScope::platform(), true, null, $owner,
+        );
+
+        $url = route('admin.erp.procurement.requests.store', [], false);
+        $auditBefore = DB::table('audit_logs')->count();
+        $requestsBefore = DB::table('enterprise_purchase_requests')->count();
+        $payload = [
+            'store_id' => $store->id,
+            'currency_code' => 'KWD',
+            'reason' => 'P111 conflicting store transport selectors',
+            'item_code' => 'P111-CONFLICTING-STORE',
+            'description' => 'Reject conflicting store identifiers',
+            'quantity' => '1.000',
+            'unit' => 'case',
+            'estimated_unit_cost' => '1.000',
+        ];
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            $buyer->forceFill(['locale' => $locale])->save();
+
+            foreach ([$store->id + 100000, 'invalid', '0'] as $queryStoreId) {
+                $this->actingAs($buyer->fresh())
+                    ->post($url.'?store_id='.$queryStoreId, $payload)
+                    ->assertForbidden();
+            }
+        }
+
+        $this->assertSame($requestsBefore, DB::table('enterprise_purchase_requests')->count());
+        $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+    }
+
     public function test_default_procurement_store_picker_excludes_store_deny_and_uses_entitled_sibling(): void
     {
         $primary = $this->wholesaleStore();
