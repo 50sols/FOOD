@@ -36,6 +36,7 @@ use App\Services\OrderLifecycleNotificationService;
 use App\Services\OrderManualDispatchService;
 use App\Services\OrderOperationsRowContext;
 use App\Services\SalesOrderOperationsDashboardService;
+use App\Services\StoreBusinessProfileService;
 use App\Services\VanDeliveryEvidenceService;
 use App\Services\WholesalePrincipal;
 use App\Support\AdminNavigation;
@@ -102,7 +103,7 @@ final class OrderOperationsController extends Controller
             $candidateStores = $selected === null ? $allowed : [$selected];
             foreach ($candidateStores as $storeId) {
                 if ($actor->hasRole('B2C_STORE_ADMIN', (int) $storeId)
-                    && app(\\App\\Services\\StoreBusinessProfileService::class)->isRestaurant((int) $storeId)) {
+                    && app(StoreBusinessProfileService::class)->isRestaurant((int) $storeId)) {
                     abort(404);
                 }
             }
