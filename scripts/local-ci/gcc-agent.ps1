@@ -160,12 +160,23 @@ function Full-CI([int]$Pr,[string]$Sha,[long]$Request,[string]$Checkout,[Validat
   if($rc -ne 0) { throw 'Composer cache Docker volume unavailable' }
   $rc=Invoke-DockerLogged -DockerArgs @('volume','create','foodex-gcc-flutter-cache') -LogPath $log -Stage 'cache-flutter'
   if($rc -ne 0) { throw 'Flutter cache Docker volume unavailable' }
-  $targets=@('preparer','runner')
-  if($Profile -ne 'backend') { $targets+= 'preview' }
+  # Avoid Docker Compose Bake on Windows (Buildx file-already-closed
+  # defect). Direct BuildKit docker build keeps layer caching, and Compose
+  # uses the exact prebuilt images named <project>-<service>.
+  $env:COMPOSE_BAKE='false'
   $stage='docker-image-build'
-  $buildArgs=@('compose','-p',$project,'-f',$compose,'build') + $targets
-  $rc=Invoke-DockerLogged -DockerArgs $buildArgs -LogPath $log -Stage $stage
-  if($rc -ne 0) { throw "Trusted GCC toolchain Docker build exited $rc" }
+  $backendImage="$($project)-preparer"
+  $runnerImage="$($project)-runner"
+  $rc=Invoke-DockerLogged -DockerArgs @('build','--progress=plain','-f',(Join-Path $kit 'Dockerfile.backend'),'-t',$backendImage,$kit) -LogPath $log -Stage $stage
+  if($rc -ne 0) { throw "Direct Docker backend build exited $rc" }
+  $rc=Invoke-DockerLogged -DockerArgs @('tag',$backendImage,$runnerImage) -LogPath $log -Stage 'backend-image-alias'
+  if($rc -ne 0) { throw "Runner image alias failed with $rc" }
+  if($Profile -ne 'backend') {
+   $stage='flutter-image-build'
+   $previewImage="$($project)-preview"
+   $rc=Invoke-DockerLogged -DockerArgs @('build','--progress=plain','-f',(Join-Path $kit 'Dockerfile.flutter'),'-t',$previewImage,$kit) -LogPath $log -Stage $stage
+   if($rc -ne 0) { throw "Direct Docker Flutter build exited $rc" }
+  }
   $stage='composer-dependencies'
   $rc=Invoke-DockerLogged -DockerArgs @('compose','-p',$project,'-f',$compose,'run','--rm','--no-deps','preparer') -LogPath $log -Stage $stage
   if($rc -ne 0) { throw "Composer preparation exited $rc" }
@@ -214,7 +225,7 @@ function Full-CI([int]$Pr,[string]$Sha,[long]$Request,[string]$Checkout,[Validat
   try {
    $null=Invoke-DockerLogged -DockerArgs @('compose','-p',$project,'-f',$compose,'down','--volumes','--remove-orphans') -LogPath $log -Stage 'cleanup'
   } catch { Write-Warning 'GCC compose cleanup failed; manual isolated-project cleanup may be required.' }
-  Remove-Item Env:\GCC_SOURCE_DIR,Env:\GCC_EVIDENCE_DIR,Env:\GCC_EXPECTED_SHA,Env:\GCC_PROFILE -ErrorAction SilentlyContinue
+  Remove-Item Env:\GCC_SOURCE_DIR,Env:\GCC_EVIDENCE_DIR,Env:\GCC_EXPECTED_SHA,Env:\GCC_PROFILE -ErrorAction SilentlyContinue,Env:\COMPOSE_BAKE
  }
 }
 function Report-Full([int]$Pr,[string]$Sha,[string]$Status,[int]$Exit,[long]$Request,[string]$Profile) {
