@@ -940,12 +940,14 @@ class B2bWorkspaceController extends Controller
     public function saveSetting(Request $request): RedirectResponse
     {
         $actor = $this->actor($request);
+        $storeId = $this->principal->storeId();
+        // Authenticate the concrete Wholesale settings scope before parsing
+        // attacker-controlled keys or returning field-level validation errors.
+        $this->operationalScope->assertStore($actor, $storeId, 'settings.manage', 'b2b');
         $data = $request->validate([
             'key' => ['required', 'string', 'max:255'],
             'value' => ['nullable', 'string', 'max:5000'],
         ]);
-        $storeId = $this->principal->storeId();
-        $this->operationalScope->assertStore($actor, $storeId, 'settings.manage', 'b2b');
 
         $settingValue = in_array((string) $data['key'], ['currency', 'default_currency', 'store.currency', 'checkout.currency'], true)
             ? 'EGP'
