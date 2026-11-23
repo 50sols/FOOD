@@ -26,6 +26,7 @@ final class TenantContextResolver
         $allowedRoles = array_values((array) config('admin.channels.b2b.global_roles', []));
         $canAccessWholesale = $user->roles()
             ->where('roles.is_active', true)
+            ->whereNull('roles.archived_at')
             ->where('roles.scope', 'global')
             ->whereIn('roles.code', $allowedRoles)
             ->exists();
@@ -187,6 +188,7 @@ final class TenantContextResolver
             ->join('store_types', 'store_types.id', '=', 'stores.store_type_id')
             ->where('user_store_roles.user_id', $user->getKey())
             ->where('roles.is_active', true)
+            ->whereNull('roles.archived_at')
             ->where('roles.scope', 'store')
             ->where('stores.is_active', true)
             ->where('store_types.code', 'B2C')
