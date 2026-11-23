@@ -52,6 +52,7 @@ final class B2bCustomerPolicy
 
         return $user->roles()
             ->where('roles.is_active', true)
+            ->whereNull('roles.archived_at')
             ->where('roles.scope', 'global')
             ->whereIn('roles.code', $roles)
             ->exists();
