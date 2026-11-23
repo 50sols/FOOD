@@ -210,6 +210,10 @@ def _member_target(member: zipfile.ZipInfo) -> tuple[str, str, bool]:
         folded = part.casefold()
         _require(folded != ".git", f"Source control metadata in Setup ZIP: {name!r}")
         _require(
+            folded not in ("auth.json", ".npmrc", ".netrc", ".pypirc", ".yarnrc.yml"),
+            f"Package manager credentials in Setup ZIP: {name!r}",
+        )
+        _require(
             not (folded == ".env" or (folded.startswith(".env.") and folded not in ALLOWED_ENV_EXAMPLES)),
             f"Secret environment configuration in Setup ZIP: {name!r}",
         )
