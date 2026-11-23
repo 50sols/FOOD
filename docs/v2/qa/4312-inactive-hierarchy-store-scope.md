@@ -16,3 +16,6 @@ Use exact-head Repository Policy, V2 Isolation, FOODEX Required CI (Laravel shar
 
 ## Default-scoping regression
 `test_default_scope_provisioning_rejects_inactive_default_organization` disables the seeded default organization and calls `ensureDefaultScopeForStore` for a new B2B store. It asserts a fail-closed exception with no `enterprise_store_scopes` or audit write, proving the automatic path cannot bypass the canonical active-ancestry writer. This case must pass in the exact-head Laravel and MySQL acceptance workflows before closeout.
+
+## Fresh-authority checks for stale in-memory Eloquent relations
+The canonical writer now refreshes the BusinessUnit row and loads the complete legal entity/company/organization chain from persistent storage before deciding eligibility. `loadMissing()` was insufficient for callers that had cached active parent relations before an administrator or another connection disabled an ancestor. `test_preloaded_active_ancestry_cannot_bypass_a_later_database_deactivation` and `test_stale_active_unit_object_cannot_bypass_current_disabled_unit` exercise both stale-parent and stale-unit bypass vectors without any scope/audit write. Require new exact-head CI and HIGH security review; no attempt to rewrite historical scopes.
