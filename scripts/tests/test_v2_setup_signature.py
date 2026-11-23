@@ -111,11 +111,11 @@ class SetupEd25519SignatureTest(unittest.TestCase):
         # staging verifier must never inherit that credential.
         verifier = self.folder / "python-verifier-with-secret-guard"
         verifier.write_text(
-            "#!/usr/bin/env python3\\n"
-            "import os, subprocess, sys\\n"
-            "if os.getenv('FOODEX_SETUP_SIGNING_SECRET_KEY_B64') is not None:\\n"
-            "    sys.exit(81)\\n"
-            "sys.exit(subprocess.run([sys.executable, *sys.argv[1:]], check=False).returncode)\\n",
+            "#!/usr/bin/env python3\n"
+            "import os, subprocess, sys\n"
+            "if os.getenv('FOODEX_SETUP_SIGNING_SECRET_KEY_B64') is not None:\n"
+            "    sys.exit(81)\n"
+            "sys.exit(subprocess.run([sys.executable, *sys.argv[1:]], check=False).returncode)\n",
             encoding="utf-8",
         )
         verifier.chmod(0o700)
