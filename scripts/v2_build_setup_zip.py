@@ -297,6 +297,14 @@ def build_setup_zip(source_root: Path, output: Path, source_epoch: int) -> str:
                 published_checksum.update(chunk)
             if published_checksum.digest() != checksum.digest():
                 raise SetupBuildError("Published Setup ZIP contents changed after checksum.")
+        # The pathname may have been replaced *after* the initial link
+        # identity check while we rehashed the pinned inode. Recheck before
+        # attesting its digest. A later hostile swap still needs external
+        # directory ownership controls and is not made atomic by this check.
+        final_publication = output.lstat()
+        if (not stat.S_ISREG(final_publication.st_mode)
+            or (final_publication.st_dev, final_publication.st_ino) != published_inode):
+            raise SetupBuildError("Published Setup ZIP path changed after checksum.")
         publication_verified = True
     finally:
         if verification_fd is not None:
