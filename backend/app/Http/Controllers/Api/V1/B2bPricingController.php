@@ -145,6 +145,15 @@ class B2bPricingController extends Controller
         $user = $request->user();
         abort_unless($user instanceof User, 401);
         Gate::authorize('b2b.pricing.manage');
+        // Resolve the selected store and its effective permission before
+        // disclosing price-tier, product or price-rule validation details.
+        // STORE DENY overrides the otherwise valid global B2B role.
+        $store = $request->validate([
+            'store_id' => ['required', 'integer', 'exists:stores,id'],
+        ]);
+        $storeId = (int) $store['store_id'];
+        $this->tenantScope->assertStore($user, $storeId, 'b2b.pricing.manage', 'b2b');
+
         $data = $request->validate([
             'price_tier_id' => ['required', 'integer', Rule::exists('b2b_price_tiers', 'id')->where('is_active', true)],
             'store_id' => ['required', 'integer', 'exists:stores,id'],
@@ -164,8 +173,6 @@ class B2bPricingController extends Controller
         ]);
         // Preserve the authorized multi-store B2B API contract while rejecting
         // another channel, inactive stores and explicit per-user store DENYs.
-        $storeId = (int) $data['store_id'];
-        $this->tenantScope->assertStore($user, $storeId, 'b2b.pricing.manage', 'b2b');
         abort_unless($this->pricingMode->tiersEnabled($storeId), 409, $this->tiersDisabledMessage($request, $user));
 
         $ownedProduct = DB::table('products')
