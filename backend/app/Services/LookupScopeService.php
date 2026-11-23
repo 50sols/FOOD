@@ -193,6 +193,7 @@ final class LookupScopeService
             ->join('users as lookup_actor', 'lookup_actor.id', '=', 'role_user.user_id')
             ->where('lookup_actor.is_active', true)
             ->where('roles.is_active', true)
+            ->whereNull('roles.archived_at')
             ->where('roles.scope', 'global')
             ->whereIn('roles.code', $roles)
             ->exists();
