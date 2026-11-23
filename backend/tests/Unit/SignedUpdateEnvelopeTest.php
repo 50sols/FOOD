@@ -18,20 +18,20 @@ final class SignedUpdateEnvelopeTest extends TestCase
         $verifier = new TrustedUpdateSignatureVerifier;
         $keys = sodium_crypto_sign_keypair();
         $manifest = $this->unsignedEnvelope();
-        $data = SignedUpdateEnvelope::parse(json_encode($manifest, JSON_THROW_ON_ERROR));
+        $data = SignedUpdateEnvelope::parse(json_encode($manifest, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE));
         $signature = sodium_crypto_sign_detached(
             $verifier->canonicalPayload($data->manifest, $data->keyId),
             sodium_crypto_sign_secretkey($keys),
         );
         $manifest['signature'] = base64_encode($signature);
-        $signed = SignedUpdateEnvelope::parse(json_encode($manifest, JSON_THROW_ON_ERROR));
+        $signed = SignedUpdateEnvelope::parse(json_encode($manifest, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE));
         $signed->verify($verifier, ['owner-key' => base64_encode(sodium_crypto_sign_publickey($keys))]);
         $this->assertSame('99.0.0', $signed->manifest->targetVersion);
 
         $modified = $manifest;
         $modified['contains_migrations'] = true;
         $this->expectException(InvalidArgumentException::class);
-        SignedUpdateEnvelope::parse(json_encode($modified, JSON_THROW_ON_ERROR))
+        SignedUpdateEnvelope::parse(json_encode($modified, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE))
             ->verify($verifier, ['owner-key' => base64_encode(sodium_crypto_sign_publickey($keys))]);
     }
 
