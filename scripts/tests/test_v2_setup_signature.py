@@ -150,7 +150,7 @@ class SetupEd25519SignatureTest(unittest.TestCase):
         # This manifest has a VALID Ed25519 signature and correct archive digest,
         # but it misrepresents the embedded VERSION and must be refused.
         signed["version"] = "1.0.126"
-        payload = "FOODEX-SETUP-SIGNATURE-V1\\n" + json.dumps(
+        payload = "FOODEX-SETUP-SIGNATURE-V1\n" + json.dumps(
             {
                 "format": "foodex-setup-manifest-v1",
                 "signer_key_id": signed["signer_key_id"],
@@ -177,7 +177,7 @@ class SetupEd25519SignatureTest(unittest.TestCase):
             encoding="utf-8",
         )
         self.assertNotEqual(0, self.run_verify().returncode)
-        self.assertEqual("1.0.125\\n", self.version.read_text(encoding="utf-8"))
+        self.assertEqual("1.0.125\n", self.version.read_text(encoding="utf-8"))
 
     def test_modified_archive_and_untrusted_publisher_fail_closed(self) -> None:
         self.assertEqual(0, self.run_sign().returncode)
