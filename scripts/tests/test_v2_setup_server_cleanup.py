@@ -51,9 +51,8 @@ class WebInstallerServerCleanupTests(unittest.TestCase):
                 for child in children:
                     if Path(f'/proc/{child}/status').exists():
                         status = Path(f'/proc/{child}/status').read_text()
-                        self.assertRegex(status, r'^State:\s+Z',
-                                         f'Owned listener PID {child} must not remain running',
-                                         flags=re.MULTILINE)
+                        self.assertTrue(re.search(r'^State:\s+Z', status, re.MULTILINE),
+                                        f'Owned listener PID {child} must not remain running')
             finally:
                 if parent.poll() is None:
                     parent.kill()
