@@ -231,6 +231,10 @@ final class SystemLookupController extends Controller
 
     private function authorizeView(User $actor): void
     {
+        // A stale loaded actor must never regain lookup visibility after offboarding.
+        abort_unless((bool) $actor->is_active && User::query()
+            ->whereKey($actor->getKey())->where('is_active', true)->exists(), 403);
+
         if ($actor->hasRole('SUPER_ADMIN') || Gate::forUser($actor)->allows('lookups.view')) {
             return;
         }
@@ -238,6 +242,8 @@ final class SystemLookupController extends Controller
         $hasScoped = $actor->storeRoleAssignments()
             ->whereHas('role', fn ($query) => $query
                 ->where('roles.is_active', true)
+                ->whereNull('roles.archived_at')
+                ->where('roles.scope', 'store')
                 ->whereHas('permissions', fn ($permissions) => $permissions
                     ->where('permissions.code', 'lookups.view')))
             ->exists();
