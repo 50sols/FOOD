@@ -358,6 +358,57 @@ class B2bAdminWorkspaceTest extends TestCase
         $this->assertDatabaseMissing('audit_logs', ['event' => 'b2b.pricing_mode.updated']);
     }
 
+    public function test_generic_wholesale_settings_write_denies_retail_before_validating_input_in_both_locales(): void
+    {
+        $storeId = app(WholesalePrincipal::class)->storeId();
+        $retail = $this->user('B2C_STORE_ADMIN', 'ar');
+
+        foreach (['ar', 'en'] as $locale) {
+            $retail->forceFill(['locale' => $locale])->save();
+            $this->actingAs($retail->fresh())
+                ->put(route('admin.b2b.settings.save'), [
+                    'key' => ['invalid' => 'not-a-string'],
+                    'value' => ['invalid' => 'not-a-string'],
+                ])
+                ->assertForbidden();
+            $this->actingAs($retail->fresh())
+                ->put(route('admin.b2b.settings.save'), [
+                    'key' => 'wholesale.delivery_terms',
+                    'value' => 'unauthorized',
+                ])
+                ->assertForbidden();
+        }
+
+        $this->assertDatabaseMissing('settings', [
+            'store_id' => $storeId,
+            'key' => 'wholesale.delivery_terms',
+        ]);
+        $this->assertDatabaseMissing('audit_logs', [
+            'event' => 'b2b.setting.saved',
+        ]);
+
+        $admin = $this->user('B2B_ADMIN', 'en');
+        $this->actingAs($admin)->put(route('admin.b2b.settings.save'), [
+            'key' => ['invalid' => 'not-a-string'],
+            'value' => 'not-saved',
+        ])->assertSessionHasErrors('key');
+
+        $this->actingAs($admin)->put(route('admin.b2b.settings.save'), [
+            'key' => 'wholesale.delivery_terms',
+            'value' => 'confirmed',
+        ])->assertRedirect()->assertSessionHasNoErrors();
+
+        $this->assertDatabaseHas('settings', [
+            'store_id' => $storeId,
+            'key' => 'wholesale.delivery_terms',
+            'value' => '"confirmed"',
+        ]);
+        $this->assertDatabaseHas('audit_logs', [
+            'event' => 'b2b.setting.saved',
+            'user_id' => $admin->id,
+        ]);
+    }
+
     public function test_b2b_customer_master_data_guide_is_localized_and_requires_approval(): void
     {
         foreach (['ar', 'en'] as $locale) {
