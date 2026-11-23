@@ -30,7 +30,7 @@ class GccHeavyExecutionContracts(unittest.TestCase):
         self.assertNotIn("iex ", AGENT.lower())
 
     def test_trusted_immutable_local_scripts_are_never_read_from_pr_checkout(self):
-        self.assertIn("f42553ea19d1d75347bedea35863bcf0c7b3f811", AGENT)
+        self.assertIn("2034d988ccabac2a520712fa3d20e8ed7d2946fc", AGENT)
         self.assertIn("raw.githubusercontent.com", AGENT)
         self.assertIn("git hash-object $file", AGENT)
         self.assertIn("context: .", COMPOSE)
@@ -62,6 +62,7 @@ class GccHeavyExecutionContracts(unittest.TestCase):
         self.assertIn("for shard in 0 1 2 3", FULL)
         self.assertIn("php artisan migrate:fresh", FULL)
         self.assertIn("php artisan db:seed", FULL)
+        self.assertIn("xargs -0 -r -n1 -P4 php -l", FULL)
         self.assertIn("node --test", FULL)
 
     def test_locked_production_setup_and_actual_update(self):
