@@ -137,7 +137,7 @@ final class EnterpriseOrganizationAdministration
             return;
         }
 
-        throw new \\InvalidArgumentException('Unsupported enterprise organization parent');
+        throw new \InvalidArgumentException('Unsupported enterprise organization parent');
     }
 
     /**
