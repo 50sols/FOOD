@@ -77,6 +77,37 @@ final class V2AccountsPayableOfficerPermissionTest extends TestCase
         }
     }
 
+    public function test_ap_officer_is_denied_direct_general_ledger_post_and_approval_routes_in_both_locales(): void
+    {
+        $actor = User::factory()->create(['is_active' => true, 'locale' => 'en']);
+        $actor->roles()->attach(Role::query()->where('code', 'AP_OFFICER')->firstOrFail());
+
+        $attempts = [
+            ['admin.erp.finance.journals.store', []],
+            ['admin.erp.finance.journals.approval', ['journal' => 999999]],
+            ['admin.erp.finance.journals.post', ['journal' => 999999]],
+            ['admin.erp.finance.opening-balances.approval', ['batch' => 999999]],
+            ['admin.erp.finance.opening-balances.post', ['batch' => 999999]],
+        ];
+
+        foreach (['ar', 'en'] as $locale) {
+            $actor->forceFill(['locale' => $locale])->save();
+
+            foreach ($attempts as [$routeName, $parameters]) {
+                $this->assertTrue(\\Illuminate\\Support\\Facades\\Route::has($routeName), $routeName);
+                $response = $this->actingAs($actor->fresh())->post(
+                    route($routeName, $parameters, false),
+                    ['idempotency_key' => '2697-ap-denied'],
+                );
+                $this->assertContains(
+                    $response->getStatusCode(),
+                    [403, 404],
+                    "{$routeName}: {$locale}: AP officer must not approve or post GL.",
+                );
+            }
+        }
+    }
+
     public function test_ap_officer_cannot_open_security_role_management_in_arabic_or_english(): void
     {
         $actor = User::factory()->create(['is_active' => true, 'locale' => 'en']);
