@@ -146,12 +146,12 @@ test('issue claim references survive newer status checkpoints', () => {
 test('historical annotated BRANCH claims reuse the one authoritative original PR', () => {
   const original='fix/2746-v2-updater-host-readiness-ui';
   const claims=claimReferences([
-    {body:'<!-- foodex-worker-state:v1 -->\\nSTATE: ACTIVE\\n'
-      + 'BRANCH: '+original+' (EXISTING)\\nPR: #3968'},
-    {body:'<!-- foodex-worker-state:v1 -->\\nSTATE: HANDOFF_READY\\n'
-      + 'ORIGINAL_BRANCH: '+original+' (preserve original)\\nORIGINAL_PR: #3968'},
-    {body:'<!-- foodex-worker-state:v1 -->\\nSTATE: HANDOFF_READY\\n'
-      + 'BRANCH: '+original+'; TARGET: Foodex_V2 ONLY\\nPR: #3968'},
+    {body:'<!-- foodex-worker-state:v1 -->\nSTATE: ACTIVE\n'
+      + 'BRANCH: '+original+' (EXISTING)\nPR: #3968'},
+    {body:'<!-- foodex-worker-state:v1 -->\nSTATE: HANDOFF_READY\n'
+      + 'ORIGINAL_BRANCH: '+original+' (preserve original)\nORIGINAL_PR: #3968'},
+    {body:'<!-- foodex-worker-state:v1 -->\nSTATE: HANDOFF_READY\n'
+      + 'BRANCH: '+original+'; TARGET: Foodex_V2 ONLY\nPR: #3968'},
   ]);
   assert.deepEqual(claims.map(ref => ref.branch),[original,original,original]);
   const result=decide({
@@ -181,8 +181,8 @@ test('unknown annotations, actual alternate branches and nonmatching claims stil
     checkpoint:null,
   };
   for (const branch of untrusted) {
-    const refs=claimReferences([{body:'<!-- foodex-worker-state:v1 -->\\n'
-      + 'STATE: ACTIVE\\nBRANCH: '+branch+'\\nPR: #3968'}]);
+    const refs=claimReferences([{body:'<!-- foodex-worker-state:v1 -->\n'
+      + 'STATE: ACTIVE\nBRANCH: '+branch+'\nPR: #3968'}]);
     assert.equal(decide({...shared,refs}).action,'BLOCK_CONFLICTING_ORIGINALS',
       'Unrecognized or conflicting branch claim must fail closed: '+branch);
   }
