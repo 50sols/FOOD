@@ -92,6 +92,8 @@ def build_setup_zip(source_root: Path, output: Path, source_epoch: int) -> str:
                 allowed_templates = {".env.example", ".env.production.example"}
                 for component in path.relative_to(source_root).parts:
                     folded = component.casefold()
+                    if folded == ".git":
+                        raise SetupBuildError(f"Source control metadata in Setup staging: {name}")
                     if folded == ".env" or (folded.startswith(".env.") and folded not in allowed_templates):
                         raise SetupBuildError(f"Secret environment configuration in Setup staging: {name}")
                 is_dir = stat.S_ISDIR(meta.st_mode)
