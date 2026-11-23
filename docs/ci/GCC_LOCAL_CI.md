@@ -63,7 +63,7 @@ The agent additionally accepts an owner-authored comment on an open same-reposit
     /gcc-ci full <exact 40-character current PR head SHA>
 
 The full profile uses the **pinned, immutable** local toolkit from repository commit
-`2034d988ccabac2a520712fa3d20e8ed7d2946fc` (container build and execution scripts), verifying each
+`ddb4847fa5c3dfaaaa55f5377b79d82b87bcbd8c` (container build and execution scripts), verifying each
 Git blob SHA before running. The toolkit is downloaded once, locally cached and
 checked again for integrity at every full job. The agent first validates the
 PR owner/base/head, fetches the exact PR commit and the v1.0.125 update base,
