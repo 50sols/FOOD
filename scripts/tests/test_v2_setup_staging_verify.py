@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import io
+import os
 import stat
 import tempfile
 import unittest
@@ -76,6 +77,36 @@ class V2SetupStagingVerifierTest(unittest.TestCase):
         self.assertIs(False, result["signed"])
         self.assertEqual(SHA, result["source_commit"])
         self.assertEqual(hashlib.sha256(self.archive.read_bytes()).hexdigest(), result["sha256"])
+
+    def test_crc_checked_zip_cannot_be_swapped_for_unvalidated_archive_before_digest(self) -> None:
+        # The old verifier validated the first ZIP through ZipFile(path),
+        # closed it, then opened path AGAIN to calculate the signed SHA.
+        # A replacement after CRC could therefore yield a valid-looking
+        # digest for ZIP bytes that never passed any extraction safety checks.
+        malicious = self.root / "swapped-unverified.zip"
+        with zipfile.ZipFile(malicious, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+            for name, payload in BASE_ENTRIES.items():
+                archive.writestr(name, payload)
+            archive.writestr("../escape-from-setup.txt", b"unsafe unverified bytes")
+
+        original_testzip = zipfile.ZipFile.testzip
+        swaps = 0
+
+        def swap_after_valid_crc(archive: zipfile.ZipFile) -> str | None:
+            nonlocal swaps
+            result = original_testzip(archive)
+            self.assertIsNone(result)
+            swaps += 1
+            os.replace(malicious, self.archive)
+            return result
+
+        with patch.object(zipfile.ZipFile, "testzip", swap_after_valid_crc):
+            with self.assertRaisesRegex(SetupZipError, "replaced or modified during verification"):
+                self.verify()
+
+        self.assertEqual(1, swaps)
+        self.assertFalse(malicious.exists())
+        self.assertIn(b"../escape-from-setup.txt", self.archive.read_bytes())
 
     def test_setup_zip_rejects_missing_required_frontend_css_and_js(self) -> None:
         # Missing public assets can produce an apparently successful Laravel
