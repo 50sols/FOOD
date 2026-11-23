@@ -34,6 +34,7 @@ final class OperationalTenantScope
             ->where('user_store_roles.user_id', $user->getKey())
             ->where('users.is_active', true)
             ->where('roles.is_active', true)
+            ->whereNull('roles.archived_at')
             ->where('roles.scope', 'store')
             ->where('permissions.code', $permission)
             ->where('stores.is_active', true)
@@ -65,6 +66,7 @@ final class OperationalTenantScope
                 ->where('overrides.effect', 'allow')
                 ->where('allowed_permissions.code', $permission)
                 ->where('assigned_roles.is_active', true)
+                ->whereNull('assigned_roles.archived_at')
                 ->where('assigned_roles.scope', 'store')
                 ->where('stores.is_active', true)
                 ->where('store_types.code', 'B2C')
@@ -79,6 +81,7 @@ final class OperationalTenantScope
         if ($user->hasPermission($permission)) {
             $globalRoles = $user->roles()
                 ->where('roles.is_active', true)
+                ->whereNull('roles.archived_at')
                 ->where('roles.scope', 'global')
                 ->pluck('roles.code')
                 ->all();
