@@ -39,7 +39,7 @@ final class EnterpriseOrganizationAdministration
 
     public function createCompany(EnterpriseOrganization $organization, array $data, Authenticatable $actor): EnterpriseCompany
     {
-        $this->assertActive($organization);
+        $this->assertCreationParentActive($organization);
 
         return DB::transaction(function () use ($organization, $data, $actor): EnterpriseCompany {
             $company = $organization->companies()->create($data);
@@ -58,8 +58,7 @@ final class EnterpriseOrganizationAdministration
 
     public function createLegalEntity(EnterpriseCompany $company, array $data, Authenticatable $actor): EnterpriseLegalEntity
     {
-        $this->assertActive($company);
-        $this->assertActive($company->organization);
+        $this->assertCreationParentActive($company);
 
         return DB::transaction(function () use ($company, $data, $actor): EnterpriseLegalEntity {
             $entity = $company->legalEntities()->create($data);
@@ -78,10 +77,7 @@ final class EnterpriseOrganizationAdministration
 
     public function createBusinessUnit(EnterpriseLegalEntity $entity, array $data, Authenticatable $actor): EnterpriseBusinessUnit
     {
-        $entity->loadMissing('company.organization');
-        $this->assertActive($entity);
-        $this->assertActive($entity->company);
-        $this->assertActive($entity->company->organization);
+        $this->assertCreationParentActive($entity);
 
         return DB::transaction(function () use ($entity, $data, $actor): EnterpriseBusinessUnit {
             $unit = $entity->businessUnits()->create($data);
@@ -109,6 +105,39 @@ final class EnterpriseOrganizationAdministration
         } catch (\LogicException) {
             throw ValidationException::withMessages(['store' => [__('enterprise_organization.cross_scope_denied')]]);
         }
+    }
+
+    /**
+     * Check parent and ancestor activation before both no-write Preview and
+     * persisted child creation. Do not promise a successful setup preview for
+     * a child that the authoritative Save service would reject.
+     */
+    public function assertCreationParentActive(Model $parent): void
+    {
+        if ($parent instanceof EnterpriseLegalEntity) {
+            $parent->loadMissing('company.organization');
+            $this->assertActive($parent);
+            $this->assertActive($parent->company);
+            $this->assertActive($parent->company->organization);
+
+            return;
+        }
+
+        if ($parent instanceof EnterpriseCompany) {
+            $parent->loadMissing('organization');
+            $this->assertActive($parent);
+            $this->assertActive($parent->organization);
+
+            return;
+        }
+
+        if ($parent instanceof EnterpriseOrganization) {
+            $this->assertActive($parent);
+
+            return;
+        }
+
+        throw new \\InvalidArgumentException('Unsupported enterprise organization parent');
     }
 
     /**
