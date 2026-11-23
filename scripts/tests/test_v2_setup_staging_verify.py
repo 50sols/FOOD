@@ -108,6 +108,28 @@ class V2SetupStagingVerifierTest(unittest.TestCase):
         self.assertFalse(malicious.exists())
         self.assertIn(b"../escape-from-setup.txt", self.archive.read_bytes())
 
+    def test_zip_mutation_after_crc_cannot_change_signed_digest_without_revalidation(self) -> None:
+        # Even if the pathname still resolves to its ORIGINAL inode, changing
+        # the ZIP bytes after CRC validation must invalidate signed evidence.
+        original_testzip = zipfile.ZipFile.testzip
+        mutations = 0
+
+        def append_after_valid_crc(archive: zipfile.ZipFile) -> str | None:
+            nonlocal mutations
+            result = original_testzip(archive)
+            self.assertIsNone(result)
+            mutations += 1
+            with self.archive.open("ab") as target:
+                target.write(b"unvalidated trailing payload")
+            return result
+
+        with patch.object(zipfile.ZipFile, "testzip", append_after_valid_crc):
+            with self.assertRaisesRegex(SetupZipError, "replaced or modified during verification"):
+                self.verify()
+
+        self.assertEqual(1, mutations)
+        self.assertTrue(self.archive.read_bytes().endswith(b"unvalidated trailing payload"))
+
     def test_setup_zip_rejects_missing_required_frontend_css_and_js(self) -> None:
         # Missing public assets can produce an apparently successful Laravel
         # installation with broken Admin or storefront functionality.
