@@ -166,7 +166,6 @@ final class V2CustomerServiceDiscountApprovalTest extends TestCase
         $this->assertSame(0, DB::table('order_customer_service_discounts')->where('order_id', $orderId)->count());
     }
 
-
     public function test_customer_service_manager_can_request_large_discount_but_cannot_apply_or_approve(): void
     {
         $manager = $this->roleUser('CUSTOMER_SERVICE_MANAGER');
