@@ -884,6 +884,16 @@ final class OrderOperationsController extends Controller
                 ->whereKey($orderId)
                 ->where('store_id', $storeId)
                 ->where('channel', $channel)
+                // A historical order whose channel disagrees with the
+                // canonical store type must not disclose customer PII in the
+                // Dashboard toast, even if the notification claims a matching
+                // channel. Keep this check inside the order query so the
+                // sensitive fields are never loaded for an invalid row.
+                ->whereHas('store', static function ($storeQuery) use ($channel): void {
+                    $storeQuery->whereIn('store_type_id', DB::table('store_types')
+                        ->where('code', strtoupper($channel))
+                        ->select('id'));
+                })
                 ->first();
 
             if (! $order instanceof Order) {
