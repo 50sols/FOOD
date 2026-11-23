@@ -4,11 +4,16 @@ namespace App\Policies;
 
 use App\Models\B2cCustomer;
 use App\Models\User;
+use Illuminate\Support\Facades\DB;
 
 final class B2cCustomerPolicy
 {
     public function view(User $user, B2cCustomer $customer): bool
     {
+        if (! $this->activeActor($user)) {
+            return false;
+        }
+
         if ((int) $customer->user_id === (int) $user->getKey()) {
             return true;
         }
@@ -22,6 +27,10 @@ final class B2cCustomerPolicy
 
     public function update(User $user, B2cCustomer $customer): bool
     {
+        if (! $this->activeActor($user)) {
+            return false;
+        }
+
         if ((int) $customer->user_id === (int) $user->getKey()) {
             return true;
         }
@@ -35,7 +44,19 @@ final class B2cCustomerPolicy
 
     public function delete(User $user, B2cCustomer $customer): bool
     {
+        if (! $this->activeActor($user)) {
+            return false;
+        }
+
         return ! $user->hasRole('SUPER_ADMIN')
             && $user->hasPermission('customers.delete', (int) $customer->store_id);
+    }
+
+    private function activeActor(User $user): bool
+    {
+        return $user->is_active && DB::table('users')
+            ->where('id', $user->getKey())
+            ->where('is_active', true)
+            ->exists();
     }
 }

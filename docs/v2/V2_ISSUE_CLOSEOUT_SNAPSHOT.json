@@ -1,0 +1,312 @@
+{
+  "schema_version": 1,
+  "observed_date": "2026-11-21",
+  "kind": "DATED_NOT_LIVE",
+  "repository": "walidatiyaai2025-gif/FOOD",
+  "branch": "Foodex_V2",
+  "issue_scope": "open GitHub issues before planning issue #4045, across entire FOOD repository",
+  "open_issue_count_at_observation": 49,
+  "open_pr_count_at_observation": 11,
+  "scope_override": "owner 2026-11-18: backend ERP/dashboard/installer/updater, no new Flutter mobile work",
+  "notes": [
+    "Values must be independently refreshed from GitHub before every claim/merge/closure.",
+    "Classification is coarse triage only; track is not a source completion verdict.",
+    "This document does not reserve workers, run CI or auto-close issues."
+  ],
+  "issue_records": [
+    {
+      "issue": 2461,
+      "title": "[STORE-DEMO][PERMANENT] FOODEX Customer + Driver + Van — long-lived store submission lane",
+      "track": "external_permanent_or_production",
+      "original_open_pr": null
+    },
+    {
+      "issue": 2468,
+      "title": "Permanent FOODEX production store lane + first-install bundle for store.foodexeg.com (Customer / Driver / Van)",
+      "track": "external_permanent_or_production",
+      "original_open_pr": null
+    },
+    {
+      "issue": 2502,
+      "title": "FOODEX Production Acceptance — verified v124/v125→v1.0.127 and live #2482 feature parity",
+      "track": "external_permanent_or_production",
+      "original_open_pr": null
+    },
+    {
+      "issue": 2503,
+      "title": "V2 | MASTER — Full Unified RBAC, ERP and Sidebar source-to-issue acceptance on isolated Foodex_V2",
+      "track": "integration_gate_or_master",
+      "original_open_pr": null
+    },
+    {
+      "issue": 2559,
+      "title": "V2 | Sidebar 229 — قواعد الربحية",
+      "track": "code_leaf_or_functional",
+      "original_open_pr": 3326
+    },
+    {
+      "issue": 2620,
+      "title": "V2 | Sidebar 290 — تسوية البنود",
+      "track": "code_leaf_or_functional",
+      "original_open_pr": null
+    },
+    {
+      "issue": 2633,
+      "title": "V2 | Sidebar 303 — التسويات المرتبطة بالتحصيل",
+      "track": "code_leaf_or_functional",
+      "original_open_pr": 3309
+    },
+    {
+      "issue": 2696,
+      "title": "V2 | ERP Role — مسؤول حسابات العملاء (AR_OFFICER)",
+      "track": "code_leaf_or_functional",
+      "original_open_pr": 3221
+    },
+    {
+      "issue": 2697,
+      "title": "V2 | ERP Role — مسؤول حسابات الموردين (AP_OFFICER)",
+      "track": "code_leaf_or_functional",
+      "original_open_pr": null
+    },
+    {
+      "issue": 2699,
+      "title": "V2 | ERP Role — مسؤول الخزينة / أمين الصندوق (TREASURY_OFFICER)",
+      "track": "code_leaf_or_functional",
+      "original_open_pr": null
+    },
+    {
+      "issue": 2705,
+      "title": "V2 | ERP Stage 1 — التشغيل الأساسي",
+      "track": "erp_stage_or_readiness",
+      "original_open_pr": null
+    },
+    {
+      "issue": 2706,
+      "title": "V2 | ERP Stage 2 — الضبط التجاري",
+      "track": "erp_stage_or_readiness",
+      "original_open_pr": 3995
+    },
+    {
+      "issue": 2707,
+      "title": "V2 | ERP Stage 3 — المشتريات والمخزون",
+      "track": "erp_stage_or_readiness",
+      "original_open_pr": null
+    },
+    {
+      "issue": 2709,
+      "title": "V2 | ERP Stage 5 — المحاسبة المتكاملة",
+      "track": "erp_stage_or_readiness",
+      "original_open_pr": null
+    },
+    {
+      "issue": 2714,
+      "title": "V2 | Sidebar Persona — المالية والمحاسبة",
+      "track": "code_leaf_or_functional",
+      "original_open_pr": null
+    },
+    {
+      "issue": 2742,
+      "title": "V2 | GATE — V2 isolated branch governance and GitHub main-merge protection ruleset",
+      "track": "integration_gate_or_master",
+      "original_open_pr": null
+    },
+    {
+      "issue": 2744,
+      "title": "V2 | GATE — Backend ERP exact-head Required CI, policy, AR/EN and Laravel testing",
+      "track": "integration_gate_or_master",
+      "original_open_pr": null
+    },
+    {
+      "issue": 2745,
+      "title": "V2 | GATE — V2 signed Setup ZIP / web installer / production dependencies fresh MySQL install",
+      "track": "integration_gate_or_master",
+      "original_open_pr": 3444
+    },
+    {
+      "issue": 2746,
+      "title": "V2 | GATE — V2 signed Admin Update ZIP / Dashboard Update Center / backup and recovery",
+      "track": "integration_gate_or_master",
+      "original_open_pr": 3968
+    },
+    {
+      "issue": 2748,
+      "title": "V2 | GATE — V2 full end-to-end ERP/RBAC/sidebar authorization security acceptance",
+      "track": "integration_gate_or_master",
+      "original_open_pr": null
+    },
+    {
+      "issue": 2750,
+      "title": "V2 | GATE — ERP Dashboard web UX audit desktop/mobile-web RTL/LTR and scoped Sidebar nodes",
+      "track": "integration_gate_or_master",
+      "original_open_pr": null
+    },
+    {
+      "issue": 2751,
+      "title": "V2 | AUTH P006 — السايدبار يعكس الوصول الحقيقي لا Visibility مستقل",
+      "track": "code_leaf_or_functional",
+      "original_open_pr": null
+    },
+    {
+      "issue": 2758,
+      "title": "V2 | AUTH P013 — دالة قرار واحدة RouteAuthorized + Permission + Scope + Module",
+      "track": "code_leaf_or_functional",
+      "original_open_pr": null
+    },
+    {
+      "issue": 2768,
+      "title": "V2 | AUDIT T019R02 — فصل مهام الشراء والمحاسبة والخزينة في foodexaccount",
+      "track": "code_leaf_or_functional",
+      "original_open_pr": null
+    },
+    {
+      "issue": 2771,
+      "title": "V2 | AUDIT T019R05 — فحص التقييد بمتجر 2 للمستخدم store1",
+      "track": "code_leaf_or_functional",
+      "original_open_pr": null
+    },
+    {
+      "issue": 2782,
+      "title": "V2 | SECURITY P031 — عزل Wholesale عن Retail وعن المتجر الآخر في كل Route",
+      "track": "code_leaf_or_functional",
+      "original_open_pr": null
+    },
+    {
+      "issue": 2783,
+      "title": "V2 | SECURITY P032 — ربط View/Create/Update/Delete/Approve/Execute بإذن دقيق",
+      "track": "code_leaf_or_functional",
+      "original_open_pr": null
+    },
+    {
+      "issue": 2784,
+      "title": "V2 | SECURITY P033 — منع شراء أو خزينة من تجاوز SoD وحدود التفويض",
+      "track": "code_leaf_or_functional",
+      "original_open_pr": null
+    },
+    {
+      "issue": 2789,
+      "title": "V2 | RBAC T037R03 — أقل صلاحيات لكل وظيفة وتنظيف info وfoodexaccount وexport",
+      "track": "code_leaf_or_functional",
+      "original_open_pr": null
+    },
+    {
+      "issue": 2791,
+      "title": "V2 | RELEASE T037R05 — تحديث آمن عبر PR وCI وUpdate ZIP والنسخ الاحتياطي",
+      "track": "integration_gate_or_master",
+      "original_open_pr": null
+    },
+    {
+      "issue": 2802,
+      "title": "V2 | GOV P051 — اعتماد تشكيل الأدوار النهائية وتقسيم الشراء والمحاسبة والخزينة",
+      "track": "code_leaf_or_functional",
+      "original_open_pr": null
+    },
+    {
+      "issue": 2813,
+      "title": "V2 | USER P075 — تصنيف الحسابات السبعة وفحص الارتباطات قبل أي حذف",
+      "track": "code_leaf_or_functional",
+      "original_open_pr": null
+    },
+    {
+      "issue": 2818,
+      "title": "V2 | RBAC-UI P082 — صلاحيات View/Create/Edit/Delete/Approve/Post/Export/Dispatch لكل صفحة",
+      "track": "code_leaf_or_functional",
+      "original_open_pr": null
+    },
+    {
+      "issue": 2824,
+      "title": "V2 | RBAC-UI T087R04 — مثال خدمة العملاء: طلب وتطبيق خصم تحت سقف وموافقة",
+      "track": "code_leaf_or_functional",
+      "original_open_pr": null
+    },
+    {
+      "issue": 2840,
+      "title": "V2 | ERP T104R03 — اعتماد جاهزية ERP بعد مسارات العمل والاختبارات الكاملة",
+      "track": "integration_gate_or_master",
+      "original_open_pr": 4012
+    },
+    {
+      "issue": 2843,
+      "title": "V2 | ERP P109 — اختبار دورة إنشاء ومراجعة واعتماد وترحيل وعكس وتقرير وتدقيق",
+      "track": "code_leaf_or_functional",
+      "original_open_pr": null
+    },
+    {
+      "issue": 2844,
+      "title": "V2 | ERP P110 — إثبات عزل ملكية مورد/FOODEX في دفتر المخزون والتقارير",
+      "track": "code_leaf_or_functional",
+      "original_open_pr": 3921
+    },
+    {
+      "issue": 2845,
+      "title": "V2 | ERP P111 — ضبط Entitlements والفروع والسقوف وMaker Checker قبل الإتاحة",
+      "track": "code_leaf_or_functional",
+      "original_open_pr": 3206
+    },
+    {
+      "issue": 2846,
+      "title": "V2 | RELEASE P112 — Setup ZIP وUpdate ZIP وFresh Install وUpgrade وBackup CI",
+      "track": "integration_gate_or_master",
+      "original_open_pr": 4019
+    },
+    {
+      "issue": 2851,
+      "title": "V2 | SOD P127 — فصل إعداد وترحيل واعتماد القيد عن الخزينة والتحصيل",
+      "track": "code_leaf_or_functional",
+      "original_open_pr": null
+    },
+    {
+      "issue": 2853,
+      "title": "V2 | SOD P129 — منع السعر والخصم من تجاوز الائتمان والربحية دون موافقة",
+      "track": "code_leaf_or_functional",
+      "original_open_pr": null
+    },
+    {
+      "issue": 2854,
+      "title": "V2 | SOD P130 — حظر استخدام Super Admin أو Platform Owner كدور تشغيلي يومي",
+      "track": "code_leaf_or_functional",
+      "original_open_pr": null
+    },
+    {
+      "issue": 2856,
+      "title": "V2 | GOV P133 — اعتماد نماذج أدوار الشركة والفرع والمخزن والمتجر ومالك القوالب",
+      "track": "code_leaf_or_functional",
+      "original_open_pr": null
+    },
+    {
+      "issue": 2858,
+      "title": "V2 | GOV P135 — اعتماد جاهزية كل موديول ERP بمسار تشغيلي حقيقي",
+      "track": "erp_stage_or_readiness",
+      "original_open_pr": 3065
+    },
+    {
+      "issue": 2901,
+      "title": "V2 | GOV P381 — اعتماد Information Architecture للشجرة المستهدفة",
+      "track": "code_leaf_or_functional",
+      "original_open_pr": null
+    },
+    {
+      "issue": 2906,
+      "title": "V2 | RBAC Exported Account Audit — Table 5 / Row 1",
+      "track": "privacy_audit",
+      "original_open_pr": null
+    },
+    {
+      "issue": 2907,
+      "title": "V2 | RBAC Exported Account Audit — Table 5 / Row 2",
+      "track": "privacy_audit",
+      "original_open_pr": null
+    },
+    {
+      "issue": 2916,
+      "title": "V2 | RBAC Exported Account Audit — Table 5 / Row 11",
+      "track": "privacy_audit",
+      "original_open_pr": null
+    },
+    {
+      "issue": 2931,
+      "title": "V2 | OPS — Activate 5-minute 30m idle-lease sweeper without promoting V2 to main",
+      "track": "integration_gate_or_master",
+      "original_open_pr": null
+    }
+  ]
+}

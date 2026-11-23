@@ -57,11 +57,24 @@ final class SystemLookupController extends Controller
         $actor = $this->actor($request);
         $this->authorizeView($actor);
 
-        $key = $this->typeKey((string) $request->query('type', 'payment-operation-types'));
+        $requestedType = $request->query('type', 'payment-operation-types');
+        // Reject array/nested GET tab selectors before invoking typeKey().
+        abort_unless(is_string($requestedType), 404);
+        $key = $this->typeKey($requestedType);
         $definition = self::TYPES[$key];
-        $status = (string) $request->query('status', 'all');
-        $search = trim((string) $request->query('q', ''));
+        // GET filters are scalar selectors; never coerce nested query arrays
+        // into strings or echo them back into links in the response.
+        $requestedStatus = $request->query('status', 'all');
+        $requestedSearch = $request->query('q', '');
+        abort_unless(is_string($requestedStatus) && is_string($requestedSearch), 404);
+        $status = $requestedStatus;
+        $search = trim($requestedSearch);
         $literalSearch = '%'.str_replace(['!', '%', '_'], ['!!', '!%', '!_'], $search).'%';
+
+        // Both reference values and pricing tiers use Laravel's default page
+        // selector. Validate explicit navigation after the canonical permission,
+        // tab and scalar-filter gates, rather than silently showing page one.
+        $request->validate(['page' => ['nullable', 'integer', 'min:1']]);
 
         if ($definition['type'] === OperationalLookupService::PRICE_TIER) {
             $query = B2bPriceTier::query()
@@ -218,6 +231,10 @@ final class SystemLookupController extends Controller
 
     private function authorizeView(User $actor): void
     {
+        // A stale loaded actor must never regain lookup visibility after offboarding.
+        abort_unless((bool) $actor->is_active && User::query()
+            ->whereKey($actor->getKey())->where('is_active', true)->exists(), 403);
+
         if ($actor->hasRole('SUPER_ADMIN') || Gate::forUser($actor)->allows('lookups.view')) {
             return;
         }
@@ -225,6 +242,8 @@ final class SystemLookupController extends Controller
         $hasScoped = $actor->storeRoleAssignments()
             ->whereHas('role', fn ($query) => $query
                 ->where('roles.is_active', true)
+                ->whereNull('roles.archived_at')
+                ->where('roles.scope', 'store')
                 ->whereHas('permissions', fn ($permissions) => $permissions
                     ->where('permissions.code', 'lookups.view')))
             ->exists();

@@ -14,7 +14,10 @@ final class EnterpriseScopeAuthorizer
         string $scopeType,
         int $scopeId,
     ): bool {
-        if ($permission === '' || $scopeId < 1 || ! $user->is_active) {
+        // Existing contexts may outlive user offboarding: check the persisted
+        // identity before the SUPER_ADMIN shortcut or scoped permission logic.
+        if ($permission === '' || $scopeId < 1 || ! $user->is_active
+            || ! User::query()->whereKey($user->getKey())->where('is_active', true)->exists()) {
             return false;
         }
 

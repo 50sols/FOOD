@@ -274,7 +274,7 @@ final class RbacManager
         }
 
         foreach ($globalRoles as $role) {
-            if (! $role->is_active) {
+            if (! $role->is_active || $role->archived_at !== null) {
                 throw ValidationException::withMessages(['global_role_ids' => [__('admin.security.errors.role_inactive', ['role' => $role->code])]]);
             }
 
@@ -293,7 +293,7 @@ final class RbacManager
         }
 
         foreach ($storeModels as $role) {
-            if (! $role->is_active) {
+            if (! $role->is_active || $role->archived_at !== null) {
                 throw ValidationException::withMessages(['store_roles' => [__('admin.security.errors.role_inactive', ['role' => $role->code])]]);
             }
 
@@ -375,6 +375,43 @@ final class RbacManager
                 $target->refresh();
                 if ($this->isLastActiveSuperAdmin($target)) {
                     throw ValidationException::withMessages(['global_role_ids' => [__('admin.security.errors.last_super_admin_role')]]);
+                }
+            }
+
+            // A historical role can remain is_active=1 after a legacy import.
+            // Serialize eligibility against concurrent archive/deactivation
+            // before mutating assignments, overrides or the audit trail.
+            $selectedRoleIds = collect($globalRoleIds)
+                ->merge(array_column($storeRoles, 'role_id'))
+                ->unique()
+                ->sort()
+                ->values()
+                ->all();
+
+            if ($selectedRoleIds !== []) {
+                $lockedRoles = Role::query()
+                    ->whereIn('id', $selectedRoleIds)
+                    ->orderBy('id')
+                    ->lockForUpdate()
+                    ->get(['id', 'code', 'scope', 'is_active', 'archived_at'])
+                    ->keyBy('id');
+
+                foreach ($globalRoleIds as $roleId) {
+                    $role = $lockedRoles->get($roleId);
+                    if (! $role || ! $role->is_active || $role->archived_at !== null || $role->scope !== 'global') {
+                        throw ValidationException::withMessages([
+                            'global_role_ids' => [__('admin.security.errors.role_inactive', ['role' => data_get($role, 'code', '—')])],
+                        ]);
+                    }
+                }
+
+                foreach ($storeRoles as $assignment) {
+                    $role = $lockedRoles->get((int) $assignment['role_id']);
+                    if (! $role || ! $role->is_active || $role->archived_at !== null || $role->scope !== 'store') {
+                        throw ValidationException::withMessages([
+                            'store_roles' => [__('admin.security.errors.role_inactive', ['role' => data_get($role, 'code', '—')])],
+                        ]);
+                    }
                 }
             }
 

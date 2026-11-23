@@ -36,6 +36,17 @@ final class CouponManagementController extends Controller
     public function index(Request $request): View
     {
         $actor = $this->authorizeAccess($request, 'coupons.view');
+
+        // Reject nested query input before string coercion; authorization still runs first.
+        foreach (['q', 'channel', 'status'] as $field) {
+            $value = $request->query($field);
+            abort_unless($value === null || is_string($value), 404);
+        }
+
+        // Keep tenant authorization and nested-filter 404 precedence before
+        // rejecting malformed explicit pagination rather than falling back.
+        $request->validate(['page' => ['nullable', 'integer', 'min:1']]);
+
         $search = trim((string) $request->query('q', ''));
         $channel = strtolower(trim((string) $request->query('channel', '')));
         $status = trim((string) $request->query('status', ''));

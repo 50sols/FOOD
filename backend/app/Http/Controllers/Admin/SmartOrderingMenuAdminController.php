@@ -48,6 +48,13 @@ final class SmartOrderingMenuAdminController extends Controller
         RestaurantTemplateSelectionService $templateSelection,
     ): View {
         [$actor, $site, $stores] = $this->context($request, $tenants, $sites);
+
+        // Authenticate and scope the selected store first, then validate the
+        // explicit editor selector before loading or creating any draft.
+        // A malformed menu_id must not silently focus the first menu.
+        $focusFilter = $request->validate(['menu_id' => ['nullable', 'integer', 'min:1']]);
+        $requestedMenuId = isset($focusFilter['menu_id']) ? (int) $focusFilter['menu_id'] : 0;
+
         $draft = $revisions->draft($actor, $site, $request);
         $publishedRevision = $revisions->published($site);
         $scheduledRevision = $revisions->scheduled($site);
@@ -76,7 +83,6 @@ final class SmartOrderingMenuAdminController extends Controller
             ->get(['id', 'public_id', 'name_ar', 'name_en', 'sort_order', 'is_default', 'is_visible']);
 
         $reviewMode = $request->boolean('review') || ($setupFlow && in_array($setupStep, ['review', 'publish'], true));
-        $requestedMenuId = $request->integer('menu_id');
         $focusedMenuId = $menuIndex->contains(fn (SmartOrderingMenu $menu): bool => (int) $menu->id === $requestedMenuId)
             ? $requestedMenuId
             : ($menuIndex->first() === null ? null : (int) $menuIndex->first()->id);
@@ -1249,7 +1255,15 @@ final class SmartOrderingMenuAdminController extends Controller
         $storeIds = app(RestaurantSaasStoreAccess::class)
             ->allowedStoreIds($actor, $permission, $request);
 
-        $requested = $request->integer('store_id');
+        // Canonical store permission is resolved before selector validation.
+        // Never coerce a nested selector to a default store and initialize its
+        // draft or apply an unintended Menu Builder mutation.
+        abort_if(is_array($request->input('store_id')), 404);
+
+        // An explicitly malformed scalar must not silently select the first
+        // authorized store. Missing/blank input retains the normal fallback.
+        $selection = $request->validate(['store_id' => ['nullable', 'integer', 'min:1']]);
+        $requested = isset($selection['store_id']) ? (int) $selection['store_id'] : 0;
         if ($requested > 0 && ! in_array($requested, $storeIds, true)) {
             abort(404);
         }

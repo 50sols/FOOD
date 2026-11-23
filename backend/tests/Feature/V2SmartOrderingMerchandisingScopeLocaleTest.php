@@ -40,13 +40,19 @@ class V2SmartOrderingMerchandisingScopeLocaleTest extends TestCase
                 ['marketing_coupon_id', 'coupon_out_of_scope'],
                 ['branch_id', 'branch_out_of_scope'],
             ] as [$field, $key]) {
-                $this->postJson($offerUrl, [
+                $response = $this->postJson($offerUrl, [
                     'name' => 'Scoped offer',
                     'type' => 'percentage',
                     $field => 999999999,
-                ])
-                    ->assertUnprocessable()
-                    ->assertJsonPath('errors.'.$field.'.0', __('smart_ordering_merchandising.'.$key));
+                ]);
+                if ($field === 'branch_id') {
+                    // A syntactically valid but non-owned branch is hidden before
+                    // unrelated field validation; do not reveal its existence.
+                    $response->assertNotFound();
+                } else {
+                    $response->assertUnprocessable()
+                        ->assertJsonPath('errors.'.$field.'.0', __('smart_ordering_merchandising.'.$key));
+                }
 
                 $this->assertDatabaseCount('smart_ordering_offer_rules', $locale === 'en' ? 0 : 1);
             }

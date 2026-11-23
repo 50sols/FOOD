@@ -18,7 +18,15 @@ final class AdminProfileController extends Controller
     public function index(Request $request): View
     {
         $user = $this->actor($request);
+        // This surface presents current effective assignments, not historical RBAC
+        // records. Preserve revoked rows in storage, but never advertise them
+        // as live authority after role archival or store deactivation.
         $storeAssignments = $user->storeRoleAssignments()
+            ->whereHas('store', fn ($query) => $query->where('stores.is_active', true))
+            ->whereHas('role', fn ($query) => $query
+                ->where('roles.is_active', true)
+                ->whereNull('roles.archived_at')
+                ->whereIn('roles.scope', ['store', 'both']))
             ->with(['store:id,name,code,is_active', 'role:id,code,name,scope,is_active'])
             ->orderBy('store_id')
             ->get();
@@ -32,7 +40,11 @@ final class AdminProfileController extends Controller
             'user' => $user,
             'navGroups' => app(AdminNavigation::class)->groupsFor($user),
             'navContext' => 'profile',
-            'globalRoles' => $user->roles()->where('roles.is_active', true)->orderBy('roles.name')->get(['roles.id', 'roles.code', 'roles.name', 'roles.scope']),
+            'globalRoles' => $user->roles()
+                ->where('roles.is_active', true)
+                ->whereNull('roles.archived_at')
+                ->orderBy('roles.name')
+                ->get(['roles.id', 'roles.code', 'roles.name', 'roles.scope']),
             'storeAssignments' => $storeAssignments,
             'globalPermissions' => $user->effectivePermissionCodes(),
             'storePermissions' => $storePermissions,

@@ -1,0 +1,55 @@
+name: FOODEX V2 Worker Resume Preflight
+
+# Read-only operator-triggered preflight. Not an autonomous ChatGPT runner.
+# Dispatched against Foodex_V2 by an authorized operator/worker.
+on:
+  workflow_dispatch:
+    inputs:
+      issue_number:
+        description: Existing FOODEX V2 issue number to resume
+        required: true
+        type: number
+
+permissions:
+  contents: read
+  issues: read
+  pull-requests: read
+  actions: read
+
+concurrency:
+  group: v2-resume-preflight-${{ inputs.issue_number }}
+  cancel-in-progress: false
+
+jobs:
+  report:
+    name: Resolve existing branch PR checkpoint and CI
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout isolated V2 source
+        uses: actions/checkout@v7
+        with:
+          ref: Foodex_V2
+          persist-credentials: false
+
+      - name: Check worker continuity regression contract
+        run: node --test .github/scripts/v2-worker-resume.test.js
+
+      - name: Produce authoritative read-only resumption report
+        uses: actions/github-script@v8
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const { buildPlan } = require('./.github/scripts/v2-worker-resume.js');
+            const issueNumber = Number('${{ inputs.issue_number }}');
+            const { owner, repo } = context.repo;
+            const plan = await buildPlan({ github, owner, repo, issueNumber });
+            core.info(JSON.stringify(plan, null, 2));
+            core.setOutput('resume_action', plan.action);
+            await core.summary
+              .addHeading('FOODEX V2 resume-first preflight')
+              .addCodeBlock(JSON.stringify(plan, null, 2), 'json')
+              .write();
+            if (plan.action.startsWith('BLOCK_')) {
+              core.warning('Issue cannot be automatically taken over; follow the report and owner gates.');
+            }

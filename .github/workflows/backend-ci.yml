@@ -73,9 +73,8 @@ jobs:
           REDOCLY_SUPPRESS_UPDATE_NOTICE: "true"
         run: npx --yes @redocly/cli@2.59.0 lint docs/api/openapi.yaml
 
-  backend:
-    name: Backend tests
-    needs: fast
+  backend-smoke:
+    name: Backend migrations seed and runtime
     runs-on: ubuntu-latest
     # The full Laravel security/feature suite legitimately exceeds 20 minutes
     # under CI runner contention; preserve every required assertion and job.
@@ -114,6 +113,9 @@ jobs:
           if [[ ! -f vendor/autoload.php ]]; then
             composer install --no-interaction --prefer-dist --no-progress
           fi
+
+      - name: Validate complete Laravel shard partition contract
+        run: python3 -m unittest discover -s ../scripts/tests -p 'test_laravel_test_shards.py'
 
       - name: Prepare test environment
         run: |
@@ -178,12 +180,99 @@ jobs:
           grep -F 'RewriteCond %{REQUEST_FILENAME} !-f' public/.htaccess
           grep -F 'RewriteCond %{REQUEST_FILENAME} !-d' public/.htaccess
 
-      - name: Run backend tests
-        run: composer test
+
+  backend-shards:
+    name: Laravel test shard (${{ matrix.shard }}/4)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Set up PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.3"
+          extensions: mbstring, intl, pdo_sqlite, pdo_mysql
+          coverage: none
+          tools: composer:v2
+
+      - name: Cache Composer downloads
+        uses: actions/cache@v5
+        with:
+          path: ~/.cache/composer/files
+          key: composer-${{ runner.os }}-${{ hashFiles('backend/composer.lock') }}
+          restore-keys: |
+            composer-${{ runner.os }}-
+
+      - name: Cache installed Composer dependencies
+        uses: actions/cache@v5
+        with:
+          path: backend/vendor
+          key: composer-vendor-v1-${{ runner.os }}-php-8.3-${{ hashFiles('backend/composer.json', 'backend/composer.lock') }}
+
+      - name: Install Composer dependencies
+        run: |
+          if [[ ! -f vendor/autoload.php ]]; then
+            composer install --no-interaction --prefer-dist --no-progress
+          fi
+
+
+      - name: Prepare isolated Laravel test environment
+        run: |
+          cp .env.example .env
+          php artisan key:generate
+          touch database/database.sqlite
+
+      - name: Generate deterministic exhaustive shard configuration
+        run: |
+          python3 ../scripts/laravel-test-shards.py --verify --count 4
+          python3 ../scripts/laravel-test-shards.py --count 4 --index "${{ matrix.shard }}" --output .phpunit-shard.xml
+
+      - name: Run complete Laravel shard
+        run: |
+          php artisan config:clear --ansi
+          vendor/bin/phpunit --configuration=.phpunit-shard.xml --display-warnings --display-deprecations --display-phpunit-deprecations --log-junit=laravel-shard-${{ matrix.shard }}.xml
+
+      - name: Preserve shard evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: laravel-shard-${{ matrix.shard }}
+          path: backend/laravel-shard-${{ matrix.shard }}.xml
+          if-no-files-found: warn
+
+  backend:
+    name: Backend tests
+    if: ${{ always() && !cancelled() }}
+    needs: [fast, backend-smoke, backend-shards]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require fast-fail, full migrations/runtime, and every Laravel shard
+        shell: bash
+        env:
+          FAST_RESULT: ${{ needs.fast.result }}
+          SMOKE_RESULT: ${{ needs.backend-smoke.result }}
+          SHARDS_RESULT: ${{ needs.backend-shards.result }}
+        run: |
+          set -euo pipefail
+          for result in "$FAST_RESULT" "$SMOKE_RESULT" "$SHARDS_RESULT"; do
+            if [[ "$result" != "success" ]]; then
+              echo "::error::Backend acceptance failed: fast=$FAST_RESULT smoke=$SMOKE_RESULT shards=$SHARDS_RESULT"
+              exit 1
+            fi
+          done
 
   production-services:
     name: MySQL Redis deployment acceptance
-    needs: fast
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     services:

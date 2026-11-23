@@ -59,6 +59,7 @@ final class CustomerServiceWorkspaceController extends Controller
     public function addNote(Request $request, int $case): RedirectResponse
     {
         $actor = $this->actor($request);
+        $this->cases->assertCanManageCase($actor, $case);
         $validated = $request->validate([
             'body' => ['nullable', 'string', 'max:8000'],
             'attachment' => ['nullable', 'file', 'max:10240', 'mimes:pdf,png,jpg,jpeg,txt,csv'],
@@ -159,6 +160,14 @@ final class CustomerServiceWorkspaceController extends Controller
             403,
         );
 
+        // The index's optional case selector is a scalar record identity, not
+        // an array filter. A show URL has an authoritative route-bound case
+        // ID and must not be redirected by an unrelated query parameter.
+        // Authorize the actor first; reject nested selectors before case reads.
+        if ($selectedCaseId === null) {
+            abort_if(is_array($request->query('case_id')), 404);
+        }
+
         $filters = $request->validate([
             'q' => ['nullable', 'string', 'max:120'],
             'store_id' => ['nullable', 'integer', 'min:1'],
@@ -177,6 +186,17 @@ final class CustomerServiceWorkspaceController extends Controller
         if (! empty($filters['store_id'])) {
             abort_unless(in_array((int) $filters['store_id'], $viewStoreIds, true), 404);
         }
+
+        // Navigation selectors are separate from case filters. Preserve the
+        // route-bound case identity on show pages, and check authorization and
+        // the requested store before exposing invalid navigation details.
+        $selectorRules = ['page' => ['nullable', 'integer', 'min:1']];
+        if ($selectedCaseId === null) {
+            // Preserve the established case_id=0 sentinel for "no selected case";
+            // nonnumeric, negative, fractional and oversized identities fail.
+            $selectorRules['case_id'] = ['nullable', 'integer', 'min:0'];
+        }
+        $request->validate($selectorRules);
 
         if (($filters['risk'] ?? null) === 'high') {
             $filters['priority'] ??= 'high';

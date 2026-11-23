@@ -764,8 +764,9 @@ final class FinanceFoundationService
      */
     private function validatedAccount(array $attributes): array
     {
-        if (array_key_exists('code', $attributes)) {
-            $attributes['code'] = strtoupper(trim((string) $attributes['code']));
+        if (array_key_exists('code', $attributes) && is_string($attributes['code'])) {
+            // Preserve non-string codes for native validation instead of coercing arrays to ARRAY.
+            $attributes['code'] = strtoupper(trim($attributes['code']));
         }
         if (array_key_exists('name', $attributes) && is_string($attributes['name'])) {
             $attributes['name'] = trim($attributes['name']);
@@ -789,8 +790,9 @@ final class FinanceFoundationService
      */
     private function validatedCostCenter(array $attributes): array
     {
-        if (array_key_exists('code', $attributes)) {
-            $attributes['code'] = strtoupper(trim((string) $attributes['code']));
+        if (array_key_exists('code', $attributes) && is_string($attributes['code'])) {
+            // Preserve non-string codes for native validation instead of coercing arrays to ARRAY.
+            $attributes['code'] = strtoupper(trim($attributes['code']));
         }
         if (array_key_exists('name', $attributes) && is_string($attributes['name'])) {
             $attributes['name'] = trim($attributes['name']);
@@ -810,8 +812,9 @@ final class FinanceFoundationService
      */
     private function validatedDateRange(array $attributes, bool $period): array
     {
-        if (array_key_exists('code', $attributes)) {
-            $attributes['code'] = strtoupper(trim((string) $attributes['code']));
+        if (array_key_exists('code', $attributes) && is_string($attributes['code'])) {
+            // Preserve non-string codes for native validation instead of coercing arrays to ARRAY.
+            $attributes['code'] = strtoupper(trim($attributes['code']));
         }
         if (array_key_exists('name', $attributes) && is_string($attributes['name'])) {
             $attributes['name'] = trim($attributes['name']);

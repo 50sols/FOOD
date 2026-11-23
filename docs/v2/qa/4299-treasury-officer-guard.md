@@ -1,0 +1,11 @@
+# T122R19 — Treasury Officer bounded role and disabled-module HTTP guard (#4299)
+
+**Acceptance level:** This is a scoped source-backed regression **under** role parent #2699, SoD/security parent #2783, master #2503. It does NOT certify the final live Treasury Officer role, real-account mappings, Treasury approval workflow or business UAT.
+
+**Authoritative role policy:** The existing builtin job role TREASURY_OFFICER is an operator, global/tenant scoped with required ERP module `treasury`. Current allowed bundled permissions are `finance.view`, `finance.manage`, and `reports.view`. The test checks exact seeded Role permissions against the existing catalog, excluding posting, approval, exporting, dispatch, procurement and security management. No broad Super Admin grant is introduced.
+
+**Fail-closed disabled module:** Sync the Treasury module manifest and explicitly disable it when needed in an isolated RefreshDatabase test; a preexisting global `role_user` link remains for historical traceability but cannot grant effective finance permissions while the module is unavailable. In Arabic and English, HTTP GET for the existing `admin.erp.treasury.index` endpoint with forged channel/store and receipts tab returns 403. Orders, payments, invoices and driver assignments row counts remain unchanged.
+
+**Implementation fence:** Two additive files only: `backend/tests/Feature/V2TreasuryOfficerLeastPrivilegeContractTest.php`, `docs/v2/qa/4299-treasury-officer-guard.md`. No modifications to business roles/production authorization code/treasury posting/API/Flutter/mobile. No claim about enabled-module operational completion; role parent #2699 remains OPEN.
+
+**Review/merge gate:** HIGH finance/SoD risk; same-account engineering COMMENT is not independent APPROVED. Original branch `test/4299-v2-treasury-officer-least-privilege` must pass exact final HEAD Repository Policy, V2 Isolation, Required CI including Laravel four shards, MySQL Redis real install/upgrade/recovery and Enterprise Performance before protected expected-SHA squash into `Foodex_V2` only. Verify both integrated files, close ONLY bounded leaf #4299, leave #2699/#2783/#2503 OPEN. No main/release/production/APK. Customer, Driver, Van NO_DIRECT_IMPACT.

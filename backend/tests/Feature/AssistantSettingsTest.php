@@ -11,12 +11,14 @@ use App\Models\Role;
 use App\Models\Setting;
 use App\Models\User;
 use App\Services\AssistantExternalAiClient;
+use App\Services\AssistantObservability;
 use App\Services\AssistantProviderSettings;
 use App\Services\AssistantRuntimeSettings;
 use Database\Seeders\CoreReferenceSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Support\Facades\Crypt;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Route;
@@ -826,6 +828,99 @@ class AssistantSettingsTest extends TestCase
             'store_id' => null,
             'key' => AssistantRuntimeSettings::ENABLED_KEY,
         ]);
+    }
+
+    public function test_assistant_settings_trace_get_shape_is_safe_after_authorization_in_ar_and_en(): void
+    {
+        config(['assistant.observability.enabled' => true]);
+
+        $manager = $this->settingsManager();
+        $viewerRole = Role::query()->create([
+            'code' => 'ASSISTANT_TRACE_READ_ONLY_VIEWER',
+            'name' => 'Assistant Trace Read Only Viewer',
+            'scope' => 'global',
+            'is_system' => false,
+            'is_active' => true,
+        ]);
+        $viewerRole->permissions()->attach(Permission::query()->where('code', 'settings.view')->firstOrFail());
+
+        $viewer = User::query()->create([
+            'name' => 'Assistant Viewer',
+            'email' => 'assistant-trace-viewer@example.test',
+            'password' => 'password',
+            'locale' => 'en',
+            'is_active' => true,
+        ]);
+        $viewer->roles()->attach($viewerRole);
+        $this->assertTrue($viewer->hasPermission('settings.view'));
+        $this->assertFalse($viewer->hasPermission('settings.manage'));
+
+        $roleless = User::query()->create([
+            'name' => 'Assistant No Access',
+            'email' => 'assistant-trace-denied@example.test',
+            'password' => 'password',
+            'locale' => 'en',
+            'is_active' => true,
+        ]);
+
+        $traceId = 'safe-trace-v2-4072';
+        app(AssistantObservability::class)->record($traceId, 'turn.completed', [
+            'actor_user_id' => $manager->id,
+            'phase' => 'turn',
+            'outcome' => 'success',
+        ]);
+        $this->assertDatabaseHas('assistant_observability_events', [
+            'trace_id' => $traceId,
+            'event_name' => 'turn.completed',
+        ]);
+
+        $auditRows = DB::table('audit_logs')->count();
+        $settingRows = DB::table('settings')->count();
+        $traceRows = DB::table('assistant_observability_events')->count();
+        $url = route('admin.assistant-settings.index');
+
+        foreach (['ar', 'en'] as $locale) {
+            $manager->update(['locale' => $locale]);
+            $viewer->update(['locale' => $locale]);
+            $roleless->update(['locale' => $locale]);
+
+            $this->actingAs($manager)
+                ->get($url.'?trace='.$traceId)
+                ->assertOk()
+                ->assertSee('id="assistant-trace-detail"', false)
+                ->assertSee('turn.completed');
+
+            $this->actingAs($manager)
+                ->get($url)
+                ->assertOk()
+                ->assertDontSee('id="assistant-trace-detail"', false);
+
+            $this->actingAs($manager)
+                ->get($url.'?trace=')
+                ->assertOk()
+                ->assertDontSee('id="assistant-trace-detail"', false);
+
+            foreach (['?trace[]=nested', '?trace[other]=nested', '?trace[other][deep]=nested'] as $query) {
+                $this->actingAs($manager)->get($url.$query)->assertNotFound();
+            }
+
+            // A view-only user must not reach trace details, even with a malformed selector.
+            $this->actingAs($viewer)
+                ->get($url.'?trace='.$traceId)
+                ->assertOk()
+                ->assertDontSee('id="assistant-trace-detail"', false);
+            $this->actingAs($viewer)
+                ->get($url.'?trace[]=nested')
+                ->assertOk()
+                ->assertDontSee('id="assistant-trace-detail"', false);
+
+            // Authorization remains authoritative before request-shape validation.
+            $this->actingAs($roleless)->get($url.'?trace[]=nested')->assertForbidden();
+        }
+
+        $this->assertSame($auditRows, DB::table('audit_logs')->count());
+        $this->assertSame($settingRows, DB::table('settings')->count());
+        $this->assertSame($traceRows, DB::table('assistant_observability_events')->count());
     }
 
     public function test_unauthorized_user_cannot_view_or_change_assistant_setting(): void
