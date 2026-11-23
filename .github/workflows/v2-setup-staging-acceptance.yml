@@ -23,6 +23,7 @@ on:
       - 'scripts/tests/test_v2_setup_ci_coverage.py'
       - 'backend/database/**'
       - 'scripts/validate-fresh-setup.sh'
+      - 'scripts/tests/test_v2_setup_server_cleanup.py'
       - 'scripts/v2_setup_staging_verify.py'
       - 'scripts/tests/test_v2_setup_staging_verify.py'
       - 'scripts/v2_setup_signature.php'
@@ -148,6 +149,7 @@ jobs:
         run: |
           set -euo pipefail
           python3 -m unittest discover -s scripts/tests -p 'test_v2_setup_ci_coverage.py'
+          python3 -m unittest discover -s scripts/tests -p 'test_v2_setup_server_cleanup.py'
           python3 -m unittest discover -s scripts/tests -p 'test_v2_build_setup_zip.py'
           python3 -m unittest discover -s scripts/tests -p 'test_v2_setup_staging_verify.py'
           # Disposable CI keys prove signer/verifier parity; never publish
