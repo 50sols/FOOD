@@ -102,6 +102,19 @@ def build_setup_zip(source_root: Path, output: Path, source_epoch: int) -> str:
     if len(paths) > MAX_ENTRIES:
         raise SetupBuildError("Setup ZIP staging member count exceeds budget.")
 
+    # Calculate the entire expanded-size budget before opening any staging
+    # member or allocating a temporary ZIP. Checking only in the packaging
+    # loop can start compressing an oversized tree before rejecting it.
+    preflight_total = 0
+    for source_path in paths:
+        source_meta = source_path.lstat()
+        if stat.S_ISREG(source_meta.st_mode):
+            if source_meta.st_size > MAX_ENTRY_SIZE:
+                raise SetupBuildError("Setup ZIP staging entry exceeds size budget.")
+            preflight_total += source_meta.st_size
+            if preflight_total > MAX_TOTAL_SIZE:
+                raise SetupBuildError("Setup ZIP staging expanded size exceeds budget.")
+
     output.parent.mkdir(parents=True, exist_ok=True)
     handle, temporary_name = tempfile.mkstemp(prefix=".v2-setup-", suffix=".zip", dir=output.parent)
     os.close(handle)
