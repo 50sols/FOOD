@@ -239,6 +239,14 @@ test('historical P135 inline metadata reuses its one original PR without hiding 
   assert.deepEqual([decision.action, decision.pr, decision.head],
     ['RESUME_ORIGINAL_PR', 3065, 'current-head']);
 
+  const wrongExplicitId = claimReferences([{body:
+    '<!-- foodex-worker-state:v1 -->\nSTATE: ACTIVE\n'
+      + 'BRANCH: ' + original + '\nPR: #9999',
+  }]);
+  assert.equal(decide({ ...shared, refs: wrongExplicitId }).action,
+    'BLOCK_CONFLICTING_ORIGINALS',
+    'A genuine original branch cannot override a contradictory historical PR ID');
+
   for (const decorated of [
     original + '; ORIGINAL_PR: #9999 OPEN/DRAFT -> Foodex_V2 ONLY; latest verified source HEAD '
       + sha + '. Previous worker WAITING_CI/EDITING_RELEASED. No peer-active file overlap, 26 other OPEN PRs inspected.',
