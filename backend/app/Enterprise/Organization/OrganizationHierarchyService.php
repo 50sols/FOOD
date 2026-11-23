@@ -82,7 +82,10 @@ final class OrganizationHierarchyService
             // Enforce the active enterprise lineage at the canonical scope
             // writer, not only in optional Admin wrappers. Both explicit
             // assignments and default provisioning pass through here.
-            $businessUnit->loadMissing('legalEntity.company.organization');
+            // Refresh both the unit and its ancestry from the database.
+            // Previously preloaded relationships could remain stale after a
+            // parent was deactivated, bypassing this canonical write guard.
+            $businessUnit->refresh()->load('legalEntity.company.organization');
             if (! $businessUnit->is_active
                 || ! $businessUnit->legalEntity->is_active
                 || ! $businessUnit->legalEntity->company->is_active
