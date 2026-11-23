@@ -7,6 +7,7 @@ use App\Enterprise\Health\ModuleHealthProbe;
 use App\Enterprise\Modules\ModuleLifecycleManager;
 use App\Enterprise\Modules\ModuleManifestCatalog;
 use App\Enterprise\Modules\ModuleOperationalReadiness;
+use App\Enterprise\Modules\ModuleRegistry;
 use App\Enterprise\Modules\ModuleState;
 use App\Enterprise\Modules\ModuleWorkflowAttestation;
 use App\Models\EnterpriseModule;
@@ -316,6 +317,36 @@ final class V2ErpOperationalWorkflowEvidenceTest extends TestCase
 
         // This test changes only disposable Laravel fixture module state.
         // No production certification, grants or trust keys are provisioned.
+    }
+
+    public function test_signed_erp_module_with_no_declared_health_checks_cannot_be_operationally_ready(): void
+    {
+        $this->enableSample();
+        $this->requireSampleWorkflow();
+        $readiness = app(ModuleOperationalReadiness::class);
+
+        // An optional platform module is allowed to use its existing empty
+        // health-check contract; requiring an ERP check must not regress it.
+        $this->evidence();
+        $this->assertSame('ready', $readiness->status('sample_optional', 1, ModuleState::ENABLED));
+
+        // Change the same isolated module into an ERP operations module and
+        // obtain a fresh correctly signed synthetic proof for that new
+        // manifest. The missing health checks, not an invalid signature,
+        // must now prevent a false ready verdict.
+        config()->set('enterprise_modules.modules.sample_optional.category', 'operations');
+        app(ModuleRegistry::class)->syncManifest('sample_optional');
+        $this->evidence();
+        $this->assertSame([], app(ModuleManifestCatalog::class)->require('sample_optional')->healthChecks);
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            $this->assertSame(
+                'unhealthy',
+                $readiness->status('sample_optional', 1, ModuleState::ENABLED),
+                'A signed ERP workflow is not a substitute for an executed health probe.',
+            );
+        }
     }
 
     public function test_operational_proof_never_bypasses_disabled_lifecycle_or_failing_health(): void
