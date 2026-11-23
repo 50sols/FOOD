@@ -325,6 +325,7 @@ def _reject_noncanonical_zip_envelope(source) -> None:
              and end_record[20:22] == b"\x00\x00",
              "Setup ZIP contains appended data, an archive comment or an ambiguous end record.")
 
+
 def verify_setup_zip(zip_path: Path, version_path: Path, source_sha: str) -> dict[str, str | int | bool]:
     _require(bool(SOURCE_SHA.fullmatch(source_sha)), "Invalid exact source SHA.")
     _require(zip_path.is_file() and not zip_path.is_symlink(), "Missing or symlinked Setup ZIP.")
@@ -438,12 +439,13 @@ def verify_setup_zip(zip_path: Path, version_path: Path, source_sha: str) -> dic
                 "source_commit": source_sha,
                 "version": version,
                 "file": zip_path.name,
-                "bytes": zip_path.stat().st_size,
+                "bytes": opened.st_size,
                 "sha256": digest.hexdigest(),
             }
 
     except OSError as exc:
         raise SetupZipError("Setup ZIP changed during verification.") from exc
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
