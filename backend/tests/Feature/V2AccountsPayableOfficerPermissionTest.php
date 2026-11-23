@@ -94,7 +94,7 @@ final class V2AccountsPayableOfficerPermissionTest extends TestCase
             $actor->forceFill(['locale' => $locale])->save();
 
             foreach ($attempts as [$routeName, $parameters]) {
-                $this->assertTrue(\\Illuminate\\Support\\Facades\\Route::has($routeName), $routeName);
+                $this->assertTrue(\Illuminate\Support\Facades\Route::has($routeName), $routeName);
                 $response = $this->actingAs($actor->fresh())->post(
                     route($routeName, $parameters, false),
                     ['idempotency_key' => '2697-ap-denied'],
