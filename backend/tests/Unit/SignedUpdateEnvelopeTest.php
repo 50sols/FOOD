@@ -64,7 +64,7 @@ final class SignedUpdateEnvelopeTest extends TestCase
         $this->assertInstanceOf(SignedUpdateEnvelope::class, SignedUpdateEnvelope::parse($canonical));
 
         $cases = [
-            " ".$canonical,
+            ' '.$canonical,
             $canonical."\n",
             json_encode(array_reverse($fields, true), JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE),
             str_replace('"target_version":"99.0.0"', '"target_version":"99.0.0","target_version":"99.0.0"', $canonical),
