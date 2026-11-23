@@ -16,7 +16,10 @@ final class OperationalTenantScope
 
         // A disabled account must never acquire operational tenant scopes,
         // including through the Super Admin shortcut.
-        if (! $user->is_active) {
+        if (! $user->is_active || ! DB::table('users')
+            ->where('id', $user->getKey())
+            ->where('is_active', true)
+            ->exists()) {
             return [];
         }
 
