@@ -7,10 +7,13 @@ use App\Enterprise\Entitlements\ModuleEntitlementManager;
 use App\Enterprise\Health\ModuleHealthCheck;
 use App\Enterprise\Health\ModuleHealthProbe;
 use App\Enterprise\Modules\ModuleRegistry;
+use App\Enterprise\Organization\OrganizationHierarchyService;
 use App\Models\Role;
+use App\Models\Store;
 use App\Models\User;
 use App\Services\EnterpriseModuleAdministration;
 use App\Services\PlatformOwnerProvisioner;
+use App\Services\WholesalePrincipal;
 use App\Support\AdminNavigation;
 use Database\Seeders\CoreReferenceSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -71,13 +74,23 @@ final class V2SidebarOperationalReadinessProjectionTest extends TestCase
 
         config()->set('enterprise_module_readiness.certified_versions.procurement', $version);
 
+        // Operational link acceptance requires a real, provisioned legal
+        // Wholesale store, not a platform entitlement alone.
+        $storeId = app(WholesalePrincipal::class)->storeId();
+        app(OrganizationHierarchyService::class)->ensureDefaultScopeForStore(
+            Store::query()->findOrFail($storeId),
+        );
+
         foreach (['ar', 'en'] as $locale) {
             app()->setLocale($locale);
             $operator->forceFill(['locale' => $locale])->save();
             $item = $this->navigationItem($operator->fresh(), 'erp_procurement');
             $this->assertNotNull($item);
             $this->assertSame('admin.erp.procurement.index', $item['route']);
-            $this->assertSame([], $item['params']);
+            $this->assertSame(['store_id' => (string) $storeId], $item['params']);
+            $this->actingAs($operator->fresh())
+                ->get(route($item['route'], $item['params']))
+                ->assertOk();
         }
 
         $denied = User::factory()->create(['is_active' => true, 'locale' => 'en']);
