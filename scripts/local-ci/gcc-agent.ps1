@@ -110,6 +110,7 @@ function Trusted-Toolkit {
 }
 function Full-CI([int]$Pr,[string]$Sha,[long]$Request,[string]$Checkout,[ValidateSet('all','backend','setup','packages')][string]$Profile) {
  if(-not (Test-Path (Join-Path $Checkout 'backend/composer.lock'))) {
+  $script:GccLastFailedStage='missing-composer-lock'
   Write-Warning 'Fail closed: exact PR head lacks backend/composer.lock; canonical dependency #3444 must be resolved first.'
   return 1
  }
@@ -127,6 +128,7 @@ function Full-CI([int]$Pr,[string]$Sha,[long]$Request,[string]$Checkout,[Validat
  $project="gcc$Pr$Request"
  $log=Join-Path $Root "full-$Pr-$Request.log"
  $exit=1
+ $stage='cache'
  try {
   & docker volume create foodex-gcc-composer-cache *> $null
   if($LASTEXITCODE -ne 0) { throw 'Composer cache volume unavailable' }
@@ -134,19 +136,25 @@ function Full-CI([int]$Pr,[string]$Sha,[long]$Request,[string]$Checkout,[Validat
   if($LASTEXITCODE -ne 0) { throw 'Flutter pub cache volume unavailable' }
   $targets=@('preparer','runner')
   if($Profile -ne 'backend') { $targets+= 'preview' }
+  $stage='docker-image-build'
   & docker compose -p $project -f $compose build @targets *> $log
   if($LASTEXITCODE -ne 0) { throw "Trusted GCC toolchain build failed; see $log" }
+  $stage='composer-dependencies'
   & docker compose -p $project -f $compose run --rm --no-deps preparer *>> $log
   if($LASTEXITCODE -ne 0) { throw "Composer/Redocly preparation failed; see $log" }
   if($Profile -ne 'backend') {
+   $stage='flutter-web-previews'
    & docker compose -p $project -f $compose run --rm --no-deps preview *>> $log
    if($LASTEXITCODE -ne 0) { throw "Flutter Web preview build failed; see $log" }
   }
+  $stage='mysql-redis-startup'
   & docker compose -p $project -f $compose up -d --wait mysql redis *>> $log
   if($LASTEXITCODE -ne 0) { throw "MySQL/Redis startup failed; see $log" }
+  $stage='laravel-and-package-suite'
   & docker compose -p $project -f $compose run --rm runner *>> $log
   $exit=[int]$LASTEXITCODE
   if($exit -ne 0) { throw "Full Laravel/package acceptance failed; see $log" }
+  $stage='validate-exact-head-results'
   $resultFile=Join-Path $report 'result.json'
   if(-not (Test-Path -LiteralPath $resultFile)) { throw 'Missing full CI result manifest.' }
   $result=Get-Content -LiteralPath $resultFile -Raw | ConvertFrom-Json
@@ -173,6 +181,7 @@ function Full-CI([int]$Pr,[string]$Sha,[long]$Request,[string]$Checkout,[Validat
   }
   return 0
  } catch {
+  $script:GccLastFailedStage=$stage
   Write-Warning "GCC full acceptance: $($_.Exception.Message)"
   return 1
  } finally {
@@ -183,6 +192,7 @@ function Full-CI([int]$Pr,[string]$Sha,[long]$Request,[string]$Checkout,[Validat
 function Report-Full([int]$Pr,[string]$Sha,[string]$Status,[int]$Exit,[long]$Request,[string]$Profile) {
  $report=Join-Path $Root "evidence\$Pr-$Request"
  $summary=''
+ $stageLabel=if($Status -eq 'FAIL') { [string]$script:GccLastFailedStage } else { 'complete' }
  $evidence=Join-Path $report 'result.json'
  if(Test-Path -LiteralPath $evidence) {
   try {
@@ -201,6 +211,7 @@ function Report-Full([int]$Pr,[string]$Sha,[string]$Status,[int]$Exit,[long]$Req
  "**GCC $Profile local Laravel/MySQL/ZIP staging: $Status**" + [Environment]::NewLine +
  "- Exact PR head: $Sha" + [Environment]::NewLine +
  "- Process exit code: $Exit" + [Environment]::NewLine +
+ "- Stage: $stageLabel" + [Environment]::NewLine +
  "- Isolated GCC evidence directory: local only (no raw logs or secrets uploaded)" + $summary +
  [Environment]::NewLine + "**Staging, unsigned, untrusted for production.** A PASS does not prove a same-ZIP upgrade, digital signature, independent provenance, or production readiness. GitHub Required CI remains authoritative."
  $response=& gh api "repos/$Repo/issues/$Pr/comments" -f "body=$body" 2>&1
@@ -223,6 +234,7 @@ function Process($Comment) {
  }
  if([string]$pr.head.ref -cnotmatch '^(ci|feat|fix|test|chore|refactor|docs|worker)/[0-9]+-[a-z0-9-]+$') { return }
  $status='FAIL'; $exit=1
+ $script:GccLastFailedStage='checkout-or-dispatch'
  try {
   if($profile -ne 'run') {
    $testProfile=if($profile -eq 'full') { 'all' } else { $profile }
