@@ -73,7 +73,7 @@ function Smoke([int]$Pr,[string]$Sha,[long]$Request) {
   & git -C $work checkout -q --detach $Sha | Out-Null
   if($LASTEXITCODE -ne 0) { throw 'git checkout failed' }
   $tests='python3 -B scripts/ci-plan.py --validate && python3 -B scripts/ci-failure-registry.py --validate && python3 -B -m unittest discover -s scripts/tests -p test_ci_plan.py && python3 -B -m unittest discover -s scripts/tests -p test_foodex_branch_policy.py'
-  $args=@('run','--rm','--pull=missing','--network','none','--read-only','--cap-drop','ALL','--security-opt','no-new-privileges','--pids-limit','128','--memory','2g','--cpus','2','--tmpfs','/tmp:rw,nosuid,nodev,noexec,size=64m','-e','PYTHONDONTWRITEBYTECODE=1','-v',("$($work):/work:ro"),'-w','/work','python:3.12-slim','sh','-ec',$tests)
+  $args=@('run','--rm','--pull=missing','--network','none','--read-only','--cap-drop','ALL','--security-opt','no-new-privileges','--pids-limit','128','--memory','2g','--cpus','2','--tmpfs','/tmp:rw,nosuid,nodev,noexec,size=64m','-e','PYTHONDONTWRITEBYTECODE=1','-v',("$($work):/work:ro"),'-w','/work','python:3.12','sh','-ec',$tests)
   $log=Join-Path $Root "test-$Pr-$Request.log"
   & docker @args *> $log
   $exit=[int]$LASTEXITCODE
