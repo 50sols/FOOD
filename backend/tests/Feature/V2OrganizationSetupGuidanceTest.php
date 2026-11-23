@@ -264,6 +264,63 @@ final class V2OrganizationSetupGuidanceTest extends TestCase
         $this->assertSame($before, DB::table('audit_logs')->count());
     }
 
+    public function test_child_preview_and_save_reject_inactive_ancestor_with_active_immediate_parent(): void
+    {
+        $admin = $this->actor('SUPER_ADMIN', 'en');
+
+        $inactiveOrganization = EnterpriseOrganization::query()->create([
+            'code' => 'v2_inactive_ancestor_org',
+            'name' => 'Inactive Ancestor Organization',
+            'is_active' => false,
+        ]);
+        $activeCompany = EnterpriseCompany::query()->create([
+            'organization_id' => $inactiveOrganization->id,
+            'code' => 'v2_active_descendant_company',
+            'name' => 'Active Child of Inactive Organization',
+            'is_active' => true,
+        ]);
+
+        $activeOrganization = EnterpriseOrganization::query()->create([
+            'code' => 'v2_active_ancestor_org',
+            'name' => 'Active Ancestor Organization',
+            'is_active' => true,
+        ]);
+        $inactiveCompany = EnterpriseCompany::query()->create([
+            'organization_id' => $activeOrganization->id,
+            'code' => 'v2_inactive_ancestor_company',
+            'name' => 'Inactive Ancestor Company',
+            'is_active' => false,
+        ]);
+        $activeEntity = EnterpriseLegalEntity::query()->create([
+            'company_id' => $inactiveCompany->id,
+            'code' => 'v2_active_descendant_entity',
+            'name' => 'Active Child of Inactive Company',
+            'is_active' => true,
+        ]);
+
+        $auditCount = DB::table('audit_logs')->count();
+        foreach ([
+            [route('admin.enterprise-legal-entities.store', $activeCompany), 'v2_denied_entity'],
+            [route('admin.enterprise-business-units.store', $activeEntity), 'v2_denied_unit'],
+        ] as [$url, $code]) {
+            foreach (['en', 'ar'] as $locale) {
+                $admin->forceFill(['locale' => $locale])->save();
+                foreach ([true, false] as $preview) {
+                    $payload = ['code' => $code, 'name' => 'Denied Descendant', 'is_active' => '1'];
+                    if ($preview) {
+                        $payload['_setup_test'] = '1';
+                    }
+                    $this->actingAs($admin->fresh())->post($url, $payload)
+                        ->assertSessionHasErrors('parent');
+                }
+            }
+        }
+
+        $this->assertDatabaseMissing('enterprise_legal_entities', ['code' => 'v2_denied_entity']);
+        $this->assertDatabaseMissing('enterprise_business_units', ['code' => 'v2_denied_unit']);
+        $this->assertSame($auditCount, DB::table('audit_logs')->count());
+    }
+
     public function test_failed_create_save_restores_values_only_to_create_form(): void
     {
         $admin = $this->actor('SUPER_ADMIN', 'en');
