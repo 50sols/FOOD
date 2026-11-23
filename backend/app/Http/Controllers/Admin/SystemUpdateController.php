@@ -185,6 +185,12 @@ final class SystemUpdateController extends Controller
     {
         $this->authorizeSuperAdminUpdate($request);
 
+        // Audit reasons must satisfy the minimum length after normalization;
+        // padded whitespace is not a valid recovery justification.
+        if (is_string($request->input('reason'))) {
+            $request->merge(['reason' => trim($request->input('reason'))]);
+        }
+
         $validated = $request->validate([
             'reason' => ['required', 'string', 'min:5', 'max:500'],
         ]);
@@ -217,6 +223,12 @@ final class SystemUpdateController extends Controller
     public function restore(Request $request, string $backupReference): RedirectResponse
     {
         $this->authorizeSuperAdminUpdate($request);
+
+        // Audit reasons must satisfy the minimum length after normalization;
+        // padded whitespace is not a valid recovery justification.
+        if (is_string($request->input('reason'))) {
+            $request->merge(['reason' => trim($request->input('reason'))]);
+        }
 
         $validated = $request->validate([
             'reason' => ['required', 'string', 'min:5', 'max:500'],
