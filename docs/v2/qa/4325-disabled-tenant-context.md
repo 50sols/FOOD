@@ -14,3 +14,6 @@ TenantContextResolver previously resolved Retail context via historical store-ro
 
 ## Acceptance
 REVIEW_RISK HIGH (identity and tenancy); require detailed file review, exact-final-head Repository Policy, V2 Isolation, Required CI including Laravel shards and MySQL/Redis. Protected SHA-guarded integration into `Foodex_V2` before closing #4325; parent #2782 and master #2503 stay OPEN. MOBILE IMPACT — Customer NO_DIRECT_IMPACT; Driver NO_DIRECT_IMPACT; Van NO_DIRECT_IMPACT to Flutter source; only disabled identities receive stricter existing backend authorization. No `main`, releases, tags or production changes.
+
+## Concurrent revocation and stale User models
+The tenant entry points check both the supplied Eloquent User.is_active and the current persisted users.is_active row; a preloaded active model cannot remain an authority after offboarding through another DB writer. The regression `test_preloaded_active_actor_cannot_resolve_retail_after_database_revocation` deliberately performs a direct database revoke after constructing an active user, then asserts the stale actor gets no enumerated/default stores and cannot resolve Retail context (403). This preserves fail-closed behavior even before request/session caches are invalidated.
