@@ -8,7 +8,7 @@ version="$(tr -d '[:space:]' < VERSION)"
 test -n "$version"
 export CURRENT_VERSION="$version"
 profile="$GCC_PROFILE"
-case "$profile" in all|backend|packages) ;; *) echo 'Unsupported GCC profile' >&2; exit 2 ;; esac
+case "$profile" in all|backend|packages|setup) ;; *) echo 'Unsupported GCC profile' >&2; exit 2 ;; esac
 mkdir -p /evidence
 step=startup
 failed() {
@@ -58,7 +58,7 @@ if [[ "$profile" == backend || "$profile" == all ]]; then
   cd /workspace
 fi
 
-if [[ "$profile" == packages || "$profile" == all ]]; then
+if [[ "$profile" == packages || "$profile" == all || "$profile" == setup ]]; then
   step=build-production-setup
   test -s /workspace/production-backend/vendor/autoload.php
   stage=/workspace/gcc-package-stage
@@ -105,6 +105,7 @@ PY
   CURRENT_VERSION="$version" bash scripts/validate-fresh-setup.sh
   test -s Release/FRESH_INSTALL_EVIDENCE.json
   cp Release/FRESH_INSTALL_EVIDENCE.json /evidence/fresh-install-evidence.json
+  if [[ "$profile" != setup ]]; then
   step=verify-safe-update-dependency-boundary
   test "$(git show v1.0.125:VERSION | tr -d '[:space:]')" = 1.0.125
   # Canonical updater excludes vendor/ from ZIP payload. If production
@@ -174,6 +175,7 @@ with zipfile.ZipFile(package) as z:
         raise SystemExit(f"Missing Update runtime files: {sorted(required-set(names))}")
 print("UPDATE_SHA256="+digest)
 PY
+  fi
 fi
 
 step=write-evidence
@@ -183,7 +185,7 @@ source,version,profile=sys.argv[1:]
 root=pathlib.Path("/evidence")
 artifacts={p.name:hashlib.sha256(p.read_bytes()).hexdigest()
            for p in root.rglob("*.zip") if p.is_file()}
-if profile in {"packages","all"} and not artifacts:
+if profile in {"packages","all","setup"} and not artifacts:
     raise SystemExit("Package artifacts missing")
 print(json.dumps(dict(schema=1,result="PASS",source_sha=source,
  version=version,profile=profile,artifacts_sha256=artifacts,
