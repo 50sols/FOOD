@@ -409,6 +409,62 @@ final class V2OrganizationSetupGuidanceTest extends TestCase
         $this->assertSame($beforeAudit, DB::table('audit_logs')->count());
     }
 
+    public function test_direct_metadata_edits_preserve_inactive_legacy_hierarchy_without_reactivation(): void
+    {
+        $admin = $this->actor('SUPER_ADMIN', 'en');
+        $service = app(EnterpriseOrganizationAdministration::class);
+        $organization = EnterpriseOrganization::query()->create([
+            'code' => 'v2_legacy_metadata_org',
+            'name' => 'Inactive Organization',
+            'is_active' => false,
+        ]);
+        $company = EnterpriseCompany::query()->create([
+            'organization_id' => $organization->id,
+            'code' => 'v2_legacy_metadata_company',
+            'name' => 'Inactive Company',
+            'is_active' => false,
+        ]);
+        $entity = EnterpriseLegalEntity::query()->create([
+            'company_id' => $company->id,
+            'code' => 'v2_legacy_metadata_entity',
+            'name' => 'Inactive Entity',
+            'is_active' => false,
+        ]);
+        $unit = EnterpriseBusinessUnit::query()->create([
+            'legal_entity_id' => $entity->id,
+            'code' => 'v2_legacy_metadata_unit',
+            'name' => 'Inactive Unit',
+            'is_active' => false,
+        ]);
+        $auditBefore = DB::table('audit_logs')->count();
+
+        // The caller submits no is_active key; name-only edits are not
+        // activation operations and must not rewrite hierarchy state.
+        $service->updateCompany($company, ['name' => 'Renamed Inactive Company'], $admin);
+        $service->updateBusinessUnit($unit, ['name' => 'Renamed Inactive Unit'], $admin);
+
+        $this->assertSame('Renamed Inactive Company', $company->fresh()->name);
+        $this->assertSame('Renamed Inactive Unit', $unit->fresh()->name);
+        $this->assertFalse((bool) $organization->fresh()->is_active);
+        $this->assertFalse((bool) $company->fresh()->is_active);
+        $this->assertFalse((bool) $entity->fresh()->is_active);
+        $this->assertFalse((bool) $unit->fresh()->is_active);
+        $this->assertSame($auditBefore + 2, DB::table('audit_logs')->count());
+
+        foreach ([[$company, 'updateCompany'], [$unit, 'updateBusinessUnit']] as [$record, $method]) {
+            try {
+                $service->{$method}($record, ['is_active' => true], $admin);
+                $this->fail('Explicit activation beneath an inactive ancestor must be denied.');
+            } catch (ValidationException $exception) {
+                $this->assertArrayHasKey('parent', $exception->errors());
+            }
+
+            $this->assertFalse((bool) $record->fresh()->is_active);
+        }
+
+        $this->assertSame($auditBefore + 2, DB::table('audit_logs')->count());
+    }
+
     public function test_reactivation_with_active_ancestors_succeeds_only_on_save(): void
     {
         $admin = $this->actor('SUPER_ADMIN', 'en');
