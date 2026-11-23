@@ -53,6 +53,9 @@ final class UpdatePackageValidator
                 ? config('foodex.update_max_zip_members', 50000)
                 : 50000;
             $maxMembers = max(1, (int) $configuredMaxMembers);
+            if ($archive->numFiles === 0) {
+                throw new InvalidArgumentException('Update archive contains no release members.');
+            }
             if ($archive->numFiles > $maxMembers) {
                 throw new InvalidArgumentException('Update archive exceeds the allowed member count.');
             }
