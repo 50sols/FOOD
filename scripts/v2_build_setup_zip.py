@@ -86,6 +86,14 @@ def build_setup_zip(source_root: Path, output: Path, source_epoch: int) -> str:
                     raise SetupBuildError(f"Hard-linked Setup staging member: {path.relative_to(source_root)!s}")
 
                 name = path.relative_to(source_root).as_posix()
+                # Never stage live dotenv configuration, even briefly. The
+                # downstream ZIP verifier rejects these too, but a builder
+                # must fail before publishing a secret-bearing archive.
+                allowed_templates = {".env.example", ".env.production.example"}
+                for component in path.relative_to(source_root).parts:
+                    folded = component.casefold()
+                    if folded == ".env" or (folded.startswith(".env.") and folded not in allowed_templates):
+                        raise SetupBuildError(f"Secret environment configuration in Setup staging: {name}")
                 is_dir = stat.S_ISDIR(meta.st_mode)
                 info = zipfile.ZipInfo(name + "/" if is_dir else name, date_time=timestamp)
                 info.create_system = 3
