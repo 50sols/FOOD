@@ -83,10 +83,194 @@ function Smoke([int]$Pr,[string]$Sha,[long]$Request) {
   if(Test-Path -LiteralPath $work) { Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue }
  }
 }
+
+# Full backend execution uses immutable trusted tooling, not Compose files from PRs.
+function Trusted-Toolkit {
+ $pin='767348b7453a2218d51012221614be0cb5b32144'
+ $kit=Join-Path $Root "trusted\$pin"
+ $expected=@{
+  'Dockerfile.backend'='7809e482cee0e446f3aab09174d1a53a634853c6'
+  'compose.backend.yaml'='d8754d606cb250849dd325b47f37cab32dd98624'
+  'prepare.sh'='1142146e0e9b0bcb7f39be6ac873ee5e85c7c93a'
+  'full.sh'='478eb8e0774d69bdced71ef4fbcfc2745b4f5ae2'
+ }
+ New-Item -ItemType Directory -Path $kit -Force | Out-Null
+ foreach($name in @('Dockerfile.backend','compose.backend.yaml','prepare.sh','full.sh')) {
+  $file=Join-Path $kit $name
+  if(-not (Test-Path -LiteralPath $file)) {
+   $url="https://raw.githubusercontent.com/$Repo/$pin/scripts/local-ci/$name"
+   Invoke-WebRequest -UseBasicParsing -Uri $url -OutFile $file
+  }
+  $actual=(& git hash-object $file | Out-String).Trim()
+  if($actual -cne $expected[$name]) { throw "Trusted GCC toolkit hash mismatch: $name" }
+ }
+ return $kit
+}
+function Full-CI([int]$Pr,[string]$Sha,[long]$Request,[string]$Checkout) {
+ $kit=Trusted-Toolkit
+ $report=Join-Path $Root "evidence\$Pr-$Request"
+ New-Item -ItemType Directory -Path $report -Force | Out-Null
+ # The versioned source tag is required by the genuine update-bundle builder.
+ & git -C $Checkout -c credential.helper= fetch --quiet --depth=1 origin tag v1.0.125
+ if($LASTEXITCODE -ne 0) { throw 'Canonical update base v1.0.125 could not be fetched.' }
+ $env:GCC_SOURCE_DIR=$Checkout
+ $env:GCC_EVIDENCE_DIR=$report
+ $env:GCC_EXPECTED_SHA=$Sha
+ $env:GCC_PROFILE='all'
+ $compose=Join-Path $kit 'compose.backend.yaml'
+ $project="gcc$Pr$Request"
+ $log=Join-Path $Root "full-$Pr-$Request.log"
+ $exit=1
+ try {
+  & docker volume create foodex-gcc-composer-cache *> $null
+  if($LASTEXITCODE -ne 0) { throw 'Composer cache volume unavailable' }
+  & docker compose -p $project -f $compose build preparer runner *> $log
+  if($LASTEXITCODE -ne 0) { throw "Trusted GCC toolchain build failed; see $log" }
+  & docker compose -p $project -f $compose run --rm --no-deps preparer *>> $log
+  if($LASTEXITCODE -ne 0) { throw "Composer/Redocly preparation failed; see $log" }
+  & docker compose -p $project -f $compose up -d --wait mysql redis *>> $log
+  if($LASTEXITCODE -ne 0) { throw "MySQL/Redis startup failed; see $log" }
+  & docker compose -p $project -f $compose run --rm runner *>> $log
+  $exit=[int]$LASTEXITCODE
+  if($exit -ne 0) { throw "Full Laravel/package acceptance failed; see $log" }
+  $resultFile=Join-Path $report 'result.json'
+  if(-not (Test-Path -LiteralPath $resultFile)) { throw 'Missing full CI result manifest.' }
+  $result=Get-Content -LiteralPath $resultFile -Raw | ConvertFrom-Json
+  if($result.result -cne 'PASS' -or $result.source_sha -cne $Sha -or $result.profile -cne 'all' -or
+     $result.signed -ne $false -or $result.trusted_release -ne $false) {
+   throw 'Full CI manifest failed exact-head/profile/staging validation.'
+  }
+  $artifacts=Get-ChildItem -Path $report -Filter '*.zip' -Recurse
+  if(@($artifacts).Count -lt 2) { throw 'Setup + Update ZIP files are both required.' }
+  foreach($artifact in $artifacts) {
+   $expectedHash=[string]$result.artifacts_sha256.($artifact.Name)
+   $actualHash=(Get-FileHash -LiteralPath $artifact.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+   if(-not $expectedHash -or $expectedHash -cne $actualHash) {
+    throw "Artifact SHA256 integrity failure: $($artifact.Name)"
+   }
+  }
+  return 0
+ } catch {
+  Write-Warning "GCC full acceptance: $($_.Exception.Message)"
+  return 1
+ } finally {
+  & docker compose -p $project -f $compose down --volumes --remove-orphans *> $null
+  Remove-Item Env:\GCC_SOURCE_DIR,Env:\GCC_EVIDENCE_DIR,Env:\GCC_EXPECTED_SHA,Env:\GCC_PROFILE -ErrorAction SilentlyContinue
+ }
+}
+function Report-Full([int]$Pr,[string]$Sha,[string]$Status,[int]$Exit,[long]$Request) {
+ $report=Join-Path $Root "evidence\$Pr-$Request"
+ $summary=''
+ $evidence=Join-Path $report 'result.json'
+ if(Test-Path -LiteralPath $evidence) {
+  try {
+   $data=Get-Content -LiteralPath $evidence -Raw | ConvertFrom-Json
+   if($data.source_sha -cne $Sha) { throw 'Result SHA mismatch' }
+   if($data.artifacts_sha256) {
+    foreach($item in $data.artifacts_sha256.PSObject.Properties) {
+     $summary += [Environment]::NewLine + "- $($item.Name): SHA256 $($item.Value)"
+    }
+   }
+  } catch {
+   $summary=[Environment]::NewLine + '- Evidence JSON could not be validated'
+  }
+ }
+ $body="<!-- foodex-gcc-full:$Request -->" + [Environment]::NewLine +
+ "**GCC full Laravel/MySQL/Redis/ZIP staging: $Status**" + [Environment]::NewLine +
+ "- Exact PR head: $Sha" + [Environment]::NewLine +
+ "- Process exit code: $Exit" + [Environment]::NewLine +
+ "- Isolated GCC evidence directory: local only (no raw logs or secrets uploaded)" + $summary +
+ [Environment]::NewLine + "**Staging, unsigned, untrusted for production.** A PASS does not prove a same-ZIP upgrade, digital signature, independent provenance, or production readiness. GitHub Required CI remains authoritative."
+ $response=& gh api "repos/$Repo/issues/$Pr/comments" -f "body=$body" 2>&1
+ if($LASTEXITCODE -ne 0) { throw "Failed to post GCC full CI evidence to PR #$Pr" }
+ $posted=$response | Out-String | ConvertFrom-Json
+ if(-not $posted.id) { throw 'GitHub did not confirm GCC full evidence.' }
+ Write-Output "GCC full PR #$Pr comment $($posted.id): $Status"
+}
+
 function Process($Comment) {
  if($null -eq $Comment.user -or $Comment.user.login -cne $Owner) { return }
- if([string]$Comment.body -cnotmatch '(?m)^/gcc-ci run ([a-f0-9]{40})\s*$') { return }
- $sha=$Matches[1]
+ if([string]$Comment.body -cnotmatch '(?m)^/gcc-ci (run|full) ([a-f0-9]{40})\s*
+ if([string]$Comment.issue_url -notmatch '^https://api\.github\.com/repos/walidatiyaai2025-gif/FOOD/issues/([0-9]+)$') { return }
+ $n=[int]$Matches[1]
+ $pr=Api "repos/$Repo/pulls/$n"
+ if($pr.state -ne 'open' -or $pr.base.ref -cne $Base -or $pr.head.repo.full_name -cne $Repo -or $pr.head.sha -cne $sha) {
+  Write-Warning "Rejected non-V2, changed or foreign PR #$n"; return
+ }
+ if([string]$pr.head.ref -cnotmatch '^(ci|feat|fix|test|chore|refactor|docs|worker)/[0-9]+-[a-z0-9-]+$') { return }
+ $status='FAIL'; $exit=1
+ try {
+  if($profile -eq 'full') {
+   $work=Join-Path $Root "work\$n-$($Comment.id)"
+   New-Item -ItemType Directory -Path $work -Force | Out-Null
+   try {
+    & git -C $work init -q | Out-Null
+    & git -C $work remote add origin "https://github.com/$Repo.git" | Out-Null
+    & git -C $work -c credential.helper= fetch --quiet --depth 1 origin "refs/pull/$n/head" | Out-Null
+    if($LASTEXITCODE -ne 0) { throw 'Full CI PR fetch failed' }
+    $fetched=(& git -C $work rev-parse FETCH_HEAD | Out-String).Trim()
+    if($fetched -cne $sha) { throw 'Full CI fetched source SHA mismatch' }
+    & git -C $work checkout -q --detach $sha | Out-Null
+    if($LASTEXITCODE -ne 0) { throw 'Full CI checkout failed' }
+    $exit=Full-CI -Pr $n -Sha $sha -Request ([long]$Comment.id) -Checkout $work
+   } finally {
+    if(Test-Path $work) { Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue }
+   }
+  } else {
+   $exit=Smoke -Pr $n -Sha $sha -Request ([long]$Comment.id)
+  }
+  if($exit -eq 0) { $status='PASS' }
+ } catch { Write-Warning "Smoke error: $($_.Exception.Message)" }
+ if($profile -eq 'full') {
+  Report-Full -Pr $n -Sha $sha -Status $status -Exit $exit -Request ([long]$Comment.id)
+ } else {
+  Report -Pr $n -Sha $sha -Status $status -Exit $exit -Request ([long]$Comment.id)
+ }
+}
+function Poll {
+ $mutex=New-Object System.Threading.Mutex($false,'Local\FOODEX_GCC_CI_AGENT')
+ $held=$false
+ try {
+  $held=$mutex.WaitOne(0)
+  if(-not $held) { return }
+  Initialize
+  $cursor=Cursor
+  $recent=@(Comments | Where-Object { [long]$_.id -gt $cursor } | Sort-Object { [long]$_.id })
+  foreach($comment in $recent) { Process $comment; Save ([long]$comment.id) }
+  Write-Output "GCC poll processed $($recent.Count) new comment(s)."
+ } finally {
+  if($held) { $mutex.ReleaseMutex() }
+  $mutex.Dispose()
+ }
+}
+switch($Mode) {
+ 'Doctor' { Doctor; Write-Output 'GCC prerequisites OK; no runner installed.' }
+ 'Once' { Doctor; Poll }
+ 'Loop' {
+  Doctor
+  while($true) {
+   try { Poll } catch { Write-Warning "GCC poll: $($_.Exception.Message)" }
+   Start-Sleep -Seconds $PollSeconds
+  }
+ }
+ 'Install' {
+  Doctor
+  New-Item -ItemType Directory -Path $Root -Force | Out-Null
+  Initialize
+  $user=[System.Security.Principal.WindowsIdentity]::GetCurrent().Name
+  $args='-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' + $MyInvocation.MyCommand.Path + '" -Mode Loop -PollSeconds ' + $PollSeconds
+  $action=New-ScheduledTaskAction -Execute (Get-Command powershell.exe).Source -Argument $args
+  $trigger=New-ScheduledTaskTrigger -AtLogOn -User $user
+  $principal=New-ScheduledTaskPrincipal -UserId $user -LogonType Interactive -RunLevel Limited
+  $settings=New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -StartWhenAvailable
+  Register-ScheduledTask -TaskName $Task -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Force | Out-Null
+  Start-ScheduledTask -TaskName $Task
+  Write-Output "Installed $Task. Owner PR comment trigger: /gcc-ci run <exact 40-char SHA>"
+ }
+}
+) { return }
+ $profile=$Matches[1]
+ $sha=$Matches[2]
  if([string]$Comment.issue_url -notmatch '^https://api\.github\.com/repos/walidatiyaai2025-gif/FOOD/issues/([0-9]+)$') { return }
  $n=[int]$Matches[1]
  $pr=Api "repos/$Repo/pulls/$n"
