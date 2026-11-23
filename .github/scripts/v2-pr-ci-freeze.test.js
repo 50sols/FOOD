@@ -32,6 +32,20 @@ test('CI fix requires a real red exact-head check, cannot accept cancelled/skipp
   assert.equal((await validate({currentHead:B,comments:[lock,fix],getChecks:async()=>[
     {name:'required-ci-gate',head_sha:C,conclusion:'failure'}]})).ok,false);
 });
+test('freeze fix rejects failed check lacking exact original head provenance', async () => {
+  const fix = comment(FIX,{FROM:A,TO:B,FAILING_CHECK:'required-ci-gate'},2);
+  const evidence = checks => validate({currentHead:B,comments:[lock,fix],getChecks:async()=>checks});
+  for (const head_sha of [undefined, null, '', C, 'not-a-sha']) {
+    const check = {name:'required-ci-gate',conclusion:'failure'};
+    if (head_sha !== undefined) check.head_sha = head_sha;
+    assert.equal((await evidence([check])).state, 'NO_VERIFIED_RED_CI',
+      'missing, invalid or mismatched check HEAD must never grant a freeze exception');
+  }
+  assert.equal((await evidence([{name:'required-ci-gate',head_sha:A,conclusion:'failure'}])).state,'FROZEN');
+  assert.equal((await evidence([{name:'required-ci-gate',head_sha:A,conclusion:'cancelled'}])).state,'NO_VERIFIED_RED_CI');
+  assert.equal((await evidence([null])).ok,false);
+});
+
 test('freeze cannot be overridden by a new SHA without unfreeze or red exact-head correction', async () => {
   const second = comment(FREEZE,{HEAD:B},2);
   assert.equal((await validate({currentHead:B,comments:[lock,second]})).state,'INVALID_FREEZE');
