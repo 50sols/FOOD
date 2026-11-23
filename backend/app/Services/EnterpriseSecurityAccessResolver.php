@@ -110,6 +110,7 @@ final class EnterpriseSecurityAccessResolver
     {
         $globalRoles = $actor->roles()
             ->where('roles.is_active', true)
+            ->whereNull('roles.archived_at')
             ->where('roles.scope', 'global')
             ->whereHas('permissions', fn ($query) => $query->where('code', $permission));
 
@@ -142,6 +143,7 @@ final class EnterpriseSecurityAccessResolver
             ->get()
             ->map(fn ($assignment) => $assignment->role)
             ->filter(fn (Role $role): bool => (bool) $role->is_active
+                && $role->archived_at === null
                 && $role->scope === 'store'
                 && $role->permissions->contains('code', $permission));
 
