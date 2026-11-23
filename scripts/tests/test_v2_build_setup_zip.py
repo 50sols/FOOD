@@ -137,6 +137,30 @@ class DeterministicSetupZipTest(unittest.TestCase):
             self.assertEqual(output.read_bytes(), b"not-the-built-archive")
             self.assertEqual(list(base.glob(".v2-setup-*.zip")), [])
 
+    def test_staging_member_count_and_expanded_size_budgets_fail_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            source = base / "source"
+            source.mkdir()
+            (source / "VERSION").write_bytes(b"1234")
+            (source / "README").write_bytes(b"5678")
+            output = base / "setup.zip"
+            for name, limit, message in (
+                ("MAX_ENTRIES", 1, "member count exceeds budget"),
+                ("MAX_ENTRY_SIZE", 3, "entry exceeds size budget"),
+                ("MAX_TOTAL_SIZE", 7, "expanded size exceeds budget"),
+            ):
+                with self.subTest(limit=name), mock.patch("v2_build_setup_zip." + name, limit):
+                    with self.assertRaisesRegex(SetupBuildError, message):
+                        build_setup_zip(source, output, SOURCE_DATE_EPOCH)
+                    self.assertFalse(output.exists(), "Over-budget source must not publish ZIP")
+                    self.assertEqual(list(base.glob(".v2-setup-*.zip")), [])
+            digest = build_setup_zip(source, output, SOURCE_DATE_EPOCH)
+            self.assertEqual(len(digest), 64)
+            with zipfile.ZipFile(output) as archive:
+                self.assertEqual(archive.read("VERSION"), b"1234")
+                self.assertEqual(archive.read("README"), b"5678")
+
     def test_live_dotenv_is_rejected_before_archive_publication(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             base = Path(temporary)
