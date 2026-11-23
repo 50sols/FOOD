@@ -60,8 +60,8 @@ async function validate({ currentHead, comments, getChecks }) {
           return { ok: false, state: 'INVALID_FIX' };
         const checks = await getChecks(f.FROM);
         if (!Array.isArray(checks) || !checks.some(check =>
-          check.name === f.FAILING_CHECK && RED.has(check.conclusion) &&
-          (!check.head_sha || check.head_sha === f.FROM)))
+          check && check.name === f.FAILING_CHECK && RED.has(check.conclusion) &&
+          check.head_sha === f.FROM))
           return { ok: false, state: 'NO_VERIFIED_RED_CI' };
         frozen = f.TO;
         fixes += 1;
