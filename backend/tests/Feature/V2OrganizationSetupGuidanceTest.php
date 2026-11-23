@@ -554,6 +554,54 @@ final class V2OrganizationSetupGuidanceTest extends TestCase
         );
     }
 
+    public function test_direct_service_rejects_string_and_integer_inactive_flags_without_bypassing_guards(): void
+    {
+        $admin = $this->actor('SUPER_ADMIN', 'en');
+        $protectedOrganization = EnterpriseOrganization::query()
+            ->where('code', OrganizationHierarchyService::DEFAULT_ORGANIZATION)->firstOrFail();
+        $organization = EnterpriseOrganization::query()->create([
+            'code' => 'v2_service_deactivation_guard',
+            'name' => 'Guarded Organization',
+            'is_active' => true,
+        ]);
+        EnterpriseCompany::query()->create([
+            'organization_id' => $organization->id,
+            'code' => 'v2_service_active_child',
+            'name' => 'Active Child',
+            'is_active' => true,
+        ]);
+        $before = DB::table('audit_logs')->count();
+        $service = app(EnterpriseOrganizationAdministration::class);
+
+        foreach (['0', 0, false] as $flag) {
+            try {
+                $service->updateOrganization($organization, [
+                    'code' => $organization->code,
+                    'name' => $organization->name,
+                    'is_active' => $flag,
+                ], $admin);
+                $this->fail('Active descendants must block deactivation for all false-like flags.');
+            } catch (ValidationException $exception) {
+                $this->assertArrayHasKey('is_active', $exception->errors());
+            }
+
+            try {
+                $service->updateOrganization($protectedOrganization, [
+                    'code' => $protectedOrganization->code,
+                    'name' => $protectedOrganization->name,
+                    'is_active' => $flag,
+                ], $admin);
+                $this->fail('Default routing identity must remain active for all false-like flags.');
+            } catch (ValidationException $exception) {
+                $this->assertArrayHasKey('is_active', $exception->errors());
+            }
+        }
+
+        $this->assertTrue((bool) $organization->fresh()->is_active);
+        $this->assertTrue((bool) $protectedOrganization->fresh()->is_active);
+        $this->assertSame($before, DB::table('audit_logs')->count());
+    }
+
     private function actor(string $roleCode, string $locale): User
     {
         $user = User::query()->create([
