@@ -293,7 +293,28 @@ try {
         } finally {
             $archive->close();
         }
-        fwrite(STDOUT, "Verified Setup archive signature and SHA-256.\n");
+
+        // Verify mode is a build-host release acceptance path, not a cPanel
+        // web request. A trusted signature authenticates the bytes but does
+        // not establish that extraction of those bytes is safe. Repeat the
+        // SAME canonical staging validator used by sign mode, including ZIP
+        // member paths, symlink and local-header consistency, and embedded
+        // source-commit provenance. Do not let a second path certify ZIPs
+        // that the publisher itself would refuse to sign.
+        $versionFile = tempnam(sys_get_temp_dir(), 'foodex-setup-version-');
+        if (! is_string($versionFile)) {
+            throw new RuntimeException('Cannot allocate signed version evidence.');
+        }
+        try {
+            $versionContent = $sidecar['version']."\n";
+            if (file_put_contents($versionFile, $versionContent) !== strlen($versionContent)) {
+                throw new RuntimeException('Cannot prepare signed version evidence.');
+            }
+            verifiedStaging($package, $versionFile, $sidecar['source_commit']);
+        } finally {
+            @unlink($versionFile);
+        }
+        fwrite(STDOUT, "Verified Setup archive signature, safety and SHA-256.\n");
     }
 } catch (Throwable) {
     refuse();

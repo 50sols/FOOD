@@ -136,6 +136,65 @@ class SetupEd25519SignatureTest(unittest.TestCase):
         verified = self.run_verify()
         self.assertEqual(0, verified.returncode, verified.stderr)
 
+    def test_valid_signed_traversal_archive_cannot_pass_independent_verify(self) -> None:
+        # The signer refuses unsafe ZIPs, but verify must *also* reject a
+        # validly signed unsafe archive. This deliberately uses the CI-only
+        # disposable key: a valid signature is not extraction authorization.
+        initially_signed = self.run_sign()
+        self.assertEqual(0, initially_signed.returncode, initially_signed.stderr)
+        with zipfile.ZipFile(self.archive, "a") as archive:
+            archive.writestr("../escape-from-setup.txt", "not a safe install")
+        signed = json.loads(self.sidecar.read_text(encoding="utf-8"))
+        signed["archive_sha256"] = hashlib.sha256(self.archive.read_bytes()).hexdigest()
+
+        payload = "FOODEX-SETUP-SIGNATURE-V1\n" + json.dumps(
+            {
+                "format": "foodex-setup-manifest-v1",
+                "signer_key_id": signed["signer_key_id"],
+                "version": signed["version"],
+                "source_commit": signed["source_commit"],
+                "archive_sha256": signed["archive_sha256"],
+            },
+            separators=(",", ":"),
+            ensure_ascii=False,
+        )
+        resigned = subprocess.run(
+            [
+                "php", "-r",
+                'echo base64_encode(sodium_crypto_sign_detached('
+                'stream_get_contents(STDIN), '
+                'base64_decode(getenv("FOODEX_SETUP_SIGNING_SECRET_KEY_B64"), true)));',
+            ],
+            input=payload, text=True, capture_output=True, env=self.env,
+        )
+        self.assertEqual(0, resigned.returncode, resigned.stderr)
+        signed["signature"] = resigned.stdout
+        self.sidecar.write_text(
+            json.dumps(signed, separators=(",", ":"), ensure_ascii=False),
+            encoding="utf-8",
+        )
+
+        # Independently prove the sidecar's Ed25519 signature is genuine.
+        signature_check = subprocess.run(
+            [
+                "php", "-r",
+                'exit(sodium_crypto_sign_verify_detached('
+                'base64_decode($argv[1], true), '
+                'stream_get_contents(STDIN), '
+                'base64_decode($argv[2], true)) ? 0 : 1);',
+                signed["signature"], self.key["public"],
+            ],
+            input=payload, text=True, capture_output=True, env=self.env,
+        )
+        self.assertEqual(0, signature_check.returncode, signature_check.stderr)
+        self.assertEqual(
+            signed["archive_sha256"],
+            hashlib.sha256(self.archive.read_bytes()).hexdigest(),
+        )
+        result = self.run_verify()
+        self.assertNotEqual(0, result.returncode)
+        self.assertNotIn(self.key["private"], result.stderr)
+
     def test_noncanonical_sidecar_and_duplicate_json_keys_fail_closed(self) -> None:
         self.assertEqual(0, self.run_sign().returncode)
         canonical = self.sidecar.read_text(encoding="utf-8")
