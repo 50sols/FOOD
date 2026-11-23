@@ -66,6 +66,7 @@ final class UpdatePackageValidator
             // runtime preflight retain their independent enforcement.
             $knownPaths = [];
             $filePaths = [];
+            $hasReleaseFile = false;
             for ($index = 0; $index < $archive->numFiles; $index++) {
                 $name = $archive->getNameIndex($index);
                 if (! is_string($name)) {
@@ -110,6 +111,7 @@ final class UpdatePackageValidator
                 $knownPaths[$foldedPath] = true;
                 if (! $isDirectory) {
                     $filePaths[$foldedPath] = true;
+                    $hasReleaseFile = true;
                 }
 
                 $operatingSystem = 0;
@@ -123,6 +125,10 @@ final class UpdatePackageValidator
                         throw new InvalidArgumentException('Update archive contains an unsafe non-regular member.');
                     }
                 }
+            }
+
+            if (! $hasReleaseFile) {
+                throw new InvalidArgumentException('Update archive contains no release files.');
             }
 
             // Files cannot also be parent directories, even on case-insensitive
