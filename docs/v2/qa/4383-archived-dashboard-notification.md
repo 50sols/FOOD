@@ -7,3 +7,10 @@
 - **REVIEW_RISK: HIGH** security/privacy. Only role eligibility read-side filtering, no data write, session management, migration, notification delivery semantics, API routes, UI, build, or mobile application source change. Customer/Driver/Van independent application targeting is unchanged; no changes to VAN-only B2B and DRIVER-only B2C dispatch.
 - **Limits:** This closes only Dashboard app audience classification for archived roles. Do not claim full notification system, atomic concurrent revocation, live UAT, or entire #2782 acceptance.
 - **Merge gate:** exact final HEAD Policy, V2 Isolation, Required CI with Laravel shards/MySQL Redis, file-level technical audit, safeguarded squash merge to `Foodex_V2` only and verified issue closure. No `main`, releases, production.
+
+## Three-app impact verification
+
+- **Customer:** no Customer application files or Customer profile eligibility changes; customer notification matching still comes from customer/b2b_customer/b2c_customer identities, not administrative role classification.
+- **Driver:** no Driver application files, retail DriverTenantScope eligibility, offline access or dispatch API changes; B2C DRIVER ONLY invariant remains.
+- **Van:** no Van application files, selected VanRuntimeContext authorization or Van warehouse notification targeting changes; B2B VAN ONLY invariant remains.
+- **Dashboard:** archived global or Retail store roles can no longer qualify a user as a Dashboard-app notification recipient; other active authorized Dashboard roles remain effective.
