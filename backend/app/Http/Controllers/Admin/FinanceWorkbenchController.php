@@ -49,6 +49,7 @@ final class FinanceWorkbenchController extends Controller
         'journals',
         'opening_balances',
         'receivables',
+        'cs_discount_review',
         'payables',
         'credit_terms',
         'budgets',
@@ -163,6 +164,7 @@ final class FinanceWorkbenchController extends Controller
             'journals' => $this->journalData($request, $actor, $context),
             'opening_balances' => $this->openingBalanceData($request, $actor, $context),
             'receivables' => $this->receivableData($request, $actor, $context),
+            'cs_discount_review' => $this->customerServiceDiscountReviewData($context),
             'payables' => $this->payableData($request, $actor, $context),
             'credit_terms' => $this->creditTermData($request, $actor, $context),
             'budgets' => $this->budgetData($request, $actor, $context),
@@ -911,6 +913,36 @@ final class FinanceWorkbenchController extends Controller
     }
 
     /** @return array<string, mixed> */
+    /**
+     * Existing Finance Workbench read only. Never expose pending requests
+     * across stores or channels; the POST review service rechecks current
+     * role, scope, request state and pricing under a database lock.
+     *
+     * @return array<string, mixed>
+     */
+    private function customerServiceDiscountReviewData(ResolvedTenantContext $context): array
+    {
+        $storeId = $context->requiresStore();
+        $channel = $context->isRetail() ? 'b2c' : 'b2b';
+
+        return [
+            'requests' => DB::table('order_customer_service_discount_requests as request')
+                ->join('orders as related_order', 'related_order.id', '=', 'request.order_id')
+                ->join('users as requester', 'requester.id', '=', 'request.requested_by_user_id')
+                ->where('related_order.store_id', $storeId)
+                ->where('related_order.channel', $channel)
+                ->where('request.status', 'pending')
+                ->orderBy('request.created_at')
+                ->orderBy('request.id')
+                ->paginate(20, [
+                    'request.id', 'request.order_id', 'request.percentage', 'request.reason',
+                    'request.created_at', 'requester.name as requested_by_name',
+                    'related_order.order_number', 'related_order.currency', 'related_order.grand_total',
+                ], 'discount_request_page')
+                ->withQueryString(),
+        ];
+    }
+
     private function payableData(Request $request, User $actor, ResolvedTenantContext $context): array
     {
         $filters = $request->only(['supplier_reference', 'status', 'date_from', 'date_to']);
@@ -1089,6 +1121,14 @@ final class FinanceWorkbenchController extends Controller
             'reports_read' => ! $context->isRetail() && $permitted('finance.view') && $entitled('finance.foundation.read'),
             'statements_read' => ! $context->isRetail() && $permitted('finance.view') && $entitled('finance.gl.read'),
             'foundation_manage' => $permitted('finance.manage') && $entitled('finance.foundation.manage'),
+            // Only the authentic Accounting role for this exact channel and
+            // store can see the pending concession inbox. The review route
+            // independently repeats these checks under the locked order.
+            'cs_discount_review' => $actor->is_active
+                && ($context->isRetail()
+                    ? $actor->hasRole('RETAIL_FINANCE', $storeId)
+                    : $actor->hasRole('FINANCE'))
+                && $permitted('finance.view') && $permitted('finance.manage'),
             'gl_read' => $permitted('finance.view') && $entitled('finance.gl.read'),
             'gl_manage' => $permitted('finance.manage') && $entitled('finance.gl.manage'),
             'gl_post' => $permitted('finance.post') && $entitled('finance.gl.post'),
@@ -1121,6 +1161,7 @@ final class FinanceWorkbenchController extends Controller
             ['key' => 'journals', 'label' => 'finance_workbench.tabs.journals', 'available' => $available('gl_read')],
             ['key' => 'opening_balances', 'label' => 'finance_workbench.tabs.opening_balances', 'available' => $available('opening_read')],
             ['key' => 'receivables', 'label' => 'finance_workbench.tabs.receivables', 'available' => $available('ar_read')],
+            ['key' => 'cs_discount_review', 'label' => 'customer_service_discount.accounting_inbox', 'available' => $available('cs_discount_review')],
             ['key' => 'payables', 'label' => 'finance_workbench.tabs.payables', 'available' => $available('ap_read')],
             ['key' => 'credit_terms', 'label' => 'finance_workbench.tabs.credit_terms', 'available' => $available('credit_read')],
             ['key' => 'budgets', 'label' => 'finance_workbench.tabs.budgets', 'available' => $available('foundation_read')],
