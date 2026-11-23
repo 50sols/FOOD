@@ -173,6 +173,53 @@ class DeterministicSetupZipTest(unittest.TestCase):
             self.assertFalse(output.exists())
             self.assertEqual(list(base.glob(".v2-setup-*.zip")), [])
 
+    def test_public_output_swap_during_final_digest_does_not_attest_rival(self) -> None:
+        # The first published-path identity check passes, but an attacker
+        # replaces output while we digest the still-pinned original inode.
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            source = base / "source"
+            source.mkdir()
+            (source / "VERSION").write_bytes(b"1.0.1\\n")
+            output = base / "setup.zip"
+            rival = base / "rival"
+            rival.write_bytes(b"rival-payload")
+            actual_sha256 = hashlib.sha256
+            hash_calls = 0
+
+            class Digest:
+                def __init__(self, replace_on_digest: bool):
+                    self._hash = actual_sha256()
+                    self._replace = replace_on_digest
+
+                def update(self, data):
+                    self._hash.update(data)
+
+                def digest(self):
+                    if self._replace:
+                        os.replace(rival, output)
+                        self._replace = False
+                    return self._hash.digest()
+
+                def hexdigest(self):
+                    return self._hash.hexdigest()
+
+            def new_digest():
+                nonlocal hash_calls
+                hash_calls += 1
+                return Digest(replace_on_digest=hash_calls == 2)
+
+            def opened_regular_member(path, meta, name, source_root):
+                return path.open("rb")
+
+            with mock.patch("v2_build_setup_zip._open_verified_member", side_effect=opened_regular_member):
+                with mock.patch("v2_build_setup_zip.hashlib.sha256", side_effect=new_digest):
+                    with self.assertRaisesRegex(SetupBuildError, "path changed after checksum"):
+                        build_setup_zip(source, output, SOURCE_DATE_EPOCH)
+            self.assertEqual(output.read_bytes(), b"rival-payload")
+            self.assertEqual(hash_calls, 2)
+            self.assertEqual(list(base.glob(".v2-setup-*.zip")), [])
+
     def test_checksum_refuses_output_replaced_after_exclusive_publish(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             base = Path(temporary)
