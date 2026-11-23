@@ -13,6 +13,7 @@ final class OrderCustomerServiceDiscountApprovalService
     public function __construct(
         private readonly OrderCustomerServiceDiscountService $discounts,
         private readonly AuditLogger $audit,
+        private readonly OperationalTenantScope $scope,
     ) {}
 
     /**
@@ -79,6 +80,22 @@ final class OrderCustomerServiceDiscountApprovalService
     ): void {
         DB::transaction(function () use ($order, $reviewer, $requestId, $approved, $reviewReason, $request): void {
             $locked = Order::query()->whereKey($order->getKey())->lockForUpdate()->firstOrFail();
+            $storeId = (int) $locked->store_id;
+            $channel = strtolower((string) $locked->channel);
+            $accountingRole = match ($channel) {
+                'b2b' => $reviewer->hasRole('FINANCE'),
+                'b2c' => $reviewer->hasRole('RETAIL_FINANCE'),
+                default => false,
+            };
+            abort_unless(
+                $reviewer->is_active && $accountingRole
+                && $reviewer->hasPermission('finance.view', $storeId)
+                && $reviewer->hasPermission('finance.manage', $storeId),
+                403,
+            );
+            $this->scope->assertStore($reviewer, $storeId, 'finance.view', $channel);
+            $this->scope->assertStore($reviewer, $storeId, 'finance.manage', $channel);
+
             $record = DB::table('order_customer_service_discount_requests')
                 ->where('id', $requestId)
                 ->where('order_id', $locked->getKey())
