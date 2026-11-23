@@ -113,8 +113,20 @@ final class OrganizationHierarchyService
                 ->first();
 
             if ($existing instanceof EnterpriseStoreScope) {
-                $current = $this->scopeForStore((int) $store->getKey());
-                if ($current !== null && $current['organization_id'] !== $targetOrganizationId) {
+                // The effective read deliberately hides disabled lineages.
+                // Ownership is different: a historical binding still belongs
+                // to its original organization even after deactivation.
+                // Resolve it from the locked mapping without active filters,
+                // or a disabled source ancestor could enable cross-org moves.
+                $currentOrganizationId = DB::table('enterprise_store_scopes')
+                    ->join('enterprise_business_units', 'enterprise_business_units.id', '=', 'enterprise_store_scopes.business_unit_id')
+                    ->join('enterprise_legal_entities', 'enterprise_legal_entities.id', '=', 'enterprise_business_units.legal_entity_id')
+                    ->join('enterprise_companies', 'enterprise_companies.id', '=', 'enterprise_legal_entities.company_id')
+                    ->where('enterprise_store_scopes.id', $existing->getKey())
+                    ->value('enterprise_companies.organization_id');
+
+                if ($currentOrganizationId === null
+                    || (int) $currentOrganizationId !== $targetOrganizationId) {
                     throw new LogicException('A store cannot be silently moved across enterprise organizations.');
                 }
 
