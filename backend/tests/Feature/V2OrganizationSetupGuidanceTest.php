@@ -990,6 +990,97 @@ final class V2OrganizationSetupGuidanceTest extends TestCase
         $this->assertSame($auditCount, DB::table('audit_logs')->count());
     }
 
+    public function test_direct_service_rejects_unguarded_identity_timestamp_and_extra_fields_without_audit(): void
+    {
+        $admin = $this->actor('SUPER_ADMIN', 'en');
+        $service = app(EnterpriseOrganizationAdministration::class);
+        $organization = EnterpriseOrganization::query()->create([
+            'code' => 'v2_identity_guard_org', 'name' => 'Identity Guard Org', 'is_active' => true,
+        ]);
+        $company = EnterpriseCompany::query()->create([
+            'organization_id' => $organization->id,
+            'code' => 'v2_identity_guard_company', 'name' => 'Identity Guard Company', 'is_active' => true,
+        ]);
+        $entity = EnterpriseLegalEntity::query()->create([
+            'company_id' => $company->id,
+            'code' => 'v2_identity_guard_entity', 'name' => 'Identity Guard Entity', 'is_active' => true,
+        ]);
+        $unit = EnterpriseBusinessUnit::query()->create([
+            'legal_entity_id' => $entity->id,
+            'code' => 'v2_identity_guard_unit', 'name' => 'Identity Guard Unit', 'is_active' => true,
+        ]);
+        $beforeAudit = DB::table('audit_logs')->count();
+
+        // The HTTP form validates just code/name/is_active, but internal
+        // callers reach this service directly. Guarded=[] on every model
+        // must not permit rewriting primary keys, timestamps or extra fields.
+        foreach ([
+            [$organization, 'updateOrganization'],
+            [$company, 'updateCompany'],
+            [$entity, 'updateLegalEntity'],
+            [$unit, 'updateBusinessUnit'],
+        ] as [$record, $method]) {
+            $id = (int) $record->getKey();
+            $created = $record->getRawOriginal('created_at');
+            $updated = $record->getRawOriginal('updated_at');
+            $name = $record->name;
+            foreach ([
+                ['id' => $id + 50000],
+                ['created_at' => '2001-01-01 00:00:00'],
+                ['updated_at' => '2001-01-01 00:00:00'],
+                ['tenant_id' => 50000],
+            ] as $injected) {
+                try {
+                    $service->{$method}($record, ['name' => 'Injected Name', ...$injected], $admin);
+                    $this->fail('Unexpected unvalidated hierarchy service attribute was accepted.');
+                } catch (ValidationException $exception) {
+                    $this->assertArrayHasKey('record', $exception->errors());
+                }
+            }
+
+            $stored = $record->fresh();
+            $this->assertNotNull($stored);
+            $this->assertSame($id, (int) $stored->getKey());
+            $this->assertSame($name, $stored->name);
+            $this->assertSame($created, $stored->getRawOriginal('created_at'));
+            $this->assertSame($updated, $stored->getRawOriginal('updated_at'));
+        }
+
+        // Related creation methods also mass-assign into unguarded models;
+        // the parent relation and record identity must remain server-owned.
+        foreach ([
+            [null, 'createOrganization', 'v2_denied_create_org'],
+            [$organization, 'createCompany', 'v2_denied_create_company'],
+            [$company, 'createLegalEntity', 'v2_denied_create_entity'],
+            [$entity, 'createBusinessUnit', 'v2_denied_create_unit'],
+        ] as [$parent, $method, $code]) {
+            $data = [
+                'code' => $code, 'name' => 'Unvalidated New Record',
+                'is_active' => true, 'id' => 50000,
+            ];
+            try {
+                if ($parent === null) {
+                    $service->{$method}($data, $admin);
+                } else {
+                    $service->{$method}($parent, $data, $admin);
+                }
+                $this->fail('Creating a hierarchy record with a caller-selected ID must be denied.');
+            } catch (ValidationException $exception) {
+                $this->assertArrayHasKey('record', $exception->errors());
+            }
+        }
+
+        foreach ([
+            ['enterprise_organizations', 'v2_denied_create_org'],
+            ['enterprise_companies', 'v2_denied_create_company'],
+            ['enterprise_legal_entities', 'v2_denied_create_entity'],
+            ['enterprise_business_units', 'v2_denied_create_unit'],
+        ] as [$table, $code]) {
+            $this->assertDatabaseMissing($table, ['code' => $code]);
+        }
+        $this->assertSame($beforeAudit, DB::table('audit_logs')->count());
+    }
+
     private function actor(string $roleCode, string $locale): User
     {
         $user = User::query()->create([

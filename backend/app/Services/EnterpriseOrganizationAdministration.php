@@ -22,6 +22,10 @@ final class EnterpriseOrganizationAdministration
 
     public function createOrganization(array $data, Authenticatable $actor): EnterpriseOrganization
     {
+        // Service callers, not only HTTP controllers, must respect the same
+        // editable field boundary on unguarded Eloquent hierarchy models.
+        $this->assertWritableRecordFields($data);
+
         return DB::transaction(function () use ($data, $actor): EnterpriseOrganization {
             $organization = EnterpriseOrganization::query()->create($data);
             $this->audit->record('enterprise.organization.created', $actor, $organization, null, $this->snapshot($organization));
@@ -39,6 +43,10 @@ final class EnterpriseOrganizationAdministration
 
     public function createCompany(EnterpriseOrganization $organization, array $data, Authenticatable $actor): EnterpriseCompany
     {
+        // Service callers, not only HTTP controllers, must respect the same
+        // editable field boundary on unguarded Eloquent hierarchy models.
+        $this->assertWritableRecordFields($data);
+
         $this->assertCreationParentActive($organization);
 
         return DB::transaction(function () use ($organization, $data, $actor): EnterpriseCompany {
@@ -58,6 +66,10 @@ final class EnterpriseOrganizationAdministration
 
     public function createLegalEntity(EnterpriseCompany $company, array $data, Authenticatable $actor): EnterpriseLegalEntity
     {
+        // Service callers, not only HTTP controllers, must respect the same
+        // editable field boundary on unguarded Eloquent hierarchy models.
+        $this->assertWritableRecordFields($data);
+
         $this->assertCreationParentActive($company);
 
         return DB::transaction(function () use ($company, $data, $actor): EnterpriseLegalEntity {
@@ -77,6 +89,10 @@ final class EnterpriseOrganizationAdministration
 
     public function createBusinessUnit(EnterpriseLegalEntity $entity, array $data, Authenticatable $actor): EnterpriseBusinessUnit
     {
+        // Service callers, not only HTTP controllers, must respect the same
+        // editable field boundary on unguarded Eloquent hierarchy models.
+        $this->assertWritableRecordFields($data);
+
         $this->assertCreationParentActive($entity);
 
         return DB::transaction(function () use ($entity, $data, $actor): EnterpriseBusinessUnit {
@@ -164,6 +180,7 @@ final class EnterpriseOrganizationAdministration
             $model instanceof EnterpriseBusinessUnit => 'legal_entity_id',
             default => null,
         };
+        $this->assertWritableRecordFields($data, $parentKey);
         if ($parentKey !== null && array_key_exists($parentKey, $data)
             && (int) $data[$parentKey] !== (int) $model->getAttribute($parentKey)) {
             throw ValidationException::withMessages([
@@ -239,6 +256,29 @@ final class EnterpriseOrganizationAdministration
 
         if ($model instanceof EnterpriseBusinessUnit && $model->storeScopes()->exists()) {
             throw ValidationException::withMessages(['is_active' => [__('enterprise_organization.assigned_stores')]]);
+        }
+    }
+
+    /**
+     * These four hierarchy models are intentionally unguarded for import/
+     * seed relations. Service methods must never mass-assign primary keys,
+     * timestamps, tenant metadata or other unreviewed fields. Updates may
+     * present their unchanged parent key for compatibility, but the
+     * ancestry invariant above still rejects any actual reparenting.
+     *
+     * @param  array<string, mixed>  $data
+     */
+    private function assertWritableRecordFields(array $data, ?string $unchangedParentKey = null): void
+    {
+        $writable = ['code', 'name', 'is_active'];
+        if ($unchangedParentKey !== null) {
+            $writable[] = $unchangedParentKey;
+        }
+
+        if (array_diff(array_keys($data), $writable) !== []) {
+            throw ValidationException::withMessages([
+                'record' => [__('enterprise_organization.cross_scope_denied')],
+            ]);
         }
     }
 
