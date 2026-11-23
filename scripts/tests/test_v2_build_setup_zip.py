@@ -168,6 +168,9 @@ class DeterministicSetupZipTest(unittest.TestCase):
                 with mock.patch("v2_build_setup_zip.os.link", side_effect=mutate_original_inode):
                     with self.assertRaisesRegex(SetupBuildError, "contents changed after checksum"):
                         build_setup_zip(root, output, SOURCE_DATE_EPOCH)
+            # The builder published the original archive inode but then
+            # rejected its changed contents. No unverified ZIP may remain.
+            self.assertFalse(output.exists())
             self.assertEqual(list(base.glob(".v2-setup-*.zip")), [])
 
     def test_checksum_refuses_output_replaced_after_exclusive_publish(self) -> None:
