@@ -200,7 +200,9 @@ function Report-Full([int]$Pr,[string]$Sha,[string]$Status,[int]$Exit,[long]$Req
 
 function Process($Comment) {
  if($null -eq $Comment.user -or $Comment.user.login -cne $Owner) { return }
- if([string]$Comment.body -cnotmatch '(?m)^/gcc-ci (run|full) ([a-f0-9]{40})\s*
+ if([string]$Comment.body -cnotmatch '(?m)^/gcc-ci (run|full) ([a-f0-9]{40})\s*$') { return }
+ $profile=$Matches[1]
+ $sha=$Matches[2]
  if([string]$Comment.issue_url -notmatch '^https://api\.github\.com/repos/walidatiyaai2025-gif/FOOD/issues/([0-9]+)$') { return }
  $n=[int]$Matches[1]
  $pr=Api "repos/$Repo/pulls/$n"
@@ -236,64 +238,6 @@ function Process($Comment) {
  } else {
   Report -Pr $n -Sha $sha -Status $status -Exit $exit -Request ([long]$Comment.id)
  }
-}
-function Poll {
- $mutex=New-Object System.Threading.Mutex($false,'Local\FOODEX_GCC_CI_AGENT')
- $held=$false
- try {
-  $held=$mutex.WaitOne(0)
-  if(-not $held) { return }
-  Initialize
-  $cursor=Cursor
-  $recent=@(Comments | Where-Object { [long]$_.id -gt $cursor } | Sort-Object { [long]$_.id })
-  foreach($comment in $recent) { Process $comment; Save ([long]$comment.id) }
-  Write-Output "GCC poll processed $($recent.Count) new comment(s)."
- } finally {
-  if($held) { $mutex.ReleaseMutex() }
-  $mutex.Dispose()
- }
-}
-switch($Mode) {
- 'Doctor' { Doctor; Write-Output 'GCC prerequisites OK; no runner installed.' }
- 'Once' { Doctor; Poll }
- 'Loop' {
-  Doctor
-  while($true) {
-   try { Poll } catch { Write-Warning "GCC poll: $($_.Exception.Message)" }
-   Start-Sleep -Seconds $PollSeconds
-  }
- }
- 'Install' {
-  Doctor
-  New-Item -ItemType Directory -Path $Root -Force | Out-Null
-  Initialize
-  $user=[System.Security.Principal.WindowsIdentity]::GetCurrent().Name
-  $args='-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' + $MyInvocation.MyCommand.Path + '" -Mode Loop -PollSeconds ' + $PollSeconds
-  $action=New-ScheduledTaskAction -Execute (Get-Command powershell.exe).Source -Argument $args
-  $trigger=New-ScheduledTaskTrigger -AtLogOn -User $user
-  $principal=New-ScheduledTaskPrincipal -UserId $user -LogonType Interactive -RunLevel Limited
-  $settings=New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -StartWhenAvailable
-  Register-ScheduledTask -TaskName $Task -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Force | Out-Null
-  Start-ScheduledTask -TaskName $Task
-  Write-Output "Installed $Task. Owner PR comment trigger: /gcc-ci run <exact 40-char SHA>"
- }
-}
-) { return }
- $profile=$Matches[1]
- $sha=$Matches[2]
- if([string]$Comment.issue_url -notmatch '^https://api\.github\.com/repos/walidatiyaai2025-gif/FOOD/issues/([0-9]+)$') { return }
- $n=[int]$Matches[1]
- $pr=Api "repos/$Repo/pulls/$n"
- if($pr.state -ne 'open' -or $pr.base.ref -cne $Base -or $pr.head.repo.full_name -cne $Repo -or $pr.head.sha -cne $sha) {
-  Write-Warning "Rejected non-V2, changed or foreign PR #$n"; return
- }
- if([string]$pr.head.ref -cnotmatch '^(ci|feat|fix|test|chore|refactor|docs|worker)/[0-9]+-[a-z0-9-]+$') { return }
- $status='FAIL'; $exit=1
- try {
-  $exit=Smoke -Pr $n -Sha $sha -Request ([long]$Comment.id)
-  if($exit -eq 0) { $status='PASS' }
- } catch { Write-Warning "Smoke error: $($_.Exception.Message)" }
- Report -Pr $n -Sha $sha -Status $status -Exit $exit -Request ([long]$Comment.id)
 }
 function Poll {
  $mutex=New-Object System.Threading.Mutex($false,'Local\FOODEX_GCC_CI_AGENT')
