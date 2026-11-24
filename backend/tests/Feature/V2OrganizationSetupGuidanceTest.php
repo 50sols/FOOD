@@ -1520,10 +1520,7 @@ final class V2OrganizationSetupGuidanceTest extends TestCase
         $this->assertSame((int) $original->id, (int) $company->organization_id);
         $this->assertNotSame((int) $foreign->id, (int) $company->organization_id);
 
-        $original->update(['is_active' => false]);
         $stale = $original->fresh();
-        $original->update(['is_active' => true]);
-        $stale->is_active = true;
         $original->update(['is_active' => false]);
         $auditAfterAllowed = DB::table('audit_logs')->count();
 
