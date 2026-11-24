@@ -774,6 +774,34 @@ class InstallerWorkflowTest extends TestCase
         $this->assertSame($originalConfig, config('app.key'));
     }
 
+    public function test_environment_write_rechecks_installed_lock_after_waiting_for_writer_lock(): void
+    {
+        $environment = app(InstallerEnvironment::class);
+        $state = app(InstallState::class);
+        $original = (string) file_get_contents($environment->path());
+
+        // Model a competing request finalizing while the current request
+        // waits on the persistent writer mutex. Invoke only the post-lock
+        // boundary, rather than relying on nondeterministic process timing.
+        $state->writeLock('test-installed');
+        $writer = new \ReflectionMethod(InstallerEnvironment::class, 'writeWithLock');
+
+        try {
+            $writer->invoke($environment, $environment->path(), [
+                'APP_KEY' => 'forbidden-after-finish',
+                'DB_PASSWORD' => 'forbidden-after-finish',
+            ], false);
+            $this->fail('The post-lock writer must refuse an installed site.');
+        } catch (HttpException $exception) {
+            $this->assertSame(404, $exception->getStatusCode());
+        }
+
+        $this->assertSame($original, file_get_contents($environment->path()));
+        $this->assertSame('test-installed', json_decode(
+            (string) file_get_contents($state->lockPath()), true, 512, JSON_THROW_ON_ERROR,
+        )['version']);
+    }
+
     public function test_conditional_environment_key_write_refuses_existing_value_under_write_lock(): void
     {
         $environment = app(InstallerEnvironment::class);
