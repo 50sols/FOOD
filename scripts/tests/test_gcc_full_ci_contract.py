@@ -94,6 +94,21 @@ class GccHeavyExecutionContracts(unittest.TestCase):
         self.assertIn("930s composer analyse", FULL)
         self.assertIn("node --test", FULL)
 
+    def test_zip_verifier_rejects_linked_parents_and_escaped_evidence_roots(self):
+        # On Windows, a genuine file inside a junction can have no reparse
+        # attribute itself. Walking the ZIP's ancestor chain before hashing
+        # is necessary in addition to refusing linked artifact files.
+        verifier = AGENT[AGENT.index("$seenArtifactNames="):]
+        self.assertIn("$canonicalEvidenceRoot=(Get-Item -LiteralPath $report", verifier)
+        self.assertIn("$parent=$artifact.Directory", verifier)
+        self.assertIn("$parent=$parent.Parent", verifier)
+        self.assertIn("Refusing reparse-point ZIP parent directory", verifier)
+        self.assertIn("ZIP artifact lies outside canonical GCC evidence root", verifier)
+        self.assertIn("$withinEvidenceRoot=$true", verifier)
+        self.assertIn("if(-not $withinEvidenceRoot)", verifier)
+        self.assertLess(verifier.index("Refusing reparse-point ZIP parent directory"), verifier.index("Get-FileHash"))
+        self.assertLess(verifier.index("ZIP artifact lies outside canonical GCC evidence root"), verifier.index("Get-FileHash"))
+
     def test_locked_production_setup_and_actual_update(self):
         self.assertIn("--no-scripts --no-plugins", PREPARE)
         self.assertIn("core.autocrlf=false -c core.eol=lf reset --hard", PREPARE)
