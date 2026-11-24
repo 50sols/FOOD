@@ -126,6 +126,9 @@ final class InstallState
 
     public function token(): string
     {
+        // A completed site cannot mint a new setup session or progress state.
+        abort_if($this->isInstalled(), 404);
+
         $progress = $this->progress();
 
         if ($progress['token'] !== null) {
@@ -222,6 +225,9 @@ final class InstallState
      */
     public function markStepComplete(int $step, ?array $admin = null): void
     {
+        // A direct caller must not restore or alter setup state after Finish.
+        abort_if($this->isInstalled(), 404);
+
         // Fail closed before creating a lock file if persisted progress is
         // corrupt, as the original installer state contract requires.
         $this->progress();
@@ -244,6 +250,9 @@ final class InstallState
 
     public function writeLock(string $version): void
     {
+        // The first installed.lock is authoritative: never overwrite it.
+        abort_if($this->isInstalled(), 404);
+
         $this->writeJson($this->lockPath(), [
             'version' => $version,
             'installed_at' => now()->toIso8601String(),
