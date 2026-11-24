@@ -102,13 +102,13 @@ final class InstallState
             throw new RuntimeException('Installer progress state is invalid.');
         }
 
-        // Progress is a persisted trust boundary: coercing "12", 12.9 or
-        // true into a completed step would allow a corrupt JSON state to
-        // unlock later setup actions. Only the integer emitted by writeJson
-        // is authoritative; malformed or out-of-range data starts at step 0.
-        $completedStep = $decoded['completed_step'] ?? 0;
+        // Progress is a persisted trust boundary. A corrupted non-integer or
+        // out-of-range step must not silently restart a partially completed
+        // installation: that could replay migrations, seeding or key setup
+        // and overwrite the authoritative recovery checkpoint.
+        $completedStep = $decoded['completed_step'];
         if (! is_int($completedStep) || $completedStep < 0 || $completedStep > 15) {
-            $completedStep = 0;
+            throw new RuntimeException('Installer progress state is invalid.');
         }
 
         return [
