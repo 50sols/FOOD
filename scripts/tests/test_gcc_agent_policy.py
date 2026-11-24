@@ -3,6 +3,10 @@
 These are static contract checks, not substitutes for running it on Windows GCC.
 """
 from pathlib import Path
+import os
+import shutil
+import subprocess
+import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -66,11 +70,66 @@ class GccAgentContractTests(unittest.TestCase):
         # automatic PR evidence without publishing local stderr or secrets.
         self.assertIn("$script:GccLastFailedStage='git-fetch-process-start'", SCRIPT)
         self.assertIn("$script:GccLastFailedStage='git-fetch-timeout'", SCRIPT)
-        self.assertIn("$script:GccLastFailedStage='git-fetch-nonzero-exit'", SCRIPT)
+        self.assertIn("function Classify-GitFetchFailure([string]$Path)", SCRIPT)
+        self.assertIn("$script:GccLastFailedStage=Classify-GitFetchFailure -Path $stderr", SCRIPT)
+        self.assertIn("return 'git-fetch-nonzero-exit'", SCRIPT)
+        for failure_class in ("git-fetch-lock", "git-fetch-network", "git-fetch-access", "git-fetch-ref"):
+            self.assertIn(f"return '{failure_class}'", SCRIPT)
         self.assertIn("WaitForExit(900000)", SCRIPT)
         self.assertIn("local diagnostic files are private", SCRIPT)
         self.assertIn("- Stage: $stageLabel", SCRIPT)
         self.assertNotIn("Get-Content -LiteralPath $stderr", SCRIPT)
+
+    def test_private_git_fetch_diagnostics_emit_only_fixed_classes(self):
+        # Execute the genuine PowerShell function on disposable hostile output,
+        # rather than simply checking source text. The runner must not echo
+        # credential-like strings or local paths from a failed Git fetch.
+        pwsh = shutil.which("pwsh")
+        if not pwsh:
+            self.skipTest("PowerShell is unavailable; hosted parser gate remains mandatory")
+
+        start = SCRIPT.index("function Classify-GitFetchFailure(")
+        end = SCRIPT.index("function Invoke-BoundedGitFetch(", start)
+        private_classifier = SCRIPT[start:end]
+        code = private_classifier + "\nWrite-Output (Classify-GitFetchFailure -Path $env:GCC_TEST_STDERR_PATH)"
+        cases = [
+            ("fatal: Unable to create '.git/shallow.lock': File exists", "git-fetch-lock"),
+            ("fatal: unable to access: Could not resolve host: github.com", "git-fetch-network"),
+            ("remote: Repository not found.", "git-fetch-access"),
+            ("fatal: couldn't find remote ref refs/pull/3444/head", "git-fetch-ref"),
+            ("unrecognized fetch failure", "git-fetch-nonzero-exit"),
+        ]
+        with tempfile.TemporaryDirectory(prefix="gcc-fetch-classifier-") as directory:
+            log = Path(directory) / "private-git.stderr"
+            for private_error, expected in cases:
+                log.write_text(private_error + "\nFAKE_TOKEN_NOT_FOR_PUBLIC_OUTPUT", encoding="utf-8")
+                env = os.environ.copy()
+                env["GCC_TEST_STDERR_PATH"] = str(log)
+                completed = subprocess.run(
+                    [pwsh, "-NoProfile", "-NonInteractive", "-Command", code],
+                    capture_output=True,
+                    text=True,
+                    env=env,
+                    timeout=30,
+                    check=False,
+                )
+                self.assertEqual(completed.returncode, 0, completed.stderr[:400])
+                self.assertEqual(completed.stdout.strip(), expected)
+                self.assertNotIn("FAKE_TOKEN_NOT_FOR_PUBLIC_OUTPUT", completed.stdout + completed.stderr)
+                self.assertNotIn(str(log), completed.stdout + completed.stderr)
+
+            log.write_text("x" * 32769, encoding="utf-8")
+            env["GCC_TEST_STDERR_PATH"] = str(log)
+            oversized = subprocess.run(
+                [pwsh, "-NoProfile", "-NonInteractive", "-Command", code],
+                capture_output=True,
+                text=True,
+                env=env,
+                timeout=30,
+                check=False,
+            )
+            self.assertEqual(oversized.returncode, 0, oversized.stderr[:400])
+            self.assertEqual(oversized.stdout.strip(), "git-fetch-nonzero-exit")
 
     def test_full_ci_replay_uses_fresh_attempt_scoped_checkout(self):
         # A crash before posting the result can replay an owner command.
