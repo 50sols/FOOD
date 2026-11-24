@@ -5,6 +5,7 @@ namespace App\Enterprise\Procurement;
 use App\Enterprise\Wms\UnknownInventoryOwnerProjection;
 use App\Models\EnterpriseGoodsReceipt;
 use App\Models\EnterpriseGoodsReceiptLine;
+use App\Models\EnterprisePurchaseOrder;
 use App\Models\EnterprisePurchaseOrderLine;
 use App\Models\Inventory;
 use App\Models\Product;
@@ -46,6 +47,46 @@ final class GoodsReceiptInventoryHandoff
                 'goods_receipt_id' => [
                     'Goods receipt line must belong to the authorized receipt and receiving store.',
                 ],
+            ]);
+        }
+
+        // Direct handoff callers can retain a draft receipt header after
+        // GoodsReceiptManager has cancelled or posted that receipt. Lock and
+        // re-read the persisted header BEFORE the line, in the same lock order
+        // as the manager (receipt, purchase order, receipt lines).
+        $persistedReceipt = EnterpriseGoodsReceipt::query()
+            ->whereKey((int) $receipt->getKey())
+            ->where('store_id', $storeId)
+            ->lockForUpdate()
+            ->first();
+
+        if ($persistedReceipt === null
+            || (int) $persistedReceipt->purchase_order_id !== (int) $receipt->purchase_order_id) {
+            throw ValidationException::withMessages([
+                'goods_receipt_id' => ['Goods receipt no longer matches its authorized source order and store.'],
+            ]);
+        }
+
+        if ($persistedReceipt->status !== 'draft') {
+            throw ValidationException::withMessages([
+                'status' => ['A goods receipt that is no longer draft cannot receive stock.'],
+            ]);
+        }
+
+        $receipt = $persistedReceipt;
+
+        // An issued PO can be revoked independently while a caller holds the
+        // old GRN draft. A direct stock writer must enforce the source PO
+        // lifecycle too, not just the manager-only HTTP posting path.
+        $persistedOrder = EnterprisePurchaseOrder::query()
+            ->whereKey((int) $receipt->purchase_order_id)
+            ->where('store_id', $storeId)
+            ->lockForUpdate()
+            ->first();
+
+        if ($persistedOrder === null || $persistedOrder->status !== 'issued') {
+            throw ValidationException::withMessages([
+                'purchase_order_id' => ['Source purchase order is no longer issued for stock receipt.'],
             ]);
         }
 

@@ -165,6 +165,99 @@ final class EnterpriseGoodsReceiptFoundationTest extends TestCase
         }
     }
 
+    public function test_p110_direct_grn_handoff_rejects_cancelled_persisted_receipt_from_stale_draft(): void
+    {
+        $this->enableProcurement();
+        [$actor, $store, $context] = $this->scopedUser($this->allPermissions(), 'GRN-P110-CANCELLED-STOCK');
+        [$product, $warehouse] = $this->stockTarget($store, 'GRN-P110-CANCELLED-SKU');
+        $order = $this->issuedOrder($actor, $context, 'GRN-P110-CANCELLED-SUP', 'GRN-P110-CANCELLED-SKU', 4);
+        $manager = app(GoodsReceiptManager::class);
+        $receipt = $manager->createFromIssuedOrder($actor, $context, $order->id, [
+            'lines' => [[
+                'purchase_order_line_id' => $order->lines()->firstOrFail()->id,
+                'warehouse_id' => $warehouse->id,
+                'quantity' => 2,
+            ]],
+        ]);
+        $staleLine = $receipt->lines()->firstOrFail();
+        $this->assertSame('cancelled', $manager->cancel($actor, $context, $receipt->id)->status);
+        $this->assertSame('draft', $receipt->status);
+
+        $beforeInventory = DB::table('inventories')->count();
+        $beforeOwner = DB::table('enterprise_inventory_owner_positions')->count();
+        $beforeMovement = DB::table('stock_movements')->count();
+        $beforeOwnerEvent = DB::table('enterprise_inventory_owner_movement_events')->count();
+        $beforeAudit = DB::table('audit_logs')->count();
+
+        try {
+            DB::transaction(static function () use ($actor, $store, $receipt, $staleLine): void {
+                app(GoodsReceiptInventoryHandoff::class)->receive($actor, $store->id, $receipt, $staleLine);
+            });
+            $this->fail('A cancelled persisted GRN must not receive stock from a stale draft header.');
+        } catch (ValidationException $exception) {
+            $this->assertArrayHasKey('status', $exception->errors());
+        }
+
+        $this->assertSame($beforeInventory, DB::table('inventories')->count());
+        $this->assertSame($beforeOwner, DB::table('enterprise_inventory_owner_positions')->count());
+        $this->assertSame($beforeMovement, DB::table('stock_movements')->count());
+        $this->assertSame($beforeOwnerEvent, DB::table('enterprise_inventory_owner_movement_events')->count());
+        $this->assertSame($beforeAudit, DB::table('audit_logs')->count());
+        $this->assertDatabaseHas('enterprise_goods_receipts', ['id' => $receipt->id, 'status' => 'cancelled']);
+        $this->assertNull($staleLine->refresh()->stock_movement_id);
+        $this->assertSame(0, DB::table('inventories')
+            ->where('warehouse_id', $warehouse->id)
+            ->where('product_id', $product->id)->count());
+    }
+
+    public function test_p110_direct_grn_handoff_rejects_source_po_no_longer_issued(): void
+    {
+        $this->enableProcurement();
+        [$actor, $store, $context] = $this->scopedUser($this->allPermissions(), 'GRN-P110-REVOKED-PO');
+        [$product, $warehouse] = $this->stockTarget($store, 'GRN-P110-REVOKED-SKU');
+        $order = $this->issuedOrder($actor, $context, 'GRN-P110-REVOKED-SUP', 'GRN-P110-REVOKED-SKU', 4);
+        $receipt = app(GoodsReceiptManager::class)->createFromIssuedOrder($actor, $context, $order->id, [
+            'lines' => [[
+                'purchase_order_line_id' => $order->lines()->firstOrFail()->id,
+                'warehouse_id' => $warehouse->id,
+                'quantity' => 2,
+            ]],
+        ]);
+        $draftLine = $receipt->lines()->firstOrFail();
+
+        // Simulate an independently revoked PO after the original GRN draft
+        // was created; direct handoff must enforce the persisted PO lifecycle.
+        DB::table('enterprise_purchase_orders')
+            ->where('id', $order->id)
+            ->update(['status' => 'draft']);
+
+        $beforeInventory = DB::table('inventories')->count();
+        $beforeOwner = DB::table('enterprise_inventory_owner_positions')->count();
+        $beforeMovement = DB::table('stock_movements')->count();
+        $beforeOwnerEvent = DB::table('enterprise_inventory_owner_movement_events')->count();
+        $beforeAudit = DB::table('audit_logs')->count();
+
+        try {
+            DB::transaction(static function () use ($actor, $store, $receipt, $draftLine): void {
+                app(GoodsReceiptInventoryHandoff::class)->receive($actor, $store->id, $receipt, $draftLine);
+            });
+            $this->fail('A source PO no longer in issued state must not post GRN inventory.');
+        } catch (ValidationException $exception) {
+            $this->assertArrayHasKey('purchase_order_id', $exception->errors());
+        }
+
+        $this->assertSame($beforeInventory, DB::table('inventories')->count());
+        $this->assertSame($beforeOwner, DB::table('enterprise_inventory_owner_positions')->count());
+        $this->assertSame($beforeMovement, DB::table('stock_movements')->count());
+        $this->assertSame($beforeOwnerEvent, DB::table('enterprise_inventory_owner_movement_events')->count());
+        $this->assertSame($beforeAudit, DB::table('audit_logs')->count());
+        $this->assertDatabaseHas('enterprise_goods_receipts', ['id' => $receipt->id, 'status' => 'draft']);
+        $this->assertNull($draftLine->refresh()->stock_movement_id);
+        $this->assertSame(0, DB::table('inventories')
+            ->where('warehouse_id', $warehouse->id)
+            ->where('product_id', $product->id)->count());
+    }
+
     public function test_p110_direct_handoff_rejects_stale_line_after_manager_post_without_double_stock(): void
     {
         $this->enableProcurement();
