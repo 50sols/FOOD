@@ -35,6 +35,21 @@ final class GoodsReceiptInventoryHandoff
             throw new LogicException('Goods receipt stock handoff requires an active database transaction.');
         }
 
+        // The manager has its own authorization checks, but this public stock
+        // writer must not trust a queued/stale Eloquent actor snapshot. The
+        // caller can alter a user's primary key in memory to attribute a real
+        // canonical stock movement to a different identity. Reload only the
+        // originally persisted actor, and fail closed after offboarding.
+        $actorId = $actor->getRawOriginal($actor->getKeyName());
+        abort_unless(
+            $actor->exists
+                && $actorId !== null
+                && (string) $actor->getKey() === (string) $actorId,
+            403,
+        );
+        $actor = User::query()->whereKey($actorId)->first();
+        abort_unless($actor instanceof User && $actor->is_active, 403);
+
         // This public posting boundary must not accept a line from another
         // draft receipt on the same issued purchase order. The PO-line check
         // below is not enough: both drafts can share the exact same PO line.

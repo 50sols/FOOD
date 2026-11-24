@@ -104,6 +104,104 @@ final class EnterpriseGoodsReceiptFoundationTest extends TestCase
         $this->assertNull($line->refresh()->stock_movement_id);
     }
 
+    public function test_p110_direct_grn_handoff_denies_dirty_and_deactivated_actor_before_movement(): void
+    {
+        $this->enableProcurement();
+        $handoff = app(GoodsReceiptInventoryHandoff::class);
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            $label = strtoupper($locale);
+            [$actor, $store, $context] = $this->scopedUser(
+                $this->allPermissions(), 'GRN-P110-ACTOR-'.$label,
+            );
+            [$product, $warehouse] = $this->stockTarget($store, 'GRN-P110-ACTOR-SKU-'.$label);
+            $order = $this->issuedOrder(
+                $actor, $context, 'GRN-P110-ACTOR-SUP-'.$label,
+                'GRN-P110-ACTOR-SKU-'.$label, 2,
+            );
+            $receipt = app(GoodsReceiptManager::class)->createFromIssuedOrder(
+                $actor, $context, $order->id, ['lines' => [[
+                    'purchase_order_line_id' => $order->lines()->firstOrFail()->id,
+                    'warehouse_id' => $warehouse->id,
+                    'quantity' => 1,
+                ]],
+            );
+            $line = $receipt->lines()->firstOrFail();
+            $foreignActor = User::factory()->create(['is_active' => true]);
+            $dirtyActor = $actor->fresh();
+            $this->assertNotNull($dirtyActor);
+            $dirtyActor->forceFill(['id' => $foreignActor->id]);
+            $this->assertNotSame($dirtyActor->getRawOriginal('id'), $dirtyActor->getKey());
+
+            $before = [
+                'inventory' => DB::table('inventories')->count(),
+                'owner' => DB::table('enterprise_inventory_owner_positions')->count(),
+                'movement' => DB::table('stock_movements')->count(),
+                'events' => DB::table('enterprise_inventory_owner_movement_events')->count(),
+                'audit' => DB::table('audit_logs')->count(),
+            ];
+
+            // An unsaved User ID redirect cannot turn another account into
+            // the recorded actor of a real inventory movement.
+            try {
+                DB::transaction(static function () use ($handoff, $dirtyActor, $store, $receipt, $line): void {
+                    $handoff->receive($dirtyActor, $store->id, $receipt, $line);
+                });
+                $this->fail('Forged in-memory actor ID must not record GRN stock.');
+            } catch (HttpExceptionInterface $exception) {
+                $this->assertSame(403, $exception->getStatusCode());
+            }
+
+            // Keep the original active Eloquent model stale while only its
+            // persisted user is offboarded. Revocation must be immediate.
+            $this->assertTrue((bool) $actor->is_active);
+            DB::table('users')->where('id', $actor->id)->update(['is_active' => false]);
+            $this->assertTrue((bool) $actor->is_active);
+            try {
+                DB::transaction(static function () use ($handoff, $actor, $store, $receipt, $line): void {
+                    $handoff->receive($actor, $store->id, $receipt, $line);
+                });
+                $this->fail('Deactivated persisted actor must not receive stock from stale model.');
+            } catch (HttpExceptionInterface $exception) {
+                $this->assertSame(403, $exception->getStatusCode());
+            }
+
+            $this->assertSame($before['inventory'], DB::table('inventories')->count());
+            $this->assertSame($before['owner'], DB::table('enterprise_inventory_owner_positions')->count());
+            $this->assertSame($before['movement'], DB::table('stock_movements')->count());
+            $this->assertSame($before['events'], DB::table('enterprise_inventory_owner_movement_events')->count());
+            $this->assertSame($before['audit'], DB::table('audit_logs')->count());
+            $this->assertDatabaseHas('enterprise_goods_receipts', [
+                'id' => $receipt->id, 'status' => 'draft',
+            ]);
+            $this->assertNull($line->fresh()->stock_movement_id);
+            $this->assertSame(0, DB::table('inventories')
+                ->where('warehouse_id', $warehouse->id)
+                ->where('product_id', $product->id)->count());
+
+            // Restoring the original actor permits one legitimate handoff;
+            // the movement must belong to that actor, never the decoy.
+            DB::table('users')->where('id', $actor->id)->update(['is_active' => true]);
+            DB::transaction(static function () use ($handoff, $actor, $store, $receipt, $line): void {
+                $handoff->receive($actor, $store->id, $receipt, $line);
+            });
+            $this->assertNotNull($line->fresh()->stock_movement_id);
+            $this->assertSame($before['movement'] + 1, DB::table('stock_movements')->count());
+            $this->assertDatabaseHas('stock_movements', [
+                'reference_type' => 'enterprise_goods_receipt_line',
+                'reference_id' => $line->id,
+                'store_id' => $store->id,
+                'user_id' => $actor->id,
+            ]);
+            $this->assertDatabaseMissing('stock_movements', [
+                'reference_type' => 'enterprise_goods_receipt_line',
+                'reference_id' => $line->id,
+                'user_id' => $foreignActor->id,
+            ]);
+        }
+    }
+
     public function test_p110_dirty_eloquent_grn_identity_cannot_redirect_stock_to_other_same_order_draft(): void
     {
         $this->enableProcurement();
