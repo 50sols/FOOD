@@ -25,6 +25,7 @@ use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Validation\ValidationException;
+use LogicException;
 use Symfony\Component\HttpKernel\Exception\HttpExceptionInterface;
 use Tests\Support\ProcurementSecondApprover;
 use Tests\TestCase;
@@ -54,6 +55,53 @@ final class EnterpriseGoodsReceiptFoundationTest extends TestCase
                 static fn (string $sql): bool => str_contains($sql, 'enterprise_goods_receipt'),
             ),
         );
+    }
+
+    public function test_p110_grn_handoff_does_not_create_stock_without_an_active_transaction(): void
+    {
+        $this->enableProcurement();
+        [$actor, $store, $context] = $this->scopedUser($this->allPermissions(), 'GRN-P110-ATOMIC');
+        [$product, $warehouse] = $this->stockTarget($store, 'GRN-P110-ATOMIC-SKU');
+        $order = $this->issuedOrder($actor, $context, 'GRN-P110-ATOMIC-SUP', 'GRN-P110-ATOMIC-SKU', 2);
+        $receipt = app(GoodsReceiptManager::class)->createFromIssuedOrder($actor, $context, $order->id, [
+            'lines' => [[
+                'purchase_order_line_id' => $order->lines()->firstOrFail()->id,
+                'warehouse_id' => $warehouse->id,
+                'quantity' => 1,
+            ]],
+        ]);
+        $line = $receipt->lines()->firstOrFail();
+        $handoff = app(GoodsReceiptInventoryHandoff::class);
+        $beforeInventory = DB::table('inventories')->count();
+        $beforeOwner = DB::table('enterprise_inventory_owner_positions')->count();
+        $beforeMovement = DB::table('stock_movements')->count();
+        $beforeOwnerEvent = DB::table('enterprise_inventory_owner_movement_events')->count();
+        $beforeAudit = DB::table('audit_logs')->count();
+
+        // RefreshDatabase wraps PHPUnit itself in a transaction. Simulate
+        // the production no-transaction entry point at the first DB guard
+        // only; restore the real facade before querying or test teardown.
+        $database = DB::getFacadeRoot();
+        try {
+            DB::shouldReceive('transactionLevel')->once()->andReturn(0);
+            $handoff->receive($actor, $store->id, $receipt, $line);
+            $this->fail('A direct nontransactional receipt must not create canonical stock.');
+        } catch (LogicException $exception) {
+            $this->assertStringContainsString('transaction', $exception->getMessage());
+        } finally {
+            DB::swap($database);
+        }
+
+        $this->assertSame($beforeInventory, DB::table('inventories')->count());
+        $this->assertSame($beforeOwner, DB::table('enterprise_inventory_owner_positions')->count());
+        $this->assertSame($beforeMovement, DB::table('stock_movements')->count());
+        $this->assertSame($beforeOwnerEvent, DB::table('enterprise_inventory_owner_movement_events')->count());
+        $this->assertSame($beforeAudit, DB::table('audit_logs')->count());
+        $this->assertSame(0, DB::table('inventories')
+            ->where('warehouse_id', $warehouse->id)
+            ->where('product_id', $product->id)->count());
+        $this->assertDatabaseHas('enterprise_goods_receipts', ['id' => $receipt->id, 'status' => 'draft']);
+        $this->assertNull($line->refresh()->stock_movement_id);
     }
 
     public function test_p110_direct_grn_handoff_rejects_foreign_draft_line_and_store_without_inventory_writes(): void
