@@ -11,7 +11,7 @@ $Owner='walidatiyaai2025-gif'
 $Base='Foodex_V2'
 $Root=Join-Path $env:LOCALAPPDATA 'FoodexGccCI'
 $State=Join-Path $Root 'cursor.json'
-$Uri='repos/walidatiyaai2025-gif/FOOD/issues/comments?per_page=100&sort=created&direction=desc'
+$Uri='repos/50sols/FOOD/issues/comments?per_page=100&sort=created&direction=desc'
 $Task='FOODEX-GCC-Local-CI'
 
 function Doctor {
