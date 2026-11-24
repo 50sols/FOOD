@@ -34,6 +34,32 @@ final class PurchaseReturnInventoryHandoff
             throw new LogicException('Purchase return stock reversal requires an active database transaction.');
         }
 
+        // Lock and re-read the canonical return header first, using the same
+        // lock order as PurchaseReturnManager::post (header before lines).
+        // A caller retaining an old draft model after cancellation must not
+        // use that snapshot to debit canonical inventory through this service.
+        $persistedReturn = EnterprisePurchaseReturn::query()
+            ->whereKey((int) $return->getKey())
+            ->where('store_id', $storeId)
+            ->lockForUpdate()
+            ->first();
+
+        if ($persistedReturn === null
+            || (int) $return->store_id !== $storeId
+            || (int) $persistedReturn->goods_receipt_id !== (int) $return->goods_receipt_id) {
+            throw ValidationException::withMessages([
+                'goods_receipt_line_id' => ['Purchase return header no longer matches the authorized receipt and store.'],
+            ]);
+        }
+
+        if ($persistedReturn->status !== 'draft') {
+            throw ValidationException::withMessages([
+                'status' => ['A purchase return that is no longer draft cannot reverse stock.'],
+            ]);
+        }
+
+        $return = $persistedReturn;
+
         // A stale Eloquent instance can still have empty handoff references
         // after another caller committed the exact same return line. Read and
         // lock the persisted row BEFORE evaluating its posting identity, so a

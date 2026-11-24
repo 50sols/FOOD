@@ -232,6 +232,61 @@ final class EnterprisePurchaseReturnFoundationTest extends TestCase
         }
     }
 
+    public function test_p110_direct_return_handoff_rejects_cancelled_persisted_header_with_stale_draft_snapshot(): void
+    {
+        $this->enableProcurement();
+        [$actor, $store, $context] = $this->scopedUser($this->allPermissions(), 'PRTN-P110-CANCEL-REPLAY');
+        [$product, $warehouse] = $this->stockTarget($store, 'PRTN-P110-CANCEL-SKU');
+        $receipt = $this->postedReceipt(
+            $actor, $context, $warehouse, 'PRTN-P110-CANCEL-SUP', 'PRTN-P110-CANCEL-SKU', 3,
+        );
+        $sourceLine = $receipt->lines()->firstOrFail();
+        $manager = app(PurchaseReturnManager::class);
+        $return = $manager->createFromPostedReceipt($actor, $context, $receipt->id, [
+            'lines' => [['goods_receipt_line_id' => $sourceLine->id, 'quantity' => 1]],
+        ]);
+        $staleLine = $return->lines()->firstOrFail();
+
+        // The manager operates on a separately loaded persisted header.
+        // The original object still says draft after the real cancellation.
+        $this->assertSame('cancelled', $manager->cancel($actor, $context, $return->id)->status);
+        $this->assertSame('draft', $return->status);
+        $inventory = DB::table('inventories')
+            ->where('warehouse_id', $warehouse->id)
+            ->where('product_id', $product->id)
+            ->firstOrFail();
+        $stockBefore = (array) DB::table('inventories')->where('id', $inventory->id)->first();
+        $ownerBefore = DB::table('enterprise_inventory_owner_positions')
+            ->where('inventory_id', $inventory->id)->get()->toArray();
+        $movementCount = DB::table('stock_movements')->count();
+        $ownerEventCount = DB::table('enterprise_inventory_owner_movement_events')->count();
+        $auditCount = DB::table('audit_logs')->count();
+
+        try {
+            DB::transaction(static function () use ($actor, $store, $return, $staleLine, $sourceLine): void {
+                app(PurchaseReturnInventoryHandoff::class)->reverse(
+                    $actor, $store->id, $return, $staleLine, $sourceLine,
+                );
+            });
+            $this->fail('A cancelled persisted return cannot reverse inventory from a stale draft snapshot.');
+        } catch (ValidationException $exception) {
+            $this->assertArrayHasKey('status', $exception->errors());
+        }
+
+        $this->assertSame($stockBefore, (array) DB::table('inventories')
+            ->where('id', $inventory->id)->first());
+        $this->assertEquals($ownerBefore, DB::table('enterprise_inventory_owner_positions')
+            ->where('inventory_id', $inventory->id)->get()->toArray());
+        $this->assertSame($movementCount, DB::table('stock_movements')->count());
+        $this->assertSame($ownerEventCount, DB::table('enterprise_inventory_owner_movement_events')->count());
+        $this->assertSame($auditCount, DB::table('audit_logs')->count());
+        $this->assertDatabaseHas('enterprise_purchase_returns', [
+            'id' => $return->id,
+            'status' => 'cancelled',
+        ]);
+        $this->assertNull($staleLine->refresh()->stock_movement_id);
+    }
+
     public function test_p110_stale_purchase_return_line_cannot_reverse_committed_stock_twice(): void
     {
         $this->enableProcurement();
