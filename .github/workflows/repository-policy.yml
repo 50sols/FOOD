@@ -63,6 +63,21 @@ jobs:
           python3 -m unittest discover -s scripts/tests -p 'test_gcc_attestation.py'
           python3 -m unittest discover -s scripts/tests -p 'test_gcc_sign_attestation.py'
 
+      - name: Parse GCC PowerShell agent without executing it
+        shell: pwsh
+        run: |
+          $tokens = $null
+          $parseErrors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile(
+            'scripts/local-ci/gcc-agent.ps1', [ref]$tokens, [ref]$parseErrors
+          ) | Out-Null
+          if ($parseErrors.Count -gt 0) {
+            foreach ($record in $parseErrors) {
+              Write-Error ("GCC agent syntax error at line {0}" -f $record.Extent.StartLineNumber)
+            }
+            exit 1
+          }
+
       - name: Prevent post-merge main release failures
         if: github.event_name == 'pull_request'
         shell: bash
