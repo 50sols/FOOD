@@ -48,8 +48,7 @@ final class OrderCustomerServiceDiscountApprovalService
             $channel = strtolower((string) $locked->channel);
             // Never rely solely on the HTTP controller: jobs and other direct
             // service callers must obey the same store-scoped CS authority.
-            abort_unless($actor->is_active
-                && $actor->hasPermission('orders.view', $storeId)
+            abort_unless($actor->hasPermission('orders.view', $storeId)
                 && $actor->hasPermission('orders.customer_service_discount', $storeId), 403);
             $this->scope->assertStore($actor, $storeId, 'orders.customer_service_discount', $channel);
             if ($actor->hasRole('CUSTOMER_SERVICE_AGENT')
@@ -178,7 +177,7 @@ final class OrderCustomerServiceDiscountApprovalService
                 default => false,
             };
             abort_unless(
-                $reviewer->is_active && $accountingRole
+                $accountingRole
                 && $reviewer->hasPermission('finance.view', $storeId)
                 && $reviewer->hasPermission('finance.manage', $storeId),
                 403,
