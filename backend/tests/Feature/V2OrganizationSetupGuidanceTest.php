@@ -1721,6 +1721,51 @@ final class V2OrganizationSetupGuidanceTest extends TestCase
         $this->assertSame($beforeAudit, DB::table('audit_logs')->count());
     }
 
+    public function test_canonical_assignment_denies_persisted_inactive_store_even_from_stale_active_model(): void
+    {
+        $admin = $this->actor('SUPER_ADMIN', 'en');
+        $hierarchy = app(OrganizationHierarchyService::class);
+        $unit = EnterpriseBusinessUnit::query()
+            ->where('code', OrganizationHierarchyService::DEFAULT_BUSINESS_UNIT)
+            ->whereHas('legalEntity.company.organization', fn ($query) => $query
+                ->where('code', OrganizationHierarchyService::DEFAULT_ORGANIZATION))
+            ->firstOrFail();
+        $typeId = DB::table('store_types')->where('code', 'B2B')->value('id');
+        $this->assertNotNull($typeId);
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            $store = Store::query()->create([
+                'store_type_id' => $typeId,
+                'code' => 'v2-inactive-scope-'.$locale,
+                'name' => 'Deactivated '.$locale,
+                'is_active' => true,
+            ]);
+            $staleActive = $store->fresh();
+            DB::table('stores')->where('id', $store->id)->update(['is_active' => false]);
+            $this->assertTrue((bool) $staleActive->is_active);
+            $auditBefore = DB::table('audit_logs')->count();
+
+            try {
+                $hierarchy->assignStore($staleActive, $unit, $admin);
+                $this->fail('Persisted inactive store must not receive canonical enterprise scope.');
+            } catch (\\LogicException $exception) {
+                $this->assertStringContainsString('inactive store', $exception->getMessage());
+            }
+            $this->assertDatabaseMissing('enterprise_store_scopes', ['store_id' => $store->id]);
+            $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+
+            // Re-enable the actual persisted store: the normal first assignment
+            // and its idempotent retry remain valid and produce one audit.
+            DB::table('stores')->where('id', $store->id)->update(['is_active' => true]);
+            $scope = $hierarchy->assignStore($staleActive, $unit, $admin);
+            $this->assertSame((int) $store->id, (int) $scope->store_id);
+            $this->assertSame((int) $unit->id, (int) $scope->business_unit_id);
+            $hierarchy->assignStore($staleActive, $unit, $admin);
+            $this->assertSame($auditBefore + 1, DB::table('audit_logs')->count());
+        }
+    }
+
     private function actor(string $roleCode, string $locale): User
     {
         $user = User::query()->create([
