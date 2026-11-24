@@ -2,6 +2,9 @@
 
 namespace App\Http\Controllers\Admin;
 
+use App\Enterprise\Finance\FinanceFoundationService;
+use App\Enterprise\Finance\FinanceWorkbenchAccess;
+use App\Enterprise\Modules\ModuleRegistry;
 use App\Http\Controllers\Api\V1\DriverAssignmentController;
 use App\Http\Controllers\Api\V1\OrderController;
 use App\Http\Controllers\Controller;
@@ -2056,6 +2059,8 @@ final class OrderOperationsController extends Controller
         int $order,
         int $discountRequest,
         OrderCustomerServiceDiscountApprovalService $approvals,
+        ModuleRegistry $modules,
+        FinanceWorkbenchAccess $financeAccess,
     ): RedirectResponse {
         $actor = $this->actor($request);
         $model = $this->managedOrder($actor, $order, 'finance.view');
@@ -2078,6 +2083,19 @@ final class OrderOperationsController extends Controller
         );
         $this->scope->assertStore($actor, $storeId, 'finance.view', $channel);
         $this->scope->assertStore($actor, $storeId, 'finance.manage', $channel);
+
+        // The POST decision endpoint must enforce the same live Finance module
+        // and exact-store enterprise entitlement as the Finance inbox GET.
+        // An old tab, crafted direct POST or revoked legal-entity entitlement
+        // cannot turn a role grant alone into a financial mutation.
+        abort_unless(
+            $modules->isEnabled(FinanceFoundationService::MODULE)
+                && $financeAccess->canRead($actor, $storeId)
+                && $financeAccess->canPerform(
+                    $actor, $storeId, 'finance.manage', 'finance.foundation.read',
+                ),
+            403,
+        );
 
         // Apply the same normalization used for the persisted audit reason
         // BEFORE min-length validation; padded whitespace is not a review rationale.
