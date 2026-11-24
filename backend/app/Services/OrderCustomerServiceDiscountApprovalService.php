@@ -71,7 +71,8 @@ final class OrderCustomerServiceDiscountApprovalService
             // HTTP validation is not a trust boundary for direct service callers.
             // Reject NaN, infinity and percentages outside the mathematical
             // 0..100 range before inserting an actionable Finance request.
-            if (! is_finite($percentage) || $percentage < 0 || $percentage > 100) {
+            if (! is_finite($percentage) || $percentage < 0 || $percentage > 100
+                || abs($percentage - round($percentage, 3)) > 0.000000001) {
                 throw ValidationException::withMessages([
                     'percentage' => [__('customer_service_discount.invalid_totals')],
                 ]);
