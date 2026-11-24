@@ -321,8 +321,18 @@ final class EnterpriseOrganizationAdministration
 
         if ($model instanceof EnterpriseBusinessUnit
             && $model->code === OrganizationHierarchyService::DEFAULT_BUSINESS_UNIT) {
-            $model->loadMissing('legalEntity.company.organization');
-            $protected = $model->legalEntity->company->organization->code
+            // Do not trust caller-preloaded ancestry when protecting the
+            // reserved default routing identity. An Eloquent relation can be
+            // stale (or supplied by a non-HTTP service caller).
+            $current = $model->fresh();
+            if (! $current instanceof EnterpriseBusinessUnit) {
+                throw ValidationException::withMessages([
+                    'code' => [__('enterprise_organization.default_routing_identity_protected')],
+                ]);
+            }
+
+            $current->load('legalEntity.company.organization');
+            $protected = $current->legalEntity->company->organization->code
                 === OrganizationHierarchyService::DEFAULT_ORGANIZATION;
         }
 
