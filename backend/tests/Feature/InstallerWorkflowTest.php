@@ -730,6 +730,28 @@ class InstallerWorkflowTest extends TestCase
         $this->assertSame($originalConfig, config('app.key'));
     }
 
+    public function test_conditional_environment_key_write_refuses_existing_value_under_write_lock(): void
+    {
+        $environment = app(InstallerEnvironment::class);
+        $originalKey = 'base64:'.base64_encode(str_repeat('K', 32));
+        $environment->write(['APP_KEY' => $originalKey]);
+        $originalBytes = file_get_contents($environment->path());
+
+        // Model a competing request which observed a blank key earlier.
+        // The conditional write must recheck it after obtaining the .env lock.
+        try {
+            $environment->write([
+                'APP_KEY' => 'base64:'.base64_encode(str_repeat('N', 32)),
+            ], requireEmptyAppKey: true);
+            $this->fail('A racing installer must not replace the first APP_KEY.');
+        } catch (\RuntimeException $exception) {
+            $this->assertSame(__('installer.environment_already_configured'), $exception->getMessage());
+        }
+
+        $this->assertSame($originalBytes, file_get_contents($environment->path()));
+        $this->assertSame($originalKey, $environment->read(['APP_KEY'])['APP_KEY']);
+    }
+
     public function test_direct_seed_refuses_configured_application_key_without_mutating_reference_data(): void
     {
         app(InstallerEnvironment::class)->write([
