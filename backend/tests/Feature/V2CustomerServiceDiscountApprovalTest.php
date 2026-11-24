@@ -169,6 +169,31 @@ final class V2CustomerServiceDiscountApprovalTest extends TestCase
         $this->assertDatabaseHas('orders', ['id' => $orderId, 'grand_total' => 9]);
     }
 
+    public function test_direct_discount_request_rejects_invalid_percentage_without_audit_or_queue(): void
+    {
+        $manager = $this->roleUser('CUSTOMER_SERVICE_MANAGER');
+        $orderId = $this->order();
+        $order = Order::query()->findOrFail($orderId);
+        $service = app(OrderCustomerServiceDiscountApprovalService::class);
+        $request = Request::create('/admin/operations/orders', 'POST');
+
+        foreach ([-1.0, 101.0, INF, NAN] as $percentage) {
+            try {
+                $service->request($order, $manager, $percentage, 'Invalid direct service percentage', (string) Str::uuid(), $request);
+                $this->fail('Invalid financial percentage must not enter the Finance queue.');
+            } catch (\Illuminate\Validation\ValidationException $exception) {
+                $this->assertArrayHasKey('percentage', $exception->errors());
+            }
+        }
+
+        $this->assertDatabaseMissing('order_customer_service_discount_requests', ['order_id' => $orderId]);
+        $this->assertDatabaseMissing('audit_logs', [
+            'event' => 'order.customer_service_discount.requested',
+            'user_id' => $manager->getKey(),
+        ]);
+        $this->assertDatabaseHas('orders', ['id' => $orderId, 'grand_total' => 9]);
+    }
+
     public function test_request_idempotency_key_cannot_mask_changed_discount_or_requester(): void
     {
         $agent = $this->roleUser('CUSTOMER_SERVICE_AGENT');
