@@ -5,9 +5,11 @@ namespace Tests\Feature;
 use App\Enterprise\Entitlements\EntitlementScope;
 use App\Enterprise\Entitlements\ModuleEntitlementManager;
 use App\Enterprise\Modules\ModuleRegistry;
+use App\Enterprise\Organization\OrganizationHierarchyService;
 use App\Enums\StoreBusinessProfile;
 use App\Models\Permission;
 use App\Models\Role;
+use App\Models\Store;
 use App\Models\User;
 use App\Services\EnterpriseModuleAdministration;
 use App\Support\AdminNavigation;
@@ -194,6 +196,21 @@ final class V2SidebarAuthorityMatrixTest extends TestCase
 
     public function test_erp_sidebar_requires_operational_certification_beyond_enabled_and_entitled_and_http_fails_closed(): void
     {
+        // An operational Procurement link is store-scoped even for the
+        // global owner. Create the real B2B tenant; otherwise the correct
+        // navigation authority denies an unbound workbench URL.
+        $storeId = (int) DB::table('stores')->insertGetId([
+            'store_type_id' => DB::table('store_types')->where('code', 'B2B')->value('id'),
+            'code' => 'V2-P156-ERP-WHOLESALE',
+            'name' => 'V2 P156 ERP Wholesale',
+            'is_active' => true,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        app(OrganizationHierarchyService::class)->ensureDefaultScopeForStore(
+            Store::query()->findOrFail($storeId),
+        );
+
         $owner = $this->globalActor('SUPER_ADMIN', 'erp');
         $modules = app(ModuleRegistry::class);
         $version = $modules->manifest('procurement')->version;
