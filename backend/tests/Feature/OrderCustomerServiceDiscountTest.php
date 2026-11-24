@@ -2,6 +2,14 @@
 
 namespace Tests\Feature;
 
+use App\Enterprise\Entitlements\EntitlementScope;
+use App\Enterprise\Entitlements\ModuleEntitlementManager;
+use App\Enterprise\Finance\FinanceFoundationService;
+use App\Enterprise\Modules\ModuleLifecycleManager;
+use App\Enterprise\Modules\ModuleRegistry;
+use App\Enterprise\Modules\ModuleState;
+use App\Enterprise\Organization\OrganizationHierarchyService;
+use App\Models\Store;
 use App\Models\Role;
 use App\Models\User;
 use App\Services\B2bCustomerService;
@@ -221,6 +229,7 @@ class OrderCustomerServiceDiscountTest extends TestCase
             'user_id' => $finance->id, 'store_id' => $ownStore, 'role_id' => $retailFinanceRole,
             'created_at' => now(), 'updated_at' => now(),
         ]);
+        $this->enableFinanceForStore($finance, $ownStore);
         $requestId = (int) DB::table('order_customer_service_discount_requests')
             ->where('order_id', $orders[0])->value('id');
         $reviewUrl = route('admin.operations.orders.customer-service-discount.review', [
@@ -235,6 +244,32 @@ class OrderCustomerServiceDiscountTest extends TestCase
             'order_id' => $orders[0], 'applied_by_user_id' => $finance->id,
         ]);
         $this->assertDatabaseMissing('order_customer_service_discounts', ['order_id' => $orders[1]]);
+    }
+
+    private function enableFinanceForStore(User $actor, int $storeId): void
+    {
+        $store = Store::query()->findOrFail($storeId);
+        app(OrganizationHierarchyService::class)->ensureDefaultScopeForStore($store);
+        $modules = app(ModuleRegistry::class);
+        config()->set(
+            'enterprise_module_readiness.certified_versions.finance',
+            $modules->manifest(FinanceFoundationService::MODULE)->version,
+        );
+        if (! $modules->isEnabled(FinanceFoundationService::MODULE)) {
+            app(ModuleLifecycleManager::class)->transition(
+                FinanceFoundationService::MODULE, ModuleState::ENABLING, $actor,
+            );
+            app(ModuleLifecycleManager::class)->transition(
+                FinanceFoundationService::MODULE, ModuleState::ENABLED, $actor,
+            );
+        }
+        $scope = app(OrganizationHierarchyService::class)->scopeForStore($storeId);
+        $this->assertNotNull($scope);
+        app(ModuleEntitlementManager::class)->set(
+            FinanceFoundationService::MODULE,
+            new EntitlementScope(EntitlementScope::LEGAL_ENTITY, $scope['legal_entity_id']),
+            true, ['finance.foundation.read', 'finance.ar.read'], $actor,
+        );
     }
 
     private function orderFor(?User $customerUser = null): int
@@ -268,6 +303,9 @@ class OrderCustomerServiceDiscountTest extends TestCase
     {
         $user = User::factory()->create(['is_active' => true, 'locale' => 'en']);
         $user->roles()->attach(Role::query()->where('code', $code)->firstOrFail());
+        if ($code === 'FINANCE') {
+            $this->enableFinanceForStore($user, app(WholesalePrincipal::class)->storeId());
+        }
 
         return $user->fresh();
     }
