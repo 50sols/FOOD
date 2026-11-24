@@ -299,12 +299,14 @@ final class InstallState
 
     public function clearProgress(): void
     {
+        // Reject an unsafe checkpoint path even when finalization has not
+        // completed; never let a symlink masquerade as a missing install.
+        $path = $this->progressPath();
+        $this->assertSafeStatePath($path);
+
         // Only successful finalization may discard the recoverable setup
         // checkpoint. Finish writes installed.lock before this cleanup.
         abort_unless($this->isInstalled(), 404);
-
-        $path = $this->progressPath();
-        $this->assertSafeStatePath($path);
 
         if (is_file($path) && ! @unlink($path)) {
             throw new RuntimeException('Installer progress could not be cleared.');
