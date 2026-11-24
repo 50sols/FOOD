@@ -105,7 +105,7 @@ class GccAgentContractTests(unittest.TestCase):
         self.assertIn("$script:GccLastFailedStage='git-fetch-process-start'", SCRIPT)
         self.assertIn("$script:GccLastFailedStage='git-fetch-timeout'", SCRIPT)
         self.assertIn("function Classify-GitFetchFailure([string]$Path)", SCRIPT)
-        self.assertIn("$script:GccLastFailedStage=Classify-GitFetchFailure -Path $stderr", SCRIPT)
+        self.assertIn("$script:GccLastFailedStage=Classify-GitFetchFailure -Path $attemptStderr", SCRIPT)
         self.assertIn("return 'git-fetch-nonzero-exit'", SCRIPT)
         for failure_class in ("git-fetch-lock", "git-fetch-network", "git-fetch-access", "git-fetch-ref"):
             self.assertIn(f"return '{failure_class}'", SCRIPT)
