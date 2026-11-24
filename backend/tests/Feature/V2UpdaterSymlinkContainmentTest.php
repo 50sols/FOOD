@@ -159,6 +159,66 @@ class V2UpdaterSymlinkContainmentTest extends TestCase
         $this->assertFileDoesNotExist($this->fixturePath.'/link.php');
     }
 
+    public function test_runtime_archive_open_rejects_hardlinked_zip_even_without_package_validation(): void
+    {
+        $package = $this->archive([$this->fixtureName.'/safe.txt' => 'safe release data']);
+        $alias = tempnam(sys_get_temp_dir(), 'foodex-v2-zip-hardlink-');
+        if (! is_string($alias)) {
+            throw new RuntimeException('Cannot allocate archive alias fixture.');
+        }
+        @unlink($alias);
+        $this->temporaryArchives[] = $alias;
+
+        if (! function_exists('link') || ! @link($package, $alias)) {
+            $this->markTestSkipped('Filesystem hardlinks unavailable on this runner.');
+        }
+
+        $original = (string) file_get_contents($package);
+        foreach ([
+            fn () => $this->runtime()->backupFiles($alias),
+            fn () => $this->runtime()->extractRelease($alias),
+        ] as $operation) {
+            try {
+                $operation();
+                $this->fail('Runtime must not read a hardlinked update ZIP.');
+            } catch (RuntimeException $exception) {
+                $this->assertSame('Update package file is hardlinked or unsafe.', $exception->getMessage());
+            }
+        }
+
+        $this->assertSame($original, file_get_contents($package));
+        $this->assertFileDoesNotExist($this->fixturePath.'/safe.txt');
+    }
+
+    public function test_runtime_archive_open_rejects_symlinked_zip_even_without_package_validation(): void
+    {
+        $package = $this->archive([$this->fixtureName.'/safe.txt' => 'safe release data']);
+        $alias = tempnam(sys_get_temp_dir(), 'foodex-v2-zip-symlink-');
+        if (! is_string($alias)) {
+            throw new RuntimeException('Cannot allocate archive alias fixture.');
+        }
+        @unlink($alias);
+        $this->temporaryArchives[] = $alias;
+
+        if (! function_exists('symlink') || ! @symlink($package, $alias)) {
+            $this->markTestSkipped('Filesystem symlinks unavailable on this runner.');
+        }
+
+        foreach ([
+            fn () => $this->runtime()->backupFiles($alias),
+            fn () => $this->runtime()->extractRelease($alias),
+        ] as $operation) {
+            try {
+                $operation();
+                $this->fail('Runtime must not read a symlinked update ZIP.');
+            } catch (RuntimeException $exception) {
+                $this->assertSame('Update package path cannot be a symbolic link.', $exception->getMessage());
+            }
+        }
+
+        $this->assertFileDoesNotExist($this->fixturePath.'/safe.txt');
+    }
+
     public function test_regular_zip_without_links_still_installs_within_release_root(): void
     {
         $package = $this->archive([$this->fixtureName.'/safe.txt' => 'safe release data']);
