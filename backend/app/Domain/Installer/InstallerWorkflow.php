@@ -498,7 +498,9 @@ final class InstallerWorkflow
         }
 
         $key = 'base64:'.base64_encode(random_bytes(32));
-        $this->environment->write(['APP_KEY' => $key]);
+        // The read guard above gives a clear early refusal; the conditional
+        // write is also checked under the persistent .env lock to stop races.
+        $this->environment->write(['APP_KEY' => $key], requireEmptyAppKey: true);
         config(['app.key' => $key]);
     }
 
