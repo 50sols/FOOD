@@ -96,6 +96,20 @@ class WebInstallerMigrationTransportFailureTests(unittest.TestCase):
         self.assertIn('G004 safe installer error category:', function)
         self.assertIn('G004 first-attempt migration failure:', function)
 
+    def test_finish_never_replays_indeterminate_http_response(self):
+        source = SH.read_text(encoding='utf-8')
+        function = source.split('wizard_post() {', 1)[1].split('\\n\\nfor step in $(seq 1 15)', 1)[0]
+        success = function.index('[[ "$status" == "302" && "$transport_exit" == "0" ]] && return 0')
+        finish = function.index('if [[ "$step" == "15" && ( "$status" == "000" || "$transport_exit" -ne 0 ) ]]')
+        migration = function.index('if [[ "$step" == "11" && ( "$status" == "000" || "$transport_exit" -ne 0 ) ]]')
+        self.assertLess(success, finish)
+        self.assertLess(finish, migration)
+        finish_block = function[finish:migration]
+        self.assertIn('refusing to replay the final installer write', finish_block)
+        self.assertIn('return 1', finish_block)
+        self.assertNotIn('laravel.log', finish_block)
+        self.assertNotIn('install-step-$step.html', finish_block)
+
     def test_step_11_captures_transport_result_without_replaying_nontransactional_ddl(self):
         source = SH.read_text(encoding='utf-8')
         start = source.index('wizard_post() {')
