@@ -96,18 +96,44 @@ if [[ "$profile" == packages || "$profile" == all || "$profile" == setup ]]; the
   rm -rf "$stage"
   mkdir -p "$stage/backend" /workspace/Release
   cp VERSION "$stage/VERSION"
-  rsync -a --exclude=vendor --exclude=.env --exclude=tests --exclude=docs \
-    --exclude='.phpunit.cache' --exclude='storage/logs/*' \
-    --exclude='storage/app/system/*' /workspace/backend/ "$stage/backend/"
+  # Match the authoritative G004 Setup staging file set, rather than
+  # constructing a second, differently filtered ZIP on GCC.
+  rsync -a /workspace/backend/ "$stage/backend/" \
+    --exclude='/vendor/' \
+    --exclude='/.env' \
+    --exclude='tests/' \
+    --exclude='docs/' \
+    --exclude='.phpunit.cache/' \
+    --exclude='/storage/' \
+    --exclude='/bootstrap/cache/' \
+    --exclude='/public/storage' \
+    --exclude='/public/uploads'
   rsync -a /workspace/production-backend/vendor/ "$stage/backend/vendor/"
-  rm -f "$stage/backend/bootstrap/cache/"*.php
+  mkdir -p "$stage/backend/storage/app/public" \
+    "$stage/backend/storage/app/private" \
+    "$stage/backend/storage/app/system" \
+    "$stage/backend/storage/logs" \
+    "$stage/backend/storage/framework/sessions" \
+    "$stage/backend/storage/framework/cache/data" \
+    "$stage/backend/storage/framework/views" \
+    "$stage/backend/storage/framework/testing" \
+    "$stage/backend/bootstrap/cache"
+  cp Release/INSTALL-FIRST.txt "$stage/INSTALL-FIRST.txt"
   test -s "$stage/backend/vendor/autoload.php"
   if find "$stage" -type l -print -quit | grep -q .; then
     echo 'Refusing symlinks in Setup ZIP' >&2; exit 1
   fi
   setup=/workspace/Release/FOODEX-Laravel-Setup.zip
-  rm -f "$setup"
-  (cd "$stage" && zip -qr "$setup" .)
+  repeat=/workspace/Release/.G004-setup-repeat.zip
+  rm -f "$setup" "$repeat"
+  source_epoch="$(git show -s --format=%ct "$GCC_EXPECTED_SHA")"
+  test -n "$source_epoch"
+  python3 scripts/v2_build_setup_zip.py \
+    --source-root "$stage" --output "$setup" --source-date-epoch "$source_epoch"
+  python3 scripts/v2_build_setup_zip.py \
+    --source-root "$stage" --output "$repeat" --source-date-epoch "$source_epoch"
+  cmp "$setup" "$repeat"
+  rm -f "$repeat"
   step=verify-real-setup-zip
   python3 - "$setup" "$version" <<'PY'
 import sys, zipfile, pathlib, stat
