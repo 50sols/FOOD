@@ -122,6 +122,21 @@ class GccHeavyExecutionContracts(unittest.TestCase):
         self.assertIn("signed=False", FULL)
         self.assertIn("Get-FileHash", AGENT)
 
+    def test_gcc_zip_evidence_rejects_links_and_ambiguous_names_before_hashing(self):
+        # The manifest is keyed by artifact basename: two nested ZIPs of
+        # the same name must never be accepted against the same hash entry.
+        # A Windows reparse point must not be hashed by following its target.
+        start = AGENT.index("$artifacts=Get-ChildItem")
+        end = AGENT.index("  return 0", start)
+        verifier = AGENT[start:end]
+        self.assertIn("[IO.FileAttributes]::ReparsePoint", verifier)
+        self.assertIn("Refusing symlink/reparse-point ZIP artifact", verifier)
+        self.assertIn("StringComparer]::OrdinalIgnoreCase", verifier)
+        self.assertIn("$seenArtifactNames.Add([string]$artifact.Name)", verifier)
+        self.assertIn("Duplicate ZIP artifact filename", verifier)
+        self.assertLess(verifier.index("ReparsePoint"), verifier.index("Get-FileHash"))
+        self.assertLess(verifier.index("$seenArtifactNames.Add"), verifier.index("Get-FileHash"))
+
     def test_setup_zip_rejects_all_non_template_dotenv_files(self):
         # Execute the actual embedded GCC ZIP verifier, not a reimplementation.
         marker = "step=verify-real-setup-zip\n  python3 - \"$setup\" \"$version\" <<'PY'\n"
