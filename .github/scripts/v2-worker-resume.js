@@ -90,7 +90,11 @@ function claimReferences(comments) {
       .replace(/;\s*PR #[1-9]\d* OPEN\/DRAFT → Foodex_V2 ONLY$/i, '')
       .replace(/;\s*EXACT_START_HEAD:\s*[a-f0-9]{40}$/i, '')
       .replace(/\s+\|\s+START_HEAD:\s+[a-f0-9]{40}$/i, '')
-      .replace(/\s+\|\s+BASE Foodex_V2 ONLY$/i, '');
+      .replace(/\s+\|\s+BASE Foodex_V2 ONLY$/i, '')
+      // Issue #2844 has a verified historical destination annotation in
+      // BRANCH. Only a whole canonical issue-scoped ref plus this exact
+      // display suffix may be normalized; all other prose stays fail-closed.
+      .replace(/^((?:feat|feature|fix|test|chore|ci|docs|refactor|worker)\/[1-9]\d*-[A-Za-z0-9._-]+) -> Foodex_V2 ONLY$/, '$1');
     // Inlined PR identities are provenance constraints, not decoration.
     // Never turn conflicting explicit and annotated PR references into a pass.
     const claimedPr = explicitPr ? Number(explicitPr[1]) : null;
