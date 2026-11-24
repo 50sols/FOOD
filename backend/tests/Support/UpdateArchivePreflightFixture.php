@@ -17,7 +17,7 @@ use RuntimeException;
 final class UpdateArchivePreflightFixture
 {
     /**
-     * @param Closure(): void $assertion
+     * @param  Closure(): void  $assertion
      */
     public static function withBackupableSqlite(Closure $assertion): void
     {
