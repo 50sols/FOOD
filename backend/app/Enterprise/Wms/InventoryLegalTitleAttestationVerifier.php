@@ -55,6 +55,7 @@ final class InventoryLegalTitleAttestationVerifier
             || ! DB::table('warehouses')
                 ->where('id', (int) ($inventory->warehouse_id ?? 0))
                 ->where('store_id', $storeId)
+                ->where('is_active', true)
                 ->exists()
             || ! $this->hasProtectedStockMovementHistory((int) $inventory->id)) {
             // Store/warehouse existence alone is not a legal entity identity.
