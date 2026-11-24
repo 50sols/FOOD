@@ -29,12 +29,23 @@ final class InstallerEnvironment
     /**
      * @param  array<string, scalar|null>  $values
      */
-    public function write(array $values): void
+    public function write(array $values, bool $requireEmptyAppKey = false): void
     {
+        // The installer-only environment writer is public to internal callers.
+        // Closing /install and guarding workflow methods is insufficient if a
+        // direct service caller can still replace live APP_KEY/DB credentials.
+        // Enforce the final installation lock at the actual write boundary,
+        // before opening either .env or its persistent file lock.
+        abort_if(app(InstallState::class)->isInstalled(), 404);
+
         foreach (array_keys($values) as $key) {
             if (! in_array($key, self::ALLOWED_KEYS, true)) {
                 throw new InvalidArgumentException('Environment key ['.$key.'] is not installer-writable.');
             }
+        }
+
+        if ($requireEmptyAppKey && array_keys($values) !== ['APP_KEY']) {
+            throw new InvalidArgumentException('One-shot APP_KEY write must not include other fields.');
         }
 
         $path = $this->path();
@@ -66,7 +77,7 @@ final class InstallerEnvironment
 
             $this->assertSafeWriteLock($lockPath, $lock);
             @chmod($lockPath, 0640);
-            $this->writeWithLock($path, $values);
+            $this->writeWithLock($path, $values, $requireEmptyAppKey);
         } finally {
             @flock($lock, LOCK_UN);
             fclose($lock);
@@ -100,14 +111,28 @@ final class InstallerEnvironment
     /**
      * @param  array<string, scalar|null>  $values
      */
-    private function writeWithLock(string $path, array $values): void
+    private function writeWithLock(string $path, array $values, bool $requireEmptyAppKey): void
     {
+        // Another installer request may have finished while this writer
+        // waited for the persistent .env lock. Recheck the final installation
+        // boundary after acquiring it, before reading or replacing live data.
+        abort_if(app(InstallState::class)->isInstalled(), 404);
+
         $this->rejectSymbolicLink($path);
         $this->ensureEnvironmentFile($path);
         $this->rejectSymbolicLink($path);
+        $this->assertSafeEnvironmentFile($path);
         $content = file_get_contents($path);
         if ($content === false) {
             throw new RuntimeException('Environment configuration could not be read.');
+        }
+
+        // Enforce the APP_KEY first-writer contract while holding the SAME
+        // persistent .env lock as all installer writers. A pre-lock check in
+        // InstallerWorkflow alone cannot stop two parallel step-13 requests
+        // from each replacing the other's encryption key.
+        if ($requireEmptyAppKey && trim((string) ($this->read(['APP_KEY'])['APP_KEY'] ?? '')) !== '') {
+            throw new RuntimeException((string) __('installer.environment_already_configured'));
         }
 
         foreach ($values as $key => $value) {
@@ -153,6 +178,7 @@ final class InstallerEnvironment
             // Recheck just before the final rename: a containing directory
             // might have changed since the initial read and backup write.
             $this->rejectSymbolicLink($path);
+            $this->assertSafeEnvironmentFile($path);
 
             if (! @rename($temporary, $path)) {
                 throw new RuntimeException('Environment configuration could not be finalized.');
@@ -172,6 +198,7 @@ final class InstallerEnvironment
     {
         $path = $this->path();
         $this->rejectSymbolicLink($path);
+        $this->assertSafeEnvironmentFile($path);
 
         if (! is_file($path)) {
             return array_fill_keys($keys, null);
@@ -203,6 +230,26 @@ final class InstallerEnvironment
         }
 
         return $result;
+    }
+
+    /**
+     * Existing installer .env must be a standalone regular file. A hardlink
+     * would let another path's private contents be imported into .env when
+     * the installer rewrites it, even if a prior host preflight was clean.
+     */
+    private function assertSafeEnvironmentFile(string $path): void
+    {
+        clearstatcache(true, $path);
+        if (! file_exists($path) && ! is_link($path)) {
+            return;
+        }
+
+        $metadata = @lstat($path);
+        if ($metadata === false
+            || ($metadata['mode'] & 0170000) !== 0100000
+            || $metadata['nlink'] !== 1) {
+            throw new RuntimeException('Environment configuration file is not a standalone regular file.');
+        }
     }
 
     private function ensureEnvironmentFile(string $path): void

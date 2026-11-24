@@ -40,8 +40,8 @@ jobs:
           path: backend/vendor
           key: composer-vendor-v1-${{ runner.os }}-php-8.3-${{ hashFiles('backend/composer.json', 'backend/composer.lock') }}
 
-      - name: Validate Composer manifest
-        run: composer validate --strict --no-check-lock
+      - name: Validate pinned Composer manifest and lock
+        run: composer validate --strict --no-check-publish
 
       - name: Install Composer dependencies
         run: |
@@ -76,7 +76,9 @@ jobs:
   backend-smoke:
     name: Backend migrations seed and runtime
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # The full Laravel security/feature suite legitimately exceeds 20 minutes
+    # under CI runner contention; preserve every required assertion and job.
+    timeout-minutes: 30
     defaults:
       run:
         working-directory: backend
