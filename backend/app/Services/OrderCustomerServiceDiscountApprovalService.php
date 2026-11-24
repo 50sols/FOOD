@@ -2,6 +2,9 @@
 
 namespace App\Services;
 
+use App\Enterprise\Finance\FinanceFoundationService;
+use App\Enterprise\Finance\FinanceWorkbenchAccess;
+use App\Enterprise\Modules\ModuleRegistry;
 use App\Models\Invoice;
 use App\Models\Order;
 use App\Models\Payment;
@@ -16,6 +19,8 @@ final class OrderCustomerServiceDiscountApprovalService
         private readonly OrderCustomerServiceDiscountService $discounts,
         private readonly AuditLogger $audit,
         private readonly OperationalTenantScope $scope,
+        private readonly FinanceWorkbenchAccess $financeAccess,
+        private readonly ModuleRegistry $modules,
     ) {}
 
     /**
@@ -120,6 +125,16 @@ final class OrderCustomerServiceDiscountApprovalService
             );
             $this->scope->assertStore($reviewer, $storeId, 'finance.view', $channel);
             $this->scope->assertStore($reviewer, $storeId, 'finance.manage', $channel);
+            // Defense in depth: a direct service caller must not approve a
+            // discount after Finance has been disabled or its store scope
+            // revoked, regardless of the HTTP controller's checks.
+            abort_unless(
+                $this->modules->isEnabled(FinanceFoundationService::MODULE)
+                    && $this->financeAccess->canPerform(
+                        $reviewer, $storeId, 'finance.manage', 'finance.foundation.read',
+                    ),
+                403,
+            );
 
             $record = DB::table('order_customer_service_discount_requests')
                 ->where('id', $requestId)
