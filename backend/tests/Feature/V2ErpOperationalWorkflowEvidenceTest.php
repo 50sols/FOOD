@@ -440,6 +440,30 @@ final class V2ErpOperationalWorkflowEvidenceTest extends TestCase
         );
     }
 
+    public function test_health_probe_cannot_return_ready_after_certified_version_is_revoked(): void
+    {
+        $this->enableSample();
+        config()->set('enterprise_modules.modules.sample_optional.category', 'operations');
+        config()->set('enterprise_modules.modules.sample_optional.health_checks', ['database']);
+        config()->set('enterprise_module_health.probes.sample_optional', [V2RevokeCertifiedVersionDuringHealthProbe::class]);
+        app(ModuleRegistry::class)->syncManifest('sample_optional');
+        $this->requireSampleWorkflow();
+        $signedAttestation = $this->evidence();
+
+        // Certification can be withdrawn independently of the signature.
+        // Health probes cannot reuse the pre-probe version approval.
+        $this->assertSame(
+            'uncertified',
+            app(ModuleOperationalReadiness::class)->status('sample_optional', 1, ModuleState::ENABLED),
+        );
+        $this->assertNull(config('enterprise_module_readiness.certified_versions.sample_optional'));
+        $this->assertSame(
+            $signedAttestation,
+            config('enterprise_module_readiness.workflow_attestations.sample_optional'),
+        );
+        $this->assertSame(ModuleState::ENABLED, app(ModuleRegistry::class)->state('sample_optional'));
+    }
+
     public function test_operational_proof_never_bypasses_disabled_lifecycle_or_failing_health(): void
     {
         config()->set('enterprise_module_readiness.certified_versions.sample_optional', 1);
@@ -505,6 +529,16 @@ final class V2RevokeAttestationDuringHealthProbe implements ModuleHealthProbe
     public function check(): ModuleHealthCheck
     {
         config()->set('enterprise_module_readiness.workflow_attestations.sample_optional', []);
+
+        return ModuleHealthCheck::healthy('database');
+    }
+}
+
+final class V2RevokeCertifiedVersionDuringHealthProbe implements ModuleHealthProbe
+{
+    public function check(): ModuleHealthCheck
+    {
+        config()->set('enterprise_module_readiness.certified_versions.sample_optional', null);
 
         return ModuleHealthCheck::healthy('database');
     }
