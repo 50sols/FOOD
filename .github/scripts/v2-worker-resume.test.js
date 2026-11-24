@@ -258,8 +258,8 @@ test('historical P110 display notes do not fabricate alternate issue branches', 
   }
   // A valid display suffix never overrides a conflicting historical PR ID.
   const mismatchedPr = claimReferences([{body:
-    '<!-- foodex-worker-state:v1 -->\\nSTATE: ACTIVE\\nBRANCH: '
-    + original + ' -> Foodex_V2 ONLY\\nPR: #3922',
+    '<!-- foodex-worker-state:v1 -->\nSTATE: ACTIVE\nBRANCH: '
+    + original + ' -> Foodex_V2 ONLY\nPR: #3922',
   }]);
   assert.equal(decide({ ...shared, refs: mismatchedPr }).action,
     'BLOCK_CONFLICTING_ORIGINALS');
