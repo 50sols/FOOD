@@ -179,21 +179,11 @@ class GccAgentContractTests(unittest.TestCase):
         self.assertIn("Remove-Item -LiteralPath $work -Recurse -Force", SCRIPT)
 
     def test_gcc_reports_running_agent_script_fingerprint_without_secrets(self):
-        # A GCC machine may still have an older scheduled agent installed.
-        # Both reports must identify the source script actually executing,
-        # while never disclosing the installation path or host credentials.
+        # Publish only the SHA-256 of the installed source script.
         self.assertIn("function AgentSourceFingerprint", SCRIPT)
         self.assertIn("$source=[string]$PSCommandPath", SCRIPT)
         self.assertIn("Get-FileHash -LiteralPath $source -Algorithm SHA256", SCRIPT)
-        self.assertIn("if($digest -cnotmatch '^[a-f0-9]{64}        self.assertIn("**Advisory only**", SCRIPT)
-        self.assertIn("Report -Pr $n", SCRIPT)
-        self.assertNotIn("/statuses/", SCRIPT)
-        self.assertNotIn("/check-runs", SCRIPT)
-
-
-if __name__ == "__main__":
-    unittest.main()
-)", SCRIPT)
+        self.assertIn("if($digest -cnotmatch '^[a-f0-9]{64}$')", SCRIPT)
         self.assertIn("return 'unavailable'", SCRIPT)
         self.assertEqual(SCRIPT.count("Installed agent script SHA-256 (diagnostic only): $(AgentSourceFingerprint)"), 2)
         self.assertNotIn("Installed agent path:", SCRIPT)
