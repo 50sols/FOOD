@@ -96,7 +96,7 @@ final class EnterprisePurchaseReturnFoundationTest extends TestCase
                 DB::transaction(static function () use (
                     $service, $actor, $store, $draft, $draftLine, $source
                 ): void {
-                    $service->reverse($actor, $store->id, $draft, $draftLine->fresh(), $source);
+                    $service->reverse($actor, $store->id, $draft, $draftLine->refresh(), $source);
                 });
                 $this->fail('A direct nonpositive purchase return must not increase stock or emit a movement.');
             } catch (ValidationException $exception) {
