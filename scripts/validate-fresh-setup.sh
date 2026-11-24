@@ -575,12 +575,33 @@ wizard_post() {
   local request_timeout=300
   [[ "$step" == "11" ]] && request_timeout=900
   for attempt in $(seq 1 15); do
+    local transport_exit=0
     status="$(curl -sS --connect-timeout 10 --max-time "$request_timeout" -o "/tmp/install-step-$step.html" \
       -w '%{http_code}' -X POST \
       --data-urlencode "installer_token=$installer_token" "$@" \
-      "http://127.0.0.1:8099/install/step/$step" || true)"
-    [[ "$status" == "302" ]] && return 0
-    if [[ "$step" == "11" && "$status" == "000" ]]; then
+      "http://127.0.0.1:8099/install/step/$step")" || transport_exit=$?
+    [[ "$status" == "302" && "$transport_exit" == "0" ]] && return 0
+    if [[ "$step" == "11" && ( "$status" == "000" || "$transport_exit" -ne 0 ) ]]; then
+      # Never retry the non-transactional MySQL migration stage. Preserve a
+      # safe diagnostic even when the PHP process dies before Laravel can log
+      # the first SQLSTATE. Do not print the HTTP form, .env or database DSN.
+      local transport_category="other"
+      case "$transport_exit" in
+        7) transport_category="connection_refused" ;;
+        28) transport_category="timeout" ;;
+        52) transport_category="empty_reply" ;;
+      esac
+      local server_state="unverifiable"
+      if [[ -s /tmp/foodex-install-server.pid ]]; then
+        local server_pid
+        server_pid="$(cat /tmp/foodex-install-server.pid)"
+        if [[ "$server_pid" =~ ^[1-9][0-9]*$ ]] && kill -0 "$server_pid" 2>/dev/null; then
+          server_state="alive"
+        else
+          server_state="missing"
+        fi
+      fi
+      echo "::error::G004 first-attempt HTTP transport: category=$transport_category, server=$server_state."
       echo "::error::Web installer step 11 lost its HTTP response; refusing to replay because MySQL DDL may have partially committed."
       FRESH_INSTALL_LOG="$fresh/backend/storage/logs/laravel.log" python3 - <<'PY'
 import os
