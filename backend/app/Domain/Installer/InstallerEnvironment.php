@@ -109,6 +109,7 @@ final class InstallerEnvironment
         $this->rejectSymbolicLink($path);
         $this->ensureEnvironmentFile($path);
         $this->rejectSymbolicLink($path);
+        $this->assertSafeEnvironmentFile($path);
         $content = file_get_contents($path);
         if ($content === false) {
             throw new RuntimeException('Environment configuration could not be read.');
@@ -165,6 +166,7 @@ final class InstallerEnvironment
             // Recheck just before the final rename: a containing directory
             // might have changed since the initial read and backup write.
             $this->rejectSymbolicLink($path);
+            $this->assertSafeEnvironmentFile($path);
 
             if (! @rename($temporary, $path)) {
                 throw new RuntimeException('Environment configuration could not be finalized.');
@@ -184,6 +186,7 @@ final class InstallerEnvironment
     {
         $path = $this->path();
         $this->rejectSymbolicLink($path);
+        $this->assertSafeEnvironmentFile($path);
 
         if (! is_file($path)) {
             return array_fill_keys($keys, null);
@@ -215,6 +218,26 @@ final class InstallerEnvironment
         }
 
         return $result;
+    }
+
+    /**
+     * Existing installer .env must be a standalone regular file. A hardlink
+     * would let another path's private contents be imported into .env when
+     * the installer rewrites it, even if a prior host preflight was clean.
+     */
+    private function assertSafeEnvironmentFile(string $path): void
+    {
+        clearstatcache(true, $path);
+        if (! file_exists($path) && ! is_link($path)) {
+            return;
+        }
+
+        $metadata = @lstat($path);
+        if ($metadata === false
+            || ($metadata['mode'] & 0170000) !== 0100000
+            || $metadata['nlink'] !== 1) {
+            throw new RuntimeException('Environment configuration file is not a standalone regular file.');
+        }
     }
 
     private function ensureEnvironmentFile(string $path): void
