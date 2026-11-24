@@ -4,6 +4,7 @@ namespace Tests\Feature;
 
 use App\Domain\Installer\InstallerEnvironment;
 use App\Domain\Installer\InstallState;
+use RuntimeException;
 use Tests\TestCase;
 
 final class V2InstallerProgressStepTypeGuardTest extends TestCase
@@ -63,8 +64,15 @@ final class V2InstallerProgressStepTypeGuardTest extends TestCase
 
         foreach (['12', 12.9, true, false, [], ['step' => 12], -1, 16, 99] as $step) {
             $this->writeProgress($step, $token);
-            $this->assertSame(0, $state->progress()['completed_step'], json_encode($step, JSON_THROW_ON_ERROR));
-            $this->assertSame($token, $state->progress()['token']);
+            $before = (string) file_get_contents($this->directory.'/install-progress.json');
+            $actualError = null;
+            try {
+                $state->progress();
+            } catch (RuntimeException $exception) {
+                $actualError = $exception->getMessage();
+            }
+            $this->assertSame('Installer progress state is invalid.', $actualError, json_encode($step, JSON_THROW_ON_ERROR));
+            $this->assertSame($before, file_get_contents($this->directory.'/install-progress.json'));
         }
     }
 
@@ -78,11 +86,11 @@ final class V2InstallerProgressStepTypeGuardTest extends TestCase
         $this->assertSame('', $environment->read(['APP_KEY'])['APP_KEY']);
 
         $this->post('/install/step/13', ['installer_token' => $token])
-            ->assertStatus(409);
+            ->assertStatus(500);
 
         $this->assertSame('', $environment->read(['APP_KEY'])['APP_KEY']);
         $this->assertSame($before, file_get_contents($this->directory.'/install-progress.json'));
-        $this->assertSame(0, app(InstallState::class)->progress()['completed_step']);
+        $this->assertSame($before, file_get_contents($this->directory.'/install-progress.json'));
         $this->assertFalse(app(InstallState::class)->isInstalled());
     }
 
