@@ -112,7 +112,11 @@ final class EnterpriseOrganizationAdministration
 
     public function assignStore(Store $store, EnterpriseBusinessUnit $unit, Authenticatable $actor): void
     {
-        if (! $unit->is_active) {
+        // Long-lived callers can carry a previously active unit even after
+        // the persisted hierarchy is disabled. Store authority must be
+        // decided from the current database record, not a cached model.
+        $unit = $unit->fresh();
+        if (! $unit instanceof EnterpriseBusinessUnit || ! $unit->is_active) {
             throw ValidationException::withMessages(['store' => [__('enterprise_organization.inactive_parent')]]);
         }
 
