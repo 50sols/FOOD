@@ -85,7 +85,7 @@ function Report([int]$Pr,[string]$Sha,[string]$Status,[int]$Exit,[long]$Request)
  $body="<!-- foodex-gcc-ci:$Request -->" + [Environment]::NewLine +
  "**GCC isolated local smoke: $Status**" + [Environment]::NewLine +
  "PR #$Pr; exact source SHA: $Sha; exit: $Exit." + [Environment]::NewLine +
- "Last execution stage: $(if($Status -eq 'PASS'){'complete'}else{$script:GccLastFailedStage})." + [Environment]::NewLine +
+ "Last execution stage: $(if($Status -eq 'PASS'){'complete'}else{$script:GccLastFailedStage})." + (Safe-GitProcessSummary) + [Environment]::NewLine +
  "Installed agent script SHA-256 (diagnostic only): $(AgentSourceFingerprint)" + [Environment]::NewLine +
  "Tests: CI map, failure registry, branch policy unit tests. Docker: offline, read-only source, no host credentials or socket." +
  [Environment]::NewLine + "**Advisory only**: does not substitute Laravel, Flutter, MySQL/Redis, signed ZIP, or exact-head Required CI."
@@ -121,6 +121,31 @@ function Classify-GitFetchFailure([string]$Path) {
  }
  return 'git-fetch-nonzero-exit'
 }
+# Public Git evidence exposes fixed labels only, never private stream bytes.
+function Private-GitOutputBand([string]$Path) {
+ try {
+  $file=Get-Item -LiteralPath $Path -ErrorAction Stop
+  if($file.Length -eq 0) { return 'empty' }
+  return 'nonempty'
+ } catch {
+  return 'missing-or-unreadable'
+ }
+}
+function Safe-GitProcessSummary {
+ if([string]$script:GccLastFailedStage -cnotmatch '^git-(init|remote|fetch|checkout)') { return '' }
+ $code=[string]$script:GccNativeGitExit
+ if($code -cnotmatch '^(unknown|timeout|-?[0-9]{1,11})$') { $code='unknown' }
+ $attempt=[string]$script:GccGitAttempt
+ if($attempt -cnotmatch '^(none|init|remote|anonymous|authenticated)$') { $attempt='none' }
+ $out=[string]$script:GccGitStdoutBand
+ $err=[string]$script:GccGitStderrBand
+ if($out -cnotmatch '^(unobserved|empty|nonempty|missing-or-unreadable)$') { $out='unobserved' }
+ if($err -cnotmatch '^(unobserved|empty|nonempty|missing-or-unreadable)$') { $err='unobserved' }
+ return ([Environment]::NewLine + "- Native Git process exit (diagnostic): $code" +
+         [Environment]::NewLine + "- Git attempt type: $attempt" +
+         [Environment]::NewLine + "- Private Git stdout size band: $out" +
+         [Environment]::NewLine + "- Private Git stderr size band: $err")
+}
 function Invoke-BoundedGitFetch([string]$Checkout,[int]$Pr,[long]$Request) {
  $bin=(Get-Command git.exe -ErrorAction Stop).Source
  $stdout=Join-Path $Root ("git-fetch-{0}-{1}.stdout" -f $Pr,$Request)
@@ -152,6 +177,10 @@ function Invoke-BoundedGitFetch([string]$Checkout,[int]$Pr,[long]$Request) {
    $arguments+=$fetchArguments
    $attemptStderr=if($authenticated) { "$stderr.authenticated" } else { $stderr }
    $attemptStdout=if($authenticated) { "$stdout.authenticated" } else { $stdout }
+   $script:GccGitAttempt=if($authenticated) { 'authenticated' } else { 'anonymous' }
+   $script:GccNativeGitExit='unknown'
+   $script:GccGitStdoutBand='unobserved'
+   $script:GccGitStderrBand='unobserved'
    try {
     try {
      $process=Start-Process -FilePath $bin -ArgumentList $arguments -PassThru -NoNewWindow -RedirectStandardOutput $attemptStdout -RedirectStandardError $attemptStderr -ErrorAction Stop
@@ -161,9 +190,14 @@ function Invoke-BoundedGitFetch([string]$Checkout,[int]$Pr,[long]$Request) {
     }
     if(-not $process.WaitForExit(900000)) {
      $script:GccLastFailedStage='git-fetch-timeout'
+     $script:GccNativeGitExit='timeout'
      & taskkill.exe /T /F /PID $process.Id 1>$null 2>$null
      throw 'Git fetch exceeded 15-minute bounded timeout; exact-head test not executed.'
     }
+    # This is git.exe's native ExitCode, not the agent's final exit code.
+    $script:GccNativeGitExit=[string]$process.ExitCode
+    $script:GccGitStdoutBand=Private-GitOutputBand -Path $attemptStdout
+    $script:GccGitStderrBand=Private-GitOutputBand -Path $attemptStderr
     if($process.ExitCode -eq 0) { return }
     $script:GccLastFailedStage=Classify-GitFetchFailure -Path $attemptStderr
     if(-not $authenticated -and $script:GccLastFailedStage -eq 'git-fetch-access') {
@@ -187,9 +221,15 @@ function Smoke([int]$Pr,[string]$Sha,[long]$Request) {
  $work=Join-Path $Root ("work\{0}-{1}-{2}" -f $Pr,$Request,[guid]::NewGuid().ToString("N"))
  New-Item -ItemType Directory -Path $work -Force | Out-Null
  try {
+  $script:GccLastFailedStage='git-init'
+  $script:GccGitAttempt='init'
   & git -C $work init -q | Out-Null
+  $script:GccNativeGitExit=[string]$LASTEXITCODE
   if($LASTEXITCODE -ne 0) { throw 'git init failed' }
+  $script:GccLastFailedStage='git-remote'
+  $script:GccGitAttempt='remote'
   & git -C $work remote add origin "https://github.com/$Repo.git" | Out-Null
+  $script:GccNativeGitExit=[string]$LASTEXITCODE
   if($LASTEXITCODE -ne 0) { throw 'git remote failed' }
   $script:GccLastFailedStage='git-fetch'
   Invoke-BoundedGitFetch -Checkout $work -Pr $Pr -Request $Request
@@ -434,7 +474,7 @@ function Report-Full([int]$Pr,[string]$Sha,[string]$Status,[int]$Exit,[long]$Req
  "**GCC $Profile local Laravel/MySQL/ZIP staging: $Status**" + [Environment]::NewLine +
  "- Exact PR head: $Sha" + [Environment]::NewLine +
  "- Process exit code: $Exit" + [Environment]::NewLine +
- "- Stage: $stageLabel" + [Environment]::NewLine +
+ "- Stage: $stageLabel" + (Safe-GitProcessSummary) + [Environment]::NewLine +
  "- Installed agent script SHA-256 (diagnostic only): $(AgentSourceFingerprint)" + [Environment]::NewLine +
  "- Isolated GCC evidence directory: local only (no raw logs or secrets uploaded)" + $summary +
  [Environment]::NewLine + "**Staging, unsigned, untrusted for production.** A PASS does not prove a same-ZIP upgrade, digital signature, independent provenance, or production readiness. GitHub Required CI remains authoritative."
@@ -482,6 +522,10 @@ function Process($Comment) {
  }
  $status='FAIL'; $exit=1
  $script:GccLastFailedStage='checkout-or-dispatch'
+ $script:GccNativeGitExit='unknown'
+ $script:GccGitStdoutBand='unobserved'
+ $script:GccGitStderrBand='unobserved'
+ $script:GccGitAttempt='none'
  try {
   if($profile -ne 'run') {
    $testProfile=if($profile -eq 'full') { 'all' } else { $profile }
@@ -490,9 +534,15 @@ function Process($Comment) {
    $work=Join-Path $Root ("work\{0}-{1}-{2}" -f $n,$Comment.id,[guid]::NewGuid().ToString("N"))
    New-Item -ItemType Directory -Path $work -Force | Out-Null
    try {
+    $script:GccLastFailedStage='git-init'
+    $script:GccGitAttempt='init'
     & git -C $work init -q | Out-Null
+    $script:GccNativeGitExit=[string]$LASTEXITCODE
     if($LASTEXITCODE -ne 0) { throw 'Full CI git init failed' }
+    $script:GccLastFailedStage='git-remote'
+    $script:GccGitAttempt='remote'
     & git -C $work remote add origin "https://github.com/$Repo.git" | Out-Null
+    $script:GccNativeGitExit=[string]$LASTEXITCODE
     if($LASTEXITCODE -ne 0) { throw 'Full CI git remote failed' }
     $script:GccLastFailedStage='git-fetch'
     Invoke-BoundedGitFetch -Checkout $work -Pr $n -Request ([long]$Comment.id)
