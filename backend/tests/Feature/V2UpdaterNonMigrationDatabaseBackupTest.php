@@ -2,6 +2,7 @@
 
 namespace Tests\Feature;
 
+use App\Domain\Updater\LaravelUpdateRuntime;
 use App\Domain\Updater\UpdateManager;
 use App\Domain\Updater\UpdatePackageManifest;
 use App\Domain\Updater\UpdatePackageValidator;
@@ -9,6 +10,7 @@ use App\Domain\Updater\UpdateRuntime;
 use App\Models\UpdateHistory;
 use App\Services\AuditLogger;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\DB;
 use RuntimeException;
 use Tests\Support\UpdateZipFixture;
 use Tests\TestCase;
@@ -32,6 +34,34 @@ final class V2UpdaterNonMigrationDatabaseBackupTest extends TestCase
         @unlink($this->packagePath);
 
         parent::tearDown();
+    }
+
+    public function test_migration_free_preflight_checks_mandatory_backup_prerequisites_before_maintenance(): void
+    {
+        // A ZIP without migrations still requires a verified DB snapshot:
+        // fail at preflight on an unsupported host instead of taking the
+        // application offline and discovering the missing tool afterward.
+        $driver = DB::connection()->getDriverName();
+
+        if ($driver === 'mysql') {
+            config()->set('foodex.mysql_dump_binary', '/foodex-nonexistent/required-mysqldump');
+            $expectedError = 'Required database backup tool';
+        } elseif ($driver === 'sqlite') {
+            config()->set('database.connections.sqlite.database', ':memory:');
+            $expectedError = 'SQLite database cannot be backed up safely.';
+        } else {
+            $this->markTestSkipped('Backup readiness regression requires MySQL or SQLite.');
+        }
+
+        try {
+            app(LaravelUpdateRuntime::class)->preflight($this->manifest(), $this->packagePath);
+            $this->fail('Missing mandatory backup prerequisites must prevent a migration-free update.');
+        } catch (RuntimeException $exception) {
+            $this->assertStringContainsString($expectedError, $exception->getMessage());
+        }
+
+        $this->assertFalse(app()->isDownForMaintenance());
+        $this->assertDatabaseCount('update_history', 0);
     }
 
     public function test_migration_free_update_verifies_database_backup_before_mutation(): void
