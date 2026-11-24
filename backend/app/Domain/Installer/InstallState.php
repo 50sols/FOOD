@@ -261,6 +261,10 @@ final class InstallState
 
     public function clearProgress(): void
     {
+        // Only successful finalization may discard the recoverable setup
+        // checkpoint. Finish writes installed.lock before this cleanup.
+        abort_unless($this->isInstalled(), 404);
+
         $path = $this->progressPath();
         $this->assertSafeStatePath($path);
 
