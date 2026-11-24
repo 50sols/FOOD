@@ -136,6 +136,39 @@ final class V2CustomerServiceDiscountApprovalTest extends TestCase
             ->where('order_id', $orderId)->count());
     }
 
+    public function test_direct_discount_request_service_rejects_unassigned_or_inactive_actor(): void
+    {
+        $assigned = $this->roleUser('CUSTOMER_SERVICE_AGENT');
+        $unassigned = $this->roleUser('CUSTOMER_SERVICE_AGENT');
+        $manager = $this->roleUser('CUSTOMER_SERVICE_MANAGER');
+        $orderId = $this->order();
+        $this->assignAgent($orderId, $assigned);
+        $service = app(OrderCustomerServiceDiscountApprovalService::class);
+        $order = Order::query()->findOrFail($orderId);
+        $request = Request::create('/admin/operations/orders', 'POST');
+
+        try {
+            $service->request($order, $unassigned, 15, 'Direct service bypass attempt', (string) Str::uuid(), $request);
+            $this->fail('An unassigned agent must never submit through the service.');
+        } catch (HttpException $exception) {
+            $this->assertSame(403, $exception->getStatusCode());
+        }
+
+        $manager->forceFill(['is_active' => false])->save();
+        try {
+            $service->request($order, $manager, 15, 'Inactive actor bypass attempt', (string) Str::uuid(), $request);
+            $this->fail('An inactive manager must never submit through the service.');
+        } catch (HttpException $exception) {
+            $this->assertSame(403, $exception->getStatusCode());
+        }
+        $this->assertDatabaseMissing('order_customer_service_discount_requests', ['order_id' => $orderId]);
+        $this->assertDatabaseMissing('audit_logs', [
+            'event' => 'order.customer_service_discount.requested',
+            'user_id' => $unassigned->getKey(),
+        ]);
+        $this->assertDatabaseHas('orders', ['id' => $orderId, 'grand_total' => 9]);
+    }
+
     public function test_request_idempotency_key_cannot_mask_changed_discount_or_requester(): void
     {
         $agent = $this->roleUser('CUSTOMER_SERVICE_AGENT');
