@@ -23,6 +23,13 @@ DOCKERFILE = (BASE / "Dockerfile.backend").read_text(encoding="utf-8")
 
 
 class GccHeavyExecutionContracts(unittest.TestCase):
+    def test_smoke_docker_stderr_is_not_treated_as_failure(self):
+        smoke = AGENT.split('function Smoke(', 1)[1].split('function Trusted-Toolkit', 1)[0]
+        self.assertIn("Invoke-DockerLogged -DockerArgs $args -LogPath $log -Stage 'smoke-tests'", smoke)
+        self.assertNotIn('& docker @args *> $log', smoke)
+        self.assertNotIn('$exit=[int]$LASTEXITCODE', smoke)
+        self.assertIn('if($exit -ne 0)', smoke)
+
     def test_smoke_checkout_is_unique_per_attempt(self):
         smoke = AGENT.split('function Smoke(', 1)[1].split('function Trusted-Toolkit', 1)[0]
         self.assertIn('[guid]::NewGuid().ToString("N")', smoke)
