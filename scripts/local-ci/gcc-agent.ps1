@@ -202,9 +202,21 @@ function Full-CI([int]$Pr,[string]$Sha,[long]$Request,[string]$Checkout,[Validat
    throw 'Full CI manifest failed exact-head/profile/staging validation.'
   }
   $artifacts=Get-ChildItem -Path $report -Filter '*.zip' -Recurse
-  # The profile must prove the canonical package TYPES, not merely a
-  # count of arbitrary ZIP files with valid checksums.
-  if([string]$result.version -cnotmatch '^[0-9]+\\.[0-9]+\\.[0-9]+
+  # Require exact canonical package names rather than a count of arbitrary ZIPs.
+  if([string]$result.version -cnotmatch '^[0-9]+[.][0-9]+[.][0-9]+\z') {
+   throw 'GCC result version must be a strict semantic version.'
+  }
+  $requiredNames=switch($Profile) {
+   'all' { @("FOODEX-Setup-v$($result.version).zip", 'FOODEX-Update.zip') }
+   'packages' { @("FOODEX-Setup-v$($result.version).zip", 'FOODEX-Update.zip') }
+   'setup' { @("FOODEX-Setup-v$($result.version).zip") }
+   default { @() }
+  }
+  foreach($name in $requiredNames) {
+   if(@($artifacts | Where-Object { $_.Name -ceq $name }).Count -ne 1) {
+    throw "Missing expected canonical ZIP artifact: $name (profile=$Profile)"
+   }
+  }
   if($Profile -eq 'all' -or $Profile -eq 'backend') {
    foreach($name in @('laravel-shard-0.xml','laravel-shard-1.xml','laravel-shard-2.xml','laravel-shard-3.xml','deployment.xml')) {
     if(-not (Test-Path -LiteralPath (Join-Path $report $name))) { throw "Missing PHPUnit evidence: $name" }
