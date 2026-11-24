@@ -315,6 +315,13 @@ final class PurchaseRequestManager
             }
 
             $this->requireStatus($request, ['draft', 'submitted'], 'cancel');
+            // A draft belongs to its originating maker until submission.
+            // Another manager in the same store must not discard that maker's
+            // work, even though supervisors may cancel submitted requests.
+            if ($request->status === 'draft') {
+                abort_if((int) $request->created_by !== (int) $actor->id, 403, 'Only the creating maker can cancel this draft.');
+            }
+
             $before = $request->toArray();
             $request->forceFill([
                 'status' => 'cancelled',
