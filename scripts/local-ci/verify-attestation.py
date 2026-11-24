@@ -18,7 +18,7 @@ import tempfile
 
 SHA = re.compile(r"^[a-f0-9]{40}$")
 DIGEST = re.compile(r"^[a-f0-9]{64}$")
-REPOSITORY = "walidatiyaai2025-gif/FOOD"
+REPOSITORY = "50sols/FOOD"
 BASE = "Foodex_V2"
 
 
