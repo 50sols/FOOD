@@ -24,6 +24,8 @@ class V2UpdaterSymlinkContainmentTest extends TestCase
 
     private string $rollbackBackupRoot;
 
+    private string $sqliteBackupFixture;
+
     protected function setUp(): void
     {
         parent::setUp();
@@ -50,6 +52,18 @@ class V2UpdaterSymlinkContainmentTest extends TestCase
         }
 
         config()->set('foodex.update_backup_path', $this->rollbackBackupRoot);
+
+        // The positive update preflight checks real backup capability.
+        // In-memory SQLite cannot safely be snapshotted by an updater.
+        $database = tempnam(sys_get_temp_dir(), 'foodex-v2-symlink-sqlite-');
+        if (! is_string($database)) {
+            throw new RuntimeException('Could not allocate SQLite backup fixture.');
+        }
+        $this->sqliteBackupFixture = $database;
+        $sqlite = new \PDO('sqlite:'.$database);
+        $sqlite->exec('PRAGMA user_version = 1');
+        unset($sqlite);
+        config()->set('database.connections.sqlite.database', $database);
     }
 
     protected function tearDown(): void
@@ -65,6 +79,9 @@ class V2UpdaterSymlinkContainmentTest extends TestCase
 
         if (isset($this->rollbackBackupRoot)) {
             @rmdir($this->rollbackBackupRoot);
+        }
+        if (isset($this->sqliteBackupFixture)) {
+            @unlink($this->sqliteBackupFixture);
         }
 
         if (is_link($this->fixturePath)) {
