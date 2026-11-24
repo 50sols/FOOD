@@ -63,7 +63,7 @@ The agent additionally accepts an owner-authored comment on an open same-reposit
     /gcc-ci full <exact 40-character current PR head SHA>
 
 The full profile uses the **pinned, immutable** local toolkit from repository commit
-`17bd4497c79771adf1b0e7d5e59185139f3e2bed` (container build and execution scripts), verifying each
+`763e865923fced400cbfb8b1fc5667e2397587c2` (container build and execution scripts), verifying each
 Git blob SHA before running. The toolkit is downloaded once, locally cached and
 checked again for integrity at every full job. The agent first validates the
 PR owner/base/head, fetches the exact PR commit and the v1.0.125 update base,
@@ -265,3 +265,5 @@ even if a previous partition fails, captures each JUnit result, enforces a
 30-minute bound per shard, and refuses overall PASS when ANY shard fails.
 Fix the original flaky clock assumption under its owning code change,
 or obtain a genuinely green test; do not fake successful parity.
+
+The trusted toolkit SHA above includes the hardened Setup ZIP verifier that rejects non-template `.env*` files. `gcc-agent.ps1` also pins the exact `full.sh` Git blob `c8f05a637ade345941c0bb3e553787bbdf4b76d0`; this does not constitute a signed release or independent trust review.
