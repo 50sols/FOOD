@@ -232,6 +232,71 @@ final class EnterprisePurchaseReturnFoundationTest extends TestCase
         }
     }
 
+    public function test_p110_stale_purchase_return_line_cannot_reverse_committed_stock_twice(): void
+    {
+        $this->enableProcurement();
+        [$actor, $store, $context] = $this->scopedUser($this->allPermissions(), 'PRTN-P110-STALE-REPLAY');
+        [$product, $warehouse] = $this->stockTarget($store, 'PRTN-P110-STALE-SKU');
+        $receipt = $this->postedReceipt(
+            $actor, $context, $warehouse, 'PRTN-P110-STALE-SUP', 'PRTN-P110-STALE-SKU', 5,
+        );
+        $sourceLine = $receipt->lines()->firstOrFail();
+        $manager = app(PurchaseReturnManager::class);
+        $return = $manager->createFromPostedReceipt($actor, $context, $receipt->id, [
+            'lines' => [['goods_receipt_line_id' => $sourceLine->id, 'quantity' => 2]],
+        ]);
+
+        // An existing direct caller may retain this stale draft object even
+        // after PurchaseReturnManager has posted a freshly loaded copy.
+        $staleLine = $return->lines()->firstOrFail();
+        $this->assertNull($staleLine->inventory_id);
+        $this->assertNull($staleLine->stock_movement_id);
+
+        $posted = $manager->post($actor, $context, $return->id);
+        $this->assertSame('posted', $posted->status);
+        $this->assertNull($staleLine->stock_movement_id);
+
+        $inventory = DB::table('inventories')
+            ->where('warehouse_id', $warehouse->id)
+            ->where('product_id', $product->id)
+            ->firstOrFail();
+        $this->assertSame(3.0, (float) $inventory->quantity);
+
+        $movements = DB::table('stock_movements')->count();
+        $owners = DB::table('enterprise_inventory_owner_positions')->count();
+        $ownerEvents = DB::table('enterprise_inventory_owner_movement_events')->count();
+        $audits = DB::table('audit_logs')->count();
+
+        try {
+            DB::transaction(static function () use ($actor, $store, $return, $staleLine, $sourceLine): void {
+                app(PurchaseReturnInventoryHandoff::class)->reverse(
+                    $actor, $store->id, $return, $staleLine, $sourceLine,
+                );
+            });
+            $this->fail('The committed return cannot be posted through a stale line a second time.');
+        } catch (ValidationException $exception) {
+            $this->assertArrayHasKey('status', $exception->errors());
+        }
+
+        $this->assertSame(3.0, (float) DB::table('inventories')
+            ->where('id', $inventory->id)->value('quantity'));
+        $this->assertDatabaseHas('enterprise_inventory_owner_positions', [
+            'inventory_id' => $inventory->id,
+            'owner_key' => 'UNKNOWN',
+            'quantity' => 3,
+            'reserved_quantity' => 0,
+        ]);
+        $this->assertSame($movements, DB::table('stock_movements')->count());
+        $this->assertSame($owners, DB::table('enterprise_inventory_owner_positions')->count());
+        $this->assertSame($ownerEvents, DB::table('enterprise_inventory_owner_movement_events')->count());
+        $this->assertSame($audits, DB::table('audit_logs')->count());
+        $this->assertDatabaseHas('enterprise_purchase_returns', [
+            'id' => $return->id,
+            'status' => 'posted',
+        ]);
+        $this->assertNotNull($staleLine->refresh()->stock_movement_id);
+    }
+
     public function test_posted_purchase_return_reverses_inventory_once_and_is_retry_safe(): void
     {
         $this->enableProcurement();

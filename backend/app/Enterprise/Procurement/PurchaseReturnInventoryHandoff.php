@@ -34,6 +34,24 @@ final class PurchaseReturnInventoryHandoff
             throw new LogicException('Purchase return stock reversal requires an active database transaction.');
         }
 
+        // A stale Eloquent instance can still have empty handoff references
+        // after another caller committed the exact same return line. Read and
+        // lock the persisted row BEFORE evaluating its posting identity, so a
+        // direct service retry cannot debit inventory a second time.
+        $persistedLine = EnterprisePurchaseReturnLine::query()
+            ->whereKey((int) $line->getKey())
+            ->where('purchase_return_id', (int) $return->getKey())
+            ->lockForUpdate()
+            ->first();
+
+        if ($persistedLine === null) {
+            throw ValidationException::withMessages([
+                'goods_receipt_line_id' => ['Purchase return line no longer belongs to the authorized return.'],
+            ]);
+        }
+
+        $line = $persistedLine;
+
         if ($line->stock_movement_id !== null || $line->inventory_id !== null) {
             throw ValidationException::withMessages([
                 'status' => ['Purchase return inventory reversal is already recorded for this line.'],
@@ -54,6 +72,23 @@ final class PurchaseReturnInventoryHandoff
                 ],
             ]);
         }
+
+        // Do not trust caller-owned snapshots of the posted GRN either:
+        // a stale or forged source inventory reference must not select which
+        // canonical stock to reverse. Revalidate against the locked row.
+        $persistedSource = EnterpriseGoodsReceiptLine::query()
+            ->whereKey((int) $sourceLine->getKey())
+            ->where('goods_receipt_id', (int) $return->goods_receipt_id)
+            ->lockForUpdate()
+            ->first();
+
+        if ($persistedSource === null) {
+            throw ValidationException::withMessages([
+                'goods_receipt_line_id' => ['Source goods receipt line no longer matches the purchase return.'],
+            ]);
+        }
+
+        $sourceLine = $persistedSource;
 
         if ($sourceLine->inventory_id === null || $sourceLine->stock_movement_id === null) {
             throw ValidationException::withMessages([
