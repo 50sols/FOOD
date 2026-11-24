@@ -106,6 +106,46 @@ final class V2AccountingDiscountFinanceInboxTest extends TestCase
         $this->assertDatabaseHas('orders', ['id' => $orderId, 'grand_total' => 9]);
     }
 
+    public function test_direct_finance_approval_post_requires_live_module_and_store_entitlement(): void
+    {
+        $finance = $this->roleUser('FINANCE');
+        $requester = $this->roleUser('CUSTOMER_SERVICE_AGENT');
+        $store = Store::query()->findOrFail(app(WholesalePrincipal::class)->storeId());
+        $orderId = $this->order($store, 'b2b', 'INBOX-ENTITLEMENT-4397');
+        $requestId = $this->pendingRequest($orderId, $requester);
+        $reviewUrl = route('admin.operations.orders.customer-service-discount.review', [
+            'order' => $orderId, 'discountRequest' => $requestId,
+        ]);
+
+        // An actor's FINANCE role alone never enables a dormant Finance
+        // module or grants the direct POST endpoint authority.
+        $this->actingAs($finance)->post($reviewUrl, ['decision' => 'approve'])
+            ->assertForbidden();
+        $this->assertDatabaseHas('orders', ['id' => $orderId, 'grand_total' => 9]);
+
+        $this->enableFinance($finance, $store);
+        $scope = app(OrganizationHierarchyService::class)->scopeForStore($store->id);
+        $this->assertNotNull($scope);
+        app(ModuleEntitlementManager::class)->set(
+            FinanceFoundationService::MODULE,
+            new EntitlementScope(EntitlementScope::LEGAL_ENTITY, $scope['legal_entity_id']),
+            false, [], $finance,
+        );
+
+        // Revoking the legal-entity entitlement must deny a crafted POST,
+        // even if Finance is enabled and the actor has finance.manage.
+        $this->actingAs($finance)->post($reviewUrl, ['decision' => 'approve'])
+            ->assertForbidden();
+        $this->assertDatabaseHas('order_customer_service_discount_requests', [
+            'id' => $requestId, 'status' => 'pending',
+        ]);
+        $this->assertDatabaseHas('orders', ['id' => $orderId, 'grand_total' => 9]);
+        $this->assertDatabaseMissing('audit_logs', [
+            'event' => 'order.customer_service_discount.approved',
+            'user_id' => $finance->id,
+        ]);
+    }
+
     public function test_retail_accounting_queue_never_reads_other_store_or_wholesale_requests(): void
     {
         $owned = $this->store('B2C', '4397-RETAIL-OWNED');
