@@ -17,6 +17,8 @@ final class V2UpdaterArchiveNamespaceCollisionTest extends TestCase
 
     private string $backupDirectory;
 
+    private string $sqliteBackupFixture;
+
     /** @var list<string> */
     private array $archives = [];
 
@@ -35,6 +37,19 @@ final class V2UpdaterArchiveNamespaceCollisionTest extends TestCase
         File::ensureDirectoryExists($this->releaseDirectory);
         File::ensureDirectoryExists($this->backupDirectory);
         config()->set('foodex.update_backup_path', $this->backupDirectory);
+
+        // This positive real-preflight fixture needs an actual backupable DB.
+        // The default PHPUnit SQLite :memory: connection cannot be snapshotted
+        // by the production updater; do not weaken that safety check.
+        $database = tempnam(sys_get_temp_dir(), 'foodex-v2-ns-sqlite-');
+        if (! is_string($database)) {
+            throw new RuntimeException('Could not allocate SQLite backup fixture.');
+        }
+        $this->sqliteBackupFixture = $database;
+        $sqlite = new \PDO('sqlite:'.$database);
+        $sqlite->exec('PRAGMA user_version = 1');
+        unset($sqlite);
+        config()->set('database.connections.sqlite.database', $database);
     }
 
     protected function tearDown(): void
@@ -49,6 +64,9 @@ final class V2UpdaterArchiveNamespaceCollisionTest extends TestCase
 
         if (isset($this->backupDirectory)) {
             File::deleteDirectory($this->backupDirectory);
+        }
+        if (isset($this->sqliteBackupFixture)) {
+            @unlink($this->sqliteBackupFixture);
         }
 
         parent::tearDown();

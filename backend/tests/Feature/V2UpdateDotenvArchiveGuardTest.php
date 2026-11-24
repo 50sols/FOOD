@@ -67,9 +67,23 @@ final class V2UpdateDotenvArchiveGuardTest extends TestCase
         ]);
 
         // Exercise the real archive reader and preflight rather than only a
-        // helper's pattern match. This test never applies the ZIP to live files.
-        app(LaravelUpdateRuntime::class)->preflight($this->manifest($archive), $archive);
-        $this->assertFileExists($archive);
+        // helper's pattern match. Production correctly refuses an in-memory
+        // SQLite database because it cannot be backed up; stage a disposable
+        // real SQLite file for this positive path, never changing the guard.
+        $database = tempnam(sys_get_temp_dir(), 'foodex-v2-dotenv-sqlite-');
+        $this->assertIsString($database);
+        $priorSqlitePath = config('database.connections.sqlite.database');
+        try {
+            $sqlite = new \PDO('sqlite:'.$database);
+            $sqlite->exec('PRAGMA user_version = 1');
+            unset($sqlite);
+            config()->set('database.connections.sqlite.database', $database);
+            app(LaravelUpdateRuntime::class)->preflight($this->manifest($archive), $archive);
+            $this->assertFileExists($archive);
+        } finally {
+            config()->set('database.connections.sqlite.database', $priorSqlitePath);
+            @unlink($database);
+        }
     }
 
     /**

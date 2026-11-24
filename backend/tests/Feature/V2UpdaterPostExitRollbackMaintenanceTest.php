@@ -45,27 +45,28 @@ class V2UpdaterPostExitRollbackMaintenanceTest extends TestCase
         $this->assertSame([
             'preflight',
             'backup_files',
+            'enter_maintenance_mode',
             'backup_database',
             'verify_database_backup',
-            'enter_maintenance_mode',
             'extract_release',
             'rebuild_caches',
             'health_check',
             'exit_maintenance_mode',
             'enter_maintenance_mode',
-            'rollback_files',
-            'rollback_database',
-            'health_check',
-            'exit_maintenance_mode',
         ], $runtime->calls);
+        // A successful re-entry does not erase writes that may already have
+        // reached the public site. Never rewind files or database to a
+        // pre-exit backup; keep maintenance until manual recovery.
         $this->assertFalse($runtime->unsafeRollbackAttempted);
-        $this->assertFalse($runtime->maintenanceEnabled);
+        $this->assertTrue($runtime->maintenanceEnabled);
         $this->assertSame('record_version', $history->failed_stage);
-        $this->assertSame('succeeded', $history->rollback_status);
-        $this->assertFalse((bool) $history->maintenance_mode_remained);
-        $this->assertSame('passed', $history->execution_evidence['rollback_files'] ?? null);
-        $this->assertSame('passed', $history->execution_evidence['rollback_database'] ?? null);
-        $this->assertSame('exited_after_rollback', $history->execution_evidence['maintenance_mode'] ?? null);
+        $this->assertSame('incomplete', $history->rollback_status);
+        $this->assertTrue((bool) $history->maintenance_mode_remained);
+        $this->assertSame('skipped_unsafe', $history->execution_evidence['rollback_files'] ?? null);
+        $this->assertSame('skipped_unsafe', $history->execution_evidence['rollback_database'] ?? null);
+        $this->assertSame('required_after_public_exposure', $history->execution_evidence['manual_recovery'] ?? null);
+        $this->assertSame('reentered_for_manual_recovery', $history->execution_evidence['maintenance_mode'] ?? null);
+        $this->assertDatabaseHas('users', ['email' => $runtime->postExitWriteEmail]);
         $this->assertDatabaseHas('audit_logs', ['event' => 'updater.failed']);
     }
 
@@ -76,9 +77,9 @@ class V2UpdaterPostExitRollbackMaintenanceTest extends TestCase
         $this->assertSame([
             'preflight',
             'backup_files',
+            'enter_maintenance_mode',
             'backup_database',
             'verify_database_backup',
-            'enter_maintenance_mode',
             'extract_release',
             'rebuild_caches',
             'health_check',
@@ -91,10 +92,12 @@ class V2UpdaterPostExitRollbackMaintenanceTest extends TestCase
         $this->assertSame('incomplete', $history->rollback_status);
         $this->assertFalse((bool) $history->maintenance_mode_remained);
         $this->assertSame('reentry_failed', $history->execution_evidence['maintenance_mode'] ?? null);
+        $this->assertSame('required_after_public_exposure', $history->execution_evidence['manual_recovery'] ?? null);
+        $this->assertDatabaseHas('users', ['email' => $runtime->postExitWriteEmail]);
         $this->assertSame('skipped_unsafe', $history->execution_evidence['rollback_files'] ?? null);
         $this->assertSame('skipped_unsafe', $history->execution_evidence['rollback_database'] ?? null);
         $this->assertStringContainsString(
-            'Rollback was skipped because maintenance mode could not be re-entered.',
+            'Automatic rollback was skipped after possible public writes;',
             (string) $history->failure_reason,
         );
         $this->assertStringContainsString('manual recovery is required', (string) $history->failure_reason);
@@ -214,6 +217,8 @@ final class V2PostExitMaintenanceRuntime implements UpdateRuntime
 
     private int $maintenanceEntrances = 0;
 
+    public string $postExitWriteEmail = 'v2-update-post-exit-customer@example.test';
+
     public function __construct(private readonly bool $failReentry) {}
 
     public function preflight(UpdatePackageManifest $manifest, string $packagePath): void
@@ -288,6 +293,13 @@ final class V2PostExitMaintenanceRuntime implements UpdateRuntime
     {
         $this->calls[] = 'exit_maintenance_mode';
         $this->maintenanceEnabled = false;
+
+        // Model an accepted public write at the exact post-exit boundary.
+        // The updater must never delete this customer/user via old DB backup.
+        User::factory()->create([
+            'email' => $this->postExitWriteEmail,
+            'is_active' => true,
+        ]);
     }
 
     private function assertSafeRollback(): void

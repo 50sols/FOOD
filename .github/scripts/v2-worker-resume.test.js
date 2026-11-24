@@ -165,18 +165,62 @@ test('historical annotated BRANCH claims reuse the one authoritative original PR
     ['RESUME_ORIGINAL_PR',3968,'exact-head']);
 });
 
+test('P111 past missing-branch sentence resolves only the real original issue branch and PR', () => {
+  const original = 'test/2845-v2-erp-entitlement-maker-checker-boundaries';
+  const sha = 'ad4dbc638ec181e2d82bf7cafbcd65e112bbe7b4';
+  const narrative = 'original ' + original + ' absent; historical commit ' + sha
+    + ' still fetchable. Restore exact original branch name at original historical commit, '
+    + 'reopen original PR #3206 to Foodex_V2, keep Draft.';
+  const comment = value => ({body:'<!-- foodex-worker-state:v1 -->\nSTATE: HANDOFF_READY\nBRANCH: '+value});
+  const refs = claimReferences([comment(narrative)]);
+  assert.deepEqual(refs, [{branch:original,pr:3206,state:'HANDOFF_READY'}]);
+  const scope = {issue:{number:2845,state:'open',title:'V2 | ERP P111',labels:[]},
+    branches:[original],prs:[{number:3206,state:'open',
+      head:{ref:original,sha:'current-authoritative-pr-sha'},base:{ref:'Foodex_V2'}}],
+    checkpoint:null};
+  const result = decide({...scope,refs});
+  assert.deepEqual([result.action,result.pr,result.head],
+    ['RESUME_ORIGINAL_PR',3206,'current-authoritative-pr-sha']);
+
+  // Never launder a different PR, old branch, malformed hash, or extra prose.
+  for (const altered of [
+    narrative.replace('PR #3206','PR #3207'),
+    narrative.replace(original,'test/2845-fake-original'),
+    narrative.replace(sha,'not-a-sha'),
+    narrative + ' UNKNOWN',
+    narrative.replace('keep Draft.','keep Draft. Overridden'),
+  ]) {
+    assert.equal(decide({...scope,refs:claimReferences([comment(altered)])}).action,
+      'BLOCK_CONFLICTING_ORIGINALS',altered);
+  }
+  const conflictingExplicitPr = claimReferences([{
+    body:comment(narrative).body+'\nPR: #3207'
+  }]);
+  assert.equal(decide({...scope,refs:conflictingExplicitPr}).action,
+    'BLOCK_CONFLICTING_ORIGINALS');
+  assert.equal(decide({...scope,refs,branches:[original,'test/2845-other-live']}).action,
+    'BLOCK_CONFLICTING_ORIGINALS');
+  assert.equal(decide({...scope,refs,prs:[...scope.prs,{...scope.prs[0],number:3207}]}).action,
+    'BLOCK_DUPLICATE_PRS');
+  assert.equal(decide({...scope,refs,issue:{...scope.issue,labels:[{name:'gate:approval'}]}}).action,
+    'BLOCK_HUMAN_GATE');
+});
+
 test('historical P110 display notes do not fabricate alternate issue branches', () => {
   const original = 'test/2844-v2-vendor-ledger-ownership-isolation';
   const notes = [
     original + ' (created, no code commit; preserve for successor)',
     original + ' (ORIGINAL)',
     original + ' | FINAL_HEAD: 1c72dfe8f7eab2de9458b57404a290c200a2648a',
+    // Real #2844 issue comment 7128797414 appends the V2 target
+    // to BRANCH; it is not a second remote ref.
+    original + ' -> Foodex_V2 ONLY',
   ];
   const refs = claimReferences(notes.map(branch => ({
     body: '<!-- foodex-worker-state:v1 -->\nSTATE: HANDOFF_READY\n'
       + 'BRANCH: ' + branch + '\nPR: #3921',
   })));
-  assert.deepEqual(refs.map(ref => ref.branch), [original, original, original]);
+  assert.deepEqual(refs.map(ref => ref.branch), Array(notes.length).fill(original));
   const shared = {
     issue: { number: 2844, state: 'open', title: 'V2 | ERP P110', labels: [] },
     branches: [original],
@@ -200,6 +244,10 @@ test('historical P110 display notes do not fabricate alternate issue branches', 
     original + ' (ORIGINAL) extra',
     original + ' (created, no code commit; preserve for successor) trailing',
     'test/2844-unrelated (ORIGINAL)',
+    original + ' -> Foodex_V2 ONLY extra',
+    original + ' -> main ONLY',
+    original + ' -> Foodex_V2 ONLY; unexpected',
+    'test/2844-forged-other -> Foodex_V2 ONLY',
   ]) {
     const conflicting = claimReferences([{
       body: '<!-- foodex-worker-state:v1 -->\nSTATE: ACTIVE\n'
@@ -207,6 +255,67 @@ test('historical P110 display notes do not fabricate alternate issue branches', 
     }]);
     assert.equal(decide({ ...shared, refs: conflicting }).action,
       'BLOCK_CONFLICTING_ORIGINALS');
+  }
+  // A valid display suffix never overrides a conflicting historical PR ID.
+  const mismatchedPr = claimReferences([{body:
+    '<!-- foodex-worker-state:v1 -->\nSTATE: ACTIVE\nBRANCH: '
+    + original + ' -> Foodex_V2 ONLY\nPR: #3922',
+  }]);
+  assert.equal(decide({ ...shared, refs: mismatchedPr }).action,
+    'BLOCK_CONFLICTING_ORIGINALS');
+});
+
+test('historical P135 inline metadata reuses its one original PR without hiding conflicting identities', () => {
+  const original = 'feat/2858-v2-erp-operational-workflow-evidence';
+  const sha = '4abd782507851c52e7de74680de0557141ec208c';
+  const annotations = [
+    original + '; ORIGINAL_PR: #3065 OPEN/DRAFT -> Foodex_V2 ONLY; latest verified source HEAD '
+      + sha + '. Previous worker WAITING_CI/EDITING_RELEASED. No peer-active file overlap, 26 other OPEN PRs inspected.',
+    original + '; PR #3065 OPEN/DRAFT → Foodex_V2 ONLY',
+    original + '; EXACT_START_HEAD: ' + sha,
+    original + '; EXACT_START_HEAD: ' + '9'.repeat(40),
+    original + ' | START_HEAD: ' + sha,
+    original + ' | BASE Foodex_V2 ONLY',
+  ];
+  const claims = claimReferences(annotations.map(branch => ({
+    body: '<!-- foodex-worker-state:v1 -->\nSTATE: HANDOFF_READY\n'
+      + 'BRANCH: ' + branch,
+  })));
+  assert.deepEqual(claims.map(ref => ref.branch), Array(annotations.length).fill(original));
+  assert.deepEqual(claims.slice(0, 2).map(ref => ref.pr), [3065, 3065]);
+  const shared = {
+    issue: { number: 2858, state: 'open', title: 'V2 | P135', labels: [] },
+    branches: [original],
+    prs: [{ number: 3065, state: 'open', head: { ref: original, sha: 'current-head' },
+      base: { ref: 'Foodex_V2' } }],
+    checkpoint: null,
+  };
+  const decision = decide({ ...shared, refs: claims });
+  assert.deepEqual([decision.action, decision.pr, decision.head],
+    ['RESUME_ORIGINAL_PR', 3065, 'current-head']);
+
+  const wrongExplicitId = claimReferences([{body:
+    '<!-- foodex-worker-state:v1 -->\nSTATE: ACTIVE\n'
+      + 'BRANCH: ' + original + '\nPR: #9999',
+  }]);
+  assert.equal(decide({ ...shared, refs: wrongExplicitId }).action,
+    'BLOCK_CONFLICTING_ORIGINALS',
+    'A genuine original branch cannot override a contradictory historical PR ID');
+
+  for (const decorated of [
+    original + '; ORIGINAL_PR: #9999 OPEN/DRAFT -> Foodex_V2 ONLY; latest verified source HEAD '
+      + sha + '. Previous worker WAITING_CI/EDITING_RELEASED. No peer-active file overlap, 26 other OPEN PRs inspected.',
+    original + '; PR #9999 OPEN/DRAFT → Foodex_V2 ONLY',
+    original + '; EXACT_START_HEAD: invalid',
+    original + ' | START_HEAD: ' + 'b'.repeat(39),
+    original + ' | BASE Foodex_V2 ONLY plus permissions',
+    original + '; ORIGINAL_PR: #3065 OPEN/DRAFT -> main ONLY',
+    'feat/2858-other | BASE Foodex_V2 ONLY',
+  ]) {
+    const refs = claimReferences([{body:'<!-- foodex-worker-state:v1 -->\n'
+      + 'STATE: ACTIVE\nBRANCH: ' + decorated}]);
+    assert.equal(decide({ ...shared, refs }).action, 'BLOCK_CONFLICTING_ORIGINALS',
+      'Untrusted P135 branch/PR annotation must not be silently accepted: ' + decorated);
   }
 });
 
@@ -233,6 +342,90 @@ test('unknown annotations, actual alternate branches and nonmatching claims stil
   }
   assert.equal(decide({...shared,branches:[original,'fix/2746-other'],refs:[]}).action,
     'BLOCK_CONFLICTING_ORIGINALS');
+});
+
+test('annotated historic claims resolve to one original without masking true duplicate branches', () => {
+  const originals = [
+    'ci/4151-resume (PRESERVE)',
+    'ci/4151-resume (ORIGINAL; KEEP)',
+    'ci/4151-resume | BASE: Foodex_V2 ONLY',
+    'ci/4151-resume; PR #4152 original DRAFT; BASE Foodex_V2',
+    'ci/4151-resume',
+  ];
+  const comments = originals.map((branch, id) => ({
+    id,
+    body: '<!-- foodex-worker-state:v1 -->\nSTATE: HANDOFF_READY\nBRANCH: ' + branch
+      + '\nPR: #4152\n',
+  }));
+  const refs = claimReferences(comments);
+  assert.deepEqual([...new Set(refs.map(x => x.branch))], ['ci/4151-resume']);
+  const safe = decide({issue, branches:['ci/4151-resume'], prs:[pr()], refs, checkpoint:null});
+  assert.equal(safe.action,'RESUME_ORIGINAL_PR');
+  assert.equal(safe.pr,4152);
+
+  const conflicting = claimReferences([
+    ...comments,
+    {id:99, body:'<!-- foodex-worker-state:v1 -->\nBRANCH: ci/4151-other (PRESERVE)\n'},
+  ]);
+  assert.equal(decide({issue, branches:['ci/4151-resume'], prs:[pr()],
+    refs:conflicting, checkpoint:null}).action,'BLOCK_CONFLICTING_ORIGINALS');
+});
+
+test('unrecognized historical claim suffixes never silently become the original branch', () => {
+  const canonical='ci/4151-resume';
+  const invalid=[
+    canonical+' (UNKNOWN)',
+    canonical+' (PRESERVE) trailing',
+    canonical+'; anything goes',
+    canonical+' | BASE: other_branch',
+    canonical+' (ORIGINAL; KEEP) extra',
+    canonical+'; PR #9999 unrelated; BASE Foodex_V2',
+    canonical+'; PR #9999 original DRAFT; BASE Foodex_V2',
+  ];
+  for (const value of invalid) {
+    const refs=claimReferences([{body:'<!-- foodex-worker-state:v1 -->\n'
+      + 'STATE: HANDOFF_READY\nBRANCH: '+value+'\nPR: #4152'}]);
+    assert.equal(decide({issue, branches:[canonical], prs:[pr()], refs,
+      checkpoint:null}).action, 'BLOCK_CONFLICTING_ORIGINALS', value);
+  }
+});
+
+test('actual G004 original historic branch claims normalize exactly without weakening unknown-claim denial', () => {
+  const original='fix/2745-v2-deterministic-setup-composer-lock';
+  const suffixes=[
+    ' (planned; base Foodex_V2 ONLY)', '',
+    ' (PRESERVE)', ' (EXISTING; preserve)', ' (preserved)',
+    ' (ORIGINAL)', ' (ORIGINAL; PRESERVE)', ' (ORIGINAL, KEEP)',
+    ' (ORIGINAL, PRESERVE)', ' (EXISTING ORIGINAL ONLY)',
+    ' (PRESERVE ORIGINAL)', ' (EXISTING)',
+    ' (ORIGINAL; NO NEW BRANCH)', ' | BASE: Foodex_V2 ONLY',
+    '; PR #3444 original DRAFT; BASE Foodex_V2.',
+  ];
+  const refs=claimReferences(suffixes.map(suffix=>({
+    body:'<!-- foodex-worker-state:v1 -->\nSTATE: HANDOFF_READY\nBRANCH: '
+      +original+suffix+'\nPR: #3444',
+  })));
+  assert.equal(refs.length,suffixes.length);
+  assert.deepEqual([...new Set(refs.map(x=>x.branch))],[original]);
+  const shared={
+    issue:{number:2745,state:'open',title:'V2 | G004',labels:[]},
+    branches:[original],
+    prs:[{number:3444,state:'open',head:{ref:original,sha:'current-head'},
+      base:{ref:'Foodex_V2'}}],checkpoint:null,
+  };
+  assert.equal(decide({...shared,refs}).action,'RESUME_ORIGINAL_PR');
+  for(const bad of [
+    original+' (EXISTING; preserve unknown)',
+    original+' (planned; base main ONLY)',
+    original+' (ORIGINAL; PRESERVE) extra',
+    original+'; PR #3444 unrelated; BASE Foodex_V2.',
+    'fix/2745-second-branch (ORIGINAL)',
+  ]) {
+    const forged=claimReferences([{body:'<!-- foodex-worker-state:v1 -->\n'
+      +'STATE: ACTIVE\nBRANCH: '+bad+'\nPR: #3444'}]);
+    assert.equal(decide({...shared,refs:forged}).action,
+      'BLOCK_CONFLICTING_ORIGINALS',bad);
+  }
 });
 
 test('incomplete or oversized search pagination fails closed', async () => {

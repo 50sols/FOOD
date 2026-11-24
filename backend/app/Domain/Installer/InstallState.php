@@ -23,7 +23,22 @@ final class InstallState
         $path = $this->lockPath();
         $this->assertSafeStatePath($path);
 
-        return is_file($path);
+        if (! is_file($path)) {
+            return false;
+        }
+
+        // A hardlink can make an unrelated external inode look like the
+        // authoritative installed.lock without tripping symlink checks.
+        // Reject forged/multiply linked completion markers fail-closed.
+        clearstatcache(true, $path);
+        $stat = @lstat($path);
+        if ($stat === false
+            || ($stat['mode'] & 0170000) !== 0100000
+            || $stat['nlink'] !== 1) {
+            throw new RuntimeException('Installer completion lock is invalid or unsafe.');
+        }
+
+        return true;
     }
 
     /**
@@ -36,6 +51,18 @@ final class InstallState
 
         if (! is_file($path)) {
             return ['completed_step' => 0, 'admin' => null, 'token' => null];
+        }
+
+        // A hardlink is not a symlink: a multiply linked checkpoint can
+        // alias an out-of-tree private inode and supply untrusted installer
+        // token/admin credentials. Only a regular single-link state file is
+        // a permissible persisted setup checkpoint.
+        clearstatcache(true, $path);
+        $stat = @lstat($path);
+        if ($stat === false
+            || ($stat['mode'] & 0170000) !== 0100000
+            || $stat['nlink'] !== 1) {
+            throw new RuntimeException('Installer progress state is invalid or unsafe.');
         }
 
         // Existing progress must never be treated as a fresh installation
@@ -102,13 +129,19 @@ final class InstallState
             throw new RuntimeException('Installer progress state is invalid.');
         }
 
-        // Progress is a persisted trust boundary: coercing "12", 12.9 or
-        // true into a completed step would allow a corrupt JSON state to
-        // unlock later setup actions. Only the integer emitted by writeJson
-        // is authoritative; malformed or out-of-range data starts at step 0.
-        $completedStep = $decoded['completed_step'] ?? 0;
+        // Progress is a persisted trust boundary. A corrupted non-integer or
+        // out-of-range step must not silently restart a partially completed
+        // installation: that could replay migrations, seeding or key setup
+        // and overwrite the authoritative recovery checkpoint.
+        $completedStep = $decoded['completed_step'];
         if (! is_int($completedStep) || $completedStep < 0 || $completedStep > 15) {
-            $completedStep = 0;
+            throw new RuntimeException('Installer progress state is invalid.');
+        }
+        // The writer always issues a token together with the first completed
+        // step. A missing token later is a damaged checkpoint, not a fresh
+        // installation. Do not mint a replacement token over partial setup.
+        if ($completedStep > 0 && $token === null) {
+            throw new RuntimeException('Installer progress state is invalid.');
         }
 
         return [
@@ -120,6 +153,9 @@ final class InstallState
 
     public function token(): string
     {
+        // A completed site cannot mint a new setup session or progress state.
+        abort_if($this->isInstalled(), 404);
+
         $progress = $this->progress();
 
         if ($progress['token'] !== null) {
@@ -181,6 +217,11 @@ final class InstallState
 
             $this->assertTokenLockFile($tokenLockPath, $lock);
 
+            // Finish can create installed.lock while another request waits
+            // for this mutex. Refuse that queued request after obtaining the
+            // lock, before it can recreate credentials or setup progress.
+            abort_if($this->isInstalled(), 404);
+
             return $operation();
         } finally {
             @flock($lock, LOCK_UN);
@@ -216,6 +257,9 @@ final class InstallState
      */
     public function markStepComplete(int $step, ?array $admin = null): void
     {
+        // A direct caller must not restore or alter setup state after Finish.
+        abort_if($this->isInstalled(), 404);
+
         // Fail closed before creating a lock file if persisted progress is
         // corrupt, as the original installer state contract requires.
         $this->progress();
@@ -238,16 +282,31 @@ final class InstallState
 
     public function writeLock(string $version): void
     {
-        $this->writeJson($this->lockPath(), [
-            'version' => $version,
-            'installed_at' => now()->toIso8601String(),
-        ]);
+        // Finalization must serialize with token and checkpoint writes.
+        // Otherwise two Finish requests can both pass the outer installed
+        // check and replace the authoritative lock through atomic rename.
+        abort_if($this->isInstalled(), 404);
+
+        $this->withProgressWriteLock(function () use ($version): void {
+            // The mutex checks installed.lock again after acquisition; a
+            // queued Finish must never replace the first completed site.
+            $this->writeJson($this->lockPath(), [
+                'version' => $version,
+                'installed_at' => now()->toIso8601String(),
+            ]);
+        });
     }
 
     public function clearProgress(): void
     {
+        // Reject an unsafe checkpoint path even when finalization has not
+        // completed; never let a symlink masquerade as a missing install.
         $path = $this->progressPath();
         $this->assertSafeStatePath($path);
+
+        // Only successful finalization may discard the recoverable setup
+        // checkpoint. Finish writes installed.lock before this cleanup.
+        abort_unless($this->isInstalled(), 404);
 
         if (is_file($path) && ! @unlink($path)) {
             throw new RuntimeException('Installer progress could not be cleared.');
