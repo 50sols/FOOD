@@ -229,6 +229,48 @@ final class V2CustomerServiceDiscountApprovalTest extends TestCase
         $this->assertDatabaseHas('orders', ['id' => $orderId, 'discount_total' => 1, 'grand_total' => 9]);
     }
 
+    public function test_direct_discount_request_rejects_non_uuid_idempotency_keys_without_financial_side_effects(): void
+    {
+        $manager = $this->roleUser('CUSTOMER_SERVICE_MANAGER');
+        $orderId = $this->order();
+        $order = Order::query()->findOrFail($orderId);
+        $service = app(OrderCustomerServiceDiscountApprovalService::class);
+        $request = Request::create('/admin/operations/orders', 'POST');
+
+        foreach (['', 'not-a-uuid', str_repeat('a', 120)] as $invalidKey) {
+            try {
+                $service->request($order, $manager, 15, 'Authorized Finance review', $invalidKey, $request);
+                $this->fail('Direct service must reject invalid idempotency keys.');
+            } catch (ValidationException $exception) {
+                $this->assertArrayHasKey('idempotency_key', $exception->errors());
+            }
+        }
+
+        $this->assertDatabaseMissing('order_customer_service_discount_requests', [
+            'order_id' => $orderId,
+        ]);
+        $this->assertDatabaseMissing('audit_logs', [
+            'event' => 'order.customer_service_discount.requested',
+            'user_id' => $manager->getKey(),
+        ]);
+        $this->assertDatabaseHas('orders', [
+            'id' => $orderId, 'discount_total' => 1, 'grand_total' => 9,
+        ]);
+
+        $key = (string) Str::uuid();
+        $this->assertTrue($service->request(
+            $order, $manager, 15, 'Authorized Finance review', $key, $request,
+        ));
+        $this->assertFalse($service->request(
+            $order, $manager, 15, 'Authorized Finance review', $key, $request,
+        ));
+        $this->assertDatabaseHas('order_customer_service_discount_requests', [
+            'order_id' => $orderId, 'idempotency_key' => $key, 'status' => 'pending',
+        ]);
+        $this->assertSame(1, DB::table('order_customer_service_discount_requests')
+            ->where('order_id', $orderId)->count());
+    }
+
     public function test_request_idempotency_key_cannot_mask_changed_discount_or_requester(): void
     {
         $agent = $this->roleUser('CUSTOMER_SERVICE_AGENT');
