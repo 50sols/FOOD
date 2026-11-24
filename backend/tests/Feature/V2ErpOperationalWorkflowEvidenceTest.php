@@ -12,6 +12,7 @@ use App\Enterprise\Modules\ModuleRegistry;
 use App\Enterprise\Modules\ModuleState;
 use App\Enterprise\Modules\ModuleWorkflowAttestation;
 use App\Models\EnterpriseModule;
+use Carbon\CarbonImmutable;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\Support\SyntheticErpWorkflowEvidence;
 use Tests\TestCase;
@@ -370,6 +371,34 @@ final class V2ErpOperationalWorkflowEvidenceTest extends TestCase
         }
     }
 
+    public function test_cached_healthy_report_becomes_unhealthy_when_an_additional_probe_expires(): void
+    {
+        $this->enableSample();
+        config()->set('enterprise_modules.modules.sample_optional.category', 'operations');
+        config()->set('enterprise_modules.modules.sample_optional.health_checks', ['database']);
+        config()->set('enterprise_module_health.probes.sample_optional', [
+            DatabaseHealthProbe::class,
+            V2ExpiringSupplementaryProbe::class,
+        ]);
+        app(ModuleRegistry::class)->syncManifest('sample_optional');
+        $this->requireSampleWorkflow();
+        $this->evidence();
+
+        $readiness = app(ModuleOperationalReadiness::class);
+        $previousClock = CarbonImmutable::getTestNow();
+        $start = CarbonImmutable::parse('2026-01-01T12:00:00Z');
+        try {
+            CarbonImmutable::setTestNow($start);
+            $this->assertSame('ready', $readiness->status('sample_optional', 1, ModuleState::ENABLED));
+            CarbonImmutable::setTestNow($start->addSeconds(59));
+            $this->assertSame('ready', $readiness->status('sample_optional', 1, ModuleState::ENABLED));
+            CarbonImmutable::setTestNow($start->addMinute());
+            $this->assertSame('unhealthy', $readiness->status('sample_optional', 1, ModuleState::ENABLED));
+        } finally {
+            CarbonImmutable::setTestNow($previousClock);
+        }
+    }
+
     public function test_health_probe_cannot_return_ready_after_module_is_suspended_during_evaluation(): void
     {
         $this->enableSample();
@@ -498,6 +527,14 @@ final class V2ErpOperationalWorkflowEvidenceTest extends TestCase
         SyntheticErpWorkflowEvidence::install();
 
         return (array) config('enterprise_module_readiness.workflow_attestations.sample_optional', []);
+    }
+}
+
+final class V2ExpiringSupplementaryProbe implements ModuleHealthProbe
+{
+    public function check(): ModuleHealthCheck
+    {
+        return ModuleHealthCheck::healthy('supplementary', staleAt: CarbonImmutable::now('UTC')->addMinute());
     }
 }
 
