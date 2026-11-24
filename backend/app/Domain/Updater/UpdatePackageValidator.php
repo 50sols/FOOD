@@ -21,6 +21,16 @@ final class UpdatePackageValidator
 
         $this->rejectSymbolicLinkPackagePath($packagePath);
 
+        // An uploaded ZIP must own its inode. A hardlink can alias a foreign
+        // private file without triggering symlink or realpath checks; refuse
+        // it before reading its contents for the checksum or ZIP parser.
+        clearstatcache(true, $packagePath);
+        $packageStat = @lstat($packagePath);
+        if ($packageStat !== false
+            && (($packageStat['mode'] & 0170000) !== 0100000 || $packageStat['nlink'] !== 1)) {
+            throw new InvalidArgumentException('Update package file is hardlinked or unsafe.');
+        }
+
         if (! is_file($packagePath) || ! is_readable($packagePath)) {
             throw new InvalidArgumentException('Update package is unavailable.');
         }
