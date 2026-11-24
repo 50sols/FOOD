@@ -802,6 +802,39 @@ class InstallerWorkflowTest extends TestCase
         )['version']);
     }
 
+    public function test_progress_writer_rechecks_installed_lock_after_acquiring_mutex(): void
+    {
+        $state = app(InstallState::class);
+        $writer = new \ReflectionMethod(InstallState::class, 'withProgressWriteLock');
+
+        // Verify that the mutex boundary works for an unfinished setup.
+        $this->assertSame('allowed-before-finish', $writer->invoke(
+            $state,
+            static fn (): string => 'allowed-before-finish',
+        ));
+
+        $state->markStepComplete(3);
+        $originalProgress = (string) file_get_contents($state->progressPath());
+        $state->writeLock('test-installed');
+        $originalLock = (string) file_get_contents($state->lockPath());
+
+        // Simulate a queued token/checkpoint request reaching the mutex
+        // only after another request has completed installation.
+        $called = false;
+        try {
+            $writer->invoke($state, static function () use (&$called): void {
+                $called = true;
+            });
+            $this->fail('A queued installer checkpoint must not execute after Finish.');
+        } catch (HttpException $exception) {
+            $this->assertSame(404, $exception->getStatusCode());
+        }
+
+        $this->assertFalse($called);
+        $this->assertSame($originalProgress, file_get_contents($state->progressPath()));
+        $this->assertSame($originalLock, file_get_contents($state->lockPath()));
+    }
+
     public function test_conditional_environment_key_write_refuses_existing_value_under_write_lock(): void
     {
         $environment = app(InstallerEnvironment::class);
