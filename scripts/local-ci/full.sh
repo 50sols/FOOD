@@ -62,7 +62,10 @@ if [[ "$profile" == backend || "$profile" == all ]]; then
     # Keep complete JUnit evidence for ALL shards even after an individual
     # failure. This never turns red tests green; it avoids rerunning costly
     # prior shards just to find a later failing fixture.
-    if DB_CONNECTION=sqlite DB_DATABASE=database/database.sqlite \
+    # PHPUnit's canonical database is :memory: (backend/phpunit.xml).
+    # The earlier file-backed override reconnected installer tests to a new
+    # empty memory database, masking existing-data guards on GCC only.
+    if DB_CONNECTION=sqlite DB_DATABASE=:memory: \
       timeout --kill-after=15s 1800s vendor/bin/phpunit \
         --configuration=".phpunit-gcc-$shard.xml" --log-junit="/evidence/laravel-shard-$shard.xml"; then
       echo "GCC Laravel shard $shard PASS"
