@@ -165,6 +165,68 @@ final class EnterpriseGoodsReceiptFoundationTest extends TestCase
         }
     }
 
+    public function test_p110_direct_handoff_rejects_stale_line_after_manager_post_without_double_stock(): void
+    {
+        $this->enableProcurement();
+        [$actor, $store, $context] = $this->scopedUser($this->allPermissions(), 'GRN-P110-STALE-RETRY');
+        [$product, $warehouse] = $this->stockTarget($store, 'GRN-P110-STALE-RETRY-SKU');
+        $order = $this->issuedOrder($actor, $context, 'GRN-P110-STALE-SUP', 'GRN-P110-STALE-RETRY-SKU', 4);
+        $manager = app(GoodsReceiptManager::class);
+        $receipt = $manager->createFromIssuedOrder($actor, $context, $order->id, [
+            'lines' => [[
+                'purchase_order_line_id' => $order->lines()->firstOrFail()->id,
+                'warehouse_id' => $warehouse->id,
+                'quantity' => 2,
+            ]],
+        ]);
+
+        // Keep the pre-post object untouched: an older direct caller can
+        // still see null references after the manager posted another copy.
+        $staleLine = $receipt->lines()->firstOrFail();
+        $this->assertNull($staleLine->stock_movement_id);
+        $this->assertNull($staleLine->inventory_id);
+
+        $posted = $manager->post($actor, $context, $receipt->id);
+        $this->assertSame('posted', $posted->status);
+        $this->assertNull($staleLine->stock_movement_id);
+        $this->assertNull($staleLine->inventory_id);
+
+        $inventory = DB::table('inventories')
+            ->where('warehouse_id', $warehouse->id)
+            ->where('product_id', $product->id)
+            ->first();
+        $this->assertNotNull($inventory);
+        $this->assertSame(2.0, (float) $inventory->quantity);
+
+        $beforeMovements = DB::table('stock_movements')->count();
+        $beforeOwners = DB::table('enterprise_inventory_owner_positions')->count();
+        $beforeOwnerEvents = DB::table('enterprise_inventory_owner_movement_events')->count();
+        $beforeAudits = DB::table('audit_logs')->count();
+
+        try {
+            DB::transaction(static function () use ($actor, $store, $receipt, $staleLine): void {
+                app(GoodsReceiptInventoryHandoff::class)->receive($actor, $store->id, $receipt, $staleLine);
+            });
+            $this->fail('A stale GRN line cannot bypass a previously committed handoff.');
+        } catch (ValidationException $exception) {
+            $this->assertArrayHasKey('status', $exception->errors());
+        }
+
+        $this->assertSame(2.0, (float) DB::table('inventories')->where('id', $inventory->id)->value('quantity'));
+        $this->assertDatabaseHas('enterprise_inventory_owner_positions', [
+            'inventory_id' => $inventory->id,
+            'owner_key' => 'UNKNOWN',
+            'quantity' => 2,
+            'reserved_quantity' => 0,
+        ]);
+        $this->assertSame($beforeOwners, DB::table('enterprise_inventory_owner_positions')->count());
+        $this->assertSame($beforeMovements, DB::table('stock_movements')->count());
+        $this->assertSame($beforeOwnerEvents, DB::table('enterprise_inventory_owner_movement_events')->count());
+        $this->assertSame($beforeAudits, DB::table('audit_logs')->count());
+        $this->assertDatabaseHas('enterprise_goods_receipts', ['id' => $receipt->id, 'status' => 'posted']);
+        $this->assertNotNull($staleLine->refresh()->stock_movement_id);
+    }
+
     public function test_posted_grn_hands_inventory_off_once_and_is_retry_safe(): void
     {
         $this->enableProcurement();

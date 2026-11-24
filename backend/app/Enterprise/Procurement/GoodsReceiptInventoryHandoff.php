@@ -49,6 +49,25 @@ final class GoodsReceiptInventoryHandoff
             ]);
         }
 
+        // The caller may hold an Eloquent snapshot from before another
+        // transaction posted this GRN line. Serialize on the persisted line
+        // and read its current handoff references before any stock mutation.
+        // Use the locked canonical values for quantity, product and warehouse
+        // too: caller-owned snapshots must not override committed draft data.
+        $persistedLine = EnterpriseGoodsReceiptLine::query()
+            ->whereKey((int) $line->getKey())
+            ->where('goods_receipt_id', (int) $receipt->getKey())
+            ->lockForUpdate()
+            ->first();
+
+        if ($persistedLine === null) {
+            throw ValidationException::withMessages([
+                'goods_receipt_id' => ['Goods receipt line no longer belongs to the authorized receipt.'],
+            ]);
+        }
+
+        $line = $persistedLine;
+
         if ($line->stock_movement_id !== null || $line->inventory_id !== null) {
             throw ValidationException::withMessages([
                 'status' => ['Goods receipt inventory handoff is already recorded for this line.'],
