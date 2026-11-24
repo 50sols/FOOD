@@ -25,6 +25,21 @@ final class GoodsReceiptInventoryHandoff
         EnterpriseGoodsReceipt $receipt,
         EnterpriseGoodsReceiptLine $line,
     ): void {
+        // This public posting boundary must not accept a line from another
+        // draft receipt on the same issued purchase order. The PO-line check
+        // below is not enough: both drafts can share the exact same PO line.
+        // Bind the line and receiving store before touching stock or title.
+        if ($receipt->getKey() === null
+            || $line->getKey() === null
+            || (int) $line->goods_receipt_id !== (int) $receipt->getKey()
+            || (int) $receipt->store_id !== $storeId) {
+            throw ValidationException::withMessages([
+                'goods_receipt_id' => [
+                    'Goods receipt line must belong to the authorized receipt and receiving store.',
+                ],
+            ]);
+        }
+
         if ($line->stock_movement_id !== null || $line->inventory_id !== null) {
             throw ValidationException::withMessages([
                 'status' => ['Goods receipt inventory handoff is already recorded for this line.'],
