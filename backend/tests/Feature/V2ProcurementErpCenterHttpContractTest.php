@@ -350,6 +350,51 @@ final class V2ProcurementErpCenterHttpContractTest extends TestCase
         }
     }
 
+    public function test_inactive_wholesale_store_revokes_procurement_navigation_and_http_until_restored_in_both_locales(): void
+    {
+        $store = $this->wholesaleStore('P135-INACTIVE-STORE-REVOCATION');
+        $this->enableAndEntitle($store);
+        $manager = $this->userWithRole('PROCUREMENT_MANAGER');
+        $url = route('admin.erp.procurement.index', [
+            'store_id' => $store->id,
+            'tab' => 'suppliers',
+        ]);
+
+        $this->actingAs($manager->fresh())->get($url)->assertOk();
+        $this->assertIsArray($this->procurementSidebarItem($manager->fresh()));
+
+        $store->forceFill(['is_active' => false])->save();
+
+        foreach (['ar' => 'rtl', 'en' => 'ltr'] as $locale => $direction) {
+            app()->setLocale($locale);
+            $manager->forceFill(['locale' => $locale])->save();
+            $actor = $manager->fresh();
+            $before = DB::table('audit_logs')->count();
+
+            $this->assertNull($this->procurementSidebarItem($actor));
+            $center = $this->actingAs($actor)->get(route('admin.erp.index'))
+                ->assertOk()->assertSee('dir="'.$direction.'"', false);
+            $card = collect($center->viewData('cards'))->firstWhere('key', 'procurement');
+            if (is_array($card)) {
+                $this->assertNotSame('available', $card['status']);
+                $this->assertNull($card['url']);
+            }
+            $this->actingAs($actor)->get($url)->assertForbidden();
+            $this->assertSame($before, DB::table('audit_logs')->count());
+        }
+
+        $store->forceFill(['is_active' => true])->save();
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            $manager->forceFill(['locale' => $locale])->save();
+            $actor = $manager->fresh();
+            $item = $this->procurementSidebarItem($actor);
+            $this->assertIsArray($item);
+            $this->assertSame(['store_id' => (string) $store->id], $item['params']);
+            $this->actingAs($actor)->get($url)->assertOk();
+        }
+    }
+
     public function test_revoked_certification_stays_unavailable_after_suspend_and_reenable_until_valid_test_evidence_is_restored(): void
     {
         $store = $this->wholesaleStore('P135-HTTP-REVOKE-REENABLE');
