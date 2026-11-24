@@ -5,6 +5,7 @@ namespace Tests\Feature;
 use App\Enterprise\Modules\ModuleLifecycleManager;
 use App\Enterprise\Modules\ModuleState;
 use App\Enterprise\Organization\OrganizationHierarchyService;
+use App\Enterprise\Procurement\GoodsReceiptInventoryHandoff;
 use App\Enterprise\Procurement\GoodsReceiptManager;
 use App\Enterprise\Procurement\PurchaseOrderManager;
 use App\Enterprise\Procurement\PurchaseRequestManager;
@@ -53,6 +54,67 @@ final class EnterpriseGoodsReceiptFoundationTest extends TestCase
                 static fn (string $sql): bool => str_contains($sql, 'enterprise_goods_receipt'),
             ),
         );
+    }
+
+    public function test_p110_direct_grn_handoff_rejects_foreign_draft_line_and_store_without_inventory_writes(): void
+    {
+        $this->enableProcurement();
+        [$actor, $store, $context] = $this->scopedUser($this->allPermissions(), 'GRN-P110-SOURCE-BIND');
+        [$product, $warehouse] = $this->stockTarget($store, 'GRN-P110-SOURCE-BIND-SKU');
+        $order = $this->issuedOrder(
+            $actor, $context, 'GRN-P110-SOURCE-SUP', 'GRN-P110-SOURCE-BIND-SKU', 4,
+        );
+        $manager = app(GoodsReceiptManager::class);
+        $poLineId = $order->lines()->firstOrFail()->id;
+        $attributes = [
+            'lines' => [[
+                'purchase_order_line_id' => $poLineId,
+                'warehouse_id' => $warehouse->id,
+                'quantity' => 1,
+            ]],
+        ];
+        // Both drafts legitimately reference the SAME issued PO line. The
+        // receipt header must still match the line being handed to inventory.
+        $receipt = $manager->createFromIssuedOrder($actor, $context, $order->id, $attributes);
+        $otherReceipt = $manager->createFromIssuedOrder($actor, $context, $order->id, $attributes);
+        $line = $receipt->lines()->firstOrFail();
+        $foreignLine = $otherReceipt->lines()->firstOrFail();
+        $handoff = app(GoodsReceiptInventoryHandoff::class);
+
+        $beforeInventory = DB::table('inventories')->count();
+        $beforeOwner = DB::table('enterprise_inventory_owner_positions')->count();
+        $beforeMovement = DB::table('stock_movements')->count();
+        $beforeOwnerEvent = DB::table('enterprise_inventory_owner_movement_events')->count();
+        $beforeAudit = DB::table('audit_logs')->count();
+
+        foreach ([
+            'line from another draft on the same PO' => [$receipt, $foreignLine, $store->id],
+            'receipt from another store context' => [$receipt, $line, $store->id + 10000],
+        ] as $scenario => [$selectedReceipt, $selectedLine, $selectedStore]) {
+            try {
+                DB::transaction(static function () use (
+                    $handoff, $actor, $selectedStore, $selectedReceipt, $selectedLine
+                ): void {
+                    $handoff->receive($actor, $selectedStore, $selectedReceipt, $selectedLine);
+                });
+                $this->fail($scenario.' must never receive inventory for a mismatched GRN.');
+            } catch (ValidationException $exception) {
+                $this->assertArrayHasKey('goods_receipt_id', $exception->errors(), $scenario);
+            }
+
+            $this->assertSame($beforeInventory, DB::table('inventories')->count(), $scenario);
+            $this->assertSame($beforeOwner, DB::table('enterprise_inventory_owner_positions')->count(), $scenario);
+            $this->assertSame($beforeMovement, DB::table('stock_movements')->count(), $scenario);
+            $this->assertSame($beforeOwnerEvent, DB::table('enterprise_inventory_owner_movement_events')->count(), $scenario);
+            $this->assertSame($beforeAudit, DB::table('audit_logs')->count(), $scenario);
+            $this->assertDatabaseHas('enterprise_goods_receipts', ['id' => $receipt->id, 'status' => 'draft']);
+            $this->assertDatabaseHas('enterprise_goods_receipts', ['id' => $otherReceipt->id, 'status' => 'draft']);
+            $this->assertNull($line->refresh()->stock_movement_id);
+            $this->assertNull($foreignLine->refresh()->stock_movement_id);
+            $this->assertSame(0, DB::table('inventories')
+                ->where('warehouse_id', $warehouse->id)
+                ->where('product_id', $product->id)->count(), $scenario);
+        }
     }
 
     public function test_posted_grn_hands_inventory_off_once_and_is_retry_safe(): void
