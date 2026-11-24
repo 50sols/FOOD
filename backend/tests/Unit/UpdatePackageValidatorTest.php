@@ -37,6 +37,54 @@ class UpdatePackageValidatorTest extends TestCase
         $this->assertTrue($result['contains_migrations']);
     }
 
+    public function test_hardlinked_valid_zip_is_rejected_without_reading_or_changing_foreign_source(): void
+    {
+        if (! function_exists('link')) {
+            $this->markTestSkipped('Hardlink support unavailable.');
+        }
+
+        $foreign = tempnam(sys_get_temp_dir(), 'foodex-update-foreign-');
+        $this->assertIsString($foreign);
+        $this->assertTrue(copy($this->packagePath, $foreign));
+        $originalBytes = (string) file_get_contents($foreign);
+
+        // Build an actual alias to a foreign ZIP, not a symlink or a bad
+        // checksum. The manifest is authentic for these exact bytes.
+        @unlink($this->packagePath);
+        if (! @link($foreign, $this->packagePath)) {
+            copy($foreign, $this->packagePath);
+            @unlink($foreign);
+            $this->markTestSkipped('Filesystem does not allow hardlinks.');
+        }
+
+        try {
+            $manifest = new UpdatePackageManifest(
+                '1.2.0', '1.0.0', hash('sha256', $originalBytes), 'Aliased ZIP', false,
+            );
+            try {
+                (new UpdatePackageValidator)->validate($manifest, '1.1.0', $this->packagePath);
+                $this->fail('Hardlinked ZIP must not pass upload-package validation.');
+            } catch (InvalidArgumentException $exception) {
+                $this->assertSame('Update package file is hardlinked or unsafe.', $exception->getMessage());
+            }
+
+            $this->assertSame($originalBytes, file_get_contents($foreign));
+            $this->assertSame($originalBytes, file_get_contents($this->packagePath));
+        } finally {
+            @unlink($this->packagePath);
+            copy($foreign, $this->packagePath);
+            @unlink($foreign);
+        }
+
+        // The same bytes are valid once held in a genuine single-link file.
+        $manifest = new UpdatePackageManifest(
+            '1.2.0', '1.0.0', hash_file('sha256', $this->packagePath), 'Owned ZIP', false,
+        );
+        $this->assertSame('1.2.0', (new UpdatePackageValidator)->validate(
+            $manifest, '1.1.0', $this->packagePath,
+        )['target_version']);
+    }
+
     public function test_embedded_version_must_match_signed_target_version(): void
     {
         // The SHA is recalculated for each complete, valid ZIP. Mismatched
