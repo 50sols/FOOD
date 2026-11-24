@@ -2563,11 +2563,15 @@ final class V2ErpEntitlementCheckerBoundaryTest extends TestCase
             $this->actingAs($maker->fresh())->post(route('admin.erp.procurement.requests.decision', $purchaseRequest->id), [
                 'store_id' => $store->id,
                 'decision' => 'approve',
-            ])->assertSessionHasErrors('decision');
+            ])->assertSessionHasErrors([
+                'decision' => __('enterprise_procurement.errors.self_decision'),
+            ]);
             $this->actingAs($maker->fresh())->post(route('admin.erp.procurement.requests.decision', $purchaseRequest->id), [
                 'store_id' => $store->id,
                 'decision' => 'reject',
-            ])->assertSessionHasErrors('decision');
+            ])->assertSessionHasErrors([
+                'decision' => __('enterprise_procurement.errors.self_decision'),
+            ]);
         }
         $this->assertDatabaseHas('enterprise_purchase_requests', [
             'id' => $purchaseRequest->id, 'status' => 'submitted', 'decided_by' => null,
