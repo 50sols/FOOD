@@ -41,3 +41,9 @@ The former #2633/PR #3309 Finance Workbench lane was **closed unmerged**, releas
 ### Exact-key request replay integrity regression
 
 Request creation now treats an exact `order_id + idempotency_key` retry as a duplicate only when the requester, normalized rationale and percentage match the original locked request. A changed discount percentage/rationale or different actor cannot reuse that key to conceal conflicting financial intent; it fails validation before any new audit or pricing action. Added authenticated HTTP regression `test_request_idempotency_key_cannot_mask_changed_discount_or_requester` in the original issue-owned feature test. This is a narrowly scoped source correction, not independent financial UAT or full #2824 acceptance. Current required exact-head CI must complete before integration.
+
+### Finance approval POST entitlement parity
+
+Accounting discount decision POST must not bypass the live Finance module and exact-store enterprise entitlement conditions of the Finance inbox GET. The endpoint now rejects disabled Finance, missing role-scoped finance.view/manage or missing legal-entity finance.foundation.read with narrower STORE deny, before any price mutation. It still requires authentic FINANCE/RETAIL_FINANCE by channel and independent reviewer identity. No implicit role or Super Admin exception is introduced.
+
+New HTTP regression `V2AccountingDiscountFinanceInboxTest::test_direct_finance_approval_post_requires_live_module_and_store_entitlement` covers disabled-module, legal-entity revocation, narrower store denial, pending request immutability and unchanged order pricing. Existing positive tests now explicitly configure canonical Finance module and entitlement fixtures. CI exact-head, independent HIGH-risk review and AR/EN browser UAT remain mandatory before integration. This source change alone is not accepted as full #2824/#4397 completion.
