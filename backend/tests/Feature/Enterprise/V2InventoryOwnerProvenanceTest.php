@@ -1800,6 +1800,54 @@ SQL);
         $this->assertSame($auditBefore, DB::table('audit_logs')->count());
     }
 
+    public function test_order_release_or_sale_cannot_hide_overdrawn_reservation_ledger(): void
+    {
+        $this->seed(CoreReferenceSeeder::class);
+        $stock = $this->stock('ORDER-OVERDRAWN-LEDGER');
+        $actor = $this->inventoryActor($stock['store_id']);
+        $beforeAudit = DB::table('audit_logs')->count();
+        $service = app(OrderInventoryReservationService::class);
+
+        foreach (['release', 'sale'] as $kind) {
+            $order = $this->ledgerTestOrder($stock['store_id'], strtoupper($kind));
+            // Simulate an inconsistent pre-existing order ledger: this
+            // historical release/sale has no matching reserve movement.
+            DB::table('stock_movements')->insert([
+                'inventory_id' => $stock['inventory_id'],
+                'store_id' => $stock['store_id'],
+                'user_id' => $actor->id,
+                'type' => $kind,
+                'quantity' => 1.0,
+                'reference_type' => 'order',
+                'reference_id' => $order->id,
+                'reason' => 'test_corrupt_order_reservation_history',
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+
+            foreach (['release', 'consume'] as $action) {
+                try {
+                    $service->{$action}($order, $actor);
+                    $this->fail('Overdrawn reservation history must fail closed for '.$action.'.');
+                } catch (HttpException $exception) {
+                    $this->assertSame(409, $exception->getStatusCode());
+                    $this->assertStringContainsString('original reservation', $exception->getMessage());
+                }
+            }
+        }
+
+        $this->assertDatabaseHas('inventories', [
+            'id' => $stock['inventory_id'], 'quantity' => 10, 'reserved_quantity' => 3,
+        ]);
+        $this->assertSame(0, DB::table('enterprise_inventory_owner_positions')
+            ->where('inventory_id', $stock['inventory_id'])->count());
+        $this->assertSame(2, DB::table('stock_movements')
+            ->where('inventory_id', $stock['inventory_id'])->count());
+        $this->assertSame(2, DB::table('enterprise_inventory_owner_movement_events')
+            ->where('inventory_id', $stock['inventory_id'])->count());
+        $this->assertSame($beforeAudit, DB::table('audit_logs')->count());
+    }
+
     public function test_order_stock_mutation_rejects_claimed_or_stale_legal_owner_without_changing_stock(): void
     {
         $this->seed(CoreReferenceSeeder::class);

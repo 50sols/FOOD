@@ -276,6 +276,12 @@ final class OrderInventoryReservationService
                 $balances[$inventoryId] += $quantity;
             } else {
                 $balances[$inventoryId] -= $quantity;
+                // A release or sale with no matching reserved units is a
+                // corrupted ledger, not a zero reservation. Do not conceal
+                // it by clamping negative balances to zero.
+                if ($balances[$inventoryId] < -0.0005) {
+                    throw new HttpException(409, 'Order inventory movements exceed the original reservation.');
+                }
             }
         }
 
