@@ -5,6 +5,7 @@ namespace Tests\Feature;
 use App\Domain\Updater\LaravelUpdateRuntime;
 use App\Domain\Updater\UpdatePackageManifest;
 use RuntimeException;
+use Tests\Support\UpdateArchivePreflightFixture;
 use Tests\TestCase;
 use ZipArchive;
 
@@ -80,7 +81,9 @@ final class V2UpdateCasefoldTargetCollisionTest extends TestCase
 
         // Actual ZIP member parsing and preflight, without backup, maintenance,
         // live extraction, migration, or any mutation of the installed release.
-        app(LaravelUpdateRuntime::class)->preflight($this->manifest($archive), $archive);
+        UpdateArchivePreflightFixture::withBackupableSqlite(
+            fn () => app(LaravelUpdateRuntime::class)->preflight($this->manifest($archive), $archive),
+        );
 
         $this->assertFileExists($archive);
     }
