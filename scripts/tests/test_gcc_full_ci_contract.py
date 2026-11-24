@@ -5,6 +5,7 @@ GCC Docker run and GitHub exact-head checks remain separate requirements.
 """
 from pathlib import Path
 import hashlib
+import json
 import re
 import subprocess
 import sys
@@ -68,7 +69,7 @@ class GccHeavyExecutionContracts(unittest.TestCase):
         self.assertLess(AGENT.index("function Process("), AGENT.index("switch($Mode) {"))
 
     def test_trusted_immutable_local_scripts_are_never_read_from_pr_checkout(self):
-        self.assertIn("a694003902c22563ed8dcc0e7647b8c19067e224", AGENT)
+        self.assertIn("1518a10cac3aafc9f57f86990d70950aa1354bbd", AGENT)
         self.assertIn("raw.githubusercontent.com", AGENT)
         self.assertIn("git hash-object $file", AGENT)
         self.assertIn("context: .", COMPOSE)
@@ -89,6 +90,45 @@ class GccHeavyExecutionContracts(unittest.TestCase):
         self.assertIn("backend/composer.lock", AGENT)
         self.assertIn("read_only: true", COMPOSE)
         self.assertIn("target: /source", COMPOSE)
+
+    def test_installer_failure_diagnostics_are_categorical_and_secret_free(self):
+        # Exercise the ACTUAL trusted embedded classifier, not a mock.
+        marker = (
+            'python3 - "$GCC_EXPECTED_SHA" "$version" "$step" "$rc" '
+            '"${fresh_setup_log:-}" > /evidence/result.json <<\'PY\'\\n'
+        )
+        self.assertEqual(FULL.count(marker), 1)
+        classifier = FULL.split(marker, 1)[1].split("\\nPY", 1)[0]
+        cases = (
+            ("::error::G004 first-attempt HTTP transport: category=timeout, server=alive",
+             "migration-timeout", None),
+            ("::error::Web installer step 11 returned HTTP 500",
+             "installer-http-status", 11),
+            ("::error::G004 Finish HTTP response indeterminate; refusing to replay",
+             "finish-response-indeterminate", None),
+            ("raw unknown error", "unclassified", None),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            log = Path(directory) / "private.log"
+            for message, expected_category, expected_step in cases:
+                # A private log may contain secrets. The public JSON must not.
+                log.write_text(message + "\\nAPP_KEY=DO_NOT_PUBLISH_THIS_SECRET\\n", encoding="utf-8")
+                result = subprocess.run(
+                    [sys.executable, "-c", classifier,
+                     "a" * 40, "1.0.125", "fresh-install-real-setup", "1", str(log)],
+                    capture_output=True, text=True, check=True,
+                )
+                evidence = json.loads(result.stdout)
+                self.assertEqual(evidence["failure_class"], expected_category)
+                self.assertEqual(evidence.get("installer_step"), expected_step)
+                self.assertNotIn("DO_NOT_PUBLISH_THIS_SECRET", result.stdout)
+                self.assertNotIn("APP_KEY", result.stdout)
+                self.assertEqual(evidence["trusted_release"], False)
+        self.assertIn('"- Installer failure category: $($data.failure_class)"', AGENT)
+        self.assertIn('"- Installer wizard step: $($data.installer_step)"', AGENT)
+        self.assertIn("^[a-z][a-z0-9-]{0,63}$", AGENT)
+        self.assertIn("readiness timed out", FULL)
+        self.assertNotIn("Get-Content -LiteralPath $stderr", AGENT)
 
     def test_gcc_toolkit_pinned_full_script_matches_actual_git_blob(self):
         match = re.search(r"'full\.sh'='([0-9a-f]{40})'", AGENT)
