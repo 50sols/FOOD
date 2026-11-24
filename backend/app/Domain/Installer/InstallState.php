@@ -202,6 +202,11 @@ final class InstallState
 
             $this->assertTokenLockFile($tokenLockPath, $lock);
 
+            // Finish can create installed.lock while another request waits
+            // for this mutex. Refuse that queued request after obtaining the
+            // lock, before it can recreate credentials or setup progress.
+            abort_if($this->isInstalled(), 404);
+
             return $operation();
         } finally {
             @flock($lock, LOCK_UN);
