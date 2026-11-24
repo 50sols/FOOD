@@ -39,8 +39,17 @@ final class GoodsReceiptInventoryHandoff
         // draft receipt on the same issued purchase order. The PO-line check
         // below is not enough: both drafts can share the exact same PO line.
         // Bind the line and receiving store before touching stock or title.
+        // A public handoff can be called with Eloquent models whose primary
+        // keys were modified in memory. Never follow a caller-selected ID to
+        // a different legitimate draft in the same store and purchase order:
+        // that would silently redirect stock movement provenance and title.
+        // Fail closed before any canonical row lock or inventory mutation.
         if ($receipt->getKey() === null
             || $line->getKey() === null
+            || ! $receipt->exists
+            || ! $line->exists
+            || (string) $receipt->getKey() !== (string) $receipt->getRawOriginal($receipt->getKeyName())
+            || (string) $line->getKey() !== (string) $line->getRawOriginal($line->getKeyName())
             || (int) $line->goods_receipt_id !== (int) $receipt->getKey()
             || (int) $receipt->store_id !== $storeId) {
             throw ValidationException::withMessages([

@@ -104,6 +104,104 @@ final class EnterpriseGoodsReceiptFoundationTest extends TestCase
         $this->assertNull($line->refresh()->stock_movement_id);
     }
 
+    public function test_p110_dirty_eloquent_grn_identity_cannot_redirect_stock_to_other_same_order_draft(): void
+    {
+        $this->enableProcurement();
+        [$actor, $store, $context] = $this->scopedUser(
+            $this->allPermissions(), 'GRN-P110-DIRTY-IDENTITY',
+        );
+        [$product, $warehouse] = $this->stockTarget($store, 'GRN-P110-DIRTY-IDENTITY-SKU');
+        $order = $this->issuedOrder(
+            $actor, $context, 'GRN-P110-DIRTY-IDENTITY-SUP', 'GRN-P110-DIRTY-IDENTITY-SKU', 6,
+        );
+        $manager = app(GoodsReceiptManager::class);
+        $attributes = ['lines' => [[
+            'purchase_order_line_id' => $order->lines()->firstOrFail()->id,
+            'warehouse_id' => $warehouse->id,
+            'quantity' => 1,
+        ]]];
+        // Both drafts intentionally share the same valid PO line, product
+        // and store. Only their persisted receipt/line IDs distinguish them.
+        $original = $manager->createFromIssuedOrder($actor, $context, $order->id, $attributes);
+        $other = $manager->createFromIssuedOrder($actor, $context, $order->id, $attributes);
+        $originalLine = $original->lines()->firstOrFail();
+        $otherLine = $other->lines()->firstOrFail();
+        $handoff = app(GoodsReceiptInventoryHandoff::class);
+
+        $before = [
+            'inventory' => DB::table('inventories')->count(),
+            'owner' => DB::table('enterprise_inventory_owner_positions')->count(),
+            'movement' => DB::table('stock_movements')->count(),
+            'events' => DB::table('enterprise_inventory_owner_movement_events')->count(),
+            'audit' => DB::table('audit_logs')->count(),
+        ];
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            $dirtyReceipt = $original->fresh();
+            $dirtyLine = $originalLine->fresh();
+            $this->assertNotNull($dirtyReceipt);
+            $this->assertNotNull($dirtyLine);
+
+            // Without an original-ID guard a caller can relabel BOTH Eloquent
+            // keys and their cached parent link. The canonical requery would
+            // then lock and post the other draft, passing all store/PO checks.
+            $dirtyReceipt->forceFill(['id' => $other->id]);
+            $dirtyLine->forceFill([
+                'id' => $otherLine->id,
+                'goods_receipt_id' => $other->id,
+            ]);
+            $this->assertNotSame($dirtyReceipt->getKey(), $dirtyReceipt->getRawOriginal('id'));
+            $this->assertNotSame($dirtyLine->getKey(), $dirtyLine->getRawOriginal('id'));
+
+            try {
+                DB::transaction(static function () use (
+                    $handoff, $actor, $store, $dirtyReceipt, $dirtyLine
+                ): void {
+                    $handoff->receive($actor, $store->id, $dirtyReceipt, $dirtyLine);
+                });
+                $this->fail('Dirty GRN identity must not redirect a canonical stock receipt.');
+            } catch (ValidationException $exception) {
+                $this->assertArrayHasKey('goods_receipt_id', $exception->errors());
+            }
+
+            $this->assertSame($before['inventory'], DB::table('inventories')->count());
+            $this->assertSame($before['owner'], DB::table('enterprise_inventory_owner_positions')->count());
+            $this->assertSame($before['movement'], DB::table('stock_movements')->count());
+            $this->assertSame($before['events'], DB::table('enterprise_inventory_owner_movement_events')->count());
+            $this->assertSame($before['audit'], DB::table('audit_logs')->count());
+            $this->assertNull($originalLine->fresh()->stock_movement_id);
+            $this->assertNull($otherLine->fresh()->stock_movement_id);
+            $this->assertDatabaseHas('enterprise_goods_receipts', [
+                'id' => $original->id, 'status' => 'draft',
+            ]);
+            $this->assertDatabaseHas('enterprise_goods_receipts', [
+                'id' => $other->id, 'status' => 'draft',
+            ]);
+        }
+
+        // The unchanged original identity must still receive normally once.
+        DB::transaction(static function () use ($handoff, $actor, $store, $original, $originalLine): void {
+            $handoff->receive($actor, $store->id, $original, $originalLine);
+        });
+        $this->assertNotNull($originalLine->fresh()->stock_movement_id);
+        $this->assertNull($otherLine->fresh()->stock_movement_id);
+        $this->assertSame($before['movement'] + 1, DB::table('stock_movements')->count());
+        $this->assertDatabaseHas('stock_movements', [
+            'reference_type' => 'enterprise_goods_receipt_line',
+            'reference_id' => $originalLine->id,
+            'store_id' => $store->id,
+        ]);
+        $this->assertSame(0, DB::table('stock_movements')
+            ->where('reference_type', 'enterprise_goods_receipt_line')
+            ->where('reference_id', $otherLine->id)->count());
+        $this->assertDatabaseHas('inventories', [
+            'warehouse_id' => $warehouse->id,
+            'product_id' => $product->id,
+            'quantity' => 1,
+        ]);
+    }
+
     public function test_p110_direct_grn_handoff_rejects_foreign_draft_line_and_store_without_inventory_writes(): void
     {
         $this->enableProcurement();
