@@ -41,7 +41,7 @@ class GccAttestationVerifierTests(unittest.TestCase):
         )
         self.report = {
             "schema": 1,
-            "repository": "walidatiyaai2025-gif/FOOD",
+            "repository": "50sols/FOOD",
             "base": "Foodex_V2",
             "pr": 4406,
             "source_sha": HEAD,
@@ -75,6 +75,7 @@ class GccAttestationVerifierTests(unittest.TestCase):
         payload = self.encode()
         verified = mod.verify(payload, self.sign(payload), self.public, 4406, HEAD, NOW)
         self.assertEqual(HEAD, verified["source_sha"])
+        self.assertEqual("50sols/FOOD", verified["repository"])
 
     def test_modified_sha_is_rejected_even_with_real_signature(self):
         payload = self.encode({"source_sha": "a" * 40})
@@ -82,7 +83,9 @@ class GccAttestationVerifierTests(unittest.TestCase):
             mod.verify(payload, self.sign(payload), self.public, 4406, HEAD, NOW)
 
     def test_wrong_pr_and_base_are_rejected(self):
-        for changes in ({"pr": 4407}, {"base": "main"}, {"repository": "other/FOOD"}):
+        for changes in ({"pr": 4407}, {"base": "main"},
+                        {"repository": "other/FOOD"},
+                        {"repository": "walidatiyaai2025-gif/FOOD"}):
             with self.subTest(changes=changes):
                 payload = self.encode(changes)
                 with self.assertRaises(ValueError):
