@@ -2294,6 +2294,28 @@ SQL);
         $this->assertSame('SUPPLIER', $certified['positions'][0]['owner_kind']);
         $this->assertSame($supplierId, $certified['positions'][0]['supplier_id']);
 
+        // A genuine, correctly signed certificate cannot remain authoritative
+        // if its original warehouse is reassigned to another tenant store.
+        // The immutable payload binds the warehouse ID, so the verifier must
+        // also check that warehouse's CURRENT store ownership.
+        $foreignWarehouseStock = $this->stock('SIGNED-WAREHOUSE-REASSIGNMENT');
+        $this->assertNotSame($stock['store_id'], $foreignWarehouseStock['store_id']);
+        $warehouseId = (int) $inventory->warehouse_id;
+        $this->assertSame(1, DB::table('warehouses')->where('id', $warehouseId)
+            ->where('store_id', $stock['store_id'])
+            ->update(['store_id' => $foreignWarehouseStock['store_id']]));
+        try {
+            $this->assertFalse(
+                $verifier->verifies($inventory, $position, $stock['store_id']),
+                'Moving a signed warehouse to a foreign store must revoke its legal-title authority.',
+            );
+        } finally {
+            $this->assertSame(1, DB::table('warehouses')->where('id', $warehouseId)
+                ->where('store_id', $foreignWarehouseStock['store_id'])
+                ->update(['store_id' => $stock['store_id']]));
+        }
+        $this->assertTrue($verifier->verifies($inventory, $position, $stock['store_id']));
+
         // The signed certificate must stop conferring stock-title authority
         // if the owning hierarchy is deactivated after signature issuance.
         // Restore each ancestor to prove the signature itself stays valid.
