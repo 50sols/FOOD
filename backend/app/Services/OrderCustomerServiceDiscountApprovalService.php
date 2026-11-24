@@ -33,9 +33,21 @@ final class OrderCustomerServiceDiscountApprovalService
         return DB::transaction(function () use ($order, $actor, $percentage, $reason, $idempotencyKey, $request): bool {
             $locked = Order::query()->whereKey($order->getKey())->lockForUpdate()->firstOrFail();
 
-            if (DB::table('order_customer_service_discount_requests')
+            $existing = DB::table('order_customer_service_discount_requests')
                 ->where('order_id', $locked->getKey())
-                ->where('idempotency_key', $idempotencyKey)->exists()) {
+                ->where('idempotency_key', $idempotencyKey)
+                ->first();
+            if ($existing !== null) {
+                // A retry may confirm the exact original request, never reuse
+                // its key to silently suppress a different financial intent.
+                if ((int) $existing->requested_by_user_id !== (int) $actor->getKey()
+                    || abs((float) $existing->percentage - $percentage) > 0.000001
+                    || (string) $existing->reason !== $reason) {
+                    throw ValidationException::withMessages([
+                        'idempotency_key' => [__('customer_service_discount.not_allowed')],
+                    ]);
+                }
+
                 return false;
             }
 
