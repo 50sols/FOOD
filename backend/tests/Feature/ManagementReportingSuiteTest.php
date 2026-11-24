@@ -5,6 +5,7 @@ namespace Tests\Feature;
 use App\Models\Customer;
 use App\Models\Role;
 use App\Models\User;
+use App\Services\ManagementReportService;
 use App\Services\ReportExportService;
 use Database\Seeders\CoreReferenceSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -43,6 +44,61 @@ class ManagementReportingSuiteTest extends TestCase
             ->assertJsonPath('data.kpis.recognized_revenue', 40)
             ->assertJsonPath('data.kpis.average_order_value', 20)
             ->assertJsonCount(2, 'data.rows');
+    }
+
+    public function test_orders_report_pages_authorized_order_ids_before_identity_joins(): void
+    {
+        $actor = $this->userWithRole('SUPER_ADMIN');
+        $filters = [
+            'store_id' => $this->storeA,
+            'channel' => 'b2c',
+            'status' => 'delivered',
+            'from' => '2026-09-01',
+            'to' => '2026-09-30',
+        ];
+
+        // The 4x workload used to sort/join every matching customer and
+        // payment just to show one page. Assert the SQL keeps *all* filters
+        // inside a bounded, sorted derived table before identity joins.
+        $rowQueries = [];
+        DB::listen(static function ($event) use (&$rowQueries): void {
+            $sql = strtolower((string) $event->sql);
+            if (str_contains($sql, 'paged_orders')) {
+                $rowQueries[] = $sql;
+            }
+        });
+
+        $reports = app(ManagementReportService::class);
+        $first = $reports->run($actor, 'orders', $filters, 1, 0);
+        $second = $reports->run($actor, 'orders', $filters, 1, 1);
+
+        $this->assertSame(2, $first['meta']['row_count']);
+        $this->assertSame(2, $second['meta']['row_count']);
+        $this->assertSame(40.0, (float) $first['kpis']['gross_value']);
+        $this->assertSame($first['kpis'], $second['kpis']);
+        $this->assertCount(1, $first['rows']);
+        $this->assertCount(1, $second['rows']);
+        $this->assertNotSame(
+            $first['rows'][0]['internal_order_number'],
+            $second['rows'][0]['internal_order_number'],
+        );
+        $this->assertCount(2, $rowQueries);
+        foreach ($rowQueries as $sql) {
+            $this->assertStringContainsString('join (select', $sql);
+            $this->assertStringContainsString('paged_orders', $sql);
+            $this->assertStringContainsString('orders.store_id', $sql);
+            $this->assertStringContainsString('orders.channel', $sql);
+            $this->assertStringContainsString('orders.status', $sql);
+            $this->assertStringContainsString('orders.created_at', $sql);
+            $this->assertStringContainsString('limit 1', $sql);
+        }
+
+        // No caller may use offset pagination to escape a store filter.
+        $foreign = $reports->run($actor, 'orders', [
+            ...$filters, 'store_id' => $this->storeB,
+        ], 1, 0);
+        $this->assertSame(0, $foreign['meta']['row_count']);
+        $this->assertSame([], $foreign['rows']);
     }
 
     public function test_product_report_ranks_best_least_and_zero_sales(): void
