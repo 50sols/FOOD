@@ -212,12 +212,15 @@ test('historical P110 display notes do not fabricate alternate issue branches', 
     original + ' (created, no code commit; preserve for successor)',
     original + ' (ORIGINAL)',
     original + ' | FINAL_HEAD: 1c72dfe8f7eab2de9458b57404a290c200a2648a',
+    // Real #2844 issue comment 7128797414 appends the V2 target
+    // to BRANCH; it is not a second remote ref.
+    original + ' -> Foodex_V2 ONLY',
   ];
   const refs = claimReferences(notes.map(branch => ({
     body: '<!-- foodex-worker-state:v1 -->\nSTATE: HANDOFF_READY\n'
       + 'BRANCH: ' + branch + '\nPR: #3921',
   })));
-  assert.deepEqual(refs.map(ref => ref.branch), [original, original, original]);
+  assert.deepEqual(refs.map(ref => ref.branch), Array(notes.length).fill(original));
   const shared = {
     issue: { number: 2844, state: 'open', title: 'V2 | ERP P110', labels: [] },
     branches: [original],
@@ -241,6 +244,10 @@ test('historical P110 display notes do not fabricate alternate issue branches', 
     original + ' (ORIGINAL) extra',
     original + ' (created, no code commit; preserve for successor) trailing',
     'test/2844-unrelated (ORIGINAL)',
+    original + ' -> Foodex_V2 ONLY extra',
+    original + ' -> main ONLY',
+    original + ' -> Foodex_V2 ONLY; unexpected',
+    'test/2844-forged-other -> Foodex_V2 ONLY',
   ]) {
     const conflicting = claimReferences([{
       body: '<!-- foodex-worker-state:v1 -->\nSTATE: ACTIVE\n'
@@ -249,6 +256,13 @@ test('historical P110 display notes do not fabricate alternate issue branches', 
     assert.equal(decide({ ...shared, refs: conflicting }).action,
       'BLOCK_CONFLICTING_ORIGINALS');
   }
+  // A valid display suffix never overrides a conflicting historical PR ID.
+  const mismatchedPr = claimReferences([{body:
+    '<!-- foodex-worker-state:v1 -->\\nSTATE: ACTIVE\\nBRANCH: '
+    + original + ' -> Foodex_V2 ONLY\\nPR: #3922',
+  }]);
+  assert.equal(decide({ ...shared, refs: mismatchedPr }).action,
+    'BLOCK_CONFLICTING_ORIGINALS');
 });
 
 test('historical P135 inline metadata reuses its one original PR without hiding conflicting identities', () => {
