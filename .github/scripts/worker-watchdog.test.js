@@ -24,6 +24,90 @@ const {
 
 const NOW = Date.parse('2026-10-01T06:00:00Z');
 
+// Model an in-flight issue-opened watchdog run: a valid claim or new gate
+// arrives after the first GET, before the watchdog mutates its old snapshot.
+function watchdogMutationRaceFixture(changedIssue) {
+  const issue = {
+    number: 4409,
+    state: 'open',
+    title: 'V2 | CI — revalidate worker leases',
+    body: [
+      STATE_MARKER,
+      'STATE: ACTIVE',
+      'OWNER: original-worker',
+      'BRANCH: fix/4409-watchdog-fresh-claim-revalidation',
+      'HEARTBEAT: 2026-10-01T04:00:00Z',
+    ].join('\n'),
+    labels: [{ name: 'worker:active' }],
+    comments: 0,
+    updated_at: '2026-10-01T04:00:00Z',
+  };
+  let reads = 0;
+  const mutations = [];
+  const github = {
+    rest: {
+      pulls: { list: async () => ({ data: [] }) },
+      repos: {
+        getBranch: async () => ({ data: { name: 'fix/4409-watchdog-fresh-claim-revalidation' } }),
+        getCommit: async () => ({
+          data: { commit: { committer: { date: '2026-10-01T04:00:00Z' } } },
+        }),
+      },
+      issues: {
+        get: async () => {
+          reads += 1;
+          return { data: reads === 1 ? issue : changedIssue(issue) };
+        },
+        removeLabel: async args => { mutations.push(['remove', args.name]); },
+        addLabels: async args => { mutations.push(['add', ...args.labels]); },
+        createComment: async args => { mutations.push(['comment', args.body]); },
+      },
+    },
+  };
+  const context = {
+    repo: { owner: 'example', repo: 'FOOD' },
+    eventName: 'issues',
+    payload: { issue: { number: 4409 } },
+  };
+  return { issue, mutations, github, context, getReads: () => reads };
+}
+
+test('new claim or approval after watchdog snapshot prevents stale label and handoff', async () => {
+  for (const changedIssue of [
+    issue => ({ ...issue, comments: 1, updated_at: '2026-10-01T05:59:40Z' }),
+    issue => ({ ...issue, labels: [{ name: 'gate:approval' }] }),
+    issue => ({ ...issue, state: 'closed' }),
+  ]) {
+    const fixture = watchdogMutationRaceFixture(changedIssue);
+    const result = await run({
+      github: fixture.github,
+      context: fixture.context,
+      core: { info: () => {} },
+      nowMs: NOW,
+    });
+    assert.deepEqual(result, { processed: 1, targeted: true });
+    assert.equal(fixture.getReads(), 2, 'must re-read the live Issue before write');
+    assert.deepEqual(fixture.mutations, [], 'stale handoff must not overwrite a newer claim');
+  }
+});
+
+test('unchanged 30-minute-stale claim still produces exactly one handoff', async () => {
+  const fixture = watchdogMutationRaceFixture(issue => issue);
+  const result = await run({
+    github: fixture.github,
+    context: fixture.context,
+    core: { info: () => {} },
+    nowMs: NOW,
+  });
+  assert.deepEqual(result, { processed: 1, targeted: true });
+  assert.equal(fixture.getReads(), 2);
+  assert.equal(fixture.mutations.filter(item => item[0] === 'comment').length, 1);
+  assert.equal(fixture.mutations.some(item => item[0] === 'add'
+    && item[1] === 'worker:handoff-ready'), true);
+  assert.equal(fixture.mutations.some(item => item[0] === 'remove'
+    && item[1] === 'worker:active'), true);
+});
+
 test('recognizes exhausted GitHub API quota without swallowing unrelated 403s', () => {
   assert.equal(isRateLimitError({
     status: 403,
