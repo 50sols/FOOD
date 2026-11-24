@@ -2346,6 +2346,39 @@ SQL);
         $this->assertSame('SUPPLIER', $certified['positions'][0]['owner_kind']);
         $this->assertSame($supplierId, $certified['positions'][0]['supplier_id']);
 
+        // The supplier's organization_id and company_id have independent
+        // foreign keys. Changing only organization_id must not preserve
+        // historically signed SUPPLIER legal title for a different tenant.
+        $originalSupplierOrganizationId = (int) DB::table('enterprise_suppliers')
+            ->where('id', $supplierId)->value('organization_id');
+        $foreignOrganizationId = (int) DB::table('enterprise_organizations')->insertGetId([
+            'code' => 'P110-FOREIGN-SIGNED-SUPPLIER-ORG',
+            'name' => 'Foreign Signed Supplier Organization',
+            'is_active' => true,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        $this->assertSame(1, DB::table('enterprise_suppliers')
+            ->where('id', $supplierId)->update(['organization_id' => $foreignOrganizationId]));
+        try {
+            $this->assertFalse(
+                $verifier->verifies($inventory, $position, $stock['store_id']),
+                'A signed supplier claim cannot cross organizations via an inconsistent supplier master.',
+            );
+            $moved = $read->snapshot($actor, $stock['inventory_id']);
+            $this->assertSame('UNKNOWN', $moved['state']);
+            $this->assertFalse($moved['certified']);
+            $this->assertSame('UNKNOWN', $moved['positions'][0]['owner_kind']);
+            $this->assertNull($moved['positions'][0]['supplier_id']);
+            $this->assertNull($moved['positions'][0]['supplier_name']);
+        } finally {
+            $this->assertSame(1, DB::table('enterprise_suppliers')
+                ->where('id', $supplierId)
+                ->update(['organization_id' => $originalSupplierOrganizationId]));
+        }
+        $this->assertTrue($verifier->verifies($inventory, $position, $stock['store_id']));
+        $this->assertSame('CERTIFIED', $read->snapshot($actor, $stock['inventory_id'])['state']);
+
         // A genuine, correctly signed certificate cannot remain authoritative
         // if its original warehouse is reassigned to another tenant store.
         // The immutable payload binds the warehouse ID, so the verifier must

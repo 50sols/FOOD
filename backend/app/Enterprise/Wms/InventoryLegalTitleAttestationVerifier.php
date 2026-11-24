@@ -46,9 +46,11 @@ final class InventoryLegalTitleAttestationVerifier
     /** @param object $inventory @param object $position */
     public function verifies(object $inventory, object $position, int $storeId): bool
     {
+        $legalScope = $this->legalScopeForStore($storeId);
         if (! isset($position->id) || ! isset($position->certified_by)
             || ! isset($position->source_inventory_updated_at)
-            || $this->legalScopeForStore($storeId) === null
+            || $legalScope === null
+            || ! $this->hasCurrentLegalOwnerScope($position, $storeId, $legalScope)
             // A signed warehouse ID is not proof that its current custodian
             // still belongs to this store. Reassignment must revoke title
             // until the exact canonical warehouse/store relationship returns.
@@ -234,6 +236,47 @@ final class InventoryLegalTitleAttestationVerifier
             // unavailable RBAC scope must leave title UNVERIFIED.
             return false;
         }
+    }
+
+    /**
+     * The verified signer/stock digest does not by itself prove a current
+     * supplier belongs to this legal organization. Both supplier scope FKs
+     * must agree with the store's company and its parent organization; an
+     * independently signed historical claim may have been revoked by a later
+     * supplier directory move. This check also protects direct verifier calls,
+     * not only the WMS owner-report read boundary.
+     */
+    private function hasCurrentLegalOwnerScope(object $position, int $storeId, object $legalScope): bool
+    {
+        $kind = (string) ($position->owner_kind ?? '');
+        $ownerKey = (string) ($position->owner_key ?? '');
+        $supplierId = $position->supplier_id ?? null;
+
+        if ($kind === 'FOODEX') {
+            return $ownerKey === 'FOODEX' && $supplierId === null;
+        }
+
+        if ($kind !== 'SUPPLIER' || $supplierId === null
+            || (int) $supplierId < 1
+            || $ownerKey !== 'SUPPLIER:'.(int) $supplierId) {
+            return false;
+        }
+
+        return DB::table('enterprise_suppliers')
+            ->where('id', (int) $supplierId)
+            ->where('organization_id', (int) $legalScope->organization_id)
+            ->where('company_id', (int) $legalScope->company_id)
+            ->where('status', 'active')
+            ->where(function ($scope) use ($storeId): void {
+                $scope->where(function ($store) use ($storeId): void {
+                    $store->where('scope_type', 'store')
+                        ->where('store_id', $storeId);
+                })->orWhere(function ($company): void {
+                    $company->where('scope_type', 'company')
+                        ->whereNull('store_id');
+                });
+            })
+            ->exists();
     }
 
     /**
@@ -582,6 +625,10 @@ final class InventoryLegalTitleAttestationVerifier
             ->where('entity.is_active', true)
             ->where('company.is_active', true)
             ->where('organization.is_active', true)
-            ->first(['entity.id as legal_entity_id', 'entity.company_id']);
+            ->first([
+                'entity.id as legal_entity_id',
+                'entity.company_id',
+                'company.organization_id',
+            ]);
     }
 }

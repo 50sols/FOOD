@@ -100,17 +100,25 @@ final class InventoryOwnerProvenanceReadService
             ->all();
         $suppliers = collect();
         if ($supplierIds !== []) {
-            $companyId = DB::table('enterprise_store_scopes as scope')
+            $company = DB::table('enterprise_store_scopes as scope')
                 ->join('enterprise_business_units as unit', 'unit.id', '=', 'scope.business_unit_id')
                 ->join('enterprise_legal_entities as entity', 'entity.id', '=', 'unit.legal_entity_id')
+                ->join('enterprise_companies as company', 'company.id', '=', 'entity.company_id')
+                ->join('enterprise_organizations as organization', 'organization.id', '=', 'company.organization_id')
                 ->where('scope.store_id', (int) $warehouse->store_id)
-                ->value('entity.company_id');
+                ->where('unit.is_active', true)
+                ->where('entity.is_active', true)
+                ->where('company.is_active', true)
+                ->where('organization.is_active', true)
+                ->first(['company.id as company_id', 'company.organization_id']);
 
-            if ($companyId !== null) {
-                // Supplier identity must belong to the authorized legal
-                // company, not merely share a manually assigned store_id.
+            if ($company !== null) {
+                // Supplier organization_id and company_id are independent FKs.
+                // Both must follow the store's CURRENT legal hierarchy; a
+                // forged cross-organization supplier cannot retain legal title.
                 $suppliers = DB::table('enterprise_suppliers')
-                    ->where('company_id', (int) $companyId)
+                    ->where('organization_id', (int) $company->organization_id)
+                    ->where('company_id', (int) $company->company_id)
                     ->where('status', 'active')
                     // Follow the canonical supplier directory: a legal
                     // company-wide supplier is visible to its company stores,
