@@ -81,6 +81,18 @@ final class OrderInventoryReservationService
                 continue;
             }
 
+            // A corrupt stock row must not be silently discarded by max(0).
+            // It may represent missing legal stock or an overdrawn canonical
+            // reservation, even when another warehouse can satisfy the cart.
+            foreach ($inventoryRows as $inventoryRow) {
+                $onHand = (float) $inventoryRow->quantity;
+                $reserved = (float) $inventoryRow->reserved_quantity;
+                if (! is_finite($onHand) || ! is_finite($reserved)
+                    || $onHand < 0 || $reserved < 0 || $reserved > $onHand) {
+                    throw new HttpException(409, 'Canonical inventory quantities are inconsistent.');
+                }
+            }
+
             $available = (float) $inventoryRows->sum(
                 static fn (object $row): float => max(
                     0.0,
