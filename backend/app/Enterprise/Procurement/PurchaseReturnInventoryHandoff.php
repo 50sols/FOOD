@@ -72,8 +72,6 @@ final class PurchaseReturnInventoryHandoff
             ]);
         }
 
-        $this->ownerProjection->assertUnattributedBeforeMutation((int) $inventory->getKey());
-
         $quantity = round((float) $line->returned_quantity, 3);
         $current = round((float) $inventory->quantity, 3);
         $reserved = round((float) $inventory->reserved_quantity, 3);
@@ -90,6 +88,12 @@ final class PurchaseReturnInventoryHandoff
                 ],
             ]);
         }
+
+        // Preserve the existing business validation priority: an invalid
+        // return below reservations is rejected with returned_quantity before
+        // asking whether a separate legal-owner allocation is permitted.
+        // Both guards still precede every canonical stock mutation.
+        $this->ownerProjection->assertUnattributedBeforeMutation((int) $inventory->getKey());
 
         $inventory->forceFill(['quantity' => $next])->save();
 
