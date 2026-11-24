@@ -60,7 +60,9 @@ function Report([int]$Pr,[string]$Sha,[string]$Status,[int]$Exit,[long]$Request)
  Write-Output "PR #$Pr local evidence posted: $Status"
 }
 function Smoke([int]$Pr,[string]$Sha,[long]$Request) {
- $work=Join-Path $Root "work\$Pr-$Request"
+ # Every attempt must have a private checkout. Reusing a prior request path
+ # can replay a half-fetched .git/shallow.lock or an existing origin remote.
+ $work=Join-Path $Root ("work\{0}-{1}-{2}" -f $Pr,$Request,[guid]::NewGuid().ToString("N"))
  New-Item -ItemType Directory -Path $work -Force | Out-Null
  try {
   & git -C $work init -q | Out-Null
