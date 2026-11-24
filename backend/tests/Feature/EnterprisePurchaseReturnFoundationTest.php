@@ -27,6 +27,7 @@ use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Validation\ValidationException;
+use LogicException;
 use Symfony\Component\HttpKernel\Exception\HttpExceptionInterface;
 use Tests\Support\SyntheticErpWorkflowEvidence;
 use Tests\TestCase;
@@ -114,6 +115,58 @@ final class EnterprisePurchaseReturnFoundationTest extends TestCase
                 'id' => $draft->id, 'status' => 'draft',
             ]);
         }
+    }
+
+    public function test_p110_purchase_return_handoff_cannot_debit_stock_without_a_transaction(): void
+    {
+        $this->enableProcurement();
+        [$actor, $store, $context] = $this->scopedUser($this->allPermissions(), 'PRTN-P110-ATOMIC');
+        [$product, $warehouse] = $this->stockTarget($store, 'PRTN-P110-ATOMIC-SKU');
+        $receipt = $this->postedReceipt(
+            $actor, $context, $warehouse, 'PRTN-P110-ATOMIC-SUP', 'PRTN-P110-ATOMIC-SKU', 2,
+        );
+        $source = $receipt->lines()->firstOrFail();
+        $draft = app(PurchaseReturnManager::class)->createFromPostedReceipt(
+            $actor, $context, $receipt->id, [
+                'lines' => [['goods_receipt_line_id' => $source->id, 'quantity' => '0.500']],
+            ],
+        );
+        $line = $draft->lines()->firstOrFail();
+        $service = app(PurchaseReturnInventoryHandoff::class);
+        $inventory = DB::table('inventories')
+            ->where('warehouse_id', $warehouse->id)
+            ->where('product_id', $product->id)->firstOrFail();
+
+        $beforeStock = (array) DB::table('inventories')->where('id', $inventory->id)->first();
+        $beforeOwner = DB::table('enterprise_inventory_owner_positions')
+            ->where('inventory_id', $inventory->id)->get()->toArray();
+        $beforeMovement = DB::table('stock_movements')->count();
+        $beforeOwnerEvent = DB::table('enterprise_inventory_owner_movement_events')->count();
+        $beforeAudit = DB::table('audit_logs')->count();
+
+        // PHPUnit RefreshDatabase has its own transaction. Simulate a direct
+        // production call with NO surrounding transaction at the first guard,
+        // then restore DB facade before inspecting real persisted balances.
+        $database = DB::getFacadeRoot();
+        try {
+            DB::shouldReceive('transactionLevel')->once()->andReturn(0);
+            $service->reverse($actor, $store->id, $draft, $line, $source);
+            $this->fail('Stock must not be debited by a return without an enclosing transaction.');
+        } catch (LogicException $exception) {
+            $this->assertStringContainsString('transaction', $exception->getMessage());
+        } finally {
+            DB::swap($database);
+        }
+
+        $this->assertSame($beforeStock, (array) DB::table('inventories')
+            ->where('id', $inventory->id)->first());
+        $this->assertEquals($beforeOwner, DB::table('enterprise_inventory_owner_positions')
+            ->where('inventory_id', $inventory->id)->get()->toArray());
+        $this->assertSame($beforeMovement, DB::table('stock_movements')->count());
+        $this->assertSame($beforeOwnerEvent, DB::table('enterprise_inventory_owner_movement_events')->count());
+        $this->assertSame($beforeAudit, DB::table('audit_logs')->count());
+        $this->assertDatabaseHas('enterprise_purchase_returns', ['id' => $draft->id, 'status' => 'draft']);
+        $this->assertNull($line->refresh()->stock_movement_id);
     }
 
     public function test_p110_direct_purchase_return_handoff_rejects_substituted_source_and_return_without_stock_writes(): void
