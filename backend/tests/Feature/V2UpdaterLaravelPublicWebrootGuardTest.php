@@ -6,6 +6,7 @@ use App\Domain\Updater\LaravelUpdateRuntime;
 use App\Domain\Updater\UpdatePackageManifest;
 use Illuminate\Support\Facades\File;
 use RuntimeException;
+use Tests\Support\UpdateArchivePreflightFixture;
 use Tests\TestCase;
 use ZipArchive;
 
@@ -113,7 +114,9 @@ final class V2UpdaterLaravelPublicWebrootGuardTest extends TestCase
             'backend/public/'.$this->slug.'/logo.svg' => '<svg xmlns="http://www.w3.org/2000/svg"/>',
         ]);
 
-        $this->runtime()->preflight($this->manifest($archive), $archive);
+        UpdateArchivePreflightFixture::withBackupableSqlite(
+            fn () => $this->runtime()->preflight($this->manifest($archive), $archive),
+        );
 
         // This test must never overwrite Laravel's actual front controller or .htaccess.
         $this->assertDirectoryDoesNotExist(public_path($this->slug));
