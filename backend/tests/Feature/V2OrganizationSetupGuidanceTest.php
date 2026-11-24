@@ -12,6 +12,7 @@ use App\Models\Store;
 use App\Models\User;
 use App\Services\EnterpriseOrganizationAdministration;
 use Database\Seeders\CoreReferenceSeeder;
+use Illuminate\Database\MultipleRecordsFoundException;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
@@ -1147,6 +1148,66 @@ final class V2OrganizationSetupGuidanceTest extends TestCase
 
         $this->assertSame(OrganizationHierarchyService::DEFAULT_BUSINESS_UNIT, $unit->fresh()->code);
         $this->assertSame($before, DB::table('audit_logs')->count());
+    }
+
+    public function test_ambiguous_default_unit_in_another_legal_entity_cannot_capture_new_store_scope(): void
+    {
+        $organization = EnterpriseOrganization::query()
+            ->where('code', OrganizationHierarchyService::DEFAULT_ORGANIZATION)->firstOrFail();
+        $originalUnit = EnterpriseBusinessUnit::query()
+            ->where('code', OrganizationHierarchyService::DEFAULT_BUSINESS_UNIT)
+            ->whereHas('legalEntity.company.organization', fn ($query) => $query
+                ->whereKey($organization->getKey()))
+            ->firstOrFail();
+
+        // Business-unit codes are unique only within each legal entity.
+        // An alternate legal entity inside FOODEX may reuse the code, but it
+        // must never become the arbitrarily selected home for a new store.
+        $company = EnterpriseCompany::query()->create([
+            'organization_id' => $organization->getKey(),
+            'code' => 'v2_other_default_company',
+            'name' => 'Other Default Candidate Company',
+            'is_active' => true,
+        ]);
+        $entity = EnterpriseLegalEntity::query()->create([
+            'company_id' => $company->getKey(),
+            'code' => 'v2_other_default_entity',
+            'name' => 'Other Default Candidate Legal Entity',
+            'is_active' => true,
+        ]);
+        $duplicate = EnterpriseBusinessUnit::query()->create([
+            'legal_entity_id' => $entity->getKey(),
+            'code' => OrganizationHierarchyService::DEFAULT_BUSINESS_UNIT,
+            'name' => 'Ambiguous Other Legal Entity Unit',
+            'is_active' => true,
+        ]);
+        $typeId = DB::table('store_types')->where('code', 'B2B')->value('id');
+        $this->assertNotNull($typeId);
+        $store = Store::query()->create([
+            'store_type_id' => $typeId,
+            'code' => 'V2-AMBIGUOUS-DEFAULT-STORE',
+            'name' => 'Unassigned Until Unique Default',
+            'is_active' => true,
+        ]);
+        $auditBefore = DB::table('audit_logs')->count();
+
+        try {
+            app(OrganizationHierarchyService::class)->ensureDefaultScopeForStore($store);
+            $this->fail('A duplicate default business-unit code must not assign a new store.');
+        } catch (MultipleRecordsFoundException) {
+            // No arbitrary first() candidate is a legitimate default.
+        }
+
+        $this->assertDatabaseMissing('enterprise_store_scopes', ['store_id' => $store->getKey()]);
+        $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+
+        // The established seeded default still works after ambiguity is
+        // resolved, without reseeding or changing the organization name.
+        $duplicate->delete();
+        $scope = app(OrganizationHierarchyService::class)->ensureDefaultScopeForStore($store);
+        $this->assertSame($originalUnit->getKey(), $scope->business_unit_id);
+        $this->assertSame($store->getKey(), $scope->store_id);
+        $this->assertSame($auditBefore + 1, DB::table('audit_logs')->count());
     }
 
     public function test_direct_service_cannot_bypass_reserved_routing_code_guard(): void
