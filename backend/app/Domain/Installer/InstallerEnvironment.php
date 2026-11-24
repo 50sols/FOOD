@@ -113,6 +113,11 @@ final class InstallerEnvironment
      */
     private function writeWithLock(string $path, array $values, bool $requireEmptyAppKey): void
     {
+        // Another installer request may have finished while this writer
+        // waited for the persistent .env lock. Recheck the final installation
+        // boundary after acquiring it, before reading or replacing live data.
+        abort_if(app(InstallState::class)->isInstalled(), 404);
+
         $this->rejectSymbolicLink($path);
         $this->ensureEnvironmentFile($path);
         $this->rejectSymbolicLink($path);
