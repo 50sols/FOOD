@@ -611,6 +611,27 @@ async function runCore({ github, context, core, nowMs }) {
     processed += 1;
     core.info(`#${issue.number}: ${outcome.status} (${outcome.reason})`);
 
+    // An Issue, lease, or approval can change while the watchdog is waiting
+    // on PR, branch and CI API calls. Fail closed before ANY label mutation.
+    // This is a fresh server-side snapshot, never an inferred coordinator
+    // heartbeat; a new claim must outrank an in-flight stale reconciliation.
+    const { data: currentIssue } = await github.rest.issues.get({
+      owner, repo, issue_number: issue.number,
+    });
+    const currentLabels = (currentIssue?.labels || [])
+      .map(label => typeof label === 'string' ? label : label.name)
+      .filter(Boolean);
+    if (!currentIssue || currentIssue.number !== issue.number
+        || currentIssue.state !== 'open' || currentIssue.pull_request
+        || !Number.isSafeInteger(issue.comments)
+        || currentIssue.comments !== issue.comments
+        || typeof issue.updated_at !== 'string'
+        || currentIssue.updated_at !== issue.updated_at
+        || currentLabels.some(label => label.startsWith('gate:'))) {
+      core.info(`#${issue.number}: live Issue changed after scan; skip stale watchdog mutation`);
+      continue;
+    }
+
     if (outcome.status === 'human-gate') {
       await replaceStatusLabels(github, owner, repo, issue, outcome.labels);
       continue;
