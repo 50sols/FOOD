@@ -94,7 +94,7 @@ final class UpdatePackageValidator
                 }
 
                 $memberStat = $archive->statIndex($index);
-                $memberBytes = is_array($memberStat) ? ($memberStat['size'] ?? null) : null;
+                $memberBytes = is_array($memberStat) ? $memberStat['size'] : null;
                 if (! is_int($memberBytes) || $memberBytes < 0) {
                     throw new InvalidArgumentException('Update archive entry length could not be read.');
                 }
