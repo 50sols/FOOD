@@ -290,12 +290,13 @@ final class V2InstallerIncompleteProgressObjectGuardTest extends TestCase
             static fn () => $state->token(),
             static fn () => $state->markStepComplete(5),
         ] as $operation) {
+            $actualError = null;
             try {
                 $operation();
-                $this->fail('A completed checkpoint with no token must not be reset.');
             } catch (RuntimeException $exception) {
-                $this->assertSame('Installer progress state is invalid.', $exception->getMessage());
+                $actualError = $exception->getMessage();
             }
+            $this->assertSame('Installer progress state is invalid.', $actualError);
         }
 
         $this->assertSame($before, file_get_contents($this->progressFile()));
