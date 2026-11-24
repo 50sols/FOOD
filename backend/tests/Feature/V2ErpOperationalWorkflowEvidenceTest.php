@@ -416,6 +416,30 @@ final class V2ErpOperationalWorkflowEvidenceTest extends TestCase
         );
     }
 
+    public function test_health_probe_cannot_return_ready_after_signed_workflow_certification_is_revoked(): void
+    {
+        $this->enableSample();
+        config()->set('enterprise_modules.modules.sample_optional.category', 'operations');
+        config()->set('enterprise_modules.modules.sample_optional.health_checks', ['database']);
+        config()->set('enterprise_module_health.probes.sample_optional', [V2RevokeAttestationDuringHealthProbe::class]);
+        app(ModuleRegistry::class)->syncManifest('sample_optional');
+        $this->requireSampleWorkflow();
+        $this->evidence();
+
+        // A real probe may run after the signature has been checked. If the
+        // trusted attestation is revoked during that probe, readiness must
+        // not reuse the earlier signed evidence as an active authorization.
+        $this->assertSame(
+            'uncertified',
+            app(ModuleOperationalReadiness::class)->status('sample_optional', 1, ModuleState::ENABLED),
+        );
+        $this->assertSame([], config('enterprise_module_readiness.workflow_attestations.sample_optional'));
+        $this->assertSame(
+            ModuleState::ENABLED,
+            app(ModuleRegistry::class)->state('sample_optional'),
+        );
+    }
+
     public function test_operational_proof_never_bypasses_disabled_lifecycle_or_failing_health(): void
     {
         config()->set('enterprise_module_readiness.certified_versions.sample_optional', 1);
@@ -471,6 +495,16 @@ final class V2ChangeManifestDuringHealthProbe implements ModuleHealthProbe
         $module->forceFill([
             'manifest' => [...$module->manifest, 'permissions' => ['unreviewed.manage']],
         ])->save();
+
+        return ModuleHealthCheck::healthy('database');
+    }
+}
+
+final class V2RevokeAttestationDuringHealthProbe implements ModuleHealthProbe
+{
+    public function check(): ModuleHealthCheck
+    {
+        config()->set('enterprise_module_readiness.workflow_attestations.sample_optional', []);
 
         return ModuleHealthCheck::healthy('database');
     }
