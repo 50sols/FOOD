@@ -213,6 +213,88 @@ final class V2OrganizationSetupGuidanceTest extends TestCase
         $this->assertSame($before, DB::table('audit_logs')->count());
     }
 
+    public function test_preloaded_active_hierarchy_cannot_authorize_child_after_ancestor_is_disabled(): void
+    {
+        $admin = $this->actor('SUPER_ADMIN', 'en');
+        $organization = EnterpriseOrganization::query()->create([
+            'code' => 'v2_cached_org',
+            'name' => 'Cached Organization',
+            'is_active' => true,
+        ]);
+        $company = EnterpriseCompany::query()->create([
+            'organization_id' => $organization->id,
+            'code' => 'v2_cached_company',
+            'name' => 'Cached Company',
+            'is_active' => true,
+        ]);
+        $entity = EnterpriseLegalEntity::query()->create([
+            'company_id' => $company->id,
+            'code' => 'v2_cached_entity',
+            'name' => 'Cached Entity',
+            'is_active' => true,
+        ]);
+
+        // Simulate a caller holding an earlier active hierarchy snapshot.
+        $company->load('organization');
+        $entity->load('company.organization');
+        $this->assertTrue((bool) $entity->company->organization->is_active);
+        $beforeAudit = DB::table('audit_logs')->count();
+        $service = app(EnterpriseOrganizationAdministration::class);
+
+        DB::table('enterprise_organizations')->where('id', $organization->id)->update(['is_active' => false]);
+        try {
+            $service->createLegalEntity($company, [
+                'code' => 'v2_stale_entity',
+                'name' => 'Disallowed Entity',
+                'is_active' => true,
+            ], $admin);
+            $this->fail('A cached active organization must not authorize a child after deactivation.');
+        } catch (ValidationException $exception) {
+            $this->assertArrayHasKey('parent', $exception->errors());
+        }
+
+        try {
+            $service->createBusinessUnit($entity, [
+                'code' => 'v2_stale_unit',
+                'name' => 'Disallowed Unit',
+                'is_active' => true,
+            ], $admin);
+            $this->fail('A cached active grandparent must not authorize a business unit.');
+        } catch (ValidationException $exception) {
+            $this->assertArrayHasKey('parent', $exception->errors());
+        }
+
+        $this->assertDatabaseMissing('enterprise_legal_entities', ['code' => 'v2_stale_entity']);
+        $this->assertDatabaseMissing('enterprise_business_units', ['code' => 'v2_stale_unit']);
+        $this->assertSame($beforeAudit, DB::table('audit_logs')->count());
+
+        // Re-enable the organization, then disable only the intermediate
+        // company: the cached entity-company relationship must still fail.
+        DB::table('enterprise_organizations')->where('id', $organization->id)->update(['is_active' => true]);
+        DB::table('enterprise_companies')->where('id', $company->id)->update(['is_active' => false]);
+        try {
+            $service->createBusinessUnit($entity, [
+                'code' => 'v2_stale_company_unit',
+                'name' => 'Disallowed Unit',
+                'is_active' => true,
+            ], $admin);
+            $this->fail('A cached active company must not authorize a new business unit.');
+        } catch (ValidationException $exception) {
+            $this->assertArrayHasKey('parent', $exception->errors());
+        }
+
+        $this->assertDatabaseMissing('enterprise_business_units', ['code' => 'v2_stale_company_unit']);
+        $this->assertSame($beforeAudit, DB::table('audit_logs')->count());
+
+        DB::table('enterprise_companies')->where('id', $company->id)->update(['is_active' => true]);
+        $created = $service->createBusinessUnit($entity, [
+            'code' => 'v2_restored_unit',
+            'name' => 'Restored Unit',
+            'is_active' => true,
+        ], $admin);
+        $this->assertSame('v2_restored_unit', $created->code);
+    }
+
     public function test_child_setup_preview_and_save_both_reject_inactive_parent_or_ancestor(): void
     {
         $admin = $this->actor('SUPER_ADMIN', 'en');
