@@ -69,9 +69,25 @@ final class ModuleOperationalReadiness
             }
         }
 
-        return array_diff($requiredChecks, $passedChecks) === []
-            ? 'ready'
-            : 'unhealthy';
+        if (array_diff($requiredChecks, $passedChecks) !== []) {
+            return 'unhealthy';
+        }
+
+        // A health probe may take time while another request suspends the
+        // module. Re-read persisted lifecycle after probing: a healthy report
+        // must never revive the earlier ENABLED snapshot or signed proof.
+        try {
+            $registration = $this->registry->registration($code);
+            if ($registration === null
+                || $registration->manifest_version !== $manifestVersion
+                || $registration->getRawOriginal('state') !== ModuleState::ENABLED->value) {
+                return 'uncertified';
+            }
+        } catch (Throwable) {
+            return 'uncertified';
+        }
+
+        return 'ready';
     }
 
     private function hasWorkflowEvidence(string $code, int $manifestVersion): bool
