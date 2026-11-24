@@ -57,6 +57,64 @@ final class EnterprisePurchaseReturnFoundationTest extends TestCase
         );
     }
 
+    public function test_p110_direct_purchase_return_handoff_rejects_nonpositive_line_without_stock_or_owner_mutation(): void
+    {
+        $this->enableProcurement();
+        [$actor, $store, $context] = $this->scopedUser($this->allPermissions(), 'PRTN-P110-DIRECT-NEG');
+        [$product, $warehouse] = $this->stockTarget($store, 'PRTN-P110-DIRECT-NEG-SKU');
+        $receipt = $this->postedReceipt(
+            $actor, $context, $warehouse, 'PRTN-P110-DIRECT-NEG-SUP', 'PRTN-P110-DIRECT-NEG-SKU', 2,
+        );
+        $source = $receipt->lines()->firstOrFail();
+        $draft = app(PurchaseReturnManager::class)->createFromPostedReceipt(
+            $actor, $context, $receipt->id, [
+                'lines' => [['goods_receipt_line_id' => $source->id, 'quantity' => 0.500]],
+            ],
+        );
+        $draftLine = $draft->lines()->firstOrFail();
+        $inventory = DB::table('inventories')
+            ->where('warehouse_id', $warehouse->id)
+            ->where('product_id', $product->id)->firstOrFail();
+        $service = app(\\App\\Enterprise\\Procurement\\PurchaseReturnInventoryHandoff::class);
+
+        foreach (['0.000', '-0.250'] as $tamperedQuantity) {
+            DB::table('enterprise_purchase_return_lines')->where('id', $draftLine->id)
+                ->update(['returned_quantity' => $tamperedQuantity]);
+
+            $inventoryBefore = (array) DB::table('inventories')->where('id', $inventory->id)->first();
+            $ownerBefore = DB::table('enterprise_inventory_owner_positions')
+                ->where('inventory_id', $inventory->id)->get()->toArray();
+            $movementBefore = DB::table('stock_movements')->count();
+            $eventBefore = DB::table('enterprise_inventory_owner_movement_events')->count();
+            $auditBefore = DB::table('audit_logs')->count();
+
+            try {
+                // This is deliberately the public handoff, NOT the manager.
+                // It must defend the inventory boundary if a caller bypasses
+                // the manager's validated posting workflow.
+                DB::transaction(static function () use (
+                    $service, $actor, $store, $draft, $draftLine, $source
+                ): void {
+                    $service->reverse($actor, $store->id, $draft, $draftLine->fresh(), $source);
+                });
+                $this->fail('A direct nonpositive purchase return must not increase stock or emit a movement.');
+            } catch (ValidationException $exception) {
+                $this->assertArrayHasKey('returned_quantity', $exception->errors());
+            }
+
+            $this->assertSame($inventoryBefore, (array) DB::table('inventories')
+                ->where('id', $inventory->id)->first());
+            $this->assertEquals($ownerBefore, DB::table('enterprise_inventory_owner_positions')
+                ->where('inventory_id', $inventory->id)->get()->toArray());
+            $this->assertSame($movementBefore, DB::table('stock_movements')->count());
+            $this->assertSame($eventBefore, DB::table('enterprise_inventory_owner_movement_events')->count());
+            $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+            $this->assertDatabaseHas('enterprise_purchase_returns', [
+                'id' => $draft->id, 'status' => 'draft',
+            ]);
+        }
+    }
+
     public function test_posted_purchase_return_reverses_inventory_once_and_is_retry_safe(): void
     {
         $this->enableProcurement();

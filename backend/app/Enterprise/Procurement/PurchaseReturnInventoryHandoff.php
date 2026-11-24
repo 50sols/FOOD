@@ -42,6 +42,21 @@ final class PurchaseReturnInventoryHandoff
             ]);
         }
 
+        // Protect the canonical stock boundary even if an internal caller
+        // bypasses PurchaseReturnManager's request and saved-draft checks.
+        // Negative returns must not mint on-hand stock; zero returns must not
+        // create spurious movement/owner events. Validate before any writes.
+        $rawQuantity = (float) $line->returned_quantity;
+        if (! is_finite($rawQuantity)
+            || $rawQuantity <= 0
+            || $rawQuantity > 99999999999.999
+            || round($rawQuantity, 3) <= 0
+            || abs($rawQuantity - round($rawQuantity, 3)) > 0.000000001) {
+            throw ValidationException::withMessages([
+                'returned_quantity' => ['Purchase return stock reversal requires a finite positive quantity with at most three decimal places.'],
+            ]);
+        }
+
         if ((int) $sourceLine->warehouse_id !== (int) $line->warehouse_id) {
             throw ValidationException::withMessages([
                 'warehouse_id' => ['Purchase return warehouse must match the posted goods receipt line.'],
@@ -72,7 +87,7 @@ final class PurchaseReturnInventoryHandoff
             ]);
         }
 
-        $quantity = round((float) $line->returned_quantity, 3);
+        $quantity = round($rawQuantity, 3);
         $current = round((float) $inventory->quantity, 3);
         $reserved = round((float) $inventory->reserved_quantity, 3);
         $next = round($current - $quantity, 3);
