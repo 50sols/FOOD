@@ -76,6 +76,19 @@ class WebInstallerServerCleanupTests(unittest.TestCase):
 class WebInstallerMigrationTransportFailureTests(unittest.TestCase):
     """Do not allow a slow or dead PHP server to mask first-attempt MySQL DDL."""
 
+    def test_global_and_readiness_failures_never_expose_raw_logs(self):
+        source = SH.read_text(encoding="utf-8")
+        failure = source.split("report_failure() {", 1)[1].split("\ntrap ", 1)[0]
+        readiness = source.split("wait_for_http() {", 1)[1].split("\nwait_for_port_free() {", 1)[0]
+        self.assertNotIn("cat /tmp/foodex-install-server.log", failure)
+        self.assertNotIn("cat /tmp/foodex-installed-server.log", failure)
+        self.assertNotIn("laravel.log", failure)
+        self.assertNotIn('cat "$log_file"', readiness)
+        self.assertNotIn("tail -n 200", readiness)
+        self.assertIn('trap \'report_failure "$?" "$LINENO"\' ERR', source)
+        self.assertIn("raw diagnostics suppressed", failure)
+        self.assertIn("G004 first-attempt migration failure:", source)
+
     def test_http_failure_never_exposes_raw_laravel_logs(self):
         source = SH.read_text(encoding='utf-8')
         function = source.split('wizard_post() {', 1)[1].split('\n\nfor step in $(seq 1 15)', 1)[0]
