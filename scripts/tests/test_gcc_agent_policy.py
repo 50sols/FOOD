@@ -96,6 +96,9 @@ class GccAgentContractTests(unittest.TestCase):
             ("fatal: Unable to create '.git/shallow.lock': File exists", "git-fetch-lock"),
             ("fatal: unable to access: Could not resolve host: github.com", "git-fetch-network"),
             ("remote: Repository not found.", "git-fetch-access"),
+            ("fatal: unable to access 'https://github.com/50sols/FOOD.git/': The requested URL returned error: 403", "git-fetch-access"),
+            ("fatal: unable to access 'https://github.com/50sols/FOOD.git/': The requested URL returned error: 401", "git-fetch-access"),
+            ("remote: Permission to 50sols/FOOD denied to GCC-worker.", "git-fetch-access"),
             ("fatal: couldn't find remote ref refs/pull/3444/head", "git-fetch-ref"),
             ("unrecognized fetch failure", "git-fetch-nonzero-exit"),
         ]
