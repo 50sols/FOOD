@@ -437,6 +437,11 @@ final class InstallerWorkflow
 
     public function runMigrations(): void
     {
+        // Do not let direct installer service calls re-enter migrations once
+        // the completed installation is locked. Database emptiness is not
+        // proof of authorization to migrate a previously installed site.
+        abort_if($this->state->isInstalled(), 404);
+
         $this->applyDatabaseConfiguration();
         $this->assertFreshInstallDatabase();
 
