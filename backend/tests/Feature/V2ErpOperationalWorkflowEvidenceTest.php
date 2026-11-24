@@ -2,6 +2,7 @@
 
 namespace Tests\Feature;
 
+use App\Enterprise\Health\DatabaseHealthProbe;
 use App\Enterprise\Health\ModuleHealthCheck;
 use App\Enterprise\Health\ModuleHealthProbe;
 use App\Enterprise\Modules\ModuleLifecycleManager;
@@ -36,6 +37,15 @@ final class V2ErpOperationalWorkflowEvidenceTest extends TestCase
             $this->assertArrayHasKey($code, $requirements);
             $this->assertNotEmpty($requirements[$code]);
             $this->assertContains('audit', $requirements[$code]);
+            // Every signed ERP manifest must require at least one actual
+            // health check. No empty/misconfigured probe may certify a
+            // Finance, WMS, Treasury, Procurement, or BI module.
+            $this->assertSame(['database'], $manifest['health_checks'] ?? null, $code);
+            $this->assertSame(
+                [DatabaseHealthProbe::class],
+                config('enterprise_module_health.probes.'.$code),
+                'Signed ERP operational readiness requires the matching executed database probe: '.$code,
+            );
         }
 
         $this->assertSame([], config('enterprise_module_readiness.workflow_attestations'));
