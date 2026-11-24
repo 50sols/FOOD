@@ -160,6 +160,50 @@ final class EnterpriseStockReservationFoundationTest extends TestCase
             ->count());
     }
 
+    public function test_non_finite_reservations_fail_before_any_stock_or_audit_mutation(): void
+    {
+        $this->seed(CoreReferenceSeeder::class);
+        $fixture = $this->fixture();
+        $user = $this->inventoryUser($fixture['store_id']);
+        $service = app(StockReservationService::class);
+
+        $beforeReserved = (float) DB::table('inventories')
+            ->where('id', $fixture['inventory_id'])
+            ->value('reserved_quantity');
+        $beforeMovements = DB::table('stock_movements')
+            ->where('inventory_id', $fixture['inventory_id'])
+            ->count();
+        $beforeAudits = DB::table('audit_logs')
+            ->where('event', 'enterprise.wms.stock_reservation.changed')
+            ->count();
+
+        foreach ([NAN, INF, -INF] as $index => $quantity) {
+            try {
+                $service->ensureReservation(
+                    $user,
+                    $fixture['warehouse_id'],
+                    $fixture['product_id'],
+                    $quantity,
+                    'enterprise_test_nonfinite',
+                    2100 + $index,
+                );
+                $this->fail('Expected non-finite reservation quantity to be rejected.');
+            } catch (ValidationException $exception) {
+                $this->assertArrayHasKey('quantity', $exception->errors());
+            }
+
+            $this->assertSame($beforeReserved, (float) DB::table('inventories')
+                ->where('id', $fixture['inventory_id'])
+                ->value('reserved_quantity'));
+            $this->assertSame($beforeMovements, DB::table('stock_movements')
+                ->where('inventory_id', $fixture['inventory_id'])
+                ->count());
+            $this->assertSame($beforeAudits, DB::table('audit_logs')
+                ->where('event', 'enterprise.wms.stock_reservation.changed')
+                ->count());
+        }
+    }
+
     public function test_store_and_explicit_warehouse_scope_are_enforced(): void
     {
         $this->seed(CoreReferenceSeeder::class);
