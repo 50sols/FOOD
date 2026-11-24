@@ -37,6 +37,18 @@ class GccAgentContractTests(unittest.TestCase):
         self.assertIn("Invoke-DockerLogged -DockerArgs $args", SCRIPT)
         self.assertNotIn("& docker @args *> $log", SCRIPT)
 
+    def test_comment_backlog_pagination_is_cursor_safe(self):
+        # More than 100 GitHub issue comments can arrive between polls.
+        # Never advance the cursor after inspecting only the newest page.
+        self.assertIn("function Comments([long]$After=0)", SCRIPT)
+        self.assertIn('Api "$Uri&page=$page"', SCRIPT)
+        self.assertIn("if([long]$comment.id -le $After)", SCRIPT)
+        self.assertIn("if($batch.Count -lt 100)", SCRIPT)
+        self.assertIn("refusing to advance cursor", SCRIPT)
+        self.assertIn("Comments -After $cursor", SCRIPT)
+        self.assertIn("foreach($c in @(Api $Uri))", SCRIPT)
+        self.assertNotIn("function Comments { return @(Api $Uri) }", SCRIPT)
+
     def test_advisory_not_required_status(self):
         self.assertIn("**Advisory only**", SCRIPT)
         self.assertIn("Report -Pr $n", SCRIPT)
