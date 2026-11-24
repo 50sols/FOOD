@@ -877,6 +877,79 @@ final class V2OrganizationSetupGuidanceTest extends TestCase
         $this->assertSame($before, DB::table('audit_logs')->count());
     }
 
+    public function test_dirty_store_and_business_unit_keys_cannot_redirect_scope_assignment_in_both_locales(): void
+    {
+        $admin = $this->actor('SUPER_ADMIN', 'en');
+        $service = app(EnterpriseOrganizationAdministration::class);
+        $originalUnit = EnterpriseBusinessUnit::query()
+            ->where('code', OrganizationHierarchyService::DEFAULT_BUSINESS_UNIT)->firstOrFail();
+
+        $otherOrg = EnterpriseOrganization::query()->create([
+            'code' => 'v2_scope_identity_other_org', 'name' => 'Other Organization', 'is_active' => true,
+        ]);
+        $otherCompany = EnterpriseCompany::query()->create([
+            'organization_id' => $otherOrg->id,
+            'code' => 'v2_scope_identity_other_company', 'name' => 'Other Company', 'is_active' => true,
+        ]);
+        $otherEntity = EnterpriseLegalEntity::query()->create([
+            'company_id' => $otherCompany->id,
+            'code' => 'v2_scope_identity_other_entity', 'name' => 'Other Entity', 'is_active' => true,
+        ]);
+        $foreignUnit = EnterpriseBusinessUnit::query()->create([
+            'legal_entity_id' => $otherEntity->id,
+            'code' => 'v2_scope_identity_other_unit', 'name' => 'Other Unit', 'is_active' => true,
+        ]);
+        $storeTypeId = DB::table('store_types')->where('code', 'B2B')->value('id');
+        $this->assertNotNull($storeTypeId);
+        $stores = [];
+        foreach (['ar', 'en'] as $locale) {
+            $stores[$locale] = Store::query()->create([
+                'store_type_id' => $storeTypeId,
+                'code' => 'v2-scope-identity-'.$locale,
+                'name' => 'Original Store '.$locale, 'is_active' => true,
+            ]);
+        }
+
+        $originalStore = Store::query()->create([
+            'store_type_id' => $storeTypeId,
+            'code' => 'v2-scope-identity-target', 'name' => 'Persisted Target', 'is_active' => true,
+        ]);
+        $foreignStore = Store::query()->create([
+            'store_type_id' => $storeTypeId,
+            'code' => 'v2-scope-identity-foreign', 'name' => 'Unrelated Store', 'is_active' => true,
+        ]);
+        $auditBefore = DB::table('audit_logs')->count();
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            $store = $stores[$locale];
+            $dirtyUnit = EnterpriseBusinessUnit::query()->findOrFail($originalUnit->id);
+            $dirtyUnit->forceFill(['id' => $foreignUnit->id]);
+            $this->assertNotSame($dirtyUnit->id, $dirtyUnit->getRawOriginal('id'));
+
+            // Mutating an Eloquent instance never authorizes another unit's
+            // ownership. The original persisted unit must be used instead.
+            $service->assignStore($store, $dirtyUnit, $admin);
+            $this->assertDatabaseHas('enterprise_store_scopes', [
+                'store_id' => $store->id, 'business_unit_id' => $originalUnit->id,
+            ]);
+            $this->assertDatabaseMissing('enterprise_store_scopes', [
+                'store_id' => $store->id, 'business_unit_id' => $foreignUnit->id,
+            ]);
+        }
+
+        $dirtyStore = Store::query()->findOrFail($originalStore->id);
+        $dirtyStore->forceFill(['id' => $foreignStore->id]);
+        $this->assertNotSame($dirtyStore->id, $dirtyStore->getRawOriginal('id'));
+
+        $service->assignStore($dirtyStore, $originalUnit, $admin);
+        $this->assertDatabaseHas('enterprise_store_scopes', [
+            'store_id' => $originalStore->id, 'business_unit_id' => $originalUnit->id,
+        ]);
+        $this->assertDatabaseMissing('enterprise_store_scopes', ['store_id' => $foreignStore->id]);
+        $this->assertSame($auditBefore + 3, DB::table('audit_logs')->count());
+    }
+
     public function test_stale_active_business_unit_cannot_receive_store_after_persisted_deactivation(): void
     {
         $admin = $this->actor('SUPER_ADMIN', 'en');

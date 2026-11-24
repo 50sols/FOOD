@@ -142,13 +142,26 @@ final class EnterpriseOrganizationAdministration
 
     public function assignStore(Store $store, EnterpriseBusinessUnit $unit, Authenticatable $actor): void
     {
-        // Long-lived callers can carry a previously active unit even after
-        // the persisted hierarchy is disabled. Store authority must be
-        // decided from the current database record, not a cached model.
-        $unit = $unit->fresh();
-        if (! $unit instanceof EnterpriseBusinessUnit || ! $unit->is_active) {
+        // Untrusted service callers can carry dirty Eloquent primary keys:
+        // fresh() follows the caller-visible key, which may redirect a store
+        // scope to an unrelated unit. Bind both identities to their original
+        // persisted keys before the canonical hierarchy writer sees them.
+        // This is the same source-of-truth boundary as hierarchy creation.
+        $storeId = $store->getRawOriginal($store->getKeyName());
+        $unitId = $unit->getRawOriginal($unit->getKeyName());
+        $persistedStore = $storeId === null ? null : Store::query()->whereKey($storeId)->first();
+        $persistedUnit = $unitId === null ? null : EnterpriseBusinessUnit::query()->whereKey($unitId)->first();
+
+        if (! $persistedStore instanceof Store) {
+            throw ValidationException::withMessages(['store' => [__('enterprise_organization.cross_scope_denied')]]);
+        }
+
+        if (! $persistedUnit instanceof EnterpriseBusinessUnit || ! $persistedUnit->is_active) {
             throw ValidationException::withMessages(['store' => [__('enterprise_organization.inactive_parent')]]);
         }
+
+        $store = $persistedStore;
+        $unit = $persistedUnit;
 
         // A live unit does not make an inactive legal entity, company or
         // organization eligible for new store scope assignments.
