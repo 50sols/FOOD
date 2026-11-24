@@ -687,7 +687,7 @@ final class LaravelUpdateRuntime implements UpdateRuntime
         }
 
         $metadataPath = $candidate.'/database.json';
-        if (is_link($metadataPath) || ! is_file($metadataPath) || ! is_readable($metadataPath)) {
+        if (! $this->isSingleLinkBackupFile($metadataPath) || ! is_readable($metadataPath)) {
             throw new RuntimeException('Database backup metadata is invalid or unsafe.');
         }
 
@@ -719,8 +719,7 @@ final class LaravelUpdateRuntime implements UpdateRuntime
 
         $expected = $candidate.'/'.$names[$driver];
         if (str_replace('\\', '/', $snapshot) !== $expected
-            || is_link($expected)
-            || ! is_file($expected)
+            || ! $this->isSingleLinkBackupFile($expected)
             || ! is_readable($expected)
             || filesize($expected) === 0
             || realpath($expected) !== rtrim(str_replace('\\', '/', $canonicalCandidate), '/').'/'.$names[$driver]) {
