@@ -348,6 +348,22 @@ function Report-Full([int]$Pr,[string]$Sha,[string]$Status,[int]$Exit,[long]$Req
  Write-Output "GCC full PR #$Pr comment $($posted.id): $Status"
 }
 
+# A replay after a cursor crash must find an older evidence marker even if
+# over 100 newer PR comments exist. Fail closed if pagination is exhausted.
+function RequestAlreadyReported([int]$Pr,[long]$Request) {
+ $smokeMarker="<!-- foodex-gcc-ci:$Request -->"
+ $fullMarker="<!-- foodex-gcc-full:$Request -->"
+ for($page=1;$page -le 100;$page++) {
+  $batch=@(Api "repos/$Repo/issues/$Pr/comments?per_page=100&sort=created&direction=desc&page=$page")
+  foreach($item in $batch) {
+   $body=[string]$item.body
+   if($body.Contains($smokeMarker) -or $body.Contains($fullMarker)) { return $true }
+   if([long]$item.id -le $Request) { return $false }
+  }
+  if($batch.Count -lt 100) { return $false }
+ }
+ throw 'GCC report lookup exceeds 100 pages; refusing duplicate execution.'
+}
 function Process($Comment) {
  if($null -eq $Comment.user -or $Comment.user.login -cne $Owner) { return }
  if([string]$Comment.body -cnotmatch '(?m)^/gcc-ci (run|full|backend|setup|packages) ([a-f0-9]{40})\s*$') { return }
@@ -362,12 +378,8 @@ function Process($Comment) {
   Write-Warning "Rejected non-V2, changed or foreign PR #$n"; return
  }
  if([string]$pr.head.ref -cnotmatch '\A(ci|feat|fix|test|chore|refactor|docs|worker)/[0-9]+-[a-z0-9-]+\z') { return }
- # Crash-safe cursor replay: do not rerun an exact command already reported.
- $smokeMarker="<!-- foodex-gcc-ci:$($Comment.id) -->"
- $fullMarker="<!-- foodex-gcc-full:$($Comment.id) -->"
- $published=@(Api "repos/$Repo/issues/$n/comments?per_page=100&sort=created&direction=desc" |
-   Where-Object { $b=[string]$_.body; $b.Contains($smokeMarker) -or $b.Contains($fullMarker) })
- if($published.Count -gt 0) {
+ # Crash-safe cursor replay: scan older PR comment pages before re-running.
+ if(RequestAlreadyReported -Pr $n -Request ([long]$Comment.id)) {
   Write-Output "GCC request $($Comment.id) already reported; skipping replay."
   return
  }
