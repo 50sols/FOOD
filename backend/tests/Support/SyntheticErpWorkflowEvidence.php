@@ -60,7 +60,7 @@ final class SyntheticErpWorkflowEvidence
                 'head_sha' => str_repeat('a', 40),
                 'manifest_sha256' => $manifestSha256,
                 'review_issue' => 2858,
-                'ci_run' => 'https://github.com/walidatiyaai2025-gif/FOOD/actions/runs/1',
+                'ci_run' => 'https://github.com/50sols/FOOD/actions/runs/1',
                 'checks' => $checks,
             ];
             $payload = ModuleWorkflowAttestation::payload($code, $version, $steps, $attestation);
