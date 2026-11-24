@@ -214,7 +214,7 @@ function Full-CI([int]$Pr,[string]$Sha,[long]$Request,[string]$Checkout,[Validat
   # A filename-keyed manifest cannot safely distinguish duplicate ZIP
   # basenames in separate directories. Reparse points are never real staging
   # artifacts and must not be followed while verifying SHA-256.
-  $seenArtifactNames=New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+  $seenArtifactNames=[System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
   foreach($artifact in $artifacts) {
    if(($artifact.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
     throw "Refusing symlink/reparse-point ZIP artifact: $($artifact.Name)"
