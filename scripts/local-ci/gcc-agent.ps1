@@ -206,15 +206,16 @@ function Full-CI([int]$Pr,[string]$Sha,[long]$Request,[string]$Checkout,[Validat
   if([string]$result.version -cnotmatch '^[0-9]+[.][0-9]+[.][0-9]+\z') {
    throw 'GCC result version must be a strict semantic version.'
   }
-  $requiredNames=switch($Profile) {
-   'all' { @("FOODEX-Setup-v$($result.version).zip", 'FOODEX-Update.zip') }
-   'packages' { @("FOODEX-Setup-v$($result.version).zip", 'FOODEX-Update.zip') }
-   'setup' { @("FOODEX-Setup-v$($result.version).zip") }
-   default { @() }
+  $requiredPaths=@()
+  if($Profile -ne 'backend') {
+   $requiredPaths+=Join-Path $report "FOODEX-Setup-v$($result.version).zip"
   }
-  foreach($name in $requiredNames) {
-   if(@($artifacts | Where-Object { $_.Name -ceq $name }).Count -ne 1) {
-    throw "Missing expected canonical ZIP artifact: $name (profile=$Profile)"
+  if($Profile -eq 'all' -or $Profile -eq 'packages') {
+   $requiredPaths+=Join-Path (Join-Path $report 'update') 'FOODEX-Update.zip'
+  }
+  foreach($expectedPath in $requiredPaths) {
+   if(@($artifacts | Where-Object { $_.FullName -ceq $expectedPath }).Count -ne 1) {
+    throw "Missing canonical ZIP artifact at expected evidence path: $expectedPath (profile=$Profile)"
    }
   }
   if($Profile -eq 'all' -or $Profile -eq 'backend') {
