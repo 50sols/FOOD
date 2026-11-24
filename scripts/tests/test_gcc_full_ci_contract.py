@@ -64,7 +64,10 @@ class GccHeavyExecutionContracts(unittest.TestCase):
     def test_gcc_toolkit_pinned_full_script_matches_actual_git_blob(self):
         match = re.search(r"'full\.sh'='([0-9a-f]{40})'", AGENT)
         self.assertIsNotNone(match, "GCC must pin the trusted full.sh Git blob")
-        content = (BASE / "full.sh").read_bytes()
+        # Windows Git working trees may expose CRLF even though the trusted
+        # Git blob and raw downloaded toolkit script are LF-only. Compare the
+        # canonical Git blob bytes, not the platform checkout representation.
+        content = (BASE / "full.sh").read_bytes().replace(b"\r\n", b"\n")
         actual = hashlib.sha1(
             f"blob {len(content)}\0".encode("ascii") + content
         ).hexdigest()
