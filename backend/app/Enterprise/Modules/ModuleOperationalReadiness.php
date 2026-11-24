@@ -115,6 +115,11 @@ final class ModuleOperationalReadiness
         return 'ready';
     }
 
+    /**
+     * Workflow evidence is read from mutable application configuration.
+     *
+     * @phpstan-impure
+     */
     private function hasWorkflowEvidence(string $code, int $manifestVersion): bool
     {
         $category = config('enterprise_modules.modules.'.$code.'.category');
