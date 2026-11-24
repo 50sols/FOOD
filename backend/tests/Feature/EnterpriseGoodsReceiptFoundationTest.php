@@ -118,6 +118,54 @@ final class EnterpriseGoodsReceiptFoundationTest extends TestCase
         );
     }
 
+    public function test_p110_post_refuses_tampered_nonpositive_grn_lines_without_stock_or_owner_movements(): void
+    {
+        $this->enableProcurement();
+        [$actor, $store, $context] = $this->scopedUser($this->allPermissions(), 'GRN-P110-NONPOSITIVE');
+        [$product, $warehouse] = $this->stockTarget($store, 'GRN-P110-NONPOSITIVE-SKU');
+        $order = $this->issuedOrder($actor, $context, 'GRN-P110-NONPOSITIVE-SUP', 'GRN-P110-NONPOSITIVE-SKU', 5);
+        $poLineId = $order->lines()->firstOrFail()->id;
+        $manager = app(GoodsReceiptManager::class);
+
+        foreach (['0.000', '-1.000'] as $corruptQuantity) {
+            // Creation validates the initial positive request; simulate
+            // the persisted draft being tampered with before post.
+            $receipt = $manager->createFromIssuedOrder($actor, $context, $order->id, [
+                'lines' => [[
+                    'purchase_order_line_id' => $poLineId,
+                    'warehouse_id' => $warehouse->id,
+                    'quantity' => 1,
+                ]],
+            ]);
+            DB::table('enterprise_goods_receipt_lines')
+                ->where('id', $receipt->lines()->firstOrFail()->id)
+                ->update(['received_quantity' => $corruptQuantity]);
+
+            $auditBefore = DB::table('audit_logs')->count();
+            $movementBefore = DB::table('stock_movements')->count();
+            $ownerBefore = DB::table('enterprise_inventory_owner_positions')->count();
+            $eventBefore = DB::table('enterprise_inventory_owner_movement_events')->count();
+
+            try {
+                $manager->post($actor, $context, $receipt->id);
+                $this->fail('A zero/negative stored goods receipt must never post stock.');
+            } catch (ValidationException $exception) {
+                $this->assertArrayHasKey('received_quantity', $exception->errors());
+            }
+
+            $this->assertDatabaseHas('enterprise_goods_receipts', [
+                'id' => $receipt->id, 'status' => 'draft',
+            ]);
+            $this->assertSame(0, DB::table('inventories')
+                ->where('warehouse_id', $warehouse->id)
+                ->where('product_id', $product->id)->count());
+            $this->assertSame($movementBefore, DB::table('stock_movements')->count());
+            $this->assertSame($ownerBefore, DB::table('enterprise_inventory_owner_positions')->count());
+            $this->assertSame($eventBefore, DB::table('enterprise_inventory_owner_movement_events')->count());
+            $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+        }
+    }
+
     public function test_posted_supplier_grn_rejects_claimed_legal_title_without_changing_canonical_stock(): void
     {
         $this->enableProcurement();

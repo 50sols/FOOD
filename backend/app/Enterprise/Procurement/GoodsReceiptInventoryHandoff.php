@@ -30,6 +30,21 @@ final class GoodsReceiptInventoryHandoff
             ]);
         }
 
+        // Draft line quantities can change after initial HTTP validation.
+        // Validate again at the actual inventory posting boundary so an
+        // adulterated zero/negative receipt cannot create an empty stock row
+        // or debit stock under the guise of a purchase receipt.
+        $quantity = (float) $line->received_quantity;
+        if (! is_finite($quantity)
+            || $quantity <= 0
+            || $quantity > 99999999999.999
+            || round($quantity, 3) <= 0
+            || abs($quantity - round($quantity, 3)) > 0.000000001) {
+            throw ValidationException::withMessages([
+                'received_quantity' => ['A goods receipt must contain a finite positive quantity with at most three decimal places.'],
+            ]);
+        }
+
         $itemCode = trim((string) $line->item_code);
         if ($itemCode === '') {
             throw ValidationException::withMessages([
@@ -92,7 +107,6 @@ final class GoodsReceiptInventoryHandoff
         // until a legitimate per-owner receipt allocation writer exists.
         $this->ownerProjection->assertUnattributedBeforeMutation((int) $inventory->getKey());
 
-        $quantity = (float) $line->received_quantity;
         $inventory->forceFill([
             'quantity' => round((float) $inventory->quantity + $quantity, 3),
         ])->save();
