@@ -1110,6 +1110,45 @@ final class V2OrganizationSetupGuidanceTest extends TestCase
         $this->assertSame('Verified Display Name (not legal certification)', $organization->fresh()->name);
     }
 
+    public function test_direct_service_cannot_spoof_cached_lineage_to_rename_reserved_default_unit(): void
+    {
+        $admin = $this->actor('SUPER_ADMIN', 'en');
+        $unit = EnterpriseBusinessUnit::query()
+            ->where('code', OrganizationHierarchyService::DEFAULT_BUSINESS_UNIT)->firstOrFail();
+        $foreignOrganization = EnterpriseOrganization::query()->create([
+            'code' => 'v2_foreign_cached_lineage', 'name' => 'Foreign Cached Lineage', 'is_active' => true,
+        ]);
+        $foreignCompany = EnterpriseCompany::query()->create([
+            'organization_id' => $foreignOrganization->id,
+            'code' => 'v2_foreign_cached_company', 'name' => 'Foreign Company', 'is_active' => true,
+        ]);
+        $foreignEntity = EnterpriseLegalEntity::query()->create([
+            'company_id' => $foreignCompany->id,
+            'code' => 'v2_foreign_cached_entity', 'name' => 'Foreign Entity', 'is_active' => true,
+        ]);
+        $foreignEntity->load('company.organization');
+
+        // The persisted unit still belongs to the protected default hierarchy.
+        // A direct service caller must not authorize identity changes by
+        // injecting a foreign preloaded relation on its Eloquent instance.
+        $unit->setRelation('legalEntity', $foreignEntity);
+        $before = DB::table('audit_logs')->count();
+
+        try {
+            app(EnterpriseOrganizationAdministration::class)->updateBusinessUnit($unit, [
+                'code' => 'stolen_routing_identity',
+                'name' => 'Attempted Reserved Unit Rename',
+                'is_active' => true,
+            ], $admin);
+            $this->fail('Persisted default routing ancestry must override cached relations.');
+        } catch (ValidationException $exception) {
+            $this->assertArrayHasKey('code', $exception->errors());
+        }
+
+        $this->assertSame(OrganizationHierarchyService::DEFAULT_BUSINESS_UNIT, $unit->fresh()->code);
+        $this->assertSame($before, DB::table('audit_logs')->count());
+    }
+
     public function test_direct_service_cannot_bypass_reserved_routing_code_guard(): void
     {
         $admin = $this->actor('SUPER_ADMIN', 'ar');
