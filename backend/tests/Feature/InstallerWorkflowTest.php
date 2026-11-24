@@ -722,7 +722,7 @@ class InstallerWorkflowTest extends TestCase
         try {
             app(InstallerWorkflow::class)->generateApplicationKey();
             $this->fail('A pre-existing application key must not be replaced by the installer.');
-        } catch (\\RuntimeException $exception) {
+        } catch (\RuntimeException $exception) {
             $this->assertSame(__('installer.environment_already_configured'), $exception->getMessage());
         }
 
