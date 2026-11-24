@@ -129,7 +129,7 @@ final class V2AccountingDiscountFinanceInboxTest extends TestCase
         app(ModuleEntitlementManager::class)->set(
             FinanceFoundationService::MODULE,
             new EntitlementScope(EntitlementScope::LEGAL_ENTITY, $scope['legal_entity_id']),
-            false, [], $finance,
+            false, null, $finance,
         );
 
         // Revoking the legal-entity entitlement must deny a crafted POST,
