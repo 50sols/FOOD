@@ -47,10 +47,18 @@ class B2bPricingController extends Controller
             $this->tiersDisabledMessage($request, $user),
         );
 
+        // Treat a nested or non-integer page-size selector as invalid input,
+        // not as a scalar coerced by Request::integer(). Keep the legacy
+        // bounded 1..100 behavior for authorized scalar integers.
+        $pagination = $request->validate([
+            'per_page' => ['sometimes', 'integer'],
+        ]);
+        $perPage = min(max((int) ($pagination['per_page'] ?? 20), 1), 100);
+
         $rules = B2bPriceRule::query()
             ->where('store_id', $storeId)
             ->orderBy('id')
-            ->paginate(min(max($request->integer('per_page', 20), 1), 100));
+            ->paginate($perPage);
 
         return response()->json([
             'data' => $rules->items(),
