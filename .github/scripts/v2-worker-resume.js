@@ -74,18 +74,27 @@ function claimReferences(comments) {
     // prose, unknown checksums and actual alternate branches remain blocked.
     const p135OriginalPr = rawBranch.match(/;\s*ORIGINAL_PR:\s*#([1-9]\d*) OPEN\/DRAFT -> Foodex_V2 ONLY; latest verified source HEAD [a-f0-9]{40}\. Previous worker WAITING_CI\/EDITING_RELEASED\. No peer-active file overlap, 26 other OPEN PRs inspected\.$/i);
     const p135Pr = rawBranch.match(/;\s*PR #([1-9]\d*) OPEN\/DRAFT → Foodex_V2 ONLY$/i);
-    const inlinePr = p135OriginalPr || p135Pr;
+    // Other historical issue claims include a PR number in descriptive
+    // branch prose. Retain it as a provenance constraint, never as authority.
+    const legacyOriginalPr = rawBranch.match(/;\s*PR\s+#([1-9]\d*)\s+original\s+DRAFT;\s*BASE\s+Foodex_V2\.?$/i);
+    const inlinePr = p135OriginalPr || p135Pr || legacyOriginalPr;
     const explicitPr = (fields.PR || fields.ORIGINAL_PR || '').match(/^#?([1-9]\d*)(?:\b|$)/);
     const branch = historicMissingBranch ? historicMissingBranch[1] : rawBranch
       .replace(/;\s*(?:BASE|TARGET):.*$/i, '')
+      .replace(/;\s*PR\s+#[1-9]\d*\s+original\s+DRAFT;\s*BASE\s+Foodex_V2\.?$/i, '')
+      .replace(/\s+\|\s*BASE:\s*Foodex_V2(?:\s+ONLY)?$/i, '')
       .trim()
-      .replace(/\s+\((?:EXISTING|preserve original|ORIGINAL|created, no code commit; preserve for successor)\)$/i, '')
+      .replace(/\s+\((?:EXISTING|preserve original|PRESERVE|ORIGINAL; KEEP|ORIGINAL|created, no code commit; preserve for successor|planned; base Foodex_V2 ONLY|EXISTING; preserve|preserved|ORIGINAL; PRESERVE|ORIGINAL, KEEP|ORIGINAL, PRESERVE|EXISTING ORIGINAL ONLY|PRESERVE ORIGINAL|ORIGINAL; NO NEW BRANCH)\)$/i, '')
       .replace(/\s+\|\s+FINAL_HEAD:\s+[a-f0-9]{40}$/i, '')
       .replace(/;\s*ORIGINAL_PR:\s*#[1-9]\d* OPEN\/DRAFT -> Foodex_V2 ONLY; latest verified source HEAD [a-f0-9]{40}\. Previous worker WAITING_CI\/EDITING_RELEASED\. No peer-active file overlap, 26 other OPEN PRs inspected\.$/i, '')
       .replace(/;\s*PR #[1-9]\d* OPEN\/DRAFT → Foodex_V2 ONLY$/i, '')
       .replace(/;\s*EXACT_START_HEAD:\s*[a-f0-9]{40}$/i, '')
       .replace(/\s+\|\s+START_HEAD:\s+[a-f0-9]{40}$/i, '')
-      .replace(/\s+\|\s+BASE Foodex_V2 ONLY$/i, '');
+      .replace(/\s+\|\s+BASE Foodex_V2 ONLY$/i, '')
+      // Issue #2844 has a verified historical destination annotation in
+      // BRANCH. Only a whole canonical issue-scoped ref plus this exact
+      // display suffix may be normalized; all other prose stays fail-closed.
+      .replace(/^((?:feat|feature|fix|test|chore|ci|docs|refactor|worker)\/[1-9]\d*-[A-Za-z0-9._-]+) -> Foodex_V2 ONLY$/, '$1');
     // Inlined PR identities are provenance constraints, not decoration.
     // Never turn conflicting explicit and annotated PR references into a pass.
     const claimedPr = explicitPr ? Number(explicitPr[1]) : null;

@@ -6,6 +6,7 @@ use App\Domain\Updater\LaravelUpdateRuntime;
 use App\Domain\Updater\UpdatePackageManifest;
 use Illuminate\Support\Facades\File;
 use RuntimeException;
+use Tests\Support\UpdateArchivePreflightFixture;
 use Tests\TestCase;
 use ZipArchive;
 
@@ -109,7 +110,9 @@ final class V2UpdaterUnixSpecialMemberGuardTest extends TestCase
             ], $this->relative('new.txt'), $type);
 
             $runtime = $this->runtime();
-            $runtime->preflight($this->manifest($package), $package);
+            UpdateArchivePreflightFixture::withBackupableSqlite(
+                fn () => $runtime->preflight($this->manifest($package), $package),
+            );
             $backup = $runtime->backupFiles($package);
             $runtime->extractRelease($package);
 
@@ -130,7 +133,9 @@ final class V2UpdaterUnixSpecialMemberGuardTest extends TestCase
             $this->relative('style.css') => 'replacement',
         ], $this->relative('folder/'), 0040000);
 
-        $this->runtime()->preflight($this->manifest($package), $package);
+        UpdateArchivePreflightFixture::withBackupableSqlite(
+            fn () => $this->runtime()->preflight($this->manifest($package), $package),
+        );
         $this->assertSame('original', file_get_contents($this->releaseFolder().'/style.css'));
         $this->assertSame([], glob($this->backupRoot.'/*') ?: []);
     }

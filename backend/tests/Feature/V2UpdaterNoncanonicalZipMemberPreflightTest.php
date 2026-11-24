@@ -6,6 +6,7 @@ use App\Domain\Updater\LaravelUpdateRuntime;
 use App\Domain\Updater\UpdatePackageManifest;
 use Illuminate\Support\Facades\File;
 use RuntimeException;
+use Tests\Support\UpdateArchivePreflightFixture;
 use Tests\TestCase;
 use ZipArchive;
 
@@ -113,7 +114,9 @@ final class V2UpdaterNoncanonicalZipMemberPreflightTest extends TestCase
         ]);
 
         $runtime = $this->runtime();
-        $runtime->preflight($this->manifest($package), $package);
+        UpdateArchivePreflightFixture::withBackupableSqlite(
+            fn () => $runtime->preflight($this->manifest($package), $package),
+        );
         $backup = $runtime->backupFiles($package);
         $runtime->extractRelease($package);
 
