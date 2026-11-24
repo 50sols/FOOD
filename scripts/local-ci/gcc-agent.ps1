@@ -238,7 +238,7 @@ function Full-CI([int]$Pr,[string]$Sha,[long]$Request,[string]$Checkout,[Validat
     if(($parent.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
      throw "Refusing reparse-point ZIP parent directory: $($artifact.Name)"
     }
-    if($parent.FullName -ceq $canonicalEvidenceRoot) {
+    if($parent.FullName -eq $canonicalEvidenceRoot) {
      $withinEvidenceRoot=$true
      break
     }
