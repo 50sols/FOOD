@@ -752,6 +752,48 @@ class InstallerWorkflowTest extends TestCase
         $this->assertSame($originalKey, $environment->read(['APP_KEY'])['APP_KEY']);
     }
 
+    public function test_environment_runtime_rejects_hardlinked_file_before_read_or_write(): void
+    {
+        if (! function_exists('link')) {
+            $this->markTestSkipped('Hardlink fixture requires link().');
+        }
+
+        $environment = app(InstallerEnvironment::class);
+        $path = $environment->path();
+        $outside = $this->testDirectory.'/separate-private-env';
+        $secretBytes = "APP_KEY=base64:foreign-key\\nDB_PASSWORD=external-secret\\n";
+        file_put_contents($outside, $secretBytes);
+        unlink($path);
+        if (! @link($outside, $path)) {
+            $this->markTestSkipped('Filesystem does not permit hardlink fixture.');
+        }
+
+        $this->assertSame(2, (int) lstat($path)['nlink']);
+        foreach ([
+            'read' => static fn () => $environment->read(['APP_KEY']),
+            'write' => static fn () => $environment->write(['APP_NAME' => 'Unexpected Copy']),
+        ] as $label => $attempt) {
+            try {
+                $attempt();
+                $this->fail("Hardlinked installer .env must deny {$label} before copying secrets.");
+            } catch (\\RuntimeException $exception) {
+                $this->assertSame(
+                    'Environment configuration file is not a standalone regular file.',
+                    $exception->getMessage(),
+                );
+            }
+            $this->assertSame($secretBytes, file_get_contents($outside));
+            $this->assertSame($secretBytes, file_get_contents($path));
+        }
+        $this->assertSame([], glob($path.'.tmp-*') ?: []);
+
+        // An ordinary standalone .env remains supported for clean setup.
+        unlink($path);
+        file_put_contents($path, 'APP_KEY='.PHP_EOL);
+        $environment->write(['APP_NAME' => 'Safe Setup']);
+        $this->assertStringContainsString('APP_NAME="Safe Setup"', file_get_contents($path));
+    }
+
     public function test_direct_seed_refuses_configured_application_key_without_mutating_reference_data(): void
     {
         app(InstallerEnvironment::class)->write([
