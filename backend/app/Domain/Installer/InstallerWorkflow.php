@@ -565,6 +565,11 @@ final class InstallerWorkflow
      */
     public function finish(array $admin): string
     {
+        // The HTTP installer lock is not a substitute for a service-level
+        // guard. A second direct finalization could otherwise replace the
+        // installed Super Admin password and replay completion audit writes.
+        abort_if($this->state->isInstalled(), 404);
+
         $this->applyRuntimeConfiguration();
         $version = trim((string) @file_get_contents(base_path('../VERSION')));
 
