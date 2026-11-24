@@ -309,6 +309,10 @@ final class InstallerWorkflow
      */
     public function savePlatformInformation(array $data): void
     {
+        // Installer-only mutations must remain unavailable after the final
+        // installation lock, even to direct service callers bypassing HTTP.
+        abort_if($this->state->isInstalled(), 404);
+
         $this->environment->write([
             'APP_NAME' => $data['name'],
             'APP_URL' => rtrim($data['url'], '/'),
@@ -332,6 +336,10 @@ final class InstallerWorkflow
 
     public function saveStorageConfiguration(string $disk): void
     {
+        // Installer-only mutations must remain unavailable after the final
+        // installation lock, even to direct service callers bypassing HTTP.
+        abort_if($this->state->isInstalled(), 404);
+
         foreach ([storage_path('app/private'), storage_path('app/public')] as $path) {
             if (! is_dir($path) && ! @mkdir($path, 0750, true) && ! is_dir($path)) {
                 throw new RuntimeException((string) __('installer.errors.storage_dir'));
@@ -377,6 +385,10 @@ final class InstallerWorkflow
      */
     public function saveCacheQueueConfiguration(array $data): void
     {
+        // Installer-only mutations must remain unavailable after the final
+        // installation lock, even to direct service callers bypassing HTTP.
+        abort_if($this->state->isInstalled(), 404);
+
         $values = [
             'CACHE_STORE' => $data['cache'],
             'QUEUE_CONNECTION' => $data['queue'],
@@ -400,6 +412,10 @@ final class InstallerWorkflow
      */
     public function saveMailConfiguration(array $data): void
     {
+        // Installer-only mutations must remain unavailable after the final
+        // installation lock, even to direct service callers bypassing HTTP.
+        abort_if($this->state->isInstalled(), 404);
+
         $values = [
             'MAIL_MAILER' => (string) $data['mailer'],
             'MAIL_FROM_ADDRESS' => (string) $data['from_address'],
