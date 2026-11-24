@@ -64,7 +64,13 @@ final class ModuleOperationalReadiness
         // execute that check before its operational HTTP link becomes ready.
         $passedChecks = [];
         foreach ($health->checks as $check) {
-            if ($check->status === ModuleHealthStatus::HEALTHY && ! $check->isStale()) {
+            // The report is memoized. Any probe expiring since aggregation
+            // degrades the module, even if it is an additional configured probe.
+            if ($check->isStale()) {
+                return 'unhealthy';
+            }
+
+            if ($check->status === ModuleHealthStatus::HEALTHY) {
                 $passedChecks[] = $check->key;
             }
         }
