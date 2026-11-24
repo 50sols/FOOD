@@ -376,8 +376,9 @@ final class SupplierDirectory
      */
     private function validatedSupplier(array $attributes, bool $partial = false): array
     {
-        if (array_key_exists('code', $attributes)) {
-            $attributes['code'] = strtoupper(trim((string) $attributes['code']));
+        if (array_key_exists('code', $attributes) && is_string($attributes['code'])) {
+            // Reject non-string codes through validation instead of coercing arrays to "ARRAY".
+            $attributes['code'] = strtoupper(trim($attributes['code']));
         }
 
         foreach (['name_en', 'name_ar', 'contact_name', 'email', 'phone'] as $field) {

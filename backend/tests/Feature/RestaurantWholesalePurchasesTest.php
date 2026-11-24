@@ -24,6 +24,80 @@ final class RestaurantWholesalePurchasesTest extends TestCase
         $this->seed(CoreReferenceSeeder::class);
     }
 
+    public function test_wholesale_cart_and_checkout_scope_precedes_body_validation_for_foreign_store_in_ar_and_en(): void
+    {
+        $owned = $this->store('B2C', 'REST-BUYER-SCOPE-OWNED');
+        $actor = $this->storeAdmin($owned, 'buyer-scope-owned@example.test');
+        $this->enableRestaurant($owned);
+        $this->linkWholesaleBuyer($owned, $actor);
+
+        $foreign = $this->store('B2C', 'REST-BUYER-SCOPE-FOREIGN');
+        $foreignActor = $this->storeAdmin($foreign, 'buyer-scope-foreign@example.test');
+        $this->enableRestaurant($foreign);
+        $this->linkWholesaleBuyer($foreign, $foreignActor);
+
+        $routes = [
+            ['method' => 'postJson', 'url' => route('admin.restaurant.wholesale-purchases.cart.add')],
+            ['method' => 'patchJson', 'url' => route('admin.restaurant.wholesale-purchases.cart.update', ['item' => 99999])],
+            ['method' => 'deleteJson', 'url' => route('admin.restaurant.wholesale-purchases.cart.remove', ['item' => 99999])],
+            ['method' => 'postJson', 'url' => route('admin.restaurant.wholesale-purchases.checkout')],
+        ];
+        $before = [
+            DB::table('carts')->count(),
+            DB::table('cart_items')->count(),
+            DB::table('orders')->count(),
+        ];
+        $oldLocale = app()->getLocale();
+
+        try {
+            foreach (['ar', 'en'] as $locale) {
+                app()->setLocale($locale);
+                $actor->forceFill(['locale' => $locale])->saveQuietly();
+
+                foreach ($routes as $target) {
+                    $method = $target['method'];
+                    $this->actingAs($actor->fresh())->$method($target['url'], [
+                        'retail_store_id' => $foreign->id,
+                        'quantity' => ['invalid'],
+                        'product_id' => ['invalid'],
+                        'payment_method' => ['invalid'],
+                    ])->assertNotFound();
+                    // Well-typed inputs must not bypass the foreign Retail buyer scope.
+                    $this->actingAs($actor->fresh())->$method($target['url'], [
+                        'retail_store_id' => $foreign->id,
+                        'quantity' => 1,
+                        'product_id' => 1,
+                        'payment_method' => 'cash',
+                        'idempotency_key' => 'buyer-scope-foreign-1234567890',
+                    ])->assertNotFound();
+                    // A foreign selector takes precedence over missing unrelated fields.
+                    $this->actingAs($actor->fresh())->$method($target['url'], [
+                        'retail_store_id' => $foreign->id,
+                    ])->assertNotFound();
+                }
+
+                $this->actingAs($actor->fresh())
+                    ->postJson(route('admin.restaurant.wholesale-purchases.cart.add'), [
+                        'retail_store_id' => $owned->id,
+                        'product_id' => ['invalid'],
+                    ])->assertUnprocessable()->assertJsonValidationErrors('product_id');
+
+                $this->actingAs($actor->fresh())
+                    ->postJson(route('admin.restaurant.wholesale-purchases.cart.add'), [
+                        'product_id' => ['invalid'],
+                    ])->assertUnprocessable()->assertJsonValidationErrors('retail_store_id');
+            }
+        } finally {
+            app()->setLocale($oldLocale);
+        }
+
+        $this->assertSame($before, [
+            DB::table('carts')->count(),
+            DB::table('cart_items')->count(),
+            DB::table('orders')->count(),
+        ]);
+    }
+
     public function test_restaurant_operator_gets_isolated_buyer_workbench_and_cross_store_access_fails_closed(): void
     {
         $restaurant = $this->store('B2C', 'REST-PROC-A');
@@ -123,6 +197,67 @@ final class RestaurantWholesalePurchasesTest extends TestCase
             ->assertOk()
             ->assertSee('REST-WHOLESALE-SKU')
             ->assertSee('Purchase Cart');
+    }
+
+    public function test_restaurant_wholesale_tab_get_rejects_nested_shapes_without_losing_buyer_scope(): void
+    {
+        $restaurant = $this->store('B2C', 'REST-TAB-STRICT');
+        $operator = $this->storeAdmin($restaurant, 'restaurant-tab-strict@example.test');
+        $this->enableRestaurant($restaurant);
+        $this->linkWholesaleBuyer($restaurant, $operator);
+
+        $url = route('admin.restaurant.wholesale-purchases.index', ['retail_store_id' => $restaurant->id]);
+        $before = [
+            DB::table('carts')->count(),
+            DB::table('cart_items')->count(),
+            DB::table('orders')->count(),
+            DB::table('audit_logs')->count(),
+        ];
+
+        foreach (['ar' => 'rtl', 'en' => 'ltr'] as $locale => $direction) {
+            $operator->forceFill(['locale' => $locale])->save();
+            app()->setLocale($locale);
+
+            $this->actingAs($operator->fresh())->get($url.'&tab=orders')
+                ->assertOk()
+                ->assertSee('dir="'.$direction.'"', false)
+                ->assertViewHas('tab', 'orders');
+            $this->actingAs($operator->fresh())->get($url.'&tab=invoices')
+                ->assertOk()
+                ->assertViewHas('tab', 'invoices');
+            // An absent selector still defaults to the existing catalog.
+            $this->actingAs($operator->fresh())->get($url)
+                ->assertOk()
+                ->assertViewHas('tab', 'catalog');
+            $this->actingAs($operator->fresh())->get($url.'&tab=delivery')
+                ->assertOk()
+                ->assertViewHas('tab', 'delivery');
+            $this->actingAs($operator->fresh())->get($url.'&tab=unknown')
+                ->assertOk()
+                ->assertViewHas('tab', 'catalog');
+            $this->actingAs($operator->fresh())->get($url.'&tab=')
+                ->assertOk()
+                ->assertViewHas('tab', 'catalog');
+
+            foreach ([
+                '&tab%5B%5D=orders',
+                '&tab%5Bdeep%5D%5B0%5D=invoices',
+                '&tab%5Bstep%5D=cart',
+            ] as $malformed) {
+                $this->actingAs($operator->fresh())->get($url.$malformed)->assertNotFound();
+            }
+        }
+
+        $foreign = $this->storeAdmin($this->store('B2C', 'REST-TAB-FOREIGN'), 'foreign-tab-operator@example.test');
+        $this->actingAs($foreign)->get($url.'&tab=orders')->assertNotFound();
+        $this->actingAs($foreign)->get($url.'&tab%5B%5D=orders')->assertNotFound();
+
+        $this->assertSame($before, [
+            DB::table('carts')->count(),
+            DB::table('cart_items')->count(),
+            DB::table('orders')->count(),
+            DB::table('audit_logs')->count(),
+        ]);
     }
 
     private function linkWholesaleBuyer(Store $store, User $owner): int

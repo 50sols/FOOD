@@ -130,6 +130,65 @@ class SmartOrderingCustomerGrowthTest extends TestCase
         $this->assertNotSame($customerA['legacy_id'], $customerB['legacy_id']);
     }
 
+    public function test_admin_history_rejects_nested_limit_after_tenant_and_customer_scope_in_ar_en(): void
+    {
+        [$storeA, $adminA, $siteA] = $this->restaurant('HISTORY-LIMIT-A');
+        [$storeB, $adminB, $siteB] = $this->restaurant('HISTORY-LIMIT-B');
+        $customerA = $this->customer($storeA, 'History Customer A', '+96550000671');
+        $customerB = $this->customer($storeB, 'History Customer B', '+96550000672');
+        $this->order($storeA, $customerA['legacy_id'], $customerA['b2c_id'], 'COMPLETED', 4.000);
+        $this->order($storeA, $customerA['legacy_id'], $customerA['b2c_id'], 'COMPLETED', 6.000);
+        $this->order($storeB, $customerB['legacy_id'], $customerB['b2c_id'], 'COMPLETED', 99.000);
+
+        $url = route('admin.smart-ordering.customers.orders', [
+            'site' => $siteA->getKey(),
+            'customer' => $customerA['legacy_id'],
+        ]);
+        $foreignCustomerUrl = route('admin.smart-ordering.customers.orders', [
+            'site' => $siteA->getKey(),
+            'customer' => $customerB['legacy_id'],
+        ]);
+        $otherSiteUrl = route('admin.smart-ordering.customers.orders', [
+            'site' => $siteB->getKey(),
+            'customer' => $customerB['legacy_id'],
+        ]);
+        $before = [
+            DB::table('orders')->count(),
+            DB::table('audit_logs')->count(),
+        ];
+        $originalLocale = app()->getLocale();
+
+        try {
+            foreach (['ar', 'en'] as $locale) {
+                $adminA->forceFill(['locale' => $locale])->saveQuietly();
+                app()->setLocale($locale);
+
+                foreach (['?limit%5B%5D=1', '?limit%5Bdeep%5D=1'] as $nested) {
+                    $this->actingAs($adminA->fresh())->getJson($url.$nested)
+                        ->assertUnprocessable();
+                    $this->actingAs($adminA->fresh())->getJson($foreignCustomerUrl.$nested)
+                        ->assertNotFound();
+                    $this->actingAs($adminA->fresh())->getJson($otherSiteUrl.$nested)
+                        ->assertNotFound();
+                }
+
+                $this->actingAs($adminA->fresh())->getJson($url)
+                    ->assertOk()->assertJsonCount(2, 'orders');
+                $this->actingAs($adminA->fresh())->getJson($url.'?limit=1')
+                    ->assertOk()->assertJsonCount(1, 'orders');
+            }
+        } finally {
+            app()->setLocale($originalLocale);
+        }
+
+        $this->actingAs($adminB)->getJson($url.'?limit%5B%5D=1')
+            ->assertNotFound();
+        $this->assertSame($before, [
+            DB::table('orders')->count(),
+            DB::table('audit_logs')->count(),
+        ]);
+    }
+
     public function test_customer_profile_is_restaurant_scoped_and_same_phone_never_merges_tenants(): void
     {
         [$storeA, $adminA, $siteA] = $this->restaurant('CRM-A');
@@ -181,6 +240,75 @@ class SmartOrderingCustomerGrowthTest extends TestCase
             'source_order_id' => $order,
             'status' => 'DRAFT',
         ]);
+    }
+
+    public function test_admin_repeat_rejects_unscoped_source_order_before_invalid_items_in_both_locales(): void
+    {
+        [$storeA, $adminA, $siteA] = $this->restaurant('V2-REPEAT-SCOPE-A');
+        [$storeB, $adminB, $siteB] = $this->restaurant('V2-REPEAT-SCOPE-B');
+        $customerA = $this->customer($storeA, 'Scoped Repeat Customer', '+96550000971');
+        $otherCustomerA = $this->customer($storeA, 'Other Customer A', '+96550000972');
+        $customerB = $this->customer($storeB, 'Foreign Repeat Customer', '+96550000973');
+
+        $productA = $this->sellableProduct($storeA, 'V2-REP-SCOPE-A', 'Owned Meal', 4.500, 20);
+        $productB = $this->sellableProduct($storeB, 'V2-REP-SCOPE-B', 'Foreign Meal', 9.000, 20);
+        $ownedOrder = $this->order($storeA, $customerA['legacy_id'], $customerA['b2c_id'], 'COMPLETED', 4.500);
+        $ownedItem = $this->orderItem($ownedOrder, $productA, 'Owned Meal', 1, 4.500);
+        $otherCustomerOrder = $this->order($storeA, $otherCustomerA['legacy_id'], $otherCustomerA['b2c_id'], 'COMPLETED', 4.500);
+        $this->orderItem($otherCustomerOrder, $productA, 'Other Meal', 1, 4.500);
+        $foreignOrder = $this->order($storeB, $customerB['legacy_id'], $customerB['b2c_id'], 'COMPLETED', 9.000);
+        $this->orderItem($foreignOrder, $productB, 'Foreign Meal', 1, 9.000);
+
+        $url = fn (int $sourceOrderId): string => route('admin.smart-ordering.customers.repeat', [
+            'site' => $siteA->getKey(),
+            'customer' => $customerA['legacy_id'],
+            'order' => $sourceOrderId,
+        ]);
+
+        $ownedUrl = $url($ownedOrder);
+        $invalid = ['order_item_ids' => ['not-an-integer']];
+        $auditBefore = DB::table('audit_logs')->count();
+        $draftsBefore = DB::table('smart_ordering_repeat_drafts')->count();
+        $initialLocale = app()->getLocale();
+
+        try {
+            foreach (['ar', 'en'] as $locale) {
+                $adminA->forceFill(['locale' => $locale])->saveQuietly();
+                app()->setLocale($locale);
+
+                foreach ([$foreignOrder, $otherCustomerOrder, $foreignOrder + 1000000] as $unavailable) {
+                    $this->actingAs($adminA->fresh())->postJson($url($unavailable), $invalid)
+                        ->assertNotFound();
+                }
+            }
+        } finally {
+            app()->setLocale($initialLocale);
+        }
+
+        // Restaurant-B operator does not gain access to restaurant-A source.
+        $this->actingAs($adminB)->postJson($ownedUrl, $invalid)->assertNotFound();
+        $this->assertSame($draftsBefore, DB::table('smart_ordering_repeat_drafts')->count());
+        $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+
+        // Validation remains intact for an order legitimately in scope.
+        $this->actingAs($adminA->fresh())->postJson($ownedUrl, $invalid)
+            ->assertUnprocessable()->assertJsonValidationErrors('order_item_ids.0');
+        $this->assertSame($draftsBefore, DB::table('smart_ordering_repeat_drafts')->count());
+
+        $this->actingAs($adminA->fresh())->postJson($ownedUrl, ['order_item_ids' => [$ownedItem]])
+            ->assertCreated()
+            ->assertJsonPath('source_order_id', $ownedOrder)
+            ->assertJsonPath('pricing_notice', 'LIVE_PRICE_AND_AVAILABILITY_REVALIDATED');
+
+        $this->assertDatabaseHas('smart_ordering_repeat_drafts', [
+            'site_id' => $siteA->id,
+            'customer_id' => $customerA['legacy_id'],
+            'source_order_id' => $ownedOrder,
+            'status' => 'DRAFT',
+        ]);
+        $this->assertSame($draftsBefore + 1, DB::table('smart_ordering_repeat_drafts')->count());
+        $this->assertSame(0, DB::table('smart_ordering_repeat_drafts')->where('site_id', $siteB->id)->count());
+        $this->assertSame(0, DB::table('smart_ordering_repeat_drafts')->where('source_order_id', $otherCustomerOrder)->count());
     }
 
     public function test_noncompleted_repeat_http_409_is_bilingual_and_never_creates_a_draft(): void
@@ -434,6 +562,95 @@ class SmartOrderingCustomerGrowthTest extends TestCase
             ->assertJsonPath('cases.0.id', $result['service_recovery']['case_id']);
     }
 
+    public function test_service_recovery_post_resolves_scoped_case_before_payload_validation(): void
+    {
+        [$storeA, $adminA, $siteA] = $this->restaurant('V2-RECOVERY-POST-A');
+        [$storeB, $adminB, $siteB] = $this->restaurant('V2-RECOVERY-POST-B');
+        $customerA = $this->customer($storeA, 'Recovery A', '+96550000961');
+        $customerB = $this->customer($storeB, 'Recovery B', '+96550000962');
+
+        $caseIds = [];
+        foreach ([
+            [$storeA, $adminA, $siteA, $customerA],
+            [$storeB, $adminB, $siteB, $customerB],
+        ] as [$store, $admin, $site, $customer]) {
+            $this->enable($admin, $site, Module::REVIEWS);
+            $order = $this->order($store, $customer['legacy_id'], $customer['b2c_id'], 'COMPLETED', 5.000);
+            $response = app(FeedbackService::class)->submit(
+                $site,
+                $customer['legacy_id'],
+                $order,
+                1,
+                'Please investigate.',
+            );
+            $this->assertNotNull($response['service_recovery']);
+            $caseIds[] = $response['service_recovery']['case_id'];
+        }
+
+        [$ownId, $foreignId] = $caseIds;
+        $route = fn (string $id): string => route('admin.smart-ordering.service-recovery.resolve', [
+            'site' => $siteA->getKey(),
+            'case' => $id,
+        ]);
+        $ownUrl = $route($ownId);
+        $foreignUrl = $route($foreignId);
+        $missingUrl = $route((string) Str::uuid());
+        $badPayload = ['resolution_note' => ['unexpected' => 'nested']];
+        $baselineCases = DB::table('smart_ordering_service_recovery_cases')
+            ->orderBy('id')
+            ->get(['id', 'site_id', 'public_id', 'status', 'resolution_note', 'resolved_at'])
+            ->toArray();
+        $baselineAudits = DB::table('audit_logs')->count();
+        $initialLocale = app()->getLocale();
+
+        try {
+            foreach (['ar', 'en'] as $locale) {
+                $adminA->forceFill(['locale' => $locale])->saveQuietly();
+                app()->setLocale($locale);
+
+                $this->actingAs($adminA->fresh())->postJson($foreignUrl, $badPayload)
+                    ->assertNotFound();
+                $this->actingAs($adminA->fresh())->postJson($missingUrl, [])
+                    ->assertNotFound();
+            }
+        } finally {
+            app()->setLocale($initialLocale);
+        }
+
+        // Tenant authentication/authorization must also fail before input checks.
+        $this->actingAs($adminB)->postJson($ownUrl, $badPayload)->assertNotFound();
+        $this->assertEquals(
+            $baselineCases,
+            DB::table('smart_ordering_service_recovery_cases')
+                ->orderBy('id')
+                ->get(['id', 'site_id', 'public_id', 'status', 'resolution_note', 'resolved_at'])
+                ->toArray(),
+        );
+        $this->assertSame($baselineAudits, DB::table('audit_logs')->count());
+
+        $this->actingAs($adminA->fresh())->postJson($ownUrl, $badPayload)
+            ->assertUnprocessable()->assertJsonValidationErrors('resolution_note');
+        $this->assertSame($baselineAudits, DB::table('audit_logs')->count());
+
+        $this->actingAs($adminA->fresh())->postJson($ownUrl, [
+            'resolution_note' => 'Follow-up completed.',
+        ])->assertOk()->assertJsonPath('status', 'RESOLVED');
+
+        $this->assertDatabaseHas('smart_ordering_service_recovery_cases', [
+            'site_id' => $siteA->id,
+            'public_id' => $ownId,
+            'status' => 'RESOLVED',
+            'resolution_note' => 'Follow-up completed.',
+        ]);
+        $this->assertDatabaseHas('smart_ordering_service_recovery_cases', [
+            'site_id' => $siteB->id,
+            'public_id' => $foreignId,
+            'status' => 'OPEN',
+            'resolution_note' => null,
+        ]);
+        $this->assertSame($baselineAudits + 1, DB::table('audit_logs')->count());
+    }
+
     public function test_high_rating_can_offer_external_review_without_reward_conditioning(): void
     {
         [$store, $admin, $site] = $this->restaurant('REVIEWS-HIGH');
@@ -494,6 +711,384 @@ class SmartOrderingCustomerGrowthTest extends TestCase
             'platform_customer_id' => $customer['platform_id'],
             'state' => MarketingConsentService::OPTED_OUT,
         ]);
+    }
+
+    public function test_loyalty_adjust_checks_scoped_customer_before_post_validation_in_both_locales(): void
+    {
+        [$storeA, $adminA, $siteA] = $this->restaurant('V2-LOYALTY-ADJUST-A');
+        [$storeB, $adminB, $siteB] = $this->restaurant('V2-LOYALTY-ADJUST-B');
+        $customerA = $this->customer($storeA, 'Local Loyalty A', '+96550000981');
+        $customerB = $this->customer($storeB, 'Foreign Loyalty B', '+96550000982');
+        $this->enable($adminA, $siteA, Module::LOYALTY);
+        $this->enable($adminB, $siteB, Module::LOYALTY);
+
+        $url = fn (int $customerId): string => route('admin.smart-ordering.customers.loyalty.adjust', [
+            'site' => $siteA->getKey(),
+            'customer' => $customerId,
+        ]);
+        $ownedUrl = $url($customerA['legacy_id']);
+        $foreignUrl = $url($customerB['legacy_id']);
+        $missingUrl = $url(max($customerA['legacy_id'], $customerB['legacy_id']) + 1000000);
+        $invalid = ['points' => ['nested' => 1], 'reason' => ['nested' => 'invalid']];
+        $beforeLedger = DB::table('smart_ordering_loyalty_ledger')->count();
+        $beforeAccounts = DB::table('smart_ordering_loyalty_accounts')->count();
+        $beforeAudits = DB::table('audit_logs')->count();
+        $initialLocale = app()->getLocale();
+
+        try {
+            foreach (['ar', 'en'] as $locale) {
+                $adminA->forceFill(['locale' => $locale])->saveQuietly();
+                app()->setLocale($locale);
+
+                $this->actingAs($adminA->fresh())->postJson($foreignUrl, $invalid)->assertNotFound();
+                $this->actingAs($adminA->fresh())->postJson($missingUrl, [])->assertNotFound();
+            }
+        } finally {
+            app()->setLocale($initialLocale);
+        }
+
+        // A foreign restaurant operator cannot access site A even with a bad body.
+        $this->actingAs($adminB)->postJson($ownedUrl, $invalid)->assertNotFound();
+        $this->assertSame($beforeLedger, DB::table('smart_ordering_loyalty_ledger')->count());
+        $this->assertSame($beforeAccounts, DB::table('smart_ordering_loyalty_accounts')->count());
+        $this->assertSame($beforeAudits, DB::table('audit_logs')->count());
+
+        $this->actingAs($adminA->fresh())->postJson($ownedUrl, $invalid)
+            ->assertUnprocessable()->assertJsonValidationErrors(['points', 'reason']);
+        $this->assertSame($beforeLedger, DB::table('smart_ordering_loyalty_ledger')->count());
+
+        $this->actingAs($adminA->fresh())->postJson($ownedUrl, [
+            'points' => 12,
+            'reason' => 'Approved correction',
+        ])->assertOk()->assertJsonPath('points', 12)->assertJsonPath('balance', 12);
+
+        $this->assertDatabaseHas('smart_ordering_loyalty_accounts', [
+            'site_id' => $siteA->id,
+            'customer_id' => $customerA['legacy_id'],
+            'balance' => 12,
+        ]);
+        $this->assertDatabaseHas('smart_ordering_loyalty_ledger', [
+            'site_id' => $siteA->id,
+            'customer_id' => $customerA['legacy_id'],
+            'type' => 'ADJUSTMENT',
+            'points' => 12,
+            'balance_after' => 12,
+        ]);
+        $this->assertSame($beforeLedger + 1, DB::table('smart_ordering_loyalty_ledger')->count());
+        $this->assertSame($beforeAccounts + 1, DB::table('smart_ordering_loyalty_accounts')->count());
+        $this->assertSame($beforeAudits + 1, DB::table('audit_logs')->count());
+        $this->assertSame(0, DB::table('smart_ordering_loyalty_accounts')->where('site_id', $siteB->id)->count());
+        $this->assertSame(0, DB::table('smart_ordering_loyalty_ledger')->where('site_id', $siteB->id)->count());
+    }
+
+    public function test_admin_loyalty_rewards_reject_nested_branch_get_after_site_authorization(): void
+    {
+        [, $admin, $site] = $this->restaurant('V2-LOYALTY-GET-A');
+        [, $otherAdmin, $otherSite] = $this->restaurant('V2-LOYALTY-GET-B');
+
+        app(LoyaltyAdminService::class)->createReward(
+            $admin,
+            $site,
+            'Site A Reward',
+            'مكافأة المتجر أ',
+            15,
+        );
+        app(LoyaltyAdminService::class)->createReward(
+            $otherAdmin,
+            $otherSite,
+            'Site B Reward',
+            'مكافأة المتجر ب',
+            25,
+        );
+
+        $url = route('admin.smart-ordering.loyalty.rewards', ['site' => $site->getKey()]);
+        $before = [
+            DB::table('smart_ordering_loyalty_rewards')->count(),
+            DB::table('smart_ordering_loyalty_ledger')->count(),
+            DB::table('audit_logs')->count(),
+        ];
+
+        foreach (['ar', 'en'] as $locale) {
+            $admin->forceFill(['locale' => $locale])->save();
+            app()->setLocale($locale);
+
+            foreach (['', '?branch_id=', '?branch_id=999999'] as $valid) {
+                $this->actingAs($admin->fresh())
+                    ->getJson($url.$valid)
+                    ->assertOk()
+                    ->assertJsonCount(1, 'rewards')
+                    ->assertJsonPath('rewards.0.name_en', 'Site A Reward')
+                    ->assertJsonPath('rewards.0.name_ar', 'مكافأة المتجر أ');
+            }
+
+            foreach ([
+                '?branch_id=invalid',
+                '?branch_id=0',
+                '?branch_id=-1',
+                '?branch_id=1.5',
+                '?branch_id=999999999999999999999999',
+            ] as $invalidScalar) {
+                $this->actingAs($admin->fresh())
+                    ->getJson($url.$invalidScalar)
+                    ->assertUnprocessable();
+            }
+
+            foreach ([
+                '?branch_id%5B%5D=999999',
+                '?branch_id%5Bdeep%5D=999999',
+                '?branch_id%5Bdeep%5D%5B0%5D=999999',
+            ] as $malformed) {
+                $this->actingAs($admin->fresh())
+                    ->getJson($url.$malformed)
+                    ->assertNotFound();
+            }
+        }
+
+        // A foreign-store actor must not see Site A data, even with a
+        // malformed selector; tenant authorization precedes input checks.
+        $this->actingAs($otherAdmin)
+            ->getJson($url.'?branch_id=999999')
+            ->assertNotFound();
+        $this->actingAs($otherAdmin)
+            ->getJson($url.'?branch_id%5B%5D=999999')
+            ->assertNotFound();
+        $this->actingAs($otherAdmin)
+            ->getJson($url.'?branch_id=invalid')
+            ->assertNotFound();
+
+        $roleless = User::factory()->create([
+            'email' => 'v2-loyalty-branch-roleless@example.test',
+            'locale' => 'en',
+            'is_active' => true,
+        ]);
+        // The dashboard middleware must deny a roleless actor (403) before
+        // the route ever evaluates the branch selector.
+        $this->actingAs($roleless)
+            ->getJson($url.'?branch_id=999999')
+            ->assertForbidden();
+        $this->actingAs($roleless)
+            ->getJson($url.'?branch_id%5B%5D=999999')
+            ->assertForbidden();
+        $this->actingAs($roleless)
+            ->getJson($url.'?branch_id=invalid')
+            ->assertForbidden();
+
+        $this->assertSame($before, [
+            DB::table('smart_ordering_loyalty_rewards')->count(),
+            DB::table('smart_ordering_loyalty_ledger')->count(),
+            DB::table('audit_logs')->count(),
+        ]);
+    }
+
+    public function test_loyalty_reward_update_checks_site_scoped_reward_before_body_validation(): void
+    {
+        [, $adminA, $siteA] = $this->restaurant('V2-LOYALTY-PUT-A');
+        [, $adminB, $siteB] = $this->restaurant('V2-LOYALTY-PUT-B');
+
+        $rewardA = app(LoyaltyAdminService::class)->createReward(
+            $adminA, $siteA, 'Site A Reward', 'مكافأة المتجر أ', 15,
+        );
+        $rewardB = app(LoyaltyAdminService::class)->createReward(
+            $adminB, $siteB, 'Site B Reward', 'مكافأة المتجر ب', 25,
+        );
+        $route = fn (string $id): string => route('admin.smart-ordering.loyalty.rewards.update', [
+            'site' => $siteA->getKey(),
+            'reward' => $id,
+        ]);
+        $ownUrl = $route($rewardA['public_id']);
+        $foreignUrl = $route($rewardB['public_id']);
+        $missingUrl = $route((string) Str::uuid());
+
+        $invalid = ['name_en' => ['nested' => 'invalid'], 'points_cost' => ['nested' => 0]];
+        $valid = [
+            'name_en' => 'Authorized Reward',
+            'name_ar' => 'مكافأة موثوقة',
+            'points_cost' => 30,
+            'is_active' => true,
+        ];
+        $beforeRewards = DB::table('smart_ordering_loyalty_rewards')
+            ->orderBy('id')
+            ->get(['id', 'site_id', 'public_id', 'name_en', 'points_cost', 'is_active'])
+            ->toArray();
+        $beforeAudits = DB::table('audit_logs')->count();
+        $beforeLedger = DB::table('smart_ordering_loyalty_ledger')->count();
+        $initialLocale = app()->getLocale();
+
+        try {
+            foreach (['ar', 'en'] as $locale) {
+                $adminA->forceFill(['locale' => $locale])->saveQuietly();
+                app()->setLocale($locale);
+                $this->actingAs($adminA->fresh())->putJson($foreignUrl, $invalid)->assertNotFound();
+                $this->actingAs($adminA->fresh())->putJson($missingUrl, $invalid)->assertNotFound();
+            }
+        } finally {
+            app()->setLocale($initialLocale);
+        }
+
+        // Existing tenant authority also wins over malformed update input.
+        $this->actingAs($adminB)->putJson($ownUrl, $invalid)->assertNotFound();
+        $this->assertEquals($beforeRewards, DB::table('smart_ordering_loyalty_rewards')
+            ->orderBy('id')
+            ->get(['id', 'site_id', 'public_id', 'name_en', 'points_cost', 'is_active'])
+            ->toArray());
+        $this->assertSame($beforeAudits, DB::table('audit_logs')->count());
+        $this->assertSame($beforeLedger, DB::table('smart_ordering_loyalty_ledger')->count());
+
+        // The same payload is a normal validation error on the owned reward.
+        $this->actingAs($adminA->fresh())->putJson($ownUrl, $invalid)
+            ->assertUnprocessable()->assertJsonValidationErrors(['name_en', 'points_cost']);
+        $this->assertSame($beforeAudits, DB::table('audit_logs')->count());
+
+        $this->actingAs($adminA->fresh())->putJson($ownUrl, $valid)
+            ->assertOk()->assertJsonPath('name_en', 'Authorized Reward')
+            ->assertJsonPath('points_cost', 30);
+        $this->assertDatabaseHas('smart_ordering_loyalty_rewards', [
+            'site_id' => $siteA->id,
+            'public_id' => $rewardA['public_id'],
+            'name_en' => 'Authorized Reward',
+            'points_cost' => 30,
+        ]);
+        $this->assertDatabaseHas('smart_ordering_loyalty_rewards', [
+            'site_id' => $siteB->id,
+            'public_id' => $rewardB['public_id'],
+            'name_en' => 'Site B Reward',
+            'points_cost' => 25,
+        ]);
+        $this->assertSame($beforeAudits + 1, DB::table('audit_logs')->count());
+        $this->assertSame($beforeLedger, DB::table('smart_ordering_loyalty_ledger')->count());
+    }
+
+    public function test_loyalty_rule_and_reward_writes_scope_branch_before_validation_in_ar_and_en(): void
+    {
+        [, $admin, $site] = $this->restaurant('V2-LOYALTY-BRANCH-A');
+        [, $foreignAdmin, $foreignSite] = $this->restaurant('V2-LOYALTY-BRANCH-B');
+
+        $makeBranch = static function (SmartOrderingSite $branchSite, string $code): int {
+            return (int) DB::table('smart_ordering_branches')->insertGetId([
+                'public_id' => (string) Str::uuid(),
+                'site_id' => $branchSite->getKey(),
+                'code' => $code,
+                'name_en' => $code,
+                'timezone' => 'Asia/Kuwait',
+                'is_default' => false,
+                'is_active' => true,
+                'accepting_orders' => true,
+                'supports_dine_in' => true,
+                'supports_pickup' => true,
+                'supports_delivery' => true,
+                'allow_scheduled' => true,
+                'pickup_lead_minutes' => 0,
+                'max_schedule_days' => 7,
+                'service_charge' => 0,
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+        };
+        $ownedBranchId = $makeBranch($site, 'OWNED');
+        $foreignBranchId = $makeBranch($foreignSite, 'FOREIGN');
+        $missingBranchId = (int) DB::table('smart_ordering_branches')->max('id') + 10000;
+        $existingReward = app(LoyaltyAdminService::class)->createReward(
+            $admin,
+            $site,
+            'Existing Reward',
+            'مكافأة قائمة',
+            11,
+            $ownedBranchId,
+        );
+        $siteId = (int) $site->getKey();
+        $cases = [
+            [
+                'method' => 'PUT',
+                'route' => route('admin.smart-ordering.loyalty.rule', ['site' => $siteId]),
+                'required' => 'points_per_currency_unit',
+                'valid' => ['points_per_currency_unit' => 2, 'minimum_spend' => 0],
+                'status' => 200,
+            ],
+            [
+                'method' => 'POST',
+                'route' => route('admin.smart-ordering.loyalty.rewards.store', ['site' => $siteId]),
+                'required' => 'name_en',
+                'valid' => ['name_en' => 'Branch Reward', 'name_ar' => 'مكافأة الفرع', 'points_cost' => 13],
+                'status' => 201,
+            ],
+            [
+                'method' => 'PUT',
+                'route' => route('admin.smart-ordering.loyalty.rewards.update', [
+                    'site' => $siteId, 'reward' => $existingReward['public_id'],
+                ]),
+                'required' => 'name_en',
+                'valid' => ['name_en' => 'Updated Reward', 'name_ar' => 'مكافأة محدثة', 'points_cost' => 19, 'is_active' => true],
+                'status' => 200,
+            ],
+        ];
+        $beforeAudits = DB::table('audit_logs')->count();
+        $beforeForeignAdminAudits = DB::table('audit_logs')->where('user_id', $foreignAdmin->getKey())->count();
+        $beforeRewards = DB::table('smart_ordering_loyalty_rewards')->count();
+        $beforeRules = DB::table('smart_ordering_loyalty_rules')->count();
+        $initialLocale = app()->getLocale();
+
+        try {
+            foreach (['ar', 'en'] as $locale) {
+                $admin->forceFill(['locale' => $locale])->saveQuietly();
+                app()->setLocale($locale);
+
+                foreach ($cases as $case) {
+                    $url = $case['route'];
+                    foreach ([$foreignBranchId, $missingBranchId, (string) $foreignBranchId] as $deniedBranch) {
+                        foreach ([
+                            ['branch_id' => $deniedBranch],
+                            ['branch_id' => $deniedBranch, $case['required'] => ['nested' => 'bad']],
+                            [...$case['valid'], 'branch_id' => $deniedBranch],
+                        ] as $payload) {
+                            $this->actingAs($admin->fresh())
+                                ->json($case['method'], $url, $payload)
+                                ->assertNotFound();
+                        }
+                    }
+
+                    foreach ([
+                        [],
+                        ['branch_id' => 0],
+                        ['branch_id' => 'invalid'],
+                        ['branch_id' => '999999999999999999999999999999'],
+                        ['branch_id' => $ownedBranchId],
+                        [...$case['valid'], 'branch_id' => $ownedBranchId, $case['required'] => ['nested' => 'bad']],
+                    ] as $payload) {
+                        $this->actingAs($admin->fresh())
+                            ->json($case['method'], $url, $payload)
+                            ->assertUnprocessable();
+                    }
+
+                    $this->actingAs($admin->fresh())
+                        ->json($case['method'], $url, [...$case['valid'], 'branch_id' => $ownedBranchId])
+                        ->assertStatus($case['status']);
+                }
+            }
+        } finally {
+            app()->setLocale($initialLocale);
+        }
+
+        $this->assertSame($beforeRules + 1, DB::table('smart_ordering_loyalty_rules')->count());
+        $this->assertSame($beforeRewards + 2, DB::table('smart_ordering_loyalty_rewards')->count());
+        $this->assertSame($beforeAudits + 6, DB::table('audit_logs')->count());
+
+        $this->assertDatabaseHas('smart_ordering_loyalty_rules', [
+            'site_id' => $siteId,
+            'branch_id' => $ownedBranchId,
+        ]);
+        $this->assertDatabaseHas('smart_ordering_loyalty_rewards', [
+            'site_id' => $siteId,
+            'public_id' => $existingReward['public_id'],
+            'branch_id' => $ownedBranchId,
+            'name_en' => 'Updated Reward',
+        ]);
+        $this->assertSame(0, DB::table('smart_ordering_loyalty_rules')
+            ->where('site_id', $siteId)->where('branch_id', $foreignBranchId)->count());
+        $this->assertSame(0, DB::table('smart_ordering_loyalty_rewards')
+            ->where('site_id', $siteId)->where('branch_id', $foreignBranchId)->count());
+        $this->assertSame(0, DB::table('smart_ordering_loyalty_rules')->where('site_id', $foreignSite->getKey())->count());
+        $this->assertSame(0, DB::table('smart_ordering_loyalty_rewards')->where('site_id', $foreignSite->getKey())->count());
+        $this->assertSame($beforeForeignAdminAudits, DB::table('audit_logs')->where('user_id', $foreignAdmin->getKey())->count());
     }
 
     /** @return array{0:int,1:User,2:SmartOrderingSite} */

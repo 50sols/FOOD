@@ -21,6 +21,66 @@ final class V2SmartOrderingQrLiteralSearchTest extends TestCase
         $this->seed(CoreReferenceSeeder::class);
     }
 
+    public function test_qr_page_selector_rejects_invalid_values_before_pagination_in_ar_en(): void
+    {
+        $owned = $this->store('V2-QR-PAGE-OWN', true);
+        $foreign = $this->store('V2-QR-PAGE-FOREIGN', true);
+        $actor = $this->manager($owned);
+        $otherActor = $this->manager($foreign);
+        $manager = app(SmartOrderingQrManager::class);
+        $qr = $manager->create($this->payload($owned, ['label' => 'Paginated QR']))['qr'];
+        $manager->create($this->payload($foreign, ['label' => 'Foreign QR']));
+        $url = route('admin.smart-ordering.qr.index');
+        $before = [
+            DB::table('smart_ordering_qr_codes')->count(),
+            DB::table('smart_ordering_qr_tokens')->count(),
+            DB::table('audit_logs')->count(),
+        ];
+        $originalLocale = app()->getLocale();
+
+        try {
+            foreach (['ar' => 'rtl', 'en' => 'ltr'] as $locale => $direction) {
+                $actor->forceFill(['locale' => $locale])->saveQuietly();
+                app()->setLocale($locale);
+
+                foreach ([
+                    'qr_page=invalid',
+                    'qr_page=0',
+                    'qr_page=-1',
+                    'qr_page=1.5',
+                    'qr_page=9999999999999999999999999',
+                    'qr_page%5B%5D=1',
+                ] as $bad) {
+                    $this->actingAs($actor->fresh())
+                        ->getJson($url.'?store_id='.$owned.'&'.$bad)
+                        ->assertUnprocessable();
+                }
+
+                foreach (['', '&qr_page=1', '&qr_page=2'] as $page) {
+                    $response = $this->actingAs($actor->fresh())
+                        ->get($url.'?store_id='.$owned.$page)
+                        ->assertOk()
+                        ->assertSee('dir="'.$direction.'"', false);
+                    $this->assertSame($page === '&qr_page=2' ? 2 : 1, $response->viewData('qrs')->currentPage());
+                    if ($page !== '&qr_page=2') {
+                        $this->assertSame([(int) $qr->id], $response->viewData('qrs')->getCollection()->pluck('id')->map(fn ($id): int => (int) $id)->all());
+                    }
+                }
+            }
+        } finally {
+            app()->setLocale($originalLocale);
+        }
+
+        $this->actingAs($otherActor)->getJson($url.'?store_id='.$owned.'&qr_page=invalid')->assertNotFound();
+        $roleless = User::factory()->create(['is_active' => true, 'locale' => 'en']);
+        $this->actingAs($roleless)->getJson($url.'?store_id='.$owned.'&qr_page=invalid')->assertForbidden();
+        $this->assertSame($before, [
+            DB::table('smart_ordering_qr_codes')->count(),
+            DB::table('smart_ordering_qr_tokens')->count(),
+            DB::table('audit_logs')->count(),
+        ]);
+    }
+
     public function test_qr_metadata_search_is_literal_bilingual_store_scoped_and_read_only(): void
     {
         $a = $this->store('V2-QR-LIT-A', true);

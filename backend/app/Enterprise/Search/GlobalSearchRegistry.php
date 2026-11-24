@@ -56,6 +56,13 @@ final class GlobalSearchRegistry
      */
     public function search(User $actor, string $query, int $limitPerProvider = 5): array
     {
+        // Revoking the identity must prevent even lazy provider or scope
+        // resolution; a module or third-party core provider must not receive
+        // a disabled account simply because it has historic role grants.
+        if (! $actor->is_active) {
+            return [];
+        }
+
         $limitPerProvider = max(1, min(8, $limitPerProvider));
         $results = [];
 

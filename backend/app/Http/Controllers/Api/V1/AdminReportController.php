@@ -16,11 +16,16 @@ class AdminReportController extends Controller
     {
         $user = $request->user();
         abort_unless($user instanceof User, 401);
+        // A cached authenticated user must not retain a report audience after
+        // persisted identity revocation. Read-only reporting fails closed.
+        abort_unless(User::query()->whereKey($user->getKey())->where('is_active', true)->exists(), 403);
         abort_unless(
             Gate::allows('reports.view')
             || $user->storeRoleAssignments()
+                ->whereHas('store', fn ($query) => $query->where('stores.is_active', true))
                 ->whereHas('role', fn ($query) => $query
                     ->where('roles.is_active', true)
+                    ->whereNull('roles.archived_at')
                     ->whereIn('roles.scope', ['store', 'both'])
                     ->whereHas('permissions', fn ($permissions) => $permissions->where('code', 'reports.view')))
                 ->exists(),
@@ -90,7 +95,14 @@ class AdminReportController extends Controller
         }
 
         abort_unless($user->hasPermission('reports.view', $requested), 403);
-        abort_unless($user->storeRoleAssignments()->where('store_id', $requested)->exists(), 403);
+        abort_unless($user->storeRoleAssignments()
+            ->where('store_id', $requested)
+            ->whereHas('store', fn ($query) => $query->where('stores.is_active', true))
+            ->whereHas('role', fn ($query) => $query
+                ->where('roles.is_active', true)
+                ->whereNull('roles.archived_at')
+                ->whereIn('roles.scope', ['store', 'both']))
+            ->exists(), 403);
 
         return $requested;
     }

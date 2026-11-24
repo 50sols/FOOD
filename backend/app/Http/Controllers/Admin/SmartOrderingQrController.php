@@ -35,11 +35,24 @@ final class SmartOrderingQrController extends Controller
         $canCreate = collect($storeIds)
             ->contains(fn (int $storeId): bool => $actor->hasPermission('smart_ordering.qr.manage', $storeId));
 
+        // A valid explicit store selector must be authorized before unrelated
+        // search filters reveal validation behavior. Malformed or overflowing
+        // selectors retain their original Laravel validation responses.
+        $requestedStore = $request->query('store_id');
+        if (is_string($requestedStore) && ctype_digit($requestedStore)) {
+            $storeId = filter_var($requestedStore, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
+            if ($storeId !== false) {
+                abort_unless(in_array($storeId, $storeIds, true), 404);
+            }
+        }
+
         $filters = $request->validate([
             'store_id' => ['nullable', 'integer', 'min:1'],
             'type' => ['nullable', Rule::in(SmartOrderingQrManager::TYPES)],
             'state' => ['nullable', Rule::in(['enabled', 'disabled', 'scheduled', 'expired'])],
             'q' => ['nullable', 'string', 'max:120'],
+            // Invalid explicit pagination must not silently become page one.
+            'qr_page' => ['nullable', 'integer', 'min:1'],
         ]);
 
         $selectedStoreId = isset($filters['store_id']) ? (int) $filters['store_id'] : null;
@@ -117,6 +130,18 @@ final class SmartOrderingQrController extends Controller
         AuditLogger $audit,
     ): RedirectResponse {
         $actor = $this->actor($request);
+        // Check an explicit, syntactically valid store selector before unrelated
+        // QR fields. Missing/malformed selectors still receive the normal 422.
+        $requestedStore = $request->input('store_id');
+        if (is_int($requestedStore) || (is_string($requestedStore) && ctype_digit($requestedStore))) {
+            // Match Laravel's integer validation range: overflowing numeric
+            // strings are invalid selectors, not authorized store identifiers.
+            $storeId = filter_var($requestedStore, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
+            if ($storeId !== false) {
+                app(RestaurantSaasStoreAccess::class)->assertStore($actor, $storeId, 'smart_ordering.qr.manage', 'b2c');
+            }
+        }
+
         $data = $this->payload($request, true);
         app(RestaurantSaasStoreAccess::class)->assertStore($actor, (int) $data['store_id'], 'smart_ordering.qr.manage', 'b2c');
 
