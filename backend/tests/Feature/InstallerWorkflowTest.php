@@ -22,6 +22,49 @@ class InstallerWorkflowTest extends TestCase
 
     private string $testDirectory;
 
+    public function test_corrupt_persisted_step_fails_closed_without_resetting_installer_state(): void
+    {
+        $state = app(InstallState::class);
+        $state->markStepComplete(12);
+        $path = $state->progressPath();
+        $original = (string) file_get_contents($path);
+        $checkpoint = json_decode($original, true, 512, JSON_THROW_ON_ERROR);
+
+        foreach ([
+            'numeric string' => '12',
+            'fraction' => 12.5,
+            'boolean' => true,
+            'null' => null,
+            'negative' => -1,
+            'beyond final step' => 16,
+        ] as $description => $invalidStep) {
+            $damaged = $checkpoint;
+            $damaged['completed_step'] = $invalidStep;
+            $bytes = json_encode($damaged, JSON_THROW_ON_ERROR);
+            file_put_contents($path, $bytes);
+
+            foreach ([
+                'read' => static fn () => $state->progress(),
+                'token' => static fn () => $state->token(),
+                'checkpoint write' => static fn () => $state->markStepComplete(1),
+            ] as $operation => $attempt) {
+                try {
+                    $attempt();
+                    $this->fail("Invalid {$description} must block installer {$operation}.");
+                } catch (\\RuntimeException $exception) {
+                    $this->assertSame('Installer progress state is invalid.', $exception->getMessage());
+                }
+            }
+
+            // A bad progress checkpoint must not be treated as a new setup
+            // or overwritten by a fresh token/earlier completed step.
+            $this->assertSame($bytes, file_get_contents($path));
+        }
+
+        file_put_contents($path, $original);
+        $this->assertSame(12, $state->progress()['completed_step']);
+    }
+
     public function test_erp_evidence_crypto_prerequisite_is_independent_from_core_install_requirements(): void
     {
         $workflow = app(InstallerWorkflow::class);
