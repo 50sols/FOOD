@@ -376,6 +376,14 @@ final class PurchaseRequestManager
             }
 
             $this->requireStatus($request, ['submitted'], $decision);
+            // The supplier may have been suspended between the maker's
+            // submission and the independent checker approval. Hold the
+            // supplier row and re-check its live tenant/store eligibility
+            // before approving; rejection and RFQ-only requests stay valid.
+            if ($decision === 'approved' && $request->supplier_id !== null) {
+                $this->activeVisibleSupplier($scope, (int) $request->supplier_id, true);
+            }
+
             $before = $request->toArray();
             $request->forceFill([
                 'status' => $decision,
