@@ -75,14 +75,16 @@ class V2InstallerConcurrentTokenInitializationTest extends TestCase
             'locale' => 'en',
         ];
 
+        $savedToken = str_repeat('a', 64);
         file_put_contents(
             $this->testDirectory.'/progress.json',
-            json_encode(['completed_step' => 7, 'admin' => $admin, 'token' => null], JSON_THROW_ON_ERROR),
+            json_encode(['completed_step' => 7, 'admin' => $admin, 'token' => $savedToken], JSON_THROW_ON_ERROR),
         );
 
         $state = app(InstallState::class);
         $token = $state->token();
 
+        $this->assertSame($savedToken, $token);
         $this->assertSame($token, $state->token());
         $this->assertSame(7, $state->progress()['completed_step']);
         $this->assertSame($admin, $state->progress()['admin']);

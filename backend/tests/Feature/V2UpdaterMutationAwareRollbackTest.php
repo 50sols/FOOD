@@ -52,12 +52,14 @@ class V2UpdaterMutationAwareRollbackTest extends TestCase
         $this->assertSame([
             'preflight',
             'backup_files',
+            'enter_maintenance_mode',
             'backup_database',
             'verify_database_backup',
+            'exit_maintenance_mode',
         ], $runtime->calls);
         $this->assertNotContains('rollback_files', $runtime->calls);
         $this->assertNotContains('rollback_database', $runtime->calls);
-        $this->assertNotContains('enter_maintenance_mode', $runtime->calls);
+        $this->assertContains('enter_maintenance_mode', $runtime->calls);
         $this->assertSame('verify_database_backup', $history->failed_stage);
         $this->assertSame('not_required', $history->rollback_status);
         $this->assertSame('failed', $history->execution_evidence['backup_database'] ?? null);
@@ -73,9 +75,9 @@ class V2UpdaterMutationAwareRollbackTest extends TestCase
         $this->assertSame([
             'preflight',
             'backup_files',
+            'enter_maintenance_mode',
             'backup_database',
             'verify_database_backup',
-            'enter_maintenance_mode',
             'extract_release',
             'rollback_files',
             'health_check',
@@ -95,9 +97,9 @@ class V2UpdaterMutationAwareRollbackTest extends TestCase
         $this->assertSame([
             'preflight',
             'backup_files',
+            'enter_maintenance_mode',
             'backup_database',
             'verify_database_backup',
-            'enter_maintenance_mode',
             'extract_release',
             'run_migrations',
             'rollback_files',
