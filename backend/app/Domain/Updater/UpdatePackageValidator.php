@@ -53,6 +53,16 @@ final class UpdatePackageValidator
                 ? config('foodex.update_max_zip_members', 50000)
                 : 50000;
             $maxMembers = max(1, (int) $configuredMaxMembers);
+            // Verify Package must apply the SAME expansion budgets as the
+            // runtime preflight; otherwise a signed ZIP can look installable
+            // until the operator starts maintenance and backups.
+            $maxEntryBytes = max(1, (int) (app()->bound('config')
+                ? config('foodex.update_max_entry_uncompressed_bytes', 268435456)
+                : 268435456));
+            $maxTotalBytes = max(1, (int) (app()->bound('config')
+                ? config('foodex.update_max_total_uncompressed_bytes', 1073741824)
+                : 1073741824));
+            $expandedBytes = 0;
             if ($archive->numFiles === 0) {
                 throw new InvalidArgumentException('Update archive contains no release members.');
             }
@@ -72,6 +82,18 @@ final class UpdatePackageValidator
                 if (! is_string($name)) {
                     throw new InvalidArgumentException('Update archive contains an unreadable member name.');
                 }
+
+                $memberStat = $archive->statIndex($index);
+                $memberBytes = is_array($memberStat) ? ($memberStat['size'] ?? null) : null;
+                if (! is_int($memberBytes) || $memberBytes < 0) {
+                    throw new InvalidArgumentException('Update archive entry length could not be read.');
+                }
+
+                // Subtraction avoids overflow from a malicious ZIP header.
+                if ($memberBytes > $maxEntryBytes || $memberBytes > $maxTotalBytes - $expandedBytes) {
+                    throw new InvalidArgumentException('Update archive exceeds the allowed expanded size.');
+                }
+                $expandedBytes += $memberBytes;
 
                 // Preserve the migration-declaration guard, including legacy
                 // Windows-style member spelling, before rejecting its alias.
