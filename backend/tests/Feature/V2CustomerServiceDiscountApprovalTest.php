@@ -76,6 +76,54 @@ final class V2CustomerServiceDiscountApprovalTest extends TestCase
         $this->assertSame(1, DB::table('order_customer_service_discounts')->where('order_id', $orderId)->count());
     }
 
+    public function test_request_idempotency_key_cannot_mask_changed_discount_or_requester(): void
+    {
+        $agent = $this->roleUser('CUSTOMER_SERVICE_AGENT');
+        $otherAgent = $this->roleUser('CUSTOMER_SERVICE_AGENT');
+        $orderId = $this->order();
+        $this->assignAgent($orderId, $agent);
+        $key = (string) Str::uuid();
+        $url = route('admin.operations.orders.customer-service-discount', ['order' => $orderId]);
+
+        $this->actingAs($agent)->post($url, [
+            'percentage' => 12.5,
+            'reason' => 'Original recovery request',
+            'idempotency_key' => $key,
+        ])->assertRedirect();
+
+        foreach ([
+            ['percentage' => 15, 'reason' => 'Original recovery request'],
+            ['percentage' => 12.5, 'reason' => 'Altered financial rationale'],
+        ] as $conflicting) {
+            $this->actingAs($agent)->post($url, $conflicting + [
+                'idempotency_key' => $key,
+            ])->assertSessionHasErrors('idempotency_key');
+        }
+
+        // Independent authorization must still be checked by the HTTP
+        // controller, even if another agent knows the original key.
+        $this->actingAs($otherAgent)->post($url, [
+            'percentage' => 12.5,
+            'reason' => 'Original recovery request',
+            'idempotency_key' => $key,
+        ])->assertStatus(403);
+
+        $this->assertDatabaseHas('order_customer_service_discount_requests', [
+            'order_id' => $orderId,
+            'requested_by_user_id' => $agent->getKey(),
+            'idempotency_key' => $key,
+            'percentage' => 12.5,
+            'reason' => 'Original recovery request',
+            'status' => 'pending',
+        ]);
+        $this->assertSame(1, DB::table('order_customer_service_discount_requests')
+            ->where('order_id', $orderId)->count());
+        $this->assertDatabaseHas('orders', ['id' => $orderId, 'discount_total' => 1, 'grand_total' => 9]);
+        $this->assertSame(1, DB::table('audit_logs')
+            ->where('event', 'order.customer_service_discount.requested')
+            ->where('user_id', $agent->getKey())->count());
+    }
+
     public function test_discount_request_rejects_whitespace_padded_rationale_before_audit_or_finance_queue(): void
     {
         $manager = $this->roleUser('CUSTOMER_SERVICE_MANAGER');
