@@ -134,6 +134,10 @@ final class V2ErpModuleAuthorityReconciliationTest extends TestCase
     /** @return array<string, mixed>|null */
     private function navigationItem(User $user, string $key): ?array
     {
+        // Navigation memoizes module readiness/entitlement for one request.
+        // Each test projection represents a separate request after explicit
+        // certification or entitlement change; never reuse a stale snapshot.
+        app()->forgetInstance(AdminNavigation::class);
         foreach (app(AdminNavigation::class)->groupsFor($user) as $group) {
             foreach ((array) ($group['children'] ?? []) as $item) {
                 if (($item['key'] ?? null) === $key) {
