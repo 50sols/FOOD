@@ -11,6 +11,7 @@ use App\Models\Role;
 use App\Models\Store;
 use App\Models\User;
 use App\Support\TenantContextResolver;
+use Illuminate\Database\Events\QueryExecuted;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Route;
@@ -185,6 +186,104 @@ final class EnterpriseProcurementWorkbenchTest extends TestCase
             ])->assertRedirect();
             $this->assertSame($auditAfterSubmit, DB::table('audit_logs')->count());
         }
+    }
+
+    public function test_supplier_hold_between_preflight_and_write_denies_request_create_and_draft_update(): void
+    {
+        $this->enableProcurement();
+        [$maker, $store] = $this->operator('ERP-UI-SUPPLIER-RECHECK');
+        $armed = false;
+        $supplierId = 0;
+        $revocations = 0;
+
+        // Simulate a supplier hold just after the optimistic active-supplier
+        // SELECT returns, before create/update enters the write transaction.
+        DB::listen(function (QueryExecuted $query) use (&$armed, &$supplierId, &$revocations): void {
+            if (! $armed || ! str_starts_with(strtolower(ltrim($query->sql)), 'select')
+                || ! str_contains($query->sql, 'enterprise_suppliers')) {
+                return;
+            }
+            $armed = false;
+            $revocations++;
+            DB::table('enterprise_suppliers')->where('id', $supplierId)
+                ->update(['status' => 'suspended']);
+        });
+
+        foreach (['ar', 'en'] as $locale) {
+            $maker->forceFill(['locale' => $locale])->save();
+            $code = 'ERP-SUP-RACE-'.strtoupper($locale);
+            $this->actingAs($maker)->post(route('admin.erp.procurement.suppliers.store'), [
+                'store_id' => $store->id,
+                'scope_type' => 'store',
+                'code' => $code,
+                'name_en' => 'Race Supplier '.$locale,
+                'name_ar' => 'مورد اختبار '.$locale,
+            ])->assertRedirect();
+            $supplierId = (int) DB::table('enterprise_suppliers')->where('code', $code)->value('id');
+            $this->assertGreaterThan(0, $supplierId);
+            $draftReason = 'Supplier race draft '.$locale;
+            $this->actingAs($maker)->post(route('admin.erp.procurement.requests.store'), [
+                'store_id' => $store->id,
+                'currency_code' => 'KWD',
+                'reason' => $draftReason,
+                'item_code' => 'RACE-SKU',
+                'description' => 'Original draft line',
+                'quantity' => 1,
+                'unit' => 'case',
+                'estimated_unit_cost' => 3.000,
+            ])->assertRedirect();
+            $draftId = (int) DB::table('enterprise_purchase_requests')
+                ->where('reason', $draftReason)->value('id');
+            $this->assertGreaterThan(0, $draftId);
+            $payload = [
+                'store_id' => $store->id,
+                'supplier_id' => $supplierId,
+                'currency_code' => 'KWD',
+                'item_code' => 'RACE-SKU',
+                'description' => 'Supplier-bound line',
+                'quantity' => 1,
+                'unit' => 'case',
+                'estimated_unit_cost' => 3.000,
+            ];
+            $beforeAudit = DB::table('audit_logs')->count();
+            $armed = true;
+            $this->actingAs($maker)->post(route('admin.erp.procurement.requests.store'),
+                $payload + ['purchase_request_id' => $draftId, 'reason' => $draftReason]
+            )->assertNotFound();
+            $this->assertFalse($armed, 'Supplier preflight must be exercised before locked rejection.');
+            $this->assertDatabaseHas('enterprise_suppliers', ['id' => $supplierId, 'status' => 'suspended']);
+            $this->assertDatabaseHas('enterprise_purchase_requests', [
+                'id' => $draftId, 'status' => 'draft', 'supplier_id' => null,
+                'reason' => $draftReason,
+            ]);
+            $this->assertSame($beforeAudit, DB::table('audit_logs')->count());
+
+            DB::table('enterprise_suppliers')->where('id', $supplierId)->update(['status' => 'active']);
+            $newReason = 'Supplier race create '.$locale;
+            $armed = true;
+            $this->actingAs($maker)->post(route('admin.erp.procurement.requests.store'),
+                $payload + ['reason' => $newReason]
+            )->assertNotFound();
+            $this->assertFalse($armed);
+            $this->assertDatabaseMissing('enterprise_purchase_requests', ['reason' => $newReason]);
+            $this->assertSame($beforeAudit, DB::table('audit_logs')->count());
+
+            // A genuinely reactivated supplier may be selected normally.
+            DB::table('enterprise_suppliers')->where('id', $supplierId)->update(['status' => 'active']);
+            $this->actingAs($maker)->post(route('admin.erp.procurement.requests.store'),
+                $payload + ['purchase_request_id' => $draftId, 'reason' => $draftReason]
+            )->assertRedirect();
+            $this->assertDatabaseHas('enterprise_purchase_requests', [
+                'id' => $draftId, 'supplier_id' => $supplierId,
+            ]);
+            $this->actingAs($maker)->post(route('admin.erp.procurement.requests.store'),
+                $payload + ['reason' => $newReason]
+            )->assertRedirect();
+            $this->assertDatabaseHas('enterprise_purchase_requests', [
+                'reason' => $newReason, 'supplier_id' => $supplierId,
+            ]);
+        }
+        $this->assertSame(4, $revocations);
     }
 
     public function test_supplier_tab_filters_literal_prefix_and_rejects_foreign_store_access(): void
