@@ -224,7 +224,7 @@ final class V2AccountingDiscountFinanceInboxTest extends TestCase
         $requester = $this->roleUser('CUSTOMER_SERVICE_AGENT');
         $localId = $this->order($owned, 'b2c', 'INBOX-B2C-OWNED');
         $foreignId = $this->order($foreign, 'b2c', 'INBOX-B2C-FOREIGN');
-        $this->pendingRequest($localId, $requester);
+        $localRequestId = $this->pendingRequest($localId, $requester);
         $this->pendingRequest($foreignId, $requester);
 
         $this->actingAs($actor)->get(route('admin.erp.finance.index', [
@@ -239,6 +239,31 @@ final class V2AccountingDiscountFinanceInboxTest extends TestCase
             'discountRequest' => (int) DB::table('order_customer_service_discount_requests')
                 ->where('order_id', $foreignId)->value('id'),
         ]), ['decision' => 'approve'])->assertNotFound();
+        $this->assertDatabaseHas('orders', ['id' => $foreignId, 'grand_total' => 9]);
+
+        // A genuine store-scoped Retail Finance reviewer may reject only this
+        // store's request, without mutating its price or enabling replay.
+        $localReview = route('admin.operations.orders.customer-service-discount.review', [
+            'order' => $localId, 'discountRequest' => $localRequestId,
+        ]);
+        $this->actingAs($actor)->post($localReview, [
+            'decision' => 'reject', 'review_reason' => 'Retail accounting rejection',
+        ])->assertRedirect();
+        $this->assertDatabaseHas('order_customer_service_discount_requests', [
+            'id' => $localRequestId, 'status' => 'rejected', 'reviewed_by_user_id' => $actor->id,
+        ]);
+        $this->assertDatabaseHas('audit_logs', [
+            'event' => 'order.customer_service_discount.rejected', 'user_id' => $actor->id,
+        ]);
+        $this->assertDatabaseHas('orders', [
+            'id' => $localId, 'discount_total' => 1, 'grand_total' => 9,
+        ]);
+        $this->actingAs($actor)->post($localReview, [
+            'decision' => 'approve',
+        ])->assertStatus(409);
+        $this->assertDatabaseHas('orders', [
+            'id' => $localId, 'discount_total' => 1, 'grand_total' => 9,
+        ]);
         $this->assertDatabaseHas('orders', ['id' => $foreignId, 'grand_total' => 9]);
     }
 
