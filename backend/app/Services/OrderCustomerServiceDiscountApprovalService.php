@@ -56,6 +56,15 @@ final class OrderCustomerServiceDiscountApprovalService
                     ->exists(), 403);
             }
 
+            // HTTP validation is not a trust boundary for direct service callers.
+            // Reject NaN, infinity and percentages outside the mathematical
+            // 0..100 range before inserting an actionable Finance request.
+            if (! is_finite($percentage) || $percentage < 0 || $percentage > 100) {
+                throw ValidationException::withMessages([
+                    'percentage' => [__('customer_service_discount.invalid_totals')],
+                ]);
+            }
+
             $existing = DB::table('order_customer_service_discount_requests')
                 ->where('order_id', $locked->getKey())
                 ->where('idempotency_key', $idempotencyKey)
