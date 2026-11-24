@@ -9,6 +9,69 @@ use Tests\TestCase;
 
 final class V2UpdaterRollbackHardlinkSafetyTest extends TestCase
 {
+    public function test_file_backup_rejects_hardlinked_release_source_before_copying_foreign_bytes(): void
+    {
+        if (! function_exists('link') || ! class_exists(\\ZipArchive::class)) {
+            $this->markTestSkipped('Hardlinks or ZIP support unavailable.');
+        }
+
+        $suffix = bin2hex(random_bytes(8));
+        $name = 'v2-backup-hardlink-'.$suffix.'.txt';
+        $relative = 'backend/tests/'.$name;
+        $liveTarget = base_path('tests/'.$name);
+        $external = storage_path('framework/'.$name);
+        $backupRoot = storage_path('framework/v2-hardlink-backup-'.$suffix);
+        $zipPath = storage_path('framework/v2-hardlink-bundle-'.$suffix.'.zip');
+        $originalBackupRoot = config('foodex.update_backup_path');
+
+        File::ensureDirectoryExists(dirname($external));
+        File::ensureDirectoryExists($backupRoot);
+        file_put_contents($external, 'external-sensitive-sentinel-'.$suffix);
+
+        $zip = new \\ZipArchive;
+        $this->assertTrue($zip->open($zipPath, \\ZipArchive::CREATE | \\ZipArchive::OVERWRITE) === true);
+        $this->assertTrue($zip->addFromString($relative, 'future-release-content'));
+        $this->assertTrue($zip->close());
+
+        config()->set('foodex.update_backup_path', $backupRoot);
+
+        try {
+            if (! @link($external, $liveTarget)) {
+                $this->markTestSkipped('Filesystem does not permit cross-directory hardlinks.');
+            }
+
+            try {
+                app(LaravelUpdateRuntime::class)->backupFiles($zipPath);
+                $this->fail('A hardlinked live release source must not be copied into private updater backups.');
+            } catch (RuntimeException $exception) {
+                $this->assertStringContainsString('hardlinked or unsafe', $exception->getMessage());
+            }
+
+            $this->assertSame('external-sensitive-sentinel-'.$suffix, file_get_contents($external));
+            $this->assertSame('external-sensitive-sentinel-'.$suffix, file_get_contents($liveTarget));
+
+            // The failed backup may create an empty snapshot directory, but
+            // must never persist a copy of the external private inode bytes.
+            $this->assertSame([], File::allFiles($backupRoot));
+
+            // A normal, single-link release file still yields a verifiable
+            // snapshot using the same signed package entry list.
+            unlink($liveTarget);
+            file_put_contents($liveTarget, 'legitimate-original-release');
+            $backup = app(LaravelUpdateRuntime::class)->backupFiles($zipPath);
+            $this->assertSame(
+                'legitimate-original-release',
+                file_get_contents($backup.'/existing/'.$relative),
+            );
+        } finally {
+            config()->set('foodex.update_backup_path', $originalBackupRoot);
+            @unlink($liveTarget);
+            @unlink($external);
+            @unlink($zipPath);
+            File::deleteDirectory($backupRoot);
+        }
+    }
+
     public function test_rollback_rejects_hardlinked_backup_member_and_manifest_before_touching_release(): void
     {
         if (! function_exists('link')) {
