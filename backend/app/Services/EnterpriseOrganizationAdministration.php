@@ -181,6 +181,18 @@ final class EnterpriseOrganizationAdministration
      */
     public function assertUpdateAllowed(Model $model, array $data): void
     {
+        // Preview and Save must evaluate the persisted identity, never
+        // uncommitted caller changes to an unguarded hierarchy model. A
+        // forged code or parent key on a preloaded instance is not authority.
+        $model = $model->newQuery()
+            ->whereKey($model->getRawOriginal($model->getKeyName()))
+            ->first();
+        if (! $model instanceof Model) {
+            throw ValidationException::withMessages([
+                'record' => [__('enterprise_organization.cross_scope_denied')],
+            ]);
+        }
+
         $this->assertDefaultRoutingIdentityPreserved($model, $data);
 
         // A record's legal organization ancestry is immutable in a metadata
@@ -363,11 +375,20 @@ final class EnterpriseOrganizationAdministration
     private function update(Model $model, array $data, Authenticatable $actor, string $event): mixed
     {
         return DB::transaction(function () use ($model, $data, $actor, $event) {
-            $before = $this->snapshot($model);
-            $model->fill($data)->save();
-            $this->audit->record($event, $actor, $model, $before, $this->snapshot($model));
+            // Re-read the locked persisted row. Saving the caller's dirty
+            // Eloquent object can silently persist a forbidden parent/code
+            // mutation even when $data only contains a harmless display name.
+            $record = $model->newQuery()
+                ->whereKey($model->getRawOriginal($model->getKeyName()))
+                ->lockForUpdate()
+                ->firstOrFail();
+            $this->assertUpdateAllowed($record, $data);
 
-            return $model->refresh();
+            $before = $this->snapshot($record);
+            $record->fill($data)->save();
+            $this->audit->record($event, $actor, $record, $before, $this->snapshot($record));
+
+            return $record->refresh();
         });
     }
 
