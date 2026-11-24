@@ -125,7 +125,7 @@ final class EnterpriseGoodsReceiptFoundationTest extends TestCase
                     'purchase_order_line_id' => $order->lines()->firstOrFail()->id,
                     'warehouse_id' => $warehouse->id,
                     'quantity' => 1,
-                ]],
+                ]]],
             );
             $line = $receipt->lines()->firstOrFail();
             $foreignActor = User::factory()->create(['is_active' => true]);
