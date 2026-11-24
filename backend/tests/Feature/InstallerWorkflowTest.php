@@ -802,6 +802,49 @@ class InstallerWorkflowTest extends TestCase
         )['version']);
     }
 
+    public function test_install_finalization_uses_verified_progress_mutex_and_preserves_first_lock(): void
+    {
+        if (! function_exists('link')) {
+            $this->markTestSkipped('Filesystem hardlinks unavailable.');
+        }
+
+        $state = app(InstallState::class);
+        $lockPath = $this->testDirectory.'/installer-finalization-token.lock';
+        $foreign = $this->testDirectory.'/private-external-lock';
+        file_put_contents($foreign, 'external-lock-sentinel');
+        config(['foodex.installer_token_lock_path' => $lockPath]);
+
+        if (! @link($foreign, $lockPath)) {
+            $this->markTestSkipped('Filesystem cannot create the hardlink regression fixture.');
+        }
+
+        // Final installed.lock must not bypass the token/checkpoint mutex:
+        // a multiply-linked mutex could alias an unrelated private inode.
+        try {
+            $state->writeLock('first-final-version');
+            $this->fail('Finalization must reject an unsafe shared mutex.');
+        } catch (\RuntimeException $exception) {
+            $this->assertSame('Installer token lock path changed unexpectedly.', $exception->getMessage());
+        }
+        $this->assertFileDoesNotExist($state->lockPath());
+        $this->assertSame('external-lock-sentinel', file_get_contents($foreign));
+
+        unlink($lockPath);
+        $state->writeLock('first-final-version');
+        $firstLock = (string) file_get_contents($state->lockPath());
+        $this->assertSame('first-final-version', json_decode($firstLock, true, 512, JSON_THROW_ON_ERROR)['version']);
+
+        try {
+            $state->writeLock('forbidden-second-version');
+            $this->fail('A second completion must never replace the first installed.lock.');
+        } catch (HttpException $exception) {
+            $this->assertSame(404, $exception->getStatusCode());
+        }
+
+        $this->assertSame($firstLock, file_get_contents($state->lockPath()));
+        $this->assertSame('external-lock-sentinel', file_get_contents($foreign));
+    }
+
     public function test_progress_writer_rechecks_installed_lock_after_acquiring_mutex(): void
     {
         $state = app(InstallState::class);
