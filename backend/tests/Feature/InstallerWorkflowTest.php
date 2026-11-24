@@ -1253,6 +1253,12 @@ class InstallerWorkflowTest extends TestCase
         $environment = app(InstallerEnvironment::class);
         $envBytes = (string) file_get_contents($environment->path());
         $mutations = [
+            // Even callers bypassing InstallerWorkflow must not directly
+            // overwrite configured APP_KEY or DB credentials after Finish.
+            'direct .env writer' => static fn () => $environment->write([
+                'APP_KEY' => 'unauthorized-post-install-rotation',
+                'DB_PASSWORD' => 'unauthorized-replacement',
+            ]),
             'platform' => static fn () => $workflow->savePlatformInformation([
                 'name' => 'Unauthorized Rename',
                 'url' => 'https://invalid.example',
