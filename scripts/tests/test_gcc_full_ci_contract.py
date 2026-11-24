@@ -23,6 +23,13 @@ DOCKERFILE = (BASE / "Dockerfile.backend").read_text(encoding="utf-8")
 
 
 class GccHeavyExecutionContracts(unittest.TestCase):
+    def test_smoke_checkout_is_unique_per_attempt(self):
+        smoke = AGENT.split('function Smoke(', 1)[1].split('function Trusted-Toolkit', 1)[0]
+        self.assertIn('[guid]::NewGuid().ToString("N")', smoke)
+        self.assertIn('git init failed', smoke)
+        self.assertIn('Requested SHA differs from fetched PR head.', smoke)
+        self.assertNotIn('"work\\$Pr-$Request"', smoke)
+
     def test_full_command_is_owner_exact_head_and_not_arbitrary_shell(self):
         self.assertIn("/gcc-ci (run|full|backend|setup|packages)", AGENT)
         self.assertIn("$script:GccLastFailedStage", AGENT)
