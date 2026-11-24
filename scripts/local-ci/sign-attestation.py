@@ -23,7 +23,7 @@ PROFILE = {"backend", "setup", "packages", "all"}
 
 def build_payload(result_file: Path, evidence_dir: Path, repo: str, pr: int,
                   head_sha: str, toolkit_sha: str, profile: str, request_id: int) -> bytes:
-    if repo != "walidatiyaai2025-gif/FOOD" or pr <= 0 or request_id <= 0:
+    if repo != "50sols/FOOD" or pr <= 0 or request_id <= 0:
         raise ValueError("Untrusted repository or request")
     if not SHA.fullmatch(head_sha) or not SHA.fullmatch(toolkit_sha) or profile not in PROFILE:
         raise ValueError("Invalid exact SHA/toolkit/profile")
