@@ -46,23 +46,24 @@ final class LaravelUpdateRuntime implements UpdateRuntime
             $this->assertSafeReleaseTarget($relativePath);
         }
 
-        if ($manifest->containsMigrations) {
-            $driver = DB::connection()->getDriverName();
+        // UpdateManager always creates a verified DB snapshot, even when
+        // the ZIP declares no migrations. Fail preflight before maintenance
+        // if the selected host cannot provide the required backup tooling.
+        $driver = DB::connection()->getDriverName();
 
-            if ($driver === 'sqlite') {
-                $database = (string) config('database.connections.sqlite.database');
-                if ($database === ':memory:' || ! is_file($database) || ! is_readable($database)) {
-                    throw new RuntimeException('SQLite database cannot be backed up safely.');
-                }
-            } elseif ($driver === 'mysql') {
-                $this->runProcess([(string) config('foodex.mysql_dump_binary', 'mysqldump'), '--version']);
-                $this->runProcess([(string) config('foodex.mysql_client_binary', 'mysql'), '--version']);
-            } elseif ($driver === 'pgsql') {
-                $this->runProcess([(string) config('foodex.pg_dump_binary', 'pg_dump'), '--version']);
-                $this->runProcess([(string) config('foodex.pg_restore_binary', 'pg_restore'), '--version']);
-            } else {
-                throw new RuntimeException('Database backup is not supported for this database driver.');
+        if ($driver === 'sqlite') {
+            $database = (string) config('database.connections.sqlite.database');
+            if ($database === ':memory:' || ! is_file($database) || ! is_readable($database)) {
+                throw new RuntimeException('SQLite database cannot be backed up safely.');
             }
+        } elseif ($driver === 'mysql') {
+            $this->runProcess([(string) config('foodex.mysql_dump_binary', 'mysqldump'), '--version']);
+            $this->runProcess([(string) config('foodex.mysql_client_binary', 'mysql'), '--version']);
+        } elseif ($driver === 'pgsql') {
+            $this->runProcess([(string) config('foodex.pg_dump_binary', 'pg_dump'), '--version']);
+            $this->runProcess([(string) config('foodex.pg_restore_binary', 'pg_restore'), '--version']);
+        } else {
+            throw new RuntimeException('Database backup is not supported for this database driver.');
         }
     }
 
