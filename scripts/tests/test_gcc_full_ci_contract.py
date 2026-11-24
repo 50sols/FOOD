@@ -38,6 +38,17 @@ class GccHeavyExecutionContracts(unittest.TestCase):
         self.assertNotIn("Invoke-Expression", AGENT)
         self.assertNotIn("iex ", AGENT.lower())
 
+    def test_scheduled_powershell_agent_has_one_complete_entrypoint(self):
+        # A previously appended malformed duplicate after the Mode switch
+        # parsed as an unexpected token and killed the Windows scheduled task.
+        for symbol in ("function Report-Full(", "function Process(", "function Poll {", "switch($Mode) {"):
+            with self.subTest(symbol=symbol):
+                self.assertEqual(AGENT.count(symbol), 1)
+        self.assertNotIn("\\n) {\\n   throw 'GCC result version", AGENT)
+        self.assertTrue(AGENT.rstrip().endswith("}"))
+        self.assertLess(AGENT.index("function Report-Full("), AGENT.index("function Process("))
+        self.assertLess(AGENT.index("function Process("), AGENT.index("switch($Mode) {"))
+
     def test_trusted_immutable_local_scripts_are_never_read_from_pr_checkout(self):
         self.assertIn("ed5e18d6d1e9c9489ce206df7f4b5ac2052cac36", AGENT)
         self.assertIn("raw.githubusercontent.com", AGENT)
