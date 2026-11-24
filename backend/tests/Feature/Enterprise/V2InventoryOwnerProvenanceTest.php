@@ -1747,6 +1747,59 @@ SQL);
             ->where('owner_snapshot_state', 'UNKNOWN')->count());
     }
 
+    public function test_order_reservation_rejects_invalid_numeric_quantities_without_stock_or_owner_side_effects(): void
+    {
+        $this->seed(CoreReferenceSeeder::class);
+        $stock = $this->stock('ORDER-INVALID-QUANTITY');
+        $actor = $this->inventoryActor($stock['store_id']);
+        $productId = (int) DB::table('inventories')->where('id', $stock['inventory_id'])
+            ->value('product_id');
+        $order = $this->ledgerTestOrder($stock['store_id'], 'INVALID-QTY');
+        $service = app(OrderInventoryReservationService::class);
+        $auditBefore = DB::table('audit_logs')->count();
+
+        foreach ([
+            ['product_id' => $productId, 'quantity' => NAN],
+            ['product_id' => $productId, 'quantity' => INF],
+            ['product_id' => $productId, 'quantity' => -INF],
+            ['product_id' => $productId, 'quantity' => 0.0],
+            ['product_id' => $productId, 'quantity' => -1.0],
+            ['product_id' => $productId, 'quantity' => 100000000000.0],
+            ['product_id' => $productId, 'quantity' => 0.0001],
+            ['product_id' => 0, 'quantity' => 1.0],
+        ] as $invalidItem) {
+            try {
+                $service->reserve($order, $actor, [$invalidItem]);
+                $this->fail('Invalid order quantity or product ID must never be accepted.');
+            } catch (ValidationException $exception) {
+                $this->assertArrayHasKey('items', $exception->errors());
+            }
+        }
+
+        // Batch input is atomic too: an invalid second line cannot leave the
+        // first valid line reserved or emit any immutable owner movement.
+        try {
+            $service->reserve($order, $actor, [
+                ['product_id' => $productId, 'quantity' => 1.0],
+                ['product_id' => $productId, 'quantity' => NAN],
+            ]);
+            $this->fail('An invalid later order item must reject the entire batch.');
+        } catch (ValidationException $exception) {
+            $this->assertArrayHasKey('items', $exception->errors());
+        }
+
+        $this->assertDatabaseHas('inventories', [
+            'id' => $stock['inventory_id'], 'quantity' => 10, 'reserved_quantity' => 3,
+        ]);
+        $this->assertSame(0, DB::table('enterprise_inventory_owner_positions')
+            ->where('inventory_id', $stock['inventory_id'])->count());
+        $this->assertSame(0, DB::table('stock_movements')
+            ->where('inventory_id', $stock['inventory_id'])->count());
+        $this->assertSame(0, DB::table('enterprise_inventory_owner_movement_events')
+            ->where('inventory_id', $stock['inventory_id'])->count());
+        $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+    }
+
     public function test_order_stock_mutation_rejects_claimed_or_stale_legal_owner_without_changing_stock(): void
     {
         $this->seed(CoreReferenceSeeder::class);

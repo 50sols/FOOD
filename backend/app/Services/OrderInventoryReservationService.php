@@ -7,6 +7,7 @@ use App\Models\Order;
 use App\Models\StockMovement;
 use App\Models\User;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Validation\ValidationException;
 use Symfony\Component\HttpKernel\Exception\HttpException;
 
 final class OrderInventoryReservationService
@@ -20,6 +21,32 @@ final class OrderInventoryReservationService
      */
     public function reserve(Order $order, User $user, array $items, string $reason = 'dashboard_order'): void
     {
+        // This service can also be called directly by internal order workflows,
+        // bypassing HTTP request rules. Never treat NaN, infinity, zero, a
+        // negative or sub-milli-unit value as a successfully reserved order.
+        // Validate the WHOLE batch before any canonical/owner stock mutation.
+        foreach ($items as $item) {
+            $productId = $item['product_id'] ?? null;
+            $rawQuantity = $item['quantity'] ?? null;
+            $validProduct = filter_var($productId, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]) !== false;
+            $validQuantity = is_numeric($rawQuantity);
+
+            if ($validQuantity) {
+                $quantity = (float) $rawQuantity;
+                $validQuantity = is_finite($quantity)
+                    && $quantity > 0
+                    && $quantity <= 99999999999.999
+                    && round($quantity, 3) > 0
+                    && abs($quantity - round($quantity, 3)) <= 0.000000001;
+            }
+
+            if (! $validProduct || ! $validQuantity) {
+                throw ValidationException::withMessages([
+                    'items' => ['Order inventory requires a positive product ID and a finite positive quantity with at most three decimal places.'],
+                ]);
+            }
+        }
+
         DB::transaction(function () use ($order, $user, $items, $reason): void {
             $this->lockOrderForInventoryLifecycle($order);
             $this->reserveWithinTransaction($order, $user, $items, $reason);
