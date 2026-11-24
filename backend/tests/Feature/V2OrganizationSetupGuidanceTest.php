@@ -876,6 +876,66 @@ final class V2OrganizationSetupGuidanceTest extends TestCase
         $this->assertSame($before, DB::table('audit_logs')->count());
     }
 
+    public function test_stale_active_business_unit_cannot_receive_store_after_persisted_deactivation(): void
+    {
+        $admin = $this->actor('SUPER_ADMIN', 'en');
+        $organization = EnterpriseOrganization::query()->create([
+            'code' => 'v2_stale_store_scope_org',
+            'name' => 'Stale Unit Store Scope Organization',
+            'is_active' => true,
+        ]);
+        $company = EnterpriseCompany::query()->create([
+            'organization_id' => $organization->id,
+            'code' => 'v2_stale_store_scope_company',
+            'name' => 'Stale Scope Company',
+            'is_active' => true,
+        ]);
+        $entity = EnterpriseLegalEntity::query()->create([
+            'company_id' => $company->id,
+            'code' => 'v2_stale_store_scope_entity',
+            'name' => 'Stale Scope Entity',
+            'is_active' => true,
+        ]);
+        $unit = EnterpriseBusinessUnit::query()->create([
+            'legal_entity_id' => $entity->id,
+            'code' => 'v2_stale_store_scope_unit',
+            'name' => 'Stale Scope Unit',
+            'is_active' => true,
+        ]);
+        $store = Store::query()->create([
+            'store_type_id' => DB::table('store_types')->where('code', 'B2B')->value('id'),
+            'code' => 'v2-stale-store-scope',
+            'name' => 'Stale Unit Scope Store',
+            'is_active' => true,
+        ]);
+        $unit->load('legalEntity.company.organization');
+        $beforeAudit = DB::table('audit_logs')->count();
+
+        // Keep $unit and its loaded ancestor relations stale in memory.
+        DB::table('enterprise_business_units')->where('id', $unit->id)->update(['is_active' => false]);
+        $this->assertTrue((bool) $unit->is_active);
+
+        try {
+            app(EnterpriseOrganizationAdministration::class)->assignStore($store, $unit, $admin);
+            $this->fail('A deactivated persisted Business Unit must reject a stale assignment.');
+        } catch (ValidationException $exception) {
+            $this->assertArrayHasKey('store', $exception->errors());
+        }
+
+        $this->assertDatabaseMissing('enterprise_store_scopes', ['store_id' => $store->id]);
+        $this->assertSame($beforeAudit, DB::table('audit_logs')->count());
+
+        // A fresh active record must still be assignable through the same
+        // service, so the guard does not block legitimate first-time setup.
+        DB::table('enterprise_business_units')->where('id', $unit->id)->update(['is_active' => true]);
+        app(EnterpriseOrganizationAdministration::class)->assignStore($store, $unit, $admin);
+        $this->assertDatabaseHas('enterprise_store_scopes', [
+            'store_id' => $store->id,
+            'business_unit_id' => $unit->id,
+        ]);
+        $this->assertSame($beforeAudit + 1, DB::table('audit_logs')->count());
+    }
+
     public function test_failed_create_save_restores_values_only_to_create_form(): void
     {
         $admin = $this->actor('SUPER_ADMIN', 'en');
