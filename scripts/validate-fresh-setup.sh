@@ -3,16 +3,11 @@ set -Eeuo pipefail
 report_failure() {
   local rc="$1"
   local line="$2"
-  local cmd="$3"
-  echo "::error::Fresh Setup failed at line $line with exit $rc: $cmd"
-  cat /tmp/foodex-install-server.log 2>/dev/null || true
-  cat /tmp/foodex-installed-server.log 2>/dev/null || true
-  if [[ -n "${fresh:-}" ]]; then
-    tail -n 200 "$fresh/backend/storage/logs/laravel.log" 2>/dev/null || true
-  fi
+  # Error commands and raw runtime logs may contain SQL bindings or secrets.
+  echo "::error::Fresh Setup failed at line $line with exit $rc; raw diagnostics suppressed."
   return "$rc"
 }
-trap 'report_failure "$?" "$LINENO" "$BASH_COMMAND"' ERR
+trap 'report_failure "$?" "$LINENO"' ERR
 
 fresh="$(mktemp -d)"
 unzip -q Release/FOODEX-Laravel-Setup.zip -d "$fresh"
@@ -473,8 +468,8 @@ wait_for_http() {
   for _ in {1..60}; do
     if ! kill -0 "$pid" 2>/dev/null; then
       echo "::error::$label server exited before becoming ready."
-      cat "$log_file" || true
-      tail -n 200 "$fresh/backend/storage/logs/laravel.log" 2>/dev/null || true
+      # Raw server logs suppressed from CI output.
+      # Raw Laravel logs suppressed from CI output.
       return 1
     fi
     code="$(curl -s --connect-timeout 2 --max-time 10 -o "$output_file" -w '%{http_code}' "$url" || true)"
@@ -483,7 +478,7 @@ wait_for_http() {
       if [[ "$consecutive" -ge 2 ]]; then
         kill -0 "$pid" 2>/dev/null || {
           echo "::error::$label server exited after readiness responses."
-          cat "$log_file" || true
+          # Raw server logs suppressed from CI output.
           return 1
         }
         return 0
@@ -495,8 +490,8 @@ wait_for_http() {
   done
 
   echo "::error::$label readiness timed out; expected HTTP $expected_code from $url."
-  cat "$log_file" || true
-  tail -n 200 "$fresh/backend/storage/logs/laravel.log" 2>/dev/null || true
+  # Raw server logs suppressed from CI output.
+  # Raw Laravel logs suppressed from CI output.
   return 1
 }
 
