@@ -74,6 +74,33 @@ function Report([int]$Pr,[string]$Sha,[string]$Status,[int]$Exit,[long]$Request)
  if(-not (($result | Out-String | ConvertFrom-Json).id)) { throw 'GitHub did not confirm comment.' }
  Write-Output "PR #$Pr local evidence posted: $Status"
 }
+# Git may emit repository credentials, proxy details or private local paths.
+# Inspect a small, private stderr file and return ONLY a fixed category.
+# This classifies a failure; it never authorizes a retry or bypasses a lock.
+function Classify-GitFetchFailure([string]$Path) {
+ try {
+  $file=Get-Item -LiteralPath $Path -ErrorAction Stop
+  if($file.Length -le 0 -or $file.Length -gt 32768) {
+   return 'git-fetch-nonzero-exit'
+  }
+  $privateDiagnostic=[System.IO.File]::ReadAllText($file.FullName)
+  if($privateDiagnostic -match '(?i)(shallow|index|packed-refs)\.lock|another git process') {
+   return 'git-fetch-lock'
+  }
+  if($privateDiagnostic -match '(?i)could not resolve host|could not resolve proxy|name or service not known|failed to connect|connection timed out|connection reset|ssl certificate problem|proxy connect|http (429|5[0-9][0-9])') {
+   return 'git-fetch-network'
+  }
+  if($privateDiagnostic -match '(?i)repository not found|authentication failed|permission denied \(publickey\)|could not read username|http (401|403|407)') {
+   return 'git-fetch-access'
+  }
+  if($privateDiagnostic -match '(?i)couldn.t find remote ref|not our ref|fatal: bad object') {
+   return 'git-fetch-ref'
+  }
+ } catch {
+  return 'git-fetch-nonzero-exit'
+ }
+ return 'git-fetch-nonzero-exit'
+}
 function Invoke-BoundedGitFetch([string]$Checkout,[int]$Pr,[long]$Request) {
  $bin=(Get-Command git.exe -ErrorAction Stop).Source
  $stdout=Join-Path $Root ("git-fetch-{0}-{1}.stdout" -f $Pr,$Request)
@@ -95,7 +122,7 @@ function Invoke-BoundedGitFetch([string]$Checkout,[int]$Pr,[long]$Request) {
    throw 'Git fetch exceeded 15-minute bounded timeout; exact-head test not executed.'
   }
   if($process.ExitCode -ne 0) {
-   $script:GccLastFailedStage='git-fetch-nonzero-exit'
+   $script:GccLastFailedStage=Classify-GitFetchFailure -Path $stderr
    throw "Git fetch failed with exit code $($process.ExitCode); local diagnostic files are private."
   }
  } finally {
