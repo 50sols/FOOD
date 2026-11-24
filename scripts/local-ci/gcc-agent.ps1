@@ -334,10 +334,16 @@ function Report-Full([int]$Pr,[string]$Sha,[string]$Status,[int]$Exit,[long]$Req
       [string]$data.failed_stage -cmatch '^[a-z][a-z0-9-]{0,63}$') {
     $summary += [Environment]::NewLine + "- Failed trusted runtime step: $($data.failed_stage)"
    }
-   # Report only fixed classifier labels and a bounded numeric wizard step.
-   # Never post the raw Docker, HTTP or Laravel log to a public PR.
+   # Only fixed labels and validated step numbers are safe for public evidence.
    if($data.result -ceq 'FAIL' -and $null -ne $data.PSObject.Properties['failure_class'] -and
-      [string]$data.failure_class -cmatch '^(unclassified|finish-response-indeterminate|migration-timeout|migration-connection-refused|migration-empty-reply|migration-sqlstate|installer-validation|installer-http-status|http-readiness-timeout|http-server-exited)
+      [string]$data.failure_class -cmatch '^(unclassified|finish-response-indeterminate|migration-timeout|migration-connection-refused|migration-empty-reply|migration-sqlstate|installer-validation|installer-http-status|http-readiness-timeout|http-server-exited)$') {
+     $summary += [Environment]::NewLine + "- Installer failure category: $($data.failure_class)"
+   }
+   if($data.result -ceq 'FAIL' -and $null -ne $data.PSObject.Properties['installer_step'] -and
+      [string]$data.installer_step -cmatch '^(?:[1-9]|1[0-5])$') {
+     $summary += [Environment]::NewLine + "- Installer wizard step: $($data.installer_step)"
+   }
+   if($null -ne $data.PSObject.Properties['artifacts_sha256'] -and $data.artifacts_sha256) {
     foreach($item in $data.artifacts_sha256.PSObject.Properties) {
      $summary += [Environment]::NewLine + "- $($item.Name): SHA256 $($item.Value)"
     }
