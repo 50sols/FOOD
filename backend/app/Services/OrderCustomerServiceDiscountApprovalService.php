@@ -37,6 +37,24 @@ final class OrderCustomerServiceDiscountApprovalService
     ): bool {
         return DB::transaction(function () use ($order, $actor, $percentage, $reason, $idempotencyKey, $request): bool {
             $locked = Order::query()->whereKey($order->getKey())->lockForUpdate()->firstOrFail();
+            $storeId = (int) $locked->store_id;
+            $channel = strtolower((string) $locked->channel);
+            // Never rely solely on the HTTP controller: jobs and other direct
+            // service callers must obey the same store-scoped CS authority.
+            abort_unless($actor->is_active
+                && $actor->hasPermission('orders.view', $storeId)
+                && $actor->hasPermission('orders.customer_service_discount', $storeId), 403);
+            $this->scope->assertStore($actor, $storeId, 'orders.customer_service_discount', $channel);
+            if ($actor->hasRole('CUSTOMER_SERVICE_AGENT')
+                && ! $actor->hasRole('CUSTOMER_SERVICE_MANAGER')
+                && ! $actor->hasRole('CUSTOMER_SERVICE_SUPERVISOR')
+                && ! $actor->hasRole('SUPER_ADMIN')) {
+                abort_unless(DB::table('order_customer_service_assignments')
+                    ->where('order_id', $locked->getKey())
+                    ->where('assigned_user_id', $actor->getKey())
+                    ->whereNull('unassigned_at')
+                    ->exists(), 403);
+            }
 
             $existing = DB::table('order_customer_service_discount_requests')
                 ->where('order_id', $locked->getKey())
