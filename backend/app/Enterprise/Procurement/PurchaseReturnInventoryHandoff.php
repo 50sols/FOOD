@@ -72,6 +72,8 @@ final class PurchaseReturnInventoryHandoff
             ]);
         }
 
+        $this->ownerProjection->assertUnattributedBeforeMutation((int) $inventory->getKey());
+
         $quantity = round((float) $line->returned_quantity, 3);
         $current = round((float) $inventory->quantity, 3);
         $reserved = round((float) $inventory->reserved_quantity, 3);

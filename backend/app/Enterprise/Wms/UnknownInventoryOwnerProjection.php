@@ -22,6 +22,60 @@ final class UnknownInventoryOwnerProjection
      * title when it is the sole position (or there are no positions yet).
      * Known/mixed owner positions remain deliberately stale.
      */
+    /**
+     * Atomic receipt/order stock mutations may update only an honest UNKNOWN
+     * partition. A known/mixed legal title needs its own authorized owner-
+     * attributed movement and checker contract, not a best-effort aggregate
+     * mutation that makes the owner ledger stale.
+     *
+     * The caller MUST already lock canonical inventories.id FOR UPDATE and
+     * enter a DB transaction; this method then locks the owner rows in the
+     * same lock order. Failures leave ALL canonical and title balances intact.
+     */
+    public function assertUnattributedBeforeMutation(int $inventoryId): void
+    {
+        if ($inventoryId < 1 || DB::transactionLevel() < 1) {
+            throw new LogicException('Atomic owner stock mutation requires a canonical inventory transaction.');
+        }
+
+        $canonical = DB::table('inventories')
+            ->where('id', $inventoryId)
+            ->first(['quantity', 'reserved_quantity']);
+        if ($canonical === null) {
+            throw new LogicException('Canonical inventory is missing from the owner stock transaction.');
+        }
+
+        self::assertCanonicalBalance($canonical->quantity, $canonical->reserved_quantity);
+
+        $positions = DB::table('enterprise_inventory_owner_positions')
+            ->where('inventory_id', $inventoryId)
+            ->lockForUpdate()
+            ->get(['id', 'owner_key', 'owner_kind', 'supplier_id', 'quantity', 'reserved_quantity']);
+
+        if ($positions->isEmpty()) {
+            // No claimed owner: the following canonical mutation may create
+            // ONE UNKNOWN row, but never claim supplier or FOODEX legal title.
+            return;
+        }
+
+        if ($positions->count() !== 1) {
+            throw new LogicException('Mixed owner stock requires approved per-owner movement allocation.');
+        }
+
+        $owner = $positions->first();
+        if ($owner->owner_key !== 'UNKNOWN' || $owner->owner_kind !== 'UNKNOWN'
+            || $owner->supplier_id !== null
+            || DB::table('enterprise_inventory_title_attestations')
+                ->where('owner_position_id', (int) $owner->id)->exists()) {
+            throw new LogicException('Claimed legal stock title requires verified per-owner movement allocation.');
+        }
+
+        if (self::milliUnits($owner->quantity) !== self::milliUnits($canonical->quantity)
+            || self::milliUnits($owner->reserved_quantity) !== self::milliUnits($canonical->reserved_quantity)) {
+            throw new LogicException('UNKNOWN owner stock balance must be reconciled before the next mutation.');
+        }
+    }
+
     public function afterReservationMutation(Inventory $lockedInventory): void
     {
         $inventoryId = (int) $lockedInventory->getKey();

@@ -10,10 +10,13 @@ use App\Enterprise\Wms\InventoryOwnershipRuleService;
 use App\Enterprise\Wms\StockReservationService;
 use App\Enterprise\Wms\UnknownInventoryOwnerProjection;
 use App\Enterprise\Wms\WarehouseTransferService;
+use App\Domain\SmartOrdering\InventoryService as SmartOrderingInventoryService;
 use App\Models\Inventory;
+use App\Models\Order;
 use App\Models\Role;
 use App\Models\User;
 use App\Models\UserStoreRole;
+use App\Services\OrderInventoryReservationService;
 use App\Services\DemoDataManager;
 use Database\Seeders\CoreReferenceSeeder;
 use Illuminate\Database\QueryException;
@@ -1539,6 +1542,209 @@ SQL);
             ->snapshot($actor, $stock['inventory_id']);
         $this->assertSame('STALE', $snapshot['state']);
         $this->assertFalse($snapshot['certified']);
+    }
+
+    public function test_received_unknown_stock_reserve_consume_and_release_are_atomic_with_owner_events(): void
+    {
+        $this->seed(CoreReferenceSeeder::class);
+        $stock = $this->stock('ATOMIC-ORDER-LIFECYCLE');
+        $actor = $this->inventoryActor($stock['store_id']);
+        $productId = (int) DB::table('inventories')->where('id', $stock['inventory_id'])
+            ->value('product_id');
+        $order = new Order(['store_id' => $stock['store_id'], 'channel' => 'b2c']);
+        $order->setAttribute('id', 1102844001);
+
+        // Same order as a genuine posted GRN: canonical inventory first,
+        // UNKNOWN projection second, immutable source movement last, all in
+        // one DB transaction. Actual procurement GRN post/retry is covered by
+        // EnterpriseGoodsReceiptFoundationTest.
+        DB::transaction(function () use ($stock): void {
+            $inventory = Inventory::query()->findOrFail($stock['inventory_id']);
+            app(UnknownInventoryOwnerProjection::class)
+                ->assertUnattributedBeforeMutation((int) $inventory->getKey());
+            $inventory->forceFill(['quantity' => 12])->save();
+            app(UnknownInventoryOwnerProjection::class)->afterProcurementMutation($inventory);
+            DB::table('stock_movements')->insert([
+                'inventory_id' => $stock['inventory_id'],
+                'store_id' => $stock['store_id'],
+                'user_id' => null,
+                'type' => 'purchase_receipt',
+                'quantity' => 2,
+                'reference_type' => 'enterprise_goods_receipt_line',
+                'reference_id' => 1102844001,
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+        });
+
+        $service = app(OrderInventoryReservationService::class);
+        $service->reserve($order, $actor, [['product_id' => $productId, 'quantity' => 2.0]]);
+        $this->assertDatabaseHas('inventories', [
+            'id' => $stock['inventory_id'], 'quantity' => 12, 'reserved_quantity' => 5,
+        ]);
+        $this->assertDatabaseHas('enterprise_inventory_owner_positions', [
+            'inventory_id' => $stock['inventory_id'], 'owner_key' => 'UNKNOWN',
+            'quantity' => 12, 'reserved_quantity' => 5, 'certified_by' => null,
+        ]);
+
+        $service->release($order, $actor);
+        $service->release($order, $actor);
+        $this->assertDatabaseHas('inventories', [
+            'id' => $stock['inventory_id'], 'quantity' => 12, 'reserved_quantity' => 3,
+        ]);
+
+        $service->reserve($order, $actor, [['product_id' => $productId, 'quantity' => 1.0]]);
+        $service->consume($order, $actor);
+        $service->consume($order, $actor);
+        $this->assertDatabaseHas('inventories', [
+            'id' => $stock['inventory_id'], 'quantity' => 11, 'reserved_quantity' => 3,
+        ]);
+        $this->assertDatabaseHas('enterprise_inventory_owner_positions', [
+            'inventory_id' => $stock['inventory_id'], 'owner_key' => 'UNKNOWN',
+            'owner_kind' => 'UNKNOWN', 'supplier_id' => null,
+            'quantity' => 11, 'reserved_quantity' => 3, 'certified_by' => null,
+        ]);
+        $this->assertSame(5, DB::table('stock_movements')
+            ->where('inventory_id', $stock['inventory_id'])->count());
+        $this->assertSame(5, DB::table('enterprise_inventory_owner_movement_events')
+            ->where('inventory_id', $stock['inventory_id'])
+            ->where('owner_snapshot_state', 'UNKNOWN')
+            ->where('owner_position_count', 1)->count());
+        $saleEvent = DB::table('enterprise_inventory_owner_movement_events')
+            ->where('inventory_id', $stock['inventory_id'])
+            ->where('movement_type', 'sale')->first();
+        $this->assertNotNull($saleEvent);
+        $this->assertSame('11.000', number_format((float) $saleEvent->observed_inventory_quantity, 3, '.', ''));
+        $this->assertSame('11.000', number_format((float) $saleEvent->owner_quantity, 3, '.', ''));
+        $this->assertSame('3.000', number_format((float) $saleEvent->owner_reserved_quantity, 3, '.', ''));
+    }
+
+    public function test_smart_ordering_reserve_and_sale_keep_unknown_owner_and_stock_balanced(): void
+    {
+        $this->seed(CoreReferenceSeeder::class);
+        $stock = $this->stock('ATOMIC-SMART-ORDER');
+        $productId = (int) DB::table('inventories')->where('id', $stock['inventory_id'])
+            ->value('product_id');
+        $order = new Order(['store_id' => $stock['store_id'], 'channel' => 'b2c']);
+        $order->setAttribute('id', 1102844002);
+        $service = app(SmartOrderingInventoryService::class);
+
+        $service->reserve($order, [['product_id' => $productId, 'quantity' => 2.0]]);
+        $service->release($order);
+        $service->reserve($order, [['product_id' => $productId, 'quantity' => 1.0]]);
+        $service->consume($order);
+        $service->consume($order);
+
+        $this->assertDatabaseHas('inventories', [
+            'id' => $stock['inventory_id'], 'quantity' => 9, 'reserved_quantity' => 3,
+        ]);
+        $this->assertDatabaseHas('enterprise_inventory_owner_positions', [
+            'inventory_id' => $stock['inventory_id'], 'owner_key' => 'UNKNOWN',
+            'quantity' => 9, 'reserved_quantity' => 3, 'certified_by' => null,
+        ]);
+        $this->assertSame(4, DB::table('stock_movements')
+            ->where('inventory_id', $stock['inventory_id'])->count());
+        $this->assertSame(4, DB::table('enterprise_inventory_owner_movement_events')
+            ->where('inventory_id', $stock['inventory_id'])
+            ->where('owner_snapshot_state', 'UNKNOWN')->count());
+    }
+
+    public function test_order_stock_mutation_rejects_claimed_or_stale_legal_owner_without_changing_stock(): void
+    {
+        $this->seed(CoreReferenceSeeder::class);
+        $stock = $this->stock('ATOMIC-KNOWN-TITLE');
+        $actor = $this->inventoryActor($stock['store_id']);
+        $productId = (int) DB::table('inventories')->where('id', $stock['inventory_id'])
+            ->value('product_id');
+        $order = new Order(['store_id' => $stock['store_id'], 'channel' => 'b2c']);
+        $order->setAttribute('id', 1102844003);
+        $this->position($stock['inventory_id'], 'FOODEX', null, 10, 3, $actor->id, $actor->id, false);
+
+        try {
+            app(OrderInventoryReservationService::class)->reserve(
+                $order, $actor, [['product_id' => $productId, 'quantity' => 1.0]],
+            );
+            $this->fail('A claimed legal owner requires an approved owner movement writer.');
+        } catch (\LogicException $exception) {
+            $this->assertStringContainsString('per-owner movement allocation', $exception->getMessage());
+        }
+        $this->assertDatabaseHas('inventories', [
+            'id' => $stock['inventory_id'], 'quantity' => 10, 'reserved_quantity' => 3,
+        ]);
+        $this->assertDatabaseHas('enterprise_inventory_owner_positions', [
+            'inventory_id' => $stock['inventory_id'], 'owner_key' => 'FOODEX',
+            'quantity' => 10, 'reserved_quantity' => 3,
+        ]);
+        $this->assertSame(0, DB::table('stock_movements')
+            ->where('inventory_id', $stock['inventory_id'])->count());
+
+        $unknown = $this->stock('ATOMIC-STALE-TITLE');
+        $unknownProductId = (int) DB::table('inventories')->where('id', $unknown['inventory_id'])
+            ->value('product_id');
+        $this->position($unknown['inventory_id'], 'UNKNOWN', null, 9, 3, $actor->id, $actor->id, false);
+        try {
+            app(SmartOrderingInventoryService::class)->reserve(
+                new Order(['id' => 1102844004, 'store_id' => $unknown['store_id'], 'channel' => 'b2c']),
+                [['product_id' => $unknownProductId, 'quantity' => 1.0]],
+            );
+            $this->fail('Stale UNKNOWN title cannot be silently repaired through checkout.');
+        } catch (\LogicException $exception) {
+            $this->assertStringContainsString('must be reconciled', $exception->getMessage());
+        }
+        $this->assertDatabaseHas('inventories', [
+            'id' => $unknown['inventory_id'], 'quantity' => 10, 'reserved_quantity' => 3,
+        ]);
+        $this->assertSame(0, DB::table('stock_movements')
+            ->where('inventory_id', $unknown['inventory_id'])->count());
+    }
+
+    public function test_order_movement_failure_rolls_back_unknown_owner_and_canonical_reservation(): void
+    {
+        if (DB::connection()->getDriverName() !== 'sqlite') {
+            $this->markTestSkipped('Local injection uses an isolated SQLite movement trigger.');
+        }
+
+        $this->seed(CoreReferenceSeeder::class);
+        $stock = $this->stock('ATOMIC-ROLLBACK-SALE');
+        $actor = $this->inventoryActor($stock['store_id']);
+        $productId = (int) DB::table('inventories')->where('id', $stock['inventory_id'])
+            ->value('product_id');
+        $order = new Order(['store_id' => $stock['store_id'], 'channel' => 'b2c']);
+        $order->setAttribute('id', 1102844005);
+
+        // Force source movement insertion to fail AFTER canonical and owner
+        // reservation rows were written. Both must roll back with that insert.
+        DB::unprepared(<<<'SQL'
+CREATE TRIGGER p110_atomic_test_fail_order_movement
+BEFORE INSERT ON stock_movements
+FOR EACH ROW
+WHEN NEW.reference_type = 'order' AND NEW.reference_id = 1102844005
+BEGIN
+    SELECT RAISE(ABORT, 'simulated order stock movement failure');
+END
+SQL);
+        try {
+            try {
+                app(OrderInventoryReservationService::class)->reserve(
+                    $order, $actor, [['product_id' => $productId, 'quantity' => 2.0]],
+                );
+                $this->fail('Source movement failure must roll back the entire stock transaction.');
+            } catch (QueryException $exception) {
+                $this->assertStringContainsString('simulated order stock movement failure', $exception->getMessage());
+            }
+        } finally {
+            DB::unprepared('DROP TRIGGER IF EXISTS p110_atomic_test_fail_order_movement');
+        }
+
+        $this->assertDatabaseHas('inventories', [
+            'id' => $stock['inventory_id'], 'quantity' => 10, 'reserved_quantity' => 3,
+        ]);
+        $this->assertSame(0, DB::table('enterprise_inventory_owner_positions')
+            ->where('inventory_id', $stock['inventory_id'])->count());
+        $this->assertSame(0, DB::table('stock_movements')
+            ->where('inventory_id', $stock['inventory_id'])->count());
+        $this->assertSame(0, DB::table('enterprise_inventory_owner_movement_events')
+            ->where('inventory_id', $stock['inventory_id'])->count());
     }
 
     public function test_wms_reservation_and_release_reconcile_unknown_title_and_replays_do_not_double_post(): void

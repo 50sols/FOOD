@@ -87,6 +87,11 @@ final class GoodsReceiptInventoryHandoff
             ]);
         }
 
+        // The source supplier on a PO/GRN is commercial identity, not
+        // independently checked legal title. Block any already-claimed title
+        // until a legitimate per-owner receipt allocation writer exists.
+        $this->ownerProjection->assertUnattributedBeforeMutation((int) $inventory->getKey());
+
         $quantity = (float) $line->received_quantity;
         $inventory->forceFill([
             'quantity' => round((float) $inventory->quantity + $quantity, 3),

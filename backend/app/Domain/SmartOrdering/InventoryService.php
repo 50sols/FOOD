@@ -2,13 +2,26 @@
 
 namespace App\Domain\SmartOrdering;
 
+use App\Enterprise\Wms\UnknownInventoryOwnerProjection;
 use App\Models\Order;
 use Illuminate\Support\Facades\DB;
 
 final class InventoryService
 {
+    public function __construct(
+        private readonly UnknownInventoryOwnerProjection $ownerProjection,
+    ) {}
+
     /** @param list<array{product_id:int,quantity:float}> $items */
     public function reserve(Order $order, array $items): void
+    {
+        DB::transaction(function () use ($order, $items): void {
+            $this->reserveWithinTransaction($order, $items);
+        }, attempts: 3);
+    }
+
+    /** @param list<array{product_id:int,quantity:float}> $items */
+    private function reserveWithinTransaction(Order $order, array $items): void
     {
         foreach ($this->aggregate($items) as $productId => $quantity) {
             $rows = DB::table('inventories')
@@ -38,7 +51,10 @@ final class InventoryService
                     continue;
                 }
 
+                $this->ownerProjection->assertUnattributedBeforeMutation((int) $row->id);
+
                 DB::table('inventories')->where('id', $row->id)->increment('reserved_quantity', $reserved);
+                $this->ownerProjection->afterUnattributedInventoryMutation((int) $row->id);
                 DB::table('stock_movements')->insert([
                     'inventory_id' => (int) $row->id,
                     'store_id' => (int) $order->store_id,
@@ -61,6 +77,14 @@ final class InventoryService
 
     public function release(Order $order, ?int $userId = null): void
     {
+        DB::transaction(function () use ($order, $userId): void {
+            $this->lockOrderForInventoryLifecycle($order);
+            $this->releaseWithinTransaction($order, $userId);
+        }, attempts: 3);
+    }
+
+    private function releaseWithinTransaction(Order $order, ?int $userId): void
+    {
         foreach ($this->activeReservations($order) as $inventoryId => $quantity) {
             $inventory = DB::table('inventories')
                 ->join('warehouses', 'warehouses.id', '=', 'inventories.warehouse_id')
@@ -72,15 +96,28 @@ final class InventoryService
                 continue;
             }
 
+            abort_if($quantity > (float) $inventory->reserved_quantity + 0.0001,
+                409, 'Order release exceeds canonical inventory reservations.');
+            $this->ownerProjection->assertUnattributedBeforeMutation((int) $inventoryId);
+
             DB::table('inventories')->where('id', $inventoryId)->update([
-                'reserved_quantity' => max(0.0, (float) $inventory->reserved_quantity - $quantity),
+                'reserved_quantity' => (float) $inventory->reserved_quantity - $quantity,
                 'updated_at' => now(),
             ]);
+            $this->ownerProjection->afterUnattributedInventoryMutation((int) $inventoryId);
             $this->movement($order, $inventoryId, $userId, 'release', $quantity, 'smart_ordering_cancelled');
         }
     }
 
     public function consume(Order $order, ?int $userId = null): void
+    {
+        DB::transaction(function () use ($order, $userId): void {
+            $this->lockOrderForInventoryLifecycle($order);
+            $this->consumeWithinTransaction($order, $userId);
+        }, attempts: 3);
+    }
+
+    private function consumeWithinTransaction(Order $order, ?int $userId): void
     {
         foreach ($this->activeReservations($order) as $inventoryId => $quantity) {
             $inventory = DB::table('inventories')
@@ -97,13 +134,25 @@ final class InventoryService
                 'Reserved inventory is inconsistent with the order.',
             );
 
+            $this->ownerProjection->assertUnattributedBeforeMutation((int) $inventoryId);
+
             DB::table('inventories')->where('id', $inventoryId)->update([
                 'quantity' => (float) $inventory->quantity - $quantity,
                 'reserved_quantity' => (float) $inventory->reserved_quantity - $quantity,
                 'updated_at' => now(),
             ]);
+            $this->ownerProjection->afterUnattributedInventoryMutation((int) $inventoryId);
             $this->movement($order, $inventoryId, $userId, 'sale', -$quantity, 'smart_ordering_completed');
         }
+    }
+
+    private function lockOrderForInventoryLifecycle(Order $order): void
+    {
+        if ($order->getKey() === null) {
+            throw new \LogicException('Smart ordering inventory lifecycle requires a persisted order key.');
+        }
+
+        DB::table('orders')->where('id', (int) $order->getKey())->lockForUpdate()->first();
     }
 
     /** @param list<array{product_id:int,quantity:float}> $items

@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use App\Enterprise\Wms\UnknownInventoryOwnerProjection;
 use App\Models\Order;
 use App\Models\StockMovement;
 use App\Models\User;
@@ -10,10 +11,22 @@ use Symfony\Component\HttpKernel\Exception\HttpException;
 
 final class OrderInventoryReservationService
 {
+    public function __construct(
+        private readonly UnknownInventoryOwnerProjection $ownerProjection,
+    ) {}
+
     /**
      * @param  list<array{product_id: int, quantity: float}>  $items
      */
     public function reserve(Order $order, User $user, array $items, string $reason = 'dashboard_order'): void
+    {
+        DB::transaction(function () use ($order, $user, $items, $reason): void {
+            $this->reserveWithinTransaction($order, $user, $items, $reason);
+        }, attempts: 3);
+    }
+
+    /** @param list<array{product_id: int, quantity: float}> $items */
+    private function reserveWithinTransaction(Order $order, User $user, array $items, string $reason): void
     {
         foreach ($items as $item) {
             $inventoryQuery = DB::table('inventories')
@@ -64,9 +77,15 @@ final class OrderInventoryReservationService
                 $reserve = min($remaining, $rowAvailable);
 
                 if ($reserve > 0) {
+                    $this->ownerProjection->assertUnattributedBeforeMutation((int) $inventoryRow->id);
+
                     DB::table('inventories')
                         ->where('id', $inventoryRow->id)
                         ->increment('reserved_quantity', $reserve);
+
+                    // Same SQL transaction as the canonical reservation and
+                    // immutable stock-movement event trigger.
+                    $this->ownerProjection->afterUnattributedInventoryMutation((int) $inventoryRow->id);
 
                     StockMovement::query()->create([
                         'inventory_id' => (int) $inventoryRow->id,
@@ -91,6 +110,14 @@ final class OrderInventoryReservationService
 
     public function release(Order $order, User $user, string $reason = 'order_cancelled'): void
     {
+        DB::transaction(function () use ($order, $user, $reason): void {
+            $this->lockOrderForInventoryLifecycle($order);
+            $this->releaseWithinTransaction($order, $user, $reason);
+        }, attempts: 3);
+    }
+
+    private function releaseWithinTransaction(Order $order, User $user, string $reason): void
+    {
         foreach ($this->activeReservations($order) as $inventoryId => $quantity) {
             $inventory = DB::table('inventories')
                 ->join('warehouses', 'warehouses.id', '=', 'inventories.warehouse_id')
@@ -103,12 +130,19 @@ final class OrderInventoryReservationService
                 continue;
             }
 
+            if ($quantity > (float) $inventory->reserved_quantity) {
+                throw new HttpException(409, 'Order release exceeds canonical inventory reservations.');
+            }
+            $this->ownerProjection->assertUnattributedBeforeMutation((int) $inventoryId);
+
             DB::table('inventories')
                 ->where('id', $inventoryId)
                 ->update([
-                    'reserved_quantity' => max(0.0, (float) $inventory->reserved_quantity - $quantity),
+                    'reserved_quantity' => (float) $inventory->reserved_quantity - $quantity,
                     'updated_at' => now(),
                 ]);
+
+            $this->ownerProjection->afterUnattributedInventoryMutation((int) $inventoryId);
 
             StockMovement::query()->create([
                 'inventory_id' => $inventoryId,
@@ -124,6 +158,14 @@ final class OrderInventoryReservationService
     }
 
     public function consume(Order $order, User $user): void
+    {
+        DB::transaction(function () use ($order, $user): void {
+            $this->lockOrderForInventoryLifecycle($order);
+            $this->consumeWithinTransaction($order, $user);
+        }, attempts: 3);
+    }
+
+    private function consumeWithinTransaction(Order $order, User $user): void
     {
         foreach ($this->activeReservations($order) as $inventoryId => $quantity) {
             $inventory = DB::table('inventories')
@@ -144,6 +186,8 @@ final class OrderInventoryReservationService
                 throw new HttpException(409, 'Reserved inventory is inconsistent with the order.');
             }
 
+            $this->ownerProjection->assertUnattributedBeforeMutation((int) $inventoryId);
+
             DB::table('inventories')
                 ->where('id', $inventoryId)
                 ->update([
@@ -151,6 +195,8 @@ final class OrderInventoryReservationService
                     'reserved_quantity' => $reserved - $quantity,
                     'updated_at' => now(),
                 ]);
+
+            $this->ownerProjection->afterUnattributedInventoryMutation((int) $inventoryId);
 
             StockMovement::query()->create([
                 'inventory_id' => $inventoryId,
@@ -163,6 +209,20 @@ final class OrderInventoryReservationService
                 'reason' => 'order_delivered',
             ]);
         }
+    }
+
+    /**
+     * Release and consume must serialize on the actual order row before
+     * reading reference-scoped stock movement balances. A second concurrent
+     * delivery/cancellation cannot consume the same reservation twice.
+     */
+    private function lockOrderForInventoryLifecycle(Order $order): void
+    {
+        if ($order->getKey() === null) {
+            throw new \LogicException('Order inventory lifecycle requires a persisted order key.');
+        }
+
+        DB::table('orders')->where('id', (int) $order->getKey())->lockForUpdate()->first();
     }
 
     /** @return array<int, float> inventory_id => active reserved quantity */
