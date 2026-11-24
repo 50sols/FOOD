@@ -98,7 +98,7 @@ class WebInstallerMigrationTransportFailureTests(unittest.TestCase):
 
     def test_finish_never_replays_indeterminate_http_response(self):
         source = SH.read_text(encoding='utf-8')
-        function = source.split('wizard_post() {', 1)[1].split('\\n\\nfor step in $(seq 1 15)', 1)[0]
+        function = source.split('wizard_post() {', 1)[1].split('\n\nfor step in $(seq 1 15)', 1)[0]
         success = function.index('[[ "$status" == "302" && "$transport_exit" == "0" ]] && return 0')
         finish = function.index('if [[ "$step" == "15" && ( "$status" == "000" || "$transport_exit" -ne 0 ) ]]')
         migration = function.index('if [[ "$step" == "11" && ( "$status" == "000" || "$transport_exit" -ne 0 ) ]]')
