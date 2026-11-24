@@ -116,6 +116,12 @@ final class PurchaseRequestManager
                     }
                 }
 
+                // The preflight supplier read is only UX. A concurrent hold or
+                // scope revocation must be caught under this transaction lock.
+                if (($data['supplier_id'] ?? null) !== null) {
+                    $this->activeVisibleSupplier($scope, (int) $data['supplier_id'], true);
+                }
+
                 $publicId = (string) Str::uuid();
                 $request = EnterprisePurchaseRequest::query()->create([
                     'public_id' => $publicId,
@@ -193,6 +199,12 @@ final class PurchaseRequestManager
             $request = $this->lockVisible($scope, $requestId);
             abort_if($request->status !== 'draft', 403, 'Only a draft purchase request can be edited.');
             abort_if((int) $request->created_by !== (int) $actor->id, 403, 'Only the creating maker can edit this draft.');
+
+            // Do not trust supplier eligibility checked before entering the
+            // transaction: the vendor may have been suspended in between.
+            if (($data['supplier_id'] ?? null) !== null) {
+                $this->activeVisibleSupplier($scope, (int) $data['supplier_id'], true);
+            }
 
             $request->load(['lines' => fn ($query) => $query->orderBy('line_no')]);
             if ($this->requestMatchesPayload($request, $data)) {
@@ -425,8 +437,9 @@ final class PurchaseRequestManager
     private function activeVisibleSupplier(
         EnterpriseDataScope $scope,
         int $supplierId,
+        bool $lock = false,
     ): EnterpriseSupplier {
-        return EnterpriseSupplier::query()
+        $query = EnterpriseSupplier::query()
             ->whereKey($supplierId)
             ->where('organization_id', $scope->organizationId)
             ->where('company_id', $scope->companyId)
@@ -439,8 +452,13 @@ final class PurchaseRequestManager
                             ->where('scope_type', 'store')
                             ->where('store_id', $scope->storeId);
                     });
-            })
-            ->firstOrFail();
+            });
+
+        if ($lock) {
+            $query->lockForUpdate();
+        }
+
+        return $query->firstOrFail();
     }
 
     private function idempotentRequest(
