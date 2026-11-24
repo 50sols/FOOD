@@ -5,7 +5,8 @@ param([ValidateSet('Doctor','Install','Once','Loop')][string]$Mode='Doctor',
       [ValidateRange(30,3600)][int]$PollSeconds=120)
 Set-StrictMode -Version Latest
 $ErrorActionPreference='Stop'
-$Repo='walidatiyaai2025-gif/FOOD'
+$Repo='50sols/FOOD'
+$RepositoryId=1385223867
 $Owner='walidatiyaai2025-gif'
 $Base='Foodex_V2'
 $Root=Join-Path $env:LOCALAPPDATA 'FoodexGccCI'
@@ -312,10 +313,12 @@ function Process($Comment) {
  if([string]$Comment.body -cnotmatch '(?m)^/gcc-ci (run|full|backend|setup|packages) ([a-f0-9]{40})\s*$') { return }
  $profile=$Matches[1]
  $sha=$Matches[2]
- if([string]$Comment.issue_url -notmatch '^https://api\.github\.com/repos/walidatiyaai2025-gif/FOOD/issues/([0-9]+)$') { return }
+ if([string]$Comment.issue_url -notmatch '^https://api\.github\.com/repos/50sols/FOOD/issues/([0-9]+)$') { return }
  $n=[int]$Matches[1]
  $pr=Api "repos/$Repo/pulls/$n"
- if($pr.state -ne 'open' -or $pr.base.ref -cne $Base -or $pr.head.repo.full_name -cne $Repo -or $pr.head.sha -cne $sha) {
+ if($pr.state -ne 'open' -or $pr.base.ref -cne $Base -or
+    [long]$pr.base.repo.id -ne $RepositoryId -or [long]$pr.head.repo.id -ne $RepositoryId -or
+    $pr.head.repo.full_name -cne $Repo -or $pr.head.sha -cne $sha) {
   Write-Warning "Rejected non-V2, changed or foreign PR #$n"; return
  }
  if([string]$pr.head.ref -cnotmatch '^(ci|feat|fix|test|chore|refactor|docs|worker)/[0-9]+-[a-z0-9-]+$') { return }
