@@ -227,7 +227,26 @@ function Full-CI([int]$Pr,[string]$Sha,[long]$Request,[string]$Checkout,[Validat
   # basenames in separate directories. Reparse points are never real staging
   # artifacts and must not be followed while verifying SHA-256.
   $seenArtifactNames=[System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+  $canonicalEvidenceRoot=(Get-Item -LiteralPath $report -ErrorAction Stop).FullName
   foreach($artifact in $artifacts) {
+   # A regular ZIP reached through a junction/symlinked parent still reads
+   # bytes outside the isolated evidence tree. Check every directory up to
+   # and including the canonical evidence root before reading the file.
+   $parent=$artifact.Directory
+   $withinEvidenceRoot=$false
+   while($null -ne $parent) {
+    if(($parent.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+     throw "Refusing reparse-point ZIP parent directory: $($artifact.Name)"
+    }
+    if($parent.FullName -ceq $canonicalEvidenceRoot) {
+     $withinEvidenceRoot=$true
+     break
+    }
+    $parent=$parent.Parent
+   }
+   if(-not $withinEvidenceRoot) {
+    throw "ZIP artifact lies outside canonical GCC evidence root: $($artifact.Name)"
+   }
    if(($artifact.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
     throw "Refusing symlink/reparse-point ZIP artifact: $($artifact.Name)"
    }
