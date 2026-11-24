@@ -100,13 +100,21 @@ final class V2CustomerServiceDiscountApprovalTest extends TestCase
             ])->assertSessionHasErrors('idempotency_key');
         }
 
-        // Independent authorization must still be checked by the HTTP
-        // controller, even if another agent knows the original key.
+        // An unrelated agent remains denied by assignment-based HTTP scope.
         $this->actingAs($otherAgent)->post($url, [
             'percentage' => 12.5,
             'reason' => 'Original recovery request',
             'idempotency_key' => $key,
         ])->assertStatus(403);
+
+        // A separately authorized CS manager CAN submit a fresh request for
+        // this store, but cannot claim another actor's idempotency key.
+        $manager = $this->roleUser('CUSTOMER_SERVICE_MANAGER');
+        $this->actingAs($manager)->post($url, [
+            'percentage' => 12.5,
+            'reason' => 'Original recovery request',
+            'idempotency_key' => $key,
+        ])->assertSessionHasErrors('idempotency_key');
 
         $this->assertDatabaseHas('order_customer_service_discount_requests', [
             'order_id' => $orderId,
