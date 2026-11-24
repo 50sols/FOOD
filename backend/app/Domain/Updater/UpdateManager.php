@@ -79,6 +79,9 @@ final class UpdateManager
             $maintenanceMode = false;
             $releaseMutationStarted = false;
             $databaseMutationStarted = false;
+            // Once maintenance exit is attempted, public writes may already
+            // exist. Never restore a pre-exit DB snapshot after that boundary.
+            $publicTrafficMayHaveResumed = false;
 
             try {
                 $this->validator->validate($manifest, $currentVersion, $packagePath);
@@ -98,10 +101,22 @@ final class UpdateManager
                     'backup_status' => 'partial',
                 ]);
 
+                $stage = 'maintenance_mode';
+                // The files-only backup may run while the site is live. A
+                // database rollback snapshot MUST NOT: accepting a legitimate
+                // user/order write between the snapshot and maintenance entry
+                // would cause data loss if a later migration/health check
+                // restores those old database bytes. Stop new public requests
+                // before capturing and verifying the recovery DB baseline.
+                $this->runtime->enterMaintenanceMode();
+                $maintenanceMode = true;
+                $this->checkpoint($history, ['maintenance_mode' => 'entered']);
+
                 $stage = 'backup_database';
                 // Cache rebuild reconciles persisted job-role grants even when
                 // this ZIP declares no migrations. Every update must therefore
-                // have a verified database snapshot before files are activated.
+                // have a verified QUIESCENT database snapshot before files are
+                // activated, after maintenance begins blocking public writes.
                 $databaseBackup = $this->runtime->backupDatabase(true);
                 if ($databaseBackup === null) {
                     throw new RuntimeException('Database backup is required for every system update.');
@@ -117,11 +132,6 @@ final class UpdateManager
                     'database_backup_reference' => $databaseBackup,
                     'backup_status' => 'available',
                 ]);
-
-                $stage = 'maintenance_mode';
-                $this->runtime->enterMaintenanceMode();
-                $maintenanceMode = true;
-                $this->checkpoint($history, ['maintenance_mode' => 'entered']);
 
                 $stage = 'extract_release';
                 // Extraction can partially replace files before throwing.
@@ -150,6 +160,9 @@ final class UpdateManager
                 ]);
 
                 $stage = 'exit_maintenance_mode';
+                // Even a throwing exit can have opened the public site first.
+                // A later metadata/audit error must not rewind post-exit writes.
+                $publicTrafficMayHaveResumed = true;
                 $this->runtime->exitMaintenanceMode();
                 $maintenanceMode = false;
                 $this->checkpoint($history, ['maintenance_mode' => 'exited']);
@@ -192,10 +205,32 @@ final class UpdateManager
                 $rollbackEvidence = [];
                 $rollbackSafe = true;
 
-                // A late version/history/audit failure can occur after the site
-                // has already left maintenance mode. Never roll live files or
-                // database back while users can write new data.
-                if ($releaseMutationStarted && ! $maintenanceMode) {
+                // The updater cannot prove that no customer/order writes were
+                // accepted after maintenance exit started. Even re-entering
+                // maintenance now cannot make a pre-exit database restore safe:
+                // it would delete post-exit business writes. Leave the live
+                // bytes intact and require explicit, verified manual recovery.
+                $unsafeAfterPublicExposure = $releaseMutationStarted && $publicTrafficMayHaveResumed;
+                if ($unsafeAfterPublicExposure) {
+                    $rollbackSafe = false;
+                    $rollbackSucceeded = false;
+                    $rollbackEvidence['rollback_files'] = 'skipped_unsafe';
+                    $rollbackEvidence['rollback_database'] = $databaseMutationStarted
+                        ? 'skipped_unsafe'
+                        : 'not_required';
+                    $rollbackEvidence['manual_recovery'] = 'required_after_public_exposure';
+
+                    try {
+                        $this->runtime->enterMaintenanceMode();
+                        $maintenanceMode = true;
+                        $rollbackEvidence['maintenance_mode'] = 'reentered_for_manual_recovery';
+                    } catch (Throwable) {
+                        // An exit may have succeeded before throwing. Do not
+                        // claim the site is safely in maintenance after this.
+                        $maintenanceMode = false;
+                        $rollbackEvidence['maintenance_mode'] = 'reentry_failed';
+                    }
+                } elseif ($releaseMutationStarted && ! $maintenanceMode) {
                     try {
                         $this->runtime->enterMaintenanceMode();
                         $maintenanceMode = true;
@@ -261,7 +296,9 @@ final class UpdateManager
                 }
 
                 if (! $rollbackSafe) {
-                    $reason .= ' Rollback was skipped because maintenance mode could not be re-entered.';
+                    $reason .= $unsafeAfterPublicExposure
+                        ? ' Automatic rollback was skipped after possible public writes; manual recovery is required.'
+                        : ' Rollback was skipped because maintenance mode could not be re-entered.';
                 }
 
                 if (! $rollbackSucceeded) {

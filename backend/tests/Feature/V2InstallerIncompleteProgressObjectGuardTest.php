@@ -269,7 +269,7 @@ final class V2InstallerIncompleteProgressObjectGuardTest extends TestCase
         }
     }
 
-    public function test_valid_null_saved_token_is_initialized_once_without_losing_admin_progress(): void
+    public function test_completed_checkpoint_with_null_token_is_rejected_without_losing_admin_progress(): void
     {
         $state = app(InstallState::class);
         $admin = [
@@ -285,14 +285,23 @@ final class V2InstallerIncompleteProgressObjectGuardTest extends TestCase
         ], JSON_THROW_ON_ERROR);
         $this->assertNotFalse(file_put_contents($this->progressFile(), $before));
 
-        $this->assertSame(['completed_step' => 4, 'admin' => $admin, 'token' => null], $state->progress());
-        $token = $state->token();
-        $this->assertMatchesRegularExpression('/^[a-f0-9]{64}$/', $token);
-        $this->assertSame($token, $state->token());
-        $this->assertSame(
-            ['completed_step' => 4, 'admin' => $admin, 'token' => $token],
-            $state->progress(),
-        );
+        foreach ([
+            static fn () => $state->progress(),
+            static fn () => $state->token(),
+            static fn () => $state->markStepComplete(5),
+        ] as $operation) {
+            $actualError = null;
+            try {
+                $operation();
+            } catch (RuntimeException $exception) {
+                $actualError = $exception->getMessage();
+            }
+            $this->assertSame('Installer progress state is invalid.', $actualError);
+        }
+
+        $this->assertSame($before, file_get_contents($this->progressFile()));
+        $this->assertFileDoesNotExist($this->directory.'/installer-token.lock');
+        $this->assertFileDoesNotExist($this->directory.'/installed.lock');
     }
 
     private function progressFile(): string
