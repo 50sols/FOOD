@@ -60,6 +60,11 @@ jobs:
           test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
           test "$(tr -d '[:space:]' < VERSION)" = "1.0.127"
           test "$(git show v1.0.125:VERSION | tr -d '[:space:]')" = "1.0.125"
+      - name: Validate G005 signed update builder source confinement
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m unittest discover -s scripts/tests -p 'test_build_update_bundle_safety.py' -v
       - name: Setup PHP and Composer for disposable upgrade
         uses: shivammathur/setup-php@v2
         with:

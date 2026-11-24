@@ -132,7 +132,7 @@ def safe_path(path: str) -> str:
         if (
             part.rstrip(" .") != part
             or any(char in '<>:"|?*' for char in part)
-            or re.fullmatch(r"(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\\..*)?", part, re.IGNORECASE)
+            or re.fullmatch(r"(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\..*)?", part, re.IGNORECASE)
         ):
             raise RuntimeError(f"Nonportable update path: {path}")
 
@@ -144,7 +144,7 @@ def safe_path(path: str) -> str:
         # .ENV.production and other live secrets. Only explicit example
         # templates accepted by UpdatePackageValidator are distributable.
         if (lowered == ".env" or lowered.startswith(".env.")) and not re.fullmatch(
-            r"\\.env(?:\\.[A-Za-z0-9_-]+)*\\.example", part
+            r"\.env(?:\.[A-Za-z0-9_-]+)*\.example", part
         ):
             raise RuntimeError(f"Environment files are not allowed in updates: {path}")
 
@@ -158,8 +158,8 @@ def safe_path(path: str) -> str:
     if public_mirror or (laravel_public and not bootstrap):
         for part in parts:
             if (
-                re.search(r"\\.(?:php[0-9]*|phtml|phar|cgi|pl|py|sh|asp|aspx|jsp)(?:\\.|$)", part, re.IGNORECASE)
-                or re.fullmatch(r"(?:\\.htaccess|\\.user\\.ini|web\\.config)(?:\\..*)?", part, re.IGNORECASE)
+                re.search(r"\.(?:php[0-9]*|phtml|phar|cgi|pl|py|sh|asp|aspx|jsp)(?:\.|$)", part, re.IGNORECASE)
+                or re.fullmatch(r"(?:\.htaccess|\.user\.ini|web\.config)(?:\..*)?", part, re.IGNORECASE)
             ):
                 raise RuntimeError(f"Executable public update path is not allowed: {path}")
 
