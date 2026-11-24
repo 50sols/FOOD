@@ -10,7 +10,9 @@ use App\Models\Inventory;
 use App\Models\StockMovement;
 use App\Models\User;
 use App\Models\Warehouse;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
+use LogicException;
 
 final class PurchaseReturnInventoryHandoff
 {
@@ -25,6 +27,13 @@ final class PurchaseReturnInventoryHandoff
         EnterprisePurchaseReturnLine $line,
         EnterpriseGoodsReceiptLine $sourceLine,
     ): void {
+        // A direct caller must not debit canonical stock before the owner
+        // projection discovers that there is no surrounding transaction.
+        // Fail before all writes, preserving atomic stock/title movements.
+        if (DB::transactionLevel() < 1) {
+            throw new LogicException('Purchase return stock reversal requires an active database transaction.');
+        }
+
         if ($line->stock_movement_id !== null || $line->inventory_id !== null) {
             throw ValidationException::withMessages([
                 'status' => ['Purchase return inventory reversal is already recorded for this line.'],
