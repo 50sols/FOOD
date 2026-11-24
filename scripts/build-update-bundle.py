@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import re
+import stat
 import subprocess
 import sys
 import zipfile
@@ -309,6 +310,13 @@ def trusted_source_file(repo_root: Path, source_relative: str) -> Path:
 
     if not source.is_file():
         raise RuntimeError(f"Selected update file is missing: {relative}")
+
+    # A hard link is not a symlink: resolve() still places it inside this
+    # worktree even when another pathname exposes the SAME external inode.
+    # The signer must not package a foreign, multiply-linked runtime source.
+    metadata = source.lstat()
+    if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
+        raise RuntimeError(f"Release input must be a single-link regular file: {relative}")
 
     try:
         source.resolve(strict=True).relative_to(repo_root.resolve(strict=True))
