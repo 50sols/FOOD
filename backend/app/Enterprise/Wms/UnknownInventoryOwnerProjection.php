@@ -112,8 +112,8 @@ HAVING COUNT(existing.id) = 0
         AND MIN(existing.owner_kind) = 'UNKNOWN'
         AND COUNT(existing.supplier_id) = 0
         AND COUNT(title_attestation.id) = 0
-        AND MIN(existing.quantity) = ?
-        AND MIN(existing.reserved_quantity) = ?
+        AND MIN(existing.quantity) = CAST(? AS DECIMAL(14,3))
+        AND MIN(existing.reserved_quantity) = CAST(? AS DECIMAL(14,3))
     )
 SQL;
 

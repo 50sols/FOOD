@@ -912,8 +912,10 @@ SQL);
             DB::transaction(function () use ($stock, $projection): void {
                 $inventory = Inventory::query()
                     ->whereKey($stock['inventory_id'])->lockForUpdate()->firstOrFail();
+                $previousQuantity = (float) $inventory->quantity;
+                $previousReserved = (float) $inventory->reserved_quantity;
                 $inventory->forceFill(['reserved_quantity' => '10.001'])->save();
-                $projection->afterReservationMutation($inventory);
+                $projection->afterReservationMutation($inventory, $previousQuantity, $previousReserved);
             });
             $this->fail('Invalid reservation must fail before UNKNOWN owner upsert.');
         } catch (\LogicException $exception) {
