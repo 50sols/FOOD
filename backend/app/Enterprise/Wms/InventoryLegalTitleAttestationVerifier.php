@@ -49,6 +49,13 @@ final class InventoryLegalTitleAttestationVerifier
         if (! isset($position->id) || ! isset($position->certified_by)
             || ! isset($position->source_inventory_updated_at)
             || $this->legalScopeForStore($storeId) === null
+            // A signed warehouse ID is not proof that its current custodian
+            // still belongs to this store. Reassignment must revoke title
+            // until the exact canonical warehouse/store relationship returns.
+            || ! DB::table('warehouses')
+                ->where('id', (int) ($inventory->warehouse_id ?? 0))
+                ->where('store_id', $storeId)
+                ->exists()
             || ! $this->hasProtectedStockMovementHistory((int) $inventory->id)) {
             // Store/warehouse existence alone is not a legal entity identity.
             return false;
