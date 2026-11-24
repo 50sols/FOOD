@@ -802,6 +802,53 @@ class InstallerWorkflowTest extends TestCase
         )['version']);
     }
 
+    public function test_hardlinked_installed_marker_cannot_spoof_setup_completion(): void
+    {
+        if (! function_exists('link')) {
+            $this->markTestSkipped('Hardlink support unavailable.');
+        }
+
+        $state = app(InstallState::class);
+        $foreign = $this->testDirectory.'/private-outside-installed-marker';
+        $marker = $state->lockPath();
+        $bytes = json_encode([
+            'version' => 'foreign-site-version',
+            'installed_at' => '2026-01-01T00:00:00+00:00',
+        ], JSON_THROW_ON_ERROR);
+        file_put_contents($foreign, $bytes);
+
+        if (! @link($foreign, $marker)) {
+            $this->markTestSkipped('Filesystem does not permit completion marker hardlinks.');
+        }
+
+        try {
+            foreach ([
+                static fn () => $state->isInstalled(),
+                static fn () => $state->token(),
+                static fn () => $state->writeLock('forbidden-replacement'),
+            ] as $attempt) {
+                try {
+                    $attempt();
+                    $this->fail('A hardlinked foreign completion marker must not authorize installed status.');
+                } catch (\RuntimeException $exception) {
+                    $this->assertSame('Installer completion lock is invalid or unsafe.', $exception->getMessage());
+                }
+                $this->assertSame($bytes, file_get_contents($marker));
+                $this->assertSame($bytes, file_get_contents($foreign));
+            }
+        } finally {
+            @unlink($marker);
+        }
+
+        $this->assertFalse($state->isInstalled());
+        $state->writeLock('real-installed-version');
+        $this->assertTrue($state->isInstalled());
+        $this->assertSame('real-installed-version', json_decode(
+            (string) file_get_contents($state->lockPath()), true, 512, JSON_THROW_ON_ERROR,
+        )['version']);
+        $this->assertSame($bytes, file_get_contents($foreign));
+    }
+
     public function test_install_finalization_uses_verified_progress_mutex_and_preserves_first_lock(): void
     {
         if (! function_exists('link')) {
