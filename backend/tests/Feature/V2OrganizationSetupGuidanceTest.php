@@ -1053,6 +1053,73 @@ final class V2OrganizationSetupGuidanceTest extends TestCase
         $this->assertSame($before, DB::table('audit_logs')->count());
     }
 
+    public function test_dirty_default_organization_instance_cannot_rename_reserved_identity(): void
+    {
+        $admin = $this->actor('SUPER_ADMIN', 'en');
+        $service = app(EnterpriseOrganizationAdministration::class);
+        $organization = EnterpriseOrganization::query()
+            ->where('code', OrganizationHierarchyService::DEFAULT_ORGANIZATION)->firstOrFail();
+        $auditBefore = DB::table('audit_logs')->count();
+
+        // An unguarded Eloquent instance can be changed in memory before a
+        // service call. That forged code must not change what Preview sees.
+        $organization->code = 'spoofed_platform_identity';
+        foreach (['preview', 'save'] as $operation) {
+            try {
+                $data = ['code' => 'captured_platform_identity', 'name' => 'Hijacked Default Organization'];
+                if ($operation === 'preview') {
+                    $service->assertUpdateAllowed($organization, $data);
+                } else {
+                    $service->updateOrganization($organization, $data, $admin);
+                }
+                $this->fail('A dirty caller model must not authorize a default routing identity change.');
+            } catch (ValidationException $exception) {
+                $this->assertArrayHasKey('code', $exception->errors());
+            }
+        }
+
+        $this->assertSame(OrganizationHierarchyService::DEFAULT_ORGANIZATION, $organization->fresh()->code);
+        $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+
+        // A real metadata-only update remains permitted, but cannot flush
+        // the unrelated dirty caller attribute while saving the new name.
+        $service->updateOrganization($organization, ['name' => 'Verified Platform Display'], $admin);
+        $this->assertSame(OrganizationHierarchyService::DEFAULT_ORGANIZATION, $organization->fresh()->code);
+        $this->assertSame('Verified Platform Display', $organization->fresh()->name);
+        $this->assertSame($auditBefore + 1, DB::table('audit_logs')->count());
+    }
+
+    public function test_dirty_business_unit_instance_cannot_reparent_during_metadata_only_save(): void
+    {
+        $admin = $this->actor('SUPER_ADMIN', 'en');
+        $service = app(EnterpriseOrganizationAdministration::class);
+        $unit = EnterpriseBusinessUnit::query()
+            ->where('code', OrganizationHierarchyService::DEFAULT_BUSINESS_UNIT)->firstOrFail();
+        $originalEntityId = (int) $unit->getRawOriginal('legal_entity_id');
+
+        $otherOrganization = EnterpriseOrganization::query()->create([
+            'code' => 'v2_dirty_model_other_org', 'name' => 'Other Organization', 'is_active' => true,
+        ]);
+        $otherCompany = EnterpriseCompany::query()->create([
+            'organization_id' => $otherOrganization->id, 'code' => 'v2_dirty_model_other_company',
+            'name' => 'Other Company', 'is_active' => true,
+        ]);
+        $otherEntity = EnterpriseLegalEntity::query()->create([
+            'company_id' => $otherCompany->id, 'code' => 'v2_dirty_model_other_entity',
+            'name' => 'Other Entity', 'is_active' => true,
+        ]);
+        $this->assertNotSame($originalEntityId, (int) $otherEntity->id);
+        $auditBefore = DB::table('audit_logs')->count();
+
+        $unit->legal_entity_id = $otherEntity->id;
+        $service->updateBusinessUnit($unit, ['name' => 'Safe Business Unit Display'], $admin);
+
+        $this->assertSame($originalEntityId, (int) $unit->fresh()->legal_entity_id);
+        $this->assertSame(OrganizationHierarchyService::DEFAULT_BUSINESS_UNIT, $unit->fresh()->code);
+        $this->assertSame('Safe Business Unit Display', $unit->fresh()->name);
+        $this->assertSame($auditBefore + 1, DB::table('audit_logs')->count());
+    }
+
     public function test_default_business_unit_code_is_guarded_and_display_name_stays_editable(): void
     {
         $admin = $this->actor('SUPER_ADMIN', 'en');
