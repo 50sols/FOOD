@@ -216,6 +216,36 @@ async function run({ github, context, core, nowMs = Date.now() }) {
     const originalPrNumber = claim.pr || historical[0]?.number || 0;
     // Use the *live issue branch*, not a potentially stale PR-search head.
     const firstBranch = await branchState(github, owner, repo, claim.branch);
+    // An open PR may live in a fork whose ref cannot be read through the base
+    // repository. A missing local branch must not erase fresh PR HEAD activity.
+    // Unknown HEAD provenance is an approval/repair task, never an idle lease.
+    let verifiedPrHead = null;
+    if (!firstBranch.sha && ownPr) {
+      const headRepo = ownPr.head?.repo;
+      const ref = ownPr.head?.sha;
+      if (!ref || ownPr.head?.ref !== claim.branch
+          || !headRepo?.owner?.login || !headRepo?.name) {
+        active += 1;
+        continue;
+      }
+      try {
+        const detail = await github.rest.repos.getCommit({
+          owner: headRepo.owner.login, repo: headRepo.name, ref,
+        });
+        const commitMs = time(detail.data.commit?.committer?.date)
+          || time(detail.data.commit?.author?.date);
+        if (!commitMs) {
+          active += 1;
+          continue;
+        }
+        verifiedPrHead = { sha: ref, commitMs,
+          owner: headRepo.owner.login, repo: headRepo.name };
+      } catch (err) {
+        if (err.status !== 404) throw err;
+        active += 1;
+        continue;
+      }
+    }
     const head = firstBranch.sha || ownPr?.head?.sha || '';
     const ciRunning = await ciInProgress(github, owner, repo, head, claim.branch);
 
@@ -291,7 +321,7 @@ async function run({ github, context, core, nowMs = Date.now() }) {
 
     const decision = activityDecision({
       nowMs, claim, latestCommitMs: firstBranch.commitMs,
-      latestPrCommitMs: firstBranch.commitMs, ciRunning,
+      latestPrCommitMs: verifiedPrHead?.commitMs || firstBranch.commitMs, ciRunning,
     });
     if (!decision.release) { active += 1; continue; }
     const marker = RELEASE_MARK + 'issue=' + issue.number + ' claim=' + claimIdentity(claim) + ' -->';
@@ -317,13 +347,21 @@ async function run({ github, context, core, nowMs = Date.now() }) {
       secondBranch.sha || head, claim.branch);
     const secondDecision = activityDecision({
       nowMs, claim, latestCommitMs: secondBranch.commitMs,
-      latestPrCommitMs: secondBranch.commitMs, ciRunning: secondCi,
+      latestPrCommitMs: verifiedPrHead?.commitMs || secondBranch.commitMs, ciRunning: secondCi,
     });
     if (!secondDecision.release) continue;
     // An original PR may be closed or merged while this sweep is scanning.
     // Never race an administrative closure with an automatic handoff label.
     if (originalPrNumber) {
       const currentOriginal = await github.rest.pulls.get({ owner, repo, pull_number: originalPrNumber });
+      // The PR may have acquired a fresh commit while issue/CI data was
+      // scanned. Reconcile exact source repository and SHA before releasing.
+      if (verifiedPrHead && (currentOriginal.data.state !== 'open'
+          || currentOriginal.data.base?.ref !== 'Foodex_V2'
+          || currentOriginal.data.head?.ref !== claim.branch
+          || currentOriginal.data.head?.sha !== verifiedPrHead.sha
+          || currentOriginal.data.head?.repo?.owner?.login !== verifiedPrHead.owner
+          || currentOriginal.data.head?.repo?.name !== verifiedPrHead.repo)) continue;
       if (isMatchingMergedPr(currentOriginal.data, claim)
           || isMatchingClosedUnmergedPr(currentOriginal.data, claim)) continue;
     }

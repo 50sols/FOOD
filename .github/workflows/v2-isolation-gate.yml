@@ -60,6 +60,11 @@ jobs:
         run: |
           set -euo pipefail
           node --test .github/scripts/v2-issue-branch-uniqueness.test.js
+      - name: Unit-test fail-closed original PR resume guard
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --test .github/scripts/v2-worker-resume.test.js
       - name: Refuse duplicate issue-scoped remote branches
         uses: actions/github-script@v8
         with:

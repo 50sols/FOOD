@@ -249,6 +249,7 @@ class CiPlanTest(unittest.TestCase):
             "docs/v2/qa/4000-archived-active-role-authority.md":{"backend"},
             "docs/v2/qa/2732-wholesale-financial-parity.md":{"backend","customer"},
             "docs/v2/qa/2845-erp-entitlement-maker-checker-boundaries.md":{"backend"},
+            "docs/v2/qa/2745-setup-composer-lock-provenance.md":{"backend"},
         }
         for path,expected in routes.items():
             with self.subTest(path=path):
@@ -288,6 +289,46 @@ class CiPlanTest(unittest.TestCase):
         self.assertFalse(workflow["areas"]["c13_integrated_e2e"])
         self.assertFalse(workflow["areas"]["operational_completion_e2e"])
         self.assertFalse(workflow["backend_dashboard_only"])
+    def test_v2_setup_acceptance_paths_route_to_backend_and_keep_ci_configuration_expansion(self):
+        setup_paths=[
+            "docs/v2/qa/2745-setup-composer-lock-provenance.md",
+            "docs/v2/qa/2745-setup-ed25519-signature.md",
+            "Release/INSTALL-FIRST.txt",
+            "scripts/validate-fresh-setup.sh",
+            "scripts/v2_build_setup_zip.py",
+            "scripts/v2_setup_staging_verify.py",
+            "scripts/v2_setup_signature.php",
+            "scripts/tests/test_release_factory_v2_safety.py",
+            "scripts/tests/test_v2_build_setup_zip.py",
+            "scripts/tests/test_v2_setup_staging_verify.py",
+            "scripts/tests/test_v2_setup_signature.py",
+        ]
+        for path in setup_paths:
+            with self.subTest(path=path):
+                plan=module.resolve(self.config,[path],"fix/2745-v2-deterministic-setup-composer-lock")
+                self.assertEqual([],plan["unclassified_paths"])
+                self.assertEqual({"backend"},{area for area,enabled in plan["areas"].items() if enabled})
+                self.assertTrue(plan["backend_dashboard_only"])
+                self.assertFalse(plan["areas"]["c13_integrated_e2e"])
+                self.assertFalse(plan["areas"]["operational_completion_e2e"])
+
+        workflow_plan=module.resolve(
+            self.config,
+            setup_paths+[
+                ".ci/ci-map.json",
+                ".github/workflows/backend-ci.yml",
+                ".github/workflows/release-factory.yml",
+                ".github/workflows/v2-setup-staging-acceptance.yml",
+                "scripts/tests/test_ci_plan.py",
+            ],
+            "fix/2745-v2-deterministic-setup-composer-lock",
+        )
+        self.assertEqual([],workflow_plan["unclassified_paths"])
+        for area in ("backend","customer","driver","van","dashboard_ui","mobile_ui","enterprise_performance"):
+            self.assertTrue(workflow_plan["areas"][area],area)
+        self.assertFalse(workflow_plan["areas"]["c13_integrated_e2e"])
+        self.assertFalse(workflow_plan["areas"]["operational_completion_e2e"])
+        self.assertFalse(workflow_plan["backend_dashboard_only"])
     def test_reviewed_2846_organization_qa_keeps_laravel_checks_and_unknown_fail_closed(self):
         """#4040: classify only source-reviewed #2846 org setup QA, never bypass E2E."""
         paths = [
