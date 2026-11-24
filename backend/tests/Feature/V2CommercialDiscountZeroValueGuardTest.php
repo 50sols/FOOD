@@ -2,6 +2,14 @@
 
 namespace Tests\Feature;
 
+use App\Enterprise\Entitlements\EntitlementScope;
+use App\Enterprise\Entitlements\ModuleEntitlementManager;
+use App\Enterprise\Finance\FinanceFoundationService;
+use App\Enterprise\Modules\ModuleLifecycleManager;
+use App\Enterprise\Modules\ModuleRegistry;
+use App\Enterprise\Modules\ModuleState;
+use App\Enterprise\Organization\OrganizationHierarchyService;
+use App\Models\Store;
 use App\Models\Role;
 use App\Models\User;
 use App\Services\B2bCustomerService;
@@ -174,8 +182,36 @@ final class V2CommercialDiscountZeroValueGuardTest extends TestCase
     {
         $actor = User::factory()->create(['is_active' => true, 'locale' => 'en']);
         $actor->roles()->attach(Role::query()->where('code', 'FINANCE')->firstOrFail());
+        $this->enableFinanceForStore($actor);
 
         return $actor->fresh();
+    }
+
+    private function enableFinanceForStore(User $actor): void
+    {
+        $storeId = app(WholesalePrincipal::class)->storeId();
+        $store = Store::query()->findOrFail($storeId);
+        app(OrganizationHierarchyService::class)->ensureDefaultScopeForStore($store);
+        $modules = app(ModuleRegistry::class);
+        config()->set(
+            'enterprise_module_readiness.certified_versions.finance',
+            $modules->manifest(FinanceFoundationService::MODULE)->version,
+        );
+        if (! $modules->isEnabled(FinanceFoundationService::MODULE)) {
+            app(ModuleLifecycleManager::class)->transition(
+                FinanceFoundationService::MODULE, ModuleState::ENABLING, $actor,
+            );
+            app(ModuleLifecycleManager::class)->transition(
+                FinanceFoundationService::MODULE, ModuleState::ENABLED, $actor,
+            );
+        }
+        $scope = app(OrganizationHierarchyService::class)->scopeForStore($storeId);
+        $this->assertNotNull($scope);
+        app(ModuleEntitlementManager::class)->set(
+            FinanceFoundationService::MODULE,
+            new EntitlementScope(EntitlementScope::LEGAL_ENTITY, $scope['legal_entity_id']),
+            true, ['finance.foundation.read', 'finance.ar.read'], $actor,
+        );
     }
 
     private function order(?User $customerUser = null): int
