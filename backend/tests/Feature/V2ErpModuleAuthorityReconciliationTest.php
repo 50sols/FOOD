@@ -7,6 +7,9 @@ use App\Enterprise\Entitlements\ModuleEntitlementManager;
 use App\Enterprise\Entitlements\ModuleEntitlementResolver;
 use App\Enterprise\Modules\ModuleOperationalReadiness;
 use App\Enterprise\Modules\ModuleRegistry;
+use App\Enterprise\Organization\OrganizationHierarchyService;
+use App\Models\Store;
+use App\Services\WholesalePrincipal;
 use App\Models\Role;
 use App\Models\User;
 use App\Services\EnterpriseModuleAdministration;
@@ -36,6 +39,10 @@ final class V2ErpModuleAuthorityReconciliationTest extends TestCase
 
     public function test_enabled_and_entitled_procurement_requires_exact_version_readiness_and_revocation_removes_navigation(): void
     {
+        // Signed readiness never grants a phantom store. Provision the actual
+        // Wholesale organizational scope required by the HTTP/Sidebar contract.
+        $store = Store::query()->findOrFail(app(WholesalePrincipal::class)->storeId());
+        app(OrganizationHierarchyService::class)->ensureDefaultScopeForStore($store);
         $actor = $this->superAdmin();
         app(EnterpriseModuleAdministration::class)->perform('procurement', 'enable', $actor);
 
