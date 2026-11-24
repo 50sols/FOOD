@@ -68,7 +68,7 @@ class GccHeavyExecutionContracts(unittest.TestCase):
         self.assertLess(AGENT.index("function Process("), AGENT.index("switch($Mode) {"))
 
     def test_trusted_immutable_local_scripts_are_never_read_from_pr_checkout(self):
-        self.assertIn("ea1322009a2ea8fb8ba81f8249c21c52523a877a", AGENT)
+        self.assertIn("a694003902c22563ed8dcc0e7647b8c19067e224", AGENT)
         self.assertIn("raw.githubusercontent.com", AGENT)
         self.assertIn("git hash-object $file", AGENT)
         self.assertIn("context: .", COMPOSE)
