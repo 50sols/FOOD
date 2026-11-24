@@ -14,7 +14,10 @@ return [
         // Required by procurement v2 manifest health_checks=['database'].
         // A missing probe is NOT equivalent to a healthy certified module.
         'procurement' => [\App\Enterprise\Health\DatabaseHealthProbe::class],
-        'inventory_wms' => [],
+        'finance' => [\App\Enterprise\Health\DatabaseHealthProbe::class],
+        'inventory_wms' => [\App\Enterprise\Health\DatabaseHealthProbe::class],
+        'treasury' => [\App\Enterprise\Health\DatabaseHealthProbe::class],
+        'enterprise_bi' => [\App\Enterprise\Health\DatabaseHealthProbe::class],
         'sample_optional' => [],
     ],
 ];
