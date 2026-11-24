@@ -9,6 +9,78 @@ use Tests\TestCase;
 
 final class V2UpdaterRollbackHardlinkSafetyTest extends TestCase
 {
+    public function test_database_restore_rejects_hardlinked_metadata_and_snapshot_before_purging_connection(): void
+    {
+        if (! function_exists('link')) {
+            $this->markTestSkipped('Hardlinks unavailable.');
+        }
+
+        $suffix = bin2hex(random_bytes(8));
+        $root = storage_path('framework/v2-db-restore-links-'.$suffix);
+        $snapshotDirectory = $root.'/database-test';
+        $externalMetadata = $root.'/private-database-metadata';
+        $metadataPath = $snapshotDirectory.'/database.json';
+        $otherMetadataLink = $root.'/metadata-alias';
+        $externalSnapshot = $root.'/private-database-snapshot';
+        $driver = \Illuminate\Support\Facades\DB::connection()->getDriverName();
+        $filename = match ($driver) {
+            'sqlite' => 'database.sqlite',
+            'mysql' => 'database.sql',
+            'pgsql' => 'database.dump',
+            default => null,
+        };
+        if ($filename === null) {
+            $this->markTestSkipped('Database backup provenance test requires a supported DB driver.');
+        }
+
+        $snapshotPath = $snapshotDirectory.'/'.$filename;
+        $previousRoot = config('foodex.update_backup_path');
+        $pdo = \Illuminate\Support\Facades\DB::connection()->getPdo();
+        File::ensureDirectoryExists($snapshotDirectory);
+        file_put_contents($externalSnapshot, 'outside-database-snapshot-sentinel');
+        file_put_contents($externalMetadata, json_encode([
+            'driver' => $driver,
+            'snapshot' => $snapshotPath,
+        ], JSON_THROW_ON_ERROR));
+        config()->set('foodex.update_backup_path', $root);
+
+        try {
+            if (! @link($externalMetadata, $metadataPath)) {
+                $this->markTestSkipped('Filesystem does not permit database metadata hardlinks.');
+            }
+
+            $runtime = app(LaravelUpdateRuntime::class);
+            try {
+                $runtime->rollbackDatabase($snapshotDirectory);
+                $this->fail('A multiply linked database metadata inode must not authorize a restore.');
+            } catch (RuntimeException $exception) {
+                $this->assertStringContainsString('metadata is invalid or unsafe', $exception->getMessage());
+            }
+
+            $this->assertSame($pdo, \Illuminate\Support\Facades\DB::connection()->getPdo());
+            $this->assertSame('outside-database-snapshot-sentinel', file_get_contents($externalSnapshot));
+
+            unlink($metadataPath);
+            copy($externalMetadata, $metadataPath);
+            if (! @link($externalSnapshot, $snapshotPath)) {
+                $this->markTestSkipped('Filesystem does not permit database snapshot hardlinks.');
+            }
+
+            try {
+                $runtime->rollbackDatabase($snapshotDirectory);
+                $this->fail('A multiply linked database snapshot inode must not authorize a restore.');
+            } catch (RuntimeException $exception) {
+                $this->assertStringContainsString('snapshot is missing or unsafe', $exception->getMessage());
+            }
+
+            $this->assertSame($pdo, \Illuminate\Support\Facades\DB::connection()->getPdo());
+            $this->assertSame('outside-database-snapshot-sentinel', file_get_contents($externalSnapshot));
+        } finally {
+            config()->set('foodex.update_backup_path', $previousRoot);
+            File::deleteDirectory($root);
+        }
+    }
+
     public function test_file_backup_rejects_hardlinked_release_source_before_copying_foreign_bytes(): void
     {
         if (! function_exists('link') || ! class_exists(\ZipArchive::class)) {
