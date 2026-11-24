@@ -90,7 +90,7 @@ function Classify-GitFetchFailure([string]$Path) {
   if($privateDiagnostic -match '(?i)could not resolve host|could not resolve proxy|name or service not known|failed to connect|connection timed out|connection reset|ssl certificate problem|proxy connect|http (429|5[0-9][0-9])') {
    return 'git-fetch-network'
   }
-  if($privateDiagnostic -match '(?i)repository not found|authentication failed|permission denied \(publickey\)|could not read username|http (401|403|407)') {
+  if($privateDiagnostic -match '(?i)repository not found|authentication failed|permission denied \(publickey\)|could not read username|http (401|403|407)|requested url returned error:\s*(401|403|407)\b|remote:\s*permission to\s+[^\r\n]+\s+denied') {
    return 'git-fetch-access'
   }
   if($privateDiagnostic -match '(?i)couldn.t find remote ref|not our ref|fatal: bad object') {
