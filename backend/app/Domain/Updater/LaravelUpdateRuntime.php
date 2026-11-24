@@ -880,6 +880,27 @@ final class LaravelUpdateRuntime implements UpdateRuntime
 
     private function openArchive(string $packagePath): ZipArchive
     {
+        // Verify Package runs separately from Apply. The upload may have
+        // been replaced by an alias in between, and direct runtime callers
+        // must obey the same filesystem provenance boundary as validation.
+        for ($candidate = $packagePath; ; $candidate = dirname($candidate)) {
+            clearstatcache(true, $candidate);
+            if (is_link($candidate)) {
+                throw new RuntimeException('Update package path cannot be a symbolic link.');
+            }
+
+            if (dirname($candidate) === $candidate) {
+                break;
+            }
+        }
+
+        $packageStat = @lstat($packagePath);
+        if ($packageStat === false
+            || ($packageStat['mode'] & 0170000) !== 0100000
+            || $packageStat['nlink'] !== 1) {
+            throw new RuntimeException('Update package file is hardlinked or unsafe.');
+        }
+
         $archive = new ZipArchive;
         if ($archive->open($packagePath) !== true) {
             throw new RuntimeException('Update package is not a valid ZIP archive.');
