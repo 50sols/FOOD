@@ -310,6 +310,19 @@ final class RestaurantKitchenService
         abort_unless($deleted === 1, 404);
     }
 
+    /**
+     * Fail closed on a kitchen ticket outside the authorized branch before
+     * parsing action/operation-key payloads. Mutations still recheck in their
+     * original transactions.
+     */
+    public function assertTicketInBranch(SmartOrderingBranch $branch, string $reference): void
+    {
+        abort_unless(DB::table('smart_ordering_order_contexts')
+            ->where('branch_id', (int) $branch->getKey())
+            ->where('public_reference', $reference)
+            ->exists(), 404);
+    }
+
     public function applyTicketAction(
         SmartOrderingBranch $branch,
         string $reference,

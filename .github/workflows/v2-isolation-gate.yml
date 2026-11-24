@@ -7,6 +7,9 @@ on:
 
 permissions:
   contents: read
+  issues: read
+  pull-requests: read
+  actions: read
 
 concurrency:
   group: foodex-v2-isolation-${{ github.event.pull_request.number }}
@@ -57,12 +60,40 @@ jobs:
         run: |
           set -euo pipefail
           node --test .github/scripts/v2-issue-branch-uniqueness.test.js
+      - name: Unit-test fail-closed original PR resume guard
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --test .github/scripts/v2-worker-resume.test.js
       - name: Refuse duplicate issue-scoped remote branches
         uses: actions/github-script@v8
         with:
           script: |
             const gate = require('./.github/scripts/v2-issue-branch-uniqueness.js');
             await gate.run({ github, context, core });
+      - name: Resume-first historical PR gate (read-only, no duplicates)
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const { buildPlan } = require('./.github/scripts/v2-worker-resume.js');
+            const head = context.payload.pull_request.head.ref;
+            const match = head.match(/^(?:feat|fix|chore|docs|refactor|test|ci|worker)\/([1-9][0-9]*)-/);
+            if (!match) throw Error('Invalid issue-scoped V2 PR branch');
+            const plan = await buildPlan({
+              github, owner: context.repo.owner, repo: context.repo.repo,
+              issueNumber: Number(match[1])
+            });
+            core.info('V2 original-work reconciliation: ' + JSON.stringify(plan));
+            const permitted = (plan.action === 'RESUME_ORIGINAL_PR'
+              && plan.original_pr === context.payload.pull_request.number
+              && plan.original_branch === head)
+              || (plan.action === 'RESUME_ORIGINAL_BRANCH'
+                && plan.original_branch === head);
+            if (!permitted) {
+              core.setFailed('V2 duplicate or unresolved historic PR: ' + plan.action
+                + ' — resume existing original branch/PR, never recreate it');
+            }
+
       - name: Verify V2 unified governance source contract and negative regression tests
         shell: bash
         run: |

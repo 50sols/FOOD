@@ -62,6 +62,14 @@ final class TreasuryMasterController extends Controller
             $this->tenantScope->assertStore($actor, $requestedStoreId, 'finance.view');
         }
 
+        // The cashbox and bank-account lists paginate independently. Validate both
+        // explicit selectors after canonical permission/store scoping, so malformed
+        // values cannot silently fall back to page one or mask an unauthorized store.
+        $request->validate([
+            'cashboxes_page' => ['nullable', 'integer', 'min:1'],
+            'bank_accounts_page' => ['nullable', 'integer', 'min:1'],
+        ]);
+
         $search = trim((string) ($filters['q'] ?? ''));
         $status = (string) ($filters['status'] ?? 'all');
         $perPage = (int) ($filters['per_page'] ?? 25);

@@ -135,6 +135,236 @@ class SmartOrderingSupplyIntelligenceTest extends TestCase
         }
     }
 
+    public function test_supply_mapping_draft_dismiss_scope_branch_before_unrelated_validation_ar_en(): void
+    {
+        $f = $this->fixture();
+        $actor = $f['actor'];
+        $role = Role::query()->where('code', 'B2C_STORE_ADMIN')->firstOrFail();
+        DB::table('user_store_roles')->insert([
+            'user_id' => $actor->id,
+            'store_id' => $f['restaurant_store_id'],
+            'role_id' => $role->id,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        $foreignStoreId = $this->store('B2C', 'SO-FOREIGN-SUPPLY-'.Str::upper(Str::random(6)));
+        $foreignSiteId = (int) DB::table('smart_ordering_sites')->insertGetId([
+            'public_id' => (string) Str::uuid(),
+            'store_id' => $foreignStoreId,
+            'slug' => 'foreign-supply-'.Str::lower(Str::random(10)),
+            'runtime_state' => 'ENABLED',
+            'master_enabled' => true,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        $foreignBranchId = $this->smartBranch($foreignSiteId, 'FOREIGN');
+        $missingBranchId = (int) DB::table('smart_ordering_branches')->max('id') + 10000;
+        $cases = [
+            [
+                'url' => route('admin.smart-ordering.supply.mappings.store', $f['site']),
+                'valid' => [
+                    'menu_item_public_id' => $f['menu_item_public_id'],
+                    'foodex_product_id' => $f['wholesale_product_id'],
+                    'quantity_per_item' => 1,
+                ],
+                'invalid' => 'quantity_per_item',
+            ],
+            [
+                'url' => route('admin.smart-ordering.supply.draft', $f['site']),
+                'valid' => ['quantities' => [$f['wholesale_product_id'] => 1]],
+                'invalid' => 'quantities',
+            ],
+            [
+                'url' => route('admin.smart-ordering.supply.dismiss', [
+                    'site' => $f['site_id'], 'product' => $f['wholesale_product_id'],
+                ]),
+                'valid' => ['days' => 7, 'reason' => 'Review'],
+                'invalid' => 'days',
+            ],
+        ];
+        $watched = [
+            'smart_ordering_supply_mappings',
+            'smart_ordering_supply_reorder_drafts',
+            'smart_ordering_supply_dismissals',
+            'audit_logs',
+        ];
+        $before = [];
+        foreach ($watched as $table) {
+            $before[$table] = DB::table($table)->count();
+        }
+        $originalLocale = app()->getLocale();
+        try {
+            foreach (['ar', 'en'] as $locale) {
+                $actor->forceFill(['locale' => $locale])->saveQuietly();
+                app()->setLocale($locale);
+                foreach ($cases as $case) {
+                    foreach ([$foreignBranchId, (string) $foreignBranchId, $missingBranchId] as $denied) {
+                        foreach ([
+                            ['branch_id' => $denied],
+                            ['branch_id' => $denied, $case['invalid'] => ['invalid']],
+                            [...$case['valid'], 'branch_id' => $denied],
+                        ] as $payload) {
+                            $this->actingAs($actor->fresh())->postJson($case['url'], $payload)
+                                ->assertNotFound();
+                        }
+                    }
+                    foreach ([
+                        ['branch_id' => 0],
+                        ['branch_id' => 'not-a-number'],
+                        ['branch_id' => '999999999999999999999999999999'],
+                        ['branch_id' => $f['branch_id'], $case['invalid'] => ['invalid']],
+                    ] as $payload) {
+                        $this->actingAs($actor->fresh())->postJson($case['url'], $payload)
+                            ->assertUnprocessable();
+                    }
+                }
+            }
+        } finally {
+            app()->setLocale($originalLocale);
+        }
+        foreach ($watched as $table) {
+            $this->assertSame($before[$table], DB::table($table)->count(), $table.' unchanged');
+        }
+        $this->actingAs($actor->fresh())->post(
+            route('admin.smart-ordering.supply.mappings.store', $f['site']),
+            [...$cases[0]['valid'], 'branch_id' => $f['branch_id']],
+        )->assertRedirect();
+        // A reorder draft requires executable recommendations from real completed
+        // consumption. That positive lifecycle is covered by the dedicated
+        // one-click reorder test; this regression proves branch authorization
+        // happens before payload validation, without fabricating inventory.
+        $this->actingAs($actor->fresh())->post(
+            $cases[2]['url'], [...$cases[2]['valid'], 'branch_id' => $f['branch_id']],
+        )->assertRedirect();
+        $this->assertSame($before['smart_ordering_supply_mappings'] + 1,
+            DB::table('smart_ordering_supply_mappings')->count());
+        $this->assertSame($before['smart_ordering_supply_dismissals'] + 1,
+            DB::table('smart_ordering_supply_dismissals')->count());
+    }
+
+    public function test_supply_stock_and_waste_scope_explicit_branch_before_payload_validation_ar_en(): void
+    {
+        $f = $this->fixture();
+        $actor = $f['actor'];
+        $role = Role::query()->where('code', 'B2C_STORE_ADMIN')->firstOrFail();
+        DB::table('user_store_roles')->insert([
+            'user_id' => $actor->id,
+            'store_id' => $f['restaurant_store_id'],
+            'role_id' => $role->id,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $foreignStoreId = $this->store('B2C', 'SO-SUPPLY-FOREIGN-'.Str::upper(Str::random(6)));
+        $foreignSiteId = (int) DB::table('smart_ordering_sites')->insertGetId([
+            'public_id' => (string) Str::uuid(),
+            'store_id' => $foreignStoreId,
+            'slug' => 'supply-foreign-'.Str::lower(Str::random(10)),
+            'runtime_state' => 'ENABLED',
+            'master_enabled' => true,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        $foreignBranchId = $this->smartBranch($foreignSiteId, 'FOREIGN');
+        $missingBranchId = (int) DB::table('smart_ordering_branches')->max('id') + 10000;
+
+        $cases = [
+            [
+                'method' => 'PUT',
+                'route' => 'admin.smart-ordering.supply.stock',
+                'payload' => [
+                    'foodex_product_id' => $f['wholesale_product_id'],
+                    'on_hand_quantity' => 10,
+                    'source' => 'physical_count',
+                    'counted_at' => now('Asia/Kuwait')->toIso8601String(),
+                ],
+                'invalid_field' => 'on_hand_quantity',
+            ],
+            [
+                'method' => 'POST',
+                'route' => 'admin.smart-ordering.supply.waste',
+                'payload' => [
+                    'foodex_product_id' => $f['wholesale_product_id'],
+                    'quantity' => 0.5,
+                    'reason' => 'prep_loss',
+                    'occurred_at' => now('Asia/Kuwait')->toIso8601String(),
+                ],
+                'invalid_field' => 'quantity',
+            ],
+        ];
+        $stockBefore = DB::table('smart_ordering_supply_stock_snapshots')->count();
+        $wasteBefore = DB::table('smart_ordering_supply_waste_events')->count();
+
+        foreach (['ar', 'en'] as $locale) {
+            $actor->forceFill(['locale' => $locale])->save();
+            app()->setLocale($locale);
+
+            foreach ($cases as $case) {
+                $url = route($case['route'], $f['site']);
+                $ownedPayload = [
+                    ...$case['payload'],
+                    'branch_id' => $f['branch_id'],
+                ];
+                // Numeric-string selectors must enforce the same branch scope.
+                $this->actingAs($actor->fresh())
+                    ->json($case['method'], $url, [
+                        ...$case['payload'],
+                        'branch_id' => (string) $foreignBranchId,
+                    ])->assertNotFound();
+
+                foreach ([$foreignBranchId, $missingBranchId] as $deniedBranch) {
+                    foreach ([
+                        ['branch_id' => $deniedBranch],
+                        ['branch_id' => $deniedBranch, $case['invalid_field'] => -1],
+                        [...$case['payload'], 'branch_id' => $deniedBranch],
+                    ] as $deniedPayload) {
+                        $this->actingAs($actor->fresh())
+                            ->json($case['method'], $url, $deniedPayload)
+                            ->assertNotFound();
+                    }
+                }
+
+                foreach ([
+                    [],
+                    ['branch_id' => 0],
+                    ['branch_id' => 'invalid'],
+                    ['branch_id' => '999999999999999999999999999999'],
+                    ['branch_id' => $f['branch_id']],
+                    [...$ownedPayload, $case['invalid_field'] => -1],
+                ] as $invalidPayload) {
+                    $this->actingAs($actor->fresh())
+                        ->json($case['method'], $url, $invalidPayload)
+                        ->assertUnprocessable();
+                }
+
+                $this->actingAs($actor->fresh())
+                    ->json($case['method'], $url, $ownedPayload)
+                    ->assertRedirect();
+            }
+        }
+
+        $this->assertSame($stockBefore + 2, DB::table('smart_ordering_supply_stock_snapshots')->count());
+        $this->assertSame($wasteBefore + 2, DB::table('smart_ordering_supply_waste_events')->count());
+        $this->assertDatabaseHas('smart_ordering_supply_stock_snapshots', [
+            'site_id' => $f['site_id'],
+            'branch_id' => $f['branch_id'],
+            'source' => 'physical_count',
+        ]);
+        $this->assertDatabaseHas('smart_ordering_supply_waste_events', [
+            'site_id' => $f['site_id'],
+            'branch_id' => $f['branch_id'],
+            'reason' => 'prep_loss',
+        ]);
+        $this->assertDatabaseMissing('smart_ordering_supply_stock_snapshots', [
+            'site_id' => $f['site_id'],
+            'branch_id' => $foreignBranchId,
+        ]);
+        $this->assertDatabaseMissing('smart_ordering_supply_waste_events', [
+            'site_id' => $f['site_id'],
+            'branch_id' => $foreignBranchId,
+        ]);
+    }
+
     public function test_reorder_is_deterministic_uses_authoritative_stock_only_when_present_and_blocks_stale_sku(): void
     {
         $f = $this->fixture();
@@ -439,6 +669,372 @@ class SmartOrderingSupplyIntelligenceTest extends TestCase
         $this->assertSame($counts['store_products'], DB::table('store_products')->count());
         $this->assertSame($counts['orders'], DB::table('orders')->count());
         $this->assertSame($counts['audit'], DB::table('audit_logs')->count());
+    }
+
+    public function test_supply_entry_rejects_malformed_scalar_store_selector_before_default_ar_en(): void
+    {
+        $f = $this->fixture();
+        $actor = $f['actor'];
+        $role = Role::query()->where('code', 'B2C_STORE_ADMIN')->firstOrFail();
+        DB::table('user_store_roles')->insert([
+            'user_id' => $actor->id,
+            'store_id' => $f['restaurant_store_id'],
+            'role_id' => $role->id,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        $foreignStore = $this->store('B2C', 'SO-ENTRY-SCALAR-'.Str::upper(Str::random(6)));
+        $url = route('admin.smart-ordering.supply.entry');
+        $destination = route('admin.smart-ordering.supply.index', ['site' => $f['site_id']]);
+        $tables = [
+            'smart_ordering_sites',
+            'smart_ordering_supply_mappings',
+            'smart_ordering_supply_stock_snapshots',
+            'smart_ordering_supply_reorder_drafts',
+            'audit_logs',
+        ];
+        $before = [];
+        foreach ($tables as $table) {
+            $before[$table] = DB::table($table)->count();
+        }
+        $originalLocale = app()->getLocale();
+        try {
+            foreach (['ar', 'en'] as $locale) {
+                $actor->forceFill(['locale' => $locale])->saveQuietly();
+                app()->setLocale($locale);
+
+                foreach (['?store_id=invalid', '?store_id=0', '?store_id=-1',
+                    '?store_id=1.5', '?store_id=999999999999999999999999'] as $invalid) {
+                    $this->actingAs($actor->fresh())->getJson($url.$invalid)
+                        ->assertUnprocessable();
+                }
+
+                $this->actingAs($actor->fresh())
+                    ->get($url.'?store_id='.$foreignStore)->assertNotFound();
+                $this->actingAs($actor->fresh())
+                    ->get($url.'?store_id%5B%5D='.$f['restaurant_store_id'])->assertNotFound();
+
+                foreach (['', '?store_id=', '?store_id='.$f['restaurant_store_id']] as $valid) {
+                    $this->actingAs($actor->fresh())->get($url.$valid)
+                        ->assertRedirect($destination);
+                }
+            }
+        } finally {
+            app()->setLocale($originalLocale);
+        }
+
+        $roleless = User::query()->create([
+            'name' => 'Supply Scalar Unauthorized',
+            'email' => 'supply-entry-scalar-roleless@example.test',
+            'password' => 'password',
+            'locale' => 'en',
+            'is_active' => true,
+        ]);
+        $this->actingAs($roleless)->getJson($url.'?store_id=invalid')
+            ->assertForbidden();
+        foreach ($tables as $table) {
+            $this->assertSame($before[$table], DB::table($table)->count(), $table.' unchanged');
+        }
+    }
+
+    public function test_supply_entry_rejects_nested_store_ids_after_authorization_without_default_fallback(): void
+    {
+        $f = $this->fixture();
+        $actor = $f['actor'];
+        $role = Role::query()->where('code', 'B2C_STORE_ADMIN')->firstOrFail();
+        DB::table('user_store_roles')->insert([
+            'user_id' => $actor->id,
+            'store_id' => $f['restaurant_store_id'],
+            'role_id' => $role->id,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $foreignStoreId = $this->store('B2C', 'SO-ENTRY-FOREIGN-'.Str::upper(Str::random(6)));
+        $url = route('admin.smart-ordering.supply.entry');
+        $destination = route('admin.smart-ordering.supply.index', ['site' => $f['site_id']]);
+
+        foreach (['ar', 'en'] as $locale) {
+            $actor->forceFill(['locale' => $locale])->save();
+            app()->setLocale($locale);
+
+            foreach ([
+                '',
+                '?store_id=',
+                '?store_id='.$f['restaurant_store_id'],
+            ] as $valid) {
+                $this->actingAs($actor->fresh())
+                    ->get($url.$valid)
+                    ->assertRedirect($destination);
+            }
+
+            $this->actingAs($actor->fresh())
+                ->get($url.'?store_id='.$foreignStoreId)
+                ->assertNotFound();
+        }
+
+        $before = [
+            DB::table('smart_ordering_sites')->count(),
+            DB::table('smart_ordering_supply_mappings')->count(),
+            DB::table('smart_ordering_supply_stock_snapshots')->count(),
+            DB::table('smart_ordering_supply_reorder_drafts')->count(),
+            DB::table('audit_logs')->count(),
+        ];
+
+        foreach (['ar', 'en'] as $locale) {
+            $actor->forceFill(['locale' => $locale])->save();
+            app()->setLocale($locale);
+
+            foreach ([
+                '?store_id%5B%5D='.$f['restaurant_store_id'],
+                '?store_id%5Bother%5D='.$f['restaurant_store_id'],
+                '?store_id%5Bdeep%5D%5Bid%5D='.$f['restaurant_store_id'],
+            ] as $nested) {
+                $this->actingAs($actor->fresh())
+                    ->get($url.$nested)
+                    ->assertNotFound();
+            }
+        }
+
+        $roleless = User::query()->create([
+            'name' => 'Supply Entry Unauthorized',
+            'email' => 'v2-4084-supply-entry-roleless@example.test',
+            'password' => 'password',
+            'locale' => 'en',
+            'is_active' => true,
+        ]);
+        $this->actingAs($roleless)->get($url.'?store_id='.$f['restaurant_store_id'])
+            ->assertForbidden();
+        $this->actingAs($roleless)->get($url.'?store_id%5B%5D='.$f['restaurant_store_id'])
+            ->assertForbidden();
+
+        $this->assertSame($before, [
+            DB::table('smart_ordering_sites')->count(),
+            DB::table('smart_ordering_supply_mappings')->count(),
+            DB::table('smart_ordering_supply_stock_snapshots')->count(),
+            DB::table('smart_ordering_supply_reorder_drafts')->count(),
+            DB::table('audit_logs')->count(),
+        ]);
+    }
+
+    public function test_supply_scalar_date_filters_reject_invalid_ranges_after_scope_ar_en(): void
+    {
+        $f = $this->fixture();
+        $actor = $f['actor'];
+        $role = Role::query()->where('code', 'B2C_STORE_ADMIN')->firstOrFail();
+        DB::table('user_store_roles')->insert([
+            'user_id' => $actor->id,
+            'store_id' => $f['restaurant_store_id'],
+            'role_id' => $role->id,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        $foreignStoreId = $this->store('B2C', 'SO-DATE-FOREIGN-'.Str::upper(Str::random(6)));
+        $foreignSiteId = (int) DB::table('smart_ordering_sites')->insertGetId([
+            'public_id' => (string) Str::uuid(),
+            'store_id' => $foreignStoreId,
+            'slug' => 'supply-date-foreign-'.Str::lower(Str::random(8)),
+            'runtime_state' => 'ENABLED',
+            'master_enabled' => true,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        $foreignUrl = route('admin.smart-ordering.supply.index', ['site' => $foreignSiteId]);
+        $url = route('admin.smart-ordering.supply.index', ['site' => $f['site_id']]);
+        $tables = ['smart_ordering_supply_mappings', 'smart_ordering_supply_stock_snapshots',
+            'smart_ordering_supply_reorder_drafts', 'audit_logs'];
+        $before = [];
+        foreach ($tables as $table) {
+            $before[$table] = DB::table($table)->count();
+        }
+        $originalLocale = app()->getLocale();
+        try {
+            foreach (['ar' => 'rtl', 'en' => 'ltr'] as $locale => $direction) {
+                $actor->forceFill(['locale' => $locale])->saveQuietly();
+                app()->setLocale($locale);
+                foreach ([
+                    '?from=invalid',
+                    '?to=invalid',
+                    '?from=2026-02-30',
+                    '?from=2026-02-29', // 2026 is not a leap year.
+                    '?to=2026-13-01',
+                    '?from=2026-12-31&to=2026-01-01',
+                    '?from=2026-01-01T12%3A00%3A00',
+                ] as $invalid) {
+                    $this->actingAs($actor->fresh())->getJson($url.$invalid)
+                        ->assertUnprocessable();
+                }
+                $this->actingAs($actor->fresh())->getJson($foreignUrl.'?from=invalid')
+                    ->assertNotFound();
+                foreach (['', '?from=&to=', '?from=2026-01-01&to=2026-01-31'] as $valid) {
+                    $this->actingAs($actor->fresh())->get($url.$valid)
+                        ->assertOk()->assertSee('dir="'.$direction.'"', false);
+                }
+            }
+        } finally {
+            app()->setLocale($originalLocale);
+        }
+        $roleless = User::query()->create([
+            'name' => 'Supply date roleless',
+            'email' => 'v2-supply-date-roleless@example.test',
+            'password' => 'password',
+            'locale' => 'en',
+            'is_active' => true,
+        ]);
+        $this->actingAs($roleless)->getJson($url.'?from=invalid')->assertForbidden();
+        foreach ($tables as $table) {
+            $this->assertSame($before[$table], DB::table($table)->count(), $table.' unchanged');
+        }
+    }
+
+    public function test_supply_index_invalid_scalar_branch_never_falls_back_to_full_site_ar_en(): void
+    {
+        $f = $this->fixture();
+        $actor = $f['actor'];
+        $role = Role::query()->where('code', 'B2C_STORE_ADMIN')->firstOrFail();
+        DB::table('user_store_roles')->insert([
+            'user_id' => $actor->id,
+            'store_id' => $f['restaurant_store_id'],
+            'role_id' => $role->id,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        $foreignStore = $this->store('B2C', 'V2-SUPPLY-SCALAR-'.Str::upper(Str::random(6)));
+        $foreignSite = (int) DB::table('smart_ordering_sites')->insertGetId([
+            'public_id' => (string) Str::uuid(),
+            'store_id' => $foreignStore,
+            'slug' => 'supply-scalar-'.Str::lower(Str::random(8)),
+            'runtime_state' => 'ENABLED',
+            'master_enabled' => true,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        $foreignBranch = $this->smartBranch($foreignSite, 'FOREIGN-SCALAR');
+        $missingBranch = (int) DB::table('smart_ordering_branches')->max('id') + 10000;
+        $url = route('admin.smart-ordering.supply.index', ['site' => $f['site_id']]);
+        $foreignUrl = route('admin.smart-ordering.supply.index', ['site' => $foreignSite]);
+        $tables = ['smart_ordering_supply_mappings', 'smart_ordering_supply_stock_snapshots',
+            'smart_ordering_supply_reorder_drafts', 'audit_logs'];
+        $before = [];
+        foreach ($tables as $table) {
+            $before[$table] = DB::table($table)->count();
+        }
+        $originalLocale = app()->getLocale();
+
+        try {
+            foreach (['ar' => 'rtl', 'en' => 'ltr'] as $locale => $direction) {
+                $actor->forceFill(['locale' => $locale])->saveQuietly();
+                app()->setLocale($locale);
+
+                foreach (['?branch_id=invalid', '?branch_id=0', '?branch_id=-1',
+                    '?branch_id=1.5', '?branch_id=999999999999999999999999'] as $invalid) {
+                    $this->actingAs($actor->fresh())->getJson($url.$invalid)
+                        ->assertUnprocessable();
+                }
+                foreach ([$foreignBranch, $missingBranch] as $notOwned) {
+                    $this->actingAs($actor->fresh())
+                        ->get($url.'?branch_id='.$notOwned)->assertNotFound();
+                }
+                $this->actingAs($actor->fresh())
+                    ->get($url.'?branch_id%5B%5D='.$f['branch_id'])->assertNotFound();
+                $this->actingAs($actor->fresh())
+                    ->get($foreignUrl.'?branch_id=invalid')->assertNotFound();
+
+                foreach (['', '?branch_id=', '?branch_id='.$f['branch_id']] as $allowed) {
+                    $this->actingAs($actor->fresh())->get($url.$allowed)
+                        ->assertOk()->assertSee('dir="'.$direction.'"', false);
+                }
+            }
+        } finally {
+            app()->setLocale($originalLocale);
+        }
+
+        $roleless = User::query()->create([
+            'name' => 'Supply branch roleless',
+            'email' => 'v2-supply-scalar-roleless@example.test',
+            'password' => 'password',
+            'locale' => 'en',
+            'is_active' => true,
+        ]);
+        $this->actingAs($roleless)->get($url.'?branch_id=invalid')
+            ->assertForbidden();
+        foreach ($tables as $table) {
+            $this->assertSame($before[$table], DB::table($table)->count(),
+                $table.' unchanged');
+        }
+    }
+
+    public function test_supply_dashboard_get_filters_reject_nested_shapes_after_site_authorization(): void
+    {
+        $f = $this->fixture();
+        $actor = $f['actor'];
+        $role = Role::query()->where('code', 'B2C_STORE_ADMIN')->firstOrFail();
+        DB::table('user_store_roles')->insert([
+            'user_id' => $actor->id,
+            'store_id' => $f['restaurant_store_id'],
+            'role_id' => $role->id,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $url = route('admin.smart-ordering.supply.index', ['site' => $f['site_id']]);
+        $counts = [
+            DB::table('smart_ordering_supply_mappings')->count(),
+            DB::table('smart_ordering_supply_stock_snapshots')->count(),
+            DB::table('smart_ordering_supply_reorder_drafts')->count(),
+            DB::table('audit_logs')->count(),
+        ];
+
+        foreach (['ar' => 'rtl', 'en' => 'ltr'] as $locale => $direction) {
+            $actor->forceFill(['locale' => $locale])->save();
+            app()->setLocale($locale);
+
+            $this->actingAs($actor->fresh())
+                ->get($url.'?'.http_build_query([
+                    'from' => now('Asia/Kuwait')->subDays(7)->toDateString(),
+                    'to' => now('Asia/Kuwait')->toDateString(),
+                    'branch_id' => $f['branch_id'],
+                    'q' => 'FDX-',
+                ]))
+                ->assertOk()
+                ->assertSee('dir="'.$direction.'"', false);
+
+            $this->actingAs($actor->fresh())
+                ->get($url.'?from=&to=&branch_id=&q=')
+                ->assertOk();
+
+            foreach ([
+                '?from%5B%5D=2026-11-21',
+                '?from%5Bnested%5D=2026-11-21',
+                '?to%5B%5D=2026-11-22',
+                '?to%5Bnested%5D=2026-11-22',
+                '?branch_id%5B%5D='.$f['branch_id'],
+                '?branch_id%5Bnested%5D='.$f['branch_id'],
+                '?q%5B%5D=FDX',
+                '?q%5Bnested%5D=FDX',
+            ] as $malformed) {
+                $this->actingAs($actor->fresh())
+                    ->get($url.$malformed)
+                    ->assertNotFound();
+            }
+        }
+
+        $roleless = User::query()->create([
+            'name' => 'V2 Supply Roleless',
+            'email' => 'v2-4074-roleless@example.test',
+            'password' => 'password',
+            'locale' => 'en',
+            'is_active' => true,
+        ]);
+        $this->actingAs($roleless)->get($url.'?q=valid')->assertForbidden();
+        $this->actingAs($roleless)->get($url.'?q%5B%5D=invalid')->assertForbidden();
+
+        $this->assertSame($counts, [
+            DB::table('smart_ordering_supply_mappings')->count(),
+            DB::table('smart_ordering_supply_stock_snapshots')->count(),
+            DB::table('smart_ordering_supply_reorder_drafts')->count(),
+            DB::table('audit_logs')->count(),
+        ]);
     }
 
     public function test_supply_workspace_tabs_preserve_scope_locale_and_exclusive_rendering(): void

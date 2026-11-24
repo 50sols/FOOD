@@ -232,6 +232,248 @@ final class RestaurantGuestServiceTest extends TestCase
         ]);
     }
 
+    public function test_guest_mutation_route_scope_precedes_body_validation_in_ar_and_en(): void
+    {
+        $service = app(RestaurantGuestService::class);
+        // A store owns one Smart Ordering site; create the sibling branch
+        // under that existing site rather than violating sites.store_id UNIQUE.
+        $sibling = SmartOrderingBranch::query()->create([
+            'public_id' => (string) Str::uuid(),
+            'site_id' => $this->branchA->site_id,
+            'code' => 'guest-sibling-route',
+            'name_ar' => 'فرع حجوزات آخر',
+            'name_en' => 'Other guest branch',
+            'timezone' => 'Asia/Kuwait',
+            'is_active' => true,
+            'accepting_orders' => true,
+            'supports_dine_in' => true,
+            'supports_pickup' => true,
+            'supports_delivery' => true,
+            'allow_scheduled' => true,
+            'pickup_lead_minutes' => 0,
+            'max_schedule_days' => 30,
+            'service_charge' => 0,
+        ]);
+        $reservation = $service->createReservation($sibling, [
+            'guest_name' => 'Other Branch Guest',
+            'guest_phone' => null,
+            'guest_email' => null,
+            'party_size' => 2,
+            'service_at' => '2026-10-18T19:00',
+            'table_public_id' => null,
+            'notes' => null,
+        ], $this->admin);
+        $entry = $service->createWaitlist($sibling, [
+            'guest_name' => 'Other Branch Waiting',
+            'guest_phone' => null,
+            'guest_email' => null,
+            'party_size' => 2,
+            'quoted_wait_minutes' => 15,
+            'priority' => 0,
+            'priority_reason' => null,
+            'notes' => null,
+        ], $this->admin);
+
+        // Owned records must still reach validation rather than being concealed as 404.
+        $ownedReservation = $service->createReservation($this->branchA, [
+            'guest_name' => 'Authorized Branch Guest',
+            'guest_phone' => null,
+            'guest_email' => null,
+            'party_size' => 2,
+            'service_at' => '2026-10-18T19:00',
+            'table_public_id' => null,
+            'notes' => null,
+        ], $this->admin);
+        $ownedEntry = $service->createWaitlist($this->branchA, [
+            'guest_name' => 'Authorized Branch Waiting',
+            'guest_phone' => null,
+            'guest_email' => null,
+            'party_size' => 2,
+            'quoted_wait_minutes' => 15,
+            'priority' => 0,
+            'priority_reason' => null,
+            'notes' => null,
+        ], $this->admin);
+
+        $before = [
+            'reservation' => DB::table('smart_ordering_reservations')
+                ->where('public_id', $reservation)->first(),
+            'waitlist' => DB::table('smart_ordering_waitlist_entries')
+                ->where('public_id', $entry)->first(),
+            'audit_count' => DB::table('audit_logs')->count(),
+        ];
+        $previousLocale = app()->getLocale();
+        try {
+            foreach (['ar', 'en'] as $locale) {
+                app()->setLocale($locale);
+                $this->admin->forceFill(['locale' => $locale])->saveQuietly();
+
+                foreach ([$reservation, (string) Str::uuid()] as $id) {
+                    foreach (['admin.smart-ordering.reservations.update' => 'putJson',
+                        'admin.smart-ordering.reservations.transition' => 'postJson'] as $route => $verb) {
+                        $url = route($route, [$this->branchA->public_id, $id]);
+                        $this->actingAs($this->admin->fresh())->$verb($url, [])->assertNotFound();
+                        $this->actingAs($this->admin->fresh())->$verb($url, [
+                            'status' => ['invalid'],
+                            'guest_name' => ['invalid'],
+                        ])->assertNotFound();
+                        // Valid mutation fields still cannot access a sibling or nonexistent reservation.
+                        $this->actingAs($this->admin->fresh())->$verb($url, [
+                            'guest_name' => 'Updated Guest',
+                            'party_size' => 2,
+                            'service_at' => '2026-10-18T19:00',
+                            'status' => 'CONFIRMED',
+                        ])->assertNotFound();
+                    }
+                }
+                $this->actingAs($this->admin->fresh())->postJson(route(
+                    'admin.smart-ordering.reservations.transition',
+                    [$this->branchA->public_id, $ownedReservation],
+                ), ['status' => ['invalid']])->assertUnprocessable()->assertJsonValidationErrors('status');
+
+                foreach ([$entry, (string) Str::uuid()] as $id) {
+                    foreach ([
+                        'admin.smart-ordering.waitlist.update' => 'putJson',
+                        'admin.smart-ordering.waitlist.transition' => 'postJson',
+                        'admin.smart-ordering.waitlist.convert' => 'postJson',
+                    ] as $route => $verb) {
+                        $url = route($route, [$this->branchA->public_id, $id]);
+                        $this->actingAs($this->admin->fresh())->$verb($url, [])->assertNotFound();
+                        $this->actingAs($this->admin->fresh())->$verb($url, [
+                            'status' => ['invalid'],
+                            'seat_now' => ['invalid'],
+                            'guest_name' => ['invalid'],
+                        ])->assertNotFound();
+                        // Well-typed update, status and conversion fields cannot bypass waitlist scope.
+                        $this->actingAs($this->admin->fresh())->$verb($url, [
+                            'guest_name' => 'Updated Waitlist Guest',
+                            'party_size' => 2,
+                            'status' => 'CONTACTED',
+                            'seat_now' => false,
+                        ])->assertNotFound();
+                    }
+                }
+                $this->actingAs($this->admin->fresh())->postJson(route(
+                    'admin.smart-ordering.waitlist.convert',
+                    [$this->branchA->public_id, $ownedEntry],
+                ), ['seat_now' => ['invalid']])->assertUnprocessable()->assertJsonValidationErrors('seat_now');
+            }
+        } finally {
+            app()->setLocale($previousLocale);
+        }
+
+        $this->assertEquals($before['reservation'], DB::table('smart_ordering_reservations')
+            ->where('public_id', $reservation)->first());
+        $this->assertEquals($before['waitlist'], DB::table('smart_ordering_waitlist_entries')
+            ->where('public_id', $entry)->first());
+        $this->assertSame($before['audit_count'], DB::table('audit_logs')->count());
+    }
+
+    public function test_selected_guest_table_scope_precedes_unrelated_payload_validation_in_ar_en(): void
+    {
+        $guestService = app(RestaurantGuestService::class);
+        $reservation = $guestService->createReservation($this->branchA, [
+            'guest_name' => 'Existing Own Guest',
+            'guest_phone' => null,
+            'guest_email' => null,
+            'party_size' => 2,
+            'service_at' => '2026-10-18T19:00',
+            'table_public_id' => null,
+            'notes' => null,
+        ], $this->admin);
+        $waitlist = $guestService->createWaitlist($this->branchA, [
+            'guest_name' => 'Existing Own Waiting',
+            'guest_phone' => null,
+            'guest_email' => null,
+            'party_size' => 2,
+            'quoted_wait_minutes' => 10,
+            'priority' => 0,
+            'priority_reason' => null,
+            'notes' => null,
+        ], $this->admin);
+
+        $cases = [
+            [
+                'route' => route('admin.smart-ordering.reservations.store', $this->branchA->public_id),
+                'verb' => 'POST',
+                'required' => 'guest_name',
+                'payload' => ['guest_name' => 'New Guest', 'party_size' => 2, 'service_at' => '2026-10-20T19:00'],
+            ],
+            [
+                'route' => route('admin.smart-ordering.reservations.update', [$this->branchA->public_id, $reservation]),
+                'verb' => 'PUT',
+                'required' => 'guest_name',
+                'payload' => ['guest_name' => 'Updated Own Guest', 'party_size' => 2, 'service_at' => '2026-10-21T19:00'],
+            ],
+            [
+                'route' => route('admin.smart-ordering.waitlist.convert', [$this->branchA->public_id, $waitlist]),
+                'verb' => 'POST',
+                'required' => 'seat_now',
+                'payload' => ['seat_now' => false],
+            ],
+        ];
+
+        $before = [
+            'reservations' => DB::table('smart_ordering_reservations')->count(),
+            'waitlist' => DB::table('smart_ordering_waitlist_entries')->count(),
+            'audits' => DB::table('audit_logs')->count(),
+        ];
+        $originalLocale = app()->getLocale();
+
+        try {
+            foreach (['ar', 'en'] as $locale) {
+                app()->setLocale($locale);
+                $this->admin->forceFill(['locale' => $locale])->saveQuietly();
+
+                foreach ($cases as $case) {
+                    foreach ([$this->tableB, (string) Str::uuid()] as $deniedTable) {
+                        foreach ([
+                            ['table_public_id' => $deniedTable],
+                            ['table_public_id' => $deniedTable, $case['required'] => ['invalid']],
+                            [...$case['payload'], 'table_public_id' => $deniedTable],
+                        ] as $payload) {
+                            $this->actingAs($this->admin->fresh())
+                                ->json($case['verb'], $case['route'], $payload)
+                                ->assertNotFound();
+                        }
+                    }
+
+                    foreach ([
+                        ['table_public_id' => $this->tableA],
+                        [...$case['payload'], 'table_public_id' => ['nested' => $this->tableA]],
+                        [...$case['payload'], 'table_public_id' => 'not-a-uuid'],
+                        [...$case['payload'], 'table_public_id' => $this->tableA, $case['required'] => ['invalid']],
+                    ] as $invalidPayload) {
+                        $this->actingAs($this->admin->fresh())
+                            ->json($case['verb'], $case['route'], $invalidPayload)
+                            ->assertUnprocessable();
+                    }
+                }
+            }
+        } finally {
+            app()->setLocale($originalLocale);
+        }
+
+        $this->assertSame($before, [
+            'reservations' => DB::table('smart_ordering_reservations')->count(),
+            'waitlist' => DB::table('smart_ordering_waitlist_entries')->count(),
+            'audits' => DB::table('audit_logs')->count(),
+        ]);
+        $this->assertDatabaseMissing('smart_ordering_reservations', ['branch_id' => $this->branchA->getKey(), 'table_id' => DB::table('smart_ordering_tables')->where('public_id', $this->tableB)->value('id')]);
+
+        foreach ($cases as $case) {
+            $this->actingAs($this->admin->fresh())
+                ->json($case['verb'], $case['route'], [...$case['payload'], 'table_public_id' => $this->tableA])
+                ->assertRedirect();
+        }
+
+        $this->assertSame($before['reservations'] + 2, DB::table('smart_ordering_reservations')->count());
+        $this->assertSame($before['waitlist'], DB::table('smart_ordering_waitlist_entries')->count());
+        $this->assertSame($before['audits'] + 3, DB::table('audit_logs')->count());
+        $this->assertDatabaseHas('smart_ordering_waitlist_entries', ['public_id' => $waitlist, 'status' => 'CONVERTED']);
+        $this->assertDatabaseHas('smart_ordering_reservations', ['public_id' => $reservation, 'table_id' => DB::table('smart_ordering_tables')->where('public_id', $this->tableA)->value('id')]);
+    }
+
     public function test_cross_tenant_exact_record_actions_fail_closed(): void
     {
         $service = app(RestaurantGuestService::class);

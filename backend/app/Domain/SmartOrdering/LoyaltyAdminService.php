@@ -12,6 +12,21 @@ final class LoyaltyAdminService
 {
     public function __construct(private readonly AuditLogger $audit) {}
 
+    /**
+     * Read-only site/branch authority check for mutation preflight.
+     * Configure/create/update still recheck the same scope before writes.
+     */
+    public function assertBranchInSite(SmartOrderingSite $site, int $branchId): void
+    {
+        abort_unless(
+            DB::table('smart_ordering_branches')
+                ->where('id', $branchId)
+                ->where('site_id', $site->getKey())
+                ->exists(),
+            404,
+        );
+    }
+
     /** @return array<string,mixed> */
     public function configureRule(
         User $actor,
@@ -27,13 +42,7 @@ final class LoyaltyAdminService
         abort_if($expiryDays !== null && $expiryDays < 1, 422);
 
         if ($branchId !== null) {
-            abort_unless(
-                DB::table('smart_ordering_branches')
-                    ->where('id', $branchId)
-                    ->where('site_id', $site->id)
-                    ->exists(),
-                404,
-            );
+            $this->assertBranchInSite($site, $branchId);
         }
 
         $scopeKey = $branchId === null ? 'site' : 'branch:'.$branchId;
@@ -109,13 +118,7 @@ final class LoyaltyAdminService
         abort_if($pointsCost <= 0, 422);
 
         if ($branchId !== null) {
-            abort_unless(
-                DB::table('smart_ordering_branches')
-                    ->where('id', $branchId)
-                    ->where('site_id', $site->id)
-                    ->exists(),
-                404,
-            );
+            $this->assertBranchInSite($site, $branchId);
         }
 
         $publicId = (string) Str::uuid();
@@ -165,13 +168,7 @@ final class LoyaltyAdminService
         abort_if($pointsCost <= 0, 422);
 
         if ($branchId !== null) {
-            abort_unless(
-                DB::table('smart_ordering_branches')
-                    ->where('id', $branchId)
-                    ->where('site_id', $site->id)
-                    ->exists(),
-                404,
-            );
+            $this->assertBranchInSite($site, $branchId);
         }
 
         $reward = DB::table('smart_ordering_loyalty_rewards')

@@ -2,6 +2,7 @@
 
 namespace Tests\Feature\Enterprise;
 
+use App\Enterprise\Modules\ModuleRegistry;
 use App\Enterprise\Wms\InventoryLotService;
 use App\Models\Role;
 use App\Models\User;
@@ -127,6 +128,83 @@ final class EnterpriseInventoryLotFoundationTest extends TestCase
         } catch (NotFoundHttpException) {
             $this->assertTrue(true);
         }
+    }
+
+    public function test_lot_status_http_route_enforces_warehouse_scope_before_validation_in_arabic_and_english(): void
+    {
+        $this->seed(CoreReferenceSeeder::class);
+        // This is an HTTP route regression: admit the fixture through the
+        // existing ERP gateway without changing production authorization.
+        config()->set('enterprise_module_readiness.certified_versions.inventory_wms', app(ModuleRegistry::class)->manifest('inventory_wms')->version);
+        $fixture = $this->fixture();
+        $actor = $this->inventoryUser($fixture['store_id']);
+        $this->grantPlatformErpAccess($actor);
+        $service = app(InventoryLotService::class);
+        $ownLot = $service->upsert(
+            $actor,
+            $fixture['warehouse_id'],
+            $fixture['product_id'],
+            ['identifier' => 'SCOPE-OWN-LOT'],
+        );
+        $foreignStoreId = (int) DB::table('warehouses')
+            ->where('id', $fixture['other_store_warehouse_id'])
+            ->value('store_id');
+        $foreignLotId = (int) DB::table('enterprise_inventory_lots')->insertGetId([
+            'store_id' => $foreignStoreId,
+            'warehouse_id' => $fixture['other_store_warehouse_id'],
+            'product_id' => $fixture['other_store_product_id'],
+            'identifier' => 'SCOPE-FOREIGN-LOT',
+            'normalized_identifier' => 'SCOPE-FOREIGN-LOT',
+            'status' => 'active',
+            'created_by' => $actor->id,
+            'updated_by' => $actor->id,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $auditCount = DB::table('audit_logs')->count();
+        $invalid = [
+            'store_id' => $fixture['store_id'],
+            'warehouse_id' => $fixture['warehouse_id'],
+            'status' => ['not-a-status'],
+        ];
+        foreach (['ar', 'en'] as $locale) {
+            $actor->forceFill(['locale' => $locale])->save();
+            foreach ([$foreignLotId, $foreignLotId + 1000000] as $unavailableId) {
+                $this->actingAs($actor->fresh())
+                    ->postJson(route('admin.erp.wms.lots.status', ['lot' => $unavailableId]), $invalid)
+                    ->assertNotFound();
+                // Even valid and empty payloads cannot bypass route-lot warehouse scope.
+                $this->actingAs($actor->fresh())
+                    ->postJson(route('admin.erp.wms.lots.status', ['lot' => $unavailableId]), [
+                        'store_id' => $fixture['store_id'],
+                        'warehouse_id' => $fixture['warehouse_id'],
+                        'status' => 'quarantined',
+                    ])->assertNotFound();
+                $this->actingAs($actor->fresh())
+                    ->postJson(route('admin.erp.wms.lots.status', ['lot' => $unavailableId]), [])
+                    ->assertNotFound();
+            }
+            $this->actingAs($actor->fresh())
+                ->postJson(route('admin.erp.wms.lots.status', ['lot' => $ownLot->id]), $invalid)
+                ->assertUnprocessable()
+                ->assertJsonValidationErrors('status');
+        }
+
+        $this->assertDatabaseHas('enterprise_inventory_lots', ['id' => $foreignLotId, 'status' => 'active']);
+        $this->assertDatabaseHas('enterprise_inventory_lots', ['id' => $ownLot->id, 'status' => 'active']);
+        $this->assertSame($auditCount, DB::table('audit_logs')->count());
+
+        $this->actingAs($actor->fresh())
+            ->post(route('admin.erp.wms.lots.status', ['lot' => $ownLot->id]), [
+                'store_id' => $fixture['store_id'],
+                'warehouse_id' => $fixture['warehouse_id'],
+                'status' => 'quarantined',
+            ])->assertRedirect();
+
+        $this->assertDatabaseHas('enterprise_inventory_lots', ['id' => $ownLot->id, 'status' => 'quarantined']);
+        $this->assertDatabaseHas('enterprise_inventory_lots', ['id' => $foreignLotId, 'status' => 'active']);
+        $this->assertSame($auditCount + 1, DB::table('audit_logs')->count());
     }
 
     public function test_expiry_window_is_date_bounded_authorized_and_limited_to_one_hundred_rows(): void

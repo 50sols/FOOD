@@ -33,7 +33,7 @@ final class SalesQuotationController extends Controller
     {
         [$actor, $storeId, $channel] = $this->authorizedStore($request, 'orders.view');
 
-        return $this->workspace($actor, $storeId, $channel);
+        return $this->workspace($request, $actor, $storeId, $channel);
     }
 
     public function show(Request $request, int $quotation): View
@@ -46,7 +46,7 @@ final class SalesQuotationController extends Controller
         $channel = $this->scope->assertStore($actor, $storeId, 'orders.view');
         abort_unless($channel === $record->channel, 404);
 
-        return $this->workspace($actor, $storeId, $channel, $record);
+        return $this->workspace($request, $actor, $storeId, $channel, $record);
     }
 
     public function store(Request $request): RedirectResponse
@@ -265,8 +265,17 @@ final class SalesQuotationController extends Controller
         return [$actor, $storeId, $channel];
     }
 
-    private function workspace(User $actor, int $storeId, string $channel, ?object $selected = null): View
+    private function workspace(Request $request, User $actor, int $storeId, string $channel, ?object $selected = null): View
     {
+        // Both read paths reach this method only after canonical actor,
+        // permission, channel, store and selected quotation authorization.
+        // Keep the quotation and contract paginators independent; neither
+        // accepts malformed explicit navigation as an implicit first page.
+        $request->validate([
+            'page' => ['nullable', 'integer', 'min:1'],
+            'contracts_page' => ['nullable', 'integer', 'min:1'],
+        ]);
+
         $quotations = DB::table('sales_quotations')
             ->where('store_id', $storeId)
             ->orderByDesc('id')

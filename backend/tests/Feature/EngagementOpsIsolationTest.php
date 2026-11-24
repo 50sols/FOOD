@@ -201,6 +201,74 @@ class EngagementOpsIsolationTest extends TestCase
         $this->assertDatabaseHas('audit_logs', ['event' => 'live_ad.status_changed', 'user_id' => $admin->id]);
     }
 
+    public function test_live_ads_dashboard_get_filters_reject_arrays_after_authorization_without_mutation(): void
+    {
+        config()->set('security.mfa.enforce_privileged', false);
+
+        $storeA = $this->store('B2C', 'V2-4062-LIVE-A');
+        $storeB = $this->store('B2C', 'V2-4062-LIVE-B');
+        $mine = $this->liveAd('b2c', $storeA, 'V2-4062-ad%_!', ['title_en' => 'Literal live ad']);
+        $foreign = $this->liveAd('b2c', $storeB, 'V2-4062-foreign');
+        $wholesale = $this->liveAd('b2b', null, 'V2-4062-wholesale');
+
+        $super = User::factory()->create(['is_active' => true, 'locale' => 'en']);
+        $super->roles()->attach(Role::query()->where('code', 'SUPER_ADMIN')->firstOrFail());
+        $retail = $this->storeAdmin($storeA, 'v2-4062-retail@example.test');
+
+        $originalCounts = [
+            DB::table('live_ads')->count(),
+            DB::table('audit_logs')->count(),
+        ];
+
+        foreach ([$super, $retail] as $actor) {
+            foreach (['ar' => 'rtl', 'en' => 'ltr'] as $locale => $direction) {
+                $actor->forceFill(['locale' => $locale])->save();
+                app()->setLocale($locale);
+
+                $response = $this->actingAs($actor->fresh())
+                    ->get('/admin/live-ads?'.http_build_query([
+                        'q' => 'V2-4062-ad%_!',
+                        'channel' => 'b2c',
+                        'status' => 'active',
+                    ]));
+                $response->assertOk()
+                    ->assertSee('dir="'.$direction.'"', false)
+                    ->assertViewHas('ads', static function ($ads) use ($mine, $foreign, $wholesale): bool {
+                        $ids = $ads->getCollection()->pluck('id')->all();
+
+                        return in_array($mine->id, $ids, true)
+                            && ! in_array($foreign->id, $ids, true)
+                            && ! in_array($wholesale->id, $ids, true);
+                    });
+
+                $this->actingAs($actor->fresh())->get('/admin/live-ads?q=&channel=&status=')
+                    ->assertOk();
+
+                foreach ([
+                    ['q' => ['invalid']],
+                    ['q' => ['nested' => ['invalid']]],
+                    ['channel' => ['b2c']],
+                    ['channel' => ['nested' => ['b2c']]],
+                    ['status' => ['active']],
+                    ['status' => ['nested' => ['active']]],
+                ] as $malformed) {
+                    $this->actingAs($actor->fresh())
+                        ->get('/admin/live-ads?'.http_build_query($malformed))
+                        ->assertNotFound();
+                }
+            }
+        }
+
+        $unprivileged = User::factory()->create(['is_active' => true]);
+        $this->actingAs($unprivileged)->get('/admin/live-ads?q=valid')->assertForbidden();
+        $this->actingAs($unprivileged)->get('/admin/live-ads?q%5B0%5D=invalid')->assertForbidden();
+
+        $this->assertSame($originalCounts, [
+            DB::table('live_ads')->count(),
+            DB::table('audit_logs')->count(),
+        ]);
+    }
+
     private function store(string $type, string $code): int
     {
         return (int) DB::table('stores')->insertGetId([

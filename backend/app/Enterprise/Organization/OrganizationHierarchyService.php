@@ -28,9 +28,20 @@ final class OrganizationHierarchyService
     public function scopeForStore(int $storeId): ?array
     {
         $row = DB::table('enterprise_store_scopes')
+            // An inactive store has no live enterprise authority even when
+            // its historical mapping and every ancestor remain active.
+            ->join('stores', 'stores.id', '=', 'enterprise_store_scopes.store_id')
+            ->where('stores.is_active', true)
             ->join('enterprise_business_units', 'enterprise_business_units.id', '=', 'enterprise_store_scopes.business_unit_id')
             ->join('enterprise_legal_entities', 'enterprise_legal_entities.id', '=', 'enterprise_business_units.legal_entity_id')
             ->join('enterprise_companies', 'enterprise_companies.id', '=', 'enterprise_legal_entities.company_id')
+            ->join('enterprise_organizations', 'enterprise_organizations.id', '=', 'enterprise_companies.organization_id')
+            // Historical store mappings remain persisted, but a disabled
+            // enterprise ancestor can no longer be used as live authority.
+            ->where('enterprise_business_units.is_active', true)
+            ->where('enterprise_legal_entities.is_active', true)
+            ->where('enterprise_companies.is_active', true)
+            ->where('enterprise_organizations.is_active', true)
             ->where('enterprise_store_scopes.store_id', $storeId)
             ->select([
                 'enterprise_companies.organization_id',
@@ -83,7 +94,20 @@ final class OrganizationHierarchyService
         ?Authenticatable $actor = null,
     ): EnterpriseStoreScope {
         return DB::transaction(function () use ($store, $businessUnit, $actor): EnterpriseStoreScope {
-            $businessUnit->loadMissing('legalEntity.company');
+            // Enforce the active enterprise lineage at the canonical scope
+            // writer, not only in optional Admin wrappers. Both explicit
+            // assignments and default provisioning pass through here.
+            // Refresh both the unit and its ancestry from the database.
+            // Previously preloaded relationships could remain stale after a
+            // parent was deactivated, bypassing this canonical write guard.
+            $businessUnit->refresh()->load('legalEntity.company.organization');
+            if (! $businessUnit->is_active
+                || ! $businessUnit->legalEntity->is_active
+                || ! $businessUnit->legalEntity->company->is_active
+                || ! $businessUnit->legalEntity->company->organization->is_active) {
+                throw new LogicException('Cannot assign a store to an inactive enterprise hierarchy.');
+            }
+
             $targetOrganizationId = (int) $businessUnit->legalEntity->company->organization_id;
 
             /** @var EnterpriseStoreScope|null $existing */
@@ -93,8 +117,20 @@ final class OrganizationHierarchyService
                 ->first();
 
             if ($existing instanceof EnterpriseStoreScope) {
-                $current = $this->scopeForStore((int) $store->getKey());
-                if ($current !== null && $current['organization_id'] !== $targetOrganizationId) {
+                // The effective read deliberately hides disabled lineages.
+                // Ownership is different: a historical binding still belongs
+                // to its original organization even after deactivation.
+                // Resolve it from the locked mapping without active filters,
+                // or a disabled source ancestor could enable cross-org moves.
+                $currentOrganizationId = DB::table('enterprise_store_scopes')
+                    ->join('enterprise_business_units', 'enterprise_business_units.id', '=', 'enterprise_store_scopes.business_unit_id')
+                    ->join('enterprise_legal_entities', 'enterprise_legal_entities.id', '=', 'enterprise_business_units.legal_entity_id')
+                    ->join('enterprise_companies', 'enterprise_companies.id', '=', 'enterprise_legal_entities.company_id')
+                    ->where('enterprise_store_scopes.id', $existing->getKey())
+                    ->value('enterprise_companies.organization_id');
+
+                if ($currentOrganizationId === null
+                    || (int) $currentOrganizationId !== $targetOrganizationId) {
                     throw new LogicException('A store cannot be silently moved across enterprise organizations.');
                 }
 
