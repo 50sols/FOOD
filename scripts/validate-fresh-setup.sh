@@ -625,7 +625,7 @@ PY
     fi
     if [[ "$status" != "000" ]]; then
       echo "::error::Web installer step $step returned HTTP $status, expected 302"
-      tail -n 100 "$fresh/backend/storage/logs/laravel.log" 2>/dev/null || true
+      # Raw Laravel logs can expose SQL bindings or secrets; print classified diagnostics only.
       # Inspect the FIRST HTTP migration failure recorded by InstallerWorkflow.
       # MySQL DDL may persist after a failed migration, so DO NOT invoke
       # artisan migrate again: that would mask the first SQLSTATE and could
