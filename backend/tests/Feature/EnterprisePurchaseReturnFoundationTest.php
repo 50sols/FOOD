@@ -9,6 +9,7 @@ use App\Enterprise\Organization\OrganizationHierarchyService;
 use App\Enterprise\Procurement\GoodsReceiptManager;
 use App\Enterprise\Procurement\PurchaseOrderManager;
 use App\Enterprise\Procurement\PurchaseRequestManager;
+use App\Enterprise\Procurement\PurchaseReturnInventoryHandoff;
 use App\Enterprise\Procurement\PurchaseReturnManager;
 use App\Enterprise\Procurement\SupplierDirectory;
 use App\Models\Catalog;
@@ -75,7 +76,7 @@ final class EnterprisePurchaseReturnFoundationTest extends TestCase
         $inventory = DB::table('inventories')
             ->where('warehouse_id', $warehouse->id)
             ->where('product_id', $product->id)->firstOrFail();
-        $service = app(\\App\\Enterprise\\Procurement\\PurchaseReturnInventoryHandoff::class);
+        $service = app(PurchaseReturnInventoryHandoff::class);
 
         foreach (['0.000', '-0.250'] as $tamperedQuantity) {
             DB::table('enterprise_purchase_return_lines')->where('id', $draftLine->id)
