@@ -23,7 +23,22 @@ final class InstallState
         $path = $this->lockPath();
         $this->assertSafeStatePath($path);
 
-        return is_file($path);
+        if (! is_file($path)) {
+            return false;
+        }
+
+        // A hardlink can make an unrelated external inode look like the
+        // authoritative installed.lock without tripping symlink checks.
+        // Reject forged/multiply linked completion markers fail-closed.
+        clearstatcache(true, $path);
+        $stat = @lstat($path);
+        if ($stat === false
+            || ($stat['mode'] & 0170000) !== 0100000
+            || $stat['nlink'] !== 1) {
+            throw new RuntimeException('Installer completion lock is invalid or unsafe.');
+        }
+
+        return true;
     }
 
     /**
