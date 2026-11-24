@@ -482,6 +482,56 @@ final class V2CustomerServiceDiscountApprovalTest extends TestCase
         $this->assertSame(0, DB::table('order_customer_service_discounts')->where('order_id', $orderId)->count());
     }
 
+    public function test_direct_finance_rejection_requires_auditable_normalized_reason(): void
+    {
+        $manager = $this->roleUser('CUSTOMER_SERVICE_MANAGER');
+        $finance = $this->roleUser('FINANCE');
+        $orderId = $this->order();
+        $service = app(OrderCustomerServiceDiscountApprovalService::class);
+        $order = Order::query()->findOrFail($orderId);
+        $request = Request::create('/admin/operations/orders', 'POST');
+
+        $this->assertTrue($service->request(
+            $order, $manager, 20, 'Accounting review requested', (string) Str::uuid(), $request,
+        ));
+        $requestId = (int) DB::table('order_customer_service_discount_requests')
+            ->where('order_id', $orderId)->value('id');
+
+        foreach ([null, '', '    ', '  no  ', str_repeat('A', 501)] as $invalidReason) {
+            try {
+                $service->review($order, $finance, $requestId, false, $invalidReason, $request);
+                $this->fail('A direct Finance rejection must provide a valid reason.');
+            } catch (ValidationException $exception) {
+                $this->assertArrayHasKey('review_reason', $exception->errors());
+            }
+            $this->assertDatabaseHas('order_customer_service_discount_requests', [
+                'id' => $requestId, 'status' => 'pending',
+            ]);
+        }
+        $this->assertDatabaseMissing('audit_logs', [
+            'event' => 'order.customer_service_discount.rejected',
+            'user_id' => $finance->getKey(),
+        ]);
+        $this->assertDatabaseHas('orders', [
+            'id' => $orderId, 'discount_total' => 1, 'grand_total' => 9,
+        ]);
+
+        $service->review($order, $finance, $requestId, false, '  Insufficient accounting support  ', $request);
+        $this->assertDatabaseHas('order_customer_service_discount_requests', [
+            'id' => $requestId,
+            'status' => 'rejected',
+            'reviewed_by_user_id' => $finance->getKey(),
+            'review_reason' => 'Insufficient accounting support',
+        ]);
+        $this->assertDatabaseHas('audit_logs', [
+            'event' => 'order.customer_service_discount.rejected',
+            'user_id' => $finance->getKey(),
+        ]);
+        $this->assertDatabaseHas('orders', [
+            'id' => $orderId, 'discount_total' => 1, 'grand_total' => 9,
+        ]);
+    }
+
     public function test_stale_dispatched_or_completed_request_cannot_change_order_when_reviewed(): void
     {
         $agent = $this->roleUser('CUSTOMER_SERVICE_AGENT');
