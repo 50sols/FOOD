@@ -10,14 +10,18 @@ use App\Enterprise\Modules\ModuleRegistry;
 use App\Enterprise\Modules\ModuleState;
 use App\Enterprise\Organization\OrganizationHierarchyService;
 use App\Models\Store;
+use App\Models\Order;
 use App\Models\Role;
 use App\Models\User;
 use App\Services\B2bCustomerService;
+use App\Services\OrderCustomerServiceDiscountApprovalService;
 use App\Services\WholesalePrincipal;
 use Database\Seeders\CoreReferenceSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
+use Symfony\Component\HttpKernel\Exception\HttpException;
 use Tests\TestCase;
 
 final class V2CustomerServiceDiscountApprovalTest extends TestCase
@@ -82,6 +86,54 @@ final class V2CustomerServiceDiscountApprovalTest extends TestCase
         ]);
         $this->actingAs($finance)->post($reviewUrl, ['decision' => 'approve'])->assertStatus(409);
         $this->assertSame(1, DB::table('order_customer_service_discounts')->where('order_id', $orderId)->count());
+    }
+
+    public function test_direct_service_review_rechecks_revoked_finance_entitlement(): void
+    {
+        $manager = $this->roleUser('CUSTOMER_SERVICE_MANAGER');
+        $finance = $this->roleUser('FINANCE');
+        $orderId = $this->order();
+        $this->actingAs($manager)->post(
+            route('admin.operations.orders.customer-service-discount', ['order' => $orderId]),
+            [
+                'percentage' => 12.5,
+                'reason' => 'Independently review requested price correction',
+                'idempotency_key' => (string) Str::uuid(),
+            ],
+        )->assertRedirect();
+        $requestId = (int) DB::table('order_customer_service_discount_requests')
+            ->where('order_id', $orderId)->value('id');
+
+        $scope = app(OrganizationHierarchyService::class)->scopeForStore(
+            app(WholesalePrincipal::class)->storeId(),
+        );
+        $this->assertNotNull($scope);
+        app(ModuleEntitlementManager::class)->set(
+            FinanceFoundationService::MODULE,
+            new EntitlementScope(EntitlementScope::LEGAL_ENTITY, $scope['legal_entity_id']),
+            false, null, $finance,
+        );
+
+        try {
+            app(OrderCustomerServiceDiscountApprovalService::class)->review(
+                Order::query()->findOrFail($orderId),
+                $finance,
+                $requestId,
+                true,
+                null,
+                Request::create('/admin/operations/orders', 'POST'),
+            );
+            $this->fail('Direct service approval must reject revoked Finance scope.');
+        } catch (HttpException $exception) {
+            $this->assertSame(403, $exception->getStatusCode());
+        }
+
+        $this->assertDatabaseHas('order_customer_service_discount_requests', [
+            'id' => $requestId, 'status' => 'pending',
+        ]);
+        $this->assertDatabaseHas('orders', ['id' => $orderId, 'grand_total' => 9]);
+        $this->assertSame(0, DB::table('order_customer_service_discounts')
+            ->where('order_id', $orderId)->count());
     }
 
     public function test_request_idempotency_key_cannot_mask_changed_discount_or_requester(): void
