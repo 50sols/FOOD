@@ -48,7 +48,7 @@ class GccSignerTests(unittest.TestCase):
 
     def build(self,profile="backend"):
         return signer.build_payload(
-            self.result,self.evidence,"walidatiyaai2025-gif/FOOD",
+            self.result,self.evidence,"50sols/FOOD",
             4406,HEAD,TOOLKIT,profile,12345,
         )
 
@@ -60,6 +60,14 @@ class GccSignerTests(unittest.TestCase):
         result=verifier.verify(payload,signed,self.pub,4406,HEAD,now)
         self.assertEqual("PASS",result["result"])
         self.assertEqual(12345,result["request_id"])
+        self.assertEqual("50sols/FOOD",result["repository"])
+
+    def test_rejects_legacy_repository_even_with_valid_local_results(self):
+        with self.assertRaisesRegex(ValueError, "Untrusted repository"):
+            signer.build_payload(
+                self.result,self.evidence,"walidatiyaai2025-gif/FOOD",
+                4406,HEAD,TOOLKIT,"backend",12345,
+            )
 
     def test_rejects_missing_or_failed_junit(self):
         (self.evidence/"laravel-shard-3.xml").unlink()
