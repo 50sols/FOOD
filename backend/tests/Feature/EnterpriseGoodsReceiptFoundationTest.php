@@ -166,6 +166,60 @@ final class EnterpriseGoodsReceiptFoundationTest extends TestCase
         }
     }
 
+    public function test_p110_post_refuses_tampered_grn_product_and_purchase_order_snapshot(): void
+    {
+        $this->enableProcurement();
+        [$actor, $store, $context] = $this->scopedUser($this->allPermissions(), 'GRN-P110-FORGED-SKU');
+        [$product, $warehouse] = $this->stockTarget($store, 'GRN-P110-ORIGINAL-SKU');
+        [$otherProduct] = $this->stockTarget($store, 'GRN-P110-FOREIGN-SKU');
+        $order = $this->issuedOrder($actor, $context, 'GRN-P110-FORGED-SUP', 'GRN-P110-ORIGINAL-SKU', 5);
+        $poLineId = $order->lines()->firstOrFail()->id;
+        $manager = app(GoodsReceiptManager::class);
+
+        foreach ([
+            ['item_code' => $otherProduct->sku],
+            ['unit' => 'forged-unit'],
+            ['unit_price' => '999.000'],
+            ['ordered_quantity' => '999.000'],
+        ] as $forgedSnapshot) {
+            $receipt = $manager->createFromIssuedOrder($actor, $context, $order->id, [
+                'lines' => [[
+                    'purchase_order_line_id' => $poLineId,
+                    'warehouse_id' => $warehouse->id,
+                    'quantity' => 1,
+                ]],
+            ]);
+            DB::table('enterprise_goods_receipt_lines')
+                ->where('id', $receipt->lines()->firstOrFail()->id)
+                ->update($forgedSnapshot);
+
+            $auditBefore = DB::table('audit_logs')->count();
+            $movementBefore = DB::table('stock_movements')->count();
+            $ownerBefore = DB::table('enterprise_inventory_owner_positions')->count();
+            $eventBefore = DB::table('enterprise_inventory_owner_movement_events')->count();
+
+            try {
+                $manager->post($actor, $context, $receipt->id);
+                $this->fail('A forged GRN item or PO snapshot must not create stock.');
+            } catch (ValidationException $exception) {
+                $this->assertArrayHasKey('purchase_order_line_id', $exception->errors());
+            }
+
+            $this->assertDatabaseHas('enterprise_goods_receipts', [
+                'id' => $receipt->id, 'status' => 'draft',
+            ]);
+            foreach ([$product->id, $otherProduct->id] as $productId) {
+                $this->assertSame(0, DB::table('inventories')
+                    ->where('warehouse_id', $warehouse->id)
+                    ->where('product_id', $productId)->count());
+            }
+            $this->assertSame($movementBefore, DB::table('stock_movements')->count());
+            $this->assertSame($ownerBefore, DB::table('enterprise_inventory_owner_positions')->count());
+            $this->assertSame($eventBefore, DB::table('enterprise_inventory_owner_movement_events')->count());
+            $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+        }
+    }
+
     public function test_posted_supplier_grn_rejects_claimed_legal_title_without_changing_canonical_stock(): void
     {
         $this->enableProcurement();

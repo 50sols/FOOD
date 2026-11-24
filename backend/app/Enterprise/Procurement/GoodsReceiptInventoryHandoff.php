@@ -5,6 +5,7 @@ namespace App\Enterprise\Procurement;
 use App\Enterprise\Wms\UnknownInventoryOwnerProjection;
 use App\Models\EnterpriseGoodsReceipt;
 use App\Models\EnterpriseGoodsReceiptLine;
+use App\Models\EnterprisePurchaseOrderLine;
 use App\Models\Inventory;
 use App\Models\Product;
 use App\Models\StockMovement;
@@ -54,6 +55,24 @@ final class GoodsReceiptInventoryHandoff
                         $line->line_no,
                     ),
                 ],
+            ]);
+        }
+
+        // The purchase order line is the authoritative item/cost/unit
+        // identity. A stored GRN draft is mutable until posting; its copied
+        // snapshot cannot choose another active product in the same store.
+        // Block a stale/forged snapshot BEFORE any inventory insert or debit.
+        $orderLine = EnterprisePurchaseOrderLine::query()
+            ->whereKey((int) $line->purchase_order_line_id)
+            ->where('purchase_order_id', (int) $receipt->purchase_order_id)
+            ->first(['item_code', 'unit', 'unit_price', 'quantity']);
+        if ($orderLine === null
+            || (string) $orderLine->item_code !== $itemCode
+            || (string) $orderLine->unit !== (string) $line->unit
+            || (string) $orderLine->unit_price !== (string) $line->unit_price
+            || (string) $orderLine->quantity !== (string) $line->ordered_quantity) {
+            throw ValidationException::withMessages([
+                'purchase_order_line_id' => ['Goods receipt source item, unit, price and ordered quantity must match the issued purchase order.'],
             ]);
         }
 
