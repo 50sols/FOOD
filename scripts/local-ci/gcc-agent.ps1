@@ -112,29 +112,52 @@ function Invoke-BoundedGitFetch([string]$Checkout,[int]$Pr,[long]$Request) {
  $bin=(Get-Command git.exe -ErrorAction Stop).Source
  $stdout=Join-Path $Root ("git-fetch-{0}-{1}.stdout" -f $Pr,$Request)
  $stderr=Join-Path $Root ("git-fetch-{0}-{1}.stderr" -f $Pr,$Request)
- $arguments='-C "'+$Checkout+'" -c credential.helper= fetch --quiet --depth 1 origin refs/pull/'+$Pr+'/head'
+ $baseArguments='-C "'+$Checkout+'"'
+ $fetchArguments=' fetch --quiet --depth 1 origin refs/pull/'+$Pr+'/head'
  $oldPrompt=$env:GIT_TERMINAL_PROMPT
+ $oldGcmInteractive=$env:GCM_INTERACTIVE
  $env:GIT_TERMINAL_PROMPT='0'
- $process=$null
+ $env:GCM_INTERACTIVE='never'
  try {
-  try {
-   $process=Start-Process -FilePath $bin -ArgumentList $arguments -PassThru -NoNewWindow -RedirectStandardOutput $stdout -RedirectStandardError $stderr -ErrorAction Stop
-  } catch {
-   $script:GccLastFailedStage='git-fetch-process-start'
-   throw 'Git fetch process could not start; local diagnostic files are private.'
-  }
-  if(-not $process.WaitForExit(900000)) {
-   $script:GccLastFailedStage='git-fetch-timeout'
-   & taskkill.exe /T /F /PID $process.Id 1>$null 2>$null
-   throw 'Git fetch exceeded 15-minute bounded timeout; exact-head test not executed.'
-  }
-  if($process.ExitCode -ne 0) {
-   $script:GccLastFailedStage=Classify-GitFetchFailure -Path $stderr
-   throw "Git fetch failed with exit code $($process.ExitCode); local diagnostic files are private."
+  # Fetch without credentials first. Only a Git-classified access rejection
+  # may use the host's already-configured, noninteractive credential helper.
+  # Never retry locks, invalid refs, network failures or timeouts; never pass
+  # credentials as command arguments or into the untrusted PR Docker runtime.
+  for($attempt=0;$attempt -lt 2;$attempt++) {
+   $process=$null
+   $authenticated=($attempt -eq 1)
+   $arguments=$baseArguments
+   if(-not $authenticated) { $arguments+=' -c credential.helper=' }
+   $arguments+=$fetchArguments
+   $attemptStderr=if($authenticated) { "$stderr.authenticated" } else { $stderr }
+   $attemptStdout=if($authenticated) { "$stdout.authenticated" } else { $stdout }
+   try {
+    try {
+     $process=Start-Process -FilePath $bin -ArgumentList $arguments -PassThru -NoNewWindow -RedirectStandardOutput $attemptStdout -RedirectStandardError $attemptStderr -ErrorAction Stop
+    } catch {
+     $script:GccLastFailedStage='git-fetch-process-start'
+     throw 'Git fetch process could not start; local diagnostic files are private.'
+    }
+    if(-not $process.WaitForExit(900000)) {
+     $script:GccLastFailedStage='git-fetch-timeout'
+     & taskkill.exe /T /F /PID $process.Id 1>$null 2>$null
+     throw 'Git fetch exceeded 15-minute bounded timeout; exact-head test not executed.'
+    }
+    if($process.ExitCode -eq 0) { return }
+    $script:GccLastFailedStage=Classify-GitFetchFailure -Path $attemptStderr
+    if(-not $authenticated -and $script:GccLastFailedStage -eq 'git-fetch-access') {
+     # The next attempt uses ONLY the trusted host's existing Git helper.
+     # Missing/noninteractive credentials fail safely and stay classified.
+     continue
+    }
+    throw "Git fetch failed with exit code $($process.ExitCode); local diagnostic files are private."
+   } finally {
+    if($null -ne $process) { $process.Dispose() }
+   }
   }
  } finally {
   $env:GIT_TERMINAL_PROMPT=$oldPrompt
-  if($null -ne $process) { $process.Dispose() }
+  $env:GCM_INTERACTIVE=$oldGcmInteractive
  }
 }
 function Smoke([int]$Pr,[string]$Sha,[long]$Request) {
