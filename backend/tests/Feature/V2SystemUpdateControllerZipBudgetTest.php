@@ -4,6 +4,7 @@ namespace Tests\Feature;
 
 use App\Domain\Updater\TrustedUpdateSignatureVerifier;
 use App\Domain\Updater\UpdatePackageManifest;
+use App\Domain\Updater\UpdatePackageValidator;
 use App\Http\Controllers\Admin\SystemUpdateController;
 use App\Models\Role;
 use App\Models\UpdateHistory;
@@ -118,6 +119,44 @@ final class V2SystemUpdateControllerZipBudgetTest extends TestCase
                 );
             }
         }
+    }
+
+    public function test_verify_package_rejects_overbudget_expansion_before_reporting_installable(): void
+    {
+        // Signed checksum/entry count can be valid despite an inflated
+        // per-file or cumulative ZIP expansion beyond shared-host limits.
+        $path = $this->archive([
+            'backend/app/First.php' => '123456789',
+            'backend/app/Second.php' => 'abcde',
+        ]);
+        $manifest = new UpdatePackageManifest(
+            '1.2.0', '1.0.0', (string) hash_file('sha256', $path),
+            'Disposable expansion budget regression', false,
+        );
+
+        config()->set('foodex.update_max_entry_uncompressed_bytes', 8);
+        config()->set('foodex.update_max_total_uncompressed_bytes', 20);
+        try {
+            (new UpdatePackageValidator)->validate($manifest, '1.1.0', $path);
+            $this->fail('An oversized individual ZIP member must never verify.');
+        } catch (\InvalidArgumentException $exception) {
+            $this->assertStringContainsString('allowed expanded size', $exception->getMessage());
+        }
+
+        config()->set('foodex.update_max_entry_uncompressed_bytes', 9);
+        config()->set('foodex.update_max_total_uncompressed_bytes', 13);
+        try {
+            (new UpdatePackageValidator)->validate($manifest, '1.1.0', $path);
+            $this->fail('A cumulative expansion over budget must never verify.');
+        } catch (\InvalidArgumentException $exception) {
+            $this->assertStringContainsString('allowed expanded size', $exception->getMessage());
+        }
+
+        // The exact boundary remains verifiable; no false rejection of
+        // a legitimately small ZIP at the configured shared-host limits.
+        config()->set('foodex.update_max_total_uncompressed_bytes', 14);
+        $verified = (new UpdatePackageValidator)->validate($manifest, '1.1.0', $path);
+        $this->assertSame('1.2.0', $verified['target_version']);
     }
 
     private function superAdmin(): User
