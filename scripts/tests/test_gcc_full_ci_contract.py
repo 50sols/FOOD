@@ -113,11 +113,11 @@ class GccHeavyExecutionContracts(unittest.TestCase):
 
     def test_setup_zip_rejects_all_non_template_dotenv_files(self):
         # Execute the actual embedded GCC ZIP verifier, not a reimplementation.
-        marker = "step=verify-real-setup-zip\\n  python3 - \\"$setup\\" \\"$version\\" <<'PY'\\n"
+        marker = "step=verify-real-setup-zip\n  python3 - \"$setup\" \"$version\" <<'PY'\n"
         self.assertIn(marker, FULL)
-        verifier = FULL.split(marker, 1)[1].split("\\nPY\\n", 1)[0]
+        verifier = FULL.split(marker, 1)[1].split("\nPY\n", 1)[0]
         required = {
-            "VERSION": "1.0.125\\n",
+            "VERSION": "1.0.125\n",
             "backend/artisan": "artisan",
             "backend/vendor/autoload.php": "autoload",
             "backend/public/index.php": "index",
