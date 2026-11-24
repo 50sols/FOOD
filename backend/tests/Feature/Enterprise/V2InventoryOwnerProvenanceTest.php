@@ -1023,6 +1023,58 @@ SQL);
         $this->assertFalse($changed['positions'][1]['certified']);
     }
 
+    public function test_owner_allocations_with_offsetting_invalid_reservations_are_stale(): void
+    {
+        $this->seed(CoreReferenceSeeder::class);
+        $stock = $this->stock('OFFSET-OWNER-RESERVES');
+        $actor = $this->inventoryActor($stock['store_id']);
+        $supplierId = $this->supplier($stock['store_id']);
+        // Canonical stock is 10/3. These two positions sum to the exact same
+        // totals but one supplier has a negative reservation.
+        $this->position($stock['inventory_id'], 'FOODEX', null, 6, 4, $actor->id, $actor->id, false);
+        $this->position($stock['inventory_id'], 'SUPPLIER', $supplierId, 4, -1, $actor->id, $actor->id, false);
+
+        $reader = app(InventoryOwnerProvenanceReadService::class);
+        $negative = $reader->snapshot($actor, $stock['inventory_id']);
+        $this->assertSame('10.000', $negative['quantity']);
+        $this->assertSame('3.000', $negative['reserved_quantity']);
+        $this->assertSame('STALE', $negative['state']);
+        $this->assertFalse($negative['certified']);
+
+        // A different invalid distribution is also stale without requiring a
+        // negative quantity: one owner reserves three of only two units.
+        DB::table('enterprise_inventory_owner_positions')
+            ->where('inventory_id', $stock['inventory_id'])
+            ->where('owner_key', 'FOODEX')
+            ->update(['quantity' => 2, 'reserved_quantity' => 3]);
+        DB::table('enterprise_inventory_owner_positions')
+            ->where('inventory_id', $stock['inventory_id'])
+            ->where('owner_key', 'SUPPLIER:'.$supplierId)
+            ->update(['quantity' => 8, 'reserved_quantity' => 0]);
+
+        $overReserved = $reader->snapshot($actor, $stock['inventory_id']);
+        $this->assertSame('STALE', $overReserved['state']);
+        $this->assertFalse($overReserved['certified']);
+        foreach ($overReserved['positions'] as $owner) {
+            $this->assertFalse($owner['certified']);
+        }
+
+        // Restoring nonnegative per-owner allocations restores consistency,
+        // not legal certification: this fixture has no trusted signed proof.
+        DB::table('enterprise_inventory_owner_positions')
+            ->where('inventory_id', $stock['inventory_id'])
+            ->where('owner_key', 'FOODEX')
+            ->update(['quantity' => 6, 'reserved_quantity' => 2]);
+        DB::table('enterprise_inventory_owner_positions')
+            ->where('inventory_id', $stock['inventory_id'])
+            ->where('owner_key', 'SUPPLIER:'.$supplierId)
+            ->update(['quantity' => 4, 'reserved_quantity' => 1]);
+
+        $reconciled = $reader->snapshot($actor, $stock['inventory_id']);
+        $this->assertSame('UNVERIFIED', $reconciled['state']);
+        $this->assertFalse($reconciled['certified']);
+    }
+
     public function test_owner_report_uses_scoped_localized_supplier_name_not_raw_foreign_id(): void
     {
         $this->seed(CoreReferenceSeeder::class);

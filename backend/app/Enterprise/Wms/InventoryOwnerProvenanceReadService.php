@@ -84,6 +84,7 @@ final class InventoryOwnerProvenanceReadService
 
         $total = 0;
         $totalReserved = 0;
+        $partitionsConsistent = true;
         $allCertifiable = $rows->isNotEmpty();
         $unknown = $rows->isEmpty();
         $positions = [];
@@ -163,12 +164,17 @@ final class InventoryOwnerProvenanceReadService
 
             $lineQuantity = self::millis($row->quantity);
             $lineReserved = self::millis($row->reserved_quantity);
+            // Aggregate totals can match while one legal owner has negative
+            // reserved units or has reserved more stock than it owns. Never
+            // treat offsetting partitions as consistent legal stock balances.
+            $partitionValid = $lineQuantity >= 0
+                && $lineReserved >= 0
+                && $lineReserved <= $lineQuantity;
+            $partitionsConsistent = $partitionsConsistent && $partitionValid;
             $total += $lineQuantity;
             $totalReserved += $lineReserved;
             $allCertifiable = $allCertifiable
-                && $proof && $sameVersion
-                && $lineQuantity >= 0 && $lineReserved >= 0
-                && $lineReserved <= $lineQuantity;
+                && $proof && $sameVersion && $partitionValid;
             $unknown = $unknown || $kind === 'UNKNOWN' || ! $validKey;
 
             $supplier = $validKey && $kind === 'SUPPLIER' ? $suppliers->get($supplierId) : null;
@@ -186,7 +192,8 @@ final class InventoryOwnerProvenanceReadService
             ];
         }
 
-        $consistent = $total === $quantity
+        $consistent = $partitionsConsistent
+            && $total === $quantity
             && $totalReserved === $reserved
             && $quantity >= 0 && $reserved >= 0 && $reserved <= $quantity;
 
