@@ -68,7 +68,11 @@ final class OrganizationHierarchyService
             ->whereHas('legalEntity.company.organization', function ($query): void {
                 $query->where('code', self::DEFAULT_ORGANIZATION);
             })
-            ->firstOrFail();
+            // The code is scoped per legal entity, not per organization.
+            // More than one default-code unit within the owner organization
+            // must fail closed: first() could assign a new store to an
+            // arbitrary legal entity and silently change its ERP scope.
+            ->sole();
 
         return $this->assignStore($store, $businessUnit, $actor);
     }
