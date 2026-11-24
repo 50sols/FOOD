@@ -151,7 +151,10 @@ final class OrderInventoryReservationService
                 ->first(['inventories.*']);
 
             if ($inventory === null) {
-                continue;
+                // Never report a successful cancellation while an order's
+                // reserved inventory has disappeared or crossed store scope.
+                // The immutable reservation ledger must be reconciled first.
+                throw new HttpException(409, 'Reserved inventory is missing from the order store.');
             }
 
             if ($quantity > (float) $inventory->reserved_quantity) {
