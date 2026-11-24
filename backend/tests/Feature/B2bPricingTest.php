@@ -112,6 +112,86 @@ class B2bPricingTest extends TestCase
             ->assertJsonPath('subtotal', 36.25);
     }
 
+    public function test_revoked_wholesale_price_tier_cannot_price_customer_catalog_or_cart(): void
+    {
+        $this->seed(CoreReferenceSeeder::class);
+        [$storeId, $productId, $tierId] = $this->catalog();
+        $this->setPricingTiers($storeId, true);
+        DB::table('b2b_price_rules')->insert([
+            'price_tier_id' => $tierId,
+            'store_id' => $storeId,
+            'product_id' => $productId,
+            'unit_price' => 7.25,
+            'minimum_quantity' => 1,
+            'ordering_increment' => 1,
+            'pack_size' => 1,
+            'is_active' => true,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $buyer = User::query()->create([
+            'name' => 'Revoked Tier Buyer',
+            'email' => 'revoked-tier-buyer@example.test',
+            'password' => 'password',
+            'is_active' => true,
+        ]);
+        $customer = Customer::query()->create([
+            'user_id' => $buyer->id,
+            'type' => 'b2b',
+            'name' => 'Revoked Tier Buyer',
+            'email' => $buyer->email,
+        ]);
+        B2bAccount::query()->create([
+            'customer_id' => $customer->id,
+            'price_tier_id' => $tierId,
+            'company_name' => 'Revoked Tier Buyer Co',
+            'status' => 'active',
+        ]);
+        Sanctum::actingAs($buyer);
+
+        $list = "/api/v1/b2b/products?store_id={$storeId}";
+        $detail = "/api/v1/b2b/products/{$productId}?store_id={$storeId}";
+        $this->getJson($list)->assertOk()
+            ->assertJsonCount(1, 'data')
+            ->assertJsonPath('data.0.unit_price', 7.25);
+        $this->getJson($detail)->assertOk()->assertJsonPath('account_price', 7.25);
+
+        $auditBefore = DB::table('audit_logs')->count();
+        $ordersBefore = DB::table('orders')->count();
+        $movementsBefore = DB::table('stock_movements')->count();
+
+        // Revocation of the parent tier must invalidate existing active
+        // rules without deleting the customer, mutating its account or
+        // accidentally falling back to the undiscounted wholesale price.
+        DB::table('b2b_price_tiers')->where('id', $tierId)
+            ->update(['is_active' => false]);
+        $this->getJson($list)->assertOk()->assertJsonCount(0, 'data');
+        $this->getJson($detail)->assertNotFound();
+        $this->postJson('/api/v1/cart/items', [
+            'store_id' => $storeId,
+            'product_id' => $productId,
+            'quantity' => 1,
+        ])->assertConflict();
+
+        $this->assertDatabaseHas('b2b_price_rules', [
+            'price_tier_id' => $tierId,
+            'store_id' => $storeId,
+            'product_id' => $productId,
+            'is_active' => true,
+        ]);
+        $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+        $this->assertSame($ordersBefore, DB::table('orders')->count());
+        $this->assertSame($movementsBefore, DB::table('stock_movements')->count());
+
+        DB::table('b2b_price_tiers')->where('id', $tierId)
+            ->update(['is_active' => true]);
+        $this->getJson($list)->assertOk()
+            ->assertJsonCount(1, 'data')
+            ->assertJsonPath('data.0.unit_price', 7.25);
+        $this->getJson($detail)->assertOk()->assertJsonPath('account_price', 7.25);
+    }
+
     public function test_pricing_tiers_are_off_by_default_and_base_price_is_authoritative(): void
     {
         $this->seed(CoreReferenceSeeder::class);
