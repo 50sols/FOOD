@@ -4,6 +4,7 @@ return [
     'errors' => [
         'contract_self_approval' => 'A supplier contract creator cannot activate the same agreement; a separately authorized approver is required.',
         'self_approval' => 'A purchaser cannot approve a purchase request they created or submitted.',
+        'self_decision' => 'A purchase request creator or submitter cannot approve or reject their own request; an independent checker is required.',
         'self_award' => 'The buyer, submitter or RFQ creator cannot award their own purchase request.',
         'invoice_receipt_not_posted' => 'Goods receipt :receipt must be posted before it can source a purchase invoice.',
         'invoice_duplicate_supplier_number' => 'This supplier invoice number is already registered in the authorized company.',
