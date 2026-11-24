@@ -280,6 +280,10 @@ final class V2SidebarAuthorityMatrixTest extends TestCase
     /** @return array<string, mixed>|null */
     private function item(User $user, string $key): ?array
     {
+        // A separate HTTP/navigation view must observe live entitlement
+        // and signed-readiness changes, not the previous projection's cache.
+        app()->forgetInstance(AdminNavigation::class);
+
         foreach (app(AdminNavigation::class)->groupsFor($user) as $group) {
             foreach ($group['children'] as $item) {
                 if ($item['key'] === $key) {
