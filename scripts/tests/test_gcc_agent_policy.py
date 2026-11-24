@@ -195,6 +195,52 @@ class GccAgentContractTests(unittest.TestCase):
         self.assertNotIn("Installed agent script contents:", SCRIPT)
         self.assertIn("**Advisory only**", SCRIPT)
 
+    def test_task_context_native_git_exit_and_stream_bands_are_safe(self):
+        # A task-context Git failure must report the *native git.exe* exit,
+        # not just the agent's generic exit 1; stream bytes stay private.
+        self.assertIn("function Private-GitOutputBand([string]$Path)", SCRIPT)
+        self.assertIn("function Safe-GitProcessSummary", SCRIPT)
+        self.assertIn("$script:GccNativeGitExit=[string]$process.ExitCode", SCRIPT)
+        self.assertIn("Private-GitOutputBand -Path $attemptStdout", SCRIPT)
+        self.assertIn("Private-GitOutputBand -Path $attemptStderr", SCRIPT)
+        self.assertIn("$script:GccNativeGitExit=[string]$LASTEXITCODE", SCRIPT)
+        self.assertIn("$script:GccLastFailedStage='git-init'", SCRIPT)
+        self.assertIn("$script:GccLastFailedStage='git-remote'", SCRIPT)
+        self.assertIn("'-?[0-9]", SCRIPT.replace("'^(unknown|timeout|-?[0-9]{1,11})$'", "'-?[0-9]"))
+        self.assertIn("Native Git process exit (diagnostic):", SCRIPT)
+        self.assertIn("Private Git stdout size band:", SCRIPT)
+        self.assertIn("Private Git stderr size band:", SCRIPT)
+        self.assertIn("Git attempt type:", SCRIPT)
+        self.assertEqual(SCRIPT.count("(Safe-GitProcessSummary)"), 2)
+        self.assertNotIn("Get-Content -LiteralPath $attemptStderr", SCRIPT)
+        self.assertNotIn("Get-Content -LiteralPath $attemptStdout", SCRIPT)
+
+    def test_private_git_output_band_runtime_ignores_secret_bytes(self):
+        pwsh = shutil.which("pwsh")
+        if not pwsh:
+            self.skipTest("PowerShell is unavailable; hosted PowerShell syntax gate is still required")
+        start = SCRIPT.index("function Private-GitOutputBand(")
+        end = SCRIPT.index("function Safe-GitProcessSummary", start)
+        function_source = SCRIPT[start:end]
+        code = (
+            function_source + "\n"
+            + "Write-Output (Private-GitOutputBand -Path $env:GCC_TEST_STDERR_PATH)"
+        )
+        with tempfile.TemporaryDirectory(prefix="gcc-git-stream-bands-") as directory:
+            log = Path(directory) / "private.stderr"
+            for value, expected in (("", "empty"), ("FAKE_TOKEN_NOT_FOR_PUBLIC_OUTPUT", "nonempty")):
+                log.write_text(value, encoding="utf-8")
+                env = os.environ.copy()
+                env["GCC_TEST_STDERR_PATH"] = str(log)
+                result = subprocess.run(
+                    [pwsh, "-NoProfile", "-NonInteractive", "-Command", code],
+                    capture_output=True, text=True, env=env, timeout=30, check=False
+                )
+                self.assertEqual(result.returncode, 0, result.stderr[:400])
+                self.assertEqual(result.stdout.strip(), expected)
+                self.assertNotIn("FAKE_TOKEN_NOT_FOR_PUBLIC_OUTPUT", result.stdout + result.stderr)
+                self.assertNotIn(str(log), result.stdout + result.stderr)
+
     def test_advisory_not_required_status(self):
         self.assertIn("**Advisory only**", SCRIPT)
         self.assertIn("Report -Pr $n", SCRIPT)
