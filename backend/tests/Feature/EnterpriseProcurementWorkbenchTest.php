@@ -366,8 +366,21 @@ final class EnterpriseProcurementWorkbenchTest extends TestCase
             ]);
             $this->assertSame($auditAfter, DB::table('audit_logs')->count());
 
+            // Re-activating is insufficient when supplier governance has
+            // independently disqualified this vendor before checker review.
             DB::table('enterprise_suppliers')->where('id', $supplierId)
-                ->update(['status' => 'active']);
+                ->update(['status' => 'active', 'qualification_status' => 'unqualified']);
+            $this->actingAs($checker)->post(route('admin.erp.procurement.requests.decision', $requestId), [
+                'store_id' => $store->id,
+                'decision' => 'approve',
+            ])->assertForbidden();
+            $this->assertDatabaseHas('enterprise_purchase_requests', [
+                'id' => $requestId, 'status' => 'submitted', 'decided_by' => null,
+            ]);
+            $this->assertSame($auditAfter, DB::table('audit_logs')->count());
+
+            DB::table('enterprise_suppliers')->where('id', $supplierId)
+                ->update(['status' => 'active', 'qualification_status' => 'qualified']);
             $this->actingAs($checker)->post(route('admin.erp.procurement.requests.decision', $requestId), [
                 'store_id' => $store->id,
                 'decision' => 'approve',
