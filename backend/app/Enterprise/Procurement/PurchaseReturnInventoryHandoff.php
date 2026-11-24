@@ -3,6 +3,7 @@
 namespace App\Enterprise\Procurement;
 
 use App\Enterprise\Wms\UnknownInventoryOwnerProjection;
+use App\Models\EnterpriseGoodsReceipt;
 use App\Models\EnterpriseGoodsReceiptLine;
 use App\Models\EnterprisePurchaseReturn;
 use App\Models\EnterprisePurchaseReturnLine;
@@ -59,6 +60,22 @@ final class PurchaseReturnInventoryHandoff
         }
 
         $return = $persistedReturn;
+
+        // A direct stock writer must not treat a stale return draft as a
+        // permit to reverse an unposted or revoked source goods receipt.
+        // Hold the source GRN lock before the return/source lines, matching
+        // PurchaseReturnManager::post and serializing all returns of this GRN.
+        $persistedReceipt = EnterpriseGoodsReceipt::query()
+            ->whereKey((int) $return->goods_receipt_id)
+            ->where('store_id', $storeId)
+            ->lockForUpdate()
+            ->first();
+
+        if ($persistedReceipt === null || $persistedReceipt->status !== 'posted') {
+            throw ValidationException::withMessages([
+                'goods_receipt_id' => ['Source goods receipt must remain posted to reverse its stock.'],
+            ]);
+        }
 
         // A stale Eloquent instance can still have empty handoff references
         // after another caller committed the exact same return line. Read and
@@ -139,6 +156,27 @@ final class PurchaseReturnInventoryHandoff
             || abs($rawQuantity - round($rawQuantity, 3)) > 0.000000001) {
             throw ValidationException::withMessages([
                 'returned_quantity' => ['Purchase return stock reversal requires a finite positive quantity with at most three decimal places.'],
+            ]);
+        }
+
+        // A valid saved draft can outlive another posted return for the
+        // same source receipt. The manager checks the remainder, but direct
+        // callers must not bypass that business limit while unrelated stock
+        // in the warehouse would otherwise permit an excess debit.
+        // Include all persisted return movements, even direct handoffs whose
+        // header is still draft. The source receipt/line is locked above.
+        $alreadyReversed = DB::table('enterprise_purchase_return_lines')
+            ->where('goods_receipt_line_id', (int) $sourceLine->getKey())
+            ->whereNotNull('stock_movement_id')
+            ->sum('returned_quantity');
+
+        $alreadyReturnedUnits = (int) round((float) $alreadyReversed * 1000);
+        $requestedUnits = (int) round($rawQuantity * 1000);
+        $originalUnits = (int) round((float) $sourceLine->received_quantity * 1000);
+
+        if ($alreadyReturnedUnits + $requestedUnits > $originalUnits) {
+            throw ValidationException::withMessages([
+                'returned_quantity' => ['Purchase return exceeds the unreturned quantity of its posted receipt line.'],
             ]);
         }
 

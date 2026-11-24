@@ -352,6 +352,65 @@ final class EnterprisePurchaseReturnFoundationTest extends TestCase
         $this->assertNotNull($staleLine->refresh()->stock_movement_id);
     }
 
+    public function test_p110_direct_return_cannot_reverse_source_more_than_received_when_other_stock_exists(): void
+    {
+        $this->enableProcurement();
+        [$actor, $store, $context] = $this->scopedUser($this->allPermissions(), 'PRTN-P110-EXCESS-DIRECT');
+        [$product, $warehouse] = $this->stockTarget($store, 'PRTN-P110-EXCESS-SKU');
+        $receipt = $this->postedReceipt(
+            $actor, $context, $warehouse, 'PRTN-P110-EXCESS-SUP', 'PRTN-P110-EXCESS-SKU', 2,
+        );
+        // Additional physical stock of the SAME product must not disguise
+        // over-return of the original GRN line.
+        $this->postedReceipt(
+            $actor, $context, $warehouse, 'PRTN-P110-EXTRA-SUP', 'PRTN-P110-EXCESS-SKU', 5,
+        );
+        $source = $receipt->lines()->firstOrFail();
+        $manager = app(PurchaseReturnManager::class);
+        $payload = [
+            'lines' => [['goods_receipt_line_id' => $source->id, 'quantity' => 2]],
+        ];
+
+        // Both drafts were valid when created. The first posted return
+        // exhausts source receipt stock; the second bypasses the manager.
+        $first = $manager->createFromPostedReceipt($actor, $context, $receipt->id, $payload);
+        $second = $manager->createFromPostedReceipt($actor, $context, $receipt->id, $payload);
+        $secondLine = $second->lines()->firstOrFail();
+        $this->assertSame('posted', $manager->post($actor, $context, $first->id)->status);
+
+        $inventory = DB::table('inventories')
+            ->where('warehouse_id', $warehouse->id)
+            ->where('product_id', $product->id)->firstOrFail();
+        $this->assertSame(5.0, (float) $inventory->quantity);
+
+        $beforeStock = (array) DB::table('inventories')->where('id', $inventory->id)->first();
+        $beforeOwner = DB::table('enterprise_inventory_owner_positions')
+            ->where('inventory_id', $inventory->id)->get()->toArray();
+        $beforeMovement = DB::table('stock_movements')->count();
+        $beforeOwnerEvent = DB::table('enterprise_inventory_owner_movement_events')->count();
+        $beforeAudit = DB::table('audit_logs')->count();
+
+        try {
+            DB::transaction(static function () use ($actor, $store, $second, $secondLine, $source): void {
+                app(PurchaseReturnInventoryHandoff::class)->reverse(
+                    $actor, $store->id, $second, $secondLine, $source,
+                );
+            });
+            $this->fail('Direct purchase return must not debit more than its own source GRN received.');
+        } catch (ValidationException $exception) {
+            $this->assertArrayHasKey('returned_quantity', $exception->errors());
+        }
+
+        $this->assertSame($beforeStock, (array) DB::table('inventories')->where('id', $inventory->id)->first());
+        $this->assertEquals($beforeOwner, DB::table('enterprise_inventory_owner_positions')
+            ->where('inventory_id', $inventory->id)->get()->toArray());
+        $this->assertSame($beforeMovement, DB::table('stock_movements')->count());
+        $this->assertSame($beforeOwnerEvent, DB::table('enterprise_inventory_owner_movement_events')->count());
+        $this->assertSame($beforeAudit, DB::table('audit_logs')->count());
+        $this->assertDatabaseHas('enterprise_purchase_returns', ['id' => $second->id, 'status' => 'draft']);
+        $this->assertNull($secondLine->refresh()->stock_movement_id);
+    }
+
     public function test_posted_purchase_return_reverses_inventory_once_and_is_retry_safe(): void
     {
         $this->enableProcurement();
