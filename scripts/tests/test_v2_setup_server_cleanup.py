@@ -103,7 +103,7 @@ class WebInstallerMigrationTransportFailureTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             calls = Path(temporary) / 'curl-post-count'
             shell = (
-                'wizard_post() {' + function + '\n}\n'
+                'wizard_post() {' + function + '\n'
                 'curl() { echo request >> "$CURL_CALLS"; printf 500; }\n'
                 'installer_token=fixture-token\n'
                 'if wizard_post 15; then exit 42; fi\n'
