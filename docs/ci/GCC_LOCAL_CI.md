@@ -65,7 +65,7 @@ The agent additionally accepts an owner-authored comment on an open same-reposit
     /gcc-ci full <exact 40-character current PR head SHA>
 
 The full profile uses the **pinned, immutable** local toolkit from repository commit
-`a694003902c22563ed8dcc0e7647b8c19067e224` (container build and execution scripts), verifying each
+`1518a10cac3aafc9f57f86990d70950aa1354bbd` (container build and execution scripts), verifying each
 Git blob SHA before running. The toolkit is downloaded once, locally cached and
 checked again for integrity at every full job. The agent first validates the
 PR owner/base/head, fetches the exact PR commit and the v1.0.125 update base,
@@ -270,14 +270,14 @@ even if a previous partition fails, captures each JUnit result, enforces a
 Fix the original flaky clock assumption under its owning code change,
 or obtain a genuinely green test; do not fake successful parity.
 
-The trusted toolkit SHA above includes the hardened Setup ZIP verifier that rejects non-template `.env*` files. `gcc-agent.ps1` also pins the exact `full.sh` Git blob `72e9a2a151dab7186e825d11d19f2347a14cf130`; this does not constitute a signed release or independent trust review.
+The trusted toolkit SHA above includes the hardened Setup ZIP verifier that rejects non-template `.env*` files. `gcc-agent.ps1` also pins the exact `full.sh` Git blob `301cdebcdf2599adb80958efe7cf66b9c1522c90`; this does not constitute a signed release or independent trust review.
 
 
 ### GCC installer/G004 runtime regressions (2026-11-24)
 
 The original GCC backend profile used `DB_DATABASE=database/database.sqlite` for PHPUnit while installer fixtures explicitly select `:memory:`; that connection mismatch could discard preloaded business markers, leading to false negatives in the install-safety guard tests. The pinned, immutable `full.sh` now runs all four PHPUnit shards with the same in-memory SQLite database setting as `backend/phpunit.xml`. The isolated SQLite migration/seeder preflight remains file-backed and separate. A prior GCC clean Setup ZIP POST to migration wizard step 11 timed out after 300 seconds with no redacted SQLSTATE. The owner G004 PR #3444 now has a non-hot-reloading web server and a longer fail-closed migration timeout; a lost HTTP response still fails without replaying partially committed MySQL DDL.
 
-**Verification state:** These are source fixes, NOT an observed GCC full runtime PASS. The trusted toolkit is pinned to source `a694003902c22563ed8dcc0e7647b8c19067e224` and full.sh Git blob `72e9a2a151dab7186e825d11d19f2347a14cf130`; the GCC host must update its installed agent script and verify the pin before a new command is eligible to exercise it. GitHub Required CI, independent review, signed release identity, same-ZIP upgrade, and production readiness remain separate mandatory gates.
+**Verification state:** These are source fixes, NOT an observed GCC full runtime PASS. The trusted toolkit is pinned to source `1518a10cac3aafc9f57f86990d70950aa1354bbd` and full.sh Git blob `301cdebcdf2599adb80958efe7cf66b9c1522c90`; the GCC host must update its installed agent script and verify the pin before a new command is eligible to exercise it. GitHub Required CI, independent review, signed release identity, same-ZIP upgrade, and production readiness remain separate mandatory gates.
 
 
 ### Canonical G004 ZIP parity continuation (2026-11-24)
@@ -295,3 +295,24 @@ host's installed agent must be refreshed and its immutable toolkit blob verified
 before this change is exercised. Exact-head hosted CI, the actual clean GCC MySQL
 install, independent review, signed Setup/Update artifacts and supported upgrade
 remain separate acceptance gates. Never accept a skipped or stale GCC result.
+
+### Sanitized failed-install diagnostics (2026-11-24)
+
+The trusted GCC installer test now captures the existing acceptance script's
+output only in the runner's private ephemeral tmpfs and extracts a strict
+allowlist of non-sensitive failure categories (for example
+`migration-timeout`, `installer-http-status`,
+`finish-response-indeterminate` or `http-readiness-timeout`).
+When an explicit HTTP status belongs to an installer wizard step, only its
+validated numeric step (1–15) is retained. The host agent appends these fixed
+values to a failed PR evidence comment; it NEVER uploads the raw HTTP response,
+.env, SQL bindings, Laravel logs, or temporary diagnostic file. A focused
+regression runs the same embedded Python classifier against synthetic
+secret-bearing logs, asserting that no secret text is included in public JSON.
+
+This does not relax migration/Finish replay protection, convert FAIL to PASS,
+substitute a production acceptance or prove that the installed GCC Windows
+agent has consumed this reviewed immutable toolkit. The current original
+G004 PR #3444 still owns the composer lock and canonical builder, and it
+must be integrated under its own required gates before a full test on
+#4406 can pass without inventing or bypassing dependencies.
