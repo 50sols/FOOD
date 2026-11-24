@@ -83,6 +83,22 @@ final class ModuleOperationalReadiness
                 || $registration->getRawOriginal('state') !== ModuleState::ENABLED->value) {
                 return 'uncertified';
             }
+
+            // A concurrent operator or a probe may alter the installed
+            // manifest during health evaluation. Do not reuse the signature
+            // checked before the probe for a changed permissions/health scope.
+            $stored = $registration->getAttribute('manifest');
+            if (! is_array($stored)) {
+                return 'uncertified';
+            }
+
+            $approvedManifest = $this->manifests->require($code);
+            $approvedDigest = ModuleWorkflowAttestation::manifestSha256($approvedManifest);
+            $storedDigest = ModuleWorkflowAttestation::manifestSha256(ModuleManifest::fromArray($stored));
+            if ($approvedDigest === null || $storedDigest === null
+                || ! hash_equals($approvedDigest, $storedDigest)) {
+                return 'uncertified';
+            }
         } catch (Throwable) {
             return 'uncertified';
         }
