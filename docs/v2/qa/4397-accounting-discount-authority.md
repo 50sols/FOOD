@@ -37,3 +37,7 @@ The former #2633/PR #3309 Finance Workbench lane was **closed unmerged**, releas
 - Real browser RTL/LTR and mobile-width (320/360/390/412/430px), tablet/desktop accessibility/UX review of tab, filtered list, approve/reject, confirmation and empty/error states. No false assertion that this manual UX step has been performed.
 - Guarded merge **only** into Foodex_V2 when source acceptance and review gates pass, then confirm postmerge CI before closing #4397 and parent #2824. No main/release/production/mobile promotion authorized.
 
+
+### Exact-key request replay integrity regression
+
+Request creation now treats an exact `order_id + idempotency_key` retry as a duplicate only when the requester, normalized rationale and percentage match the original locked request. A changed discount percentage/rationale or different actor cannot reuse that key to conceal conflicting financial intent; it fails validation before any new audit or pricing action. Added authenticated HTTP regression `test_request_idempotency_key_cannot_mask_changed_discount_or_requester` in the original issue-owned feature test. This is a narrowly scoped source correction, not independent financial UAT or full #2824 acceptance. Current required exact-head CI must complete before integration.
