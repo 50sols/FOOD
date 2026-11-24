@@ -1193,5 +1193,38 @@ class InstallerWorkflowTest extends TestCase
         $this->assertSame($originalPassword, DB::table('users')->where('id', $user->id)->value('password'));
         $this->assertSame($auditCount, DB::table('audit_logs')->where('event', 'installer.completed')->count());
         $this->assertSame($versionCount, DB::table('system_versions')->count());
+
+        // The final lock must also block direct installer-only configuration
+        // helpers, not just HTTP requests and finish() itself.
+        $environment = app(InstallerEnvironment::class);
+        $envBytes = (string) file_get_contents($environment->path());
+        $mutations = [
+            'platform' => static fn () => $workflow->savePlatformInformation([
+                'name' => 'Unauthorized Rename',
+                'url' => 'https://invalid.example',
+                'locale' => 'en',
+            ]),
+            'storage' => static fn () => $workflow->saveStorageConfiguration('public'),
+            'cache/queue' => static fn () => $workflow->saveCacheQueueConfiguration([
+                'cache' => 'file',
+                'queue' => 'sync',
+            ]),
+            'mail' => static fn () => $workflow->saveMailConfiguration([
+                'mailer' => 'log',
+                'from_address' => 'unexpected@example.com',
+                'from_name' => 'Unauthorized Mailer',
+            ]),
+        ];
+
+        foreach ($mutations as $label => $mutate) {
+            try {
+                $mutate();
+                $this->fail("Installed site must reject direct installer {$label} mutation.");
+            } catch (HttpException $exception) {
+                $this->assertSame(404, $exception->getStatusCode());
+            }
+
+            $this->assertSame($envBytes, file_get_contents($environment->path()));
+        }
     }
 }
