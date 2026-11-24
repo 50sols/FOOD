@@ -110,6 +110,12 @@ final class InstallState
         if (! is_int($completedStep) || $completedStep < 0 || $completedStep > 15) {
             throw new RuntimeException('Installer progress state is invalid.');
         }
+        // The writer always issues a token together with the first completed
+        // step. A missing token later is a damaged checkpoint, not a fresh
+        // installation. Do not mint a replacement token over partial setup.
+        if ($completedStep > 0 && $token === null) {
+            throw new RuntimeException('Installer progress state is invalid.');
+        }
 
         return [
             'completed_step' => $completedStep,
