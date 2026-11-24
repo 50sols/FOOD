@@ -111,7 +111,9 @@ final class V2ProcurementSidebarPersonaContractTest extends TestCase
             $item = $this->navigationItems($actor->fresh())['erp_procurement'] ?? null;
             $this->assertNotNull($item);
             $this->assertSame('admin.erp.procurement.index', $item['route']);
-            $this->assertSame([], $item['params']);
+            // The linked workbench must carry the concrete authorized B2B
+            // store; a bare route can resolve to an unrelated tenant.
+            $this->assertSame(['store_id' => (string) $store], $item['params']);
             $this->assertArrayNotHasKey('erp_procurement', $this->navigationItems($denied->fresh()));
             $this->assertArrayHasKey('reports_center', $this->navigationItems($actor->fresh()));
 
@@ -177,6 +179,9 @@ final class V2ProcurementSidebarPersonaContractTest extends TestCase
         [$retail, $ownStore] = $this->retailUser();
         $foreignStore = $this->retailStore('V2-2712-FOREIGN');
         $manager = $this->userWithRoles(['PROCUREMENT_MANAGER']);
+        // A valid Procurement workbench needs a real Wholesale store; the
+        // Retail-only user must still remain isolated from that store.
+        $this->wholesaleStore();
 
         foreach ([$retail, $manager] as $actor) {
             $this->assertArrayNotHasKey('erp_procurement', $this->navigationItems($actor->fresh()));
