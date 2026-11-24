@@ -576,6 +576,13 @@ wizard_post() {
       --data-urlencode "installer_token=$installer_token" "$@" \
       "http://127.0.0.1:8099/install/step/$step")" || transport_exit=$?
     [[ "$status" == "302" && "$transport_exit" == "0" ]] && return 0
+    if [[ "$step" == "15" && ( "$status" == "000" || "$transport_exit" -ne 0 ) ]]; then
+      # Finish can atomically create the Super Admin, version and permanent
+      # install lock even if the HTTP response is lost. Do not replay a POST
+      # whose outcome is unknown; inspect state in a separate acceptance run.
+      echo "::error::G004 Finish HTTP response indeterminate; refusing to replay the final installer write."
+      return 1
+    fi
     if [[ "$step" == "11" && ( "$status" == "000" || "$transport_exit" -ne 0 ) ]]; then
       # Never retry the non-transactional MySQL migration stage. Preserve a
       # safe diagnostic even when the PHP process dies before Laravel can log
