@@ -1551,8 +1551,7 @@ SQL);
         $actor = $this->inventoryActor($stock['store_id']);
         $productId = (int) DB::table('inventories')->where('id', $stock['inventory_id'])
             ->value('product_id');
-        $order = new Order(['store_id' => $stock['store_id'], 'channel' => 'b2c']);
-        $order->setAttribute('id', 1102844001);
+        $order = $this->ledgerTestOrder($stock['store_id'], 'ORDER');
 
         // Same order as a genuine posted GRN: canonical inventory first,
         // UNKNOWN projection second, immutable source movement last, all in
@@ -1625,8 +1624,7 @@ SQL);
         $stock = $this->stock('ATOMIC-SMART-ORDER');
         $productId = (int) DB::table('inventories')->where('id', $stock['inventory_id'])
             ->value('product_id');
-        $order = new Order(['store_id' => $stock['store_id'], 'channel' => 'b2c']);
-        $order->setAttribute('id', 1102844002);
+        $order = $this->ledgerTestOrder($stock['store_id'], 'SMART');
         $service = app(SmartOrderingInventoryService::class);
 
         $service->reserve($order, [['product_id' => $productId, 'quantity' => 2.0]]);
@@ -1656,8 +1654,7 @@ SQL);
         $actor = $this->inventoryActor($stock['store_id']);
         $productId = (int) DB::table('inventories')->where('id', $stock['inventory_id'])
             ->value('product_id');
-        $order = new Order(['store_id' => $stock['store_id'], 'channel' => 'b2c']);
-        $order->setAttribute('id', 1102844003);
+        $order = $this->ledgerTestOrder($stock['store_id'], 'KNOWN');
         $this->position($stock['inventory_id'], 'FOODEX', null, 10, 3, $actor->id, $actor->id, false);
 
         try {
@@ -1665,7 +1662,8 @@ SQL);
                 $order, $actor, [['product_id' => $productId, 'quantity' => 1.0]],
             );
             $this->fail('A claimed legal owner requires an approved owner movement writer.');
-        } catch (\LogicException $exception) {
+        } catch (HttpException $exception) {
+            $this->assertSame(409, $exception->getStatusCode());
             $this->assertStringContainsString('per-owner movement allocation', $exception->getMessage());
         }
         $this->assertDatabaseHas('inventories', [
@@ -1684,11 +1682,12 @@ SQL);
         $this->position($unknown['inventory_id'], 'UNKNOWN', null, 9, 3, $actor->id, $actor->id, false);
         try {
             app(SmartOrderingInventoryService::class)->reserve(
-                new Order(['id' => 1102844004, 'store_id' => $unknown['store_id'], 'channel' => 'b2c']),
+                $this->ledgerTestOrder($unknown['store_id'], 'STALE'),
                 [['product_id' => $unknownProductId, 'quantity' => 1.0]],
             );
             $this->fail('Stale UNKNOWN title cannot be silently repaired through checkout.');
-        } catch (\LogicException $exception) {
+        } catch (HttpException $exception) {
+            $this->assertSame(409, $exception->getStatusCode());
             $this->assertStringContainsString('must be reconciled', $exception->getMessage());
         }
         $this->assertDatabaseHas('inventories', [
@@ -1709,8 +1708,7 @@ SQL);
         $actor = $this->inventoryActor($stock['store_id']);
         $productId = (int) DB::table('inventories')->where('id', $stock['inventory_id'])
             ->value('product_id');
-        $order = new Order(['store_id' => $stock['store_id'], 'channel' => 'b2c']);
-        $order->setAttribute('id', 1102844005);
+        $order = $this->ledgerTestOrder($stock['store_id'], 'ROLLBACK');
 
         // Force source movement insertion to fail AFTER canonical and owner
         // reservation rows were written. Both must roll back with that insert.
@@ -1718,7 +1716,7 @@ SQL);
 CREATE TRIGGER p110_atomic_test_fail_order_movement
 BEFORE INSERT ON stock_movements
 FOR EACH ROW
-WHEN NEW.reference_type = 'order' AND NEW.reference_id = 1102844005
+WHEN NEW.reference_type = 'order' AND NEW.reason = 'dashboard_order'
 BEGIN
     SELECT RAISE(ABORT, 'simulated order stock movement failure');
 END
@@ -3046,6 +3044,28 @@ SQL);
     }
 
     /** @return array{store_id:int,inventory_id:int} */
+    /**
+     * Use an actual persisted order so the production order-row lock and
+     * store boundary are exercised, not bypassed by a forged in-memory ID.
+     */
+    private function ledgerTestOrder(int $storeId, string $suffix): Order
+    {
+        $customerId = (int) DB::table('customers')->insertGetId([
+            'type' => 'b2c',
+            'name' => 'P110 Atomic Ledger Customer '.$suffix,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        return Order::query()->create([
+            'store_id' => $storeId,
+            'customer_id' => $customerId,
+            'order_number' => 'P110-ATOMIC-'.$suffix.'-'.$storeId,
+            'channel' => 'b2c',
+            'status' => 'pending',
+        ]);
+    }
+
     private function stock(string $suffix): array
     {
         $storeType = (int) DB::table('store_types')->where('code', 'B2C')->value('id');

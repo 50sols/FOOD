@@ -21,6 +21,7 @@ final class OrderInventoryReservationService
     public function reserve(Order $order, User $user, array $items, string $reason = 'dashboard_order'): void
     {
         DB::transaction(function () use ($order, $user, $items, $reason): void {
+            $this->lockOrderForInventoryLifecycle($order);
             $this->reserveWithinTransaction($order, $user, $items, $reason);
         }, attempts: 3);
     }
@@ -222,7 +223,12 @@ final class OrderInventoryReservationService
             throw new \LogicException('Order inventory lifecycle requires a persisted order key.');
         }
 
-        DB::table('orders')->where('id', (int) $order->getKey())->lockForUpdate()->first();
+        $exists = DB::table('orders')->where('id', (int) $order->getKey())
+            ->where('store_id', (int) $order->store_id)
+            ->lockForUpdate()->exists();
+        if (! $exists) {
+            throw new HttpException(409, 'Order is not persisted in the requested store.');
+        }
     }
 
     /** @return array<int, float> inventory_id => active reserved quantity */

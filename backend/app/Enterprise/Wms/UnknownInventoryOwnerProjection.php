@@ -5,6 +5,7 @@ namespace App\Enterprise\Wms;
 use App\Models\Inventory;
 use Illuminate\Support\Facades\DB;
 use LogicException;
+use Symfony\Component\HttpKernel\Exception\HttpException;
 
 /**
  * Reconcile legally UNATTRIBUTED stock with the canonical inventory row. This is not a legal-title attribution, valuation source, or second ledger.
@@ -59,7 +60,7 @@ final class UnknownInventoryOwnerProjection
         }
 
         if ($positions->count() !== 1) {
-            throw new LogicException('Mixed owner stock requires approved per-owner movement allocation.');
+            throw new HttpException(409, 'Mixed owner stock requires approved per-owner movement allocation.');
         }
 
         $owner = $positions->first();
@@ -67,12 +68,12 @@ final class UnknownInventoryOwnerProjection
             || $owner->supplier_id !== null
             || DB::table('enterprise_inventory_title_attestations')
                 ->where('owner_position_id', (int) $owner->id)->exists()) {
-            throw new LogicException('Claimed legal stock title requires verified per-owner movement allocation.');
+            throw new HttpException(409, 'Claimed legal stock title requires verified per-owner movement allocation.');
         }
 
         if (self::milliUnits($owner->quantity) !== self::milliUnits($canonical->quantity)
             || self::milliUnits($owner->reserved_quantity) !== self::milliUnits($canonical->reserved_quantity)) {
-            throw new LogicException('UNKNOWN owner stock balance must be reconciled before the next mutation.');
+            throw new HttpException(409, 'UNKNOWN owner stock balance must be reconciled before the next mutation.');
         }
     }
 
