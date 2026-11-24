@@ -52,12 +52,33 @@ function Report([int]$Pr,[string]$Sha,[string]$Status,[int]$Exit,[long]$Request)
  $body="<!-- foodex-gcc-ci:$Request -->" + [Environment]::NewLine +
  "**GCC isolated local smoke: $Status**" + [Environment]::NewLine +
  "PR #$Pr; exact source SHA: $Sha; exit: $Exit." + [Environment]::NewLine +
+ "Last execution stage: $(if($Status -eq 'PASS'){'complete'}else{$script:GccLastFailedStage})." + [Environment]::NewLine +
  "Tests: CI map, failure registry, branch policy unit tests. Docker: offline, read-only source, no host credentials or socket." +
  [Environment]::NewLine + "**Advisory only**: does not substitute Laravel, Flutter, MySQL/Redis, signed ZIP, or exact-head Required CI."
  $result=& gh api "repos/$Repo/issues/$Pr/comments" -f "body=$body" 2>&1
  if($LASTEXITCODE -ne 0) { throw "Evidence posting failed on PR #$Pr" }
  if(-not (($result | Out-String | ConvertFrom-Json).id)) { throw 'GitHub did not confirm comment.' }
  Write-Output "PR #$Pr local evidence posted: $Status"
+}
+function Invoke-BoundedGitFetch([string]$Checkout,[int]$Pr,[long]$Request) {
+ $bin=(Get-Command git.exe -ErrorAction Stop).Source
+ $stdout=Join-Path $Root ("git-fetch-{0}-{1}.stdout" -f $Pr,$Request)
+ $stderr=Join-Path $Root ("git-fetch-{0}-{1}.stderr" -f $Pr,$Request)
+ $arguments='-C "'+$Checkout+'" -c credential.helper= fetch --quiet --depth 1 origin refs/pull/'+$Pr+'/head'
+ $oldPrompt=$env:GIT_TERMINAL_PROMPT
+ $env:GIT_TERMINAL_PROMPT='0'
+ $process=$null
+ try {
+  $process=Start-Process -FilePath $bin -ArgumentList $arguments -PassThru -NoNewWindow -RedirectStandardOutput $stdout -RedirectStandardError $stderr -ErrorAction Stop
+  if(-not $process.WaitForExit(900000)) {
+   & taskkill.exe /T /F /PID $process.Id 1>$null 2>$null
+   throw 'Git fetch exceeded 15-minute bounded timeout; exact-head test not executed.'
+  }
+  if($process.ExitCode -ne 0) { throw "Git fetch exited $($process.ExitCode). Check local git-fetch log." }
+ } finally {
+  $env:GIT_TERMINAL_PROMPT=$oldPrompt
+  if($null -ne $process) { $process.Dispose() }
+ }
 }
 function Smoke([int]$Pr,[string]$Sha,[long]$Request) {
  # Every attempt must have a private checkout. Reusing a prior request path
@@ -69,8 +90,9 @@ function Smoke([int]$Pr,[string]$Sha,[long]$Request) {
   if($LASTEXITCODE -ne 0) { throw 'git init failed' }
   & git -C $work remote add origin "https://github.com/$Repo.git" | Out-Null
   if($LASTEXITCODE -ne 0) { throw 'git remote failed' }
-  & git -C $work -c credential.helper= fetch -q --depth 1 origin "refs/pull/$Pr/head" | Out-Null
-  if($LASTEXITCODE -ne 0) { throw 'git fetch failed' }
+  $script:GccLastFailedStage='git-fetch'
+  Invoke-BoundedGitFetch -Checkout $work -Pr $Pr -Request $Request
+  $script:GccLastFailedStage='checkout'
   $actual=(& git -C $work rev-parse FETCH_HEAD | Out-String).Trim()
   if($actual -cne $Sha) { throw 'Requested SHA differs from fetched PR head.' }
   & git -C $work checkout -q --detach $Sha | Out-Null
@@ -80,6 +102,7 @@ function Smoke([int]$Pr,[string]$Sha,[long]$Request) {
   $log=Join-Path $Root "test-$Pr-$Request.log"
   # PowerShell 5.1 promotes native stderr into terminating errors with Stop.
   # unittest writes progress to stderr even when its exit code is zero.
+  $script:GccLastFailedStage='smoke-tests'
   $exit=Invoke-DockerLogged -DockerArgs $args -LogPath $log -Stage 'smoke-tests'
   if($exit -ne 0) { Write-Warning "Failed smoke ($exit): $log" }
   return $exit
@@ -324,7 +347,16 @@ function Process($Comment) {
     $pr.head.repo.full_name -cne $Repo -or $pr.head.sha -cne $sha) {
   Write-Warning "Rejected non-V2, changed or foreign PR #$n"; return
  }
- if([string]$pr.head.ref -cnotmatch '^(ci|feat|fix|test|chore|refactor|docs|worker)/[0-9]+-[a-z0-9-]+$') { return }
+ if([string]$pr.head.ref -cnotmatch '\A(ci|feat|fix|test|chore|refactor|docs|worker)/[0-9]+-[a-z0-9-]+\z') { return }
+ # Crash-safe cursor replay: do not rerun an exact command already reported.
+ $smokeMarker="<!-- foodex-gcc-ci:$($Comment.id) -->"
+ $fullMarker="<!-- foodex-gcc-full:$($Comment.id) -->"
+ $published=@(Api "repos/$Repo/issues/$n/comments?per_page=100&sort=created&direction=desc" |
+   Where-Object { $b=[string]$_.body; $b.Contains($smokeMarker) -or $b.Contains($fullMarker) })
+ if($published.Count -gt 0) {
+  Write-Output "GCC request $($Comment.id) already reported; skipping replay."
+  return
+ }
  $status='FAIL'; $exit=1
  $script:GccLastFailedStage='checkout-or-dispatch'
  try {
@@ -335,8 +367,9 @@ function Process($Comment) {
    try {
     & git -C $work init -q | Out-Null
     & git -C $work remote add origin "https://github.com/$Repo.git" | Out-Null
-    & git -C $work -c credential.helper= fetch --quiet --depth 1 origin "refs/pull/$n/head" | Out-Null
-    if($LASTEXITCODE -ne 0) { throw 'Full CI PR fetch failed' }
+    $script:GccLastFailedStage='git-fetch'
+    Invoke-BoundedGitFetch -Checkout $work -Pr $n -Request ([long]$Comment.id)
+    $script:GccLastFailedStage='checkout'
     $fetched=(& git -C $work rev-parse FETCH_HEAD | Out-String).Trim()
     if($fetched -cne $sha) { throw 'Full CI fetched source SHA mismatch' }
     & git -C $work checkout -q --detach $sha | Out-Null

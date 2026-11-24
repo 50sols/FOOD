@@ -29,6 +29,14 @@ class GccAgentContractTests(unittest.TestCase):
         self.assertNotIn("self-hosted", SCRIPT)
         self.assertIn("test_foodex_branch_policy.py", SCRIPT)
 
+    def test_fetch_bounded_and_replay_safe(self):
+        self.assertIn("Invoke-BoundedGitFetch", SCRIPT)
+        self.assertIn("WaitForExit(900000)", SCRIPT)
+        self.assertIn("GIT_TERMINAL_PROMPT='0'", SCRIPT)
+        self.assertIn("already reported; skipping replay.", SCRIPT)
+        self.assertIn("Invoke-DockerLogged -DockerArgs $args", SCRIPT)
+        self.assertNotIn("& docker @args *> $log", SCRIPT)
+
     def test_advisory_not_required_status(self):
         self.assertIn("**Advisory only**", SCRIPT)
         self.assertIn("Report -Pr $n", SCRIPT)
