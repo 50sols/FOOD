@@ -195,6 +195,43 @@ final class V2CustomerServiceDiscountApprovalTest extends TestCase
         $this->assertDatabaseHas('orders', ['id' => $orderId, 'grand_total' => 9]);
     }
 
+    public function test_direct_discount_request_rejects_excess_fractional_precision_without_financial_side_effects(): void
+    {
+        $manager = $this->roleUser('CUSTOMER_SERVICE_MANAGER');
+        $orderId = $this->order();
+        $order = Order::query()->findOrFail($orderId);
+        $service = app(OrderCustomerServiceDiscountApprovalService::class);
+        $request = Request::create('/admin/operations/orders', 'POST');
+
+        foreach ([12.3456, 0.0001, 99.9999] as $invalidPercentage) {
+            try {
+                $service->request(
+                    $order, $manager, $invalidPercentage,
+                    'Independent accounting approval', (string) Str::uuid(), $request,
+                );
+                $this->fail('Direct service must reject percentage precision beyond three decimal places.');
+            } catch (ValidationException $exception) {
+                $this->assertArrayHasKey('percentage', $exception->errors());
+            }
+        }
+
+        $this->assertDatabaseMissing('order_customer_service_discount_requests', ['order_id' => $orderId]);
+        $this->assertDatabaseMissing('audit_logs', [
+            'event' => 'order.customer_service_discount.requested',
+            'user_id' => $manager->getKey(),
+        ]);
+        $this->assertDatabaseHas('orders', ['id' => $orderId, 'discount_total' => 1, 'grand_total' => 9]);
+
+        $this->assertTrue($service->request(
+            $order, $manager, 12.345,
+            'Independent accounting approval', (string) Str::uuid(), $request,
+        ));
+        $this->assertDatabaseHas('order_customer_service_discount_requests', [
+            'order_id' => $orderId, 'percentage' => 12.345, 'status' => 'pending',
+        ]);
+        $this->assertDatabaseHas('orders', ['id' => $orderId, 'discount_total' => 1, 'grand_total' => 9]);
+    }
+
     public function test_direct_discount_request_normalizes_and_validates_finance_rationale(): void
     {
         $manager = $this->roleUser('CUSTOMER_SERVICE_MANAGER');
