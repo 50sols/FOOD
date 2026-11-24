@@ -1174,5 +1174,24 @@ class InstallerWorkflowTest extends TestCase
 
         $this->get('/install')->assertNotFound();
         $this->post('/install/step/1', ['installer_token' => 'invalid'])->assertNotFound();
+
+        // A direct service caller must not be able to bypass the closed web
+        // installer and replay finalization with a replacement admin password.
+        $originalPassword = (string) DB::table('users')->where('id', $user->id)->value('password');
+        $auditCount = DB::table('audit_logs')->where('event', 'installer.completed')->count();
+        $versionCount = DB::table('system_versions')->count();
+        try {
+            $workflow->finish([
+                ...$admin,
+                'password_hash' => Hash::make('UnexpectedReplacement!456'),
+            ]);
+            $this->fail('A completed installation must reject direct finalization replay.');
+        } catch (HttpException $exception) {
+            $this->assertSame(404, $exception->getStatusCode());
+        }
+
+        $this->assertSame($originalPassword, DB::table('users')->where('id', $user->id)->value('password'));
+        $this->assertSame($auditCount, DB::table('audit_logs')->where('event', 'installer.completed')->count());
+        $this->assertSame($versionCount, DB::table('system_versions')->count());
     }
 }
