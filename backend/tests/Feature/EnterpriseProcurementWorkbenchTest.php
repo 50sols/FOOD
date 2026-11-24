@@ -286,6 +286,69 @@ final class EnterpriseProcurementWorkbenchTest extends TestCase
         $this->assertSame(4, $revocations);
     }
 
+    public function test_suspended_supplier_cannot_advance_maker_draft_to_submitted_in_both_locales(): void
+    {
+        $this->enableProcurement();
+        [$maker, $store] = $this->operator('ERP-UI-SUPPLIER-SUBMIT');
+
+        foreach (['ar', 'en'] as $locale) {
+            $maker->forceFill(['locale' => $locale])->save();
+            $code = 'ERP-SUP-SUB-'.strtoupper($locale);
+            $this->actingAs($maker)->post(route('admin.erp.procurement.suppliers.store'), [
+                'store_id' => $store->id,
+                'scope_type' => 'store',
+                'code' => $code,
+                'name_en' => 'Submit Supplier '.$locale,
+                'name_ar' => 'مورد تسليم '.$locale,
+            ])->assertRedirect();
+            $supplierId = (int) DB::table('enterprise_suppliers')
+                ->where('code', $code)->value('id');
+            $this->assertGreaterThan(0, $supplierId);
+            $reason = 'Supplier submit revocation '.$locale;
+            $this->actingAs($maker)->post(route('admin.erp.procurement.requests.store'), [
+                'store_id' => $store->id,
+                'supplier_id' => $supplierId,
+                'currency_code' => 'KWD',
+                'reason' => $reason,
+                'item_code' => 'SUP-SUB-SKU',
+                'description' => 'Supplier lifecycle line',
+                'quantity' => 2,
+                'unit' => 'case',
+                'estimated_unit_cost' => 1.500,
+            ])->assertRedirect();
+            $requestId = (int) DB::table('enterprise_purchase_requests')
+                ->where('reason', $reason)->value('id');
+            $this->assertGreaterThan(0, $requestId);
+            DB::table('enterprise_suppliers')->where('id', $supplierId)
+                ->update(['status' => 'suspended']);
+            $auditBefore = DB::table('audit_logs')->count();
+
+            $this->actingAs($maker)->post(route('admin.erp.procurement.requests.submit', $requestId), [
+                'store_id' => $store->id,
+            ])->assertNotFound();
+            $this->assertDatabaseHas('enterprise_purchase_requests', [
+                'id' => $requestId, 'status' => 'draft',
+                'supplier_id' => $supplierId, 'submitted_by' => null,
+            ]);
+            $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+
+            DB::table('enterprise_suppliers')->where('id', $supplierId)
+                ->update(['status' => 'active']);
+            $this->actingAs($maker)->post(route('admin.erp.procurement.requests.submit', $requestId), [
+                'store_id' => $store->id,
+            ])->assertRedirect();
+            $this->assertDatabaseHas('enterprise_purchase_requests', [
+                'id' => $requestId, 'status' => 'submitted',
+                'supplier_id' => $supplierId, 'submitted_by' => $maker->id,
+            ]);
+            $auditAfter = DB::table('audit_logs')->count();
+            $this->actingAs($maker)->post(route('admin.erp.procurement.requests.submit', $requestId), [
+                'store_id' => $store->id,
+            ])->assertRedirect();
+            $this->assertSame($auditAfter, DB::table('audit_logs')->count());
+        }
+    }
+
     public function test_supplier_tab_filters_literal_prefix_and_rejects_foreign_store_access(): void
     {
         $this->enableProcurement();
