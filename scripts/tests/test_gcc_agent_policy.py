@@ -22,6 +22,19 @@ class GccAgentContractTests(unittest.TestCase):
         self.assertIn("$pr.head.sha -cne $sha", SCRIPT)
         self.assertIn("$actual -cne $Sha", SCRIPT)
 
+    def test_doctor_binds_authenticated_github_to_immutable_canonical_repository(self):
+        # A valid gh login is not sufficient after an organization transfer.
+        # The agent must verify the same immutable repo as its PR gate before
+        # reading or dispatching owner commands, without logging API secrets.
+        doctor = SCRIPT.split("function Doctor {", 1)[1].split("function Api(", 1)[0]
+        self.assertIn("$Repo='50sols/FOOD'", SCRIPT)
+        self.assertIn("$RepositoryId=1385223867", SCRIPT)
+        self.assertIn('gh api "repos/$Repo" --jq \'.id\' 2>$null', doctor)
+        self.assertIn("$resolvedId -cne [string]$RepositoryId", doctor)
+        self.assertIn("Canonical GitHub repository identity preflight failed.", doctor)
+        self.assertLess(doctor.index("gh api"), doctor.index("docker info"))
+        self.assertNotIn("Write-Output $resolvedId", doctor)
+
     def test_fixed_command_and_docker_isolation(self):
         self.assertNotIn("Invoke-Expression", SCRIPT)
         self.assertNotIn("iex ", SCRIPT.lower())
