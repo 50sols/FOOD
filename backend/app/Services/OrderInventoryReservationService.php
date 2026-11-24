@@ -26,21 +26,17 @@ final class OrderInventoryReservationService
         // negative or sub-milli-unit value as a successfully reserved order.
         // Validate the WHOLE batch before any canonical/owner stock mutation.
         foreach ($items as $item) {
-            $productId = $item['product_id'] ?? null;
-            $rawQuantity = $item['quantity'] ?? null;
-            $validProduct = filter_var($productId, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]) !== false;
-            $validQuantity = is_numeric($rawQuantity);
+            $validProduct = filter_var(
+                $item['product_id'], FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]],
+            ) !== false;
+            $quantity = (float) $item['quantity'];
 
-            if ($validQuantity) {
-                $quantity = (float) $rawQuantity;
-                $validQuantity = is_finite($quantity)
-                    && $quantity > 0
-                    && $quantity <= 99999999999.999
-                    && round($quantity, 3) > 0
-                    && abs($quantity - round($quantity, 3)) <= 0.000000001;
-            }
-
-            if (! $validProduct || ! $validQuantity) {
+            if (! $validProduct
+                || ! is_finite($quantity)
+                || $quantity <= 0
+                || $quantity > 99999999999.999
+                || round($quantity, 3) <= 0
+                || abs($quantity - round($quantity, 3)) > 0.000000001) {
                 throw ValidationException::withMessages([
                     'items' => ['Order inventory requires a positive product ID and a finite positive quantity with at most three decimal places.'],
                 ]);
