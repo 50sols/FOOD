@@ -86,7 +86,7 @@ class BuildUpdateBundleSourceSafetyTest(unittest.TestCase):
             output = root / "dist/FOODEX-Update.zip"
             entries = [
                 ("backend/public/assets/admin/app.css", "backend/public/assets/admin/app.css"),
-                ("backend/public/assets/admin/APP.CSS", "backend/public/assets/admin/app.css"),
+                ("backend/public/assets/admin/APP.CSS", "backend/public/assets/admin/APP.CSS"),
             ]
             with self.assertRaisesRegex(RuntimeError, "Ambiguous"):
                 builder.build_zip(root, entries, output)
