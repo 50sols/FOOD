@@ -50,6 +50,16 @@ final class EnterpriseOrganizationAdministration
         $this->assertCreationParentActive($organization);
 
         return DB::transaction(function () use ($organization, $data, $actor): EnterpriseCompany {
+            // Bind child creation to the persisted parent identity, not a
+            // caller-mutated Eloquent key or cached activation state.
+            $organization = EnterpriseOrganization::query()
+                ->whereKey($organization->getRawOriginal($organization->getKeyName()))
+                ->lockForUpdate()
+                ->first();
+            if (! $organization instanceof EnterpriseOrganization) {
+                throw ValidationException::withMessages(['parent' => [__('enterprise_organization.inactive_parent')]]);
+            }
+            $this->assertCreationParentActive($organization);
             $company = $organization->companies()->create($data);
             $this->audit->record('enterprise.company.created', $actor, $company, null, $this->snapshot($company));
 
@@ -73,6 +83,16 @@ final class EnterpriseOrganizationAdministration
         $this->assertCreationParentActive($company);
 
         return DB::transaction(function () use ($company, $data, $actor): EnterpriseLegalEntity {
+            // Bind child creation to the persisted parent identity, not a
+            // caller-mutated Eloquent key or cached activation state.
+            $company = EnterpriseCompany::query()
+                ->whereKey($company->getRawOriginal($company->getKeyName()))
+                ->lockForUpdate()
+                ->first();
+            if (! $company instanceof EnterpriseCompany) {
+                throw ValidationException::withMessages(['parent' => [__('enterprise_organization.inactive_parent')]]);
+            }
+            $this->assertCreationParentActive($company);
             $entity = $company->legalEntities()->create($data);
             $this->audit->record('enterprise.legal_entity.created', $actor, $entity, null, $this->snapshot($entity));
 
@@ -96,6 +116,16 @@ final class EnterpriseOrganizationAdministration
         $this->assertCreationParentActive($entity);
 
         return DB::transaction(function () use ($entity, $data, $actor): EnterpriseBusinessUnit {
+            // Bind child creation to the persisted parent identity, not a
+            // caller-mutated Eloquent key or cached activation state.
+            $entity = EnterpriseLegalEntity::query()
+                ->whereKey($entity->getRawOriginal($entity->getKeyName()))
+                ->lockForUpdate()
+                ->first();
+            if (! $entity instanceof EnterpriseLegalEntity) {
+                throw ValidationException::withMessages(['parent' => [__('enterprise_organization.inactive_parent')]]);
+            }
+            $this->assertCreationParentActive($entity);
             $unit = $entity->businessUnits()->create($data);
             $this->audit->record('enterprise.business_unit.created', $actor, $unit, null, $this->snapshot($unit));
 
