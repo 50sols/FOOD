@@ -136,7 +136,7 @@ final class EnterpriseOrganizationAdministrationController extends Controller
     public function updateOrganization(Request $request, EnterpriseOrganization $organization): RedirectResponse
     {
         $actor = $this->platformAdmin($request);
-        $data = $this->validatedRecord($request, Rule::unique('enterprise_organizations', 'code')->ignore($organization->id));
+        $data = $this->validatedRecord($request, Rule::unique('enterprise_organizations', 'code')->ignore($organization->id), (bool) $organization->is_active);
         $this->administration->assertUpdateAllowed($organization, $data);
         if ($request->has('_setup_test')) {
             return back()->withInput($request->only(['name', 'code', 'is_active', '_setup_test', '_setup_form']))
@@ -172,6 +172,7 @@ final class EnterpriseOrganizationAdministrationController extends Controller
         $data = $this->validatedRecord(
             $request,
             Rule::unique('enterprise_companies', 'code')->where('organization_id', $company->organization_id)->ignore($company->id),
+            (bool) $company->is_active,
         );
         $this->administration->assertUpdateAllowed($company, $data);
         if ($request->has('_setup_test')) {
@@ -208,6 +209,7 @@ final class EnterpriseOrganizationAdministrationController extends Controller
         $data = $this->validatedRecord(
             $request,
             Rule::unique('enterprise_legal_entities', 'code')->where('company_id', $legalEntity->company_id)->ignore($legalEntity->id),
+            (bool) $legalEntity->is_active,
         );
         $this->administration->assertUpdateAllowed($legalEntity, $data);
         if ($request->has('_setup_test')) {
@@ -244,6 +246,7 @@ final class EnterpriseOrganizationAdministrationController extends Controller
         $data = $this->validatedRecord(
             $request,
             Rule::unique('enterprise_business_units', 'code')->where('legal_entity_id', $businessUnit->legal_entity_id)->ignore($businessUnit->id),
+            (bool) $businessUnit->is_active,
         );
         $this->administration->assertUpdateAllowed($businessUnit, $data);
         if ($request->has('_setup_test')) {
@@ -264,7 +267,7 @@ final class EnterpriseOrganizationAdministrationController extends Controller
         return back()->with('status', __('enterprise_organization.store_assigned'));
     }
 
-    private function validatedRecord(Request $request, mixed $unique): array
+    private function validatedRecord(Request $request, mixed $unique, ?bool $currentActive = null): array
     {
         // Codes are stored in lowercase. Validate uniqueness against that same
         // canonical value so a case-sensitive database cannot accept a
@@ -288,7 +291,12 @@ final class EnterpriseOrganizationAdministrationController extends Controller
         return [
             'code' => strtolower((string) $validated['code']),
             'name' => trim((string) $validated['name']),
-            'is_active' => $request->boolean('is_active'),
+            // PATCH omitting the activation field is a metadata edit, not a
+            // deactivation command. Explicit false still reaches the service
+            // and its descendant/store/default-routing safeguards.
+            'is_active' => $request->exists('is_active')
+                ? $request->boolean('is_active')
+                : ($currentActive ?? false),
         ];
     }
 
