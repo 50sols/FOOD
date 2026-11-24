@@ -76,6 +76,13 @@ class WebInstallerServerCleanupTests(unittest.TestCase):
 class WebInstallerMigrationTransportFailureTests(unittest.TestCase):
     """Do not allow a slow or dead PHP server to mask first-attempt MySQL DDL."""
 
+    def test_http_failure_never_exposes_raw_laravel_logs(self):
+        source = SH.read_text(encoding='utf-8')
+        function = source.split('wizard_post() {', 1)[1].split('\n\nfor step in $(seq 1 15)', 1)[0]
+        self.assertNotIn('tail -n 100', function)
+        self.assertIn('G004 safe installer error category:', function)
+        self.assertIn('G004 first-attempt migration failure:', function)
+
     def test_step_11_captures_transport_result_without_replaying_nontransactional_ddl(self):
         source = SH.read_text(encoding='utf-8')
         start = source.index('wizard_post() {')
