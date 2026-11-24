@@ -188,6 +188,67 @@ final class EnterpriseProcurementWorkbenchTest extends TestCase
         }
     }
 
+    public function test_same_store_manager_cannot_cancel_another_makers_draft_but_can_cancel_submitted_request(): void
+    {
+        $this->enableProcurement();
+        [$maker, $store] = $this->operator('ERP-UI-DRAFT-CANCEL');
+        $other = User::factory()->create(['locale' => 'en', 'is_active' => true]);
+        $this->grantPlatformErpAccess($other);
+        $roleId = Role::query()->where('code', 'B2C_STORE_ADMIN')->firstOrFail()->id;
+        DB::table('user_store_roles')->insert([
+            'user_id' => $other->id, 'store_id' => $store->id,
+            'role_id' => $roleId, 'created_at' => now(), 'updated_at' => now(),
+        ]);
+
+        foreach (['ar', 'en'] as $locale) {
+            $maker->forceFill(['locale' => $locale])->save();
+            $other->forceFill(['locale' => $locale])->save();
+            $reason = 'Maker draft cancellation boundary '.$locale;
+            $this->actingAs($maker)->post(route('admin.erp.procurement.requests.store'), [
+                'store_id' => $store->id,
+                'currency_code' => 'KWD',
+                'reason' => $reason,
+                'item_code' => 'CANCEL-SKU',
+                'description' => 'Maker owned draft',
+                'quantity' => 1,
+                'unit' => 'case',
+                'estimated_unit_cost' => 2.500,
+            ])->assertRedirect();
+            $requestId = (int) DB::table('enterprise_purchase_requests')
+                ->where('reason', $reason)->value('id');
+            $this->assertGreaterThan(0, $requestId);
+            $auditBefore = DB::table('audit_logs')->count();
+
+            $this->actingAs($other)->post(route('admin.erp.procurement.requests.cancel', $requestId), [
+                'store_id' => $store->id,
+            ])->assertForbidden();
+            $this->assertDatabaseHas('enterprise_purchase_requests', [
+                'id' => $requestId, 'status' => 'draft', 'created_by' => $maker->id,
+            ]);
+            $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+
+            $this->actingAs($maker)->post(route('admin.erp.procurement.requests.submit', $requestId), [
+                'store_id' => $store->id,
+            ])->assertRedirect();
+            $this->assertDatabaseHas('enterprise_purchase_requests', [
+                'id' => $requestId, 'status' => 'submitted', 'submitted_by' => $maker->id,
+            ]);
+            // A manager retains permission to stop a submitted request;
+            // the draft maker-only guard must not break this existing flow.
+            $this->actingAs($other)->post(route('admin.erp.procurement.requests.cancel', $requestId), [
+                'store_id' => $store->id,
+            ])->assertRedirect();
+            $this->assertDatabaseHas('enterprise_purchase_requests', [
+                'id' => $requestId, 'status' => 'cancelled', 'cancelled_by' => $other->id,
+            ]);
+            $auditAfter = DB::table('audit_logs')->count();
+            $this->actingAs($other)->post(route('admin.erp.procurement.requests.cancel', $requestId), [
+                'store_id' => $store->id,
+            ])->assertRedirect();
+            $this->assertSame($auditAfter, DB::table('audit_logs')->count());
+        }
+    }
+
     public function test_supplier_hold_between_preflight_and_write_denies_request_create_and_draft_update(): void
     {
         $this->enableProcurement();
