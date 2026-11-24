@@ -85,6 +85,14 @@ final class LaravelUpdateRuntime implements UpdateRuntime
             $target = $this->releaseRoot().'/'.$relativePath;
 
             if (is_file($target)) {
+                // Existing release targets are untrusted filesystem entries:
+                // a hardlink can alias a private inode outside the release
+                // root without appearing as a symlink. Never copy those bytes
+                // into a backup that may later authorize restoration.
+                if (! $this->isSingleLinkBackupFile($target)) {
+                    throw new RuntimeException('Existing release file is hardlinked or unsafe to back up.');
+                }
+
                 $backupPath = $filesDirectory.'/'.$relativePath;
                 $this->ensureDirectory(dirname($backupPath));
 
