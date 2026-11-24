@@ -195,6 +195,40 @@ final class V2CustomerServiceDiscountApprovalTest extends TestCase
         $this->assertDatabaseHas('orders', ['id' => $orderId, 'grand_total' => 9]);
     }
 
+    public function test_direct_discount_request_normalizes_and_validates_finance_rationale(): void
+    {
+        $manager = $this->roleUser('CUSTOMER_SERVICE_MANAGER');
+        $orderId = $this->order();
+        $order = Order::query()->findOrFail($orderId);
+        $service = app(OrderCustomerServiceDiscountApprovalService::class);
+        $request = Request::create('/admin/operations/orders', 'POST');
+
+        foreach (['', '   ', '  no  ', str_repeat('X', 501)] as $invalidReason) {
+            try {
+                $service->request($order, $manager, 15, $invalidReason, (string) Str::uuid(), $request);
+                $this->fail('Direct service must reject an invalid Accounting rationale.');
+            } catch (ValidationException $exception) {
+                $this->assertArrayHasKey('reason', $exception->errors());
+            }
+        }
+
+        $this->assertDatabaseMissing('order_customer_service_discount_requests', ['order_id' => $orderId]);
+        $this->assertDatabaseMissing('audit_logs', [
+            'event' => 'order.customer_service_discount.requested',
+            'user_id' => $manager->getKey(),
+        ]);
+
+        $this->assertTrue($service->request(
+            $order, $manager, 15, '  Valid Finance recovery reason  ', (string) Str::uuid(), $request,
+        ));
+        $this->assertDatabaseHas('order_customer_service_discount_requests', [
+            'order_id' => $orderId,
+            'status' => 'pending',
+            'reason' => 'Valid Finance recovery reason',
+        ]);
+        $this->assertDatabaseHas('orders', ['id' => $orderId, 'discount_total' => 1, 'grand_total' => 9]);
+    }
+
     public function test_request_idempotency_key_cannot_mask_changed_discount_or_requester(): void
     {
         $agent = $this->roleUser('CUSTOMER_SERVICE_AGENT');
