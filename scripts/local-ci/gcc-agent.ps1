@@ -28,7 +28,21 @@ function Api([string]$Path) {
  if($LASTEXITCODE -ne 0) { throw "GitHub API failure: $Path" }
  return (ConvertFrom-Json -InputObject ($raw | Out-String))
 }
-function Comments { return @(Api $Uri) }
+# Walk newest-first pages until the saved cursor is reached. A single
+# 100-comment page can silently lose owner commands during a busy interval.
+# Cap the traversal so an API/backlog anomaly fails closed before Save().
+function Comments([long]$After=0) {
+ $found=New-Object 'System.Collections.Generic.List[object]'
+ for($page=1;$page -le 100;$page++) {
+  $batch=@(Api "$Uri&page=$page")
+  foreach($comment in $batch) {
+   if([long]$comment.id -le $After) { return $found.ToArray() }
+   $found.Add($comment)
+  }
+  if($batch.Count -lt 100) { return $found.ToArray() }
+ }
+ throw 'GCC comment backlog exceeds 100 pages; refusing to advance cursor.'
+}
 function Cursor {
  if(-not (Test-Path -LiteralPath $State)) { return [long]0 }
  $value=Get-Content -LiteralPath $State -Raw | ConvertFrom-Json
@@ -44,7 +58,7 @@ function Save([long]$Id) {
 function Initialize {
  if(Test-Path -LiteralPath $State) { return }
  $latest=[long]0
- foreach($c in @(Comments)) { if([long]$c.id -gt $latest) { $latest=[long]$c.id } }
+ foreach($c in @(Api $Uri)) { if([long]$c.id -gt $latest) { $latest=[long]$c.id } }
  Save $latest
  Write-Output "Initialized at comment $latest; older commands ignored."
 }
@@ -397,7 +411,7 @@ function Poll {
   if(-not $held) { return }
   Initialize
   $cursor=Cursor
-  $recent=@(Comments | Where-Object { [long]$_.id -gt $cursor } | Sort-Object { [long]$_.id })
+  $recent=@(Comments -After $cursor | Sort-Object { [long]$_.id })
   foreach($comment in $recent) { Process $comment; Save ([long]$comment.id) }
   Write-Output "GCC poll processed $($recent.Count) new comment(s)."
  } finally {
