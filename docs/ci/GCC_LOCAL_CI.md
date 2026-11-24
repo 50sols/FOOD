@@ -65,7 +65,7 @@ The agent additionally accepts an owner-authored comment on an open same-reposit
     /gcc-ci full <exact 40-character current PR head SHA>
 
 The full profile uses the **pinned, immutable** local toolkit from repository commit
-`ed5e18d6d1e9c9489ce206df7f4b5ac2052cac36` (container build and execution scripts), verifying each
+`a694003902c22563ed8dcc0e7647b8c19067e224` (container build and execution scripts), verifying each
 Git blob SHA before running. The toolkit is downloaded once, locally cached and
 checked again for integrity at every full job. The agent first validates the
 PR owner/base/head, fetches the exact PR commit and the v1.0.125 update base,
@@ -77,8 +77,10 @@ The isolated containers cover:
 - deterministic exhaustive four-shard Laravel PHPUnit suite, SQLite
   fresh migration/seed, Node live-map acceptance;
 - disposable MySQL 8 + Redis 7 deployment/installer/updater/recovery tests;
-- one **production-vendor** Setup ZIP (no dev Composer dependencies), path,
-  duplicate/symlink, environment-file checks, SHA256 and the existing
+- one **production-vendor** Setup ZIP (no dev Composer dependencies), staged using
+  the same G004 excludes, immutable commit timestamp, canonical Python builder,
+  repeated-byte comparison and security/provenance verifier as hosted CI
+  (not the former independent rsync + zip(1) serializer); then the existing
   full clean-install HTTP/browser contract against that same ZIP;
 - the repository's canonical Update ZIP builder against v1.0.125, including
   structural validation and staged SHA256 if the required preview/runtime
@@ -268,11 +270,28 @@ even if a previous partition fails, captures each JUnit result, enforces a
 Fix the original flaky clock assumption under its owning code change,
 or obtain a genuinely green test; do not fake successful parity.
 
-The trusted toolkit SHA above includes the hardened Setup ZIP verifier that rejects non-template `.env*` files. `gcc-agent.ps1` also pins the exact `full.sh` Git blob `c8f05a637ade345941c0bb3e553787bbdf4b76d0`; this does not constitute a signed release or independent trust review.
+The trusted toolkit SHA above includes the hardened Setup ZIP verifier that rejects non-template `.env*` files. `gcc-agent.ps1` also pins the exact `full.sh` Git blob `72e9a2a151dab7186e825d11d19f2347a14cf130`; this does not constitute a signed release or independent trust review.
 
 
 ### GCC installer/G004 runtime regressions (2026-11-24)
 
 The original GCC backend profile used `DB_DATABASE=database/database.sqlite` for PHPUnit while installer fixtures explicitly select `:memory:`; that connection mismatch could discard preloaded business markers, leading to false negatives in the install-safety guard tests. The pinned, immutable `full.sh` now runs all four PHPUnit shards with the same in-memory SQLite database setting as `backend/phpunit.xml`. The isolated SQLite migration/seeder preflight remains file-backed and separate. A prior GCC clean Setup ZIP POST to migration wizard step 11 timed out after 300 seconds with no redacted SQLSTATE. The owner G004 PR #3444 now has a non-hot-reloading web server and a longer fail-closed migration timeout; a lost HTTP response still fails without replaying partially committed MySQL DDL.
 
-**Verification state:** These are source fixes, NOT an observed GCC full runtime PASS. The trusted toolkit is pinned to source `ed5e18d6d1e9c9489ce206df7f4b5ac2052cac36` and full.sh Git blob `0ce6421716efda56f202bcc636e5d2e745f73206`; the GCC host must update its installed agent script and verify the pin before a new command is eligible to exercise it. GitHub Required CI, independent review, signed release identity, same-ZIP upgrade, and production readiness remain separate mandatory gates.
+**Verification state:** These are source fixes, NOT an observed GCC full runtime PASS. The trusted toolkit is pinned to source `a694003902c22563ed8dcc0e7647b8c19067e224` and full.sh Git blob `72e9a2a151dab7186e825d11d19f2347a14cf130`; the GCC host must update its installed agent script and verify the pin before a new command is eligible to exercise it. GitHub Required CI, independent review, signed release identity, same-ZIP upgrade, and production readiness remain separate mandatory gates.
+
+
+### Canonical G004 ZIP parity continuation (2026-11-24)
+
+The trusted `full.sh` source now builds the Setup candidate with
+`scripts/v2_build_setup_zip.py` twice (same source SHA-derived timestamp),
+compares the actual archive bytes, and validates with
+`scripts/v2_setup_staging_verify.py` before running
+`scripts/validate-fresh-setup.sh`. Package contents exclude mutable runtime
+storage and built Laravel cache, and include empty required directories and
+`INSTALL-FIRST.txt`, matching the existing G004 CI staging contract.
+
+**This is source/contract alignment, not a GCC runtime PASS.** The GCC Windows
+host's installed agent must be refreshed and its immutable toolkit blob verified
+before this change is exercised. Exact-head hosted CI, the actual clean GCC MySQL
+install, independent review, signed Setup/Update artifacts and supported upgrade
+remain separate acceptance gates. Never accept a skipped or stale GCC result.
