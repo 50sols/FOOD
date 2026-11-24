@@ -32,6 +32,19 @@ final class EnterpriseBiScheduleController extends Controller
         ScheduledReportManager $schedules,
     ): RedirectResponse {
         $actor = $this->actor($request);
+        // Check the explicitly requested report and effective tenant scope before
+        // validating unrelated scheduling fields. A denied store must receive 403,
+        // even when the request's dates or measures are malformed.
+        $selector = $request->validate([
+            'report' => ['required', 'string', 'max:120'],
+            'scope_type' => ['required', Rule::in([EntitlementScope::STORE, EntitlementScope::LEGAL_ENTITY])],
+            'scope_id' => ['required', 'integer', 'min:1'],
+        ]);
+        $report = $reports->require((string) $selector['report']);
+        $scope = new EntitlementScope((string) $selector['scope_type'], (int) $selector['scope_id']);
+        $this->assertDashboardScope($actor, $scope);
+        abort_unless($access->allowsExport($actor, $report, $scope), 403);
+
         $validated = $request->validate([
             'report' => ['required', 'string', 'max:120'],
             'scope_type' => ['required', Rule::in([EntitlementScope::STORE, EntitlementScope::LEGAL_ENTITY])],
@@ -49,11 +62,6 @@ final class EnterpriseBiScheduleController extends Controller
             'interval_minutes' => ['required', 'integer', 'min:15', 'max:525600'],
             'next_run_at' => ['required', 'date'],
         ]);
-
-        $report = $reports->require((string) $validated['report']);
-        $scope = new EntitlementScope((string) $validated['scope_type'], (int) $validated['scope_id']);
-        $this->assertDashboardScope($actor, $scope);
-        abort_unless($access->allowsExport($actor, $report, $scope), 403);
 
         $query = ReportQuery::fromArray($report, [
             'from' => (string) $validated['from'],
@@ -108,12 +116,8 @@ final class EnterpriseBiScheduleController extends Controller
         ReportAccessResolver $access,
     ): RedirectResponse {
         $actor = $this->actor($request);
-        $validated = $request->validate([
-            'enabled' => ['required', 'boolean'],
-            'interval_minutes' => ['required', 'integer', 'min:15', 'max:525600'],
-            'next_run_at' => ['required', 'date'],
-        ]);
-
+        // Resolve record ownership and effective report scope before payload
+        // validation. A non-owner must not learn field-validation details.
         $row = DB::table('enterprise_scheduled_reports')->where('id', $schedule)->first();
         abort_if($row === null, 404);
         abort_unless($actor->hasRole('SUPER_ADMIN') || (int) $row->requested_by === (int) $actor->id, 403);
@@ -122,6 +126,12 @@ final class EnterpriseBiScheduleController extends Controller
         $scope = new EntitlementScope((string) $row->scope_type, $row->scope_id === null ? null : (int) $row->scope_id);
         $this->assertDashboardScope($actor, $scope);
         abort_unless($access->allowsExport($actor, $report, $scope), 403);
+
+        $validated = $request->validate([
+            'enabled' => ['required', 'boolean'],
+            'interval_minutes' => ['required', 'integer', 'min:15', 'max:525600'],
+            'next_run_at' => ['required', 'date'],
+        ]);
 
         $nextRun = CarbonImmutable::parse((string) $validated['next_run_at']);
         if ($nextRun->lessThanOrEqualTo(now())) {

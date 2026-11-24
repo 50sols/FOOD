@@ -93,6 +93,21 @@ final class RestaurantIntegrationService
         return $publicId;
     }
 
+    /**
+     * Check an integration's tenant ownership before validating unrelated
+     * Admin mutation input. setStatus repeats scope at the actual write.
+     */
+    public function assertConnectorInScope(SmartOrderingSite $site, string $publicId): void
+    {
+        abort_unless(
+            DB::table('restaurant_saas_integrations')
+                ->where('site_id', $site->getKey())
+                ->where('public_id', $publicId)
+                ->exists(),
+            404,
+        );
+    }
+
     public function setStatus(SmartOrderingSite $site, string $publicId, string $status): void
     {
         abort_unless(in_array($status, ['disabled', 'enabled', 'degraded', 'suspended'], true), 422);
@@ -536,6 +551,18 @@ final class RestaurantIntegrationService
             ->update(['is_active' => false, 'updated_at' => now()]);
 
         abort_unless($updated === 1, 404);
+    }
+
+    /** Resolve a webhook only within its authorized restaurant site. */
+    public function assertWebhookInScope(SmartOrderingSite $site, string $publicId): void
+    {
+        abort_unless(
+            DB::table('restaurant_saas_webhook_subscriptions')
+                ->where('site_id', $site->getKey())
+                ->where('public_id', $publicId)
+                ->exists(),
+            404,
+        );
     }
 
     public function setWebhookActive(SmartOrderingSite $site, string $publicId, bool $active): void

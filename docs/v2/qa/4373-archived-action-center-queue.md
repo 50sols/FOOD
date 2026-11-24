@@ -1,0 +1,7 @@
+# #4373 — archived role cannot reveal Action Center approvals
+
+- P031 security leaf under #2782 / #2503, target Foodex_V2 only.
+- EnterpriseActionCenter authorizationSnapshot previously included active-but-archived global roles and store assignments. The queue includes sensitive pending approval titles, requesters and record links, even though WorkflowEngine separately protects mutations. Both candidate paths now exclude archived roles. Preserves active roles, Super Admin direct active role, channel and store scoping, maker-checker, and all workflow state.
+- Seeded real WorkflowEngine requests and EnterpriseActionCenter::page DB regression: active B2B_ADMIN role sees pending org approval, archived-but-active role sees no action even from stale actor, active Retail B2C_STORE_ADMIN sees own-store approval but not foreign; archived role hides own-store queue; separate active global approval role retains access when another historical role is archived, PENDING records retained and no audit mutation.
+- HIGH technical security review; no claim of system-wide approval authorization or atomic concurrency guarantee. Require exact-head Repository Policy, V2 Isolation and Required CI all Laravel shards/MySQL Redis, expected-head SHA protected squash merge and verified issue closure; parent #2782 stays OPEN.
+- MOBILE IMPACT: Customer NO_DIRECT_SOURCE_IMPACT; Driver NO_DIRECT_SOURCE_IMPACT; Van NO_DIRECT_SOURCE_IMPACT. No main, production, release, tag or Flutter edits.

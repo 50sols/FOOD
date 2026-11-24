@@ -38,9 +38,24 @@ final class LiveAdController extends Controller
         $actor = $this->authorizeAccess($request, 'live_ads.view');
         App::setLocale(in_array($actor->locale, ['ar', 'en'], true) ? $actor->locale : 'ar');
 
-        $search = trim((string) $request->query('q', ''));
-        $channel = strtolower(trim((string) $request->query('channel', '')));
-        $status = trim((string) $request->query('status', ''));
+        // GET filters are scalar text; reject nested query values before any
+        // coercion or page query, without changing authorization precedence.
+        $queryFilters = $request->query();
+        $requestedSearch = $queryFilters['q'] ?? '';
+        $requestedChannel = $queryFilters['channel'] ?? '';
+        $requestedStatus = $queryFilters['status'] ?? '';
+        abort_unless(
+            is_string($requestedSearch) && is_string($requestedChannel) && is_string($requestedStatus),
+            404,
+        );
+
+        // Reject invalid pagination only after tenant authorization and the
+        // existing nested-filter 404 guard; do not silently serve page one.
+        $request->validate(['page' => ['nullable', 'integer', 'min:1']]);
+
+        $search = trim($requestedSearch);
+        $channel = strtolower(trim($requestedChannel));
+        $status = trim($requestedStatus);
         $literalSearch = '%'.str_replace(['!', '%', '_'], ['!!', '!%', '!_'], $search).'%';
 
         $ads = $this->visibleAds($actor)

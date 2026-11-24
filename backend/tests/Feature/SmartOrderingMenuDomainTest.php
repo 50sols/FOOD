@@ -43,6 +43,185 @@ class SmartOrderingMenuDomainTest extends TestCase
         $this->seed(CoreReferenceSeeder::class);
     }
 
+    public function test_menu_context_rejects_malformed_store_selector_before_draft_or_write_ar_en(): void
+    {
+        $owned = $this->fixture('MENU-SELECTOR-A', 4.250);
+        $foreign = $this->fixture('MENU-SELECTOR-B', 5.500);
+        $url = route('admin.smart-ordering.menu.index');
+        $writeUrl = route('admin.smart-ordering.menu.menus.store');
+        $tables = [
+            'smart_ordering_sites',
+            'smart_ordering_revisions',
+            'smart_ordering_menus',
+            'audit_logs',
+        ];
+        $before = [];
+        foreach ($tables as $table) {
+            $before[$table] = DB::table($table)->count();
+        }
+
+        $originalLocale = app()->getLocale();
+        try {
+            foreach (['ar', 'en'] as $locale) {
+                $owned['admin']->forceFill(['locale' => $locale])->saveQuietly();
+                app()->setLocale($locale);
+
+                foreach ([
+                    '?store_id=invalid',
+                    '?store_id=0',
+                    '?store_id=-1',
+                    '?store_id=1.5',
+                    '?store_id=999999999999999999999999',
+                ] as $invalid) {
+                    $this->actingAs($owned['admin']->fresh())
+                        ->getJson($url.$invalid)->assertUnprocessable();
+                }
+
+                foreach ([
+                    '?store_id%5B%5D='.$owned['store_id'],
+                    '?store_id%5Bdeep%5D='.$owned['store_id'],
+                ] as $nested) {
+                    $this->actingAs($owned['admin']->fresh())
+                        ->getJson($url.$nested)->assertNotFound();
+                }
+
+                $this->actingAs($owned['admin']->fresh())
+                    ->getJson($url.'?store_id='.$foreign['store_id'])->assertNotFound();
+
+                $this->actingAs($owned['admin']->fresh())
+                    ->postJson($writeUrl, ['store_id' => 'invalid', 'name_en' => 'Wrong Store'])
+                    ->assertUnprocessable();
+                $this->actingAs($owned['admin']->fresh())
+                    ->postJson($writeUrl, ['store_id' => [$owned['store_id']], 'name_en' => 'Wrong Store'])
+                    ->assertNotFound();
+            }
+        } finally {
+            app()->setLocale($originalLocale);
+        }
+
+        $this->actingAs($foreign['admin'])
+            ->getJson($url.'?store_id='.$owned['store_id'])->assertNotFound();
+        $roleless = User::factory()->create([
+            'email' => 'v2-menu-selector-roleless@example.test',
+            'locale' => 'en',
+            'is_active' => true,
+        ]);
+        $this->actingAs($roleless)
+            ->getJson($url.'?store_id=invalid')->assertForbidden();
+
+        foreach ($tables as $table) {
+            $this->assertSame($before[$table], DB::table($table)->count(), $table.' must remain unchanged');
+        }
+
+        foreach (['', '?store_id=', '?store_id='.$owned['store_id']] as $valid) {
+            $this->actingAs($owned['admin']->fresh())
+                ->get($url.$valid)->assertOk();
+        }
+    }
+
+    public function test_appearance_preview_rejects_nested_selectors_after_authorization_without_changing_draft(): void
+    {
+        $fixture = $this->fixture('PREVIEW-SHAPE-A', 5.750);
+        $foreign = $this->fixture('PREVIEW-SHAPE-B', 7.500);
+        [$draft] = $this->draftItem($fixture, app(SmartOrderingMenuWriteService::class));
+        $siteKey = (string) $fixture['site']->slug;
+        $foreignKey = (string) $foreign['site']->slug;
+        $roleless = User::factory()->create(['is_active' => true, 'locale' => 'en']);
+        $before = [
+            DB::table('smart_ordering_sites')->count(),
+            DB::table('smart_ordering_revisions')->count(),
+            DB::table('smart_ordering_menus')->count(),
+            DB::table('audit_logs')->count(),
+        ];
+        $draftPayload = $draft->fresh()->payload;
+
+        $selectors = [
+            'site' => 'site%5B%5D='.$siteKey,
+            'theme' => 'theme%5B0%5D=modern-minimal',
+            'appearance' => 'appearance%5Bdark%5D=1',
+            'lang' => 'lang%5Bdeep%5D%5B0%5D=ar',
+            'revision' => 'revision%5B%5D=published',
+            'device' => 'device%5Bdeep%5D=desktop',
+        ];
+
+        foreach (['ar' => 'rtl', 'en' => 'ltr'] as $locale => $direction) {
+            $fixture['admin']->forceFill(['locale' => $locale])->save();
+            $actor = $fixture['admin']->fresh();
+            $params = [
+                'site' => $siteKey,
+                'theme' => 'modern-minimal',
+                'appearance' => 'light',
+                'lang' => $locale,
+                'revision' => 'draft',
+                'device' => 'desktop',
+            ];
+
+            $this->actingAs($actor)
+                ->get(route('admin.smart-ordering.appearance.index', $params))
+                ->assertOk()
+                ->assertSee('data-builder', false);
+
+            $this->actingAs($actor)
+                ->get(route('admin.smart-ordering.appearance.preview', $params))
+                ->assertOk()
+                ->assertHeader('X-FOODEX-Preview-State', 'draft')
+                ->assertHeader('X-Robots-Tag', 'noindex, nofollow, noarchive')
+                ->assertSee('dir="'.$direction.'"', false);
+
+            $this->actingAs($actor)
+                ->get(route('admin.smart-ordering.appearance.demo-preview', [
+                    'theme' => 'modern-minimal', 'appearance' => 'light', 'lang' => $locale,
+                ]))
+                ->assertOk()
+                ->assertHeader('X-FOODEX-Preview-State', 'demo')
+                ->assertSee('dir="'.$direction.'"', false);
+
+            foreach (['admin.smart-ordering.appearance.index', 'admin.smart-ordering.appearance.preview'] as $routeName) {
+                foreach ($selectors as $field => $nested) {
+                    $validParams = $params;
+                    unset($validParams[$field]);
+                    $this->actingAs($actor)
+                        ->get(route($routeName, $validParams).'&'.$nested)
+                        ->assertNotFound();
+                }
+            }
+
+            foreach (['theme', 'appearance', 'lang'] as $field) {
+                $validDemoParams = [
+                    'theme' => 'modern-minimal', 'appearance' => 'light', 'lang' => $locale,
+                ];
+                unset($validDemoParams[$field]);
+                $this->actingAs($actor)
+                    ->get(route('admin.smart-ordering.appearance.demo-preview', $validDemoParams).'&'.$selectors[$field])
+                    ->assertNotFound();
+            }
+
+            $this->actingAs($actor)
+                ->get(route('admin.smart-ordering.appearance.index', ['site' => $foreignKey]))
+                ->assertNotFound();
+            $this->actingAs($actor)
+                ->get(route('admin.smart-ordering.appearance.preview', ['site' => $foreignKey]))
+                ->assertNotFound();
+
+            $this->actingAs($roleless)
+                ->get(route('admin.smart-ordering.appearance.index', $params))
+                ->assertForbidden();
+            $this->actingAs($roleless)
+                ->get(route('admin.smart-ordering.appearance.demo-preview', [
+                    'theme' => 'modern-minimal',
+                ]))
+                ->assertForbidden();
+        }
+
+        $this->assertSame($draftPayload, $draft->fresh()->payload);
+        $this->assertSame($before, [
+            DB::table('smart_ordering_sites')->count(),
+            DB::table('smart_ordering_revisions')->count(),
+            DB::table('smart_ordering_menus')->count(),
+            DB::table('audit_logs')->count(),
+        ]);
+    }
+
     public function test_appearance_builder_creates_a_starter_menu_with_categories_and_images(): void
     {
         Storage::fake('public');
@@ -268,6 +447,67 @@ class SmartOrderingMenuDomainTest extends TestCase
             ->where('module', 'public_menu')
             ->value('enabled'));
         $this->assertNotNull(app(SmartOrderingMenuRevisionService::class)->published($site));
+    }
+
+    public function test_menu_editor_rejects_malformed_focus_before_draft_mutation_in_ar_en(): void
+    {
+        $owned = $this->fixture('FOCUS-INVALID-A', 5.000);
+        $foreign = $this->fixture('FOCUS-INVALID-B', 7.000);
+        [$draft, $menu] = $this->draftItem($owned, app(SmartOrderingMenuWriteService::class));
+        $url = route('admin.smart-ordering.menu.index');
+        $tables = ['smart_ordering_revisions', 'smart_ordering_menus', 'smart_ordering_menu_items', 'audit_logs'];
+        $before = [];
+        foreach ($tables as $table) {
+            $before[$table] = DB::table($table)->count();
+        }
+        $originalLocale = app()->getLocale();
+
+        try {
+            foreach (['ar', 'en'] as $locale) {
+                $owned['admin']->forceFill(['locale' => $locale])->saveQuietly();
+                app()->setLocale($locale);
+                foreach ([
+                    '?menu_id=invalid',
+                    '?menu_id=0',
+                    '?menu_id=-1',
+                    '?menu_id=1.5',
+                    '?menu_id=99999999999999999999999999',
+                    '?menu_id%5B%5D='.$menu->id,
+                ] as $invalid) {
+                    $this->actingAs($owned['admin']->fresh())
+                        ->getJson($url.'?store_id='.$owned['store_id'].'&'.ltrim($invalid, '?'))
+                        ->assertUnprocessable();
+                }
+                $this->actingAs($foreign['admin']->fresh())
+                    ->getJson($url.'?store_id='.$owned['store_id'].'&menu_id=invalid')
+                    ->assertNotFound();
+            }
+        } finally {
+            app()->setLocale($originalLocale);
+        }
+
+        $roleless = User::factory()->create(['is_active' => true, 'locale' => 'en']);
+        $this->actingAs($roleless)
+            ->getJson($url.'?store_id='.$owned['store_id'].'&menu_id=invalid')
+            ->assertForbidden();
+        foreach ($tables as $table) {
+            $this->assertSame($before[$table], DB::table($table)->count(), $table.' unchanged');
+        }
+
+        try {
+            foreach (['ar', 'en'] as $locale) {
+                $owned['admin']->forceFill(['locale' => $locale])->saveQuietly();
+                app()->setLocale($locale);
+                foreach (['', '&menu_id=', '&menu_id='.$menu->id] as $valid) {
+                    $this->actingAs($owned['admin']->fresh())
+                        ->get($url.'?store_id='.$owned['store_id'].$valid)
+                        ->assertOk()
+                        ->assertSee('id="menu-'.$menu->id.'"', false);
+                }
+            }
+        } finally {
+            app()->setLocale($originalLocale);
+        }
     }
 
     public function test_menu_builder_bounds_default_editor_and_opens_focused_records_directly(): void

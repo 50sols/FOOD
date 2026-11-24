@@ -124,6 +124,20 @@ final class InventoryLotService
         }, attempts: 3);
     }
 
+    /**
+     * Resolve the route lot in its authoritative warehouse scope before HTTP
+     * validation. The mutation still re-locks and reauthorizes the lot.
+     */
+    public function assertCanTransitionStatus(User $actor, int $lotId): void
+    {
+        $lot = EnterpriseInventoryLot::query()->findOrFail($lotId);
+        $this->warehouseScope->assertWarehouse(
+            $actor,
+            (int) $lot->warehouse_id,
+            'inventory.manage',
+        );
+    }
+
     public function transitionStatus(
         User $actor,
         int $lotId,

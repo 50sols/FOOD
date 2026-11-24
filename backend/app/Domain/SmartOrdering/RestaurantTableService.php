@@ -198,6 +198,12 @@ final class RestaurantTableService
     }
 
     /** @param array<string,mixed> $data */
+    /** Fail closed on floor routes outside the authorized branch before validation. */
+    public function assertFloorInBranch(SmartOrderingBranch $branch, string $floorPublicId): void
+    {
+        $this->floor($branch, $floorPublicId);
+    }
+
     public function updateFloor(SmartOrderingBranch $branch, string $floorPublicId, array $data): void
     {
         $floor = $this->floor($branch, $floorPublicId);
@@ -375,6 +381,12 @@ final class RestaurantTableService
                 'qr_bound_at' => null,
                 'updated_at' => now(),
             ]);
+    }
+
+    /** Assert route-table membership before parsing untrusted Admin mutation payloads. */
+    public function assertTableInBranch(SmartOrderingBranch $branch, string $tablePublicId): void
+    {
+        $this->table($branch, $tablePublicId);
     }
 
     public function combine(

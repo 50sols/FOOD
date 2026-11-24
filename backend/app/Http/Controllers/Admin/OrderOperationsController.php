@@ -36,6 +36,7 @@ use App\Services\OrderLifecycleNotificationService;
 use App\Services\OrderManualDispatchService;
 use App\Services\OrderOperationsRowContext;
 use App\Services\SalesOrderOperationsDashboardService;
+use App\Services\StoreBusinessProfileService;
 use App\Services\VanDeliveryEvidenceService;
 use App\Services\WholesalePrincipal;
 use App\Support\AdminNavigation;
@@ -73,6 +74,50 @@ final class OrderOperationsController extends Controller
 
     public function b2cIndex(Request $request): View
     {
+        // This compatibility GET pins the Retail channel. Explicit store aliases
+        // must agree and use canonical positive IDs: never silently ignore a
+        // contradictory or malformed selector and fall back to another store.
+        $explicitStoreIds = [];
+        foreach (['store_id', 'store'] as $key) {
+            if (! $request->query->has($key)) {
+                continue;
+            }
+
+            $raw = $request->query($key);
+            abort_unless(is_string($raw) && preg_match('/^[1-9][0-9]*$/D', $raw) === 1, 404);
+            $parsed = filter_var($raw, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
+            abort_unless($parsed !== false && (string) $parsed === $raw, 404);
+            $explicitStoreIds[] = $parsed;
+        }
+        abort_if(count(array_unique($explicitStoreIds)) > 1, 404);
+
+        // Both legacy `store` and canonical `store_id` are validated above.
+        // Normalize the single explicit selector before either the Restaurant
+        // admission decision or the generic index query. Otherwise `store`
+        // silently becomes an unfiltered request and can disclose other
+        // authorized store rows despite the caller selecting one store.
+        $selectedStoreId = $explicitStoreIds[0] ?? null;
+        if ($selectedStoreId !== null) {
+            $request->merge(['store_id' => $selectedStoreId]);
+        }
+
+        // A Restaurant store-admin may use its dedicated workspace, but its
+        // profile does not expose Retail Orders. The canonical compatibility
+        // route must enforce that same boundary before the generic list query.
+        // With no explicit selector, fail closed for mixed-profile assignments
+        // rather than allow the list to include a Restaurant store implicitly.
+        $actor = $this->actor($request);
+        if (! $actor->hasRole('SUPER_ADMIN')) {
+            $allowed = $this->scope->allowedStoreIds($actor, 'orders.view', 'b2c');
+            $candidateStores = $selectedStoreId === null ? $allowed : [$selectedStoreId];
+            foreach ($candidateStores as $storeId) {
+                if ($actor->hasRole('B2C_STORE_ADMIN', (int) $storeId)
+                    && app(StoreBusinessProfileService::class)->isRestaurant((int) $storeId)) {
+                    abort(404);
+                }
+            }
+        }
+
         $request->merge(['channel' => 'b2c']);
 
         return $this->index($request);
@@ -165,6 +210,23 @@ final class OrderOperationsController extends Controller
         if ($discountDecisionMode && $selectedStoreId !== null
             && ! in_array($selectedStoreId, array_merge($discountReadScopes['b2b'], $discountReadScopes['b2c']), true)) {
             abort(404);
+        }
+
+        // This generic Operations GET must enforce the same Retail-only
+        // admission as the canonical B2C Orders route. Tenant orders.view alone
+        // does not authorize a Restaurant-profile B2C_STORE_ADMIN to inspect
+        // Retail Orders. A mixed-profile actor can explicitly select its
+        // authorized Retail store, but an unfiltered query must fail closed.
+        if (! $actor->hasRole('SUPER_ADMIN')) {
+            $candidateStores = $selectedStoreId === null
+                ? $scopes['b2c']
+                : (in_array($selectedStoreId, $scopes['b2c'], true) ? [$selectedStoreId] : []);
+            foreach ($candidateStores as $candidateStoreId) {
+                if ($actor->hasRole('B2C_STORE_ADMIN', (int) $candidateStoreId)
+                    && app(StoreBusinessProfileService::class)->isRestaurant((int) $candidateStoreId)) {
+                    abort(404);
+                }
+            }
         }
 
         $orderQuery = Order::query()
@@ -690,6 +752,15 @@ final class OrderOperationsController extends Controller
 
         $actor = $this->actor($request);
         $model = $this->managedOrder($actor, $order, 'orders.view');
+        // The per-store orders.view grant is necessary, but a Restaurant
+        // B2C_STORE_ADMIN does not have Retail Operations Orders admission.
+        // Keep popup/invoice/timeline aligned with the canonical and generic
+        // list routes; deny before constructing sensitive detail payloads.
+        if (! $actor->hasRole('SUPER_ADMIN')
+            && $actor->hasRole('B2C_STORE_ADMIN', (int) $model->store_id)
+            && app(StoreBusinessProfileService::class)->isRestaurant((int) $model->store_id)) {
+            abort(404);
+        }
         $channel = strtolower((string) $model->channel);
         $statusOptions = $this->orderStatusOptions();
         $statusLabels = collect($statusOptions)
@@ -803,6 +874,19 @@ final class OrderOperationsController extends Controller
                 continue;
             }
 
+            // Orders visibility in this dashboard feed must match the Retail
+            // Operations route. A Restaurant-profile B2C_STORE_ADMIN can have
+            // a valid orders.view store grant without admission to Retail
+            // Orders; never expose customer name, phone or total through an
+            // old published notification. Keep the cursor moving so clients
+            // do not repeatedly fetch skipped entries.
+            if (! $actor->hasRole('SUPER_ADMIN')
+                && $channel === 'b2c'
+                && $actor->hasRole('B2C_STORE_ADMIN', $storeId)
+                && app(StoreBusinessProfileService::class)->isRestaurant($storeId)) {
+                continue;
+            }
+
             $order = Order::query()
                 ->whereKey($orderId)
                 ->where('store_id', $storeId)
@@ -813,17 +897,16 @@ final class OrderOperationsController extends Controller
                 continue;
             }
 
-            $customerName = trim((string) data_get($notification->data, 'customer_name', ''));
-            $customerPhone = trim((string) data_get($notification->data, 'customer_phone', ''));
-
-            if ($customerName === '') {
-                $customer = $channel === 'b2b'
-                    ? DB::table('b2b_customers')->where('id', $order->b2b_customer_id)->first(['name', 'phone'])
-                    : DB::table('b2c_customers')->where('id', $order->b2c_customer_id)->first(['name', 'phone']);
-
-                $customerName = trim((string) data_get($customer, 'name', ''));
-                $customerPhone = trim((string) data_get($customer, 'phone', ''));
-            }
+            // Notification payloads are historical, independently persisted
+            // metadata. Never render customer PII from their cached name/phone:
+            // it can become stale or refer to a different customer. Resolve
+            // both fields solely from the order's current authoritative B2B/B2C
+            // identity, after tenant, channel and profile admission checks.
+            $customer = $channel === 'b2b'
+                ? DB::table('b2b_customers')->where('id', $order->b2b_customer_id)->first(['name', 'phone'])
+                : DB::table('b2c_customers')->where('id', $order->b2c_customer_id)->first(['name', 'phone']);
+            $customerName = trim((string) data_get($customer, 'name', ''));
+            $customerPhone = trim((string) data_get($customer, 'phone', ''));
 
             $storeName = DB::table('stores')->where('id', $storeId)->value('name');
 
@@ -1017,10 +1100,22 @@ final class OrderOperationsController extends Controller
     /** @return list<int> */
     private function orderCreateStoreIds(User $actor, string $channel): array
     {
-        return array_values(array_unique(array_merge(
+        $ids = array_values(array_unique(array_merge(
             $this->scope->allowedStoreIds($actor, 'orders.create', $channel),
             $this->scope->allowedStoreIds($actor, 'orders.manage', $channel),
         )));
+
+        // Central Operations is a Retail workspace; the dedicated Restaurant
+        // workspace must not be reachable merely because its store admin has
+        // orders.create/manage. Use the same profile admission as the Orders
+        // list, popup and feed. A mixed actor keeps its authorized Retail IDs.
+        if ($channel === 'b2c' && ! $actor->hasRole('SUPER_ADMIN')) {
+            $ids = array_values(array_filter($ids, static fn (int $storeId): bool => ! ($actor->hasRole('B2C_STORE_ADMIN', $storeId)
+                    && app(StoreBusinessProfileService::class)->isRestaurant($storeId))
+            ));
+        }
+
+        return $ids;
     }
 
     /** @return array<string,mixed> */

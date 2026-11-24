@@ -494,6 +494,15 @@ final class CustomerServiceCaseManager
         return $case->refresh();
     }
 
+    /**
+     * Reject inaccessible route targets before inspecting note or upload fields.
+     * The mutation still performs its own authoritative scoped lookup.
+     */
+    public function assertCanManageCase(User $actor, int $caseId): void
+    {
+        $this->managedCase($actor, $caseId);
+    }
+
     public function addNote(
         User $actor,
         int $caseId,

@@ -5,6 +5,7 @@ return [
     'customers' => 'Customers',
     'customer_list' => 'Customer list',
     'back_to_list' => 'Back to list',
+    'open_customer_360' => 'Open 360',
     'active' => 'Active',
     'inactive' => 'Inactive',
     'sections' => 'Customer detail sections',

@@ -158,10 +158,10 @@ class CiPlanTest(unittest.TestCase):
 
     def test_required_laravel_jobs_cache_exact_composer_vendor_with_install_fallback(self):
         workflow=(ROOT/".github/workflows/backend-ci.yml").read_text(encoding="utf-8")
-        self.assertEqual(3,workflow.count("- name: Cache installed Composer dependencies"))
-        self.assertEqual(3,workflow.count("composer-vendor-v1-${{ runner.os }}-php-8.3-${{ hashFiles('backend/composer.json', 'backend/composer.lock') }}"))
-        self.assertEqual(3,workflow.count("if [[ ! -f vendor/autoload.php ]]; then"))
-        self.assertEqual(3,workflow.count("composer install --no-interaction --prefer-dist --no-progress"))
+        self.assertEqual(4,workflow.count("- name: Cache installed Composer dependencies"))
+        self.assertEqual(4,workflow.count("composer-vendor-v1-${{ runner.os }}-php-8.3-${{ hashFiles('backend/composer.json', 'backend/composer.lock') }}"))
+        self.assertEqual(4,workflow.count("if [[ ! -f vendor/autoload.php ]]; then"))
+        self.assertEqual(4,workflow.count("composer install --no-interaction --prefer-dist --no-progress"))
         self.assertNotIn("restore-keys:",workflow.split("- name: Cache installed Composer dependencies",1)[1].split("- name:",1)[0])
 
     @staticmethod
@@ -239,6 +239,12 @@ class CiPlanTest(unittest.TestCase):
         routes={
             "docs/v2/qa/3960-erp-center-horizontal-tabs.md":{"backend","dashboard_ui"},
             "docs/v2/qa/3951-enterprise-bi-page-tabs-authority.md":{"backend","dashboard_ui"},
+            "docs/v2/qa/4026-orders-analytics-filter-touch.md":{"backend","dashboard_ui"},
+            "docs/v2/qa/4028-customer360-list-return-context.md":{"backend","dashboard_ui"},
+            "docs/v2/qa/2846-organization-setup-guidance.md":{"backend","dashboard_ui"},
+            "docs/v2/qa/4238-retail-canonical-orders-route-isolation.md":{"backend"},
+            "docs/v2/qa/4244-retail-finance-workspace-isolation.md":{"backend"},
+            "docs/v2/qa/4248-wholesale-reports-workspace-isolation.md":{"backend"},
             "docs/v2/qa/4007-treasury-page-tab-rail.md":{"backend","dashboard_ui"},
             "docs/v2/qa/4000-archived-active-role-authority.md":{"backend"},
             "docs/v2/qa/2732-wholesale-financial-parity.md":{"backend","customer"},
@@ -253,6 +259,112 @@ class CiPlanTest(unittest.TestCase):
                 self.assertNotIn("c13_integrated_e2e",actual)
                 self.assertNotIn("operational_completion_e2e",actual)
                 self.assertEqual("customer" not in expected,plan["backend_dashboard_only"])
+
+    def test_reviewed_2846_organization_qa_keeps_laravel_checks_and_unknown_fail_closed(self):
+        """#4040: classify only source-reviewed #2846 org setup QA, never bypass E2E."""
+        paths = [
+            "backend/app/Http/Controllers/Admin/EnterpriseOrganizationAdministrationController.php",
+            "backend/app/Services/EnterpriseOrganizationAdministration.php",
+            "backend/lang/ar/enterprise_organization.php",
+            "backend/lang/en/enterprise_organization.php",
+            "backend/resources/views/admin/enterprise-organization.blade.php",
+            "backend/tests/Feature/V2OrganizationSetupGuidanceTest.php",
+            "docs/v2/qa/2846-organization-setup-guidance.md",
+        ]
+        branch = "fix/2846-v2-organization-setup-guidance"
+        plan = module.resolve(self.config, paths, branch)
+        self.assertEqual([], plan["unclassified_paths"])
+        self.assertEqual(
+            {"backend", "dashboard_ui"},
+            {area for area, active in plan["areas"].items() if active},
+        )
+        self.assertTrue(plan["backend_dashboard_only"])
+        for area in ("customer", "driver", "van", "mobile_ui", "c13_integrated_e2e", "operational_completion_e2e"):
+            self.assertFalse(plan["areas"][area], area)
+
+        unknown = "docs/v2/qa/2846-organization-setup-guidance-unreviewed.md"
+        unsafe = module.resolve(self.config, [unknown], branch)
+        self.assertEqual([unknown], unsafe["unclassified_paths"])
+        self.assertFalse(unsafe["backend_dashboard_only"])
+        for area in self.config["areas"]:
+            self.assertTrue(unsafe["areas"][area], area)
+
+        for special_branch, gate in (
+            ("test/873-c13-integrated-e2e", "c13_integrated_e2e"),
+            ("test/9999-operational-completion-e2e", "operational_completion_e2e"),
+        ):
+            dedicated = module.resolve(self.config, paths, special_branch)
+            self.assertTrue(dedicated["areas"][gate])
+
+    def test_reviewed_4028_customer360_qa_keeps_dashboard_only_and_fails_closed_for_unknown(self):
+        """#4038 / #4028: only the reviewed Customer 360 QA note is classified."""
+        paths = [
+            "backend/app/Http/Controllers/Admin/Customer360Controller.php",
+            "backend/lang/ar/customer_360.php",
+            "backend/lang/en/customer_360.php",
+            "backend/resources/views/admin/customer-360-index.blade.php",
+            "backend/resources/views/admin/customer-360-show.blade.php",
+            "backend/tests/Feature/V2Customer360DirectoryReturnContextTest.php",
+            "docs/v2/qa/4028-customer360-list-return-context.md",
+        ]
+        branch = "fix/4028-v2-customer360-directory-return-context"
+        plan = module.resolve(self.config, paths, branch)
+        self.assertEqual([], plan["unclassified_paths"])
+        self.assertEqual(
+            {"backend", "dashboard_ui"},
+            {area for area, active in plan["areas"].items() if active},
+        )
+        self.assertTrue(plan["backend_dashboard_only"])
+        for area in ("customer", "driver", "van", "mobile_ui", "c13_integrated_e2e", "operational_completion_e2e"):
+            self.assertFalse(plan["areas"][area], area)
+
+        unknown = "docs/v2/qa/4028-customer360-list-return-context-unreviewed.md"
+        unsafe = module.resolve(self.config, [unknown], branch)
+        self.assertEqual([unknown], unsafe["unclassified_paths"])
+        self.assertFalse(unsafe["backend_dashboard_only"])
+        for area in self.config["areas"]:
+            self.assertTrue(unsafe["areas"][area], area)
+
+        for e2e_branch, expected_gate in (
+            ("test/873-c13-integrated-e2e", "c13_integrated_e2e"),
+            ("test/9999-operational-completion-e2e", "operational_completion_e2e"),
+        ):
+            dedicated = module.resolve(self.config, paths, e2e_branch)
+            self.assertTrue(dedicated["areas"][expected_gate])
+
+    def test_reviewed_4026_analytics_filter_qa_does_not_trigger_unrelated_integrated_gates(self):
+        """G003: QA evidence must preserve actual Laravel gates, not invoke unrelated C13/#734."""
+        paths=[
+            "backend/resources/views/admin/_order-operations-header-filters.blade.php",
+            "backend/tests/Feature/UnifiedOrderOperationsTest.php",
+            "backend/tests/Feature/V2OrdersAnalyticsFilterTouchTargetsTest.php",
+            "docs/v2/qa/4026-orders-analytics-filter-touch.md",
+        ]
+        branch="fix/4026-v2-orders-analytics-filter-44px"
+        plan=module.resolve(self.config,paths,branch)
+        self.assertEqual([],plan["unclassified_paths"])
+        self.assertEqual(
+            {"backend","dashboard_ui"},
+            {area for area,active in plan["areas"].items() if active},
+        )
+        self.assertTrue(plan["backend_dashboard_only"])
+        for area in ("customer","driver","van","mobile_ui","c13_integrated_e2e","operational_completion_e2e"):
+            self.assertFalse(plan["areas"][area],area)
+
+        # Only this independently reviewed QA filename is classified.
+        unknown="docs/v2/qa/4026-orders-analytics-filter-touch-unreviewed.md"
+        unsafe=module.resolve(self.config,[unknown],branch)
+        self.assertEqual([unknown],unsafe["unclassified_paths"])
+        self.assertFalse(unsafe["backend_dashboard_only"])
+        for area in self.config["areas"]:
+            self.assertTrue(unsafe["areas"][area],area)
+
+        # Dedicated E2E branches still activate their genuine contract gates.
+        c13=module.resolve(self.config,paths,"test/873-c13-integrated-e2e")
+        ops=module.resolve(self.config,paths,"test/9999-operational-completion-e2e")
+        self.assertTrue(c13["areas"]["c13_integrated_e2e"])
+        self.assertTrue(c13["areas"]["operational_completion_e2e"])
+        self.assertTrue(ops["areas"]["operational_completion_e2e"])
 
     def test_2706_pricing_readiness_qa_doc_is_backend_only_and_skips_integrated_e2e(self):
         path="docs/v2/qa/2706-pricing-mode-settings-readiness.md"

@@ -38,6 +38,14 @@ final class AssistantIntelligenceController extends Controller
         $this->authorization->assertCanUse($actor);
         App::setLocale(in_array($actor->locale, ['ar', 'en'], true) ? $actor->locale : 'ar');
 
+        // Findings and brief history paginate independently. Validate both GET
+        // selectors after the canonical assistant runtime/permission check so
+        // malformed navigation cannot silently resolve to the first page.
+        $request->validate([
+            'findings_page' => ['nullable', 'integer', 'min:1'],
+            'briefs_page' => ['nullable', 'integer', 'min:1'],
+        ]);
+
         $findings = AssistantIntelligenceFinding::query()
             ->where('recipient_user_id', $actor->getKey())
             ->latest('snapshot_at')

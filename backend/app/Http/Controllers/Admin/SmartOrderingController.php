@@ -38,15 +38,22 @@ final class SmartOrderingController extends Controller
         $storeIds = app(RestaurantSaasStoreAccess::class)
             ->allowedStoreIds($actor, 'smart_ordering.view', $request);
 
+        // Validate and scope an explicit store selector BEFORE ensureForStore
+        // creates any site/revision. A malformed scalar must not fall back to
+        // the first authorized store, and foreign stores remain hidden.
+        $selected = $request->validate([
+            'store_id' => ['nullable', 'integer', 'min:1'],
+        ]);
+        $requested = isset($selected['store_id']) ? (int) $selected['store_id'] : 0;
+        if ($requested > 0 && ! in_array($requested, $storeIds, true)) {
+            abort(404);
+        }
+
         $stores = Store::query()->whereIn('id', $storeIds)->orderBy('name')->get();
         foreach ($stores as $store) {
             $sites->ensureForStore((int) $store->id, $actor);
         }
 
-        $requested = $request->integer('store_id');
-        if ($requested > 0 && ! in_array($requested, $storeIds, true)) {
-            abort(404);
-        }
         $storeId = $requested > 0 ? $requested : (int) $storeIds[0];
 
         $site = SmartOrderingSite::query()->where('store_id', $storeId)->firstOrFail();
