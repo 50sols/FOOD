@@ -75,7 +75,7 @@ class GccAgentContractTests(unittest.TestCase):
     def test_full_ci_replay_uses_fresh_attempt_scoped_checkout(self):
         # A crash before posting the result can replay an owner command.
         # An earlier git init/origin/shallow.lock must not poison that retry.
-        self.assertIn('("work\\\\{0}-{1}-{2}" -f $n,$Comment.id,[guid]::NewGuid().ToString("N"))', SCRIPT)
+        self.assertIn(r'("work\{0}-{1}-{2}" -f $n,$Comment.id,[guid]::NewGuid().ToString("N"))', SCRIPT)
         self.assertIn("if($LASTEXITCODE -ne 0) { throw 'Full CI git init failed' }", SCRIPT)
         self.assertIn("if($LASTEXITCODE -ne 0) { throw 'Full CI git remote failed' }", SCRIPT)
         self.assertNotIn('$work=Join-Path $Root "work\\\\$n-$($Comment.id)"', SCRIPT)
