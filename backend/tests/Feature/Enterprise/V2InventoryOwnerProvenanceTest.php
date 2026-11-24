@@ -2,6 +2,7 @@
 
 namespace Tests\Feature\Enterprise;
 
+use App\Domain\SmartOrdering\InventoryService as SmartOrderingInventoryService;
 use App\Enterprise\Wms\InventoryAdjustmentService;
 use App\Enterprise\Wms\InventoryCountService;
 use App\Enterprise\Wms\InventoryLegalTitleAttestationVerifier;
@@ -10,14 +11,13 @@ use App\Enterprise\Wms\InventoryOwnershipRuleService;
 use App\Enterprise\Wms\StockReservationService;
 use App\Enterprise\Wms\UnknownInventoryOwnerProjection;
 use App\Enterprise\Wms\WarehouseTransferService;
-use App\Domain\SmartOrdering\InventoryService as SmartOrderingInventoryService;
 use App\Models\Inventory;
 use App\Models\Order;
 use App\Models\Role;
 use App\Models\User;
 use App\Models\UserStoreRole;
-use App\Services\OrderInventoryReservationService;
 use App\Services\DemoDataManager;
+use App\Services\OrderInventoryReservationService;
 use Database\Seeders\CoreReferenceSeeder;
 use Illuminate\Database\QueryException;
 use Illuminate\Foundation\Testing\RefreshDatabase;

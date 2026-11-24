@@ -118,6 +118,72 @@ final class EnterpriseGoodsReceiptFoundationTest extends TestCase
         );
     }
 
+    public function test_posted_supplier_grn_rejects_claimed_legal_title_without_changing_canonical_stock(): void
+    {
+        $this->enableProcurement();
+        [$actor, $store, $context] = $this->scopedUser($this->allPermissions(), 'GRN-P110-CLAIM-GUARD');
+        [$product, $warehouse] = $this->stockTarget($store, 'GRN-P110-CLAIM-SKU');
+        $order = $this->issuedOrder($actor, $context, 'GRN-P110-CLAIM-SUP', 'GRN-P110-CLAIM-SKU', 2);
+        $lineId = $order->lines()->firstOrFail()->id;
+        $manager = app(GoodsReceiptManager::class);
+
+        $first = $manager->createFromIssuedOrder($actor, $context, $order->id, [
+            'lines' => [[
+                'purchase_order_line_id' => $lineId,
+                'warehouse_id' => $warehouse->id,
+                'quantity' => 1,
+            ]],
+        ]);
+        $manager->post($actor, $context, $first->id);
+        $inventory = DB::table('inventories')
+            ->where('warehouse_id', $warehouse->id)
+            ->where('product_id', $product->id)
+            ->firstOrFail();
+
+        // This is an adversarial *claim*, not legal-title issuance. The
+        // ordinary GRN must NEVER add unattributed stock into an already
+        // claimed FOODEX/SUPPLIER position or silently reset its owner.
+        $this->assertSame(1, DB::table('enterprise_inventory_owner_positions')
+            ->where('inventory_id', $inventory->id)
+            ->where('owner_key', 'UNKNOWN')
+            ->update(['owner_key' => 'FOODEX', 'owner_kind' => 'FOODEX']));
+
+        $second = $manager->createFromIssuedOrder($actor, $context, $order->id, [
+            'lines' => [[
+                'purchase_order_line_id' => $lineId,
+                'warehouse_id' => $warehouse->id,
+                'quantity' => 1,
+            ]],
+        ]);
+
+        try {
+            $manager->post($actor, $context, $second->id);
+            $this->fail('A claimed legal owner needs a separately authorized owner-allocated receipt.');
+        } catch (HttpExceptionInterface $exception) {
+            $this->assertSame(409, $exception->getStatusCode());
+        }
+
+        $this->assertDatabaseHas('enterprise_goods_receipts', [
+            'id' => $second->id,
+            'status' => 'draft',
+        ]);
+        $this->assertDatabaseHas('inventories', [
+            'id' => $inventory->id,
+            'quantity' => 1,
+            'reserved_quantity' => 0,
+        ]);
+        $this->assertDatabaseHas('enterprise_inventory_owner_positions', [
+            'inventory_id' => $inventory->id,
+            'owner_key' => 'FOODEX',
+            'quantity' => 1,
+            'reserved_quantity' => 0,
+        ]);
+        $this->assertSame(1, DB::table('stock_movements')
+            ->where('inventory_id', $inventory->id)->count());
+        $this->assertSame(1, DB::table('enterprise_inventory_owner_movement_events')
+            ->where('inventory_id', $inventory->id)->count());
+    }
+
     public function test_partial_receipts_cannot_over_receive_purchase_order_remaining(): void
     {
         $this->enableProcurement();
