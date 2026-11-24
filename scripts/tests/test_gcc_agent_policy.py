@@ -54,6 +54,27 @@ class GccAgentContractTests(unittest.TestCase):
         self.assertIn("Invoke-DockerLogged -DockerArgs $args", SCRIPT)
         self.assertNotIn("& docker @args *> $log", SCRIPT)
 
+    def test_git_fetch_credential_retry_is_bounded_and_noninteractive(self):
+        # A migrated org may need the host's trusted Git helper. Anonymous
+        # access is tried first and only a classified access rejection may
+        # trigger exactly one noninteractive helper-backed fetch attempt.
+        fetch = SCRIPT.split("function Invoke-BoundedGitFetch(", 1)[1].split("function Smoke(", 1)[0]
+        self.assertIn("for($attempt=0;$attempt -lt 2;$attempt++)", fetch)
+        self.assertIn("$authenticated=($attempt -eq 1)", fetch)
+        self.assertIn("if(-not $authenticated) { $arguments+=' -c credential.helper=' }", fetch)
+        self.assertIn("$script:GccLastFailedStage=Classify-GitFetchFailure -Path $attemptStderr", fetch)
+        self.assertIn("$script:GccLastFailedStage -eq 'git-fetch-access'", fetch)
+        self.assertIn("if(-not $authenticated -and", fetch)
+        self.assertIn("continue", fetch)
+        self.assertIn("$env:GIT_TERMINAL_PROMPT='0'", fetch)
+        self.assertIn("$env:GCM_INTERACTIVE='never'", fetch)
+        self.assertIn("$env:GIT_TERMINAL_PROMPT=$oldPrompt", fetch)
+        self.assertIn("$env:GCM_INTERACTIVE=$oldGcmInteractive", fetch)
+        self.assertIn("WaitForExit(900000)", fetch)
+        self.assertNotIn("gh auth token", fetch)
+        self.assertNotIn("GH_TOKEN", fetch)
+        self.assertNotIn("Invoke-Expression", fetch)
+
     def test_comment_backlog_pagination_is_cursor_safe(self):
         # More than 100 GitHub issue comments can arrive between polls.
         # Never advance the cursor after inspecting only the newest page.
