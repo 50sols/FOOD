@@ -536,7 +536,7 @@ assert_backend_private_paths_not_served() {
 rm -f /tmp/foodex-install-server.log /tmp/foodex-install-server.pid
 (
   cd "$fresh/backend"
-  php artisan serve --host=127.0.0.1 --port=8099 >/tmp/foodex-install-server.log 2>&1 &
+  php artisan serve --no-reload --host=127.0.0.1 --port=8099 >/tmp/foodex-install-server.log 2>&1 &
   echo $! >/tmp/foodex-install-server.pid
 )
 trap 'stop_server /tmp/foodex-install-server.pid; stop_server /tmp/foodex-installed-server.pid' EXIT
@@ -569,8 +569,13 @@ wizard_post() {
   local step="$1"
   shift
   local status=""
+  # Windows Docker Desktop may need several minutes for the first large MySQL
+  # schema migration. Never retry a request with an indeterminate response:
+  # MySQL DDL is not rollback-safe, and the test must fail closed on timeout.
+  local request_timeout=300
+  [[ "$step" == "11" ]] && request_timeout=900
   for attempt in $(seq 1 15); do
-    status="$(curl -sS --max-time 300 -o "/tmp/install-step-$step.html" \
+    status="$(curl -sS --connect-timeout 10 --max-time "$request_timeout" -o "/tmp/install-step-$step.html" \
       -w '%{http_code}' -X POST \
       --data-urlencode "installer_token=$installer_token" "$@" \
       "http://127.0.0.1:8099/install/step/$step" || true)"
@@ -728,7 +733,7 @@ for step in $(seq 1 15); do
     rm -f /tmp/foodex-install-server.log /tmp/foodex-install-server.pid
     (
       cd "$fresh/backend"
-      php artisan serve --host=127.0.0.1 --port=8099 >/tmp/foodex-install-server.log 2>&1 &
+      php artisan serve --no-reload --host=127.0.0.1 --port=8099 >/tmp/foodex-install-server.log 2>&1 &
       echo $! >/tmp/foodex-install-server.pid
     )
   fi
@@ -765,7 +770,7 @@ FRESH_ROOT="$fresh" php /tmp/foodex-fresh-install.php finish
 rm -f /tmp/foodex-installed-server.log /tmp/foodex-installed-server.pid
 (
   cd "$fresh/backend"
-  php artisan serve --host=127.0.0.1 --port=8099 >/tmp/foodex-installed-server.log 2>&1 &
+  php artisan serve --no-reload --host=127.0.0.1 --port=8099 >/tmp/foodex-installed-server.log 2>&1 &
   echo $! >/tmp/foodex-installed-server.pid
 )
 
