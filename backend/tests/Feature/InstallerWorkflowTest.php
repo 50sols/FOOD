@@ -776,7 +776,7 @@ class InstallerWorkflowTest extends TestCase
             try {
                 $attempt();
                 $this->fail("Hardlinked installer .env must deny {$label} before copying secrets.");
-            } catch (\\RuntimeException $exception) {
+            } catch (\RuntimeException $exception) {
                 $this->assertSame(
                     'Environment configuration file is not a standalone regular file.',
                     $exception->getMessage(),
