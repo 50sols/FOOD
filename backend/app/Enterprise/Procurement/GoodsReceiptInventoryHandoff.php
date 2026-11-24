@@ -160,6 +160,29 @@ final class GoodsReceiptInventoryHandoff
             ]);
         }
 
+        // Receipt creation and manager posting both check the PO remainder,
+        // but a direct handoff call must enforce this stock boundary too.
+        // The parent PO is locked above, serializing all GRN writers for
+        // this order. Count real persisted handoffs, not only posted header
+        // statuses: a direct caller may have written a movement while the
+        // draft receipt header remains unposted.
+        $previouslyHandedOff = DB::table('enterprise_goods_receipt_lines')
+            ->where('purchase_order_line_id', (int) $line->purchase_order_line_id)
+            ->whereNotNull('stock_movement_id')
+            ->sum('received_quantity');
+
+        $alreadyReceivedUnits = (int) round((float) $previouslyHandedOff * 1000);
+        $requestedUnits = (int) round($quantity * 1000);
+        $orderedUnits = (int) round((float) $orderLine->quantity * 1000);
+
+        if ($alreadyReceivedUnits + $requestedUnits > $orderedUnits) {
+            throw ValidationException::withMessages([
+                'received_quantity' => [
+                    'Goods receipt would exceed the outstanding quantity of its issued purchase order line.',
+                ],
+            ]);
+        }
+
         $product = Product::query()
             ->forStore($storeId)
             ->where('sku', $itemCode)

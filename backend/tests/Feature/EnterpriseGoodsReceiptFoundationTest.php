@@ -551,6 +551,61 @@ final class EnterpriseGoodsReceiptFoundationTest extends TestCase
             ->where('inventory_id', $inventory->id)->count());
     }
 
+    public function test_p110_direct_grn_handoff_cannot_overreceive_after_another_receipt_post(): void
+    {
+        $this->enableProcurement();
+        [$actor, $store, $context] = $this->scopedUser($this->allPermissions(), 'GRN-P110-DIRECT-EXCESS');
+        [$product, $warehouse] = $this->stockTarget($store, 'GRN-P110-DIRECT-EXCESS-SKU');
+        $order = $this->issuedOrder(
+            $actor, $context, 'GRN-P110-DIRECT-EXCESS-SUP', 'GRN-P110-DIRECT-EXCESS-SKU', 2,
+        );
+        $poLineId = $order->lines()->firstOrFail()->id;
+        $manager = app(GoodsReceiptManager::class);
+        $payload = [
+            'lines' => [[
+                'purchase_order_line_id' => $poLineId,
+                'warehouse_id' => $warehouse->id,
+                'quantity' => 2,
+            ]],
+        ];
+
+        // Both drafts are valid when created against the full issued PO.
+        // The first manager post exhausts it; the second bypasses the
+        // manager validation and calls the stock handoff directly.
+        $first = $manager->createFromIssuedOrder($actor, $context, $order->id, $payload);
+        $stale = $manager->createFromIssuedOrder($actor, $context, $order->id, $payload);
+        $staleLine = $stale->lines()->firstOrFail();
+        $this->assertSame('posted', $manager->post($actor, $context, $first->id)->status);
+        $inventory = DB::table('inventories')
+            ->where('warehouse_id', $warehouse->id)
+            ->where('product_id', $product->id)->firstOrFail();
+
+        $stockBefore = (array) DB::table('inventories')->where('id', $inventory->id)->first();
+        $ownerBefore = DB::table('enterprise_inventory_owner_positions')
+            ->where('inventory_id', $inventory->id)->get()->toArray();
+        $movementsBefore = DB::table('stock_movements')->count();
+        $eventsBefore = DB::table('enterprise_inventory_owner_movement_events')->count();
+        $auditsBefore = DB::table('audit_logs')->count();
+
+        try {
+            DB::transaction(static function () use ($actor, $store, $stale, $staleLine): void {
+                app(GoodsReceiptInventoryHandoff::class)->receive($actor, $store->id, $stale, $staleLine);
+            });
+            $this->fail('Direct stock handoff must enforce the outstanding issued PO quantity.');
+        } catch (ValidationException $exception) {
+            $this->assertArrayHasKey('received_quantity', $exception->errors());
+        }
+
+        $this->assertSame($stockBefore, (array) DB::table('inventories')->where('id', $inventory->id)->first());
+        $this->assertEquals($ownerBefore, DB::table('enterprise_inventory_owner_positions')
+            ->where('inventory_id', $inventory->id)->get()->toArray());
+        $this->assertSame($movementsBefore, DB::table('stock_movements')->count());
+        $this->assertSame($eventsBefore, DB::table('enterprise_inventory_owner_movement_events')->count());
+        $this->assertSame($auditsBefore, DB::table('audit_logs')->count());
+        $this->assertDatabaseHas('enterprise_goods_receipts', ['id' => $stale->id, 'status' => 'draft']);
+        $this->assertNull($staleLine->refresh()->stock_movement_id);
+    }
+
     public function test_partial_receipts_cannot_over_receive_purchase_order_remaining(): void
     {
         $this->enableProcurement();
