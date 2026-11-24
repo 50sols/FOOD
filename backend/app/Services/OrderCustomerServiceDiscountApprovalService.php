@@ -11,6 +11,7 @@ use App\Models\Payment;
 use App\Models\User;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
 
 final class OrderCustomerServiceDiscountApprovalService
@@ -73,6 +74,15 @@ final class OrderCustomerServiceDiscountApprovalService
             if (! is_finite($percentage) || $percentage < 0 || $percentage > 100) {
                 throw ValidationException::withMessages([
                     'percentage' => [__('customer_service_discount.invalid_totals')],
+                ]);
+            }
+
+            // The HTTP UUID validator is not a trust boundary for jobs or
+            // direct service clients. A missing/non-UUID key must never create
+            // an actionable approval request that cannot be safely replayed.
+            if (! Str::isUuid($idempotencyKey)) {
+                throw ValidationException::withMessages([
+                    'idempotency_key' => [__('customer_service_discount.not_allowed')],
                 ]);
             }
 
