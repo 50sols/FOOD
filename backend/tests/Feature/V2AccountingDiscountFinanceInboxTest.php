@@ -106,6 +106,48 @@ final class V2AccountingDiscountFinanceInboxTest extends TestCase
         $this->assertDatabaseHas('orders', ['id' => $orderId, 'grand_total' => 9]);
     }
 
+    public function test_independent_finance_rejection_preserves_pricing_and_cannot_be_replayed_as_approval(): void
+    {
+        $finance = $this->roleUser('FINANCE');
+        $requester = $this->roleUser('CUSTOMER_SERVICE_AGENT');
+        $store = Store::query()->findOrFail(app(WholesalePrincipal::class)->storeId());
+        $this->enableFinance($finance, $store);
+
+        $orderId = $this->order($store, 'b2b', 'INBOX-REJECT-4397');
+        $requestId = $this->pendingRequest($orderId, $requester);
+        $review = route('admin.operations.orders.customer-service-discount.review', [
+            'order' => $orderId, 'discountRequest' => $requestId,
+        ]);
+        $inbox = route('admin.erp.finance.index', ['store_id' => $store->id, 'tab' => 'discount_approvals']);
+
+        $this->actingAs($finance)->post($review, [
+            'decision' => 'reject',
+            'review_reason' => 'Independent Accounting rejection',
+        ])->assertRedirect();
+
+        $this->assertDatabaseHas('order_customer_service_discount_requests', [
+            'id' => $requestId,
+            'status' => 'rejected',
+            'reviewed_by_user_id' => $finance->id,
+        ]);
+        $this->assertDatabaseHas('audit_logs', [
+            'event' => 'order.customer_service_discount.rejected',
+            'user_id' => $finance->id,
+        ]);
+        $this->assertDatabaseHas('orders', [
+            'id' => $orderId, 'discount_total' => 1, 'grand_total' => 9,
+        ]);
+
+        $this->actingAs($finance)->post($review, ['decision' => 'approve'])->assertStatus(409);
+        $this->assertDatabaseHas('orders', [
+            'id' => $orderId, 'discount_total' => 1, 'grand_total' => 9,
+        ]);
+        $this->assertDatabaseHas('order_customer_service_discount_requests', [
+            'id' => $requestId, 'status' => 'rejected',
+        ]);
+        $this->actingAs($finance)->get($inbox)->assertOk()->assertDontSee('INBOX-REJECT-4397');
+    }
+
     public function test_direct_finance_approval_post_requires_live_module_and_store_entitlement(): void
     {
         $finance = $this->roleUser('FINANCE');
