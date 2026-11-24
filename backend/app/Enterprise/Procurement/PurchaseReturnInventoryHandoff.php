@@ -31,6 +31,21 @@ final class PurchaseReturnInventoryHandoff
             ]);
         }
 
+        // The handoff is a public service boundary, not just a manager-only
+        // helper. Never let a caller substitute a return, source GRN line or
+        // store after the manager validated the original request. Such an
+        // alias could debit real stock while recording false return provenance.
+        if ((int) $line->purchase_return_id !== (int) $return->getKey()
+            || (int) $line->goods_receipt_line_id !== (int) $sourceLine->getKey()
+            || (int) $sourceLine->goods_receipt_id !== (int) $return->goods_receipt_id
+            || (int) $return->store_id !== $storeId) {
+            throw ValidationException::withMessages([
+                'goods_receipt_line_id' => [
+                    'Purchase return, posted receipt line and authorized store must match before stock reversal.',
+                ],
+            ]);
+        }
+
         if ($sourceLine->inventory_id === null || $sourceLine->stock_movement_id === null) {
             throw ValidationException::withMessages([
                 'goods_receipt_line_id' => [
