@@ -52,7 +52,7 @@ final class ModuleWorkflowAttestation
             || ! is_string($manifestSha256) || preg_match('/^[a-f0-9]{64}$/D', $manifestSha256) !== 1
             || ! is_int($reviewIssue) || $reviewIssue < 1
             || ! is_string($ciRun)
-            || preg_match('~^https://github\.com/walidatiyaai2025-gif/FOOD/actions/runs/[1-9][0-9]*$~D', $ciRun) !== 1
+            || preg_match('~^https://github\.com/50sols/FOOD/actions/runs/[1-9][0-9]*$~D', $ciRun) !== 1
             || ! array_is_list($stages) || $stages === []
             || ! is_array($checks) || count($checks) !== count($stages)) {
             return null;
