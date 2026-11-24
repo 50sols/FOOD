@@ -2316,6 +2316,15 @@ SQL);
         }
         $this->assertTrue($verifier->verifies($inventory, $position, $stock['store_id']));
 
+        // An inactive warehouse cannot retain legal title certification even
+        // if the store, signature and original source stock remain unchanged.
+        $this->assertSame(1, DB::table('warehouses')->where('id', $warehouseId)
+            ->update(['is_active' => false]));
+        $this->assertFalse($verifier->verifies($inventory, $position, $stock['store_id']));
+        $this->assertSame(1, DB::table('warehouses')->where('id', $warehouseId)
+            ->update(['is_active' => true]));
+        $this->assertTrue($verifier->verifies($inventory, $position, $stock['store_id']));
+
         // The signed certificate must stop conferring stock-title authority
         // if the owning hierarchy is deactivated after signature issuance.
         // Restore each ancestor to prove the signature itself stays valid.
