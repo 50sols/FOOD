@@ -116,6 +116,69 @@ final class EnterprisePurchaseReturnFoundationTest extends TestCase
         }
     }
 
+    public function test_p110_direct_purchase_return_handoff_rejects_substituted_source_and_return_without_stock_writes(): void
+    {
+        $this->enableProcurement();
+        [$actor, $store, $context] = $this->scopedUser($this->allPermissions(), 'PRTN-P110-SOURCE-BIND');
+        [$product, $warehouse] = $this->stockTarget($store, 'PRTN-P110-SOURCE-BIND-SKU');
+        $receipt = $this->postedReceipt(
+            $actor, $context, $warehouse, 'PRTN-P110-SOURCE-A', 'PRTN-P110-SOURCE-BIND-SKU', 2,
+        );
+        $otherReceipt = $this->postedReceipt(
+            $actor, $context, $warehouse, 'PRTN-P110-SOURCE-B', 'PRTN-P110-SOURCE-BIND-SKU', 1,
+        );
+        $source = $receipt->lines()->firstOrFail();
+        $foreignSource = $otherReceipt->lines()->firstOrFail();
+        $manager = app(PurchaseReturnManager::class);
+        $draft = $manager->createFromPostedReceipt($actor, $context, $receipt->id, [
+            'lines' => [['goods_receipt_line_id' => $source->id, 'quantity' => '0.500']],
+        ]);
+        $otherReturn = $manager->createFromPostedReceipt($actor, $context, $receipt->id, [
+            'lines' => [['goods_receipt_line_id' => $source->id, 'quantity' => '0.250']],
+        ]);
+        $line = $draft->lines()->firstOrFail();
+        $inventory = DB::table('inventories')
+            ->where('warehouse_id', $warehouse->id)
+            ->where('product_id', $product->id)->firstOrFail();
+        $service = app(PurchaseReturnInventoryHandoff::class);
+
+        $beforeStock = (array) DB::table('inventories')->where('id', $inventory->id)->first();
+        $beforeOwner = DB::table('enterprise_inventory_owner_positions')
+            ->where('inventory_id', $inventory->id)->get()->toArray();
+        $beforeMovement = DB::table('stock_movements')->count();
+        $beforeOwnerEvent = DB::table('enterprise_inventory_owner_movement_events')->count();
+        $beforeAudit = DB::table('audit_logs')->count();
+
+        foreach ([
+            'substituted posted GRN line' => [$draft, $line, $foreignSource],
+            'substituted purchase return header' => [$otherReturn, $line, $source],
+        ] as $scenario => [$selectedReturn, $selectedLine, $selectedSource]) {
+            try {
+                DB::transaction(static function () use (
+                    $service, $actor, $store, $selectedReturn, $selectedLine, $selectedSource
+                ): void {
+                    $service->reverse(
+                        $actor, $store->id, $selectedReturn, $selectedLine, $selectedSource,
+                    );
+                });
+                $this->fail($scenario.' must not reverse an unrelated receipt or return.');
+            } catch (ValidationException $exception) {
+                $this->assertArrayHasKey('goods_receipt_line_id', $exception->errors(), $scenario);
+            }
+
+            $this->assertSame($beforeStock, (array) DB::table('inventories')
+                ->where('id', $inventory->id)->first(), $scenario);
+            $this->assertEquals($beforeOwner, DB::table('enterprise_inventory_owner_positions')
+                ->where('inventory_id', $inventory->id)->get()->toArray(), $scenario);
+            $this->assertSame($beforeMovement, DB::table('stock_movements')->count(), $scenario);
+            $this->assertSame($beforeOwnerEvent, DB::table('enterprise_inventory_owner_movement_events')->count(), $scenario);
+            $this->assertSame($beforeAudit, DB::table('audit_logs')->count(), $scenario);
+            $this->assertDatabaseHas('enterprise_purchase_returns', ['id' => $draft->id, 'status' => 'draft']);
+            $this->assertDatabaseHas('enterprise_purchase_returns', ['id' => $otherReturn->id, 'status' => 'draft']);
+            $this->assertNull($line->refresh()->stock_movement_id);
+        }
+    }
+
     public function test_posted_purchase_return_reverses_inventory_once_and_is_retry_safe(): void
     {
         $this->enableProcurement();
