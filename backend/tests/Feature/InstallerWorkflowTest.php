@@ -687,6 +687,49 @@ class InstallerWorkflowTest extends TestCase
         $this->assertEquals($before, DB::table('enterprise_finance_credit_terms')->first());
     }
 
+    public function test_interrupted_key_step_replay_never_rotates_persisted_app_key(): void
+    {
+        $state = app(InstallState::class);
+        $environment = app(InstallerEnvironment::class);
+        $workflow = app(InstallerWorkflow::class);
+
+        // Simulate a crash after atomic .env persistence but before the
+        // controller can checkpoint completed_step=13.
+        $state->markStepComplete(12);
+        $token = $state->token();
+        $workflow->generateApplicationKey();
+        $saved = (string) $environment->read(['APP_KEY'])['APP_KEY'];
+        $originalBytes = file_get_contents($environment->path());
+
+        $this->assertMatchesRegularExpression('/^base64:[A-Za-z0-9+\\/]+={0,2}$/', $saved);
+        $this->assertSame(12, $state->progress()['completed_step']);
+
+        $this->post('/install/step/13', ['installer_token' => $token])
+            ->assertStatus(422);
+        $this->assertSame($originalBytes, file_get_contents($environment->path()));
+        $this->assertSame($saved, $environment->read(['APP_KEY'])['APP_KEY']);
+        $this->assertSame($saved, config('app.key'));
+        $this->assertSame(12, $state->progress()['completed_step']);
+    }
+
+    public function test_key_generation_rejects_preexisting_foreign_key_without_overwrite(): void
+    {
+        $environment = app(InstallerEnvironment::class);
+        $environment->write(['APP_KEY' => 'preexisting-owner-key-do-not-rotate']);
+        $originalBytes = file_get_contents($environment->path());
+        $originalConfig = config('app.key');
+
+        try {
+            app(InstallerWorkflow::class)->generateApplicationKey();
+            $this->fail('A pre-existing application key must not be replaced by the installer.');
+        } catch (\\RuntimeException $exception) {
+            $this->assertSame(__('installer.environment_already_configured'), $exception->getMessage());
+        }
+
+        $this->assertSame($originalBytes, file_get_contents($environment->path()));
+        $this->assertSame($originalConfig, config('app.key'));
+    }
+
     public function test_direct_seed_refuses_configured_application_key_without_mutating_reference_data(): void
     {
         app(InstallerEnvironment::class)->write([
