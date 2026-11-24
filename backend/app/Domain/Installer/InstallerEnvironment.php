@@ -29,12 +29,16 @@ final class InstallerEnvironment
     /**
      * @param  array<string, scalar|null>  $values
      */
-    public function write(array $values): void
+    public function write(array $values, bool $requireEmptyAppKey = false): void
     {
         foreach (array_keys($values) as $key) {
             if (! in_array($key, self::ALLOWED_KEYS, true)) {
                 throw new InvalidArgumentException('Environment key ['.$key.'] is not installer-writable.');
             }
+        }
+
+        if ($requireEmptyAppKey && array_keys($values) !== ['APP_KEY']) {
+            throw new InvalidArgumentException('One-shot APP_KEY write must not include other fields.');
         }
 
         $path = $this->path();
@@ -66,7 +70,7 @@ final class InstallerEnvironment
 
             $this->assertSafeWriteLock($lockPath, $lock);
             @chmod($lockPath, 0640);
-            $this->writeWithLock($path, $values);
+            $this->writeWithLock($path, $values, $requireEmptyAppKey);
         } finally {
             @flock($lock, LOCK_UN);
             fclose($lock);
@@ -100,7 +104,7 @@ final class InstallerEnvironment
     /**
      * @param  array<string, scalar|null>  $values
      */
-    private function writeWithLock(string $path, array $values): void
+    private function writeWithLock(string $path, array $values, bool $requireEmptyAppKey): void
     {
         $this->rejectSymbolicLink($path);
         $this->ensureEnvironmentFile($path);
@@ -108,6 +112,14 @@ final class InstallerEnvironment
         $content = file_get_contents($path);
         if ($content === false) {
             throw new RuntimeException('Environment configuration could not be read.');
+        }
+
+        // Enforce the APP_KEY first-writer contract while holding the SAME
+        // persistent .env lock as all installer writers. A pre-lock check in
+        // InstallerWorkflow alone cannot stop two parallel step-13 requests
+        // from each replacing the other's encryption key.
+        if ($requireEmptyAppKey && trim((string) ($this->read(['APP_KEY'])['APP_KEY'] ?? '')) !== '') {
+            throw new RuntimeException((string) __('installer.environment_already_configured'));
         }
 
         foreach ($values as $key => $value) {
