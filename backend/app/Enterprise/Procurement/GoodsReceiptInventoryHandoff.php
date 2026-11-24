@@ -11,7 +11,9 @@ use App\Models\Product;
 use App\Models\StockMovement;
 use App\Models\User;
 use App\Models\Warehouse;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
+use LogicException;
 
 final class GoodsReceiptInventoryHandoff
 {
@@ -25,6 +27,13 @@ final class GoodsReceiptInventoryHandoff
         EnterpriseGoodsReceipt $receipt,
         EnterpriseGoodsReceiptLine $line,
     ): void {
+        // Creating a canonical inventory row before the owner projection's
+        // transaction guard would leave partial stock writes on direct calls.
+        // The manager already transacts; enforce this at the write boundary.
+        if (DB::transactionLevel() < 1) {
+            throw new LogicException('Goods receipt stock handoff requires an active database transaction.');
+        }
+
         // This public posting boundary must not accept a line from another
         // draft receipt on the same issued purchase order. The PO-line check
         // below is not enough: both drafts can share the exact same PO line.
