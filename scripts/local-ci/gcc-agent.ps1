@@ -83,12 +83,21 @@ function Invoke-BoundedGitFetch([string]$Checkout,[int]$Pr,[long]$Request) {
  $env:GIT_TERMINAL_PROMPT='0'
  $process=$null
  try {
-  $process=Start-Process -FilePath $bin -ArgumentList $arguments -PassThru -NoNewWindow -RedirectStandardOutput $stdout -RedirectStandardError $stderr -ErrorAction Stop
+  try {
+   $process=Start-Process -FilePath $bin -ArgumentList $arguments -PassThru -NoNewWindow -RedirectStandardOutput $stdout -RedirectStandardError $stderr -ErrorAction Stop
+  } catch {
+   $script:GccLastFailedStage='git-fetch-process-start'
+   throw 'Git fetch process could not start; local diagnostic files are private.'
+  }
   if(-not $process.WaitForExit(900000)) {
+   $script:GccLastFailedStage='git-fetch-timeout'
    & taskkill.exe /T /F /PID $process.Id 1>$null 2>$null
    throw 'Git fetch exceeded 15-minute bounded timeout; exact-head test not executed.'
   }
-  if($process.ExitCode -ne 0) { throw "Git fetch exited $($process.ExitCode). Check local git-fetch log." }
+  if($process.ExitCode -ne 0) {
+   $script:GccLastFailedStage='git-fetch-nonzero-exit'
+   throw "Git fetch failed with exit code $($process.ExitCode); local diagnostic files are private."
+  }
  } finally {
   $env:GIT_TERMINAL_PROMPT=$oldPrompt
   if($null -ne $process) { $process.Dispose() }
