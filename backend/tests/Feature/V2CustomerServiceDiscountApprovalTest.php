@@ -21,6 +21,7 @@ use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
+use Illuminate\Validation\ValidationException;
 use Symfony\Component\HttpKernel\Exception\HttpException;
 use Tests\TestCase;
 
@@ -181,7 +182,7 @@ final class V2CustomerServiceDiscountApprovalTest extends TestCase
             try {
                 $service->request($order, $manager, $percentage, 'Invalid direct service percentage', (string) Str::uuid(), $request);
                 $this->fail('Invalid financial percentage must not enter the Finance queue.');
-            } catch (\Illuminate\Validation\ValidationException $exception) {
+            } catch (ValidationException $exception) {
                 $this->assertArrayHasKey('percentage', $exception->errors());
             }
         }
