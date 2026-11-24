@@ -393,7 +393,7 @@ final class LaravelUpdateRuntime implements UpdateRuntime
         }
 
         $manifestPath = $candidate.'/files.json';
-        if (is_link($backupReference) || is_link($manifestPath) || ! is_file($manifestPath)) {
+        if (is_link($backupReference) || ! $this->isSingleLinkBackupFile($manifestPath)) {
             throw new RuntimeException('File rollback manifest is missing or unsafe.');
         }
 
@@ -480,7 +480,7 @@ final class LaravelUpdateRuntime implements UpdateRuntime
 
             // Empty original files are valid; require readability, not a
             // nonzero size. Do not follow links in the private backup tree.
-            if (! is_file($source) || ! is_readable($source)) {
+            if (! $this->isSingleLinkBackupFile($source) || ! is_readable($source)) {
                 throw new RuntimeException('File rollback backup is incomplete or unsafe.');
             }
 
@@ -967,6 +967,25 @@ final class LaravelUpdateRuntime implements UpdateRuntime
                 throw new RuntimeException('Update target traverses a symbolic link.');
             }
         }
+    }
+
+    /**
+     * A backed-up release member must own its inode. A hardlink inside the
+     * recovery directory may otherwise alias bytes outside the trusted
+     * backup root while passing realpath, is_file and symlink checks.
+     */
+    private function isSingleLinkBackupFile(string $path): bool
+    {
+        clearstatcache(true, $path);
+        if (is_link($path)) {
+            return false;
+        }
+
+        $metadata = @lstat($path);
+
+        return $metadata !== false
+            && ($metadata['mode'] & 0170000) === 0100000
+            && $metadata['nlink'] === 1;
     }
 
     private function releaseRoot(): string
