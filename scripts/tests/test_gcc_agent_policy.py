@@ -61,6 +61,17 @@ class GccAgentContractTests(unittest.TestCase):
         self.assertIn("RequestAlreadyReported -Pr $n -Request ([long]$Comment.id)", SCRIPT)
         self.assertNotIn("$published.Count -gt 0", SCRIPT)
 
+    def test_git_fetch_failure_is_classified_without_exposing_logs(self):
+        # Distinguish process spawn, timeout and nonzero Git exit in the
+        # automatic PR evidence without publishing local stderr or secrets.
+        self.assertIn("$script:GccLastFailedStage='git-fetch-process-start'", SCRIPT)
+        self.assertIn("$script:GccLastFailedStage='git-fetch-timeout'", SCRIPT)
+        self.assertIn("$script:GccLastFailedStage='git-fetch-nonzero-exit'", SCRIPT)
+        self.assertIn("WaitForExit(900000)", SCRIPT)
+        self.assertIn("local diagnostic files are private", SCRIPT)
+        self.assertIn("- Stage: $stageLabel", SCRIPT)
+        self.assertNotIn("Get-Content -LiteralPath $stderr", SCRIPT)
+
     def test_advisory_not_required_status(self):
         self.assertIn("**Advisory only**", SCRIPT)
         self.assertIn("Report -Pr $n", SCRIPT)
