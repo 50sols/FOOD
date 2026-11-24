@@ -2,6 +2,8 @@
 
 Issue #4405. Integration target Foodex_V2 only. Local evidence never replaces exact-head Required CI.
 
+Canonical repository after the organization transfer: `50sols/FOOD` (repository ID `1385223867`). The GCC agent's `$Repo` and GitHub API issue-comment endpoints must target this organization path; GitHub redirects from the former owner are not a substitute for explicit repository-identity checks. The command author remains `walidatiyaai2025-gif`.
+
 ## Objective
 
 After a one-time setup on GCC, commands flow through GitHub PR comments, not repeated Desktop Commander calls. The Windows scheduled task checks comments every 120 seconds, verifies the command is from the repository owner, validates the exact current PR SHA, runs a fixed test profile in isolated Docker, and posts a summary back to the PR.
