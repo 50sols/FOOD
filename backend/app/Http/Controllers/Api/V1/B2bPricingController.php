@@ -263,7 +263,8 @@ class B2bPricingController extends Controller
                         ->where('b2b_price_rules.price_tier_id', '=', (int) $account->price_tier_id)
                         ->where('b2b_price_rules.is_active', '=', true);
                 })
-                ->join('b2b_price_tiers', 'b2b_price_tiers.id', '=', 'b2b_price_rules.price_tier_id');
+                ->join('b2b_price_tiers', 'b2b_price_tiers.id', '=', 'b2b_price_rules.price_tier_id')
+                ->where('b2b_price_tiers.is_active', true);
         }
 
         $columns = [
@@ -397,6 +398,9 @@ class B2bPricingController extends Controller
                     ->where('b2b_price_rules.store_id', '=', $storeId)
                     ->where('b2b_price_rules.price_tier_id', '=', (int) $account->price_tier_id)
                     ->where('b2b_price_rules.is_active', '=', true);
+            })->join('b2b_price_tiers', function ($join): void {
+                $join->on('b2b_price_tiers.id', '=', 'b2b_price_rules.price_tier_id')
+                    ->where('b2b_price_tiers.is_active', '=', true);
             });
         }
 
