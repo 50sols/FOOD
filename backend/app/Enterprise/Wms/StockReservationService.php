@@ -95,17 +95,16 @@ final class StockReservationService
                 'reservation_quantity' => $currentQuantity,
             ];
 
-            // The reservation reference, inventory row, and owner partition
-            // are checked under the SAME transaction. A title dispute must
-            // not commit a changed physical reservation while leaving its
-            // claimed supplier/FOODEX allocation out of sync.
-            $this->ownerProjection->assertUnattributedBeforeMutation((int) $inventory->getKey());
-
             $inventory->forceFill([
                 'reserved_quantity' => $nextReserved,
             ])->save();
 
-            $this->ownerProjection->afterReservationMutation($inventory);
+            // One conditional INSERT/UPDATE verifies the prior UNKNOWN owner
+            // quantity/reservations and writes the new owner position. If it
+            // affects no row, the entire enclosing canonical reservation
+            // transaction rolls back BEFORE the movement/event is inserted.
+            // This avoids two new SELECTs in the 18-query WMS hot path.
+            $this->ownerProjection->afterReservationMutation($inventory, $onHand, $reserved);
 
             DB::table('stock_movements')->insert([
                 'inventory_id' => $inventory->getKey(),

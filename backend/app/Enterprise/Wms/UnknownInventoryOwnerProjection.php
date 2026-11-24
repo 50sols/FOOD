@@ -77,13 +77,17 @@ final class UnknownInventoryOwnerProjection
         }
     }
 
-    public function afterReservationMutation(Inventory $lockedInventory): void
-    {
+    public function afterReservationMutation(
+        Inventory $lockedInventory,
+        float $previousQuantity,
+        float $previousReserved,
+    ): void {
         $inventoryId = (int) $lockedInventory->getKey();
         if ($inventoryId < 1 || ! $lockedInventory->exists || DB::transactionLevel() < 1) {
             throw new LogicException('Reservation owner projection requires the locked canonical stock transaction.');
         }
 
+        self::assertCanonicalBalance($previousQuantity, $previousReserved);
         self::assertCanonicalBalance($lockedInventory->quantity, $lockedInventory->reserved_quantity);
 
         // A single statement is essential: the existing WMS reservation
@@ -98,6 +102,8 @@ SELECT ?, 'UNKNOWN', 'UNKNOWN', NULL, ?, ?, ?, ?, ?
 FROM (SELECT 1 AS seed) AS projection_seed
 LEFT JOIN enterprise_inventory_owner_positions AS existing
     ON existing.inventory_id = ?
+LEFT JOIN enterprise_inventory_title_attestations AS title_attestation
+    ON title_attestation.owner_position_id = existing.id
 GROUP BY projection_seed.seed
 HAVING COUNT(existing.id) = 0
     OR (
@@ -105,6 +111,9 @@ HAVING COUNT(existing.id) = 0
         AND MIN(existing.owner_key) = 'UNKNOWN'
         AND MIN(existing.owner_kind) = 'UNKNOWN'
         AND COUNT(existing.supplier_id) = 0
+        AND COUNT(title_attestation.id) = 0
+        AND MIN(existing.quantity) = ?
+        AND MIN(existing.reserved_quantity) = ?
     )
 SQL;
 
@@ -132,7 +141,14 @@ SQL;
         }
 
         $now = now();
-        DB::statement($sql, [
+        // For a changed reservation, a valid INSERT/UPDATE must affect at
+        // least one row. Zero means known/mixed title, a stale UNKNOWN
+        // allocation, or an independently attested row. Throwing now rolls
+        // back the canonical inventory UPDATE in the same transaction and
+        // prevents both the stock movement and owner event from posting.
+        // This single SQL statement retains the indexed WMS query budget:
+        // no preflight SELECT round trips on the reservation hot path.
+        $affected = DB::affectingStatement($sql, [
             $inventoryId,
             $lockedInventory->quantity,
             $lockedInventory->reserved_quantity,
@@ -140,7 +156,13 @@ SQL;
             $now,
             $now,
             $inventoryId,
+            $previousQuantity,
+            $previousReserved,
         ]);
+
+        if ($affected < 1) {
+            throw new HttpException(409, 'Reservation owner allocation is not reconciled or independently authorized.');
+        }
     }
 
     public function afterProcurementMutation(Inventory $inventory): void
