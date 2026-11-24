@@ -183,7 +183,7 @@ class GccAgentContractTests(unittest.TestCase):
         self.assertIn("function AgentSourceFingerprint", SCRIPT)
         self.assertIn("$source=[string]$PSCommandPath", SCRIPT)
         self.assertIn("Get-FileHash -LiteralPath $source -Algorithm SHA256", SCRIPT)
-        self.assertIn("if($digest -cnotmatch '^[a-f0-9]{64}$')", SCRIPT)
+        self.assertIn("if($digest.Length -ne 64 -or $digest -match '[^a-f0-9]')", SCRIPT)
         self.assertIn("return 'unavailable'", SCRIPT)
         self.assertEqual(SCRIPT.count("Installed agent script SHA-256 (diagnostic only): $(AgentSourceFingerprint)"), 2)
         self.assertNotIn("Installed agent path:", SCRIPT)
