@@ -195,6 +195,18 @@ final class OrderCustomerServiceDiscountApprovalService
             abort_if((string) $record->status !== 'pending', 409);
             abort_if((int) $record->requested_by_user_id === (int) $reviewer->getKey(), 403);
 
+            // The HTTP controller is not a trust boundary. A direct job or
+            // service caller cannot record an unreasoned Accounting rejection,
+            // or persist malformed optional approval reasons into the audit.
+            $reviewReason = $reviewReason === null ? null : trim($reviewReason);
+            $reasonLength = $reviewReason === null ? 0 : mb_strlen($reviewReason);
+            if ((! $approved && $reasonLength < 5)
+                || ($reviewReason !== null && ($reasonLength < 5 || $reasonLength > 500))) {
+                throw ValidationException::withMessages([
+                    'review_reason' => [__('customer_service_discount.not_allowed')],
+                ]);
+            }
+
             if ($approved) {
                 $applied = $this->discounts->apply(
                     $locked,
