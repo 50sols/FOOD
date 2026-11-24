@@ -208,10 +208,10 @@ function Full-CI([int]$Pr,[string]$Sha,[long]$Request,[string]$Checkout,[Validat
   }
   $requiredPaths=@()
   if($Profile -ne 'backend') {
-   $requiredPaths+=Join-Path $report "FOODEX-Setup-v$($result.version).zip"
+   $requiredPaths+=(Join-Path $report "FOODEX-Setup-v$($result.version).zip")
   }
   if($Profile -eq 'all' -or $Profile -eq 'packages') {
-   $requiredPaths+=Join-Path (Join-Path $report 'update') 'FOODEX-Update.zip'
+   $requiredPaths+=(Join-Path (Join-Path $report 'update') 'FOODEX-Update.zip')
   }
   foreach($expectedPath in $requiredPaths) {
    if(@($artifacts | Where-Object { $_.FullName -ceq $expectedPath }).Count -ne 1) {
