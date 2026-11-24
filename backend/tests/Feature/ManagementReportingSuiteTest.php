@@ -84,13 +84,17 @@ class ManagementReportingSuiteTest extends TestCase
         );
         $this->assertCount(2, $rowQueries);
         foreach ($rowQueries as $sql) {
-            $this->assertStringContainsString('join (select', $sql);
-            $this->assertStringContainsString('paged_orders', $sql);
-            $this->assertStringContainsString('orders.store_id', $sql);
-            $this->assertStringContainsString('orders.channel', $sql);
-            $this->assertStringContainsString('orders.status', $sql);
-            $this->assertStringContainsString('orders.created_at', $sql);
-            $this->assertStringContainsString('limit 1', $sql);
+            // Laravel quotes identifiers differently on SQLite and MySQL.
+            // Inspect the actual SQL shape without coupling the assertion to
+            // either dialect's identifier quote character.
+            $normalizedSql = str_replace(['"', '`'], '', $sql);
+            $this->assertStringContainsString('join (select', $normalizedSql);
+            $this->assertStringContainsString('paged_orders', $normalizedSql);
+            $this->assertStringContainsString('orders.store_id', $normalizedSql);
+            $this->assertStringContainsString('orders.channel', $normalizedSql);
+            $this->assertStringContainsString('orders.status', $normalizedSql);
+            $this->assertStringContainsString('orders.created_at', $normalizedSql);
+            $this->assertStringContainsString('limit 1', $normalizedSql);
         }
 
         // Store B has its own delivered order (RPT-004). Paging may
