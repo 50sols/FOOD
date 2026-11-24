@@ -94,7 +94,12 @@ function claimReferences(comments) {
       // Issue #2844 has a verified historical destination annotation in
       // BRANCH. Only a whole canonical issue-scoped ref plus this exact
       // display suffix may be normalized; all other prose stays fail-closed.
-      .replace(/^((?:feat|feature|fix|test|chore|ci|docs|refactor|worker)\/[1-9]\d*-[A-Za-z0-9._-]+) -> Foodex_V2 ONLY$/, '$1');
+      .replace(/^((?:feat|feature|fix|test|chore|ci|docs|refactor|worker)\/[1-9]\d*-[A-Za-z0-9._-]+) -> Foodex_V2 ONLY$/, '$1')
+      // #2706's first published claim (#6941157113) used one exact display
+      // annotation before its original PR existed. Resolve ONLY that known
+      // phrase on the canonical branch; unknown notes and actual second refs
+      // still fail closed in decide() against live GitHub branches and PRs.
+      .replace(/^(feat\/2706-v2-b2b-pricing-setup-readiness) \(new Issue-scoped; no existing 2706 branch\/PR found\)$/, '$1');
     // Inlined PR identities are provenance constraints, not decoration.
     // Never turn conflicting explicit and annotated PR references into a pass.
     const claimedPr = explicitPr ? Number(explicitPr[1]) : null;

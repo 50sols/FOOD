@@ -428,6 +428,44 @@ test('actual G004 original historic branch claims normalize exactly without weak
   }
 });
 
+test('historical P2706 initial branch note resumes the one live original without admitting alternate claims', () => {
+  const original = 'feat/2706-v2-b2b-pricing-setup-readiness';
+  const historic = original + ' (new Issue-scoped; no existing 2706 branch/PR found)';
+  const comment = (branch, pr = '#3995') => ({body:'<!-- foodex-worker-state:v1 -->\n'
+    + 'STATE: HANDOFF_READY\nBRANCH: ' + branch + '\nPR: ' + pr});
+  const refs = claimReferences([comment(historic), comment(original)]);
+  assert.deepEqual(refs.map(ref => ref.branch), [original, original]);
+  const scope = {
+    issue:{number:2706,state:'open',title:'V2 | wholesale price tiers',labels:[]},
+    branches:[original],
+    prs:[{number:3995,state:'open',head:{ref:original,sha:'current-3995-head'},
+      base:{ref:'Foodex_V2'}}],
+    checkpoint:null,
+  };
+  assert.deepEqual([decide({...scope,refs}).action,decide({...scope,refs}).pr],
+    ['RESUME_ORIGINAL_PR',3995]);
+
+  // Historical wording is never permission to rewrite a different branch,
+  // alter the issue number, append prose, or conceal genuine duplicate refs.
+  const untrusted = [
+    historic + ' trailing',
+    original + ' (new Issue-scoped; no existing 2707 branch/PR found)',
+    'feat/2706-other (new Issue-scoped; no existing 2706 branch/PR found)',
+    'feat/2707-v2-b2b-pricing-setup-readiness (new Issue-scoped; no existing 2706 branch/PR found)',
+    original + ' (new Issue-scoped; no existing 2706 branch/PR found; approved)',
+  ];
+  for (const value of untrusted) {
+    assert.equal(decide({...scope,refs:claimReferences([comment(value)])}).action,
+      'BLOCK_CONFLICTING_ORIGINALS', value);
+  }
+  assert.equal(decide({...scope,refs:claimReferences([comment(historic, '#3996')])}).action,
+    'BLOCK_CONFLICTING_ORIGINALS');
+  assert.equal(decide({...scope,refs,branches:[original,'feat/2706-other']}).action,
+    'BLOCK_CONFLICTING_ORIGINALS');
+  assert.equal(decide({...scope,refs,prs:[...scope.prs,{...scope.prs[0],number:3996}]}).action,
+    'BLOCK_DUPLICATE_PRS');
+});
+
 test('incomplete or oversized search pagination fails closed', async () => {
   await assert.rejects(pages(async()=>({data:{items:[],total_count:2}}),{},'items'),/incomplete/);
   await assert.rejects(pages(async()=>({data:{wrong:[]}}),{},'items'),/payload/);
