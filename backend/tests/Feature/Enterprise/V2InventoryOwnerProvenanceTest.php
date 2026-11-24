@@ -1800,6 +1800,46 @@ SQL);
         $this->assertSame($auditBefore, DB::table('audit_logs')->count());
     }
 
+    public function test_order_reservation_refuses_inconsistent_canonical_stock_before_mutation(): void
+    {
+        $this->seed(CoreReferenceSeeder::class);
+        $stock = $this->stock('ORDER-CORRUPT-ONHAND');
+        $actor = $this->inventoryActor($stock['store_id']);
+        $productId = (int) DB::table('inventories')->where('id', $stock['inventory_id'])
+            ->value('product_id');
+        $order = $this->ledgerTestOrder($stock['store_id'], 'CORRUPT-STOCK');
+
+        // A legacy inconsistency is not permission to ignore this stock row
+        // and silently use another row (or to create new owner movements).
+        DB::table('inventories')->where('id', $stock['inventory_id'])
+            ->update(['reserved_quantity' => 11]);
+        $inventoryBefore = (array) DB::table('inventories')
+            ->where('id', $stock['inventory_id'])->first();
+        $movementBefore = DB::table('stock_movements')
+            ->where('inventory_id', $stock['inventory_id'])->count();
+        $eventBefore = DB::table('enterprise_inventory_owner_movement_events')
+            ->where('inventory_id', $stock['inventory_id'])->count();
+        $auditBefore = DB::table('audit_logs')->count();
+
+        try {
+            app(OrderInventoryReservationService::class)->reserve(
+                $order, $actor, [['product_id' => $productId, 'quantity' => 1.0]],
+            );
+            $this->fail('Overdrawn canonical reservations must fail closed.');
+        } catch (HttpException $exception) {
+            $this->assertSame(409, $exception->getStatusCode());
+            $this->assertStringContainsString('inconsistent', $exception->getMessage());
+        }
+
+        $this->assertSame($inventoryBefore, (array) DB::table('inventories')
+            ->where('id', $stock['inventory_id'])->first());
+        $this->assertSame($movementBefore, DB::table('stock_movements')
+            ->where('inventory_id', $stock['inventory_id'])->count());
+        $this->assertSame($eventBefore, DB::table('enterprise_inventory_owner_movement_events')
+            ->where('inventory_id', $stock['inventory_id'])->count());
+        $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+    }
+
     public function test_order_release_denies_active_reservation_after_inventory_moves_out_of_store_scope(): void
     {
         $this->seed(CoreReferenceSeeder::class);
