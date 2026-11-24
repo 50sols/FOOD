@@ -134,8 +134,17 @@ final class EnterpriseOrganizationAdministration
      */
     public function assertCreationParentActive(Model $parent): void
     {
+        // Models passed by long-lived service callers can carry cached active
+        // relations from before an ancestor was disabled. Re-fetch the parent
+        // and its lineage rather than trusting that stale authorization state.
+        $current = $parent->fresh();
+        if (! $current instanceof Model) {
+            throw ValidationException::withMessages(['parent' => [__('enterprise_organization.inactive_parent')]]);
+        }
+
+        $parent = $current;
         if ($parent instanceof EnterpriseLegalEntity) {
-            $parent->loadMissing('company.organization');
+            $parent->load('company.organization');
             $this->assertActive($parent);
             $this->assertActive($parent->company);
             $this->assertActive($parent->company->organization);
@@ -144,7 +153,7 @@ final class EnterpriseOrganizationAdministration
         }
 
         if ($parent instanceof EnterpriseCompany) {
-            $parent->loadMissing('organization');
+            $parent->load('organization');
             $this->assertActive($parent);
             $this->assertActive($parent->organization);
 
