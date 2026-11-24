@@ -220,6 +220,10 @@ final class V2ProcurementSidebarPersonaContractTest extends TestCase
     /** @return array<string, array<string, mixed>> */
     private function navigationItems(User $user): array
     {
+        // Each projection is a separate user request after certification,
+        // entitlement, or lifecycle changes; never reuse memoized decisions.
+        app()->forgetInstance(AdminNavigation::class);
+
         return collect(app(AdminNavigation::class)->groupsFor($user))
             ->flatMap(static fn (array $group): array => $group['children'])
             ->keyBy('key')
