@@ -397,11 +397,15 @@ function Process($Comment) {
  try {
   if($profile -ne 'run') {
    $testProfile=if($profile -eq 'full') { 'all' } else { $profile }
-   $work=Join-Path $Root "work\$n-$($Comment.id)"
+   # The request ID identifies evidence, not a reusable checkout. A crash
+   # before Report-Full must not replay against a half-fetched .git directory.
+   $work=Join-Path $Root ("work\{0}-{1}-{2}" -f $n,$Comment.id,[guid]::NewGuid().ToString("N"))
    New-Item -ItemType Directory -Path $work -Force | Out-Null
    try {
     & git -C $work init -q | Out-Null
+    if($LASTEXITCODE -ne 0) { throw 'Full CI git init failed' }
     & git -C $work remote add origin "https://github.com/$Repo.git" | Out-Null
+    if($LASTEXITCODE -ne 0) { throw 'Full CI git remote failed' }
     $script:GccLastFailedStage='git-fetch'
     Invoke-BoundedGitFetch -Checkout $work -Pr $n -Request ([long]$Comment.id)
     $script:GccLastFailedStage='checkout'
