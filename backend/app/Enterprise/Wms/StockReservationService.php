@@ -212,6 +212,14 @@ final class StockReservationService
 
     private function normalizeQuantity(float $quantity): float
     {
+        // NaN and +/-Infinity compare false against ordinary numeric bounds.
+        // Reject them before rounding so no invalid reservation reaches SQL.
+        if (! is_finite($quantity)) {
+            throw ValidationException::withMessages([
+                'quantity' => ['Reservation quantity must be a finite number.'],
+            ]);
+        }
+
         $quantity = round($quantity, 3);
 
         if ($quantity < 0 || $quantity > 99999999999.999) {
