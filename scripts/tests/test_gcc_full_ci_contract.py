@@ -27,7 +27,7 @@ class GccHeavyExecutionContracts(unittest.TestCase):
         self.assertIn("/gcc-ci (run|full|backend|setup|packages)", AGENT)
         self.assertIn("$script:GccLastFailedStage", AGENT)
         self.assertIn("Failed trusted runtime step", AGENT)
-        self.assertIn("Missing expected canonical ZIP artifact", AGENT)
+        self.assertIn("Missing canonical ZIP artifact at expected evidence path", AGENT)
         self.assertIn("GCC result version must be a strict semantic version.", AGENT)
         self.assertIn("$Comment.user.login -cne $Owner", AGENT)
         self.assertIn("$pr.head.sha -cne $sha", AGENT)
@@ -123,12 +123,13 @@ class GccHeavyExecutionContracts(unittest.TestCase):
         self.assertIn("signed=False", FULL)
         self.assertIn("Get-FileHash", AGENT)
 
-    def test_profiles_require_expected_zip_artifact_names_not_arbitrary_count(self):
+    def test_profiles_require_canonical_zip_paths_not_arbitrary_counts(self):
         self.assertIn('"FOODEX-Setup-v$($result.version).zip"', AGENT)
         self.assertIn("'FOODEX-Update.zip'", AGENT)
-        self.assertIn("switch($Profile)", AGENT)
-        self.assertIn("$requiredNames", AGENT)
-        self.assertIn("$artifacts | Where-Object { $_.Name -ceq $name }", AGENT)
+        self.assertIn("$requiredPaths", AGENT)
+        self.assertIn("Join-Path (Join-Path $report 'update')", AGENT)
+        self.assertIn("$artifacts | Where-Object { $_.FullName -ceq $expectedPath }", AGENT)
+        self.assertIn("Missing canonical ZIP artifact at expected evidence path", AGENT)
         self.assertNotIn("$requiredPackages=switch($Profile)", AGENT)
         self.assertNotIn("@($artifacts).Count -lt $requiredPackages", AGENT)
 
