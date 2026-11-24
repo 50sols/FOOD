@@ -95,12 +95,16 @@ final class StockReservationService
                 'reservation_quantity' => $currentQuantity,
             ];
 
+            // The reservation reference, inventory row, and owner partition
+            // are checked under the SAME transaction. A title dispute must
+            // not commit a changed physical reservation while leaving its
+            // claimed supplier/FOODEX allocation out of sync.
+            $this->ownerProjection->assertUnattributedBeforeMutation((int) $inventory->getKey());
+
             $inventory->forceFill([
                 'reserved_quantity' => $nextReserved,
             ])->save();
 
-            // The canonical row is locked in this transaction. Synchronize only
-            // wholly UNKNOWN title; a claimed FOODEX/supplier owner stays stale.
             $this->ownerProjection->afterReservationMutation($inventory);
 
             DB::table('stock_movements')->insert([

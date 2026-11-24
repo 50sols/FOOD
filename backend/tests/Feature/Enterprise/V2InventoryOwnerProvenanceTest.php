@@ -1899,6 +1899,39 @@ SQL);
         $this->assertFalse($snapshot['certified']);
     }
 
+    public function test_wms_reservation_refuses_stale_unknown_title_instead_of_silently_reconciling(): void
+    {
+        $this->seed(CoreReferenceSeeder::class);
+        $stock = $this->stock('RESERVE-UNKNOWN-STALE');
+        $actor = $this->inventoryActor($stock['store_id']);
+        $inventory = DB::table('inventories')->where('id', $stock['inventory_id'])
+            ->first(['warehouse_id', 'product_id']);
+        $this->position($stock['inventory_id'], 'UNKNOWN', null, 10, 2, $actor->id, $actor->id, false);
+
+        try {
+            app(StockReservationService::class)->ensureReservation(
+                $actor, (int) $inventory->warehouse_id, (int) $inventory->product_id,
+                1.0, 'p110_stale_unknown_reservation', 1102849,
+            );
+            $this->fail('Stale physical reservation cannot be repaired by an unrelated WMS reference.');
+        } catch (HttpException $exception) {
+            $this->assertSame(409, $exception->getStatusCode());
+        }
+
+        $this->assertDatabaseHas('inventories', [
+            'id' => $stock['inventory_id'], 'quantity' => 10, 'reserved_quantity' => 3,
+        ]);
+        $this->assertDatabaseHas('enterprise_inventory_owner_positions', [
+            'inventory_id' => $stock['inventory_id'], 'owner_key' => 'UNKNOWN',
+            'quantity' => 10, 'reserved_quantity' => 2,
+        ]);
+        $this->assertSame(0, DB::table('stock_movements')
+            ->where('reference_type', 'p110_stale_unknown_reservation')
+            ->where('reference_id', 1102849)->count());
+        $this->assertSame(0, DB::table('enterprise_inventory_owner_movement_events')
+            ->where('inventory_id', $stock['inventory_id'])->count());
+    }
+
     public function test_wms_reservation_never_reclassifies_a_claimed_foodex_title(): void
     {
         $this->seed(CoreReferenceSeeder::class);
@@ -1914,13 +1947,18 @@ SQL);
         $inventory = DB::table('inventories')->where('id', $stock['inventory_id'])
             ->first(['warehouse_id', 'product_id']);
 
-        app(StockReservationService::class)->ensureReservation(
-            $actor, (int) $inventory->warehouse_id, (int) $inventory->product_id,
-            1.0, 'p110_unverified_owner_reservation', 1102847,
-        );
+        try {
+            app(StockReservationService::class)->ensureReservation(
+                $actor, (int) $inventory->warehouse_id, (int) $inventory->product_id,
+                1.0, 'p110_unverified_owner_reservation', 1102847,
+            );
+            $this->fail('Known legal title needs an approved per-owner reservation allocation.');
+        } catch (HttpException $exception) {
+            $this->assertSame(409, $exception->getStatusCode());
+        }
 
         $this->assertDatabaseHas('inventories', [
-            'id' => $stock['inventory_id'], 'quantity' => 10, 'reserved_quantity' => 4,
+            'id' => $stock['inventory_id'], 'quantity' => 10, 'reserved_quantity' => 3,
         ]);
         $this->assertDatabaseHas('enterprise_inventory_owner_positions', [
             'inventory_id' => $stock['inventory_id'], 'owner_key' => 'FOODEX',
@@ -1930,7 +1968,12 @@ SQL);
             ->where('inventory_id', $stock['inventory_id'])->where('owner_key', 'UNKNOWN')->count());
         $snapshot = app(InventoryOwnerProvenanceReadService::class)
             ->snapshot($actor, $stock['inventory_id']);
-        $this->assertSame('STALE', $snapshot['state']);
+        $this->assertSame('UNVERIFIED', $snapshot['state']);
+        $this->assertSame(0, DB::table('stock_movements')
+            ->where('reference_type', 'p110_unverified_owner_reservation')
+            ->where('reference_id', 1102847)->count());
+        $this->assertSame(0, DB::table('enterprise_inventory_owner_movement_events')
+            ->where('inventory_id', $stock['inventory_id'])->count());
         $this->assertFalse($snapshot['certified']);
     }
 
@@ -1950,13 +1993,18 @@ SQL);
         $inventory = DB::table('inventories')->where('id', $stock['inventory_id'])
             ->first(['warehouse_id', 'product_id']);
 
-        app(StockReservationService::class)->ensureReservation(
-            $actor, (int) $inventory->warehouse_id, (int) $inventory->product_id,
-            2.0, 'p110_mixed_title_reservation', 1102848,
-        );
+        try {
+            app(StockReservationService::class)->ensureReservation(
+                $actor, (int) $inventory->warehouse_id, (int) $inventory->product_id,
+                2.0, 'p110_mixed_title_reservation', 1102848,
+            );
+            $this->fail('Mixed legal title cannot borrow unallocated owner reservations.');
+        } catch (HttpException $exception) {
+            $this->assertSame(409, $exception->getStatusCode());
+        }
 
         $this->assertDatabaseHas('inventories', [
-            'id' => $stock['inventory_id'], 'quantity' => 10, 'reserved_quantity' => 5,
+            'id' => $stock['inventory_id'], 'quantity' => 10, 'reserved_quantity' => 3,
         ]);
         $this->assertDatabaseHas('enterprise_inventory_owner_positions', [
             'inventory_id' => $stock['inventory_id'], 'owner_key' => 'UNKNOWN',
@@ -1970,7 +2018,12 @@ SQL);
             ->where('inventory_id', $stock['inventory_id'])->count());
         $snapshot = app(InventoryOwnerProvenanceReadService::class)
             ->snapshot($actor, $stock['inventory_id']);
-        $this->assertSame('STALE', $snapshot['state']);
+        $this->assertSame('UNKNOWN', $snapshot['state']);
+        $this->assertSame(0, DB::table('stock_movements')
+            ->where('reference_type', 'p110_mixed_title_reservation')
+            ->where('reference_id', 1102848)->count());
+        $this->assertSame(0, DB::table('enterprise_inventory_owner_movement_events')
+            ->where('inventory_id', $stock['inventory_id'])->count());
         $this->assertFalse($snapshot['certified']);
     }
 
