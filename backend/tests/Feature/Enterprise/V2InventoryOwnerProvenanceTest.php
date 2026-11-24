@@ -2323,6 +2323,19 @@ SQL);
             $this->assertTrue($verifier->verifies($inventory, $position, $stock['store_id']));
         }
 
+        // Store deactivation must revoke *current* legal-title authority,
+        // even when the signed certificate and all parent entities stay active.
+        // Restoring the store must not rewrite the immutable title evidence.
+        $this->assertSame(1, DB::table('stores')->where('id', $stock['store_id'])
+            ->update(['is_active' => false]));
+        $this->assertFalse(
+            $verifier->verifies($inventory, $position, $stock['store_id']),
+            'An inactive store cannot retain previously signed stock-title authority.',
+        );
+        $this->assertSame(1, DB::table('stores')->where('id', $stock['store_id'])
+            ->update(['is_active' => true]));
+        $this->assertTrue($verifier->verifies($inventory, $position, $stock['store_id']));
+
         // Revocation is tied to the exact signer ID in this verified
         // attestation. An unrelated revoked ID leaves the valid signature
         // usable, while revoking its signer fails closed without any write.

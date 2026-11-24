@@ -563,11 +563,13 @@ final class InventoryLegalTitleAttestationVerifier
         // ancestor in the store's legal hierarchy is deactivated. Resolve
         // the entire effective chain, never just a historical scope row.
         return DB::table('enterprise_store_scopes as scope')
+            ->join('stores as store', 'store.id', '=', 'scope.store_id')
             ->join('enterprise_business_units as unit', 'unit.id', '=', 'scope.business_unit_id')
             ->join('enterprise_legal_entities as entity', 'entity.id', '=', 'unit.legal_entity_id')
             ->join('enterprise_companies as company', 'company.id', '=', 'entity.company_id')
             ->join('enterprise_organizations as organization', 'organization.id', '=', 'company.organization_id')
             ->where('scope.store_id', $storeId)
+            ->where('store.is_active', true)
             ->where('unit.is_active', true)
             ->where('entity.is_active', true)
             ->where('company.is_active', true)
