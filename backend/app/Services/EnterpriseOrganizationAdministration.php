@@ -184,7 +184,11 @@ final class EnterpriseOrganizationAdministration
         // Models passed by long-lived service callers can carry cached active
         // relations from before an ancestor was disabled. Re-fetch the parent
         // and its lineage rather than trusting that stale authorization state.
-        $current = $parent->fresh();
+        // fresh() follows a caller-dirtied primary key. Preview and the
+        // service preflight must check the originally loaded database row,
+        // never a different active hierarchy record selected by that key.
+        $originalId = $parent->getRawOriginal($parent->getKeyName());
+        $current = $originalId === null ? null : $parent->newQuery()->whereKey($originalId)->first();
         if (! $current instanceof Model) {
             throw ValidationException::withMessages(['parent' => [__('enterprise_organization.inactive_parent')]]);
         }
