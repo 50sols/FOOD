@@ -381,7 +381,11 @@ final class PurchaseRequestManager
             // supplier row and re-check its live tenant/store eligibility
             // before approving; rejection and RFQ-only requests stay valid.
             if ($decision === 'approved' && $request->supplier_id !== null) {
-                $this->activeVisibleSupplier($scope, (int) $request->supplier_id, true);
+                $supplier = $this->activeVisibleSupplier($scope, (int) $request->supplier_id, true);
+                // PO issuance already rejects an unqualified supplier. Do not
+                // let an independent checker approve a PR that cannot be
+                // converted into an eligible purchase order.
+                abort_if($supplier->qualification_status === 'unqualified', 403, 'An unqualified supplier cannot be approved for procurement.');
             }
 
             $before = $request->toArray();
