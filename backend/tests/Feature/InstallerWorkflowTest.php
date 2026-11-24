@@ -1248,6 +1248,28 @@ class InstallerWorkflowTest extends TestCase
         $this->assertSame($originalPassword, DB::table('users')->where('id', $user->id)->value('password'));
         $this->assertSame($versionCount, DB::table('system_versions')->count());
 
+        // Post-Finish state is immutable to direct callers. The legitimate
+        // Finish sequence clears progress AFTER writing installed.lock, so
+        // these guards must protect public state writers without interfering
+        // with that required final cleanup.
+        $installedBytes = (string) file_get_contents($state->lockPath());
+        $this->assertFileDoesNotExist($state->progressPath());
+        $stateMutations = [
+            'token' => static fn () => $state->token(),
+            'progress' => static fn () => $state->markStepComplete(15, $admin),
+            'installed lock' => static fn () => $state->writeLock('unauthorized-replacement'),
+        ];
+        foreach ($stateMutations as $label => $mutate) {
+            try {
+                $mutate();
+                $this->fail("Installed site must reject direct installer {$label} replay.");
+            } catch (HttpException $exception) {
+                $this->assertSame(404, $exception->getStatusCode());
+            }
+            $this->assertSame($installedBytes, file_get_contents($state->lockPath()));
+            $this->assertFileDoesNotExist($state->progressPath());
+        }
+
         // The final lock must also block direct installer-only configuration
         // helpers, not just HTTP requests and finish() itself.
         $environment = app(InstallerEnvironment::class);
