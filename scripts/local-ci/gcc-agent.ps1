@@ -20,6 +20,13 @@ function Doctor {
  }
  & gh auth status 2>$null | Out-Null
  if($LASTEXITCODE -ne 0) { throw 'GitHub CLI authentication is required to post PR evidence.' }
+ # Authentication is not sufficient after an organization transfer. Bind the
+ # running agent to the canonical immutable repository ID before PR dispatch.
+ # Never print API output or credentials on failed identity verification.
+ $resolvedId=(& gh api "repos/$Repo" --jq '.id' 2>$null | Out-String).Trim()
+ if($LASTEXITCODE -ne 0 -or $resolvedId -cne [string]$RepositoryId) {
+  throw 'Canonical GitHub repository identity preflight failed.'
+ }
  $os=(& docker info --format '{{.OSType}}' 2>$null | Out-String).Trim()
  if($LASTEXITCODE -ne 0 -or $os -ne 'linux') { throw 'Docker Desktop Linux containers are not available.' }
 }
