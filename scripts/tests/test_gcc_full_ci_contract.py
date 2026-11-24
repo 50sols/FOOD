@@ -4,6 +4,8 @@ Runtime parity is NOT established by this static suite; an actual disposable
 GCC Docker run and GitHub exact-head checks remain separate requirements.
 """
 from pathlib import Path
+import hashlib
+import re
 import subprocess
 import sys
 import tempfile
@@ -57,6 +59,15 @@ class GccHeavyExecutionContracts(unittest.TestCase):
         self.assertIn("backend/composer.lock", AGENT)
         self.assertIn("read_only: true", COMPOSE)
         self.assertIn("target: /source", COMPOSE)
+
+    def test_gcc_toolkit_pinned_full_script_matches_actual_git_blob(self):
+        match = re.search(r"'full\\.sh'='([0-9a-f]{40})'", AGENT)
+        self.assertIsNotNone(match, "GCC must pin the trusted full.sh Git blob")
+        content = (BASE / "full.sh").read_bytes()
+        actual = hashlib.sha1(
+            f"blob {len(content)}\\0".encode("ascii") + content
+        ).hexdigest()
+        self.assertEqual(match.group(1), actual, "Pinned full.sh no longer matches reviewed bytes")
 
     def test_full_php_tests_run_in_isolated_mysql_redis(self):
         self.assertIn("image: mysql:8.0", COMPOSE)
