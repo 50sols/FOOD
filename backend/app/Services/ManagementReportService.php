@@ -6,6 +6,7 @@ use App\Models\User;
 use App\Support\DisplayNumber;
 use Carbon\CarbonImmutable;
 use Illuminate\Database\Query\Builder;
+use Illuminate\Database\Query\JoinClause;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
 
@@ -154,13 +155,26 @@ final class ManagementReportService
             ])
             ->all();
 
+        // Select the exact authorized page using the indexed orders table
+        // BEFORE joining store, customer identities, and latest payment.
+        // Date, tenant, channel, customer, product and provider filters all
+        // stay in this bounded subquery, never on a wider outer row set.
+        $page = DB::table('orders');
+        $this->applyOrderFilters($page, $filters);
+        $page->select('orders.id')
+            ->orderByDesc('orders.created_at')
+            ->orderByDesc('orders.id')
+            ->offset(max(0, $offset))
+            ->limit($limit);
+
         $rowsQuery = DB::table('orders')
+            ->joinSub($page, 'paged_orders', function (JoinClause $join): void {
+                $join->on('paged_orders.id', '=', 'orders.id');
+            })
             ->join('stores', 'stores.id', '=', 'orders.store_id')
             ->leftJoin('b2c_customers', 'b2c_customers.id', '=', 'orders.b2c_customer_id')
             ->leftJoin('b2b_customers', 'b2b_customers.id', '=', 'orders.b2b_customer_id')
             ->leftJoin('customers as legacy_customers', 'legacy_customers.id', '=', 'orders.customer_id');
-
-        $this->applyOrderFilters($rowsQuery, $filters);
 
         $rows = $rowsQuery
             ->select([
@@ -181,9 +195,8 @@ final class ManagementReportService
                     ->limit(1),
                 'payment_provider',
             )
-            ->latest('orders.created_at')
-            ->offset(max(0, $offset))
-            ->limit($limit)
+            ->orderByDesc('orders.created_at')
+            ->orderByDesc('orders.id')
             ->get()
             ->map(fn (object $row): array => [
                 'order_number' => DisplayNumber::reference($row->id),

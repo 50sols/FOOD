@@ -81,6 +81,38 @@ jobs:
         working-directory: backend
         run: vendor/bin/phpunit tests/Feature/Performance/LegacyScalePerformanceContractTest.php
 
+      # Synthetic 4x seeding generates far more redo than the MySQL image's
+      # default 100 MiB buffer can checkpoint under shared-runner IO pressure.
+      # Provision the DISPOSABLE benchmark service, never a live database.
+      # Keep p95, error-rate, 4x volume and 50-user workload limits unchanged.
+      - name: Provision and verify isolated 4x MySQL redo capacity
+        working-directory: backend
+        run: |
+          set -euo pipefail
+          php -r '
+            if (getenv("APP_ENV") !== "testing"
+                || getenv("FOODEX_PERF_ALLOW_SEED") !== "1"
+                || getenv("DB_DATABASE") !== "foodex_perf") {
+                throw new RuntimeException("Refusing MySQL tuning outside the disposable performance fixture.");
+            }
+            $dsn = sprintf("mysql:host=%s;port=%s;dbname=%s;charset=utf8mb4",
+                getenv("DB_HOST"), getenv("DB_PORT"), getenv("DB_DATABASE"));
+            $pdo = new PDO($dsn, getenv("DB_USERNAME"), getenv("DB_PASSWORD"),
+                [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]);
+            $before = (int) $pdo->query("SELECT @@GLOBAL.innodb_redo_log_capacity")->fetchColumn();
+            $target = 1073741824;
+            $pdo->exec("SET GLOBAL innodb_redo_log_capacity = " . $target);
+            $actual = (int) $pdo->query("SELECT @@GLOBAL.innodb_redo_log_capacity")->fetchColumn();
+            if ($actual !== $target) {
+                throw new RuntimeException("MySQL redo capacity did not match the required 1 GiB fixture budget.");
+            }
+            $evidence = ["before_bytes" => $before, "configured_bytes" => $actual,
+                "scope" => "disposable-legacy-4x-ci", "benchmark_budgets_unchanged" => true];
+            $json = json_encode($evidence, JSON_THROW_ON_ERROR | JSON_PRETTY_PRINT) . PHP_EOL;
+            file_put_contents("../artifacts/legacy-scale/mysql-redo-provision.json", $json);
+            echo $json;
+          '
+
       - name: Seed current-volume baseline
         working-directory: backend
         env:
