@@ -17,8 +17,8 @@ final class V2UpdaterRollbackHardlinkSafetyTest extends TestCase
 
         $root = sys_get_temp_dir().'/foodex-rollback-links-'.bin2hex(random_bytes(7));
         $name = 'rollback-links-'.bin2hex(random_bytes(7)).'.txt';
-        $relative = 'backend/storage/framework/'.$name;
-        $target = storage_path('framework/'.$name);
+        $relative = 'backend/tests/'.$name;
+        $target = base_path('tests/'.$name);
         $snapshot = $root.'/snapshot-files';
         $source = $snapshot.'/existing/'.$relative;
         $externalFile = $root.'/private-backup-origin';
