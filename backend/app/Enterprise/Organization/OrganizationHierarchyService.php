@@ -69,6 +69,19 @@ final class OrganizationHierarchyService
         Store $store,
         ?Authenticatable $actor = null,
     ): EnterpriseStoreScope {
+        // A caller can mutate an Eloquent primary key without saving it.
+        // Historical scope lookup must use the persisted store identity, not
+        // the dirty model key, or a foreign store may be returned as "already
+        // provisioned" without executing the canonical assignment guard.
+        $originalStoreId = $store->getRawOriginal($store->getKeyName());
+        $persistedStore = $originalStoreId === null
+            ? null
+            : Store::query()->whereKey($originalStoreId)->first();
+        if (! $persistedStore instanceof Store) {
+            throw new LogicException('Cannot provision enterprise scope for a missing persisted store.');
+        }
+        $store = $persistedStore;
+
         $existing = EnterpriseStoreScope::query()->where('store_id', $store->getKey())->first();
         if ($existing instanceof EnterpriseStoreScope) {
             return $existing;
@@ -94,13 +107,25 @@ final class OrganizationHierarchyService
         ?Authenticatable $actor = null,
     ): EnterpriseStoreScope {
         return DB::transaction(function () use ($store, $businessUnit, $actor): EnterpriseStoreScope {
-            // Enforce the active enterprise lineage at the canonical scope
-            // writer, not only in optional Admin wrappers. Both explicit
-            // assignments and default provisioning pass through here.
-            // Refresh both the unit and its ancestry from the database.
-            // Previously preloaded relationships could remain stale after a
-            // parent was deactivated, bypassing this canonical write guard.
-            $businessUnit->refresh()->load('legalEntity.company.organization');
+            // The canonical writer is also used outside the Admin wrapper.
+            // Rebind BOTH identities by their originally loaded database keys:
+            // refresh() and getKey() on a dirty Eloquent instance may point
+            // to an unrelated Store or Business Unit, violating tenant scope.
+            // Hold these rows for the full assignment transaction.
+            $originalUnitId = $businessUnit->getRawOriginal($businessUnit->getKeyName());
+            $originalStoreId = $store->getRawOriginal($store->getKeyName());
+            $businessUnit = $originalUnitId === null
+                ? null
+                : EnterpriseBusinessUnit::query()->whereKey($originalUnitId)->lockForUpdate()->first();
+            $store = $originalStoreId === null
+                ? null
+                : Store::query()->whereKey($originalStoreId)->lockForUpdate()->first();
+            if (! $businessUnit instanceof EnterpriseBusinessUnit || ! $store instanceof Store) {
+                throw new LogicException('Cannot assign store scope to a missing persisted hierarchy identity.');
+            }
+
+            // Re-read live lineage instead of accepting cached ancestors.
+            $businessUnit->load('legalEntity.company.organization');
             if (! $businessUnit->is_active
                 || ! $businessUnit->legalEntity->is_active
                 || ! $businessUnit->legalEntity->company->is_active

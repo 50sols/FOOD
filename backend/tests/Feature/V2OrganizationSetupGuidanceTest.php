@@ -877,6 +877,85 @@ final class V2OrganizationSetupGuidanceTest extends TestCase
         $this->assertSame($before, DB::table('audit_logs')->count());
     }
 
+    public function test_canonical_hierarchy_writer_rejects_dirty_store_and_unit_id_redirect_in_arabic_and_english(): void
+    {
+        $admin = $this->actor('SUPER_ADMIN', 'en');
+        $hierarchy = app(OrganizationHierarchyService::class);
+        $defaultUnit = EnterpriseBusinessUnit::query()
+            ->where('code', OrganizationHierarchyService::DEFAULT_BUSINESS_UNIT)
+            ->whereHas('legalEntity.company.organization', fn ($query) => $query
+                ->where('code', OrganizationHierarchyService::DEFAULT_ORGANIZATION))
+            ->firstOrFail();
+
+        $foreignOrg = EnterpriseOrganization::query()->create([
+            'code' => 'v2_canonical_dirty_foreign_org', 'name' => 'Foreign Organization', 'is_active' => true,
+        ]);
+        $foreignCompany = EnterpriseCompany::query()->create([
+            'organization_id' => $foreignOrg->id, 'code' => 'v2_canonical_dirty_foreign_company',
+            'name' => 'Foreign Company', 'is_active' => true,
+        ]);
+        $foreignEntity = EnterpriseLegalEntity::query()->create([
+            'company_id' => $foreignCompany->id, 'code' => 'v2_canonical_dirty_foreign_entity',
+            'name' => 'Foreign Entity', 'is_active' => true,
+        ]);
+        $foreignUnit = EnterpriseBusinessUnit::query()->create([
+            'legal_entity_id' => $foreignEntity->id, 'code' => 'v2_canonical_dirty_foreign_unit',
+            'name' => 'Foreign Unit', 'is_active' => true,
+        ]);
+        $typeId = DB::table('store_types')->where('code', 'B2B')->value('id');
+        $this->assertNotNull($typeId);
+        $decoyStore = Store::query()->create([
+            'store_type_id' => $typeId, 'code' => 'v2-canonical-dirty-decoy',
+            'name' => 'Unrelated Store', 'is_active' => true,
+        ]);
+        $originalStores = [];
+        foreach (['ar', 'en'] as $locale) {
+            $originalStores[$locale] = Store::query()->create([
+                'store_type_id' => $typeId, 'code' => 'v2-canonical-dirty-'.$locale,
+                'name' => 'Original '.$locale, 'is_active' => true,
+            ]);
+        }
+        $defaultStore = Store::query()->create([
+            'store_type_id' => $typeId, 'code' => 'v2-canonical-dirty-default',
+            'name' => 'Default-Path Store', 'is_active' => true,
+        ]);
+        $beforeAudit = DB::table('audit_logs')->count();
+
+        // Exercise the public canonical writer directly: unlike the Admin
+        // facade, it previously trusted both mutable Eloquent primary keys.
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            $originalStore = $originalStores[$locale];
+            $dirtyStore = Store::query()->findOrFail($originalStore->id);
+            $dirtyUnit = EnterpriseBusinessUnit::query()->findOrFail($defaultUnit->id);
+            $dirtyStore->forceFill(['id' => $decoyStore->id]);
+            $dirtyUnit->forceFill(['id' => $foreignUnit->id]);
+            $this->assertNotSame($dirtyStore->id, $dirtyStore->getRawOriginal('id'));
+            $this->assertNotSame($dirtyUnit->id, $dirtyUnit->getRawOriginal('id'));
+
+            $scope = $hierarchy->assignStore($dirtyStore, $dirtyUnit, $admin);
+            $this->assertSame((int) $originalStore->id, (int) $scope->store_id);
+            $this->assertSame((int) $defaultUnit->id, (int) $scope->business_unit_id);
+            $this->assertDatabaseMissing('enterprise_store_scopes', [
+                'store_id' => $originalStore->id, 'business_unit_id' => $foreignUnit->id,
+            ]);
+        }
+
+        // Default-scope provisioning must resolve the original Store ID even
+        // when another store has a syntactically valid, dirty caller key.
+        $dirtyDefaultStore = Store::query()->findOrFail($defaultStore->id);
+        $dirtyDefaultStore->forceFill(['id' => $decoyStore->id]);
+        $scope = $hierarchy->ensureDefaultScopeForStore($dirtyDefaultStore, $admin);
+        $this->assertSame((int) $defaultStore->id, (int) $scope->store_id);
+        $this->assertSame((int) $defaultUnit->id, (int) $scope->business_unit_id);
+        $this->assertDatabaseMissing('enterprise_store_scopes', ['store_id' => $decoyStore->id]);
+        $this->assertSame($beforeAudit + 3, DB::table('audit_logs')->count());
+
+        // Existing canonical mapping is idempotent; no second owner/audit.
+        $hierarchy->assignStore($defaultStore, $defaultUnit, $admin);
+        $this->assertSame($beforeAudit + 3, DB::table('audit_logs')->count());
+    }
+
     public function test_dirty_store_and_business_unit_keys_cannot_redirect_scope_assignment_in_both_locales(): void
     {
         $admin = $this->actor('SUPER_ADMIN', 'en');
