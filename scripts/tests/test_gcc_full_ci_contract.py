@@ -95,10 +95,10 @@ class GccHeavyExecutionContracts(unittest.TestCase):
         # Exercise the ACTUAL trusted embedded classifier, not a mock.
         marker = (
             'python3 - "$GCC_EXPECTED_SHA" "$version" "$step" "$rc" '
-            '"${fresh_setup_log:-}" > /evidence/result.json <<\'PY\'\\n'
+            '"${fresh_setup_log:-}" > /evidence/result.json <<\'PY\'\n'
         )
         self.assertEqual(FULL.count(marker), 1)
-        classifier = FULL.split(marker, 1)[1].split("\\nPY", 1)[0]
+        classifier = FULL.split(marker, 1)[1].split("\nPY", 1)[0]
         cases = (
             ("::error::G004 first-attempt HTTP transport: category=timeout, server=alive",
              "migration-timeout", None),
@@ -112,7 +112,7 @@ class GccHeavyExecutionContracts(unittest.TestCase):
             log = Path(directory) / "private.log"
             for message, expected_category, expected_step in cases:
                 # A private log may contain secrets. The public JSON must not.
-                log.write_text(message + "\\nAPP_KEY=DO_NOT_PUBLISH_THIS_SECRET\\n", encoding="utf-8")
+                log.write_text(message + "\nAPP_KEY=DO_NOT_PUBLISH_THIS_SECRET\n", encoding="utf-8")
                 result = subprocess.run(
                     [sys.executable, "-c", classifier,
                      "a" * 40, "1.0.125", "fresh-install-real-setup", "1", str(log)],
