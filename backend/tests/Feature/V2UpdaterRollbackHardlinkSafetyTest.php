@@ -3,6 +3,7 @@
 namespace Tests\Feature;
 
 use App\Domain\Updater\LaravelUpdateRuntime;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\File;
 use RuntimeException;
 use Tests\TestCase;
@@ -22,7 +23,7 @@ final class V2UpdaterRollbackHardlinkSafetyTest extends TestCase
         $metadataPath = $snapshotDirectory.'/database.json';
         $otherMetadataLink = $root.'/metadata-alias';
         $externalSnapshot = $root.'/private-database-snapshot';
-        $driver = \Illuminate\Support\Facades\DB::connection()->getDriverName();
+        $driver = DB::connection()->getDriverName();
         $filename = match ($driver) {
             'sqlite' => 'database.sqlite',
             'mysql' => 'database.sql',
@@ -35,7 +36,7 @@ final class V2UpdaterRollbackHardlinkSafetyTest extends TestCase
 
         $snapshotPath = $snapshotDirectory.'/'.$filename;
         $previousRoot = config('foodex.update_backup_path');
-        $pdo = \Illuminate\Support\Facades\DB::connection()->getPdo();
+        $pdo = DB::connection()->getPdo();
         File::ensureDirectoryExists($snapshotDirectory);
         file_put_contents($externalSnapshot, 'outside-database-snapshot-sentinel');
         file_put_contents($externalMetadata, json_encode([
@@ -57,7 +58,7 @@ final class V2UpdaterRollbackHardlinkSafetyTest extends TestCase
                 $this->assertStringContainsString('metadata is invalid or unsafe', $exception->getMessage());
             }
 
-            $this->assertSame($pdo, \Illuminate\Support\Facades\DB::connection()->getPdo());
+            $this->assertSame($pdo, DB::connection()->getPdo());
             $this->assertSame('outside-database-snapshot-sentinel', file_get_contents($externalSnapshot));
 
             unlink($metadataPath);
@@ -73,7 +74,7 @@ final class V2UpdaterRollbackHardlinkSafetyTest extends TestCase
                 $this->assertStringContainsString('snapshot is missing or unsafe', $exception->getMessage());
             }
 
-            $this->assertSame($pdo, \Illuminate\Support\Facades\DB::connection()->getPdo());
+            $this->assertSame($pdo, DB::connection()->getPdo());
             $this->assertSame('outside-database-snapshot-sentinel', file_get_contents($externalSnapshot));
         } finally {
             config()->set('foodex.update_backup_path', $previousRoot);
