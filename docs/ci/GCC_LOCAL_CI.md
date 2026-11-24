@@ -63,7 +63,7 @@ The agent additionally accepts an owner-authored comment on an open same-reposit
     /gcc-ci full <exact 40-character current PR head SHA>
 
 The full profile uses the **pinned, immutable** local toolkit from repository commit
-`763e865923fced400cbfb8b1fc5667e2397587c2` (container build and execution scripts), verifying each
+`ed5e18d6d1e9c9489ce206df7f4b5ac2052cac36` (container build and execution scripts), verifying each
 Git blob SHA before running. The toolkit is downloaded once, locally cached and
 checked again for integrity at every full job. The agent first validates the
 PR owner/base/head, fetches the exact PR commit and the v1.0.125 update base,
@@ -267,3 +267,10 @@ Fix the original flaky clock assumption under its owning code change,
 or obtain a genuinely green test; do not fake successful parity.
 
 The trusted toolkit SHA above includes the hardened Setup ZIP verifier that rejects non-template `.env*` files. `gcc-agent.ps1` also pins the exact `full.sh` Git blob `c8f05a637ade345941c0bb3e553787bbdf4b76d0`; this does not constitute a signed release or independent trust review.
+
+
+### GCC installer/G004 runtime regressions (2026-11-24)
+
+The original GCC backend profile used `DB_DATABASE=database/database.sqlite` for PHPUnit while installer fixtures explicitly select `:memory:`; that connection mismatch could discard preloaded business markers, leading to false negatives in the install-safety guard tests. The pinned, immutable `full.sh` now runs all four PHPUnit shards with the same in-memory SQLite database setting as `backend/phpunit.xml`. The isolated SQLite migration/seeder preflight remains file-backed and separate. A prior GCC clean Setup ZIP POST to migration wizard step 11 timed out after 300 seconds with no redacted SQLSTATE. The owner G004 PR #3444 now has a non-hot-reloading web server and a longer fail-closed migration timeout; a lost HTTP response still fails without replaying partially committed MySQL DDL.
+
+**Verification state:** These are source fixes, NOT an observed GCC full runtime PASS. The trusted toolkit is pinned to source `ed5e18d6d1e9c9489ce206df7f4b5ac2052cac36` and full.sh Git blob `0ce6421716efda56f202bcc636e5d2e745f73206`; the GCC host must update its installed agent script and verify the pin before a new command is eligible to exercise it. GitHub Required CI, independent review, signed release identity, same-ZIP upgrade, and production readiness remain separate mandatory gates.
