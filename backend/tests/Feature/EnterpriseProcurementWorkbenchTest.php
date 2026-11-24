@@ -346,6 +346,35 @@ final class EnterpriseProcurementWorkbenchTest extends TestCase
                 'store_id' => $store->id,
             ])->assertRedirect();
             $this->assertSame($auditAfter, DB::table('audit_logs')->count());
+
+            // Supplier can be revoked again AFTER a valid submission but
+            // BEFORE a different approver makes the financial commitment.
+            [$checker] = ProcurementSecondApprover::forSameStore(
+                $maker,
+                app(TenantContextResolver::class)->retail($maker, $store->id),
+            );
+            $checker->forceFill(['locale' => $locale])->save();
+            $this->grantPlatformErpAccess($checker);
+            DB::table('enterprise_suppliers')->where('id', $supplierId)
+                ->update(['status' => 'suspended']);
+            $this->actingAs($checker)->post(route('admin.erp.procurement.requests.decision', $requestId), [
+                'store_id' => $store->id,
+                'decision' => 'approve',
+            ])->assertNotFound();
+            $this->assertDatabaseHas('enterprise_purchase_requests', [
+                'id' => $requestId, 'status' => 'submitted', 'decided_by' => null,
+            ]);
+            $this->assertSame($auditAfter, DB::table('audit_logs')->count());
+
+            DB::table('enterprise_suppliers')->where('id', $supplierId)
+                ->update(['status' => 'active']);
+            $this->actingAs($checker)->post(route('admin.erp.procurement.requests.decision', $requestId), [
+                'store_id' => $store->id,
+                'decision' => 'approve',
+            ])->assertRedirect();
+            $this->assertDatabaseHas('enterprise_purchase_requests', [
+                'id' => $requestId, 'status' => 'approved', 'decided_by' => $checker->id,
+            ]);
         }
     }
 
