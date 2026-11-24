@@ -956,7 +956,7 @@ class InstallerWorkflowTest extends TestCase
         $environment = app(InstallerEnvironment::class);
         $path = $environment->path();
         $outside = $this->testDirectory.'/separate-private-env';
-        $secretBytes = "APP_KEY=base64:foreign-key\\nDB_PASSWORD=external-secret\\n";
+        $secretBytes = 'APP_KEY=base64:foreign-key\\nDB_PASSWORD=external-secret\\n';
         file_put_contents($outside, $secretBytes);
         unlink($path);
         if (! @link($outside, $path)) {
