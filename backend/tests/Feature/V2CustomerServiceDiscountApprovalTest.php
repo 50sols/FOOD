@@ -137,6 +137,60 @@ final class V2CustomerServiceDiscountApprovalTest extends TestCase
             ->where('order_id', $orderId)->count());
     }
 
+    public function test_direct_finance_discount_service_rejects_deactivated_stale_requester_and_reviewer(): void
+    {
+        $manager = $this->roleUser('CUSTOMER_SERVICE_MANAGER');
+        $finance = $this->roleUser('FINANCE');
+        $orderId = $this->order();
+        $order = Order::query()->findOrFail($orderId);
+        $service = app(OrderCustomerServiceDiscountApprovalService::class);
+        $httpRequest = Request::create('/admin/operations/orders', 'POST');
+        $beforeAudit = DB::table('audit_logs')->count();
+
+        // Keep the original active Eloquent instance in memory. Only the
+        // authoritative database record is deactivated before the service call.
+        $this->assertTrue((bool) $manager->is_active);
+        DB::table('users')->where('id', $manager->getKey())->update(['is_active' => false]);
+        $this->assertTrue((bool) $manager->is_active);
+        try {
+            $service->request($order, $manager, 15, 'Stale user request denial', (string) Str::uuid(), $httpRequest);
+            $this->fail('Stale in-memory CS identity must not create a Finance request.');
+        } catch (HttpException $exception) {
+            $this->assertSame(403, $exception->getStatusCode());
+        }
+
+        $this->assertDatabaseMissing('order_customer_service_discount_requests', ['order_id' => $orderId]);
+        $this->assertSame($beforeAudit, DB::table('audit_logs')->count());
+
+        // Restore the manager only to create a legitimate pending request.
+        DB::table('users')->where('id', $manager->getKey())->update(['is_active' => true]);
+        $this->assertTrue($service->request(
+            $order, $manager, 15, 'Authorized independent finance review',
+            (string) Str::uuid(), $httpRequest,
+        ));
+        $requestId = (int) DB::table('order_customer_service_discount_requests')
+            ->where('order_id', $orderId)->value('id');
+        $beforeReviewAudit = DB::table('audit_logs')->count();
+
+        $this->assertTrue((bool) $finance->is_active);
+        DB::table('users')->where('id', $finance->getKey())->update(['is_active' => false]);
+        $this->assertTrue((bool) $finance->is_active);
+        try {
+            $service->review($order, $finance, $requestId, true, null, $httpRequest);
+            $this->fail('Stale in-memory Finance identity must not approve a discount.');
+        } catch (HttpException $exception) {
+            $this->assertSame(403, $exception->getStatusCode());
+        }
+
+        $this->assertDatabaseHas('order_customer_service_discount_requests', [
+            'id' => $requestId, 'status' => 'pending',
+        ]);
+        $this->assertDatabaseHas('orders', ['id' => $orderId, 'grand_total' => 9, 'discount_total' => 1]);
+        $this->assertSame(0, DB::table('order_customer_service_discounts')
+            ->where('order_id', $orderId)->count());
+        $this->assertSame($beforeReviewAudit, DB::table('audit_logs')->count());
+    }
+
     public function test_direct_discount_request_service_rejects_unassigned_or_inactive_actor(): void
     {
         $assigned = $this->roleUser('CUSTOMER_SERVICE_AGENT');
