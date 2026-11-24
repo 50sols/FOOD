@@ -1800,6 +1800,50 @@ SQL);
         $this->assertSame($auditBefore, DB::table('audit_logs')->count());
     }
 
+    public function test_order_release_denies_active_reservation_after_inventory_moves_out_of_store_scope(): void
+    {
+        $this->seed(CoreReferenceSeeder::class);
+        $stock = $this->stock('ORDER-RELEASE-FOREIGN-STOCK');
+        $otherStore = $this->stock('ORDER-RELEASE-OTHER-STORE');
+        $actor = $this->inventoryActor($stock['store_id']);
+        $productId = (int) DB::table('inventories')->where('id', $stock['inventory_id'])
+            ->value('product_id');
+        $order = $this->ledgerTestOrder($stock['store_id'], 'RELEASE-FOREIGN');
+        $service = app(OrderInventoryReservationService::class);
+
+        $service->reserve($order, $actor, [['product_id' => $productId, 'quantity' => 1.0]]);
+        $warehouseId = (int) DB::table('inventories')->where('id', $stock['inventory_id'])
+            ->value('warehouse_id');
+        // Reproduce stale ownership metadata: the original reserved inventory
+        // is no longer selectable through this order's store-scoped query.
+        DB::table('warehouses')->where('id', $warehouseId)
+            ->update(['store_id' => $otherStore['store_id']]);
+
+        $inventoryBefore = (array) DB::table('inventories')
+            ->where('id', $stock['inventory_id'])->first();
+        $movementsBefore = DB::table('stock_movements')
+            ->where('inventory_id', $stock['inventory_id'])->count();
+        $eventsBefore = DB::table('enterprise_inventory_owner_movement_events')
+            ->where('inventory_id', $stock['inventory_id'])->count();
+        $auditBefore = DB::table('audit_logs')->count();
+
+        try {
+            $service->release($order, $actor);
+            $this->fail('A missing store-scoped inventory must not silently complete cancellation.');
+        } catch (HttpException $exception) {
+            $this->assertSame(409, $exception->getStatusCode());
+            $this->assertStringContainsString('order store', $exception->getMessage());
+        }
+
+        $this->assertSame($inventoryBefore, (array) DB::table('inventories')
+            ->where('id', $stock['inventory_id'])->first());
+        $this->assertSame($movementsBefore, DB::table('stock_movements')
+            ->where('inventory_id', $stock['inventory_id'])->count());
+        $this->assertSame($eventsBefore, DB::table('enterprise_inventory_owner_movement_events')
+            ->where('inventory_id', $stock['inventory_id'])->count());
+        $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+    }
+
     public function test_order_release_or_sale_cannot_hide_overdrawn_reservation_ledger(): void
     {
         $this->seed(CoreReferenceSeeder::class);
