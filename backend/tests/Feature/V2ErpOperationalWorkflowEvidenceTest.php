@@ -252,6 +252,16 @@ final class V2ErpOperationalWorkflowEvidenceTest extends TestCase
         $signed = $this->evidence();
         $readiness = app(ModuleOperationalReadiness::class);
 
+        // Even correctly structured metadata cannot certify an attestation
+        // belonging to the pre-transfer owner: only current canonical Actions
+        // links can enter a signed workflow payload.
+        $steps = (array) config('enterprise_module_readiness.required_workflows.sample_optional');
+        $this->assertNotNull(ModuleWorkflowAttestation::payload('sample_optional', 1, $steps, $signed));
+        $this->assertNull(ModuleWorkflowAttestation::payload('sample_optional', 1, $steps, [
+            ...$signed,
+            'ci_run' => 'https://github.com/walidatiyaai2025-gif/FOOD/actions/runs/1',
+        ]));
+
         // A second trusted ID with the SAME public key must not be able to
         // relabel an attestation signed for the original signer identity.
         $publicKey = config('enterprise_module_readiness.trusted_public_keys.synthetic-test');
@@ -268,7 +278,8 @@ final class V2ErpOperationalWorkflowEvidenceTest extends TestCase
             foreach ([
                 ['key_id' => 'synthetic-copy'],
                 ['review_issue' => 2859],
-                ['ci_run' => 'https://github.com/walidatiyaai2025-gif/FOOD/actions/runs/2'],
+                ['ci_run' => 'https://github.com/50sols/FOOD/actions/runs/2'],
+                ['ci_run' => 'https://github.com/walidatiyaai2025-gif/FOOD/actions/runs/1'],
                 ['checks' => $tamperedChecks],
             ] as $mutation) {
                 config()->set('enterprise_module_readiness.workflow_attestations.sample_optional', [
