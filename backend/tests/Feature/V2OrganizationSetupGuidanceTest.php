@@ -1749,7 +1749,7 @@ final class V2OrganizationSetupGuidanceTest extends TestCase
             try {
                 $hierarchy->assignStore($staleActive, $unit, $admin);
                 $this->fail('Persisted inactive store must not receive canonical enterprise scope.');
-            } catch (\\LogicException $exception) {
+            } catch (\LogicException $exception) {
                 $this->assertStringContainsString('inactive store', $exception->getMessage());
             }
             $this->assertDatabaseMissing('enterprise_store_scopes', ['store_id' => $store->id]);
