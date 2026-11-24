@@ -11,7 +11,7 @@ final class V2UpdaterRollbackHardlinkSafetyTest extends TestCase
 {
     public function test_file_backup_rejects_hardlinked_release_source_before_copying_foreign_bytes(): void
     {
-        if (! function_exists('link') || ! class_exists(\\ZipArchive::class)) {
+        if (! function_exists('link') || ! class_exists(\ZipArchive::class)) {
             $this->markTestSkipped('Hardlinks or ZIP support unavailable.');
         }
 
@@ -28,8 +28,8 @@ final class V2UpdaterRollbackHardlinkSafetyTest extends TestCase
         File::ensureDirectoryExists($backupRoot);
         file_put_contents($external, 'external-sensitive-sentinel-'.$suffix);
 
-        $zip = new \\ZipArchive;
-        $this->assertTrue($zip->open($zipPath, \\ZipArchive::CREATE | \\ZipArchive::OVERWRITE) === true);
+        $zip = new \ZipArchive;
+        $this->assertTrue($zip->open($zipPath, \ZipArchive::CREATE | \ZipArchive::OVERWRITE) === true);
         $this->assertTrue($zip->addFromString($relative, 'future-release-content'));
         $this->assertTrue($zip->close());
 
