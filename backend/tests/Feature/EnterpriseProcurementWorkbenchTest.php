@@ -131,6 +131,62 @@ final class EnterpriseProcurementWorkbenchTest extends TestCase
             ->assertSee('مُصدر');
     }
 
+    public function test_same_store_manager_cannot_submit_another_makers_purchase_request_in_both_locales(): void
+    {
+        $this->enableProcurement();
+        [$maker, $store] = $this->operator('ERP-UI-MAKER-SUBMIT');
+        $other = User::factory()->create(['locale' => 'en', 'is_active' => true]);
+        $this->grantPlatformErpAccess($other);
+        $roleId = Role::query()->where('code', 'B2C_STORE_ADMIN')->firstOrFail()->id;
+        DB::table('user_store_roles')->insert([
+            'user_id' => $other->id, 'store_id' => $store->id,
+            'role_id' => $roleId, 'created_at' => now(), 'updated_at' => now(),
+        ]);
+
+        foreach (['ar', 'en'] as $locale) {
+            $maker->forceFill(['locale' => $locale])->save();
+            $other->forceFill(['locale' => $locale])->save();
+            $reason = 'Origin maker ownership '.$locale;
+            $this->actingAs($maker)->post(route('admin.erp.procurement.requests.store'), [
+                'store_id' => $store->id,
+                'currency_code' => 'KWD',
+                'reason' => $reason,
+                'item_code' => 'MAKER-SKU',
+                'description' => 'Maker-owned item',
+                'quantity' => 1,
+                'unit' => 'case',
+                'estimated_unit_cost' => 2.500,
+            ])->assertRedirect();
+
+            $requestId = (int) DB::table('enterprise_purchase_requests')->where('reason', $reason)->value('id');
+            $this->assertGreaterThan(0, $requestId);
+            $auditBefore = DB::table('audit_logs')->count();
+            $this->actingAs($other)->post(route('admin.erp.procurement.requests.submit', $requestId), [
+                'store_id' => $store->id,
+            ])->assertForbidden();
+            $this->assertDatabaseHas('enterprise_purchase_requests', [
+                'id' => $requestId, 'status' => 'draft', 'created_by' => $maker->id,
+            ]);
+            $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+
+            $this->actingAs($maker)->post(route('admin.erp.procurement.requests.submit', $requestId), [
+                'store_id' => $store->id,
+            ])->assertRedirect();
+            $this->assertDatabaseHas('enterprise_purchase_requests', [
+                'id' => $requestId, 'status' => 'submitted', 'submitted_by' => $maker->id,
+            ]);
+            $auditAfterSubmit = DB::table('audit_logs')->count();
+            $this->actingAs($other)->post(route('admin.erp.procurement.requests.submit', $requestId), [
+                'store_id' => $store->id,
+            ])->assertForbidden();
+            $this->assertSame($auditAfterSubmit, DB::table('audit_logs')->count());
+            $this->actingAs($maker)->post(route('admin.erp.procurement.requests.submit', $requestId), [
+                'store_id' => $store->id,
+            ])->assertRedirect();
+            $this->assertSame($auditAfterSubmit, DB::table('audit_logs')->count());
+        }
+    }
+
     public function test_supplier_tab_filters_literal_prefix_and_rejects_foreign_store_access(): void
     {
         $this->enableProcurement();
