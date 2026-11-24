@@ -211,7 +211,17 @@ function Full-CI([int]$Pr,[string]$Sha,[long]$Request,[string]$Checkout,[Validat
     if(-not (Test-Path -LiteralPath (Join-Path $report $name))) { throw "Missing PHPUnit evidence: $name" }
    }
   }
+  # A filename-keyed manifest cannot safely distinguish duplicate ZIP
+  # basenames in separate directories. Reparse points are never real staging
+  # artifacts and must not be followed while verifying SHA-256.
+  $seenArtifactNames=New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
   foreach($artifact in $artifacts) {
+   if(($artifact.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+    throw "Refusing symlink/reparse-point ZIP artifact: $($artifact.Name)"
+   }
+   if(-not $seenArtifactNames.Add([string]$artifact.Name)) {
+    throw "Duplicate ZIP artifact filename in GCC evidence: $($artifact.Name)"
+   }
    $expectedHash=[string]$result.artifacts_sha256.($artifact.Name)
    $actualHash=(Get-FileHash -LiteralPath $artifact.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
    if(-not $expectedHash -or $expectedHash -cne $actualHash) {
