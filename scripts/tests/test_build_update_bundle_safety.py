@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import os
 from pathlib import Path
 import tempfile
 import unittest
@@ -108,6 +109,32 @@ class BuildUpdateBundleSourceSafetyTest(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "symbolic links"):
                 builder.build_zip(root, [(path.relative_to(root).as_posix(), path.relative_to(root).as_posix())], output)
             self.assertFalse(output.exists())
+
+    def test_refuse_hardlinked_external_release_input_before_zip_creation(self) -> None:
+        # A hard link passes pathlib is_symlink() and resolve() confinement.
+        # It aliases the exact inode of a file outside the reviewed worktree.
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            root = base / "repo"
+            source = root / "backend/public/assets/admin/app.css"
+            source.parent.mkdir(parents=True)
+            outside = base / "outside-signing-tree-secret.txt"
+            outside.write_bytes(b"outside-secret-must-not-ship")
+            try:
+                os.link(outside, source)
+            except OSError as exc:
+                self.skipTest(f"Hard links unavailable: {exc}")
+
+            self.assertFalse(source.is_symlink())
+            self.assertTrue(source.is_file())
+            self.assertEqual(source.resolve(), source)
+            self.assertGreater(source.stat().st_nlink, 1)
+            output = root / "dist/FOODEX-Update.zip"
+            entry = "backend/public/assets/admin/app.css"
+            with self.assertRaisesRegex(RuntimeError, "single-link regular file"):
+                builder.build_zip(root, [(entry, entry)], output)
+            self.assertFalse(output.exists())
+            self.assertEqual(outside.read_bytes(), b"outside-secret-must-not-ship")
 
     def test_refuse_linked_parent_directory_before_zip_creation(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
