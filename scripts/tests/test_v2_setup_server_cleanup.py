@@ -72,5 +72,31 @@ class WebInstallerServerCleanupTests(unittest.TestCase):
                 self.assertTrue(pidfile.exists())
 
 
+
+class WebInstallerMigrationTransportFailureTests(unittest.TestCase):
+    """Do not allow a slow or dead PHP server to mask first-attempt MySQL DDL."""
+
+    def test_step_11_captures_transport_result_without_replaying_nontransactional_ddl(self):
+        source = SH.read_text(encoding='utf-8')
+        start = source.index('wizard_post() {')
+        end = source.index('\n\nfor step in $(seq 1 15)', start)
+        function = source[start:end]
+        self.assertIn('local transport_exit=0', function)
+        self.assertIn(')" || transport_exit=$?', function)
+        self.assertIn('"$step" == "11" && ( "$status" == "000" || "$transport_exit" -ne 0 )',
+                      function)
+        self.assertIn('transport_category="timeout"', function)
+        self.assertIn('transport_category="empty_reply"', function)
+        self.assertIn('transport_category="connection_refused"', function)
+        self.assertIn('server_state="missing"', function)
+        self.assertIn('server_state="alive"', function)
+        self.assertIn('refusing to replay because MySQL DDL may have partially committed', function)
+        self.assertLess(function.index('category=$transport_category'),
+                        function.index('return 1', function.index('category=$transport_category')))
+        self.assertNotIn('|| true)', function[function.index('local transport_exit=0'):])
+
+
+
+
 if __name__ == '__main__':
     unittest.main()
