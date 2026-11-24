@@ -255,6 +255,14 @@ final class PurchaseRequestManager
             $this->requireStatus($request, ['draft'], 'submit');
             abort_if($request->lines()->count() < 1, 409, 'A purchase request must contain at least one line.');
 
+            // A vendor can be suspended after draft creation. Revalidate
+            // persisted supplier eligibility while the request is locked,
+            // before advancing it to the review/approval workflow. Requests
+            // without a supplier remain valid for the RFQ selection flow.
+            if ($request->supplier_id !== null) {
+                $this->activeVisibleSupplier($scope, (int) $request->supplier_id, true);
+            }
+
             $before = $request->toArray();
             $request->forceFill([
                 'status' => 'submitted',
