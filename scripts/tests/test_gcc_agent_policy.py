@@ -200,7 +200,10 @@ class GccAgentContractTests(unittest.TestCase):
         # not just the agent's generic exit 1; stream bytes stay private.
         self.assertIn("function Private-GitOutputBand([string]$Path)", SCRIPT)
         self.assertIn("function Safe-GitProcessSummary", SCRIPT)
-        self.assertIn("$script:GccNativeGitExit=[string]$process.ExitCode", SCRIPT)
+        self.assertIn("$nativeHandle=$process.Handle", SCRIPT)
+        self.assertIn("$script:GccNativeGitExit=[string]$nativeExit", SCRIPT)
+        self.assertIn("$script:GccLastFailedStage='git-fetch-handle-unavailable'", SCRIPT)
+        self.assertIn("$script:GccLastFailedStage='git-fetch-exit-unavailable'", SCRIPT)
         self.assertIn("Private-GitOutputBand -Path $attemptStdout", SCRIPT)
         self.assertIn("Private-GitOutputBand -Path $attemptStderr", SCRIPT)
         self.assertIn("$script:GccNativeGitExit=[string]$LASTEXITCODE", SCRIPT)
@@ -214,6 +217,20 @@ class GccAgentContractTests(unittest.TestCase):
         self.assertEqual(SCRIPT.count("(Safe-GitProcessSummary)"), 2)
         self.assertNotIn("Get-Content -LiteralPath $attemptStderr", SCRIPT)
         self.assertNotIn("Get-Content -LiteralPath $attemptStdout", SCRIPT)
+
+    def test_windows_native_git_handle_cached_before_wait_and_exit_is_fail_closed(self):
+        # PowerShell Start-Process -NoNewWindow/-RedirectStandard* can return
+        # a null ExitCode after WaitForExit unless its native Handle was read
+        # before the wait (PowerShell/PowerShell#5421). Unknown must not PASS.
+        fetch = SCRIPT.split("function Invoke-BoundedGitFetch(", 1)[1].split("function Smoke(", 1)[0]
+        self.assertIn("$nativeHandle=$process.Handle", fetch)
+        self.assertLess(fetch.index("$nativeHandle=$process.Handle"), fetch.index("WaitForExit(900000)"))
+        self.assertIn("$null -eq $nativeExit", fetch)
+        self.assertIn("throw 'Git native exit code unavailable; refusing to guess success.'", fetch)
+        self.assertIn("if($nativeExit -eq 0) { return }", fetch)
+        self.assertIn("$script:GccNativeGitExit=[string]$nativeExit", fetch)
+        self.assertNotIn("if($process.ExitCode -eq 0)", fetch)
+        self.assertEqual(fetch.count("$nativeExit=$process.ExitCode"), 1)
 
     def test_private_git_output_band_runtime_ignores_secret_bytes(self):
         pwsh = shutil.which("pwsh")
