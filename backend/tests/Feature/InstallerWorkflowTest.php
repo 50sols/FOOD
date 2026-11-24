@@ -65,6 +65,42 @@ class InstallerWorkflowTest extends TestCase
         $this->assertSame(12, $state->progress()['completed_step']);
     }
 
+    public function test_missing_setup_token_after_completed_step_cannot_be_silently_regenerated(): void
+    {
+        $state = app(InstallState::class);
+        $state->markStepComplete(3);
+        $path = $state->progressPath();
+        $checkpoint = json_decode((string) file_get_contents($path), true, 512, JSON_THROW_ON_ERROR);
+        $this->assertNotNull($checkpoint['token']);
+        $checkpoint['token'] = null;
+        $corruptBytes = json_encode($checkpoint, JSON_THROW_ON_ERROR);
+        file_put_contents($path, $corruptBytes);
+
+        foreach ([
+            static fn () => $state->progress(),
+            static fn () => $state->token(),
+            static fn () => $state->markStepComplete(4),
+        ] as $attempt) {
+            try {
+                $attempt();
+                $this->fail('Missing token on a completed installer step must fail closed.');
+            } catch (\RuntimeException $exception) {
+                $this->assertSame('Installer progress state is invalid.', $exception->getMessage());
+            }
+        }
+        $this->assertSame($corruptBytes, file_get_contents($path));
+
+        // Only the untouched, truly new installation can request its first token.
+        file_put_contents($path, json_encode([
+            'completed_step' => 0,
+            'admin' => null,
+            'token' => null,
+        ], JSON_THROW_ON_ERROR));
+        $this->assertSame(0, $state->progress()['completed_step']);
+        $this->assertMatchesRegularExpression('/^[a-f0-9]{64}$/', $state->token());
+        $this->assertSame(0, $state->progress()['completed_step']);
+    }
+
     public function test_erp_evidence_crypto_prerequisite_is_independent_from_core_install_requirements(): void
     {
         $workflow = app(InstallerWorkflow::class);
