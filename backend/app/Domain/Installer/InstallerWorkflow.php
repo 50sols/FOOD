@@ -486,6 +486,17 @@ final class InstallerWorkflow
 
     public function generateApplicationKey(): void
     {
+        abort_if($this->state->isInstalled(), 404);
+
+        // A worker can persist .env and crash before the step-13 progress
+        // checkpoint. Replaying that request must never rotate APP_KEY and
+        // invalidate already encrypted data or accept a foreign live-site key.
+        // Stop for controlled recovery rather than guessing its provenance.
+        $existing = $this->environment->read(['APP_KEY']);
+        if (trim((string) ($existing['APP_KEY'] ?? '')) !== '') {
+            throw new RuntimeException((string) __('installer.environment_already_configured'));
+        }
+
         $key = 'base64:'.base64_encode(random_bytes(32));
         $this->environment->write(['APP_KEY' => $key]);
         config(['app.key' => $key]);
