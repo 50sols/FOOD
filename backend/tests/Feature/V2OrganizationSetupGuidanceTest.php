@@ -1498,6 +1498,48 @@ final class V2OrganizationSetupGuidanceTest extends TestCase
         $this->assertSame($beforeAudit, DB::table('audit_logs')->count());
     }
 
+    public function test_child_creation_uses_persisted_parent_identity_and_rejects_stale_inactive_parent(): void
+    {
+        $admin = $this->actor('SUPER_ADMIN', 'en');
+        $service = app(EnterpriseOrganizationAdministration::class);
+        $original = EnterpriseOrganization::query()->create([
+            'code' => 'v2_child_origin', 'name' => 'Origin', 'is_active' => true,
+        ]);
+        $foreign = EnterpriseOrganization::query()->create([
+            'code' => 'v2_child_foreign', 'name' => 'Foreign', 'is_active' => true,
+        ]);
+        $beforeAudit = DB::table('audit_logs')->count();
+
+        // Unguarded Eloquent models allow a caller to dirty their primary key.
+        // A service must bind the new company to the persisted original ID.
+        $dirty = $original->fresh();
+        $dirty->id = $foreign->id;
+        $company = $service->createCompany($dirty, [
+            'code' => 'v2_child_bound', 'name' => 'Bound', 'is_active' => true,
+        ], $admin);
+        $this->assertSame((int) $original->id, (int) $company->organization_id);
+        $this->assertNotSame((int) $foreign->id, (int) $company->organization_id);
+
+        $original->update(['is_active' => false]);
+        $stale = $original->fresh();
+        $original->update(['is_active' => true]);
+        $stale->is_active = true;
+        $original->update(['is_active' => false]);
+        $auditAfterAllowed = DB::table('audit_logs')->count();
+
+        try {
+            $service->createCompany($stale, [
+                'code' => 'v2_child_denied_stale', 'name' => 'Denied', 'is_active' => true,
+            ], $admin);
+            $this->fail('A disabled persisted parent must not accept new children.');
+        } catch (ValidationException $exception) {
+            $this->assertArrayHasKey('parent', $exception->errors());
+        }
+        $this->assertDatabaseMissing('enterprise_companies', ['code' => 'v2_child_denied_stale']);
+        $this->assertSame($auditAfterAllowed, DB::table('audit_logs')->count());
+        $this->assertGreaterThanOrEqual($beforeAudit, $auditAfterAllowed);
+    }
+
     private function actor(string $roleCode, string $locale): User
     {
         $user = User::query()->create([
