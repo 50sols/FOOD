@@ -63,5 +63,13 @@ class SetupCiTriggerContractTest(unittest.TestCase):
         )
 
 
+    def test_gcc_slow_mysql_migration_has_no_reload_or_unsafe_replay(self) -> None:
+        script = (ROOT / "scripts/validate-fresh-setup.sh").read_text(encoding="utf-8")
+        self.assertEqual(script.count("php artisan serve --no-reload --host=127.0.0.1"), 3)
+        self.assertIn('[[ "$step" == "11" ]] && request_timeout=900', script)
+        self.assertIn('curl -sS --connect-timeout 10 --max-time "$request_timeout"', script)
+        self.assertIn("refusing to replay because MySQL DDL may have partially committed", script)
+
+
 if __name__ == "__main__":
     unittest.main()
