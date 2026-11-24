@@ -56,7 +56,7 @@ function watchdogMutationRaceFixture(changedIssue) {
       issues: {
         get: async () => {
           reads += 1;
-          return { data: reads === 1 ? issue : changedIssue(issue) };
+          return { data: reads === 1 ? issue : changedIssue(issue, reads) };
         },
         removeLabel: async args => { mutations.push(['remove', args.name]); },
         addLabels: async args => { mutations.push(['add', ...args.labels]); },
@@ -91,6 +91,22 @@ test('new claim or approval after watchdog snapshot prevents stale label and han
   }
 });
 
+test('fresh claim arriving while watchdog updates labels suppresses stale handoff comment', async () => {
+  const fixture = watchdogMutationRaceFixture((issue, reads) => reads === 2
+    ? issue
+    : ({ ...issue, comments: 1, updated_at: '2026-10-01T05:59:55Z' }));
+  const result = await run({
+    github: fixture.github,
+    context: fixture.context,
+    core: { info: () => {} },
+    nowMs: NOW,
+  });
+  assert.deepEqual(result, { processed: 1, targeted: true });
+  assert.equal(fixture.getReads(), 3, 'must re-read immediately before handoff');
+  assert.equal(fixture.mutations.filter(item => item[0] === 'comment').length, 0,
+    'a claim posted during status changes must never receive a stale handoff');
+});
+
 test('unchanged 30-minute-stale claim still produces exactly one handoff', async () => {
   const fixture = watchdogMutationRaceFixture(issue => issue);
   const result = await run({
@@ -100,7 +116,7 @@ test('unchanged 30-minute-stale claim still produces exactly one handoff', async
     nowMs: NOW,
   });
   assert.deepEqual(result, { processed: 1, targeted: true });
-  assert.equal(fixture.getReads(), 2);
+  assert.equal(fixture.getReads(), 3);
   assert.equal(fixture.mutations.filter(item => item[0] === 'comment').length, 1);
   assert.equal(fixture.mutations.some(item => item[0] === 'add'
     && item[1] === 'worker:handoff-ready'), true);
