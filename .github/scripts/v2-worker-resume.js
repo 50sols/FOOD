@@ -77,7 +77,10 @@ function claimReferences(comments) {
     // Other historical issue claims include a PR number in descriptive
     // branch prose. Retain it as a provenance constraint, never as authority.
     const legacyOriginalPr = rawBranch.match(/;\s*PR\s+#([1-9]\d*)\s+original\s+DRAFT;\s*BASE\s+Foodex_V2\.?$/i);
-    const inlinePr = p135OriginalPr || p135Pr || legacyOriginalPr;
+    // Initial #2706 historical handoff (#7068011953) embeds the existing PR
+    // in the ORIGINAL_BRANCH display text. Bind that identity to the live PR.
+    const p2706OriginalPr = rawBranch.match(/^feat\/2706-v2-b2b-pricing-setup-readiness; ORIGINAL_PR: #([1-9]\d*) OPEN\/DRAFT -> Foodex_V2 ONLY$/i);
+    const inlinePr = p135OriginalPr || p135Pr || legacyOriginalPr || p2706OriginalPr;
     const explicitPr = (fields.PR || fields.ORIGINAL_PR || '').match(/^#?([1-9]\d*)(?:\b|$)/);
     const branch = historicMissingBranch ? historicMissingBranch[1] : rawBranch
       .replace(/;\s*(?:BASE|TARGET):.*$/i, '')
@@ -88,6 +91,7 @@ function claimReferences(comments) {
       .replace(/\s+\|\s+FINAL_HEAD:\s+[a-f0-9]{40}$/i, '')
       .replace(/;\s*ORIGINAL_PR:\s*#[1-9]\d* OPEN\/DRAFT -> Foodex_V2 ONLY; latest verified source HEAD [a-f0-9]{40}\. Previous worker WAITING_CI\/EDITING_RELEASED\. No peer-active file overlap, 26 other OPEN PRs inspected\.$/i, '')
       .replace(/;\s*PR #[1-9]\d* OPEN\/DRAFT → Foodex_V2 ONLY$/i, '')
+      .replace(/^(feat\/2706-v2-b2b-pricing-setup-readiness); ORIGINAL_PR: #[1-9]\d* OPEN\/DRAFT -> Foodex_V2 ONLY$/i, '$1')
       .replace(/;\s*EXACT_START_HEAD:\s*[a-f0-9]{40}$/i, '')
       .replace(/\s+\|\s+START_HEAD:\s+[a-f0-9]{40}$/i, '')
       .replace(/\s+\|\s+BASE Foodex_V2 ONLY$/i, '')

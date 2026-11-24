@@ -466,6 +466,42 @@ test('historical P2706 initial branch note resumes the one live original without
     'BLOCK_DUPLICATE_PRS');
 });
 
+test('P2706 historical ORIGINAL_BRANCH inline PR still requires matching live source and rejects spoofing', () => {
+  const original = 'feat/2706-v2-b2b-pricing-setup-readiness';
+  const annotated = original + '; ORIGINAL_PR: #3995 OPEN/DRAFT -> Foodex_V2 ONLY';
+  const claim = value => ({body:'<!-- foodex-worker-state:v1 -->\n'
+    + 'STATE: HANDOFF_READY\nORIGINAL_BRANCH: ' + value});
+  const refs = claimReferences([claim(annotated), claim(original)]);
+  assert.deepEqual(refs.map(x => x.branch), [original, original]);
+  assert.deepEqual(refs.map(x => x.pr), [3995, null]);
+
+  const shared = {
+    issue:{number:2706,state:'open',title:'V2 | Wholesale Stage 2',labels:[]},
+    branches:[original],
+    prs:[{number:3995,state:'open',head:{ref:original,sha:'authoritative-head'},
+      base:{ref:'Foodex_V2'}}],
+    checkpoint:null,
+  };
+  const decision = decide({...shared,refs});
+  assert.deepEqual([decision.action,decision.pr,decision.head],
+    ['RESUME_ORIGINAL_PR',3995,'authoritative-head']);
+
+  for (const bad of [
+    annotated.replace('#3995', '#3996'),
+    annotated + ' trailing',
+    annotated.replace('feat/2706-v2-b2b-pricing-setup-readiness', 'feat/2706-other'),
+    annotated.replace('Foodex_V2 ONLY', 'main ONLY'),
+    annotated.replace('ORIGINAL_PR:', 'FOREIGN_PR:'),
+  ]) {
+    assert.equal(decide({...shared,refs:claimReferences([claim(bad)])}).action,
+      'BLOCK_CONFLICTING_ORIGINALS', bad);
+  }
+  assert.equal(decide({...shared,refs,branches:[original,'feat/2706-alternate']}).action,
+    'BLOCK_CONFLICTING_ORIGINALS');
+  assert.equal(decide({...shared,refs,prs:[...shared.prs,{...shared.prs[0],number:3996}]}).action,
+    'BLOCK_DUPLICATE_PRS');
+});
+
 test('incomplete or oversized search pagination fails closed', async () => {
   await assert.rejects(pages(async()=>({data:{items:[],total_count:2}}),{},'items'),/incomplete/);
   await assert.rejects(pages(async()=>({data:{wrong:[]}}),{},'items'),/payload/);
