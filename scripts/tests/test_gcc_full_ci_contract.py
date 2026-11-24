@@ -4,7 +4,11 @@ Runtime parity is NOT established by this static suite; an actual disposable
 GCC Docker run and GitHub exact-head checks remain separate requirements.
 """
 from pathlib import Path
+import subprocess
+import sys
+import tempfile
 import unittest
+import zipfile
 
 ROOT = Path(__file__).resolve().parents[2]
 BASE = ROOT / "scripts/local-ci"
@@ -106,6 +110,45 @@ class GccHeavyExecutionContracts(unittest.TestCase):
         self.assertIn("trusted_release=False", FULL)
         self.assertIn("signed=False", FULL)
         self.assertIn("Get-FileHash", AGENT)
+
+    def test_setup_zip_rejects_all_non_template_dotenv_files(self):
+        # Execute the actual embedded GCC ZIP verifier, not a reimplementation.
+        marker = "step=verify-real-setup-zip\\n  python3 - \\"$setup\\" \\"$version\\" <<'PY'\\n"
+        self.assertIn(marker, FULL)
+        verifier = FULL.split(marker, 1)[1].split("\\nPY\\n", 1)[0]
+        required = {
+            "VERSION": "1.0.125\\n",
+            "backend/artisan": "artisan",
+            "backend/vendor/autoload.php": "autoload",
+            "backend/public/index.php": "index",
+            "backend/.env.production.example": "safe public template",
+        }
+        cases = {
+            "backend/.env.example": True,
+            "backend/.env.local": False,
+            "backend/.env.production": False,
+            "backend/.env.backup": False,
+            "backend/.env": False,
+            "backend/config/.env": False,
+            "elsewhere/.env.secret": False,
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            package = Path(directory) / "setup.zip"
+            for entry, accepted in cases.items():
+                with self.subTest(dotenv_entry=entry):
+                    with zipfile.ZipFile(package, "w") as archive:
+                        for name, contents in required.items():
+                            archive.writestr(name, contents)
+                        if entry not in required:
+                            archive.writestr(entry, "test-only dummy content")
+                    result = subprocess.run(
+                        [sys.executable, "-c", verifier, str(package), "1.0.125"],
+                        capture_output=True, text=True, check=False,
+                    )
+                    self.assertEqual(
+                        result.returncode == 0, accepted,
+                        f"{entry}: stdout={result.stdout} stderr={result.stderr}",
+                    )
 
     def test_no_ci_bypass_or_secret_github_mount(self):
         self.assertNotIn("GITHUB_TOKEN", COMPOSE)
