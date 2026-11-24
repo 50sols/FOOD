@@ -124,13 +124,6 @@ final class OrganizationHierarchyService
                 throw new LogicException('Cannot assign store scope to a missing persisted hierarchy identity.');
             }
 
-            // Historical mappings of inactive stores remain intact, but a
-            // deactivated store must never receive a new or changed binding.
-            // Trust only the locked persisted row, not a stale caller model.
-            if (! $store->is_active) {
-                throw new LogicException('Cannot assign enterprise scope to an inactive store.');
-            }
-
             // Re-read live lineage instead of accepting cached ancestors.
             $businessUnit->load('legalEntity.company.organization');
             if (! $businessUnit->is_active
@@ -169,6 +162,14 @@ final class OrganizationHierarchyService
                 if ((int) $existing->business_unit_id === (int) $businessUnit->getKey()) {
                     return $existing;
                 }
+            }
+
+            // Historical ownership must be checked before store lifecycle:
+            // even a disabled store cannot evade a cross-organization denial.
+            // No new/changed binding is allowed for an inactive persisted store.
+            // The identity and lifecycle were re-read under the same row lock.
+            if (! $store->is_active) {
+                throw new LogicException('Cannot assign enterprise scope to an inactive store.');
             }
 
             $scope = EnterpriseStoreScope::query()->updateOrCreate(
