@@ -89,6 +89,97 @@ final class V2CustomerServiceDiscountApprovalTest extends TestCase
         $this->assertSame(1, DB::table('order_customer_service_discounts')->where('order_id', $orderId)->count());
     }
 
+    public function test_direct_finance_service_rejects_mutable_actor_keys_and_preserves_original_order_in_both_locales(): void
+    {
+        $manager = $this->roleUser('CUSTOMER_SERVICE_MANAGER');
+        $finance = $this->roleUser('FINANCE');
+        $outsider = $this->roleUser('CUSTOMER_SERVICE_AGENT');
+        $service = app(OrderCustomerServiceDiscountApprovalService::class);
+        $httpRequest = Request::create('/admin/operations/orders', 'POST');
+        $beforeRequested = DB::table('audit_logs')
+            ->where('event', 'order.customer_service_discount.requested')->count();
+        $beforeApproved = DB::table('audit_logs')
+            ->where('event', 'order.customer_service_discount.approved')->count();
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            $originalId = $this->order();
+            $foreignId = $this->order();
+
+            // The loaded record is the original business intent. Dirtying its
+            // in-memory key must never redirect a request to the foreign order.
+            $dirtyOrder = Order::query()->findOrFail($originalId);
+            $dirtyOrder->forceFill(['id' => $foreignId]);
+            $this->assertNotSame($dirtyOrder->getRawOriginal('id'), $dirtyOrder->id);
+
+            // An unassigned agent must not impersonate an authorized manager
+            // by changing only the unsaved user model ID.
+            $dirtyRequester = User::query()->findOrFail($outsider->id);
+            $dirtyRequester->forceFill(['id' => $manager->id]);
+            $this->assertNotSame($dirtyRequester->getRawOriginal('id'), $dirtyRequester->id);
+            try {
+                $service->request(
+                    $dirtyOrder, $dirtyRequester, 12.5, 'Forged requester identity',
+                    (string) Str::uuid(), $httpRequest,
+                );
+                $this->fail('Dirty requester ID must not impersonate a Finance-eligible manager.');
+            } catch (HttpException $exception) {
+                $this->assertSame(403, $exception->getStatusCode());
+            }
+
+            $this->assertDatabaseMissing('order_customer_service_discount_requests', ['order_id' => $originalId]);
+            $this->assertDatabaseMissing('order_customer_service_discount_requests', ['order_id' => $foreignId]);
+
+            // An authorized manager's dirty Order ID still binds to the real
+            // original order, rather than changing the target financial row.
+            $this->assertTrue($service->request(
+                $dirtyOrder, $manager, 12.5, 'Authorized accounting adjustment',
+                (string) Str::uuid(), $httpRequest,
+            ));
+            $requestId = (int) DB::table('order_customer_service_discount_requests')
+                ->where('order_id', $originalId)->value('id');
+            $this->assertGreaterThan(0, $requestId);
+            $this->assertDatabaseMissing('order_customer_service_discount_requests', ['order_id' => $foreignId]);
+
+            // A CS agent cannot impersonate an independent Finance reviewer
+            // by mutating an unsaved Eloquent user ID either.
+            $dirtyReviewer = User::query()->findOrFail($outsider->id);
+            $dirtyReviewer->forceFill(['id' => $finance->id]);
+            try {
+                $service->review(
+                    Order::query()->findOrFail($originalId), $dirtyReviewer,
+                    $requestId, true, null, $httpRequest,
+                );
+                $this->fail('Dirty reviewer ID must not impersonate independent Finance.');
+            } catch (HttpException $exception) {
+                $this->assertSame(403, $exception->getStatusCode());
+            }
+
+            $this->assertDatabaseHas('order_customer_service_discount_requests', [
+                'id' => $requestId, 'order_id' => $originalId, 'status' => 'pending',
+            ]);
+            $this->assertDatabaseHas('orders', ['id' => $originalId, 'grand_total' => 9]);
+            $this->assertDatabaseHas('orders', ['id' => $foreignId, 'grand_total' => 9]);
+
+            // A legitimate independent Finance decision should still apply
+            // once to the original order despite the caller's dirty order key.
+            $service->review($dirtyOrder, $finance, $requestId, true, null, $httpRequest);
+            $this->assertDatabaseHas('order_customer_service_discount_requests', [
+                'id' => $requestId, 'order_id' => $originalId,
+                'status' => 'approved', 'reviewed_by_user_id' => $finance->id,
+            ]);
+            $this->assertDatabaseHas('orders', ['id' => $originalId, 'grand_total' => 7.875]);
+            $this->assertDatabaseHas('orders', ['id' => $foreignId, 'grand_total' => 9]);
+            $this->assertSame(0, DB::table('order_customer_service_discounts')
+                ->where('order_id', $foreignId)->count());
+        }
+
+        $this->assertSame($beforeRequested + 2, DB::table('audit_logs')
+            ->where('event', 'order.customer_service_discount.requested')->count());
+        $this->assertSame($beforeApproved + 2, DB::table('audit_logs')
+            ->where('event', 'order.customer_service_discount.approved')->count());
+    }
+
     public function test_direct_service_review_rechecks_revoked_finance_entitlement(): void
     {
         $manager = $this->roleUser('CUSTOMER_SERVICE_MANAGER');

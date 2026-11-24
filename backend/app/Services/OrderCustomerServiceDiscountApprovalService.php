@@ -37,11 +37,19 @@ final class OrderCustomerServiceDiscountApprovalService
         Request $request,
     ): bool {
         return DB::transaction(function () use ($order, $actor, $percentage, $reason, $idempotencyKey, $request): bool {
-            $locked = Order::query()->whereKey($order->getKey())->lockForUpdate()->firstOrFail();
+            // Bind to the original loaded order identity. A caller can dirty an
+            // Eloquent primary key without persisting it; getKey() would
+            // silently redirect financial approval to a different order.
+            $locked = Order::query()
+                ->whereKey($order->getRawOriginal($order->getKeyName()))
+                ->lockForUpdate()
+                ->firstOrFail();
             // A queued job may hold a User model loaded before an account was
             // disabled. Do not authorize a new Finance request from stale
             // in-memory lifecycle or cached role/permission relationships.
-            $actor = User::query()->find($actor->getKey());
+            // Persisted original user identity is the authority for a direct
+            // service caller, never an unsaved modified Eloquent key.
+            $actor = User::query()->find($actor->getRawOriginal($actor->getKeyName()));
             abort_unless($actor instanceof User && $actor->is_active, 403);
 
             $storeId = (int) $locked->store_id;
@@ -163,10 +171,18 @@ final class OrderCustomerServiceDiscountApprovalService
         Request $request,
     ): void {
         DB::transaction(function () use ($order, $reviewer, $requestId, $approved, $reviewReason, $request): void {
-            $locked = Order::query()->whereKey($order->getKey())->lockForUpdate()->firstOrFail();
+            // Bind to the original loaded order identity. A caller can dirty an
+            // Eloquent primary key without persisting it; getKey() would
+            // silently redirect financial approval to a different order.
+            $locked = Order::query()
+                ->whereKey($order->getRawOriginal($order->getKeyName()))
+                ->lockForUpdate()
+                ->firstOrFail();
             // Finance review must consult current persisted identity. A stale
             // Eloquent reviewer snapshot must not survive account deactivation.
-            $reviewer = User::query()->find($reviewer->getKey());
+            // Do not let a dirty reviewer ID impersonate a separate Finance
+            // principal, even when the target user has valid permissions.
+            $reviewer = User::query()->find($reviewer->getRawOriginal($reviewer->getKeyName()));
             abort_unless($reviewer instanceof User && $reviewer->is_active, 403);
 
             $storeId = (int) $locked->store_id;
