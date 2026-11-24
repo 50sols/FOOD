@@ -117,7 +117,14 @@ with zipfile.ZipFile(name) as z:
         raise SystemExit("Setup ZIP duplicate entry")
     if any(stat.S_ISLNK(info.external_attr >> 16) for info in z.infolist()):
         raise SystemExit("Setup ZIP symlink")
-    if any(p.endswith("/.env") or p == "backend/.env" for p in names):
+    # Explicitly allow only public installer templates. A stray .env.local,
+    # .env.production, .env.backup or nested dotenv is a secret-bearing file.
+    allowed_env_templates = {"backend/.env.example", "backend/.env.production.example"}
+    if any(
+        pathlib.PurePosixPath(p).name.startswith(".env")
+        and p not in allowed_env_templates
+        for p in names
+    ):
         raise SystemExit("Secrets in Setup ZIP")
     required = {"VERSION", "backend/artisan", "backend/vendor/autoload.php",
                 "backend/public/index.php", "backend/.env.production.example"}
