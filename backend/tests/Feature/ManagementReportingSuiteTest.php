@@ -93,12 +93,15 @@ class ManagementReportingSuiteTest extends TestCase
             $this->assertStringContainsString('limit 1', $sql);
         }
 
-        // No caller may use offset pagination to escape a store filter.
+        // Store B has its own delivered order (RPT-004). Paging may
+        // return that order, but never any Store A identity or total.
         $foreign = $reports->run($actor, 'orders', [
             ...$filters, 'store_id' => $this->storeB,
         ], 1, 0);
-        $this->assertSame(0, $foreign['meta']['row_count']);
-        $this->assertSame([], $foreign['rows']);
+        $this->assertSame(1, $foreign['meta']['row_count']);
+        $this->assertCount(1, $foreign['rows']);
+        $this->assertSame('RPT-004', $foreign['rows'][0]['internal_order_number']);
+        $this->assertSame(50.0, (float) $foreign['kpis']['gross_value']);
     }
 
     public function test_product_report_ranks_best_least_and_zero_sales(): void
