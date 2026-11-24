@@ -1158,6 +1158,25 @@ class InstallerWorkflowTest extends TestCase
         $this->assertFalse(app(InstallState::class)->isInstalled());
     }
 
+    public function test_unfinished_install_checkpoint_cannot_be_deleted_by_direct_service_caller(): void
+    {
+        $state = app(InstallState::class);
+        $state->markStepComplete(6);
+        $originalProgress = (string) file_get_contents($state->progressPath());
+        $this->assertNotSame('', $originalProgress);
+        $this->assertFalse($state->isInstalled());
+
+        try {
+            $state->clearProgress();
+            $this->fail('Unfinished installation must preserve its recovery checkpoint.');
+        } catch (HttpException $exception) {
+            $this->assertSame(404, $exception->getStatusCode());
+        }
+
+        $this->assertSame($originalProgress, file_get_contents($state->progressPath()));
+        $this->assertFalse($state->isInstalled());
+    }
+
     public function test_failed_finish_does_not_write_install_lock(): void
     {
         app(InstallState::class)->markStepComplete(14);
