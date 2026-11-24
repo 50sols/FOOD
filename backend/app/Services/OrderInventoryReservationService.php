@@ -225,8 +225,8 @@ final class OrderInventoryReservationService
 
         $exists = DB::table('orders')->where('id', (int) $order->getKey())
             ->where('store_id', (int) $order->store_id)
-            ->lockForUpdate()->exists();
-        if (! $exists) {
+            ->lockForUpdate()->first(['id']);
+        if ($exists === null) {
             throw new HttpException(409, 'Order is not persisted in the requested store.');
         }
     }
