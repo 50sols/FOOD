@@ -136,6 +136,21 @@ final class V2AccountingDiscountFinanceInboxTest extends TestCase
         // even if Finance is enabled and the actor has finance.manage.
         $this->actingAs($finance)->post($reviewUrl, ['decision' => 'approve'])
             ->assertForbidden();
+
+        // A legal-entity grant must not override a more-specific STORE denial.
+        app(ModuleEntitlementManager::class)->set(
+            FinanceFoundationService::MODULE,
+            new EntitlementScope(EntitlementScope::LEGAL_ENTITY, $scope['legal_entity_id']),
+            true, ['finance.foundation.read', 'finance.ar.read'], $finance,
+        );
+        app(ModuleEntitlementManager::class)->set(
+            FinanceFoundationService::MODULE,
+            new EntitlementScope(EntitlementScope::STORE, $store->id),
+            false, null, $finance,
+        );
+        $this->actingAs($finance)->post($reviewUrl, ['decision' => 'approve'])
+            ->assertForbidden();
+
         $this->assertDatabaseHas('order_customer_service_discount_requests', [
             'id' => $requestId, 'status' => 'pending',
         ]);
