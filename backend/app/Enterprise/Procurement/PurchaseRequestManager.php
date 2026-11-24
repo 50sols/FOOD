@@ -232,6 +232,10 @@ final class PurchaseRequestManager
 
         return DB::transaction(function () use ($actor, $scope, $requestId): EnterprisePurchaseRequest {
             $request = $this->lockVisible($scope, $requestId);
+            // Only the original maker may advance a draft to submitted.
+            // Check before replay handling: a second manager must not be able
+            // to impersonate the originating maker on an already-submitted PR.
+            abort_if((int) $request->created_by !== (int) $actor->id, 403, 'Only the creating maker can submit this purchase request.');
             if ($request->status === 'submitted') {
                 return $request->refresh();
             }
