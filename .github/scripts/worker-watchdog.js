@@ -642,6 +642,23 @@ async function runCore({ github, context, core, nowMs }) {
 
     if (outcome.status !== 'handoff-ready') continue;
 
+    // Label writes themselves are not atomic with creating the handoff
+    // comment. A new owner claim can arrive between the pre-write check and
+    // the final comment; detect it instead of announcing a false takeover.
+    const { data: beforeHandoff } = await github.rest.issues.get({
+      owner, repo, issue_number: issue.number,
+    });
+    const handoffLabels = (beforeHandoff?.labels || [])
+      .map(label => typeof label === 'string' ? label : label.name)
+      .filter(Boolean);
+    if (!beforeHandoff || beforeHandoff.number !== issue.number
+        || beforeHandoff.state !== 'open' || beforeHandoff.pull_request
+        || beforeHandoff.comments !== issue.comments
+        || handoffLabels.some(label => label.startsWith('gate:'))) {
+      core.info(`#${issue.number}: newer Issue activity after label update; suppress stale handoff`);
+      continue;
+    }
+
     const head = linkedPr?.head?.sha || workerState?.head || '';
     const marker = `<!-- foodex-watchdog:handoff issue=${issue.number} head=${head || 'none'} reason=${outcome.reason} -->`;
     if (comments.some(comment => (comment.body || '').includes(marker))) continue;
