@@ -108,7 +108,23 @@ final class EnterprisePurchaseRequestFoundationTest extends TestCase
 
         $manager = app(PurchaseRequestManager::class);
         $request = $manager->create($creator, $context, $this->requestPayload('Maker checker'));
-        $manager->submit($submitter, $submitterContext, $request->id);
+
+        try {
+            $manager->submit($submitter, $submitterContext, $request->id);
+            $this->fail('Only the creating maker may submit a draft purchase request.');
+        } catch (HttpException $exception) {
+            $this->assertSame(403, $exception->getStatusCode());
+        }
+        $this->assertDatabaseHas('enterprise_purchase_requests', [
+            'id' => $request->id,
+            'status' => 'draft',
+            'submitted_by' => null,
+        ]);
+        $manager->submit($creator, $context, $request->id);
+
+        // Existing submitted records can predate the maker-only submission rule.
+        DB::table('enterprise_purchase_requests')->where('id', $request->id)
+            ->update(['submitted_by' => $submitter->id]);
 
         foreach ([[$creator, $context], [$submitter, $submitterContext]] as [$blockedActor, $blockedContext]) {
             try {
