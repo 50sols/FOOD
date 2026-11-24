@@ -96,6 +96,28 @@ class WebInstallerMigrationTransportFailureTests(unittest.TestCase):
         self.assertIn('G004 safe installer error category:', function)
         self.assertIn('G004 first-attempt migration failure:', function)
 
+    def test_finish_http_500_is_a_single_post_in_real_bash(self):
+        """Exercise the sourced wizard function; a failed Finish is never replayed."""
+        source = SH.read_text(encoding='utf-8')
+        function = source.split('wizard_post() {', 1)[1].split('\\n\\nfor step in $(seq 1 15)', 1)[0]
+        with tempfile.TemporaryDirectory() as temporary:
+            calls = Path(temporary) / 'curl-post-count'
+            shell = (
+                'wizard_post() {' + function + '\\n}\\n'
+                'curl() { echo request >> "$CURL_CALLS"; printf 500; }\\n'
+                'installer_token=fixture-token\\n'
+                'if wizard_post 15; then exit 42; fi\\n'
+                'test "$(wc -l < "$CURL_CALLS")" -eq 1\\n'
+            )
+            completed = subprocess.run(
+                ['bash', '-e', '-c', shell],
+                capture_output=True, text=True, timeout=10,
+                env={**os.environ, 'CURL_CALLS': str(calls)},
+            )
+            self.assertEqual(0, completed.returncode, completed.stderr + completed.stdout)
+            self.assertEqual(['request'], calls.read_text(encoding='utf-8').splitlines())
+            self.assertIn('refusing to replay the final installer write', completed.stdout)
+
     def test_finish_never_replays_indeterminate_http_response(self):
         source = SH.read_text(encoding='utf-8')
         function = source.split('wizard_post() {', 1)[1].split('\n\nfor step in $(seq 1 15)', 1)[0]
