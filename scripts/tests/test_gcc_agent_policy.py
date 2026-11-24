@@ -61,7 +61,12 @@ class GccAgentContractTests(unittest.TestCase):
         fetch = SCRIPT.split("function Invoke-BoundedGitFetch(", 1)[1].split("function Smoke(", 1)[0]
         self.assertIn("for($attempt=0;$attempt -lt 2;$attempt++)", fetch)
         self.assertIn("$authenticated=($attempt -eq 1)", fetch)
-        self.assertIn("if(-not $authenticated) { $arguments+=' -c credential.helper=' }", fetch)
+        self.assertIn("if($authenticated) {", fetch)
+        self.assertIn('$arguments+=\' -c "credential.helper=!gh auth git-credential"\'', fetch)
+        self.assertIn("$arguments+=' -c credential.helper='", fetch)
+        self.assertIn("gh auth git-credential", fetch)
+        self.assertNotIn("gh auth setup-git", fetch)
+        self.assertNotIn("git config --global", fetch)
         self.assertIn("$script:GccLastFailedStage=Classify-GitFetchFailure -Path $attemptStderr", fetch)
         self.assertIn("$script:GccLastFailedStage -eq 'git-fetch-access'", fetch)
         self.assertIn("if(-not $authenticated -and", fetch)
