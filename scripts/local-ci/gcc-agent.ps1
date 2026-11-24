@@ -188,24 +188,42 @@ function Invoke-BoundedGitFetch([string]$Checkout,[int]$Pr,[long]$Request) {
      $script:GccLastFailedStage='git-fetch-process-start'
      throw 'Git fetch process could not start; local diagnostic files are private.'
     }
+    # Windows PowerShell 5.1 Start-Process -NoNewWindow/-RedirectStandard* can
+    # lose the native process handle and return a null ExitCode after WaitForExit.
+    # Cache the handle BEFORE waiting; never infer success from empty streams.
+    try {
+     $nativeHandle=$process.Handle
+     if($null -eq $nativeHandle -or $nativeHandle -eq [System.IntPtr]::Zero) {
+      throw 'Process handle missing'
+     }
+    } catch {
+     $script:GccLastFailedStage='git-fetch-handle-unavailable'
+     throw 'Git process handle unavailable; refusing to guess exit status.'
+    }
     if(-not $process.WaitForExit(900000)) {
      $script:GccLastFailedStage='git-fetch-timeout'
      $script:GccNativeGitExit='timeout'
      & taskkill.exe /T /F /PID $process.Id 1>$null 2>$null
      throw 'Git fetch exceeded 15-minute bounded timeout; exact-head test not executed.'
     }
-    # This is git.exe's native ExitCode, not the agent's final exit code.
-    $script:GccNativeGitExit=[string]$process.ExitCode
+    # Read one native exit value from the cached handle. An unknown/null exit
+    # is neither a PASS nor evidence of nonzero Git failure; fail closed.
+    $nativeExit=$process.ExitCode
     $script:GccGitStdoutBand=Private-GitOutputBand -Path $attemptStdout
     $script:GccGitStderrBand=Private-GitOutputBand -Path $attemptStderr
-    if($process.ExitCode -eq 0) { return }
+    if($null -eq $nativeExit) {
+     $script:GccLastFailedStage='git-fetch-exit-unavailable'
+     throw 'Git native exit code unavailable; refusing to guess success.'
+    }
+    $script:GccNativeGitExit=[string]$nativeExit
+    if($nativeExit -eq 0) { return }
     $script:GccLastFailedStage=Classify-GitFetchFailure -Path $attemptStderr
     if(-not $authenticated -and $script:GccLastFailedStage -eq 'git-fetch-access') {
      # The next attempt uses ONLY the trusted host's existing Git helper.
      # Missing/noninteractive credentials fail safely and stay classified.
      continue
     }
-    throw "Git fetch failed with exit code $($process.ExitCode); local diagnostic files are private."
+    throw "Git fetch failed with exit code $nativeExit; local diagnostic files are private."
    } finally {
     if($null -ne $process) { $process.Dispose() }
    }
