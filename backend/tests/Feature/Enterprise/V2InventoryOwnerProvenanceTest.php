@@ -1405,29 +1405,33 @@ SQL);
             'p110-unverified-transfer',
         );
 
-        $service->dispatch($actor, $transfer->id);
+        try {
+            $service->dispatch($actor, $transfer->id);
+            $this->fail('A known legal owner cannot be dispatched by an unattributed transfer writer.');
+        } catch (HttpException $exception) {
+            $this->assertSame(409, $exception->getStatusCode());
+        }
+
+        $this->assertDatabaseHas('enterprise_warehouse_transfers', [
+            'id' => $transfer->id, 'status' => 'draft',
+        ]);
         $this->assertDatabaseHas('enterprise_inventory_owner_positions', [
             'inventory_id' => $stock['inventory_id'],
             'owner_key' => 'FOODEX',
             'quantity' => 10,
             'reserved_quantity' => 3,
         ]);
-        $this->assertSame(0, DB::table('enterprise_inventory_owner_positions')
-            ->where('inventory_id', $stock['inventory_id'])
-            ->where('owner_key', 'UNKNOWN')->count());
-
-        $read = app(InventoryOwnerProvenanceReadService::class);
-        $source = $read->snapshot($actor, $stock['inventory_id']);
-        $this->assertSame('STALE', $source['state']);
+        $this->assertDatabaseHas('inventories', ['id' => $stock['inventory_id'], 'quantity' => 10]);
+        $this->assertDatabaseHas('inventories', ['id' => $target['target_inventory_id'], 'quantity' => 1]);
+        $this->assertSame(0, DB::table('stock_movements')
+            ->where('reference_type', 'enterprise_warehouse_transfer')
+            ->where('reference_id', $transfer->id)->count());
+        $this->assertSame(0, DB::table('enterprise_inventory_owner_movement_events')
+            ->where('inventory_id', $stock['inventory_id'])->count());
+        $source = app(InventoryOwnerProvenanceReadService::class)
+            ->snapshot($actor, $stock['inventory_id']);
+        $this->assertSame('UNVERIFIED', $source['state']);
         $this->assertFalse($source['certified']);
-
-        $service->receive($actor, $transfer->id);
-        $destination = $read->snapshot($actor, $target['target_inventory_id']);
-        $this->assertSame('UNKNOWN', $destination['state']);
-        $this->assertFalse($destination['certified']);
-        $this->assertSame('UNKNOWN', $destination['positions'][0]['owner_kind']);
-        $this->assertDatabaseHas('inventories', ['id' => $stock['inventory_id'], 'quantity' => 8]);
-        $this->assertDatabaseHas('inventories', ['id' => $target['target_inventory_id'], 'quantity' => 3]);
     }
 
     public function test_wms_adjustment_posts_current_unknown_title_once_and_replay_has_no_second_stock_mutation(): void
@@ -1526,11 +1530,16 @@ SQL);
         $this->position($stock['inventory_id'], 'FOODEX', null, 10, 3, $actor->id, $checker->id, true);
         $inventory = DB::table('inventories')->where('id', $stock['inventory_id'])
             ->first(['warehouse_id', 'product_id']);
-        app(InventoryAdjustmentService::class)->post(
-            $actor, (int) $inventory->warehouse_id, (int) $inventory->product_id,
-            -1.0, 'loss', 'p110_preserve_title', 1102845,
-            'Unverified title must not be reallocated',
-        );
+        try {
+            app(InventoryAdjustmentService::class)->post(
+                $actor, (int) $inventory->warehouse_id, (int) $inventory->product_id,
+                -1.0, 'loss', 'p110_preserve_title', 1102845,
+                'Unverified title must not be reallocated',
+            );
+            $this->fail('A known legal owner requires an approved owner-attributed loss posting.');
+        } catch (HttpException $exception) {
+            $this->assertSame(409, $exception->getStatusCode());
+        }
 
         $this->assertDatabaseHas('enterprise_inventory_owner_positions', [
             'inventory_id' => $stock['inventory_id'], 'owner_key' => 'FOODEX',
@@ -1538,10 +1547,99 @@ SQL);
         ]);
         $this->assertSame(0, DB::table('enterprise_inventory_owner_positions')
             ->where('inventory_id', $stock['inventory_id'])->where('owner_key', 'UNKNOWN')->count());
+        $this->assertDatabaseHas('inventories', [
+            'id' => $stock['inventory_id'], 'quantity' => 10, 'reserved_quantity' => 3,
+        ]);
+        $this->assertSame(0, DB::table('stock_movements')
+            ->where('inventory_id', $stock['inventory_id'])->count());
+        $this->assertSame(0, DB::table('enterprise_inventory_owner_movement_events')
+            ->where('inventory_id', $stock['inventory_id'])->count());
         $snapshot = app(InventoryOwnerProvenanceReadService::class)
             ->snapshot($actor, $stock['inventory_id']);
-        $this->assertSame('STALE', $snapshot['state']);
+        $this->assertSame('UNVERIFIED', $snapshot['state']);
         $this->assertFalse($snapshot['certified']);
+    }
+
+    public function test_wms_cycle_count_refuses_known_title_without_completing_session_or_posting_movement(): void
+    {
+        $this->seed(CoreReferenceSeeder::class);
+        $stock = $this->stock('COUNT-KNOWN-TITLE-DENY');
+        $actor = $this->inventoryActor($stock['store_id']);
+        $warehouse = (int) DB::table('inventories')
+            ->where('id', $stock['inventory_id'])->value('warehouse_id');
+        $service = app(InventoryCountService::class);
+        $count = $service->start($actor, $warehouse, [$stock['inventory_id']], 'p110-known-count-deny');
+
+        $this->position($stock['inventory_id'], 'FOODEX', null, 10, 3, $actor->id, $actor->id, false);
+
+        try {
+            $service->complete($actor, $count->getKey(), [$stock['inventory_id'] => 9]);
+            $this->fail('Physical stock variance cannot be assigned to an unapproved legal owner.');
+        } catch (HttpException $exception) {
+            $this->assertSame(409, $exception->getStatusCode());
+        }
+
+        $this->assertDatabaseHas('enterprise_inventory_counts', [
+            'id' => $count->getKey(), 'status' => 'open',
+        ]);
+        $this->assertDatabaseHas('inventories', [
+            'id' => $stock['inventory_id'], 'quantity' => 10, 'reserved_quantity' => 3,
+        ]);
+        $this->assertDatabaseHas('enterprise_inventory_owner_positions', [
+            'inventory_id' => $stock['inventory_id'], 'owner_key' => 'FOODEX',
+            'quantity' => 10, 'reserved_quantity' => 3,
+        ]);
+        $this->assertSame(0, DB::table('stock_movements')
+            ->where('inventory_id', $stock['inventory_id'])->count());
+        $this->assertSame(0, DB::table('enterprise_inventory_owner_movement_events')
+            ->where('inventory_id', $stock['inventory_id'])->count());
+    }
+
+    public function test_wms_transfer_receive_refuses_target_legal_owner_changed_in_transit(): void
+    {
+        $this->seed(CoreReferenceSeeder::class);
+        $stock = $this->stock('TRANSFER-TARGET-CLAIM');
+        $target = $this->transferTarget($stock, 'TRANSFER-TARGET-CLAIM');
+        $actor = $this->inventoryActor($stock['store_id']);
+        $service = app(WarehouseTransferService::class);
+
+        $transfer = $service->create(
+            $actor,
+            $target['source_warehouse_id'],
+            $target['target_warehouse_id'],
+            [['product_id' => $target['product_id'], 'quantity' => 2]],
+            'p110-target-legal-title-change',
+        );
+        $service->dispatch($actor, $transfer->id);
+
+        // The destination's legal title may change after physical dispatch.
+        // Refuse to borrow or overwrite its legal-owner position at receipt.
+        $this->position($target['target_inventory_id'], 'FOODEX', null, 1, 0, $actor->id, $actor->id, false);
+        try {
+            $service->receive($actor, $transfer->id);
+            $this->fail('Receipt must not overwrite a newly claimed legal owner.');
+        } catch (HttpException $exception) {
+            $this->assertSame(409, $exception->getStatusCode());
+        }
+
+        $this->assertDatabaseHas('enterprise_warehouse_transfers', [
+            'id' => $transfer->id, 'status' => 'dispatched',
+        ]);
+        $this->assertDatabaseHas('inventories', [
+            'id' => $stock['inventory_id'], 'quantity' => 8, 'reserved_quantity' => 3,
+        ]);
+        $this->assertDatabaseHas('inventories', [
+            'id' => $target['target_inventory_id'], 'quantity' => 1, 'reserved_quantity' => 0,
+        ]);
+        $this->assertDatabaseHas('enterprise_inventory_owner_positions', [
+            'inventory_id' => $target['target_inventory_id'], 'owner_key' => 'FOODEX',
+            'quantity' => 1, 'reserved_quantity' => 0,
+        ]);
+        $this->assertSame(1, DB::table('stock_movements')
+            ->where('reference_type', 'enterprise_warehouse_transfer')
+            ->where('reference_id', $transfer->id)->count());
+        $this->assertSame(0, DB::table('enterprise_inventory_owner_movement_events')
+            ->where('inventory_id', $target['target_inventory_id'])->count());
     }
 
     public function test_received_unknown_stock_reserve_consume_and_release_are_atomic_with_owner_events(): void

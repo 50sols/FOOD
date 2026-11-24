@@ -130,6 +130,11 @@ final class InventoryAdjustmentService
                 ]);
             }
 
+            // Reconcile legal provenance BEFORE any physical adjustment.
+            // Claimed supplier/FOODEX or mixed title requires an approved
+            // owner-specific adjustment, not a silently stale owner ledger.
+            $this->ownerProjection->assertUnattributedBeforeMutation((int) $inventory->getKey());
+
             $inventory->forceFill([
                 'quantity' => max(0.0, $next),
             ])->save();

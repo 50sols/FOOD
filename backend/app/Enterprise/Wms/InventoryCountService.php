@@ -204,6 +204,11 @@ final class InventoryCountService
                 $variance = round($counted - $current, 3);
 
                 if (! $this->sameQuantity($variance, 0.0)) {
+                    // Under the existing locked count transaction, reject
+                    // claimed/mixed or already-stale legal stock title before
+                    // writing any physical variance or counted line.
+                    $this->ownerProjection->assertUnattributedBeforeMutation($inventoryId);
+
                     DB::table('inventories')
                         ->where('id', $inventoryId)
                         ->update([

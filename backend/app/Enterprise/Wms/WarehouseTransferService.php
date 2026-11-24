@@ -200,6 +200,10 @@ final class WarehouseTransferService
                 $quantity = (float) $line->quantity;
                 $newQuantity = round((float) $inventory->quantity - $quantity, 3);
 
+                // Source inventory is row-locked by this transaction. No
+                // inferred legal-owner transfer from a known/mixed partition.
+                $this->ownerProjection->assertUnattributedBeforeMutation((int) $inventory->id);
+
                 DB::table('inventories')
                     ->where('id', $inventory->id)
                     ->update([
@@ -298,6 +302,12 @@ final class WarehouseTransferService
 
                 $quantity = (float) $line->quantity;
                 $newQuantity = round((float) $inventory->quantity + $quantity, 3);
+
+                // Recheck at actual receipt, not just at draft/dispatch:
+                // legal title may change while a shipment is in transit.
+                // Keep it DISPATCHED and leave destination stock unchanged
+                // until an authorized per-owner receiving writer exists.
+                $this->ownerProjection->assertUnattributedBeforeMutation((int) $inventory->id);
 
                 DB::table('inventories')
                     ->where('id', $inventory->id)
