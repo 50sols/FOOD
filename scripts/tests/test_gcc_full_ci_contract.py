@@ -68,7 +68,7 @@ class GccHeavyExecutionContracts(unittest.TestCase):
         self.assertLess(AGENT.index("function Process("), AGENT.index("switch($Mode) {"))
 
     def test_trusted_immutable_local_scripts_are_never_read_from_pr_checkout(self):
-        self.assertIn("ef05600e0b744b968ad9d93c5209d0eb597e24a4", AGENT)
+        self.assertIn("ea1322009a2ea8fb8ba81f8249c21c52523a877a", AGENT)
         self.assertIn("raw.githubusercontent.com", AGENT)
         self.assertIn("git hash-object $file", AGENT)
         self.assertIn("context: .", COMPOSE)
@@ -162,7 +162,18 @@ class GccHeavyExecutionContracts(unittest.TestCase):
         self.assertIn("tcpdf_static.php", PREPARE)
         self.assertIn("--no-dev", PREPARE)
         self.assertIn("composer analyse", FULL)
-        self.assertIn("zip -qr", FULL)
+        # GCC must build the same byte-stable, filtered Setup ZIP as G004
+        # hosted acceptance, not a second ad-hoc zip(1) payload.
+        self.assertNotIn("zip -qr", FULL)
+        self.assertIn("python3 scripts/v2_build_setup_zip.py", FULL)
+        self.assertIn("python3 scripts/v2_setup_staging_verify.py", FULL)
+        self.assertIn("cmp \"$setup\" \"$repeat\"", FULL)
+        self.assertIn("git show -s --format=%ct", FULL)
+        self.assertIn("--exclude='/storage/'", FULL)
+        self.assertIn("--exclude='/bootstrap/cache/'", FULL)
+        self.assertIn('--exclude=\'/public/uploads\'', FULL)
+        self.assertIn('cp Release/INSTALL-FIRST.txt "$stage/INSTALL-FIRST.txt"', FULL)
+        self.assertLess(FULL.index("v2_build_setup_zip.py"), FULL.index("validate-fresh-setup.sh"))
         self.assertIn("validate-fresh-setup.sh", FULL)
         self.assertIn('export GITHUB_SHA="$GCC_EXPECTED_SHA"', FULL)
         self.assertIn("export GITHUB_WORKSPACE=/workspace", FULL)
