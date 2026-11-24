@@ -27,7 +27,8 @@ class GccHeavyExecutionContracts(unittest.TestCase):
         self.assertIn("/gcc-ci (run|full|backend|setup|packages)", AGENT)
         self.assertIn("$script:GccLastFailedStage", AGENT)
         self.assertIn("Failed trusted runtime step", AGENT)
-        self.assertIn("profile=$Profile expected=$requiredPackages", AGENT)
+        self.assertIn("Missing expected canonical ZIP artifact", AGENT)
+        self.assertIn("GCC result version must be a strict semantic version.", AGENT)
         self.assertIn("$Comment.user.login -cne $Owner", AGENT)
         self.assertIn("$pr.head.sha -cne $sha", AGENT)
         self.assertIn("$pr.base.ref -cne $Base", AGENT)
@@ -121,6 +122,15 @@ class GccHeavyExecutionContracts(unittest.TestCase):
         self.assertIn("trusted_release=False", FULL)
         self.assertIn("signed=False", FULL)
         self.assertIn("Get-FileHash", AGENT)
+
+    def test_profiles_require_expected_zip_artifact_names_not_arbitrary_count(self):
+        self.assertIn('"FOODEX-Setup-v$($result.version).zip"', AGENT)
+        self.assertIn("'FOODEX-Update.zip'", AGENT)
+        self.assertIn("switch($Profile)", AGENT)
+        self.assertIn("$requiredNames", AGENT)
+        self.assertIn("$artifacts | Where-Object { $_.Name -ceq $name }", AGENT)
+        self.assertNotIn("$requiredPackages=switch($Profile)", AGENT)
+        self.assertNotIn("@($artifacts).Count -lt $requiredPackages", AGENT)
 
     def test_gcc_zip_evidence_rejects_links_and_ambiguous_names_before_hashing(self):
         # The manifest is keyed by artifact basename: two nested ZIPs of
