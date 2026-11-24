@@ -1689,6 +1689,38 @@ final class V2OrganizationSetupGuidanceTest extends TestCase
         $this->assertGreaterThanOrEqual($beforeAudit, $auditAfterAllowed);
     }
 
+    public function test_creation_parent_preflight_uses_original_identity_not_dirty_active_decoy(): void
+    {
+        $service = app(EnterpriseOrganizationAdministration::class);
+
+        $inactive = EnterpriseOrganization::query()->create([
+            'code' => 'v2_preflight_original_inactive', 'name' => 'Inactive Origin', 'is_active' => false,
+        ]);
+        $activeDecoy = EnterpriseOrganization::query()->create([
+            'code' => 'v2_preflight_active_decoy', 'name' => 'Active Decoy', 'is_active' => true,
+        ]);
+        $beforeAudit = DB::table('audit_logs')->count();
+
+        foreach (['en', 'ar'] as $locale) {
+            app()->setLocale($locale);
+            $dirty = $inactive->fresh();
+            $dirty->id = $activeDecoy->id;
+            try {
+                $service->assertCreationParentActive($dirty);
+                $this->fail('A mutated primary key must never authorize an inactive persisted parent.');
+            } catch (ValidationException $exception) {
+                $this->assertArrayHasKey('parent', $exception->errors());
+            }
+
+            $positive = $activeDecoy->fresh();
+            $positive->id = $inactive->id;
+            $service->assertCreationParentActive($positive);
+        }
+
+        $this->assertDatabaseMissing('enterprise_companies', ['code' => 'v2_preflight_unexpected_child']);
+        $this->assertSame($beforeAudit, DB::table('audit_logs')->count());
+    }
+
     private function actor(string $roleCode, string $locale): User
     {
         $user = User::query()->create([
