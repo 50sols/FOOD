@@ -370,6 +370,29 @@ final class V2ErpOperationalWorkflowEvidenceTest extends TestCase
         }
     }
 
+    public function test_health_probe_cannot_return_ready_after_module_is_suspended_during_evaluation(): void
+    {
+        $this->enableSample();
+        config()->set('enterprise_modules.modules.sample_optional.category', 'operations');
+        config()->set('enterprise_modules.modules.sample_optional.health_checks', ['database']);
+        config()->set('enterprise_module_health.probes.sample_optional', [V2SuspendDuringHealthProbe::class]);
+        app(ModuleRegistry::class)->syncManifest('sample_optional');
+        $this->requireSampleWorkflow();
+        $this->evidence();
+
+        // The signed manifest and check are valid. The probe returns healthy
+        // but suspends the persisted module in the middle of the readiness
+        // decision, so the earlier ENABLED snapshot cannot authorize access.
+        $this->assertSame(
+            'uncertified',
+            app(ModuleOperationalReadiness::class)->status('sample_optional', 1, ModuleState::ENABLED),
+        );
+        $this->assertSame(
+            ModuleState::SUSPENDED,
+            app(ModuleRegistry::class)->state('sample_optional'),
+        );
+    }
+
     public function test_operational_proof_never_bypasses_disabled_lifecycle_or_failing_health(): void
     {
         config()->set('enterprise_module_readiness.certified_versions.sample_optional', 1);
@@ -404,6 +427,16 @@ final class V2ErpOperationalWorkflowEvidenceTest extends TestCase
         SyntheticErpWorkflowEvidence::install();
 
         return (array) config('enterprise_module_readiness.workflow_attestations.sample_optional', []);
+    }
+}
+
+final class V2SuspendDuringHealthProbe implements ModuleHealthProbe
+{
+    public function check(): ModuleHealthCheck
+    {
+        app(ModuleLifecycleManager::class)->transition('sample_optional', ModuleState::SUSPENDED);
+
+        return ModuleHealthCheck::healthy('database');
     }
 }
 
