@@ -162,6 +162,12 @@ with zipfile.ZipFile(name) as z:
     if z.read("VERSION").decode().strip() != version:
         raise SystemExit("Setup ZIP wrong version")
 PY
+  # Reuse the exact G004 staging verifier for checksums, portable paths,
+  # source provenance and secret exclusions before running /install.
+  python3 scripts/v2_setup_staging_verify.py \
+    --zip "$setup" --version-file VERSION \
+    --source-commit "$GCC_EXPECTED_SHA" \
+    --evidence Release/V2_SETUP_STAGING_EVIDENCE.json
   cp "$setup" "/evidence/FOODEX-Setup-v$version.zip"
   step=fresh-install-real-setup
   mysql -h127.0.0.1 -uroot -proot -e \
