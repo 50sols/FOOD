@@ -38,6 +38,18 @@ final class InstallState
             return ['completed_step' => 0, 'admin' => null, 'token' => null];
         }
 
+        // A hardlink is not a symlink: a multiply linked checkpoint can
+        // alias an out-of-tree private inode and supply untrusted installer
+        // token/admin credentials. Only a regular single-link state file is
+        // a permissible persisted setup checkpoint.
+        clearstatcache(true, $path);
+        $stat = @lstat($path);
+        if ($stat === false
+            || ($stat['mode'] & 0170000) !== 0100000
+            || $stat['nlink'] !== 1) {
+            throw new RuntimeException('Installer progress state is invalid or unsafe.');
+        }
+
         // Existing progress must never be treated as a fresh installation
         // when its contents are corrupt: token() could otherwise overwrite
         // its prior admin, step and token snapshot with a new first-run token.
