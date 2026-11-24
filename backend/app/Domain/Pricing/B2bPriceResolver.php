@@ -96,6 +96,11 @@ class B2bPriceResolver
 
         $groupedTargets = $tierTargets->groupBy('store_id');
         $rules = DB::table('b2b_price_rules')
+            // An inactive tier revokes its rule prices even when individual
+            // rules and the account remain active. Enforce at the shared
+            // resolver used by API, cart and order pricing paths.
+            ->join('b2b_price_tiers', 'b2b_price_tiers.id', '=', 'b2b_price_rules.price_tier_id')
+            ->where('b2b_price_tiers.is_active', true)
             ->join('products', 'products.id', '=', 'b2b_price_rules.product_id')
             ->join('catalogs', 'catalogs.id', '=', 'products.catalog_id')
             ->join('stores', 'stores.id', '=', 'b2b_price_rules.store_id')
