@@ -393,6 +393,29 @@ final class V2ErpOperationalWorkflowEvidenceTest extends TestCase
         );
     }
 
+    public function test_health_probe_cannot_return_ready_after_installed_manifest_changes(): void
+    {
+        $this->enableSample();
+        config()->set('enterprise_modules.modules.sample_optional.category', 'operations');
+        config()->set('enterprise_modules.modules.sample_optional.health_checks', ['database']);
+        config()->set('enterprise_module_health.probes.sample_optional', [V2ChangeManifestDuringHealthProbe::class]);
+        app(ModuleRegistry::class)->syncManifest('sample_optional');
+        $this->requireSampleWorkflow();
+        $this->evidence();
+
+        // Although the probe reports a healthy database, it changes the
+        // installed permissions after the original signed-manifest check.
+        // The readiness result must not authorize this altered manifest.
+        $this->assertSame(
+            'uncertified',
+            app(ModuleOperationalReadiness::class)->status('sample_optional', 1, ModuleState::ENABLED),
+        );
+        $this->assertSame(
+            ['unreviewed.manage'],
+            EnterpriseModule::query()->where('code', 'sample_optional')->firstOrFail()->manifest['permissions'],
+        );
+    }
+
     public function test_operational_proof_never_bypasses_disabled_lifecycle_or_failing_health(): void
     {
         config()->set('enterprise_module_readiness.certified_versions.sample_optional', 1);
@@ -435,6 +458,19 @@ final class V2SuspendDuringHealthProbe implements ModuleHealthProbe
     public function check(): ModuleHealthCheck
     {
         app(ModuleLifecycleManager::class)->transition('sample_optional', ModuleState::SUSPENDED);
+
+        return ModuleHealthCheck::healthy('database');
+    }
+}
+
+final class V2ChangeManifestDuringHealthProbe implements ModuleHealthProbe
+{
+    public function check(): ModuleHealthCheck
+    {
+        $module = EnterpriseModule::query()->where('code', 'sample_optional')->firstOrFail();
+        $module->forceFill([
+            'manifest' => [...$module->manifest, 'permissions' => ['unreviewed.manage']],
+        ])->save();
 
         return ModuleHealthCheck::healthy('database');
     }
