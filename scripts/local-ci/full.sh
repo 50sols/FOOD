@@ -22,11 +22,49 @@ step=startup
 failed() {
   rc="$?"
   echo "GCC local CI FAIL step=$step exit=$rc source=$GCC_EXPECTED_SHA" >&2
-  python3 - "$GCC_EXPECTED_SHA" "$version" "$step" "$rc" > /evidence/result.json <<'PY'
-import json, sys
-print(json.dumps(dict(schema=1, result="FAIL", source_sha=sys.argv[1],
-    version=sys.argv[2], failed_stage=sys.argv[3], exit_code=int(sys.argv[4]),
-    trusted_release=False), sort_keys=True))
+  # Only publish a fixed diagnostic category from ephemeral installer output.
+  # Raw HTTP/Laravel logs can contain credentials: never copy or stringify them
+  # into the evidence JSON or the public GitHub PR comment.
+  python3 - "$GCC_EXPECTED_SHA" "$version" "$step" "$rc" "${fresh_setup_log:-}" > /evidence/result.json <<'PY'
+import json, pathlib, re, sys
+sha, version, stage, exit_code, path = sys.argv[1:]
+result = dict(schema=1, result="FAIL", source_sha=sha, version=version,
+              failed_stage=stage, exit_code=int(exit_code),
+              trusted_release=False)
+if stage == "fresh-install-real-setup" and path:
+    log = pathlib.Path(path)
+    # Keep only a bounded private tail; the public evidence contains known
+    # categorical identifiers, never log text or HTTP response bodies.
+    if log.is_file():
+        with log.open("rb") as stream:
+            stream.seek(0, 2)
+            stream.seek(max(stream.tell() - 131072, 0))
+            messages = stream.read().decode("utf-8", errors="replace")
+        category = "unclassified"
+        if "Finish HTTP response indeterminate" in messages:
+            category = "finish-response-indeterminate"
+        elif "first-attempt HTTP transport: category=timeout" in messages:
+            category = "migration-timeout"
+        elif "first-attempt HTTP transport: category=connection_refused" in messages:
+            category = "migration-connection-refused"
+        elif "first-attempt HTTP transport: category=empty_reply" in messages:
+            category = "migration-empty-reply"
+        elif "G004 original HTTP migration failure: SQLSTATE=" in messages:
+            category = "migration-sqlstate"
+        elif "G004 safe installer error category:" in messages:
+            category = "installer-validation"
+        elif "Web installer step " in messages and " returned HTTP " in messages:
+            category = "installer-http-status"
+        elif "readiness timed out" in messages:
+            category = "http-readiness-timeout"
+        elif "server exited before becoming ready" in messages:
+            category = "http-server-exited"
+        result["failure_class"] = category
+        # Only an integer 1..15 may leave the ephemeral local diagnostic.
+        step_match = re.search(r"Web installer step (1[0-5]|[1-9]) returned HTTP [0-9]{3}", messages)
+        if step_match:
+            result["installer_step"] = int(step_match.group(1))
+print(json.dumps(result, sort_keys=True))
 PY
   exit "$rc"
 }
@@ -172,7 +210,13 @@ PY
   step=fresh-install-real-setup
   mysql -h127.0.0.1 -uroot -proot -e \
     'DROP DATABASE IF EXISTS foodex_acceptance; CREATE DATABASE foodex_acceptance;'
-  CURRENT_VERSION="$version" bash scripts/validate-fresh-setup.sh
+  # Capture a local tmpfs diagnostic for fail-closed classification in the
+  # ERR trap. The same output still goes to the PRIVATE Docker/GCC log.
+  # Never upload this file or quote it in a PR comment.
+  fresh_setup_log=/tmp/foodex-gcc-fresh-setup.log
+  CURRENT_VERSION="$version" bash scripts/validate-fresh-setup.sh 2>&1 | tee "$fresh_setup_log"
+  rm -f "$fresh_setup_log"
+  fresh_setup_log=''
   test -s Release/FRESH_INSTALL_EVIDENCE.json
   cp Release/FRESH_INSTALL_EVIDENCE.json /evidence/fresh-install-evidence.json
   if [[ "$profile" != setup ]]; then
