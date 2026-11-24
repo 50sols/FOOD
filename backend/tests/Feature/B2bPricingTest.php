@@ -24,6 +24,16 @@ class B2bPricingTest extends TestCase
         $admin = $this->userWithRole('B2B_ADMIN', 'pricing-admin@example.test');
         Sanctum::actingAs($admin);
 
+        // Valid Wholesale operators must receive structured 422 input errors
+        // for nested page-size selectors, not PHP coercion or a 500 response.
+        foreach (['ar', 'en'] as $locale) {
+            $admin->forceFill(['locale' => $locale])->save();
+            Sanctum::actingAs($admin->fresh());
+            $this->getJson('/api/v1/admin/b2b/prices?per_page%5B0%5D=2')
+                ->assertUnprocessable()
+                ->assertJsonValidationErrors(['per_page']);
+        }
+
         $this->putJson('/api/v1/admin/b2b/prices', ['price_tier_id' => $tierId, 'store_id' => $storeId, 'product_id' => $productId, 'unit_price' => 7.250, 'minimum_quantity' => 5, 'ordering_increment' => 5, 'pack_size' => 12, 'case_size' => 24, 'pack_label' => 'Case 12', 'retail_reference_price' => 9.500])->assertCreated();
         $this->assertDatabaseHas('audit_logs', ['event' => 'b2b.price_rule.saved']);
 
