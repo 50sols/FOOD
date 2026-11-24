@@ -2564,10 +2564,18 @@ final class V2ErpEntitlementCheckerBoundaryTest extends TestCase
                 'store_id' => $store->id,
                 'decision' => 'approve',
             ])->assertSessionHasErrors('decision');
+            $this->actingAs($maker->fresh())->post(route('admin.erp.procurement.requests.decision', $purchaseRequest->id), [
+                'store_id' => $store->id,
+                'decision' => 'reject',
+            ])->assertSessionHasErrors('decision');
         }
         $this->assertDatabaseHas('enterprise_purchase_requests', [
             'id' => $purchaseRequest->id, 'status' => 'submitted', 'decided_by' => null,
         ]);
+        $this->assertSame(0, DB::table('audit_logs')
+            ->where('event', 'enterprise.purchase_request.rejected')
+            ->where('auditable_id', $purchaseRequest->id)
+            ->count());
         $this->assertSame(0, DB::table('audit_logs')
             ->where('event', 'enterprise.purchase_request.approved')
             ->where('auditable_id', $purchaseRequest->id)
@@ -2582,6 +2590,32 @@ final class V2ErpEntitlementCheckerBoundaryTest extends TestCase
         $this->assertSame(1, DB::table('audit_logs')
             ->where('event', 'enterprise.purchase_request.approved')
             ->where('auditable_id', $purchaseRequest->id)
+            ->count());
+
+        // Independent checker rejection is a legitimate final decision.
+        $secondRequest = $requests->create($maker, $context, [
+            'supplier_id' => $supplier->id,
+            'currency_code' => 'KWD',
+            'reason' => 'P111 independent reject witness',
+            'lines' => [[
+                'item_code' => 'P111-REJECT-SKU',
+                'description' => 'P111 independent reject witness',
+                'quantity' => 1,
+                'unit' => 'case',
+                'estimated_unit_cost' => 1.250,
+            ]],
+        ]);
+        $requests->submit($maker, $context, $secondRequest->id);
+        $this->actingAs($checker->fresh())->post(route('admin.erp.procurement.requests.decision', $secondRequest->id), [
+            'store_id' => $store->id,
+            'decision' => 'reject',
+        ])->assertRedirect();
+        $this->assertDatabaseHas('enterprise_purchase_requests', [
+            'id' => $secondRequest->id, 'status' => 'rejected', 'decided_by' => $checker->id,
+        ]);
+        $this->assertSame(1, DB::table('audit_logs')
+            ->where('event', 'enterprise.purchase_request.rejected')
+            ->where('auditable_id', $secondRequest->id)
             ->count());
 
         $this->actingAs($maker->fresh())->post(route('admin.erp.procurement.orders.create', $purchaseRequest->id), [
