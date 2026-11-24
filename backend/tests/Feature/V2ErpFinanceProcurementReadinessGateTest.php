@@ -6,6 +6,9 @@ use App\Enterprise\Entitlements\EntitlementScope;
 use App\Enterprise\Entitlements\ModuleEntitlementManager;
 use App\Enterprise\Modules\ModuleOperationalReadiness;
 use App\Enterprise\Modules\ModuleRegistry;
+use App\Enterprise\Organization\OrganizationHierarchyService;
+use App\Models\Store;
+use App\Services\WholesalePrincipal;
 use App\Enums\StoreBusinessProfile;
 use App\Models\Role;
 use App\Models\User;
@@ -94,6 +97,10 @@ final class V2ErpFinanceProcurementReadinessGateTest extends TestCase
     public function test_only_approved_versions_project_real_routes_without_bypassing_entitlements_or_tenant_roles(): void
     {
         $actor = $this->superAdmin();
+        // The Procurement link mirrors a genuinely accessible B2B store,
+        // not a synthetic Super Admin navigation-only scope.
+        $store = Store::query()->findOrFail(app(WholesalePrincipal::class)->storeId());
+        app(OrganizationHierarchyService::class)->ensureDefaultScopeForStore($store);
         $this->enableAndEntitle($actor);
 
         foreach (array_keys(self::MODULES) as $code) {
