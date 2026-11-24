@@ -654,6 +654,15 @@ async function runCore({ github, context, core, nowMs }) {
     if (!beforeHandoff || beforeHandoff.number !== issue.number
         || beforeHandoff.state !== 'open' || beforeHandoff.pull_request
         || beforeHandoff.comments !== issue.comments
+        // A worker can renew an Issue-body claim without posting a comment.
+        // Ignore our own label-write timestamp, but reject a changed body.
+        || beforeHandoff.body !== currentIssue.body
+        // A concurrent claim may update status labels without a comment.
+        // Only our intended handoff status, with no competing worker state,
+        // is safe to announce as a new handoff comment.
+        || !handoffLabels.includes('worker:handoff-ready')
+        || handoffLabels.some(label => STATUS_LABELS.includes(label)
+          && label !== 'worker:handoff-ready')
         || handoffLabels.some(label => label.startsWith('gate:'))) {
       core.info(`#${issue.number}: newer Issue activity after label update; suppress stale handoff`);
       continue;

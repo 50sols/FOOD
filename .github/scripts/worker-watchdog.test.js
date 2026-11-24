@@ -44,6 +44,9 @@ function watchdogMutationRaceFixture(changedIssue) {
   };
   let reads = 0;
   const mutations = [];
+  // Mirrors the label mutation the mocked GitHub issues API performs, so
+  // the third GET sees the watchdog's own handoff-ready label by default.
+  let liveLabels = issue.labels.map(label => label.name);
   const github = {
     rest: {
       pulls: { list: async () => ({ data: [] }) },
@@ -56,10 +59,22 @@ function watchdogMutationRaceFixture(changedIssue) {
       issues: {
         get: async () => {
           reads += 1;
-          return { data: reads === 1 ? issue : changedIssue(issue, reads) };
+          const liveIssue = {
+            ...issue,
+            labels: liveLabels.map(name => ({ name })),
+          };
+          return { data: reads === 1 ? issue : changedIssue(liveIssue, reads) };
         },
-        removeLabel: async args => { mutations.push(['remove', args.name]); },
-        addLabels: async args => { mutations.push(['add', ...args.labels]); },
+        removeLabel: async args => {
+          mutations.push(['remove', args.name]);
+          liveLabels = liveLabels.filter(name => name !== args.name);
+        },
+        addLabels: async args => {
+          mutations.push(['add', ...args.labels]);
+          for (const name of args.labels) {
+            if (!liveLabels.includes(name)) liveLabels.push(name);
+          }
+        },
         createComment: async args => { mutations.push(['comment', args.body]); },
       },
     },
@@ -105,6 +120,38 @@ test('fresh claim arriving while watchdog updates labels suppresses stale handof
   assert.equal(fixture.getReads(), 3, 'must re-read immediately before handoff');
   assert.equal(fixture.mutations.filter(item => item[0] === 'comment').length, 0,
     'a claim posted during status changes must never receive a stale handoff');
+});
+
+test('body-only renewed claim or competing status after labels suppresses stale handoff', async () => {
+  for (const changedIssue of [
+    (issue, reads) => reads === 3
+      ? ({ ...issue, body: issue.body.replace(
+        'HEARTBEAT: 2026-10-01T04:00:00Z',
+        'HEARTBEAT: 2026-10-01T05:59:55Z',
+      ) })
+      : issue,
+    (issue, reads) => reads === 3
+      ? ({ ...issue, labels: [{ name: 'worker:active' }] })
+      : issue,
+    (issue, reads) => reads === 3
+      ? ({ ...issue, labels: [
+        { name: 'worker:active' },
+        { name: 'worker:handoff-ready' },
+      ] })
+      : issue,
+  ]) {
+    const fixture = watchdogMutationRaceFixture(changedIssue);
+    const result = await run({
+      github: fixture.github,
+      context: fixture.context,
+      core: { info: () => {} },
+      nowMs: NOW,
+    });
+    assert.deepEqual(result, { processed: 1, targeted: true });
+    assert.equal(fixture.getReads(), 3);
+    assert.equal(fixture.mutations.filter(item => item[0] === 'comment').length, 0,
+      'renewed body-only or status-label claim must not produce a stale handoff');
+  }
 });
 
 test('unchanged 30-minute-stale claim still produces exactly one handoff', async () => {
