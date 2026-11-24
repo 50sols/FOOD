@@ -70,6 +70,70 @@ final class V2OrganizationSetupGuidanceTest extends TestCase
         $this->assertSame($before, DB::table('audit_logs')->count());
     }
 
+    public function test_omitted_activation_on_patch_does_not_disable_enterprise_hierarchy(): void
+    {
+        $admin = $this->actor('SUPER_ADMIN', 'en');
+        $organization = EnterpriseOrganization::query()->create([
+            'code' => 'v2_patch_active_org', 'name' => 'Active Organization', 'is_active' => true,
+        ]);
+        $company = EnterpriseCompany::query()->create([
+            'organization_id' => $organization->id, 'code' => 'v2_patch_active_company',
+            'name' => 'Active Company', 'is_active' => true,
+        ]);
+        $entity = EnterpriseLegalEntity::query()->create([
+            'company_id' => $company->id, 'code' => 'v2_patch_active_entity',
+            'name' => 'Active Legal Entity', 'is_active' => true,
+        ]);
+        $unit = EnterpriseBusinessUnit::query()->create([
+            'legal_entity_id' => $entity->id, 'code' => 'v2_patch_active_unit',
+            'name' => 'Active Business Unit', 'is_active' => true,
+        ]);
+
+        foreach ([
+            ['admin.enterprise-organizations.update', $organization],
+            ['admin.enterprise-companies.update', $company],
+            ['admin.enterprise-legal-entities.update', $entity],
+            ['admin.enterprise-business-units.update', $unit],
+        ] as [$routeName, $record]) {
+            $newName = 'Renamed '.$record->name;
+            $payload = ['code' => $record->code, 'name' => $newName];
+            $beforeAudit = DB::table('audit_logs')->count();
+
+            // The same omitted checkbox must be safe in no-write preview.
+            $this->actingAs($admin)->patch(route($routeName, $record), [
+                ...$payload, '_setup_test' => 'edit',
+            ])->assertRedirect()->assertSessionHas('status', __('enterprise_organization.setup_test_passed'));
+            $this->assertSame($record->name, $record->fresh()->name);
+            $this->assertTrue((bool) $record->fresh()->is_active);
+            $this->assertSame($beforeAudit, DB::table('audit_logs')->count());
+
+            $this->actingAs($admin)->patch(route($routeName, $record), $payload)
+                ->assertRedirect()->assertSessionHas('status', __('enterprise_organization.saved'));
+            $this->assertSame($newName, $record->fresh()->name);
+            $this->assertTrue((bool) $record->fresh()->is_active);
+            $this->assertSame($beforeAudit + 1, DB::table('audit_logs')->count());
+        }
+
+        // Explicit deactivation is still checked against active descendants.
+        $beforeAudit = DB::table('audit_logs')->count();
+        $this->actingAs($admin)->patch(route('admin.enterprise-organizations.update', $organization), [
+            'code' => $organization->code, 'name' => 'Not Deactivated', 'is_active' => '0',
+        ])->assertSessionHasErrors('is_active');
+        $this->assertTrue((bool) $organization->fresh()->is_active);
+        $this->assertSame($beforeAudit, DB::table('audit_logs')->count());
+
+        // Omission must not silently *activate* an inactive legacy child either.
+        $inactive = EnterpriseCompany::query()->create([
+            'organization_id' => $organization->id, 'code' => 'v2_patch_inactive_company',
+            'name' => 'Inactive Company', 'is_active' => false,
+        ]);
+        $this->actingAs($admin)->patch(route('admin.enterprise-companies.update', $inactive), [
+            'code' => $inactive->code, 'name' => 'Still Inactive Company',
+        ])->assertRedirect()->assertSessionHas('status', __('enterprise_organization.saved'));
+        $this->assertSame('Still Inactive Company', $inactive->fresh()->name);
+        $this->assertFalse((bool) $inactive->fresh()->is_active);
+    }
+
     public function test_preview_rejects_invalid_or_duplicate_codes_without_mutation(): void
     {
         $admin = $this->actor('SUPER_ADMIN', 'en');
