@@ -307,6 +307,12 @@ class B2bPricingTest extends TestCase
                 'unit_price' => 'not-a-price',
             ]))->assertNotFound();
             $this->putJson('/api/v1/admin/b2b/prices', $candidate)->assertNotFound();
+            // A denied store must remain concealed even when nested schedule
+            // input would otherwise fail Laravel's array validation.
+            $this->putJson('/api/v1/admin/b2b/prices', array_replace($candidate, [
+                'quantity_price_breaks' => ['invalid-nested-break'],
+                'replace_quantity_price_breaks' => 'not-a-boolean',
+            ]))->assertNotFound();
 
             $this->assertSame($beforeRules, DB::table('b2b_price_rules')->count());
             $this->assertSame($beforeAudit, DB::table('audit_logs')->count());
