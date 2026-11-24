@@ -88,6 +88,13 @@ class GccHeavyExecutionContracts(unittest.TestCase):
         ).hexdigest()
         self.assertEqual(match.group(1), actual, "Pinned full.sh no longer matches reviewed bytes")
 
+    def test_playwright_import_matches_runtime_npm_global_root(self):
+        # Actual GCC Docker runner: npm root -g is /usr/lib/node_modules,
+        # not /usr/local/lib/node_modules. Build must exercise ESM import.
+        self.assertIn('ln -s "$(npm root -g)/playwright" /node_modules/playwright', DOCKERFILE)
+        self.assertIn('node --input-type=module -e "import(', DOCKERFILE)
+        self.assertNotIn('/usr/local/lib/node_modules/playwright', DOCKERFILE)
+
     def test_full_php_tests_run_in_isolated_mysql_redis(self):
         self.assertIn("image: mysql:8.0", COMPOSE)
         self.assertIn("image: redis:7", COMPOSE)
