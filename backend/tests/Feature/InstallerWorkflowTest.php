@@ -1194,6 +1194,18 @@ class InstallerWorkflowTest extends TestCase
         $this->assertSame($auditCount, DB::table('audit_logs')->where('event', 'installer.completed')->count());
         $this->assertSame($versionCount, DB::table('system_versions')->count());
 
+        // A completed site must never allow direct installer migrations,
+        // even if future schema changes make business-table probes empty.
+        Artisan::shouldReceive('call')->never();
+        try {
+            $workflow->runMigrations();
+            $this->fail('Installed site must reject direct installer migrations.');
+        } catch (HttpException $exception) {
+            $this->assertSame(404, $exception->getStatusCode());
+        }
+        $this->assertSame($originalPassword, DB::table('users')->where('id', $user->id)->value('password'));
+        $this->assertSame($versionCount, DB::table('system_versions')->count());
+
         // The final lock must also block direct installer-only configuration
         // helpers, not just HTTP requests and finish() itself.
         $environment = app(InstallerEnvironment::class);
