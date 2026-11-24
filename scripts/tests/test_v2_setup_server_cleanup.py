@@ -99,15 +99,15 @@ class WebInstallerMigrationTransportFailureTests(unittest.TestCase):
     def test_finish_http_500_is_a_single_post_in_real_bash(self):
         """Exercise the sourced wizard function; a failed Finish is never replayed."""
         source = SH.read_text(encoding='utf-8')
-        function = source.split('wizard_post() {', 1)[1].split('\\n\\nfor step in $(seq 1 15)', 1)[0]
+        function = source.split('wizard_post() {', 1)[1].split('\n\nfor step in $(seq 1 15)', 1)[0]
         with tempfile.TemporaryDirectory() as temporary:
             calls = Path(temporary) / 'curl-post-count'
             shell = (
-                'wizard_post() {' + function + '\\n}\\n'
-                'curl() { echo request >> "$CURL_CALLS"; printf 500; }\\n'
-                'installer_token=fixture-token\\n'
-                'if wizard_post 15; then exit 42; fi\\n'
-                'test "$(wc -l < "$CURL_CALLS")" -eq 1\\n'
+                'wizard_post() {' + function + '\n}\n'
+                'curl() { echo request >> "$CURL_CALLS"; printf 500; }\n'
+                'installer_token=fixture-token\n'
+                'if wizard_post 15; then exit 42; fi\n'
+                'test "$(wc -l < "$CURL_CALLS")" -eq 1\n'
             )
             completed = subprocess.run(
                 ['bash', '-e', '-c', shell],
