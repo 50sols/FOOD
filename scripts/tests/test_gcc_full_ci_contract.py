@@ -39,7 +39,7 @@ class GccHeavyExecutionContracts(unittest.TestCase):
         self.assertNotIn("iex ", AGENT.lower())
 
     def test_trusted_immutable_local_scripts_are_never_read_from_pr_checkout(self):
-        self.assertIn("763e865923fced400cbfb8b1fc5667e2397587c2", AGENT)
+        self.assertIn("ed5e18d6d1e9c9489ce206df7f4b5ac2052cac36", AGENT)
         self.assertIn("raw.githubusercontent.com", AGENT)
         self.assertIn("git hash-object $file", AGENT)
         self.assertIn("context: .", COMPOSE)
@@ -83,6 +83,8 @@ class GccHeavyExecutionContracts(unittest.TestCase):
         self.assertIn("mysql-redis-deployment-recovery", FULL)
         self.assertIn("vendor/bin/phpunit tests/Deployment", FULL)
         self.assertIn("for shard in 0 1 2 3", FULL)
+        self.assertIn("if DB_CONNECTION=sqlite DB_DATABASE=:memory:", FULL)
+        self.assertNotIn("if DB_CONNECTION=sqlite DB_DATABASE=database/database.sqlite", FULL)
         self.assertIn("shard_failures=$((shard_failures+1))", FULL)
         self.assertIn("1800s vendor/bin/phpunit", FULL)
         self.assertIn("refusing a PASS", FULL)
