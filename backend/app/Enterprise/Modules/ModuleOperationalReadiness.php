@@ -103,6 +103,15 @@ final class ModuleOperationalReadiness
             return 'uncertified';
         }
 
+        // Health probes are application code and may revoke a certification
+        // while they run. A previously verified signature is not a perpetual
+        // grant: re-read the certification and attestation before returning
+        // READY, just as we re-read the persisted lifecycle and manifest.
+        if (config('enterprise_module_readiness.certified_versions.'.$code) !== $manifestVersion
+            || ! $this->hasWorkflowEvidence($code, $manifestVersion)) {
+            return 'uncertified';
+        }
+
         return 'ready';
     }
 
