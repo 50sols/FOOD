@@ -47,7 +47,7 @@ jobs:
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
-            if (context.repo.owner !== 'walidatiyaai2025-gif' ||
+            if (context.repo.owner !== '50sols' ||
                 context.repo.repo !== 'FOOD') {
               throw new Error('Repository allowlist denied watchdog run');
             }
