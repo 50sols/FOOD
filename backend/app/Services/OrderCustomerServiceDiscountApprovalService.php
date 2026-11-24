@@ -56,6 +56,17 @@ final class OrderCustomerServiceDiscountApprovalService
                     ->exists(), 403);
             }
 
+            // A direct service caller must pass the same normalized rationale
+            // required by the HTTP entrypoint. Empty or padded reasons cannot
+            // create an actionable financial approval or misleading audit row.
+            $reason = trim($reason);
+            $reasonLength = mb_strlen($reason);
+            if ($reasonLength < 5 || $reasonLength > 500) {
+                throw ValidationException::withMessages([
+                    'reason' => [__('customer_service_discount.not_allowed')],
+                ]);
+            }
+
             // HTTP validation is not a trust boundary for direct service callers.
             // Reject NaN, infinity and percentages outside the mathematical
             // 0..100 range before inserting an actionable Finance request.
