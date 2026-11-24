@@ -22,6 +22,50 @@ class InstallerWorkflowTest extends TestCase
 
     private string $testDirectory;
 
+    public function test_hardlinked_install_progress_rejects_foreign_admin_token_and_checkpoint_before_read_or_write(): void
+    {
+        if (! function_exists('link')) {
+            $this->markTestSkipped('Hardlink support unavailable.');
+        }
+
+        $state = app(InstallState::class);
+        $state->markStepComplete(3);
+        $progressPath = $state->progressPath();
+        $foreign = $this->testDirectory.'/outside-private-progress';
+        $bytes = (string) file_get_contents($progressPath);
+        file_put_contents($foreign, $bytes);
+        if (! @link($foreign, $this->testDirectory.'/hardlink-probe')) {
+            $this->markTestSkipped('Filesystem does not permit hardlinks.');
+        }
+        unlink($this->testDirectory.'/hardlink-probe');
+        unlink($progressPath);
+        $this->assertTrue(link($foreign, $progressPath));
+
+        try {
+            foreach ([
+                'progress read' => static fn () => $state->progress(),
+                'setup token' => static fn () => $state->token(),
+                'checkpoint write' => static fn () => $state->markStepComplete(4),
+            ] as $label => $attempt) {
+                try {
+                    $attempt();
+                    $this->fail("Hardlinked progress must reject {$label}.");
+                } catch (\RuntimeException $exception) {
+                    $this->assertSame('Installer progress state is invalid or unsafe.', $exception->getMessage());
+                }
+                $this->assertSame($bytes, file_get_contents($foreign));
+                $this->assertSame($bytes, file_get_contents($progressPath));
+            }
+        } finally {
+            @unlink($progressPath);
+        }
+
+        // A genuine single-link persisted checkpoint remains resumable.
+        copy($foreign, $progressPath);
+        $this->assertSame(3, $state->progress()['completed_step']);
+        $this->assertMatchesRegularExpression('/^[a-f0-9]{64}$/', $state->token());
+    }
+
     public function test_corrupt_persisted_step_fails_closed_without_resetting_installer_state(): void
     {
         $state = app(InstallState::class);
