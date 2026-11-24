@@ -267,13 +267,19 @@ final class InstallState
 
     public function writeLock(string $version): void
     {
-        // The first installed.lock is authoritative: never overwrite it.
+        // Finalization must serialize with token and checkpoint writes.
+        // Otherwise two Finish requests can both pass the outer installed
+        // check and replace the authoritative lock through atomic rename.
         abort_if($this->isInstalled(), 404);
 
-        $this->writeJson($this->lockPath(), [
-            'version' => $version,
-            'installed_at' => now()->toIso8601String(),
-        ]);
+        $this->withProgressWriteLock(function () use ($version): void {
+            // The mutex checks installed.lock again after acquisition; a
+            // queued Finish must never replace the first completed site.
+            $this->writeJson($this->lockPath(), [
+                'version' => $version,
+                'installed_at' => now()->toIso8601String(),
+            ]);
+        });
     }
 
     public function clearProgress(): void
