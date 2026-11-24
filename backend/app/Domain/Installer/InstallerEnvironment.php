@@ -31,6 +31,13 @@ final class InstallerEnvironment
      */
     public function write(array $values, bool $requireEmptyAppKey = false): void
     {
+        // The installer-only environment writer is public to internal callers.
+        // Closing /install and guarding workflow methods is insufficient if a
+        // direct service caller can still replace live APP_KEY/DB credentials.
+        // Enforce the final installation lock at the actual write boundary,
+        // before opening either .env or its persistent file lock.
+        abort_if(app(InstallState::class)->isInstalled(), 404);
+
         foreach (array_keys($values) as $key) {
             if (! in_array($key, self::ALLOWED_KEYS, true)) {
                 throw new InvalidArgumentException('Environment key ['.$key.'] is not installer-writable.');
