@@ -49,6 +49,18 @@ class GccAgentContractTests(unittest.TestCase):
         self.assertIn("foreach($c in @(Api $Uri))", SCRIPT)
         self.assertNotIn("function Comments { return @(Api $Uri) }", SCRIPT)
 
+    def test_report_replay_scans_beyond_first_pr_comment_page(self):
+        # A cursor replay must not re-execute a command whose result moved
+        # beyond the most recent 100 PR comments.
+        self.assertIn("function RequestAlreadyReported([int]$Pr,[long]$Request)", SCRIPT)
+        self.assertIn('comments?per_page=100&sort=created&direction=desc&page=$page', SCRIPT)
+        self.assertIn("$body.Contains($smokeMarker)", SCRIPT)
+        self.assertIn("$body.Contains($fullMarker)", SCRIPT)
+        self.assertIn("if([long]$item.id -le $Request)", SCRIPT)
+        self.assertIn("refusing duplicate execution", SCRIPT)
+        self.assertIn("RequestAlreadyReported -Pr $n -Request ([long]$Comment.id)", SCRIPT)
+        self.assertNotIn("$published.Count -gt 0", SCRIPT)
+
     def test_advisory_not_required_status(self):
         self.assertIn("**Advisory only**", SCRIPT)
         self.assertIn("Report -Pr $n", SCRIPT)
