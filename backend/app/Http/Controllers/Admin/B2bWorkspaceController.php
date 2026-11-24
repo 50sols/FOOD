@@ -458,9 +458,15 @@ class B2bWorkspaceController extends Controller
     public function savePriceRule(Request $request, B2bPricingController $pricing): RedirectResponse
     {
         $actor = $this->actor($request);
-        $storeId = $this->principal->storeId();
-        abort_unless($this->pricingMode->tiersEnabled($storeId), 409, 'B2B pricing tiers are disabled.');
+        $storeId = (int) DB::table('stores')
+            ->join('store_types', 'store_types.id', '=', 'stores.store_type_id')
+            ->where('stores.code', WholesalePrincipal::STORE_CODE)
+            ->where('stores.is_active', true)
+            ->where('store_types.code', 'B2B')
+            ->value('stores.id');
+        abort_unless($storeId > 0, 404);
         $this->operationalScope->assertStore($actor, $storeId, 'b2b.pricing.manage', 'b2b');
+        abort_unless($this->pricingMode->tiersEnabled($storeId), 409, 'B2B pricing tiers are disabled.');
         $request->validate(['setup_action' => ['sometimes', 'in:save,test']]);
         $request->merge(['store_id' => $storeId]);
 
