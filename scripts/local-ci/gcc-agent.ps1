@@ -133,14 +133,22 @@ function Invoke-BoundedGitFetch([string]$Checkout,[int]$Pr,[long]$Request) {
  $env:GCM_INTERACTIVE='never'
  try {
   # Fetch without credentials first. Only a Git-classified access rejection
-  # may use the host's already-configured, noninteractive credential helper.
-  # Never retry locks, invalid refs, network failures or timeouts; never pass
-  # credentials as command arguments or into the untrusted PR Docker runtime.
+  # may invoke the authenticated GitHub CLI's Git credential protocol helper.
+  # Use a process-local -c setting: no global helper mutation and no tokens
+  # in command arguments, PR logs, or the untrusted PR Docker runtime.
+  # Never retry locks, invalid refs, network failures or timeouts.
   for($attempt=0;$attempt -lt 2;$attempt++) {
    $process=$null
    $authenticated=($attempt -eq 1)
    $arguments=$baseArguments
-   if(-not $authenticated) { $arguments+=' -c credential.helper=' }
+   if($authenticated) {
+    # Doctor has already verified gh auth and the canonical repository ID.
+    # A process-local Git config invokes gh's credential protocol with no
+    # interactive prompts; this never exposes the token as a process arg.
+    $arguments+=' -c "credential.helper=!gh auth git-credential"'
+   } else {
+    $arguments+=' -c credential.helper='
+   }
    $arguments+=$fetchArguments
    $attemptStderr=if($authenticated) { "$stderr.authenticated" } else { $stderr }
    $attemptStdout=if($authenticated) { "$stdout.authenticated" } else { $stdout }
