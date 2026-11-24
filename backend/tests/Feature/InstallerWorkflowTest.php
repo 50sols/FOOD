@@ -51,7 +51,7 @@ class InstallerWorkflowTest extends TestCase
                 try {
                     $attempt();
                     $this->fail("Invalid {$description} must block installer {$operation}.");
-                } catch (\\RuntimeException $exception) {
+                } catch (\RuntimeException $exception) {
                     $this->assertSame('Installer progress state is invalid.', $exception->getMessage());
                 }
             }
