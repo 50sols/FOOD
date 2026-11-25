@@ -203,7 +203,13 @@ final class InventoryOwnershipRuleService
      */
     public function advisoryFor(User $actor, int $storeId, string $channel, ?int $supplierId, ?int $warehouseId): array
     {
-        $this->authorize($actor, $storeId, 'inventory.view');
+        // Do not trust a stale in-memory Super Admin or checker on entry.
+        // A persisted offboarding must deny before any store/scope lookup
+        // can obscure the authorization failure with a 404.
+        $initialActor = User::query()
+            ->whereKey($actor->getKey())->where('is_active', true)->first();
+        abort_unless($initialActor !== null, 403);
+        $this->authorize($initialActor, $storeId, 'inventory.view');
         // Do not issue even non-certifying guidance for a foreign, deleted or
         // disabled warehouse. The client cannot designate an arbitrary store's
         // warehouse as the context for this store's title policy.
