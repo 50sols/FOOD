@@ -347,7 +347,7 @@ final class ProcurementCompletionManager
         // ownership in the same SELECT. A visibleRfq() preflight followed by
         // an unscoped document lookup could disclose a stored file path if
         // the RFQ is reassigned between the two statements.
-        return DB::table('enterprise_procurement_quote_documents as documents')
+        $document = DB::table('enterprise_procurement_quote_documents as documents')
             ->join('enterprise_procurement_quotes as quotes', 'quotes.id', '=', 'documents.quote_id')
             ->join('enterprise_procurement_rfqs as rfqs', 'rfqs.id', '=', 'quotes.rfq_id')
             ->where('rfqs.organization_id', $scope->organizationId)
@@ -357,6 +357,13 @@ final class ProcurementCompletionManager
             ->where('documents.id', $documentId)
             ->select('documents.*')
             ->firstOrFail();
+
+        // This query deliberately resolves the document and CURRENT scoped
+        // parent in one SELECT. A view grant can be revoked while it runs;
+        // do not return the private storage path without a final fresh check.
+        $this->scope($actor, $context, 'procurement.purchase_requests.view');
+
+        return $document;
     }
 
     /** @param array<string,mixed> $attributes */
@@ -1477,7 +1484,7 @@ final class ProcurementCompletionManager
         // ownership gap before fetching the attachment's storage path.
         // Resolve both identities and the live tenant/store scope in one
         // database statement so a transferred contract cannot expose a file.
-        return DB::table('enterprise_procurement_contract_documents as documents')
+        $document = DB::table('enterprise_procurement_contract_documents as documents')
             ->join('enterprise_procurement_contracts as contracts', 'contracts.id', '=', 'documents.contract_id')
             ->where('contracts.organization_id', $scope->organizationId)
             ->where('contracts.company_id', $scope->companyId)
@@ -1486,6 +1493,12 @@ final class ProcurementCompletionManager
             ->where('documents.id', $documentId)
             ->select('documents.*')
             ->firstOrFail();
+
+        // Keep the contract/doc join atomic for scope while denying a caller
+        // whose original persisted view permission changed during the SELECT.
+        $this->scope($actor, $context, 'procurement.purchase_orders.view');
+
+        return $document;
     }
 
     /** @param array<string,mixed> $attributes */
