@@ -933,7 +933,10 @@ final class EnterprisePurchaseOrderFoundationTest extends TestCase
             ] as [$operation, $permission, $readTable, $beforeStatus, $afterStatus]) {
                 $permissionId = $permissionIds[$permission];
                 $table = $readTable;
-                $armed = true;
+                // Do not arm before baseline counts: the line-count SELECT
+                // itself matches the issued-PO race trigger, outside the
+                // transaction that is supposed to roll back the injected DENY.
+                $armed = false;
                 $injected = false;
                 $run = static function () use ($orders, $actor, $context, $request, &$order, $operation) {
                     return match ($operation) {
@@ -946,6 +949,9 @@ final class EnterprisePurchaseOrderFoundationTest extends TestCase
                 $auditBefore = DB::table('audit_logs')->count();
                 $linesBefore = DB::table('enterprise_purchase_order_lines')->count();
 
+                // The injected permission revoke must occur during the real
+                // create/issue/cancel transaction, never during test setup.
+                $armed = true;
                 try {
                     $run();
                     $this->fail('A mid-transaction permission revoke must stop '.$operation.' before mutation.');
