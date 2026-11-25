@@ -77,6 +77,19 @@ final class GoodsReceiptManager
             ->paginate($perPage)
             ->withQueryString();
 
+        // A receipt may transfer out of the selected store AFTER the page
+        // SELECT. Before returning cached headers, verify every bounded page
+        // row still belongs to this original organization's store scope.
+        // A single scoped count avoids per-row queries or stale-model checks.
+        $pageIds = $page->getCollection()->pluck('id')->all();
+        if ($pageIds !== []) {
+            abort_unless(
+                $this->visibleQuery($scope)->whereKey($pageIds)->count() === count($pageIds),
+                404,
+                'Goods receipt ownership changed during pagination.',
+            );
+        }
+
         // COUNT and page SELECT may outlive the initial authorization. A
         // committed DENY or offboarding during those queries must prevent
         // returning supplier/receipt data to the original caller.
