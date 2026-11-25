@@ -53,7 +53,7 @@ final class SupplierStatementAgingManager
             ? strtoupper((string) $validated['currency_code'])
             : null;
 
-        return $this->visibleInvoiceQuery($scope)
+        $page = $this->visibleInvoiceQuery($scope)
             ->where('supplier_id', $supplierId)
             ->where('status', 'handed_off')
             ->where('invoice_date', '>=', $window['from'])
@@ -70,6 +70,12 @@ final class SupplierStatementAgingManager
             ->orderByDesc('id')
             ->paginate($perPage)
             ->withQueryString();
+
+        // The supplier could transfer to a different store after the first
+        // visible-supplier SELECT and before its invoices are fetched.
+        $this->findVisibleSupplier($scope, $supplierId);
+
+        return $page;
     }
 
     /**
@@ -117,7 +123,7 @@ final class SupplierStatementAgingManager
         $due60 = $asOf->subDays(60)->toDateString();
         $due90 = $asOf->subDays(90)->toDateString();
 
-        return [
+        $result = [
             'supplier' => $supplier,
             'as_of' => $asOf->toDateString(),
             'currency_code' => $currency,
@@ -164,6 +170,12 @@ final class SupplierStatementAgingManager
                 ),
             ],
         ];
+
+        // Each aggregate is a separate SQL read. Never return financial
+        // exposure for a supplier that left the authorized store mid-read.
+        $this->findVisibleSupplier($scope, $supplierId);
+
+        return $result;
     }
 
     private function authorizedScope(

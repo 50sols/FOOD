@@ -395,6 +395,105 @@ final class EnterpriseSupplierStatementAgingFoundationTest extends TestCase
         }
     }
 
+    public function test_statement_and_aging_reject_supplier_store_transfer_after_financial_preflight_in_ar_and_en(): void
+    {
+        $this->enableProcurement();
+        [$actor, $store, $context] = $this->scopedUser($this->allPermissions(), 'SAGE-LIVE-OWN');
+        $foreignStore = $this->createRetailStore('SAGE-LIVE-FOREIGN');
+        [, $warehouse] = $this->stockTarget($store, 'SAGE-LIVE-STOCK');
+        $manager = app(SupplierStatementAgingManager::class);
+        $invoices = app(PurchaseInvoiceHandoffManager::class);
+
+        $armed = false;
+        $moved = false;
+        $targetSupplierId = null;
+        DB::listen(static function ($query) use (&$armed, &$moved, &$targetSupplierId, $foreignStore): void {
+            $sql = strtolower((string) $query->sql);
+            if (! $armed || $moved || $targetSupplierId === null
+                || ! str_contains($sql, 'enterprise_purchase_invoices')
+                || ! str_contains($sql, 'select')) {
+                return;
+            }
+
+            // The supplier was authorized at the initial SELECT. Transfer it
+            // after the first invoice/aggregate read, before returning money.
+            $armed = false;
+            $moved = true;
+            DB::table('enterprise_suppliers')
+                ->where('id', $targetSupplierId)
+                ->update(['store_id' => $foreignStore->id]);
+        });
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            foreach (['statement', 'aging'] as $report) {
+                $suffix = strtoupper($locale.'-'.$report);
+                $receipt = $this->postedReceipt(
+                    $actor, $context, $warehouse, 'SAGE-LIVE-SUP-'.$suffix,
+                    'SAGE-LIVE-STOCK', 2,
+                );
+                $invoice = $invoices->createFromPostedReceipt($actor, $context, $receipt->id, [
+                    'supplier_invoice_number' => 'SAGE-LIVE-INV-'.$suffix,
+                    'invoice_date' => '2026-10-01',
+                    'due_date' => '2026-10-15',
+                    'lines' => [[
+                        'goods_receipt_line_id' => $receipt->lines()->firstOrFail()->id,
+                        'quantity' => 1,
+                    ]],
+                ]);
+                $invoices->handoff($actor, $context, $invoice->id);
+                $supplierId = (int) $receipt->supplier_id;
+
+                $read = static fn () => $report === 'statement'
+                    ? $manager->statement($actor, $context, $supplierId, [
+                        'from' => '2026-10-01', 'to' => '2026-10-31',
+                    ])
+                    : $manager->aging($actor, $context, $supplierId, [
+                        'as_of' => '2026-10-16', 'currency_code' => 'KWD',
+                    ]);
+
+                $positive = $read();
+                if ($report === 'statement') {
+                    $this->assertSame(1, $positive->total());
+                    $this->assertSame($invoice->id, $positive->items()[0]->id);
+                } else {
+                    $this->assertSame(1, $positive['invoice_count']);
+                    $this->assertSame('1.250', $positive['gross_exposure']);
+                }
+
+                $auditBefore = DB::table('audit_logs')->count();
+                $invoiceBefore = DB::table('enterprise_purchase_invoices')->count();
+                $linesBefore = DB::table('enterprise_purchase_invoice_lines')->count();
+                $stockBefore = DB::table('stock_movements')->count();
+                $targetSupplierId = $supplierId;
+                $moved = false;
+                $armed = true;
+
+                try {
+                    $read();
+                    $this->fail('Former-store supplier reports must not expose invoice amounts after transfer.');
+                } catch (ModelNotFoundException) {
+                    $this->assertTrue($moved, 'The supplier must transfer after an authorized preflight.');
+                }
+
+                $this->assertDatabaseHas('enterprise_suppliers', [
+                    'id' => $supplierId, 'store_id' => $foreignStore->id,
+                ]);
+                $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+                $this->assertSame($invoiceBefore, DB::table('enterprise_purchase_invoices')->count());
+                $this->assertSame($linesBefore, DB::table('enterprise_purchase_invoice_lines')->count());
+                $this->assertSame($stockBefore, DB::table('stock_movements')->count());
+
+                try {
+                    $read();
+                    $this->fail('Repeated former-store statement access must be denied.');
+                } catch (ModelNotFoundException) {
+                    $this->assertTrue(true);
+                }
+            }
+        }
+    }
+
     public function test_aging_reads_do_not_require_finance_or_treasury_modules(): void
     {
         $this->enableProcurement();
