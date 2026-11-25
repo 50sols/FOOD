@@ -20,6 +20,50 @@ SOURCE_DATE_EPOCH = 1731758400
 
 
 class DeterministicSetupZipTest(unittest.TestCase):
+    def test_private_key_and_service_credentials_fail_before_setup_zip_staging(self) -> None:
+        # Dirty release source must not serialize private or cloud keys.
+        cases = (
+            "backend/config/private.key",
+            "backend/config/CLIENT.P12",
+            "backend/resources/admin/client.PFX",
+            "backend/id_ed25519",
+            "backend/config/SERVICE-ACCOUNT.JSON",
+            "backend/config/client_secret.json",
+            "backend/resources/admin/secrets.pem",
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            for number, member in enumerate(cases):
+                with self.subTest(member=member):
+                    stage = base / f"private-credential-{number}"
+                    stage.mkdir()
+                    (stage / "VERSION").write_text("1.0.127\n", encoding="utf-8")
+                    leaked = stage / member
+                    leaked.parent.mkdir(parents=True, exist_ok=True)
+                    leaked.write_bytes(b"DO-NOT-PUBLISH-PRIVATE-MATERIAL")
+                    archive = base / f"private-credential-{number}.zip"
+                    with mock.patch(
+                        "v2_build_setup_zip.tempfile.mkstemp",
+                        side_effect=AssertionError("Private credentials must fail before ZIP staging"),
+                    ):
+                        with self.assertRaisesRegex(SetupBuildError, "Private key or service credentials"):
+                            build_setup_zip(stage, archive, SOURCE_DATE_EPOCH)
+                    self.assertFalse(archive.exists())
+                    self.assertEqual(leaked.read_bytes(), b"DO-NOT-PUBLISH-PRIVATE-MATERIAL")
+
+    def test_public_ca_pem_and_ssh_pubkey_are_not_private_material(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            stage = Path(temporary) / "source"
+            (stage / "backend/public/assets").mkdir(parents=True)
+            (stage / "VERSION").write_text("1.0.127\n", encoding="utf-8")
+            (stage / "backend/public/assets/cacert.pem").write_bytes(b"PUBLIC CA")
+            (stage / "backend/public/assets/id_ed25519.pub").write_bytes(b"PUBLIC SSH KEY")
+            archive = Path(temporary) / "safe-public.zip"
+            self.assertEqual(len(build_setup_zip(stage, archive, SOURCE_DATE_EPOCH)), 64)
+            with zipfile.ZipFile(archive) as content:
+                self.assertIn("backend/public/assets/cacert.pem", content.namelist())
+                self.assertIn("backend/public/assets/id_ed25519.pub", content.namelist())
+
     def test_package_manager_credentials_are_rejected_before_any_zip_creation(self) -> None:
         # Composer/npm tokens must never reach the temporary ZIP. Match file
         # names case-insensitively at any depth, including hidden config dirs.

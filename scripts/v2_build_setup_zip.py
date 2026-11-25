@@ -35,6 +35,22 @@ RESERVED_DEVICE = re.compile(
 )
 
 
+def _is_sensitive_private_file(name: str) -> bool:
+    """Reject key material without blocking public CA bundles or SSH .pub files."""
+    lower = name.casefold()
+    return (
+        lower in {
+            "id_rsa", "id_ed25519", "id_ecdsa", "id_dsa",
+            "credentials.json", "client_secret.json",
+            "service-account.json", "service_account.json",
+        }
+        or lower.endswith((".key", ".p12", ".pfx"))
+        or (lower.endswith(".pem") and any(
+            marker in lower for marker in ("private", "secret")
+        ))
+    )
+
+
 def _zip_timestamp(epoch: int) -> tuple[int, int, int, int, int, int]:
     moment = dt.datetime.fromtimestamp(epoch, tz=dt.timezone.utc)
     if not 1980 <= moment.year <= 2107:
@@ -179,6 +195,8 @@ def build_setup_zip(source_root: Path, output: Path, source_epoch: int) -> str:
                 raise SetupBuildError(f"Source control metadata in Setup staging: {name}")
             if folded in ("auth.json", ".npmrc", ".netrc", ".pypirc", ".yarnrc.yml"):
                 raise SetupBuildError(f"Package manager credentials in Setup staging: {name}")
+            if _is_sensitive_private_file(folded):
+                raise SetupBuildError(f"Private key or service credentials in Setup staging: {name}")
             if folded == ".env" or (folded.startswith(".env.") and folded not in allowed_templates):
                 raise SetupBuildError(f"Secret environment configuration in Setup staging: {name}")
         # The verifier rejects runtime data, but that is too late if the
@@ -287,6 +305,8 @@ def build_setup_zip(source_root: Path, output: Path, source_epoch: int) -> str:
                         raise SetupBuildError(f"Source control metadata in Setup staging: {name}")
                     if folded in ("auth.json", ".npmrc", ".netrc", ".pypirc", ".yarnrc.yml"):
                         raise SetupBuildError(f"Package manager credentials in Setup staging: {name}")
+                    if _is_sensitive_private_file(folded):
+                        raise SetupBuildError(f"Private key or service credentials in Setup staging: {name}")
                     if folded == ".env" or (folded.startswith(".env.") and folded not in allowed_templates):
                         raise SetupBuildError(f"Secret environment configuration in Setup staging: {name}")
                 is_dir = stat.S_ISDIR(meta.st_mode)

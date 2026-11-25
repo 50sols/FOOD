@@ -102,6 +102,39 @@ class BuildUpdateBundleSourceSafetyTest(unittest.TestCase):
             with self.subTest(name=name), self.assertRaises(RuntimeError):
                 builder.safe_path(name)
 
+    def test_private_keys_and_service_credentials_are_never_update_members(self) -> None:
+        for member in (
+            "backend/config/private.key",
+            "backend/config/CLIENT.P12",
+            "backend/resources/admin/client.PFX",
+            "backend/config/id_rsa",
+            "backend/config/SERVICE-ACCOUNT.JSON",
+            "backend/resources/admin/client_secret.json",
+            "assets/admin/private_certificate.pem",
+        ):
+            with self.subTest(member=member):
+                with self.assertRaisesRegex(RuntimeError, "Private key or service credentials"):
+                    builder.safe_path(member)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "repo"
+            secret = root / "backend/resources/admin/private.key"
+            secret.parent.mkdir(parents=True)
+            secret.write_bytes(b"DO-NOT-PUBLISH-PRIVATE-MATERIAL")
+            output = root / "dist/FOODEX-Update.zip"
+            with mock.patch.object(builder.tempfile, "mkstemp") as stage:
+                with self.assertRaisesRegex(RuntimeError, "Private key or service credentials"):
+                    builder.complete_runtime_files(root)
+                stage.assert_not_called()
+            self.assertFalse(output.exists())
+            self.assertEqual(secret.read_bytes(), b"DO-NOT-PUBLISH-PRIVATE-MATERIAL")
+
+        for public_asset in (
+            "backend/public/assets/cacert.pem",
+            "backend/public/assets/id_ed25519.pub",
+        ):
+            self.assertEqual(builder.safe_path(public_asset), public_asset)
+
     def test_refuse_package_manager_credentials_from_dirty_runtime_tree(self) -> None:
         # Shared-host staging can accidentally contain developer credential
         # files in a recursively included resources/public asset directory.

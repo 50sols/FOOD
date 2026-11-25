@@ -282,6 +282,19 @@ def safe_path(path: str) -> str:
             raise RuntimeError(f"Package-manager credentials are not allowed in updates: {path}")
 
         if (
+            part.casefold() in {
+                "id_rsa", "id_ed25519", "id_ecdsa", "id_dsa",
+                "credentials.json", "client_secret.json",
+                "service-account.json", "service_account.json",
+            }
+            or part.casefold().endswith((".key", ".p12", ".pfx"))
+            or (part.casefold().endswith(".pem") and any(
+                marker in part.casefold() for marker in ("private", "secret")
+            ))
+        ):
+            raise RuntimeError(f"Private key or service credentials are not allowed in updates: {path}")
+
+        if (
             part.rstrip(" .") != part
             or any(char in '<>:"|?*' for char in part)
             or re.fullmatch(r"(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\..*)?", part, re.IGNORECASE)
