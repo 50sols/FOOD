@@ -352,11 +352,37 @@ final class V2GoodsReceiptsWorkbenchAuthorityTest extends TestCase
     {
         $store = $this->store('B2C', 'P135-GRN-DETAIL-REVOKE');
         $this->enableProcurement();
-        $actor = $this->actor('PROCUREMENT_MANAGER');
+        // Retail permissions require a STORE-scoped role. A global job role
+        // placed in user_store_roles cannot authorize Retail procurement.
+        $role = Role::query()->create([
+            'code' => 'P135_GRN_DETAIL_MANAGER',
+            'name' => 'GRN Detail Scoped Test Maker',
+            'scope' => 'store',
+            'is_active' => true,
+            'is_system' => false,
+        ]);
+        foreach ([
+            'procurement.suppliers.view',
+            'procurement.suppliers.manage',
+            'procurement.purchase_requests.view',
+            'procurement.purchase_requests.manage',
+            'procurement.purchase_requests.approve',
+            'procurement.purchase_orders.view',
+            'procurement.purchase_orders.manage',
+            'procurement.purchase_orders.issue',
+            'procurement.goods_receipts.view',
+            'procurement.goods_receipts.manage',
+            'procurement.goods_receipts.post',
+        ] as $code) {
+            $role->permissions()->syncWithoutDetaching([
+                Permission::query()->where('code', $code)->firstOrFail()->id,
+            ]);
+        }
+        $actor = User::factory()->create(['is_active' => true, 'locale' => 'en']);
         DB::table('user_store_roles')->insert([
             'user_id' => $actor->id,
             'store_id' => $store->id,
-            'role_id' => Role::query()->where('code', 'PROCUREMENT_MANAGER')->firstOrFail()->id,
+            'role_id' => $role->id,
             'created_at' => now(),
             'updated_at' => now(),
         ]);
