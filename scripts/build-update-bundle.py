@@ -249,7 +249,14 @@ def safe_path(path: str) -> str:
     ):
         raise RuntimeError(f"Public uploaded/runtime content is not allowed in updates: {path}")
 
+    # Keep G005's recursively scanned runtime trees at least as strict as
+    # the G004 Setup package. A staged package-manager auth file can contain
+    # bearer tokens despite having a perfectly portable ZIP member name.
+    package_credentials = {"auth.json", ".npmrc", ".netrc", ".pypirc", ".yarnrc.yml"}
     for part in parts:
+        if part.casefold() in package_credentials:
+            raise RuntimeError(f"Package-manager credentials are not allowed in updates: {path}")
+
         if (
             part.rstrip(" .") != part
             or any(char in '<>:"|?*' for char in part)

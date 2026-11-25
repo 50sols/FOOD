@@ -63,6 +63,40 @@ class BuildUpdateBundleSourceSafetyTest(unittest.TestCase):
             with self.subTest(name=name), self.assertRaises(RuntimeError):
                 builder.safe_path(name)
 
+    def test_refuse_package_manager_credentials_from_dirty_runtime_tree(self) -> None:
+        # Shared-host staging can accidentally contain developer credential
+        # files in a recursively included resources/public asset directory.
+        for filename in ("auth.json", ".npmrc", ".netrc", ".pypirc", ".yarnrc.yml"):
+            for path in (
+                f"backend/resources/admin/{filename}",
+                f"backend/public/assets/admin/{filename.upper()}",
+                f"assets/admin/{filename}",
+            ):
+                with self.subTest(path=path), self.assertRaisesRegex(
+                    RuntimeError, "Package-manager credentials"
+                ):
+                    builder.safe_path(path)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "repo"
+            credential = root / "backend/resources/admin/.npmrc"
+            credential.parent.mkdir(parents=True)
+            credential.write_bytes(b"//registry.example.invalid/:_authToken=PRIVATE")
+            output = root / "dist/FOODEX-Update.zip"
+            with mock.patch.object(builder.tempfile, "mkstemp") as temporary_zip:
+                with self.assertRaisesRegex(RuntimeError, "Package-manager credentials"):
+                    builder.complete_runtime_files(root)
+                temporary_zip.assert_not_called()
+            self.assertFalse(output.exists())
+            self.assertEqual(credential.read_bytes(), b"//registry.example.invalid/:_authToken=PRIVATE")
+
+        # The policy is filename-based, not an arbitrary denial of frontend
+        # assets; standard compiled files retain their canonical selection.
+        self.assertEqual(
+            builder.safe_path("backend/public/assets/admin/app.css"),
+            "backend/public/assets/admin/app.css",
+        )
+
     def test_public_uploaded_content_is_excluded_before_update_zip_creation(self) -> None:
         # A dirty shared-host staging copy may contain customer uploads inside
         # backend/public/. These must never become authenticated release bytes.
