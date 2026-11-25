@@ -224,6 +224,9 @@ final class PurchaseInvoiceHandoffManager
             // Reauthorize the current persisted principal before any invoice
             // lines, audit or downstream Finance-matching writes begin.
             $this->authorizedScope($actor, $context, self::MANAGE_PERMISSION);
+            // An independently reassigned supplier invalidates the receipt
+            // even when its original store and priced lines have not moved.
+            $this->visibleReceiptQuery($scope)->whereKey($receipt->id)->firstOrFail();
 
             $publicId = (string) Str::uuid();
             $invoice = EnterprisePurchaseInvoice::query()->create([
@@ -313,6 +316,9 @@ final class PurchaseInvoiceHandoffManager
             // Even an idempotent replay must not disclose a locked invoice
             // to a user whose permission was revoked during row lookup.
             $this->authorizedScope($actor, $context, self::HANDOFF_PERMISSION);
+            // Locking the invoice does not lock its independently mutable supplier.
+            // Revalidate its live store eligibility before either retry response.
+            $this->findVisible($scope, $invoiceId);
             if ($invoice->status === 'handed_off') {
                 return $invoice->refresh()->load('lines');
             }
@@ -379,6 +385,7 @@ final class PurchaseInvoiceHandoffManager
             // A committed permission revocation after the GRN/line/match
             // reads must abort before an immutable Finance outbox event.
             $this->authorizedScope($actor, $context, self::HANDOFF_PERMISSION);
+            $this->findVisible($scope, $invoiceId);
 
             $event = VersionedDomainEvent::create(
                 type: self::EVENT_TYPE,
@@ -457,6 +464,7 @@ final class PurchaseInvoiceHandoffManager
             // Recheck after the authoritative row lock, including retries,
             // before returning sensitive data or mutating financial state.
             $this->authorizedScope($actor, $context, self::MANAGE_PERMISSION);
+            $this->findVisible($scope, $invoiceId);
             if ($invoice->status === 'cancelled') {
                 return $invoice->refresh();
             }
@@ -557,7 +565,18 @@ final class PurchaseInvoiceHandoffManager
         return EnterprisePurchaseInvoice::query()
             ->where('organization_id', $scope->organizationId)
             ->where('company_id', $scope->companyId)
-            ->where('store_id', $scope->storeId);
+            ->where('store_id', $scope->storeId)
+            ->whereHas('supplier', function (Builder $supplier) use ($scope): void {
+                $supplier->where('organization_id', $scope->organizationId)
+                    ->where('company_id', $scope->companyId)
+                    ->where(function (Builder $query) use ($scope): void {
+                        $query->where('scope_type', 'company')
+                            ->orWhere(function (Builder $store) use ($scope): void {
+                                $store->where('scope_type', 'store')
+                                    ->where('store_id', $scope->storeId);
+                            });
+                    });
+            });
     }
 
     /** @return Builder<EnterpriseGoodsReceipt> */
@@ -566,7 +585,18 @@ final class PurchaseInvoiceHandoffManager
         return EnterpriseGoodsReceipt::query()
             ->where('organization_id', $scope->organizationId)
             ->where('company_id', $scope->companyId)
-            ->where('store_id', $scope->storeId);
+            ->where('store_id', $scope->storeId)
+            ->whereHas('supplier', function (Builder $supplier) use ($scope): void {
+                $supplier->where('organization_id', $scope->organizationId)
+                    ->where('company_id', $scope->companyId)
+                    ->where(function (Builder $query) use ($scope): void {
+                        $query->where('scope_type', 'company')
+                            ->orWhere(function (Builder $store) use ($scope): void {
+                                $store->where('scope_type', 'store')
+                                    ->where('store_id', $scope->storeId);
+                            });
+                    });
+            });
     }
 
     private function findVisible(

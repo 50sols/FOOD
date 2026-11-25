@@ -36,6 +36,97 @@ final class EnterprisePurchaseInvoiceHandoffFoundationTest extends TestCase
 {
     use RefreshDatabase;
 
+    public function test_purchase_invoice_late_supplier_store_transfer_denies_financial_reads_and_writes_in_ar_and_en(): void
+    {
+        $this->enableProcurement();
+        [$actor, $store, $context] = $this->scopedUser($this->allPermissions(), 'PINV-LIVE-SUP');
+        $foreignStore = $this->createRetailStore('PINV-SUP-FOREIGN');
+        [, $warehouse] = $this->stockTarget($store, 'PINV-SUP-SKU');
+        $manager = app(PurchaseInvoiceHandoffManager::class);
+        $armed = false;
+        $transferred = false;
+        $targetSupplier = null;
+
+        DB::listen(static function ($query) use (&$armed, &$transferred, &$targetSupplier, $foreignStore): void {
+            $sql = strtolower((string) $query->sql);
+            if (! $armed || $transferred || $targetSupplier === null
+                || ! str_contains($sql, 'select')
+                || ! str_contains($sql, 'enterprise_purchase_invoices')) {
+                return;
+            }
+
+            // Deterministic same-connection injection immediately after the
+            // first live invoice SELECT; this is not a two-session race proof.
+            $armed = false;
+            $transferred = true;
+            DB::table('enterprise_suppliers')->where('id', $targetSupplier)
+                ->update(['store_id' => $foreignStore->id]);
+        });
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            $receipt = $this->postedReceipt(
+                $actor, $context, $warehouse, 'PINV-LIVE-SUP-'.strtoupper($locale), 'PINV-SUP-SKU', 2,
+            );
+            $invoice = $manager->createFromPostedReceipt($actor, $context, $receipt->id, [
+                'supplier_invoice_number' => 'PINV-SUP-XFER-'.strtoupper($locale),
+                'invoice_date' => '2026-10-16',
+                'lines' => [[
+                    'goods_receipt_line_id' => $receipt->lines()->firstOrFail()->id,
+                    'quantity' => 1,
+                ]],
+            ]);
+            $targetSupplier = (int) $receipt->supplier_id;
+            $this->assertSame($invoice->id, $manager->detail($actor, $context, $invoice->id)->id);
+            $this->assertSame(1, $manager->paginate($actor, $context, ['supplier_id' => $targetSupplier])->total());
+
+            $auditBefore = DB::table('audit_logs')->count();
+            $lineCountBefore = DB::table('enterprise_purchase_invoice_lines')->count();
+            $outboxBefore = DB::table('enterprise_outbox_messages')->count();
+            $transferred = false;
+            $armed = true;
+            try {
+                $manager->detail($actor, $context, $invoice->id);
+                $this->fail('A supplier moved after the invoice SELECT must deny cached priced lines.');
+            } catch (ModelNotFoundException) {
+                $this->assertTrue($transferred);
+            }
+
+            $this->assertSame(0, $manager->paginate($actor, $context, ['supplier_id' => $targetSupplier])->total());
+            foreach ([
+                fn () => $manager->detail($actor, $context, $invoice->id),
+                fn () => $manager->handoff($actor, $context, $invoice->id),
+                fn () => $manager->cancel($actor, $context, $invoice->id),
+                fn () => $manager->createFromPostedReceipt($actor, $context, $receipt->id, [
+                    'supplier_invoice_number' => 'PINV-BLOCKED-'.strtoupper($locale),
+                    'invoice_date' => '2026-10-16',
+                    'lines' => [[
+                        'goods_receipt_line_id' => $receipt->lines()->firstOrFail()->id,
+                        'quantity' => 1,
+                    ]],
+                ]),
+            ] as $operation) {
+                try {
+                    $operation();
+                    $this->fail('Foreign-store supplier linkage must deny invoice reads and writes.');
+                } catch (ModelNotFoundException) {
+                    $this->assertTrue(true);
+                }
+            }
+
+            $this->assertDatabaseHas('enterprise_purchase_invoices', [
+                'id' => $invoice->id, 'status' => 'draft', 'outbox_event_id' => null,
+            ]);
+            $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+            $this->assertSame($lineCountBefore, DB::table('enterprise_purchase_invoice_lines')->count());
+            $this->assertSame($outboxBefore, DB::table('enterprise_outbox_messages')->count());
+
+            DB::table('enterprise_suppliers')->where('id', $targetSupplier)
+                ->update(['store_id' => $store->id]);
+            $this->assertSame($invoice->id, $manager->detail($actor, $context, $invoice->id)->id);
+        }
+    }
+
     public function test_disabled_procurement_performs_no_purchase_invoice_query_work(): void
     {
         [$actor, , $context] = $this->scopedUser($this->allPermissions(), 'PINV-OFF');
