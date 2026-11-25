@@ -367,6 +367,45 @@ final class EnterprisePurchaseOrderFoundationTest extends TestCase
                 ->where('auditable_id', $order->id)
                 ->count());
         }
+
+        // A migrated GRN may also have lost its line's cached movement FK.
+        // The stock movement itself is the durable evidence of receipt and
+        // must remain sufficient to forbid PO cancellation independently.
+        $receivedLine = $receipt->lines()->firstOrFail();
+        DB::table('enterprise_goods_receipt_lines')->where('id', $receivedLine->id)
+            ->update(['stock_movement_id' => null]);
+        $this->assertNull($receivedLine->fresh()->stock_movement_id);
+        $this->assertDatabaseHas('stock_movements', [
+            'reference_type' => 'enterprise_goods_receipt_line',
+            'reference_id' => $receivedLine->id,
+            'type' => 'purchase_receipt',
+            'store_id' => $store->id,
+        ]);
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            try {
+                $orders->cancel($actor, $context, $order->id);
+                $this->fail('Existing purchase receipt movement must block PO cancellation even with missing GRN pointer.');
+            } catch (ValidationException $exception) {
+                $this->assertArrayHasKey('status', $exception->errors());
+            }
+            $this->assertDatabaseHas('enterprise_purchase_orders', [
+                'id' => $order->id, 'status' => 'issued',
+            ]);
+            $this->assertSame(1.0, (float) DB::table('inventories')
+                ->where('warehouse_id', $warehouse->id)
+                ->where('product_id', $product->id)
+                ->value('quantity'));
+            $this->assertSame(1, DB::table('stock_movements')
+                ->where('type', 'purchase_receipt')
+                ->where('store_id', $store->id)
+                ->count());
+            $this->assertSame(0, DB::table('audit_logs')
+                ->where('event', 'enterprise.purchase_order.cancelled')
+                ->where('auditable_id', $order->id)
+                ->count());
+        }
     }
 
     public function test_po_number_is_unique_per_company_even_for_imported_duplicate(): void
