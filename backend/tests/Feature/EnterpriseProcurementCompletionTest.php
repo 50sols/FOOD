@@ -582,6 +582,99 @@ final class EnterpriseProcurementCompletionTest extends TestCase
         }
     }
 
+    public function test_contract_detail_does_not_expose_attachment_paths_after_store_transfer_in_ar_and_en(): void
+    {
+        Storage::fake('local');
+        $this->enableProcurement();
+        [$actor, , $context] = $this->scopedUser($this->allPermissions(), 'PROC-DETAIL-DOC-TRANSFER');
+        $foreignStore = $this->createRetailStore('PROC-DETAIL-DOC-FOREIGN');
+        $directory = app(SupplierDirectory::class);
+        $completion = app(ProcurementCompletionManager::class);
+
+        $transferContractId = null;
+        $transferred = false;
+        $documentQueries = [];
+        // Listen once for both locales. Move the contract immediately after
+        // the first scoped contract SELECT, before detail reads attachment
+        // storage paths. A separate preflight must not authorize those paths.
+        DB::listen(static function ($query) use (&$transferContractId, &$transferred, &$documentQueries, $foreignStore): void {
+            $sql = strtolower((string) $query->sql);
+            if (str_contains($sql, 'enterprise_procurement_contract_documents')
+                && str_contains($sql, 'enterprise_procurement_contracts')
+                && str_contains($sql, 'join')
+                && str_contains($sql, 'select')) {
+                $documentQueries[] = $sql;
+            }
+            if ($transferContractId === null || $transferred
+                || ! str_contains($sql, 'enterprise_procurement_contracts')
+                || ! str_contains($sql, 'select')
+                || str_contains($sql, 'join')) {
+                return;
+            }
+
+            $transferred = true;
+            DB::table('enterprise_procurement_contracts')
+                ->where('id', $transferContractId)
+                ->update(['store_id' => $foreignStore->id]);
+        });
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            $supplier = $directory->create($actor, $context, [
+                'scope_type' => 'store',
+                'code' => 'PROC-DETAIL-TRANSFER-'.strtoupper($locale),
+                'name_en' => 'Detail transfer supplier '.$locale,
+            ]);
+            $contract = $completion->createContract($actor, $context, [
+                'supplier_id' => $supplier->id,
+                'title' => 'Attachment detail transfer '.$locale,
+                'currency_code' => 'KWD',
+                'starts_on' => now()->toDateString(),
+                'ends_on' => now()->addDays(30)->toDateString(),
+            ]);
+            $document = $completion->addContractDocument(
+                $actor, $context, $contract->id,
+                ['title' => 'Private contract detail '.$locale],
+                UploadedFile::fake()->create('private-contract.pdf', 4, 'application/pdf'),
+            );
+            $this->assertNotNull($document->storage_path);
+            $auditBefore = DB::table('audit_logs')->count();
+            $documentQueries = [];
+
+            $visible = $completion->contractDetail($actor, $context, $contract->id);
+            $this->assertCount(1, $visible['documents']);
+            $this->assertSame((int) $document->id, (int) $visible['documents'][0]->id);
+            $this->assertSame($document->storage_path, $visible['documents'][0]->storage_path);
+            $this->assertCount(1, $documentQueries, 'Attachment details must use one current-store JOIN.');
+            $this->assertStringContainsString('organization_id', $documentQueries[0]);
+            $this->assertStringContainsString('company_id', $documentQueries[0]);
+            $this->assertStringContainsString('store_id', $documentQueries[0]);
+            $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+
+            $transferContractId = (int) $contract->id;
+            $transferred = false;
+            $documentQueries = [];
+            $afterTransfer = $completion->contractDetail($actor, $context, $contract->id);
+            $this->assertTrue($transferred, 'Transfer must happen after contract preflight.');
+            $this->assertCount(1, $documentQueries);
+            $this->assertSame([], $afterTransfer['documents'], 'Transferred attachment paths are no longer visible.');
+            $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+            Storage::disk('local')->assertExists($document->storage_path);
+            $this->assertDatabaseHas('enterprise_procurement_contracts', [
+                'id' => $contract->id,
+                'store_id' => $foreignStore->id,
+            ]);
+
+            $transferContractId = null;
+            try {
+                $completion->contractDetail($actor, $context, $contract->id);
+                $this->fail('A contract transferred to another store must now be 404.');
+            } catch (RecordNotFoundException $exception) {
+                $this->assertNotEmpty($exception->getMessage());
+            }
+        }
+    }
+
     public function test_contract_document_download_reads_live_store_and_document_in_one_scoped_query_in_ar_and_en(): void
     {
         Storage::fake('local');
