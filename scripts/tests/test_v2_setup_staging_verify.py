@@ -358,13 +358,13 @@ class V2SetupStagingVerifierTest(unittest.TestCase):
         # An intentionally bad CRC demonstrates Python ignores that alias.
         alternate = b"\x01" + (0).to_bytes(4, "little") + b"backend/.env.local"
         extra = (0x7075).to_bytes(2, "little") + len(alternate).to_bytes(2, "little") + alternate
-        member = zipfile.ZipInfo("backend/public/safe.php")
+        member = zipfile.ZipInfo("backend/public/safe.css")
         member.external_attr = (stat.S_IFREG | 0o644) << 16
         member.extra = extra
         with zipfile.ZipFile(self.archive, "a") as archive:
             archive.writestr(member, b"<?php // no secret")
         with zipfile.ZipFile(self.archive) as archive:
-            self.assertEqual("backend/public/safe.php", archive.getinfo(member.filename).filename)
+            self.assertEqual("backend/public/safe.css", archive.getinfo(member.filename).filename)
             self.assertIsNone(archive.testzip())
         with self.assertRaisesRegex(SetupZipError, "Ambiguous Unicode Path"):
             self.verify()
@@ -525,7 +525,7 @@ class V2SetupStagingVerifierTest(unittest.TestCase):
         # extractor may use as backend/.env.local; Python CRC still passes.
         alias = b"\x01" + (0).to_bytes(4, "little") + b"backend/.env.local"
         extra = (0x7075).to_bytes(2, "little") + len(alias).to_bytes(2, "little") + alias
-        member = zipfile.ZipInfo("backend/public/safe-extra.php")
+        member = zipfile.ZipInfo("backend/public/safe-extra.css")
         member.external_attr = (stat.S_IFREG | 0o644) << 16
         member.extra = extra
         with zipfile.ZipFile(self.archive, "a") as archive:
@@ -546,7 +546,8 @@ class V2SetupStagingVerifierTest(unittest.TestCase):
             self.verify()
 
     def test_safe_extra_timestamp_metadata_does_not_block_staging_zip(self) -> None:
-        member = zipfile.ZipInfo("backend/public/normal.php")
+        # A valid static asset isolates timestamp metadata from public PHP denial.
+        member = zipfile.ZipInfo("backend/public/normal.css")
         member.external_attr = (stat.S_IFREG | 0o644) << 16
         member.extra = (0x5455).to_bytes(2, "little") + (1).to_bytes(2, "little") + b"\x00"
         with zipfile.ZipFile(self.archive, "a") as archive:
@@ -592,9 +593,10 @@ class V2SetupStagingVerifierTest(unittest.TestCase):
                     self.verify()
 
     def test_regular_file_cannot_also_be_parent_directory(self) -> None:
+        # A CSS child tests file/directory collision without executable-content denial.
         self.pack({
             "backend/public/asset": b"regular file",
-            "backend/public/asset/index.php": b"<?php",
+            "backend/public/asset/index.css": b"<?php",
         })
         with self.assertRaisesRegex(SetupZipError, "path collision"):
             self.verify()
