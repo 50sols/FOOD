@@ -869,6 +869,10 @@ final class EnterpriseProcurementCompletionTest extends TestCase
         $moved = false;
         $targetRfqId = null;
         $documentQueries = [];
+        $pathSwapArmed = false;
+        $pathSwapped = false;
+        $pathSwapDocumentId = 0;
+        $replacementPath = '';
         // A listener survives both locales. Move the RFQ immediately after
         // the initially authorized RFQ SELECT, before detail children load.
         DB::listen(static function ($query) use (&$armed, &$moved, &$targetRfqId, &$documentQueries, $foreignStore): void {
@@ -892,6 +896,29 @@ final class EnterpriseProcurementCompletionTest extends TestCase
             DB::table('enterprise_procurement_rfqs')
                 ->where('id', $targetRfqId)
                 ->update(['store_id' => $foreignStore->id]);
+        });
+
+        // The first scoped documents SELECT may already have returned a
+        // private path when the document's own identity changes. A second
+        // same-document snapshot read must reject the stale value.
+        DB::listen(static function ($query) use (
+            &$pathSwapArmed, &$pathSwapped, &$pathSwapDocumentId, &$replacementPath
+        ): void {
+            $sql = strtolower((string) $query->sql);
+            if (! $pathSwapArmed || $pathSwapped || $pathSwapDocumentId < 1
+                || ! str_contains($sql, 'select')
+                || ! str_contains($sql, 'enterprise_procurement_quote_documents')
+                || ! str_contains($sql, 'enterprise_procurement_quotes')
+                || ! str_contains($sql, 'enterprise_procurement_rfqs')
+                || ! str_contains($sql, 'join')) {
+                return;
+            }
+
+            $pathSwapArmed = false;
+            $pathSwapped = true;
+            DB::table('enterprise_procurement_quote_documents')
+                ->where('id', $pathSwapDocumentId)
+                ->update(['storage_path' => $replacementPath]);
         });
 
         foreach (['ar', 'en'] as $locale) {
@@ -942,10 +969,40 @@ final class EnterpriseProcurementCompletionTest extends TestCase
             $this->assertCount(1, $visible['quotes']);
             $this->assertCount(1, $visible['quoteDocuments']->get($quoteId));
             $this->assertSame($document->storage_path, $visible['quoteDocuments']->get($quoteId)->first()->storage_path);
-            $this->assertCount(1, $documentQueries, 'The RFQ detail attachment SELECT must join its current RFQ.');
+            $this->assertCount(2, $documentQueries, 'RFQ detail must read current attachment identity and revalidate source and path.');
             $this->assertStringContainsString('organization_id', $documentQueries[0]);
             $this->assertStringContainsString('company_id', $documentQueries[0]);
             $this->assertStringContainsString('store_id', $documentQueries[0]);
+
+            $pathSwapDocumentId = (int) $document->id;
+            $replacementPath = 'supplier-quotes/rfq-detail-replaced-'.strtolower($locale).'-'.$document->id.'.pdf';
+            Storage::disk('local')->put($replacementPath, 'Independent replacement must not reveal the old path.');
+            $pathSwapped = false;
+            $pathSwapArmed = true;
+            try {
+                $completion->rfqDetail($actor, $context, $rfq->id);
+                $this->fail('A private quote path replaced after SELECT must not be released in RFQ detail.');
+            } catch (HttpException $exception) {
+                $this->assertSame(404, $exception->getStatusCode());
+            } finally {
+                $pathSwapArmed = false;
+            }
+            $this->assertTrue($pathSwapped, 'The real private document SELECT must trigger the path replacement.');
+            $this->assertDatabaseHas('enterprise_procurement_quote_documents', [
+                'id' => $document->id,
+                'quote_id' => $quoteId,
+                'storage_path' => $replacementPath,
+            ]);
+            $this->assertSame($beforeAudit, DB::table('audit_logs')->count());
+            Storage::disk('local')->assertExists($document->storage_path);
+            DB::table('enterprise_procurement_quote_documents')
+                ->where('id', $document->id)
+                ->update(['storage_path' => $document->storage_path]);
+            $this->assertSame(
+                $document->storage_path,
+                $completion->rfqDetail($actor, $context, $rfq->id)['quoteDocuments']
+                    ->get($quoteId)->first()->storage_path,
+            );
 
             $targetRfqId = (int) $rfq->id;
             $moved = false;

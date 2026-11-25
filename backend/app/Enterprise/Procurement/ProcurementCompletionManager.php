@@ -418,6 +418,48 @@ final class ProcurementCompletionManager
             );
         }
 
+        // Quote documents can be reassigned or their private storage path
+        // replaced independently of the still-local RFQ/quote/supplier. Do
+        // not return the original path unless the SAME document identity,
+        // quote and path remain authorized after the initial document SELECT.
+        $documentSnapshot = $quoteDocuments->flatten(1)
+            ->mapWithKeys(static fn ($document): array => [
+                (int) $document->id => [
+                    'quote_id' => (int) $document->quote_id,
+                    'storage_path' => (string) $document->storage_path,
+                ],
+            ])
+            ->sortKeys()
+            ->all();
+        if ($documentSnapshot !== []) {
+            $currentDocuments = DB::table('enterprise_procurement_quote_documents as documents')
+                ->join('enterprise_procurement_quotes as quotes', 'quotes.id', '=', 'documents.quote_id')
+                ->join('enterprise_procurement_rfqs as rfqs', 'rfqs.id', '=', 'quotes.rfq_id')
+                ->join('enterprise_purchase_requests as requests', 'requests.id', '=', 'rfqs.purchase_request_id')
+                ->join('enterprise_suppliers as suppliers', 'suppliers.id', '=', 'quotes.supplier_id')
+                ->where($visibleRfq)
+                ->where('requests.organization_id', $scope->organizationId)
+                ->where('requests.company_id', $scope->companyId)
+                ->where('requests.store_id', $scope->storeId)
+                ->where(fn (QueryBuilder $query) => $this->scopeJoinedSupplier($query, $scope))
+                ->whereIn('documents.id', array_keys($documentSnapshot))
+                ->get(['documents.id', 'documents.quote_id', 'documents.storage_path'])
+                ->mapWithKeys(static fn ($document): array => [
+                    (int) $document->id => [
+                        'quote_id' => (int) $document->quote_id,
+                        'storage_path' => (string) $document->storage_path,
+                    ],
+                ])
+                ->sortKeys()
+                ->all();
+
+            abort_unless(
+                $currentDocuments === $documentSnapshot,
+                404,
+                'RFQ quote attachment ownership or private path changed during detail retrieval.',
+            );
+        }
+
         // Relations and attachment paths were fetched under an earlier read
         // grant. Recheck the same persisted principal's live permission
         // before returning supplier/quote/financial details.
