@@ -23,6 +23,7 @@ use App\Models\Warehouse;
 use App\Support\ResolvedTenantContext;
 use App\Support\TenantContextResolver;
 use Illuminate\Database\Eloquent\ModelNotFoundException;
+use Illuminate\Database\QueryException;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
@@ -369,7 +370,7 @@ final class EnterprisePurchaseInvoiceHandoffFoundationTest extends TestCase
         );
     }
 
-    public function test_handoff_rejects_duplicate_persisted_grn_line_without_finance_mutation_in_ar_and_en(): void
+    public function test_duplicate_invoice_grn_line_is_rejected_by_database_before_finance_handoff_in_ar_and_en(): void
     {
         $this->enableProcurement();
         [$actor, $store, $context] = $this->scopedUser($this->allPermissions(), 'PINV-DUP-GRN');
@@ -387,33 +388,32 @@ final class EnterprisePurchaseInvoiceHandoffFoundationTest extends TestCase
                 'invoice_date' => '2026-10-16',
                 'lines' => [[
                     'goods_receipt_line_id' => $receiptLineId,
-                    'quantity' => 2,
+                    'quantity' => 1,
                 ]],
             ]);
 
-            // Imported/altered draft: each row fits 3 received units, but
-            // two rows using the same GRN line would invoice 4 units.
+            // The unique (invoice, GRN line) index is the primary boundary.
+            // Even a direct importer bypassing the creation validator cannot
+            // persist another row with a distinct line number for this source.
             $original = (array) DB::table('enterprise_purchase_invoice_lines')
                 ->where('purchase_invoice_id', $invoice->id)->first();
             $this->assertNotEmpty($original);
             $duplicate = $original;
             unset($duplicate['id']);
             $duplicate['line_no'] = 2;
-            DB::table('enterprise_purchase_invoice_lines')->insert($duplicate);
-            DB::table('enterprise_purchase_invoices')->where('id', $invoice->id)
-                ->update(['total_amount' => round((float) $original['line_total'] * 2, 3)]);
-
             $auditBefore = DB::table('audit_logs')->count();
             $outboxBefore = DB::table('enterprise_outbox_messages')
                 ->where('event_type', 'ProcurementPurchaseInvoiceHandedOff')->count();
 
             try {
-                $manager->handoff($actor, $context, $invoice->id);
-                $this->fail('One GRN line must not be billed twice in a Finance handoff.');
-            } catch (ValidationException $exception) {
-                $this->assertArrayHasKey('lines', $exception->errors());
+                DB::table('enterprise_purchase_invoice_lines')->insert($duplicate);
+                $this->fail('Database must prevent a duplicated GRN source on one invoice.');
+            } catch (QueryException $exception) {
+                $this->assertNotEmpty($exception->getMessage());
             }
 
+            $this->assertSame(1, DB::table('enterprise_purchase_invoice_lines')
+                ->where('purchase_invoice_id', $invoice->id)->count());
             $this->assertDatabaseHas('enterprise_purchase_invoices', [
                 'id' => $invoice->id,
                 'status' => 'draft',
@@ -425,17 +425,8 @@ final class EnterprisePurchaseInvoiceHandoffFoundationTest extends TestCase
                 DB::table('enterprise_outbox_messages')
                     ->where('event_type', 'ProcurementPurchaseInvoiceHandedOff')->count(),
             );
+            $this->assertSame('handed_off', $manager->handoff($actor, $context, $invoice->id)->status);
         }
-
-        $valid = $manager->createFromPostedReceipt($actor, $context, $receipt->id, [
-            'supplier_invoice_number' => 'PINV-DUP-VALID',
-            'invoice_date' => '2026-10-16',
-            'lines' => [[
-                'goods_receipt_line_id' => $receiptLineId,
-                'quantity' => 2,
-            ]],
-        ]);
-        $this->assertSame('handed_off', $manager->handoff($actor, $context, $valid->id)->status);
     }
 
     public function test_supplier_invoice_number_is_unique_and_reads_are_scope_bounded(): void
