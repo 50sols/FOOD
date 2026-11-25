@@ -122,6 +122,8 @@ class BuildUpdateBundleSourceSafetyTest(unittest.TestCase):
             "backend/public/assets/.CONFIG/GCLOUD/configurations/config_default",
             "backend/public/assets/.config/gh/hosts.yml",
             "backend/public/assets/.CONFIG/GH/hosts.yml",
+            "backend/public/assets/.config/git/credentials",
+            "backend/public/assets/.CONFIG/GIT/config",
             "backend/public/preview/driver/application_default_credentials.json",
             "backend/public/assets/admin/azureProfile.json",
             "backend/public/assets/admin/ACCESSTOKENS.JSON",

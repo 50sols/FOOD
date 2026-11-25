@@ -218,8 +218,9 @@ def _member_target(member: zipfile.ZipInfo) -> tuple[str, str, bool]:
              f"Unsafe Setup ZIP component: {name!r}")
 
     for index, part in enumerate(parts):
+        # XDG Git config and credential-store files must never enter Setup ZIPs.
         _require(
-            not (index > 0 and parts[index - 1].casefold() == ".config" and part.casefold() in {"gcloud", "gh"}),
+            not (index > 0 and parts[index - 1].casefold() == ".config" and part.casefold() in {"gcloud", "gh", "git"}),
             f"Credential storage in Setup ZIP: {name!r}",
         )
         _require(

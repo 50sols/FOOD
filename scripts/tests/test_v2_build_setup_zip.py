@@ -70,6 +70,8 @@ class DeterministicSetupZipTest(unittest.TestCase):
             "backend/resources/admin/.CONFIG/GCLOUD/credentials.db",
             "backend/public/assets/.config/gh/hosts.yml",
             "backend/resources/admin/.CONFIG/GH/hosts.yml",
+            "backend/public/assets/.config/git/credentials",
+            "backend/resources/admin/.CONFIG/GIT/config",
         )
         with tempfile.TemporaryDirectory() as temporary:
             base = Path(temporary)

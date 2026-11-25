@@ -282,8 +282,9 @@ def safe_path(path: str) -> str:
     credential_directories = {".aws", ".ssh", ".docker", ".kube", ".gnupg", ".azure", ".terraform"}
     credential_files = {".git-credentials", "azureprofile.json", "accesstokens.json", "terraform.tfstate", "terraform.tfstate.backup"}
     for index, part in enumerate(parts):
-        # gcloud credentials are routinely stored as .config/gcloud/*.
-        if part.casefold() in {"gcloud", "gh"} and index > 0 and parts[index - 1].casefold() == ".config":
+        # Git stores plaintext credentials in .config/git/credentials and
+        # may store HTTP auth tokens in .config/git/config; block both homes.
+        if part.casefold() in {"gcloud", "gh", "git"} and index > 0 and parts[index - 1].casefold() == ".config":
             raise RuntimeError(f"Credential storage is not allowed in updates: {path}")
         if part.casefold() == "application_default_credentials.json":
             raise RuntimeError(f"Credential storage is not allowed in updates: {path}")

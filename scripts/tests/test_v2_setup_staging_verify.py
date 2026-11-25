@@ -181,6 +181,8 @@ class V2SetupStagingVerifierTest(unittest.TestCase):
             "backend/resources/admin/.CONFIG/GCLOUD/credentials.db",
             "backend/public/assets/.config/gh/hosts.yml",
             "backend/resources/admin/.CONFIG/GH/hosts.yml",
+            "backend/public/assets/.config/git/credentials",
+            "backend/resources/admin/.CONFIG/GIT/config",
         ):
             with self.subTest(member=member):
                 self.pack({member: b"DO-NOT-PUBLISH-CREDENTIALS"})
