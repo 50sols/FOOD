@@ -49,6 +49,19 @@ final class PurchaseReturnInventoryHandoff
         $actor = User::query()->whereKey($actorId)->first();
         abort_unless($actor instanceof User && $actor->is_active, 403);
 
+        // Reject in-memory Eloquent identity substitutions before following
+        // any caller-selected return, return-line or source GRN-line key.
+        // Even two valid drafts on the same posted receipt must not be
+        // interchangeable when this stock writer is invoked directly.
+        foreach ([$return, $line, $sourceLine] as $record) {
+            if (! $record->exists || $record->getKey() === null
+                || (string) $record->getKey() !== (string) $record->getRawOriginal($record->getKeyName())) {
+                throw ValidationException::withMessages([
+                    'goods_receipt_line_id' => ['Purchase return and source receipt identities must be unchanged persisted records.'],
+                ]);
+            }
+        }
+
         // Lock and re-read the canonical return header first, using the same
         // lock order as PurchaseReturnManager::post (header before lines).
         // A caller retaining an old draft model after cancellation must not
