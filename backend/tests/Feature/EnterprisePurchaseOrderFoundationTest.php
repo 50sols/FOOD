@@ -8,6 +8,7 @@ use App\Enterprise\Modules\ModuleLifecycleManager;
 use App\Enterprise\Modules\ModuleState;
 use App\Enterprise\Organization\OrganizationHierarchyService;
 use App\Enterprise\Procurement\GoodsReceiptManager;
+use App\Enterprise\Procurement\ProcurementCompletionManager;
 use App\Enterprise\Procurement\PurchaseOrderManager;
 use App\Enterprise\Procurement\PurchaseRequestManager;
 use App\Enterprise\Procurement\SupplierDirectory;
@@ -1013,6 +1014,98 @@ final class EnterprisePurchaseOrderFoundationTest extends TestCase
                     $this->assertSame($request->id, $order->purchase_request_id);
                 }
             }
+        }
+    }
+
+    public function test_issued_contract_order_cancellation_fails_closed_on_foreign_contract_scope_in_ar_and_en(): void
+    {
+        SyntheticErpWorkflowEvidence::install();
+        $lifecycle = app(ModuleLifecycleManager::class);
+        $lifecycle->transition('procurement', ModuleState::ENABLING);
+        $lifecycle->transition('procurement', ModuleState::ENABLED);
+
+        $completion = app(ProcurementCompletionManager::class);
+        $orders = app(PurchaseOrderManager::class);
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            [$actor, $store, $context] = $this->scopedUser(
+                $this->allPermissions(),
+                'PO-CTR-DRIFT-'.strtoupper($locale),
+            );
+            $order = $this->approvedOrder(
+                $actor,
+                $context,
+                'PO-CTR-DRIFT-SUP-'.strtoupper($locale),
+            );
+            $contract = $completion->createContract($actor, $context, [
+                'supplier_id' => $order->supplier_id,
+                'title' => 'Scoped commitment release '.$locale,
+                'currency_code' => 'KWD',
+                'starts_on' => now()->subDay()->toDateString(),
+                'ends_on' => now()->addDays(30)->toDateString(),
+                'value_ceiling' => 10,
+                'quantity_ceiling' => 5,
+            ]);
+            [$checker, $checkerContext] = ProcurementSecondApprover::forSameStore($actor, $context);
+            $completion->activateContract($checker, $checkerContext, $contract->id);
+            $completion->assignContractToOrder($actor, $context, $order->id, $contract->id);
+
+            $this->assertSame('issued', $orders->issue($actor, $context, $order->id)->status);
+            $this->assertDatabaseHas('enterprise_procurement_contracts', [
+                'id' => $contract->id,
+                'store_id' => $store->id,
+                'committed_value' => '1.250',
+                'committed_quantity' => '1.000',
+            ]);
+
+            $foreignStore = $this->createRetailStore('PO-CTR-FOREIGN-'.strtoupper($locale));
+            // Simulate a legacy/import/store-transfer writer that changes only
+            // the linked contract's scope after the PO reserved its balance.
+            DB::table('enterprise_procurement_contracts')
+                ->where('id', $contract->id)
+                ->update(['store_id' => $foreignStore->id]);
+            $auditBefore = DB::table('audit_logs')->count();
+
+            try {
+                $orders->cancel($actor, $context, $order->id);
+                $this->fail('Cancellation must not orphan a reservation on an out-of-scope contract.');
+            } catch (HttpException $exception) {
+                $this->assertSame(409, $exception->getStatusCode());
+            }
+
+            $this->assertDatabaseHas('enterprise_purchase_orders', [
+                'id' => $order->id,
+                'status' => 'issued',
+                'cancelled_by' => null,
+            ]);
+            $this->assertDatabaseHas('enterprise_procurement_contracts', [
+                'id' => $contract->id,
+                'store_id' => $foreignStore->id,
+                'committed_value' => '1.250',
+                'committed_quantity' => '1.000',
+            ]);
+            $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+
+            // Restore the original authorized scope; the real cancellation
+            // must release exactly the reserved balance, once and only once.
+            DB::table('enterprise_procurement_contracts')
+                ->where('id', $contract->id)
+                ->update(['store_id' => $store->id]);
+            $this->assertSame('cancelled', $orders->cancel($actor, $context, $order->id)->status);
+            $this->assertDatabaseHas('enterprise_procurement_contracts', [
+                'id' => $contract->id,
+                'committed_value' => '0.000',
+                'committed_quantity' => '0.000',
+            ]);
+            $auditAfter = DB::table('audit_logs')->count();
+            $this->assertSame('cancelled', $orders->cancel($actor, $context, $order->id)->status);
+            $this->assertSame($auditAfter, DB::table('audit_logs')->count());
+            $this->assertDatabaseHas('enterprise_procurement_contracts', [
+                'id' => $contract->id,
+                'committed_value' => '0.000',
+                'committed_quantity' => '0.000',
+            ]);
         }
     }
 

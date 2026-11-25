@@ -401,25 +401,28 @@ final class PurchaseOrderManager
                     ->lockForUpdate()
                     ->first();
 
-                if ($contract !== null) {
-                    $lines = $order->lines()->get();
-                    $orderValue = round((float) $lines->sum(
-                        fn ($line): float => (float) ($line->unit_price ?? 0) * (float) $line->quantity,
-                    ), 3);
-                    $orderQuantity = round((float) $lines->sum('quantity'), 3);
-                    // Releasing an issued contract commitment also requires
-                    // the caller's current persisted manage permission.
-                    $this->authorizedScope($actor, $context, self::MANAGE_PERMISSION);
+                // An issued order already reserved contract value/quantity.
+                // A transferred or missing contract cannot be silently skipped:
+                // cancellation would orphan that reserved financial balance.
+                abort_if($contract === null, 409, 'Assigned procurement contract is unavailable for commitment release.');
 
-                    DB::table('enterprise_procurement_contracts')
-                        ->where('id', $contract->id)
-                        ->update([
-                            'committed_value' => max(0, round((float) $contract->committed_value - $orderValue, 3)),
-                            'committed_quantity' => max(0, round((float) $contract->committed_quantity - $orderQuantity, 3)),
-                            'updated_by' => $actor->id,
-                            'updated_at' => now(),
-                        ]);
-                }
+                $lines = $order->lines()->get();
+                $orderValue = round((float) $lines->sum(
+                    fn ($line): float => (float) ($line->unit_price ?? 0) * (float) $line->quantity,
+                ), 3);
+                $orderQuantity = round((float) $lines->sum('quantity'), 3);
+                // Releasing an issued contract commitment also requires
+                // the caller's current persisted manage permission.
+                $this->authorizedScope($actor, $context, self::MANAGE_PERMISSION);
+
+                DB::table('enterprise_procurement_contracts')
+                    ->where('id', $contract->id)
+                    ->update([
+                        'committed_value' => max(0, round((float) $contract->committed_value - $orderValue, 3)),
+                        'committed_quantity' => max(0, round((float) $contract->committed_quantity - $orderQuantity, 3)),
+                        'updated_by' => $actor->id,
+                        'updated_at' => now(),
+                    ]);
             }
 
             // Protect the non-contract path and roll back any earlier
