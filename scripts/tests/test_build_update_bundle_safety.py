@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import tempfile
 import unittest
+from unittest import mock
 import zipfile
 
 
@@ -109,6 +110,71 @@ class BuildUpdateBundleSourceSafetyTest(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "symbolic links"):
                 builder.build_zip(root, [(path.relative_to(root).as_posix(), path.relative_to(root).as_posix())], output)
             self.assertFalse(output.exists())
+
+    def test_replace_checked_file_with_secret_symlink_during_zip_open_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            root = base / "repo"
+            source = root / "backend/public/assets/admin/app.css"
+            source.parent.mkdir(parents=True)
+            source.write_bytes(b"safe-reviewed-css")
+            secret = base / "private-publisher-key.txt"
+            secret.write_bytes(b"DO-NOT-PACKAGE-PRIVATE-KEY")
+            output = root / "dist/FOODEX-Update.zip"
+            member = "backend/public/assets/admin/app.css"
+
+            original_zip = zipfile.ZipFile
+            swapped = False
+
+            def swap_after_preflight(*args, **kwargs):
+                nonlocal swapped
+                if not swapped and len(args) > 1 and args[1] == "w":
+                    swapped = True
+                    source.rename(source.with_suffix(".reviewed"))
+                    source.symlink_to(secret)
+                return original_zip(*args, **kwargs)
+
+            with mock.patch.object(builder.zipfile, "ZipFile", side_effect=swap_after_preflight):
+                with self.assertRaisesRegex(RuntimeError, "changed or linked"):
+                    builder.build_zip(root, [(member, member)], output)
+
+            self.assertTrue(swapped, "The attack must execute AFTER source preflight.")
+            self.assertFalse(output.exists(), "Never publish a partially replaced ZIP.")
+            self.assertEqual(secret.read_bytes(), b"DO-NOT-PACKAGE-PRIVATE-KEY")
+            self.assertEqual(list(output.parent.glob("*.staging")), [])
+
+    def test_replace_checked_parent_with_offtree_symlink_during_zip_open_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            root = base / "repo"
+            source = root / "backend/public/assets/admin/app.css"
+            source.parent.mkdir(parents=True)
+            source.write_bytes(b"reviewed-asset")
+            off_tree = base / "secret-parent"
+            off_tree.mkdir()
+            (off_tree / "app.css").write_bytes(b"SECRET-OFF-TREE")
+            output = root / "dist/FOODEX-Update.zip"
+            member = "backend/public/assets/admin/app.css"
+
+            original_zip = zipfile.ZipFile
+            swapped = False
+
+            def swap_parent_after_preflight(*args, **kwargs):
+                nonlocal swapped
+                if not swapped and len(args) > 1 and args[1] == "w":
+                    swapped = True
+                    source.parent.rename(source.parent.with_name("admin.reviewed"))
+                    source.parent.symlink_to(off_tree, target_is_directory=True)
+                return original_zip(*args, **kwargs)
+
+            with mock.patch.object(builder.zipfile, "ZipFile", side_effect=swap_parent_after_preflight):
+                with self.assertRaisesRegex(RuntimeError, "changed or linked"):
+                    builder.build_zip(root, [(member, member)], output)
+
+            self.assertTrue(swapped)
+            self.assertFalse(output.exists())
+            self.assertEqual((off_tree / "app.css").read_bytes(), b"SECRET-OFF-TREE")
+            self.assertEqual(list(output.parent.glob("*.staging")), [])
 
     def test_refuse_hardlinked_external_release_input_before_zip_creation(self) -> None:
         # A hard link passes pathlib is_symlink() and resolve() confinement.

@@ -9,6 +9,7 @@ from pathlib import Path
 import re
 import stat
 import subprocess
+import tempfile
 import sys
 import zipfile
 
@@ -325,10 +326,82 @@ def trusted_source_file(repo_root: Path, source_relative: str) -> Path:
     return source
 
 
+def _source_identity(metadata: os.stat_result) -> tuple[int, int, int, int, int, int, int]:
+    """Pin the reviewed inode, links, size and modification metadata."""
+    return (
+        metadata.st_dev,
+        metadata.st_ino,
+        metadata.st_mode,
+        metadata.st_nlink,
+        metadata.st_size,
+        metadata.st_mtime_ns,
+        metadata.st_ctime_ns,
+    )
+
+
+def _open_pinned_source(
+    repo_root: Path, source_relative: str, expected: os.stat_result
+):
+    """Open a preflighted source without following any replaced path component.
+
+    Path.read_bytes() performs a fresh symlink-following traversal after
+    trusted_source_file() returns. A build-time attacker could replace the
+    final file or an ancestor with a link in that gap and inject secrets
+    into an otherwise source-verified signed ZIP.
+    """
+    if (
+        not hasattr(os, "O_NOFOLLOW")
+        or not hasattr(os, "O_DIRECTORY")
+        or os.open not in os.supports_dir_fd
+    ):
+        raise RuntimeError("Safe directory-relative update packaging is unavailable.")
+
+    relative = safe_path(source_relative)
+    parent_fd = None
+    file_fd = None
+    directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    try:
+        parent_fd = os.open(repo_root, directory_flags)
+        components = relative.split("/")
+        for component in components[:-1]:
+            child_fd = os.open(component, directory_flags, dir_fd=parent_fd)
+            os.close(parent_fd)
+            parent_fd = child_fd
+
+        file_fd = os.open(
+            components[-1],
+            os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_BINARY", 0),
+            dir_fd=parent_fd,
+        )
+        opened = os.fstat(file_fd)
+        current = (repo_root / relative).lstat()
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or opened.st_nlink != 1
+            or not stat.S_ISREG(current.st_mode)
+            or _source_identity(opened) != _source_identity(expected)
+            or _source_identity(current) != _source_identity(expected)
+        ):
+            raise RuntimeError(f"Release input changed after preflight: {relative}")
+
+        handle = os.fdopen(file_fd, "rb")
+        file_fd = None
+        return handle
+    except OSError as exc:
+        raise RuntimeError(
+            f"Release input changed or linked during packaging: {relative}"
+        ) from exc
+    finally:
+        if file_fd is not None:
+            os.close(file_fd)
+        if parent_fd is not None:
+            os.close(parent_fd)
+
+
 def build_zip(repo_root: Path, entries: list[tuple[str, str]], output: Path) -> None:
-    # Preflight every source BEFORE opening/truncating the output artifact.
-    # A refused symlink or .env variant must never create a partial release ZIP.
-    verified: list[tuple[str, Path]] = []
+    # Preflight all sources and pin their reviewed inode metadata. Hold no
+    # unbounded number of open descriptors while scanning a full Laravel tree.
+    verified: list[tuple[str, str, os.stat_result]] = []
     folded_names: set[str] = set()
     for archive_name, source_relative in entries:
         canonical = safe_path(archive_name)
@@ -340,25 +413,71 @@ def build_zip(repo_root: Path, entries: list[tuple[str, str]], output: Path) -> 
         if canonical.lower() in folded_names:
             raise RuntimeError(f"Ambiguous update member alias: {canonical}")
         folded_names.add(canonical.lower())
-        verified.append((canonical, trusted_source_file(repo_root, source_relative)))
+        reviewed = trusted_source_file(repo_root, source_relative)
+        verified.append((canonical, source_relative, reviewed.lstat()))
 
     output.parent.mkdir(parents=True, exist_ok=True)
-    with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as archive:
-        for archive_name, source in verified:
-            info = zipfile.ZipInfo(archive_name, date_time=FIXED_ZIP_TIME)
-            info.compress_type = zipfile.ZIP_DEFLATED
-            info.external_attr = (0o100644 & 0xFFFF) << 16
-            archive.writestr(info, source.read_bytes())
+    fd, temporary_name = tempfile.mkstemp(
+        prefix=f".{output.name}.", suffix=".staging", dir=output.parent
+    )
+    os.close(fd)
+    temporary = Path(temporary_name)
+    try:
+        with zipfile.ZipFile(temporary, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as archive:
+            for archive_name, source_relative, expected in verified:
+                info = zipfile.ZipInfo(archive_name, date_time=FIXED_ZIP_TIME)
+                info.compress_type = zipfile.ZIP_DEFLATED
+                info.external_attr = (0o100644 & 0xFFFF) << 16
 
-    with zipfile.ZipFile(output, "r") as archive:
-        names = archive.namelist()
-        expected_names = [archive_name for archive_name, _ in verified]
-        if names != expected_names:
-            raise RuntimeError("Update ZIP file list does not match the deterministic selection.")
-        for name in names:
-            safe_path(name)
-            if name.endswith("/"):
-                raise RuntimeError(f"Unexpected directory entry in update ZIP: {name}")
+                # The file and EACH ancestor must still be the original
+                # reviewed inode. Never re-open the string path via read_bytes.
+                with _open_pinned_source(repo_root, source_relative, expected) as original:
+                    with archive.open(info, "w") as packed:
+                        remaining = expected.st_size
+                        while remaining:
+                            chunk = original.read(min(1024 * 1024, remaining))
+                            if not chunk:
+                                raise RuntimeError(
+                                    f"Release input truncated during packaging: {source_relative}"
+                                )
+                            packed.write(chunk)
+                            remaining -= len(chunk)
+                        if original.read(1):
+                            raise RuntimeError(
+                                f"Release input grew during packaging: {source_relative}"
+                            )
+
+                    # An in-place rewrite, unlink or later file/parent swap
+                    # during streaming must fail BEFORE publication.
+                    try:
+                        current = (repo_root / source_relative).lstat()
+                    except OSError as exc:
+                        raise RuntimeError(
+                            f"Release input changed during packaging: {source_relative}"
+                        ) from exc
+                    if (
+                        _source_identity(os.fstat(original.fileno())) != _source_identity(expected)
+                        or _source_identity(current) != _source_identity(expected)
+                    ):
+                        raise RuntimeError(
+                            f"Release input changed during packaging: {source_relative}"
+                        )
+
+        with zipfile.ZipFile(temporary, "r") as archive:
+            names = archive.namelist()
+            expected_names = [archive_name for archive_name, _, _ in verified]
+            if names != expected_names:
+                raise RuntimeError("Update ZIP file list does not match the deterministic selection.")
+            for name in names:
+                safe_path(name)
+                if name.endswith("/"):
+                    raise RuntimeError(f"Unexpected directory entry in update ZIP: {name}")
+
+        # A failed build only ever leaves a disposable private staging file.
+        # Never expose a partially written archive at the delivery path.
+        os.replace(temporary, output)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def main() -> int:
