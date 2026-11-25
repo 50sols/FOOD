@@ -1687,7 +1687,9 @@ final class V2OrganizationSetupGuidanceTest extends TestCase
                 foreach ([
                     ['code' => '../unsafe', 'name' => 'Rejected', 'error' => 'code'],
                     ['code' => 'MIXED_CODE', 'name' => 'Rejected', 'error' => 'code'],
-                    ['code' => 'p112_invalid_blank', 'name' => " \\t ", 'error' => 'name'],
+                    ['code' => 'p112_invalid_blank', 'name' => '   ', 'error' => 'name'],
+                    ['code' => str_repeat('a', 101), 'name' => 'Rejected', 'error' => 'code'],
+                    ['code' => 'p112_invalid_long_name', 'name' => str_repeat('N', 256), 'error' => 'name'],
                 ] as $invalid) {
                     $createData = [
                         'code' => $invalid['code'],
