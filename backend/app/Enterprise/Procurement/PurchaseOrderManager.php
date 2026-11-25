@@ -420,9 +420,18 @@ final class PurchaseOrderManager
 
         abort_if($context->enterpriseScope === null, 409, 'Enterprise data scope is required.');
 
+        // The supplied Eloquent User may predate a committed permission DENY.
+        // Authorize the same immutable persisted principal, but with today's
+        // active status and effective override flag, never a stale snapshot.
+        $currentActor = User::query()
+            ->whereKey($persistedActorId)
+            ->where('is_active', true)
+            ->first();
+        abort_unless($currentActor instanceof User, 403);
+
         $scope = $context->enterpriseScope;
         $this->authorizer->authorize(
-            $actor,
+            $currentActor,
             $context,
             $permission,
             'company',

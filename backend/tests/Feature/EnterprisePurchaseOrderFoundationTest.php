@@ -564,6 +564,75 @@ final class EnterprisePurchaseOrderFoundationTest extends TestCase
         $orders->detail($actorB, $contextB, $order->id);
     }
 
+    public function test_purchase_order_service_refuses_persisted_permission_denies_on_stale_user_in_ar_and_en(): void
+    {
+        [$actor, , $context] = $this->scopedUser($this->allPermissions(), 'PO-STALE-DENY');
+        $orders = app(PurchaseOrderManager::class);
+        $this->assertFalse((bool) $actor->has_permission_overrides);
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            $order = $this->approvedOrder($actor, $context, 'PO-DENY-SUP-'.strtoupper($locale));
+            $this->assertSame($order->id, $orders->detail($actor, $context, $order->id)->id);
+
+            foreach (['procurement.purchase_orders.view', 'procurement.purchase_orders.issue'] as $permissionCode) {
+                $permissionId = (int) Permission::query()->where('code', $permissionCode)->value('id');
+                $this->assertGreaterThan(0, $permissionId);
+                DB::table('user_permission_overrides')->insert([
+                    'user_id' => $actor->id,
+                    'permission_id' => $permissionId,
+                    'scope_key' => 'global',
+                    'store_id' => null,
+                    'effect' => 'deny',
+                    'created_at' => now(),
+                    'updated_at' => now(),
+                ]);
+                DB::table('users')->where('id', $actor->id)
+                    ->update(['has_permission_overrides' => true]);
+                // The caller deliberately retains the pre-DENY user object.
+                $this->assertFalse((bool) $actor->has_permission_overrides);
+                $this->assertTrue((bool) $actor->fresh()->has_permission_overrides);
+                $auditBefore = DB::table('audit_logs')->count();
+                $linesBefore = DB::table('enterprise_purchase_order_lines')->count();
+
+                $actions = $permissionCode === 'procurement.purchase_orders.view'
+                    ? [
+                        fn () => $orders->detail($actor, $context, $order->id),
+                        fn () => $orders->paginate($actor, $context),
+                    ]
+                    : [fn () => $orders->issue($actor, $context, $order->id)];
+
+                foreach ($actions as $action) {
+                    try {
+                        $action();
+                        $this->fail('Persisted purchase-order DENY must block stale direct-service access.');
+                    } catch (HttpException $exception) {
+                        $this->assertSame(403, $exception->getStatusCode());
+                    }
+                }
+
+                $this->assertDatabaseHas('enterprise_purchase_orders', [
+                    'id' => $order->id,
+                    'status' => 'draft',
+                ]);
+                $this->assertSame($linesBefore, DB::table('enterprise_purchase_order_lines')->count());
+                $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+
+                DB::table('user_permission_overrides')
+                    ->where('user_id', $actor->id)
+                    ->where('permission_id', $permissionId)
+                    ->delete();
+                DB::table('users')->where('id', $actor->id)
+                    ->update(['has_permission_overrides' => false]);
+                $this->assertFalse((bool) $actor->fresh()->has_permission_overrides);
+                $this->assertSame($order->id, $orders->detail($actor, $context, $order->id)->id);
+            }
+
+            // Restored permissions allow the real authorized draft transition.
+            $this->assertSame('issued', $orders->issue($actor, $context, $order->id)->status);
+        }
+    }
+
     public function test_purchase_order_detail_denies_stale_supplier_and_financial_lines_after_store_transfer_in_ar_and_en(): void
     {
         [$actor, , $context] = $this->scopedUser($this->allPermissions(), 'PO-DETAIL-LIVE');
