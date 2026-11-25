@@ -80,6 +80,22 @@ def _require(condition: bool, message: str) -> None:
         raise SetupZipError(message)
 
 
+def _is_sensitive_private_file(name: str) -> bool:
+    """Reject conventional private credentials, not public CA or SSH .pub keys."""
+    lower = name.casefold()
+    return (
+        lower in {
+            "id_rsa", "id_ed25519", "id_ecdsa", "id_dsa",
+            "credentials.json", "client_secret.json",
+            "service-account.json", "service_account.json",
+        }
+        or lower.endswith((".key", ".p12", ".pfx"))
+        or (lower.endswith(".pem") and any(
+            marker in lower for marker in ("private", "secret")
+        ))
+    )
+
+
 def _parse_env_template(content: str) -> dict[str, list[str]]:
     """Parse every dotenv assignment so duplicate keys cannot hide secrets."""
     values: dict[str, list[str]] = {}
@@ -213,6 +229,10 @@ def _member_target(member: zipfile.ZipInfo) -> tuple[str, str, bool]:
         _require(
             folded not in ("auth.json", ".npmrc", ".netrc", ".pypirc", ".yarnrc.yml"),
             f"Package manager credentials in Setup ZIP: {name!r}",
+        )
+        _require(
+            not _is_sensitive_private_file(folded),
+            f"Private key or service credentials in Setup ZIP: {name!r}",
         )
         _require(
             not (folded == ".env" or (folded.startswith(".env.") and folded not in ALLOWED_ENV_EXAMPLES)),

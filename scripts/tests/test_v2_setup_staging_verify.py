@@ -185,6 +185,32 @@ class V2SetupStagingVerifierTest(unittest.TestCase):
         })
         self.assertEqual("UNTRUSTED_CI_STAGING_ONLY", self.verify()["status"])
 
+    def test_private_credential_filenames_fail_in_independent_setup_verifier(self) -> None:
+        # A crafted CRC-valid ZIP can bypass the source builder entirely.
+        # Its validator must deny private keys and cloud credentials itself.
+        entries = (
+            "backend/config/private.key",
+            "backend/config/CLIENT.P12",
+            "backend/config/client.pfx",
+            "backend/id_ed25519",
+            "backend/config/SERVICE-ACCOUNT.JSON",
+            "backend/config/client_secret.json",
+            "backend/resources/admin/secrets.pem",
+            "backend/public/assets/PRIVATE_certificate.PEM",
+        )
+        for entry in entries:
+            with self.subTest(entry=entry):
+                self.pack({entry: b"DO-NOT-PUBLISH-PRIVATE-MATERIAL"})
+                with self.assertRaisesRegex(SetupZipError, "Private key or service credentials"):
+                    self.verify()
+
+        # Public CA bundles and *.pub files are not private signing material.
+        self.pack({
+            "backend/public/assets/cacert.pem": b"PUBLIC CA CERTIFICATE",
+            "backend/public/assets/id_ed25519.pub": b"PUBLIC SSH KEY",
+        })
+        self.assertEqual("UNTRUSTED_CI_STAGING_ONLY", self.verify()["status"])
+
     def test_secret_env_and_runtime_private_members_fail_closed(self) -> None:
         for entry in (
             "backend/.env",
