@@ -1216,6 +1216,75 @@ final class V2OrganizationSetupGuidanceTest extends TestCase
         }
     }
 
+    public function test_hierarchy_index_rechecks_permission_revoked_mid_query_in_ar_and_en(): void
+    {
+        $permissionId = DB::table('permissions')->where('code', 'platform.manage')->value('id');
+        $this->assertNotNull($permissionId);
+        $armed = false;
+        $revoked = false;
+        $actorId = 0;
+
+        // Revoke immediately after the index query reads its hierarchy rows.
+        // This deterministic same-connection seam is not a multi-session
+        // MySQL serialization or external-host concurrency certification.
+        DB::listen(static function ($query) use (&$armed, &$revoked, &$actorId, $permissionId): void {
+            $sql = strtolower((string) $query->sql);
+            if (! $armed || $revoked || ! str_contains($sql, 'select')
+                || ! str_contains($sql, 'enterprise_organizations')) {
+                return;
+            }
+
+            $armed = false;
+            $revoked = true;
+            DB::table('user_permission_overrides')->insert([
+                'user_id' => $actorId,
+                'permission_id' => $permissionId,
+                'scope_key' => 'global',
+                'store_id' => null,
+                'effect' => 'deny',
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+            DB::table('users')->where('id', $actorId)
+                ->update(['has_permission_overrides' => true]);
+        });
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            $actor = $this->actor('SYSTEM_ADMINISTRATOR', $locale);
+            $actorId = (int) $actor->id;
+            $organization = EnterpriseOrganization::query()->create([
+                'code' => 'v2_mid_query_org_'.$locale,
+                'name' => 'Protected mid-query organization '.$locale,
+                'is_active' => true,
+            ]);
+            $url = route('admin.enterprise-organizations.index');
+            $this->actingAs($actor)->get($url)->assertOk();
+            $beforeAudit = DB::table('audit_logs')->count();
+
+            $armed = true;
+            $revoked = false;
+            $this->actingAs($actor)->get($url)->assertForbidden();
+            $this->assertTrue($revoked, 'An actual hierarchy SELECT must trigger the DENY.');
+            $this->assertFalse((bool) $actor->has_permission_overrides);
+            $this->assertFalse($actor->fresh()->hasPermission('platform.manage'));
+            $this->get($url)->assertForbidden();
+            $this->assertSame('Protected mid-query organization '.$locale, $organization->fresh()->name);
+            $this->assertSame($beforeAudit, DB::table('audit_logs')->count());
+
+            DB::table('user_permission_overrides')
+                ->where('user_id', $actorId)
+                ->where('permission_id', $permissionId)
+                ->delete();
+            DB::table('users')->where('id', $actorId)
+                ->update(['has_permission_overrides' => false]);
+            $this->actingAs($actor)->get($url)
+                ->assertOk()
+                ->assertSee('Protected mid-query organization '.$locale);
+            $this->assertSame($beforeAudit, DB::table('audit_logs')->count());
+        }
+    }
+
     public function test_non_admin_cannot_test_or_save_organization_inputs(): void
     {
         $finance = $this->actor('FINANCE', 'en');

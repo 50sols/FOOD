@@ -305,11 +305,14 @@ final class EnterpriseOrganizationAdministrationController extends Controller
         $actor = $request->user();
         abort_unless($actor instanceof User, 401);
 
-        // The authenticated Eloquent User may have been loaded before an
-        // explicit platform.manage DENY or an offboarding was persisted.
-        // The service already checks fresh permission state before writes;
-        // every read-only hierarchy page and Setup Preview needs the same
-        // protection. Never follow a caller-mutated in-memory primary key.
+        return $this->currentPlatformAdmin($actor);
+    }
+
+    private function currentPlatformAdmin(User $actor): User
+    {
+        // The authenticated User may have been loaded before a persisted
+        // platform.manage DENY or offboarding. Keep its original identity,
+        // never a caller-mutated in-memory primary key, on both checks.
         $originalId = $actor->getRawOriginal($actor->getKeyName());
         abort_unless($actor->exists
             && $originalId !== null
@@ -327,9 +330,15 @@ final class EnterpriseOrganizationAdministrationController extends Controller
 
     private function page(User $actor, string $screen, array $data): View
     {
+        $navGroups = $this->navigation->groupsFor($actor);
+        // Reauthorize after hierarchy and navigation reads. A persisted DENY
+        // issued during those queries must block the response, even if the
+        // permission was valid at the start of the HTTP request.
+        $actor = $this->currentPlatformAdmin($actor);
+
         return view('admin.enterprise-organization', [
             'user' => $actor,
-            'navGroups' => $this->navigation->groupsFor($actor),
+            'navGroups' => $navGroups,
             'navContext' => 'administration_hub',
             'screen' => $screen,
             ...$data,
