@@ -230,6 +230,19 @@ def _member_target(member: zipfile.ZipInfo) -> tuple[str, str, bool]:
             folded not in ("auth.json", ".npmrc", ".netrc", ".pypirc", ".yarnrc.yml"),
             f"Package manager credentials in Setup ZIP: {name!r}",
         )
+        # A dirty shared-host checkout can contain cloud auth material in
+        # hidden credential homes whose individual filenames look harmless.
+        # Validate every path segment, even for directory-only ZIP members.
+        _require(
+            folded not in {
+                ".aws", ".ssh", ".docker", ".kube", ".gnupg",
+                ".azure", ".terraform", ".git-credentials",
+                "application_default_credentials.json",
+                "azureprofile.json", "accesstokens.json",
+                "terraform.tfstate", "terraform.tfstate.backup",
+            },
+            f"Credential storage in Setup ZIP: {name!r}",
+        )
         _require(
             not _is_sensitive_private_file(folded),
             f"Private key or service credentials in Setup ZIP: {name!r}",

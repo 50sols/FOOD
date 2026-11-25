@@ -160,6 +160,36 @@ class V2SetupStagingVerifierTest(unittest.TestCase):
         result = self.verify()
         self.assertEqual("UNTRUSTED_CI_STAGING_ONLY", result["status"])
 
+    def test_setup_zip_blocks_cloud_and_client_credential_homes(self) -> None:
+        # The independent verifier must reject hostile ZIPs even if a
+        # publisher source guard is bypassed. CRC-valid members alone are
+        # never evidence that credential-home paths are safe to distribute.
+        for member in (
+            "backend/resources/admin/.aws/credentials",
+            "backend/public/assets/.AWS/config",
+            "backend/resources/admin/.ssh/id_ed25519.pub",
+            "backend/app/.docker/config.json",
+            "backend/config/.kube/config",
+            "backend/resources/admin/.gnupg/pubring.kbx",
+            "backend/public/assets/.azure/azureProfile.json",
+            "backend/resources/admin/.terraform/terraform.tfstate",
+            "backend/resources/admin/.git-credentials",
+            "backend/resources/admin/application_default_credentials.json",
+            "backend/public/assets/admin/terraform.tfstate.backup",
+            "backend/resources/admin/accessTokens.json",
+        ):
+            with self.subTest(member=member):
+                self.pack({member: b"DO-NOT-PUBLISH-CREDENTIALS"})
+                with self.assertRaisesRegex(SetupZipError, "Credential storage"):
+                    self.verify()
+
+        # No unrelated public certificate or compiled frontend asset denial.
+        self.pack({
+            "backend/public/assets/admin/app.css": b"body { color: green; }",
+            "backend/public/assets/cacert.pem": b"PUBLIC CERTIFICATE",
+        })
+        self.assertEqual("UNTRUSTED_CI_STAGING_ONLY", self.verify()["status"])
+
     def test_package_manager_credentials_cannot_pass_setup_zip_verification(self) -> None:
         # A crafted ZIP must not bypass prepublication builder guards.
         # SHA-256 and ZIP CRC prove bytes, not the absence of credentials.
