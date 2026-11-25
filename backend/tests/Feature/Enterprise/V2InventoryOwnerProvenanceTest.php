@@ -2224,6 +2224,87 @@ SQL);
         app(InventoryOwnerProvenanceReadService::class)->snapshot($actor, $foreign['inventory_id']);
     }
 
+    public function test_owner_snapshot_denies_former_store_if_inventory_moves_during_read_in_ar_and_en(): void
+    {
+        $this->seed(CoreReferenceSeeder::class);
+        $reader = app(InventoryOwnerProvenanceReadService::class);
+
+        $armed = false;
+        $moved = false;
+        $targetInventoryId = null;
+        $destinationWarehouseId = null;
+        DB::listen(static function ($query) use (&$armed, &$moved, &$targetInventoryId, &$destinationWarehouseId): void {
+            $sql = strtolower((string) $query->sql);
+            if (! $armed || $moved || $targetInventoryId === null
+                || $destinationWarehouseId === null
+                || ! str_contains($sql, 'enterprise_inventory_owner_positions')
+                || ! str_contains($sql, 'select')) {
+                return;
+            }
+
+            // Owner rows were fetched after the actor's initial warehouse
+            // authorization. Simulate a different-store stock reassignment.
+            $armed = false;
+            $moved = true;
+            DB::table('inventories')->where('id', $targetInventoryId)
+                ->update(['warehouse_id' => $destinationWarehouseId]);
+        });
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            $home = $this->stock('SNAP-HOME-'.strtoupper($locale));
+            $foreign = $this->stock('SNAP-FOREIGN-'.strtoupper($locale));
+            $actor = $this->inventoryActor($home['store_id']);
+
+            $legitimate = $reader->snapshot($actor, $home['inventory_id']);
+            $this->assertSame($home['store_id'], $legitimate['store_id']);
+            $this->assertSame('UNKNOWN', $legitimate['state']);
+
+            $targetInventoryId = $home['inventory_id'];
+            $sourceWarehouseId = (int) DB::table('inventories')
+                ->where('id', $targetInventoryId)->value('warehouse_id');
+            $destinationWarehouseId = (int) DB::table('inventories')
+                ->where('id', $foreign['inventory_id'])->value('warehouse_id');
+            $this->assertNotSame($sourceWarehouseId, $destinationWarehouseId);
+            $auditBefore = DB::table('audit_logs')->count();
+            $movementBefore = DB::table('stock_movements')->count();
+            $attestationsBefore = DB::table('enterprise_inventory_title_attestations')->count();
+
+            $moved = false;
+            $armed = true;
+            try {
+                $reader->snapshot($actor, $targetInventoryId);
+                $this->fail('A former-store reader must not receive a mid-transfer owner snapshot.');
+            } catch (HttpException $exception) {
+                $this->assertSame(404, $exception->getStatusCode());
+                $this->assertTrue($moved, 'Warehouse reassignment must occur after the first authorization.');
+            }
+
+            $this->assertDatabaseHas('inventories', [
+                'id' => $targetInventoryId,
+                'warehouse_id' => $destinationWarehouseId,
+                'quantity' => 10,
+                'reserved_quantity' => 3,
+            ]);
+            $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+            $this->assertSame($movementBefore, DB::table('stock_movements')->count());
+            $this->assertSame($attestationsBefore, DB::table('enterprise_inventory_title_attestations')->count());
+
+            try {
+                $reader->snapshot($actor, $targetInventoryId);
+                $this->fail('The former-store actor must also be denied on retry.');
+            } catch (HttpException $exception) {
+                $this->assertContains($exception->getStatusCode(), [403, 404]);
+            }
+
+            DB::table('inventories')->where('id', $targetInventoryId)
+                ->update(['warehouse_id' => $sourceWarehouseId]);
+            $restored = $reader->snapshot($actor, $targetInventoryId);
+            $this->assertSame($home['store_id'], $restored['store_id']);
+            $this->assertSame('UNKNOWN', $restored['state']);
+        }
+    }
+
     public function test_actual_inventory_rest_api_denies_foreign_store_forged_title_and_stale_balance_retry(): void
     {
         $this->seed(CoreReferenceSeeder::class);

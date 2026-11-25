@@ -55,6 +55,10 @@ final class InventoryOwnerProvenanceReadService
         // Expose the entire balance as UNKNOWN rather than a misleading zero
         // or a certified FOODEX amount.
         if ($rows->isEmpty()) {
+            // Even an UNKNOWN stock snapshot must not be sent to a former
+            // store after the inventory changes warehouse during this read.
+            $this->assertCurrentSnapshotScope($actor, $inventory, (int) $warehouse->store_id);
+
             // Lack of owner provenance must not camouflage an invalid
             // canonical stock balance. This is an accounting/inventory
             // integrity exception, not merely unknown legal ownership.
@@ -219,6 +223,10 @@ final class InventoryOwnerProvenanceReadService
             unset($position);
         }
 
+        // An earlier scoped warehouse SELECT cannot authorize a later
+        // snapshot if the inventory moved stores or stock revised mid-read.
+        $this->assertCurrentSnapshotScope($actor, $inventory, (int) $warehouse->store_id);
+
         return [
             'inventory_id' => $inventoryId,
             'store_id' => (int) $warehouse->store_id,
@@ -230,6 +238,38 @@ final class InventoryOwnerProvenanceReadService
             'certified' => $certified,
             'positions' => $positions,
         ];
+    }
+
+    /**
+     * Fail closed if the current canonical stock or warehouse scope changed
+     * while supplier names, owner positions and title proofs were loaded.
+     * This is a last-read guard, not a serializable transaction guarantee.
+     */
+    private function assertCurrentSnapshotScope(User $actor, object $initial, int $initialStoreId): void
+    {
+        $current = DB::table('inventories')
+            ->where('id', (int) $initial->id)
+            ->first(['warehouse_id', 'product_id', 'quantity', 'reserved_quantity', 'updated_at']);
+
+        abort_unless(
+            $current !== null
+            && (int) $current->warehouse_id === (int) $initial->warehouse_id
+            && (int) $current->product_id === (int) $initial->product_id
+            && (string) $current->quantity === (string) $initial->quantity
+            && (string) $current->reserved_quantity === (string) $initial->reserved_quantity
+            && (string) $current->updated_at === (string) $initial->updated_at,
+            404,
+        );
+
+        // Re-evaluate actual warehouse/store RBAC and WMS entitlement after
+        // the last inventory read. A warehouse's store can also be reassigned
+        // independently of inventories.warehouse_id.
+        $warehouse = $this->warehouses->assertWarehouse(
+            $actor,
+            (int) $current->warehouse_id,
+            'inventory.view',
+        );
+        abort_unless((int) $warehouse->store_id === $initialStoreId, 404);
     }
 
     /**
