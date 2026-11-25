@@ -1766,6 +1766,102 @@ final class V2OrganizationSetupGuidanceTest extends TestCase
         }
     }
 
+    public function test_direct_organization_writes_reject_forged_and_offboarded_audit_actors_in_both_locales(): void
+    {
+        $service = app(EnterpriseOrganizationAdministration::class);
+        $unit = EnterpriseBusinessUnit::query()
+            ->where('code', OrganizationHierarchyService::DEFAULT_BUSINESS_UNIT)
+            ->whereHas('legalEntity.company.organization', fn ($query) => $query
+                ->where('code', OrganizationHierarchyService::DEFAULT_ORGANIZATION))
+            ->firstOrFail();
+        $typeId = DB::table('store_types')->where('code', 'B2B')->value('id');
+        $this->assertNotNull($typeId);
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            $originalActor = $this->actor('SUPER_ADMIN', $locale);
+            $independentActor = $this->actor('SUPER_ADMIN', $locale);
+            $organization = $service->createOrganization([
+                'code' => 'v2_actor_guard_'.$locale,
+                'name' => 'Original organization '.$locale,
+                'is_active' => true,
+            ], $originalActor);
+            $store = Store::query()->create([
+                'store_type_id' => $typeId,
+                'code' => 'v2-actor-guard-'.$locale,
+                'name' => 'Actor guard '.$locale,
+                'is_active' => true,
+            ]);
+
+            // An unsaved Eloquent key change must not attribute a live write
+            // to the second, otherwise legitimate, Super Admin.
+            $forgedActor = $originalActor->fresh();
+            $forgedActor->id = $independentActor->id;
+
+            // An actor loaded before offboarding must not retain write/audit
+            // authority through a stale in-memory is_active=true property.
+            $offboardedActor = $originalActor->fresh();
+            DB::table('users')->where('id', $originalActor->id)->update(['is_active' => false]);
+            $this->assertTrue((bool) $offboardedActor->is_active);
+            $auditBefore = DB::table('audit_logs')->count();
+
+            foreach (['forged' => $forgedActor, 'offboarded' => $offboardedActor] as $case => $actor) {
+                foreach ([
+                    'create' => fn () => $service->createOrganization([
+                        'code' => 'v2_forbidden_'.$case.'_'.$locale,
+                        'name' => 'Forbidden',
+                        'is_active' => true,
+                    ], $actor),
+                    'update' => fn () => $service->updateOrganization($organization, [
+                        'code' => $organization->code,
+                        'name' => 'Forbidden rename',
+                        'is_active' => true,
+                    ], $actor),
+                    'assign' => fn () => $service->assignStore($store, $unit, $actor),
+                ] as $operation => $write) {
+                    try {
+                        $write();
+                        $this->fail("The {$case} actor must not {$operation} enterprise scope.");
+                    } catch (\Symfony\Component\HttpKernel\Exception\HttpException $exception) {
+                        $this->assertSame(403, $exception->getStatusCode());
+                    }
+                }
+            }
+
+            $this->assertDatabaseMissing('enterprise_organizations', [
+                'code' => 'v2_forbidden_forged_'.$locale,
+            ]);
+            $this->assertDatabaseMissing('enterprise_organizations', [
+                'code' => 'v2_forbidden_offboarded_'.$locale,
+            ]);
+            $this->assertSame('Original organization '.$locale, $organization->fresh()->name);
+            $this->assertDatabaseMissing('enterprise_store_scopes', ['store_id' => $store->id]);
+            $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+
+            // Persisted, active Super Admin still executes the normal workflow
+            // and the audit trail attributes each action to the real user.
+            $service->updateOrganization($organization, [
+                'code' => $organization->code,
+                'name' => 'Legitimate rename '.$locale,
+                'is_active' => true,
+            ], $independentActor);
+            $service->assignStore($store, $unit, $independentActor);
+            $this->assertSame('Legitimate rename '.$locale, $organization->fresh()->name);
+            $this->assertDatabaseHas('enterprise_store_scopes', ['store_id' => $store->id, 'business_unit_id' => $unit->id]);
+            $this->assertSame($auditBefore + 2, DB::table('audit_logs')->count());
+            $this->assertDatabaseHas('audit_logs', [
+                'event' => 'enterprise.organization.updated',
+                'user_id' => $independentActor->id,
+                'auditable_id' => $organization->id,
+            ]);
+            $this->assertDatabaseHas('audit_logs', [
+                'event' => 'enterprise.organization.store_scope_assigned',
+                'user_id' => $independentActor->id,
+                'auditable_id' => $store->id,
+            ]);
+        }
+    }
+
     private function actor(string $roleCode, string $locale): User
     {
         $user = User::query()->create([
