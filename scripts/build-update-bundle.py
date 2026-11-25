@@ -739,6 +739,48 @@ def assert_staged_release_member_unchanged(
         )
 
 
+def assert_staged_release_consistency(staging_dir: Path) -> None:
+    """Refuse mismatched manifest, file list, checksum and actual ZIP bytes.
+
+    A valid digest sidecar alone does not prove publisher authenticity. This
+    independent producer preflight prevents internally inconsistent release
+    groups from being published as a ready dashboard update.
+    """
+    manifest_path = staging_dir / "FOODEX-Update.json"
+    files_path = staging_dir / "FOODEX-Update.files.txt"
+    digest_path = staging_dir / "FOODEX-Update.sha256.txt"
+    archive_path = staging_dir / "FOODEX-Update.zip"
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        if not isinstance(manifest, dict) or not isinstance(manifest.get("delta"), dict):
+            raise RuntimeError("Invalid Update release manifest.")
+        expected_hash = manifest.get("sha256")
+        if (
+            manifest.get("package") != archive_path.name
+            or manifest["delta"].get("files_manifest") != files_path.name
+            or not isinstance(expected_hash, str)
+            or re.fullmatch(r"[0-9a-f]{64}", expected_hash) is None
+        ):
+            raise RuntimeError("Update release manifest metadata does not match output names.")
+        if digest_path.read_text(encoding="utf-8") != f"{expected_hash}  {archive_path.name}\\n":
+            raise RuntimeError("Update release checksum sidecar does not match manifest.")
+        filenames = files_path.read_text(encoding="utf-8").splitlines()
+        if not filenames or len(set(filenames)) != len(filenames):
+            raise RuntimeError("Update release file list is empty or contains duplicates.")
+
+        actual_hash = hashlib.sha256()
+        with archive_path.open("rb") as binary:
+            for chunk in iter(lambda: binary.read(1024 * 1024), b""):
+                actual_hash.update(chunk)
+        if actual_hash.hexdigest() != expected_hash:
+            raise RuntimeError("Update release ZIP digest does not match manifest.")
+        with zipfile.ZipFile(archive_path) as archive:
+            if archive.namelist() != filenames:
+                raise RuntimeError("Update release file list does not match ZIP members.")
+    except (OSError, UnicodeError, ValueError, zipfile.BadZipFile) as exc:
+        raise RuntimeError("Update release staged artifact consistency check failed.") from exc
+
+
 def publish_release_bundle(staging_dir: Path, output_dir: Path) -> None:
     """Publish all verified sidecars first; the ZIP is the last release marker.
 
@@ -777,6 +819,12 @@ def publish_release_bundle(staging_dir: Path, output_dir: Path) -> None:
 
     published: list[tuple[Path, Path]] = []
     try:
+        # Recheck the actual bytes and cross-file provenance while holding the
+        # publisher mutex. Each staged identity is pinned again below before
+        # hardlinking, and after publication against the target hardlink.
+        assert_staged_release_consistency(staging_dir)
+        for staged in staged_paths:
+            assert_staged_release_member_unchanged(staged, reviewed_members[staged], 1)
         reject_existing_release_outputs(outputs)
         try:
             for staged, output in zip(staged_paths, outputs):

@@ -395,15 +395,63 @@ class BuildUpdateBundleSourceSafetyTest(unittest.TestCase):
     def _staged_release_fixture(self, output_dir: Path) -> tuple[Path, dict[str, bytes]]:
         staging = output_dir / "private-build"
         staging.mkdir(mode=0o700)
+        import io
+
+        binary = io.BytesIO()
+        with zipfile.ZipFile(binary, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+            archive.writestr("backend/artisan", b"<?php // staged reviewed Laravel CLI")
+        zipped = binary.getvalue()
+        digest = hashlib.sha256(zipped).hexdigest()
         contents = {
-            "FOODEX-Update.json": b'{"sha256":"abc","source_commit":"123"}\n',
-            "FOODEX-Update.files.txt": b"backend/artisan\n",
-            "FOODEX-Update.sha256.txt": b"abc  FOODEX-Update.zip\n",
-            "FOODEX-Update.zip": b"PK\x03\x04release-bytes",
+            "FOODEX-Update.json": (
+                json.dumps({
+                    "package": "FOODEX-Update.zip",
+                    "sha256": digest,
+                    "source_commit": "123",
+                    "delta": {"files_manifest": "FOODEX-Update.files.txt"},
+                }) + "\\n"
+            ).encode("utf-8"),
+            "FOODEX-Update.files.txt": b"backend/artisan\\n",
+            "FOODEX-Update.sha256.txt": f"{digest}  FOODEX-Update.zip\\n".encode("utf-8"),
+            "FOODEX-Update.zip": zipped,
         }
         for name, data in contents.items():
             (staging / name).write_bytes(data)
         return staging, contents
+
+    def test_update_release_group_refuses_cross_artifact_drift_before_publish(self) -> None:
+        alterations = {
+            "manifest_hash": lambda p: p.__setitem__(
+                "FOODEX-Update.json",
+                p["FOODEX-Update.json"].replace(b'"sha256": "', b'"sha256": "0')
+            ),
+            "checksum_sidecar": lambda p: p.__setitem__(
+                "FOODEX-Update.sha256.txt", b"0" * 64 + b"  FOODEX-Update.zip\\n"
+            ),
+            "file_list": lambda p: p.__setitem__(
+                "FOODEX-Update.files.txt", b"backend/incorrect-artisan\\n"
+            ),
+            "zip_bytes": lambda p: p.__setitem__(
+                "FOODEX-Update.zip", p["FOODEX-Update.zip"] + b"ATTACKER-BYTES"
+            ),
+        }
+        for attack, mutate in alterations.items():
+            with self.subTest(attack=attack):
+                with tempfile.TemporaryDirectory() as directory:
+                    output_dir = Path(directory)
+                    staged, original = self._staged_release_fixture(output_dir)
+                    modified = dict(original)
+                    mutate(modified)
+                    for name, value in modified.items():
+                        (staged / name).write_bytes(value)
+
+                    with self.assertRaisesRegex(RuntimeError, "manifest|checksum|ZIP digest|file list"):
+                        builder.publish_release_bundle(staged, output_dir)
+
+                    for name in modified:
+                        self.assertFalse(os.path.lexists(output_dir / name), name)
+                        self.assertEqual((staged / name).read_bytes(), modified[name])
+                    self.assertFalse((output_dir / ".FOODEX-Update.publish.lock").exists())
 
     def test_complete_update_release_publishes_zip_last_under_exclusive_lock(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
