@@ -85,11 +85,18 @@ final class GoodsReceiptManager
     ): EnterpriseGoodsReceipt {
         $scope = $this->authorizedScope($actor, $context, self::VIEW_PERMISSION);
 
-        return $this->findVisible($scope, $receiptId)->load([
+        $receipt = $this->findVisible($scope, $receiptId)->load([
             'purchaseOrder:id,order_number,status',
             'supplier:id,code,name_en,name_ar,status',
             'lines' => fn ($query) => $query->orderBy('line_no'),
         ]);
+
+        // A store/organization transfer can occur between the scoped initial
+        // SELECT and the supplier, PO and financial line queries. Do not return
+        // the old store's receipt header or costs after ownership has moved.
+        $this->findVisible($scope, $receiptId);
+
+        return $receipt;
     }
 
     /** @param array<string, mixed> $attributes */

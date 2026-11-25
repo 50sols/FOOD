@@ -627,6 +627,76 @@ final class EnterprisePurchaseInvoiceHandoffFoundationTest extends TestCase
         }
     }
 
+    public function test_goods_receipt_detail_denies_stale_header_and_received_line_costs_after_store_transfer_in_ar_and_en(): void
+    {
+        $this->enableProcurement();
+        [$actor, $store, $context] = $this->scopedUser($this->allPermissions(), 'GRN-DETAIL-LIVE');
+        $foreignStore = $this->createRetailStore('GRN-DETAIL-FOREIGN');
+        [, $warehouse] = $this->stockTarget($store, 'GRN-DETAIL-LIVE-SKU');
+        $manager = app(GoodsReceiptManager::class);
+
+        $armed = false;
+        $moved = false;
+        $targetReceiptId = null;
+        DB::listen(static function ($query) use (&$armed, &$moved, &$targetReceiptId, $foreignStore): void {
+            $sql = strtolower((string) $query->sql);
+            if (! $armed || $moved || $targetReceiptId === null
+                || ! str_contains($sql, 'enterprise_goods_receipts')
+                || ! str_contains($sql, 'select')
+                || str_contains($sql, 'join')) {
+                return;
+            }
+
+            // Change store ownership immediately after the scoped receipt
+            // preflight, before the supplier, order and line SELECTs execute.
+            $armed = false;
+            $moved = true;
+            DB::table('enterprise_goods_receipts')
+                ->where('id', $targetReceiptId)
+                ->update(['store_id' => $foreignStore->id]);
+        });
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            $receipt = $this->postedReceipt(
+                $actor, $context, $warehouse, 'GRN-DETAIL-SUP-'.strtoupper($locale),
+                'GRN-DETAIL-LIVE-SKU', 2,
+            );
+
+            $visible = $manager->detail($actor, $context, $receipt->id);
+            $this->assertSame($receipt->id, $visible->id);
+            $this->assertCount(1, $visible->lines);
+            $this->assertSame('posted', $visible->status);
+
+            $targetReceiptId = (int) $receipt->id;
+            $auditBefore = DB::table('audit_logs')->count();
+            $linesBefore = DB::table('enterprise_goods_receipt_lines')->count();
+            $movementsBefore = DB::table('stock_movements')->count();
+            $moved = false;
+            $armed = true;
+            try {
+                $manager->detail($actor, $context, $receipt->id);
+                $this->fail('Transferred goods receipt must not reveal stale supplier, stock or unit prices.');
+            } catch (ModelNotFoundException) {
+                $this->assertTrue($moved, 'Ownership must change after the original authorized SELECT.');
+            }
+
+            $this->assertDatabaseHas('enterprise_goods_receipts', [
+                'id' => $receipt->id, 'store_id' => $foreignStore->id, 'status' => 'posted',
+            ]);
+            $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+            $this->assertSame($linesBefore, DB::table('enterprise_goods_receipt_lines')->count());
+            $this->assertSame($movementsBefore, DB::table('stock_movements')->count());
+
+            try {
+                $manager->detail($actor, $context, $receipt->id);
+                $this->fail('Repeated former-store access must remain denied.');
+            } catch (ModelNotFoundException) {
+                $this->assertTrue(true);
+            }
+        }
+    }
+
     public function test_purchase_invoice_number_and_supplier_reference_prefix_search_is_literal_scoped_and_read_only(): void
     {
         $this->enableProcurement();
