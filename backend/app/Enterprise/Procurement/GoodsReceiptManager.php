@@ -121,7 +121,7 @@ final class GoodsReceiptManager
         $scope = $this->authorizedScope($actor, $context, self::MANAGE_PERMISSION);
         $data = $this->validatedReceipt($attributes);
 
-        return DB::transaction(function () use ($actor, $scope, $orderId, $data): EnterpriseGoodsReceipt {
+        return DB::transaction(function () use ($actor, $context, $scope, $orderId, $data): EnterpriseGoodsReceipt {
             $order = $this->visibleOrderQuery($scope)
                 ->whereKey($orderId)
                 ->lockForUpdate()
@@ -193,6 +193,10 @@ final class GoodsReceiptManager
                 }
             }
 
+            // Source PO, warehouse and cumulative-quantity reads may outlive
+            // the original manage permission. Reauthorize before any write.
+            $this->authorizedScope($actor, $context, self::MANAGE_PERMISSION);
+
             $publicId = (string) Str::uuid();
             $receipt = EnterpriseGoodsReceipt::query()->create([
                 'public_id' => $publicId,
@@ -257,7 +261,7 @@ final class GoodsReceiptManager
     ): EnterpriseGoodsReceipt {
         $scope = $this->authorizedScope($actor, $context, self::POST_PERMISSION);
 
-        return DB::transaction(function () use ($actor, $scope, $receiptId): EnterpriseGoodsReceipt {
+        return DB::transaction(function () use ($actor, $context, $scope, $receiptId): EnterpriseGoodsReceipt {
             $receipt = $this->lockVisible($scope, $receiptId);
             $alreadyPosted = $receipt->status === 'posted';
             if (! $alreadyPosted) {
@@ -298,6 +302,8 @@ final class GoodsReceiptManager
                 ]);
             }
 
+            // Deny a revoked principal even on an idempotent posted retry.
+            $this->authorizedScope($actor, $context, self::POST_PERMISSION);
             if ($alreadyPosted) {
                 return $receipt->refresh()->load('lines');
             }
@@ -361,6 +367,10 @@ final class GoodsReceiptManager
                 }
             }
 
+            // Never post stock or write success audit on permissions revoked
+            // while the GRN and PO line/quantity queries were executing.
+            $this->authorizedScope($actor, $context, self::POST_PERMISSION);
+
             foreach ($lines as $line) {
                 $this->inventory->receive($actor, $scope->storeId, $receipt, $line);
             }
@@ -395,8 +405,10 @@ final class GoodsReceiptManager
     ): EnterpriseGoodsReceipt {
         $scope = $this->authorizedScope($actor, $context, self::MANAGE_PERMISSION);
 
-        return DB::transaction(function () use ($actor, $scope, $receiptId): EnterpriseGoodsReceipt {
+        return DB::transaction(function () use ($actor, $context, $scope, $receiptId): EnterpriseGoodsReceipt {
             $receipt = $this->lockVisible($scope, $receiptId);
+            // Locking the row is not a lease on the previous manage grant.
+            $this->authorizedScope($actor, $context, self::MANAGE_PERMISSION);
             if ($receipt->status === 'cancelled') {
                 return $receipt->refresh();
             }

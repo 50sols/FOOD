@@ -435,6 +435,134 @@ final class EnterprisePurchaseInvoiceHandoffFoundationTest extends TestCase
         }
     }
 
+    public function test_grn_mutations_reauthorize_after_transactional_reads_in_both_locales(): void
+    {
+        $this->enableProcurement();
+        [$actor, $store, $context] = $this->scopedUser($this->allPermissions(), 'GRN-TX-RBAC');
+        $manager = app(GoodsReceiptManager::class);
+        $armed = false;
+        $injected = false;
+        $table = '';
+        $permissionId = 0;
+
+        // The same-connection injected DENY rolls back with the refused
+        // nested transaction. It is not a two-session/MySQL HTTP race proof.
+        DB::listen(static function ($query) use ($actor, &$armed, &$injected, &$table, &$permissionId): void {
+            $sql = strtolower((string) $query->sql);
+            if (! $armed || $injected || ! str_contains($sql, 'select')
+                || ! str_contains($sql, $table)) {
+                return;
+            }
+
+            $armed = false;
+            $injected = true;
+            DB::table('user_permission_overrides')->insert([
+                'user_id' => $actor->id,
+                'permission_id' => $permissionId,
+                'scope_key' => 'global',
+                'store_id' => null,
+                'effect' => 'deny',
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+            DB::table('users')->where('id', $actor->id)
+                ->update(['has_permission_overrides' => true]);
+        });
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            $sku = 'GRN-TX-'.strtoupper($locale);
+            [, $warehouse] = $this->stockTarget($store, $sku);
+            $supplier = app(SupplierDirectory::class)->create($actor, $context, [
+                'scope_type' => 'store',
+                'code' => 'GRN-TX-SUP-'.strtoupper($locale),
+                'name_en' => 'GRN supplier '.$locale,
+            ]);
+            $requests = app(PurchaseRequestManager::class);
+            $request = $requests->create($actor, $context, [
+                'supplier_id' => $supplier->id,
+                'currency_code' => 'KWD',
+                'reason' => 'GRN late revoke',
+                'lines' => [[
+                    'item_code' => $sku,
+                    'description' => $sku,
+                    'quantity' => 4,
+                    'unit' => 'each',
+                    'estimated_unit_cost' => 1.250,
+                ]],
+            ]);
+            $requests->submit($actor, $context, $request->id);
+            [$checker, $checkerContext] = ProcurementSecondApprover::forSameStore($actor, $context);
+            $requests->approve($checker, $checkerContext, $request->id);
+            $orders = app(PurchaseOrderManager::class);
+            $order = $orders->createFromApprovedRequest($actor, $context, $request->id);
+            $order = $orders->issue($actor, $context, $order->id);
+            $data = ['lines' => [[
+                'purchase_order_line_id' => $order->lines()->firstOrFail()->id,
+                'warehouse_id' => $warehouse->id,
+                'quantity' => 1,
+            ]]];
+            $manageId = (int) Permission::query()->where('code', 'procurement.goods_receipts.manage')->value('id');
+            $postId = (int) Permission::query()->where('code', 'procurement.goods_receipts.post')->value('id');
+            $this->assertGreaterThan(0, $manageId);
+            $this->assertGreaterThan(0, $postId);
+
+            $permissionId = $manageId;
+            $table = 'enterprise_purchase_orders';
+            $armed = true;
+            $injected = false;
+            $auditBefore = DB::table('audit_logs')->count();
+            try {
+                $manager->createFromIssuedOrder($actor, $context, $order->id, $data);
+                $this->fail('Late manage DENY must prevent GRN creation.');
+            } catch (HttpExceptionInterface $exception) {
+                $this->assertSame(403, $exception->getStatusCode());
+            }
+            $this->assertTrue($injected, 'PO SELECT must inject DENY.');
+            $this->assertDatabaseMissing('enterprise_goods_receipts', ['purchase_order_id' => $order->id]);
+            $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+            $this->assertFalse((bool) $actor->fresh()->has_permission_overrides);
+
+            $receipt = $manager->createFromIssuedOrder($actor, $context, $order->id, $data);
+            $permissionId = $postId;
+            $table = 'enterprise_goods_receipt_lines';
+            $armed = true;
+            $injected = false;
+            $auditBefore = DB::table('audit_logs')->count();
+            $stockBefore = DB::table('stock_movements')->count();
+            try {
+                $manager->post($actor, $context, $receipt->id);
+                $this->fail('Late post DENY must prevent receipt posting.');
+            } catch (HttpExceptionInterface $exception) {
+                $this->assertSame(403, $exception->getStatusCode());
+            }
+            $this->assertTrue($injected, 'Receipt-lines SELECT must inject DENY.');
+            $this->assertDatabaseHas('enterprise_goods_receipts', ['id' => $receipt->id, 'status' => 'draft']);
+            $this->assertSame($stockBefore, DB::table('stock_movements')->count());
+            $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+            $this->assertFalse((bool) $actor->fresh()->has_permission_overrides);
+            $this->assertSame('posted', $manager->post($actor, $context, $receipt->id)->status);
+
+            $draft = $manager->createFromIssuedOrder($actor, $context, $order->id, $data);
+            $permissionId = $manageId;
+            $table = 'enterprise_goods_receipts';
+            $armed = true;
+            $injected = false;
+            $auditBefore = DB::table('audit_logs')->count();
+            try {
+                $manager->cancel($actor, $context, $draft->id);
+                $this->fail('Late manage DENY must prevent GRN cancellation.');
+            } catch (HttpExceptionInterface $exception) {
+                $this->assertSame(403, $exception->getStatusCode());
+            }
+            $this->assertTrue($injected, 'GRN row SELECT must inject DENY.');
+            $this->assertDatabaseHas('enterprise_goods_receipts', ['id' => $draft->id, 'status' => 'draft']);
+            $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+            $this->assertFalse((bool) $actor->fresh()->has_permission_overrides);
+            $this->assertSame('cancelled', $manager->cancel($actor, $context, $draft->id)->status);
+        }
+    }
+
     public function test_invoice_mutations_recheck_procurement_shutdown_before_writes_in_both_locales(): void
     {
         $this->enableProcurement();
