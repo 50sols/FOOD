@@ -509,6 +509,225 @@ final class ProcurementModuleLockContentionTest extends TestCase
         }
     }
 
+    public function test_two_mysql_sessions_serialize_supplier_invitation_revocation_before_quote_submission(): void
+    {
+        $this->assertSame('true', getenv('FOODEX_DISPOSABLE_SERVICES'));
+        $this->assertSame('mysql', DB::connection()->getDriverName());
+        $this->assertSame('foodex_acceptance', DB::connection()->getDatabaseName());
+        $this->assertSame(0, Artisan::call('migrate', ['--force' => true]));
+
+        $company = DB::table('enterprise_companies')->orderBy('id')->first();
+        $this->assertNotNull($company);
+        $store = DB::table('stores')->where('id', app(WholesalePrincipal::class)->storeId())->first();
+        $this->assertNotNull($store);
+
+        $maker = User::factory()->create(['is_active' => true]);
+        $checker = User::factory()->create(['is_active' => true]);
+        $supplierId = null;
+        $requestId = null;
+        $rfqId = null;
+        $invitationId = null;
+        $peer = null;
+
+        try {
+            $key = bin2hex(random_bytes(8));
+            $supplierId = DB::table('enterprise_suppliers')->insertGetId([
+                'organization_id' => $company->organization_id,
+                'company_id' => $company->id,
+                'scope_type' => 'company',
+                'code' => 'P135-INV-LOCK-'.$key,
+                'name_en' => 'Disposable invitation contention supplier',
+                'status' => 'active',
+                'qualification_status' => 'qualified',
+                'created_at' => now(), 'updated_at' => now(),
+            ]);
+            $requestId = DB::table('enterprise_purchase_requests')->insertGetId([
+                'public_id' => (string) Str::uuid(),
+                'request_number' => 'PR-INV-'.$key,
+                'organization_id' => $company->organization_id,
+                'company_id' => $company->id,
+                'store_id' => $store->id,
+                'supplier_id' => $supplierId,
+                'status' => 'approved',
+                'currency_code' => 'KWD',
+                'created_by' => $maker->id,
+                'submitted_by' => $maker->id,
+                'decided_by' => $checker->id,
+                'created_at' => now(), 'updated_at' => now(),
+            ]);
+            $requestLineId = DB::table('enterprise_purchase_request_lines')->insertGetId([
+                'purchase_request_id' => $requestId,
+                'line_no' => 1,
+                'description' => 'Disposable invitation lock item',
+                'quantity' => '1.000',
+                'unit' => 'each',
+                'estimated_unit_cost' => '1.250',
+                'created_at' => now(), 'updated_at' => now(),
+            ]);
+            $rfqId = DB::table('enterprise_procurement_rfqs')->insertGetId([
+                'public_id' => (string) Str::uuid(),
+                'rfq_number' => 'RFQ-INV-'.$key,
+                'purchase_request_id' => $requestId,
+                'organization_id' => $company->organization_id,
+                'company_id' => $company->id,
+                'store_id' => $store->id,
+                'status' => 'published',
+                'title' => 'Disposable supplier invitation lock acceptance',
+                'currency_code' => 'KWD',
+                'created_by' => $maker->id,
+                'published_by' => $maker->id,
+                'published_at' => now(),
+                'created_at' => now(), 'updated_at' => now(),
+            ]);
+            DB::table('enterprise_procurement_rfq_lines')->insert([
+                'rfq_id' => $rfqId,
+                'purchase_request_line_id' => $requestLineId,
+                'line_no' => 1,
+                'description' => 'Disposable invitation lock item',
+                'quantity' => '1.000',
+                'unit' => 'each',
+                'baseline_unit_cost' => '1.250',
+                'created_at' => now(), 'updated_at' => now(),
+            ]);
+            $invitationId = DB::table('enterprise_procurement_rfq_invitations')->insertGetId([
+                'rfq_id' => $rfqId,
+                'supplier_id' => $supplierId,
+                'token_hash' => hash('sha256', $key),
+                'status' => 'invited',
+                'expires_at' => now()->addDay(),
+                'created_by' => $maker->id,
+                'created_at' => now(), 'updated_at' => now(),
+            ]);
+
+            $config = config('database.connections.mysql');
+            $this->assertIsArray($config);
+            $peer = new PDO(
+                sprintf('mysql:host=%s;port=%d;dbname=%s;charset=utf8mb4',
+                    (string) ($config['host'] ?? '127.0.0.1'),
+                    (int) ($config['port'] ?? 3306),
+                    (string) $config['database']),
+                (string) ($config['username'] ?? ''),
+                (string) ($config['password'] ?? ''),
+                [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION, PDO::ATTR_EMULATE_PREPARES => false],
+            );
+            $primaryId = (int) DB::selectOne('SELECT CONNECTION_ID() AS id')->id;
+            $peerId = (int) $peer->query('SELECT CONNECTION_ID()')->fetchColumn();
+            $this->assertGreaterThan(0, $primaryId);
+            $this->assertGreaterThan(0, $peerId);
+            $this->assertNotSame($primaryId, $peerId);
+
+            $quotesBefore = DB::table('enterprise_procurement_quotes')->count();
+            $ordersBefore = DB::table('enterprise_purchase_orders')->count();
+            $auditBefore = DB::table('audit_logs')->count();
+
+            // Quote-side row lock first: operator cannot revoke a currently
+            // locked invitation while the quote transaction is still open.
+            DB::beginTransaction();
+            try {
+                $locked = DB::table('enterprise_procurement_rfq_invitations')
+                    ->where('id', $invitationId)
+                    ->where('rfq_id', $rfqId)
+                    ->where('supplier_id', $supplierId)
+                    ->lockForUpdate()
+                    ->first();
+                $this->assertNotNull($locked);
+                $this->assertSame('invited', $locked->status);
+
+                $peer->beginTransaction();
+                try {
+                    $blocked = false;
+                    try {
+                        $statement = $peer->prepare(
+                            'SELECT status FROM enterprise_procurement_rfq_invitations WHERE id = ? FOR UPDATE NOWAIT',
+                        );
+                        $statement->execute([$invitationId]);
+                    } catch (PDOException $error) {
+                        $blocked = true;
+                        $this->assertSame(3572, (int) ($error->errorInfo[1] ?? 0));
+                    }
+                    $this->assertTrue($blocked, 'Operator must not revoke the locked supplier invitation.');
+                } finally {
+                    if ($peer->inTransaction()) {
+                        $peer->rollBack();
+                    }
+                }
+            } finally {
+                DB::rollBack();
+            }
+
+            // Reversed order: committed revocation wins, so a quote-side
+            // locking read cannot accept the previously invited state.
+            $peer->beginTransaction();
+            try {
+                $statement = $peer->prepare(
+                    'UPDATE enterprise_procurement_rfq_invitations SET status = ? WHERE id = ?',
+                );
+                $statement->execute(['revoked', $invitationId]);
+
+                DB::beginTransaction();
+                try {
+                    $blocked = false;
+                    try {
+                        DB::select(
+                            'SELECT status FROM enterprise_procurement_rfq_invitations WHERE id = ? FOR UPDATE NOWAIT',
+                            [$invitationId],
+                        );
+                    } catch (QueryException $error) {
+                        $blocked = true;
+                        $this->assertSame(3572, (int) ($error->errorInfo[1] ?? 0));
+                    }
+                    $this->assertTrue($blocked, 'Quote submission must not read an uncommitted invitation revocation.');
+                } finally {
+                    DB::rollBack();
+                }
+                $peer->commit();
+            } finally {
+                if ($peer->inTransaction()) {
+                    $peer->rollBack();
+                }
+            }
+
+            DB::beginTransaction();
+            try {
+                $after = DB::table('enterprise_procurement_rfq_invitations')
+                    ->where('id', $invitationId)
+                    ->where('rfq_id', $rfqId)
+                    ->where('supplier_id', $supplierId)
+                    ->lockForUpdate()
+                    ->first();
+                $this->assertNotNull($after);
+                $this->assertSame('revoked', $after->status);
+            } finally {
+                DB::rollBack();
+            }
+
+            $this->assertSame($quotesBefore, DB::table('enterprise_procurement_quotes')->count());
+            $this->assertSame($ordersBefore, DB::table('enterprise_purchase_orders')->count());
+            $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+        } finally {
+            if ($peer !== null && $peer->inTransaction()) {
+                $peer->rollBack();
+            }
+            if (DB::connection()->transactionLevel() > 0) {
+                DB::rollBack();
+            }
+            if ($invitationId !== null) {
+                DB::table('enterprise_procurement_rfq_invitations')->where('id', $invitationId)->delete();
+            }
+            if ($rfqId !== null) {
+                DB::table('enterprise_procurement_rfqs')->where('id', $rfqId)->delete();
+            }
+            if ($requestId !== null) {
+                DB::table('enterprise_purchase_requests')->where('id', $requestId)->delete();
+            }
+            if ($supplierId !== null) {
+                DB::table('enterprise_suppliers')->where('id', $supplierId)->delete();
+            }
+            $checker->delete();
+            $maker->delete();
+        }
+    }
+
     private function assertPeerNowaitBlocked(PDO $peer): void
     {
         $blocked = false;
