@@ -359,6 +359,69 @@ final class EnterpriseProcurementCompletionTest extends TestCase
         $this->assertNotEmpty($dashboard['charts']['savings']);
     }
 
+    public function test_contract_assignment_rechecks_procurement_shutdown_after_preflight_in_ar_and_en(): void
+    {
+        $this->enableProcurement();
+        [$actor, , $context] = $this->scopedUser($this->allPermissions(), 'PROC-CTR-ASSIGN-LIVE');
+        $supplier = app(SupplierDirectory::class)->create($actor, $context, [
+            'scope_type' => 'store',
+            'code' => 'PROC-CTR-ASSIGN-SUP',
+            'name_en' => 'Contract Assignment Supplier',
+        ]);
+        $completion = app(ProcurementCompletionManager::class);
+        $contract = $completion->createContract($actor, $context, [
+            'supplier_id' => $supplier->id,
+            'title' => 'Assignment lifecycle proof',
+            'currency_code' => 'KWD',
+            'starts_on' => now()->subDay()->toDateString(),
+            'ends_on' => now()->addDays(30)->toDateString(),
+        ]);
+        [$checker, $checkerContext] = ProcurementSecondApprover::forSameStore($actor, $context);
+        $completion->activateContract($checker, $checkerContext, $contract->id);
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            $order = $this->approvedOrder($actor, $context, $supplier->id, 1, 2.000);
+            $beforeAudit = DB::table('audit_logs')->count();
+            $shutdownAfterPreflight = false;
+
+            // ModuleRegistry's first SELECT supplies the enabled preflight.
+            // Revoke it just after that SELECT returns; the final transaction
+            // must independently lock/recheck state before linking the order.
+            DB::listen(static function ($query) use (&$shutdownAfterPreflight): void {
+                $sql = strtolower((string) $query->sql);
+                if ($shutdownAfterPreflight
+                    || ! str_contains($sql, 'enterprise_modules')
+                    || ! str_contains($sql, 'select')) {
+                    return;
+                }
+
+                $shutdownAfterPreflight = true;
+                DB::table('enterprise_modules')->where('code', 'procurement')
+                    ->update(['state' => ModuleState::DISABLED->value]);
+            });
+
+            try {
+                $completion->assignContractToOrder($actor, $context, $order->id, $contract->id);
+                $this->fail('Contract assignment must reject post-preflight procurement shutdown.');
+            } catch (HttpException $exception) {
+                $this->assertSame(404, $exception->getStatusCode());
+            }
+
+            $this->assertTrue($shutdownAfterPreflight, 'Test must revoke the module after the preflight SELECT.');
+            $this->assertNull(DB::table('enterprise_purchase_orders')
+                ->where('id', $order->id)->value('procurement_contract_id'));
+            $this->assertSame($beforeAudit, DB::table('audit_logs')->count());
+
+            DB::table('enterprise_modules')->where('code', 'procurement')
+                ->update(['state' => ModuleState::ENABLED->value]);
+            $completion->assignContractToOrder($actor, $context, $order->id, $contract->id);
+            $this->assertSame((int) $contract->id, (int) DB::table('enterprise_purchase_orders')
+                ->where('id', $order->id)->value('procurement_contract_id'));
+            $this->assertSame($beforeAudit + 1, DB::table('audit_logs')->count());
+        }
+    }
+
     public function test_contract_document_rechecks_live_scope_after_preflight_and_removes_orphan_upload(): void
     {
         Storage::fake('local');
