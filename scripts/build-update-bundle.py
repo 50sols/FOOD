@@ -297,7 +297,7 @@ def safe_path(path: str) -> str:
         if (
             part.rstrip(" .") != part
             or any(char in '<>:"|?*' for char in part)
-            or re.fullmatch(r"(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\..*)?", part, re.IGNORECASE)
+            or re.fullmatch(r"(?:con|conin\$|conout\$|prn|aux|nul|com[1-9]|lpt[1-9])(?:\..*)?", part, re.IGNORECASE)
         ):
             raise RuntimeError(f"Nonportable update path: {path}")
 

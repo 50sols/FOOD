@@ -89,6 +89,9 @@ class BuildUpdateBundleSourceSafetyTest(unittest.TestCase):
             "backend/Storage/data.json",
             "backend/.GIT/config",
             "backend/public/assets/con",
+            "backend/public/assets/CONIN$",
+            "backend/public/assets/ConOut$.log",
+            "backend/config/conin$.txt",
             "backend/public/assets/trailing.",
             "backend/public/assets/../secrets.json",
             "backend/public/assets/./secret.json",
@@ -101,6 +104,31 @@ class BuildUpdateBundleSourceSafetyTest(unittest.TestCase):
         for name in invalid:
             with self.subTest(name=name), self.assertRaises(RuntimeError):
                 builder.safe_path(name)
+
+    def test_windows_console_device_member_is_rejected_before_zip_staging(self) -> None:
+        # ASCII CONIN$/CONOUT$ are reserved on Windows even when suffixed
+        # or nested in an otherwise portable Laravel runtime path.
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "repo"
+            source = root / "backend/public/assets/CONOUT$.log"
+            source.parent.mkdir(parents=True)
+            source.write_bytes(b"device-name-not-an-asset")
+            output = root / "dist/FOODEX-Update.zip"
+            with mock.patch.object(builder.tempfile, "mkstemp") as stage:
+                with self.assertRaisesRegex(RuntimeError, "Nonportable update path"):
+                    builder.build_zip(
+                        root,
+                        [("backend/public/assets/CONOUT$.log", "backend/public/assets/CONOUT$.log")],
+                        output,
+                    )
+                stage.assert_not_called()
+            self.assertFalse(os.path.lexists(output))
+            self.assertEqual(source.read_bytes(), b"device-name-not-an-asset")
+
+        self.assertEqual(
+            builder.safe_path("backend/public/assets/admin/console.css"),
+            "backend/public/assets/admin/console.css",
+        )
 
     def test_private_keys_and_service_credentials_are_never_update_members(self) -> None:
         for member in (
