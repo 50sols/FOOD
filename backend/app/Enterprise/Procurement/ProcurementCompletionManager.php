@@ -248,6 +248,9 @@ final class ProcurementCompletionManager
             ->where('rfqs.organization_id', $scope->organizationId)
             ->where('rfqs.company_id', $scope->companyId)
             ->where('rfqs.store_id', $scope->storeId)
+            ->where('requests.organization_id', $scope->organizationId)
+            ->where('requests.company_id', $scope->companyId)
+            ->where('requests.store_id', $scope->storeId)
             ->when(
                 $validated['status'] ?? null,
                 fn ($query, string $status) => $query->where('rfqs.status', $status),
@@ -267,6 +270,27 @@ final class ProcurementCompletionManager
             ->orderByDesc('rfqs.id')
             ->paginate(max(10, min(100, $perPage)))
             ->withQueryString();
+
+        // A request can be transferred independently from its RFQ. Do not
+        // return former-store RFQ or joined request references after either
+        // record changes tenant ownership during page hydration.
+        $rfqIds = $page->getCollection()->pluck('id')->all();
+        if ($rfqIds !== []) {
+            abort_unless(
+                DB::table('enterprise_procurement_rfqs as rfqs')
+                    ->join('enterprise_purchase_requests as requests', 'requests.id', '=', 'rfqs.purchase_request_id')
+                    ->whereIn('rfqs.id', $rfqIds)
+                    ->where('rfqs.organization_id', $scope->organizationId)
+                    ->where('rfqs.company_id', $scope->companyId)
+                    ->where('rfqs.store_id', $scope->storeId)
+                    ->where('requests.organization_id', $scope->organizationId)
+                    ->where('requests.company_id', $scope->companyId)
+                    ->where('requests.store_id', $scope->storeId)
+                    ->count() === count($rfqIds),
+                404,
+                'RFQ or source purchase request ownership changed during pagination.',
+            );
+        }
 
         // The scoped COUNT/row SELECTs may complete after permission has
         // been persistently revoked. Never return RFQ or request metadata

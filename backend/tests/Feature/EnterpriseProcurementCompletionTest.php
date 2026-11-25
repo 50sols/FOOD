@@ -139,6 +139,96 @@ final class EnterpriseProcurementCompletionTest extends TestCase
         ]);
     }
 
+    public function test_rfq_pagination_never_leaks_transferred_source_request_or_late_moved_rfq_in_ar_and_en(): void
+    {
+        $this->enableProcurement();
+        [$actor, $store, $context] = $this->scopedUser($this->allPermissions(), 'P135-RFQ-PAGE-LIVE');
+        $foreignStore = $this->createRetailStore('P135-RFQ-PAGE-OTHER');
+        $requests = app(PurchaseRequestManager::class);
+        $completion = app(ProcurementCompletionManager::class);
+
+        $armed = false;
+        $injected = false;
+        $mode = '';
+        $rfqId = null;
+        $requestId = null;
+        DB::listen(static function ($query) use (
+            $foreignStore, &$armed, &$injected, &$mode, &$rfqId, &$requestId
+        ): void {
+            $sql = strtolower((string) $query->sql);
+            if (! $armed || $injected || $rfqId === null || $requestId === null
+                || ! str_contains($sql, 'select')
+                || ! str_contains($sql, 'enterprise_procurement_rfqs')
+                || ! str_contains($sql, 'enterprise_purchase_requests')
+                || ! str_contains($sql, 'order by')) {
+                return;
+            }
+
+            // Deterministic post-page-select interleaving, NOT an independently
+            // validated multi-session MySQL concurrency guarantee.
+            $armed = false;
+            $injected = true;
+            $table = $mode === 'rfq'
+                ? 'enterprise_procurement_rfqs'
+                : 'enterprise_purchase_requests';
+            $id = $mode === 'rfq' ? $rfqId : $requestId;
+            DB::table($table)->where('id', $id)
+                ->update(['store_id' => $foreignStore->id]);
+        });
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            $request = $requests->create($actor, $context, [
+                'currency_code' => 'KWD',
+                'reason' => 'P135 scoped RFQ page '.$locale,
+                'lines' => [[
+                    'item_code' => 'P135-RFQ-PAGE-'.strtoupper($locale),
+                    'description' => 'RFQ source transfer boundary',
+                    'quantity' => 1,
+                    'unit' => 'each',
+                    'estimated_unit_cost' => 2.000,
+                ]],
+            ]);
+            $requests->submit($actor, $context, $request->id);
+            $rfq = $completion->createRfq($actor, $context, $request->id, [
+                'title' => 'Protected quotation '.$locale,
+            ]);
+            $filter = ['q' => $rfq->rfq_number];
+            $this->assertSame(1, $completion->paginateRfqs($actor, $context, $filter)->total());
+
+            $rfqId = (int) $rfq->id;
+            $requestId = (int) $request->id;
+            $auditBefore = DB::table('audit_logs')->count();
+            $quotesBefore = DB::table('enterprise_procurement_quotes')->count();
+            $rfqsBefore = DB::table('enterprise_procurement_rfqs')->count();
+            foreach (['rfq', 'request'] as $mode) {
+                $injected = false;
+                $armed = true;
+                try {
+                    $completion->paginateRfqs($actor, $context, $filter);
+                    $this->fail('A stale RFQ or foreign source request must not return joined data.');
+                } catch (HttpException $exception) {
+                    $this->assertTrue($injected, 'Actual RFQ page SQL must trigger transfer.');
+                    $this->assertSame(404, $exception->getStatusCode());
+                } finally {
+                    $armed = false;
+                }
+
+                // A transfer before the SELECT must also hide the joined
+                // source request; no stale supplier or request number is safe.
+                $this->assertSame(0, $completion->paginateRfqs($actor, $context, $filter)->total());
+                DB::table($mode === 'rfq' ? 'enterprise_procurement_rfqs' : 'enterprise_purchase_requests')
+                    ->where('id', $mode === 'rfq' ? $rfqId : $requestId)
+                    ->update(['store_id' => $store->id]);
+
+                $this->assertSame(1, $completion->paginateRfqs($actor, $context, $filter)->total());
+                $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+                $this->assertSame($quotesBefore, DB::table('enterprise_procurement_quotes')->count());
+                $this->assertSame($rfqsBefore, DB::table('enterprise_procurement_rfqs')->count());
+            }
+        }
+    }
+
     public function test_scoped_supplier_contract_search_preserves_literal_numbers_titles_and_supplier_codes(): void
     {
         $this->enableProcurement();
