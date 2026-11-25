@@ -1652,6 +1652,52 @@ final class V2OrganizationSetupGuidanceTest extends TestCase
         $this->assertSame($beforeAudit, DB::table('audit_logs')->count());
     }
 
+    public function test_direct_service_canonicalizes_name_on_create_and_update_in_both_locales(): void
+    {
+        $admin = $this->actor('SUPER_ADMIN', 'en');
+        $service = app(EnterpriseOrganizationAdministration::class);
+        $organization = EnterpriseOrganization::query()->create([
+            'code' => 'p112_name_parent_org', 'name' => 'Parent Organization', 'is_active' => true,
+        ]);
+        $company = EnterpriseCompany::query()->create([
+            'organization_id' => $organization->id,
+            'code' => 'p112_name_parent_company', 'name' => 'Parent Company', 'is_active' => true,
+        ]);
+        $entity = EnterpriseLegalEntity::query()->create([
+            'company_id' => $company->id,
+            'code' => 'p112_name_parent_entity', 'name' => 'Parent Entity', 'is_active' => true,
+        ]);
+        $cases = [
+            [null, 'createOrganization', 'updateOrganization'],
+            [$organization, 'createCompany', 'updateCompany'],
+            [$company, 'createLegalEntity', 'updateLegalEntity'],
+            [$entity, 'createBusinessUnit', 'updateBusinessUnit'],
+        ];
+        $auditBefore = DB::table('audit_logs')->count();
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            foreach ($cases as $index => [$parent, $create, $update]) {
+                $data = [
+                    'code' => 'p112_trim_'.$locale.'_'.$index,
+                    'name' => '  Canonical Name  ',
+                    'is_active' => true,
+                ];
+                $record = $parent === null
+                    ? $service->{$create}($data, $admin)
+                    : $service->{$create}($parent, $data, $admin);
+
+                $this->assertSame('Canonical Name', $record->fresh()->name);
+                $updated = $service->{$update}($record, ['name' => '  Updated Canonical Name  '], $admin);
+                $this->assertSame('Updated Canonical Name', $updated->fresh()->name);
+                $this->assertSame($data['code'], $updated->fresh()->code);
+            }
+        }
+
+        // Four hierarchy levels x two locales x one create and update each.
+        $this->assertSame($auditBefore + 16, DB::table('audit_logs')->count());
+    }
+
     public function test_direct_hierarchy_creation_requires_code_and_name_before_database_write_in_both_locales(): void
     {
         $admin = $this->actor('SUPER_ADMIN', 'en');

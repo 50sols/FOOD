@@ -29,6 +29,8 @@ final class EnterpriseOrganizationAdministration
         // Service callers, not only HTTP controllers, must respect the same
         // editable field boundary on unguarded Eloquent hierarchy models.
         $this->assertWritableRecordFields($data, creating: true);
+        // Mirror HTTP setup normalization before persisting master-data names.
+        $data['name'] = trim($data['name']);
 
         return DB::transaction(function () use ($data, $actor): EnterpriseOrganization {
             $organization = EnterpriseOrganization::query()->create($data);
@@ -54,6 +56,8 @@ final class EnterpriseOrganizationAdministration
         // Service callers, not only HTTP controllers, must respect the same
         // editable field boundary on unguarded Eloquent hierarchy models.
         $this->assertWritableRecordFields($data, creating: true);
+        // Mirror HTTP setup normalization before persisting master-data names.
+        $data['name'] = trim($data['name']);
 
         $this->assertCreationParentActive($organization);
 
@@ -91,6 +95,8 @@ final class EnterpriseOrganizationAdministration
         // Service callers, not only HTTP controllers, must respect the same
         // editable field boundary on unguarded Eloquent hierarchy models.
         $this->assertWritableRecordFields($data, creating: true);
+        // Mirror HTTP setup normalization before persisting master-data names.
+        $data['name'] = trim($data['name']);
 
         $this->assertCreationParentActive($company);
 
@@ -128,6 +134,8 @@ final class EnterpriseOrganizationAdministration
         // Service callers, not only HTTP controllers, must respect the same
         // editable field boundary on unguarded Eloquent hierarchy models.
         $this->assertWritableRecordFields($data, creating: true);
+        // Mirror HTTP setup normalization before persisting master-data names.
+        $data['name'] = trim($data['name']);
 
         $this->assertCreationParentActive($entity);
 
@@ -496,6 +504,11 @@ final class EnterpriseOrganizationAdministration
                 ->lockForUpdate()
                 ->firstOrFail();
             $this->assertUpdateAllowed($record, $data);
+            // HTTP Setup Save trims names; direct writes must persist and
+            // audit the same canonical human-readable name.
+            if (array_key_exists('name', $data)) {
+                $data['name'] = trim($data['name']);
+            }
 
             $before = $this->snapshot($record);
             $record->fill($data)->save();
