@@ -185,6 +185,20 @@ def build_setup_zip(source_root: Path, output: Path, source_epoch: int) -> str:
         # builder has already serialized credentials or customer uploads to
         # a temporary ZIP. Empty Laravel storage/cache directories are safe.
         folded_parts = tuple(part.casefold() for part in source_path.relative_to(source_root).parts)
+        # Public static assets must not carry executable scripts or alternate
+        # server configuration from a dirty deployment staging checkout.
+        # Keep the canonical Laravel front controller and root .htaccess.
+        public_asset = (
+            folded_parts[:2] == ("backend", "public")
+            or folded_parts[:1] in (("assets",), ("brand",), ("demo",), ("preview",))
+        )
+        canonical_bootstrap = name in ("backend/public/index.php", "backend/public/.htaccess")
+        if public_asset and not canonical_bootstrap and any(
+            re.search(r"\\.(?:php[0-9]*|phtml|phar|cgi|pl|py|sh|asp|aspx|jsp)(?:\\.|$)", part, re.IGNORECASE)
+            or re.fullmatch(r"(?:\\.htaccess|\\.user\\.ini|web\\.config)(?:\\..*)?", part, re.IGNORECASE)
+            for part in source_path.relative_to(source_root).parts
+        ):
+            raise SetupBuildError(f"Executable public static asset in Setup staging: {name}")
         upload_roots = (
             ("backend", "public", "storage"),
             ("backend", "public", "uploads"),

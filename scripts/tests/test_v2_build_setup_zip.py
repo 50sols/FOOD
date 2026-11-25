@@ -448,6 +448,39 @@ class DeterministicSetupZipTest(unittest.TestCase):
                 create.assert_not_called()
             self.assertFalse(output.exists())
 
+    def test_public_static_asset_executables_fail_before_setup_zip_creation(self) -> None:
+        # Compiled assets are read-only static content. A dirty staging copy
+        # must not turn a signed Setup ZIP into a PHP/script dropper.
+        cases = (
+            "backend/public/assets/admin/shell.php",
+            "backend/public/preview/customer/dropper.php.jpg",
+            "backend/public/assets/admin/.htaccess",
+            "backend/public/assets/admin/.user.ini",
+            "backend/public/assets/admin/web.config",
+            "backend/public/js/hidden.phtml",
+            "backend/public/brand/backdoor.phar",
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            for index, name in enumerate(cases):
+                with self.subTest(name=name):
+                    root = base / f"source-{index}"
+                    root.mkdir()
+                    (root / "VERSION").write_bytes(b"1.0.1\\n")
+                    unsafe = root / name
+                    unsafe.parent.mkdir(parents=True)
+                    unsafe.write_bytes(b"NOT-AN-ASSET")
+                    output = base / f"setup-{index}.zip"
+                    with mock.patch(
+                        "v2_build_setup_zip.tempfile.mkstemp",
+                        side_effect=AssertionError("No temporary ZIP before source path rejection"),
+                    ):
+                        with self.assertRaisesRegex(SetupBuildError, "Executable public static asset"):
+                            build_setup_zip(root, output, SOURCE_DATE_EPOCH)
+                    self.assertFalse(output.exists())
+                    self.assertEqual(unsafe.read_bytes(), b"NOT-AN-ASSET")
+            self.assertEqual(list(base.glob(".v2-setup-*.zip")), [])
+
     def test_nonportable_zip_names_fail_before_temp_archive_creation(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             base = Path(temporary)
