@@ -1347,6 +1347,15 @@ final class ProcurementCompletionManager
             ->where('contracts.organization_id', $scope->organizationId)
             ->where('contracts.company_id', $scope->companyId)
             ->where('contracts.store_id', $scope->storeId)
+            ->where('suppliers.organization_id', $scope->organizationId)
+            ->where('suppliers.company_id', $scope->companyId)
+            ->where(function ($query) use ($scope): void {
+                $query->where('suppliers.scope_type', 'company')
+                    ->orWhere(function ($store) use ($scope): void {
+                        $store->where('suppliers.scope_type', 'store')
+                            ->where('suppliers.store_id', $scope->storeId);
+                    });
+            })
             ->when(
                 $validated['status'] ?? null,
                 function ($query, string $status) {
@@ -1389,14 +1398,24 @@ final class ProcurementCompletionManager
         $pageIds = $page->getCollection()->pluck('id')->all();
         if ($pageIds !== []) {
             abort_unless(
-                DB::table('enterprise_procurement_contracts')
-                    ->where('organization_id', $scope->organizationId)
-                    ->where('company_id', $scope->companyId)
-                    ->where('store_id', $scope->storeId)
-                    ->whereIn('id', $pageIds)
+                DB::table('enterprise_procurement_contracts as contracts')
+                    ->join('enterprise_suppliers as suppliers', 'suppliers.id', '=', 'contracts.supplier_id')
+                    ->where('contracts.organization_id', $scope->organizationId)
+                    ->where('contracts.company_id', $scope->companyId)
+                    ->where('contracts.store_id', $scope->storeId)
+                    ->where('suppliers.organization_id', $scope->organizationId)
+                    ->where('suppliers.company_id', $scope->companyId)
+                    ->where(function ($query) use ($scope): void {
+                        $query->where('suppliers.scope_type', 'company')
+                            ->orWhere(function ($store) use ($scope): void {
+                                $store->where('suppliers.scope_type', 'store')
+                                    ->where('suppliers.store_id', $scope->storeId);
+                            });
+                    })
+                    ->whereIn('contracts.id', $pageIds)
                     ->count() === count($pageIds),
                 404,
-                'Procurement contract ownership changed during pagination.',
+                'Procurement contract or supplier ownership changed during pagination.',
             );
         }
 
@@ -1470,6 +1489,15 @@ final class ProcurementCompletionManager
             ->where('contracts.organization_id', $scope->organizationId)
             ->where('contracts.company_id', $scope->companyId)
             ->where('contracts.store_id', $scope->storeId)
+            ->where('suppliers.organization_id', $scope->organizationId)
+            ->where('suppliers.company_id', $scope->companyId)
+            ->where(function ($query) use ($scope): void {
+                $query->where('suppliers.scope_type', 'company')
+                    ->orWhere(function ($store) use ($scope): void {
+                        $store->where('suppliers.scope_type', 'store')
+                            ->where('suppliers.store_id', $scope->storeId);
+                    });
+            })
             ->where('contracts.status', 'active')
             ->whereDate('contracts.starts_on', '<=', now()->toDateString())
             ->whereDate('contracts.ends_on', '>=', now()->toDateString())
@@ -1492,14 +1520,24 @@ final class ProcurementCompletionManager
         $contractIds = array_map(static fn ($contract): int => (int) $contract->id, $contracts);
         if ($contractIds !== []) {
             abort_unless(
-                DB::table('enterprise_procurement_contracts')
-                    ->where('organization_id', $scope->organizationId)
-                    ->where('company_id', $scope->companyId)
-                    ->where('store_id', $scope->storeId)
-                    ->whereIn('id', $contractIds)
+                DB::table('enterprise_procurement_contracts as contracts')
+                    ->join('enterprise_suppliers as suppliers', 'suppliers.id', '=', 'contracts.supplier_id')
+                    ->where('contracts.organization_id', $scope->organizationId)
+                    ->where('contracts.company_id', $scope->companyId)
+                    ->where('contracts.store_id', $scope->storeId)
+                    ->where('suppliers.organization_id', $scope->organizationId)
+                    ->where('suppliers.company_id', $scope->companyId)
+                    ->where(function ($query) use ($scope): void {
+                        $query->where('suppliers.scope_type', 'company')
+                            ->orWhere(function ($store) use ($scope): void {
+                                $store->where('suppliers.scope_type', 'store')
+                                    ->where('suppliers.store_id', $scope->storeId);
+                            });
+                    })
+                    ->whereIn('contracts.id', $contractIds)
                     ->count() === count($contractIds),
                 404,
-                'Procurement contract ownership changed during option lookup.',
+                'Procurement contract or supplier ownership changed during option lookup.',
             );
         }
 

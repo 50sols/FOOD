@@ -326,6 +326,95 @@ final class EnterpriseProcurementCompletionTest extends TestCase
         ]);
     }
 
+    public function test_contract_list_and_options_refuse_moved_supplier_scope_in_ar_and_en(): void
+    {
+        $this->enableProcurement();
+        [$actor, $store, $context] = $this->scopedUser($this->allPermissions(), 'P135-CTR-SUPPLIER-LIVE');
+        $foreignStore = $this->createRetailStore('P135-CTR-SUPPLIER-FOREIGN');
+        $directory = app(SupplierDirectory::class);
+        $completion = app(ProcurementCompletionManager::class);
+
+        $armed = false;
+        $moved = false;
+        $targetSupplierId = null;
+        DB::listen(static function ($query) use (&$armed, &$moved, &$targetSupplierId, $foreignStore): void {
+            $sql = strtolower((string) $query->sql);
+            if (! $armed || $moved || $targetSupplierId === null
+                || ! str_contains($sql, 'select')
+                || ! str_contains($sql, 'enterprise_procurement_contracts')
+                || ! str_contains($sql, 'enterprise_suppliers')
+                || ! str_contains($sql, 'order by')) {
+                return;
+            }
+            // Simulate a concurrent persisted supplier transfer immediately
+            // AFTER the scoped row SELECT, before the terminal live-owner check.
+            // This does not claim an independent two-session MySQL race proof.
+            $armed = false;
+            $moved = true;
+            DB::table('enterprise_suppliers')->where('id', $targetSupplierId)
+                ->update(['store_id' => $foreignStore->id]);
+        });
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            $supplier = $directory->create($actor, $context, [
+                'scope_type' => 'store',
+                'code' => 'P135-CTR-SUPPLIER-'.strtoupper($locale),
+                'name_en' => 'Private supplier contract '.$locale,
+            ]);
+            $contract = $completion->createContract($actor, $context, [
+                'supplier_id' => $supplier->id,
+                'title' => 'Supplier contract scope '.$locale,
+                'currency_code' => 'KWD',
+                'starts_on' => now()->subDay()->toDateString(),
+                'ends_on' => now()->addDays(30)->toDateString(),
+            ]);
+            // The live selector exposes active agreements only. Fixture-only
+            // status transition avoids unrelated checker workflow side effects.
+            DB::table('enterprise_procurement_contracts')->where('id', $contract->id)
+                ->update(['status' => 'active']);
+            $filter = ['q' => $contract->contract_number];
+            $targetSupplierId = (int) $supplier->id;
+            $this->assertSame(1, $completion->paginateContracts($actor, $context, $filter)->total());
+            $options = $completion->activeContractOptions($actor, $context, $supplier->id);
+            $this->assertCount(1, $options);
+            $this->assertSame((int) $contract->id, (int) $options[0]->id);
+            $auditBefore = DB::table('audit_logs')->count();
+            $contractsBefore = DB::table('enterprise_procurement_contracts')->count();
+
+            foreach (['page', 'options'] as $read) {
+                $moved = false;
+                $armed = true;
+                try {
+                    if ($read === 'page') {
+                        $completion->paginateContracts($actor, $context, $filter);
+                    } else {
+                        $completion->activeContractOptions($actor, $context, $supplier->id);
+                    }
+                    $this->fail('Contract supplier foreign-store transfer must block stale joined financial data.');
+                } catch (HttpException $exception) {
+                    $this->assertTrue($moved, 'Supplier movement must follow the actual joined SELECT.');
+                    $this->assertSame(404, $exception->getStatusCode());
+                } finally {
+                    $armed = false;
+                }
+                $this->assertSame(0, $completion->paginateContracts($actor, $context, $filter)->total());
+                $this->assertSame([], $completion->activeContractOptions($actor, $context, $supplier->id));
+                $this->assertDatabaseHas('enterprise_suppliers', [
+                    'id' => $supplier->id,
+                    'store_id' => $foreignStore->id,
+                ]);
+                DB::table('enterprise_suppliers')->where('id', $supplier->id)
+                    ->update(['store_id' => $store->id]);
+                $this->assertSame(1, $completion->paginateContracts($actor, $context, $filter)->total());
+                $this->assertCount(1, $completion->activeContractOptions($actor, $context, $supplier->id));
+            }
+            $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+            $this->assertSame($contractsBefore, DB::table('enterprise_procurement_contracts')->count());
+            $targetSupplierId = null;
+        }
+    }
+
     public function test_contract_page_rejects_late_store_transfer_and_persisted_view_revoke_in_ar_and_en(): void
     {
         $this->enableProcurement();
