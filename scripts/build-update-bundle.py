@@ -710,6 +710,35 @@ def publish_release_sidecar(path: Path, content: str) -> None:
         temporary.unlink(missing_ok=True)
 
 
+def assert_staged_release_member_unchanged(
+    path: Path, reviewed: os.stat_result, expected_links: int
+) -> None:
+    """Fail closed if a staged release member was replaced or rewritten.
+
+    Hard-linking a staged file legitimately changes its ctime/link count;
+    compare ctime only before publication, and inode/size/mtime both before
+    and after. lstat (not stat) prevents post-preflight symlink swaps.
+    """
+    try:
+        current = path.lstat()
+    except OSError as exc:
+        raise RuntimeError(
+            f"Staged Update release member changed during publication: {path}"
+        ) from exc
+    if (
+        not stat.S_ISREG(current.st_mode)
+        or current.st_dev != reviewed.st_dev
+        or current.st_ino != reviewed.st_ino
+        or current.st_size != reviewed.st_size
+        or current.st_mtime_ns != reviewed.st_mtime_ns
+        or current.st_nlink != expected_links
+        or (expected_links == 1 and current.st_ctime_ns != reviewed.st_ctime_ns)
+    ):
+        raise RuntimeError(
+            f"Staged Update release member changed during publication: {path}"
+        )
+
+
 def publish_release_bundle(staging_dir: Path, output_dir: Path) -> None:
     """Publish all verified sidecars first; the ZIP is the last release marker.
 
@@ -728,6 +757,7 @@ def publish_release_bundle(staging_dir: Path, output_dir: Path) -> None:
         raise RuntimeError("Unsafe Update release staging directory.")
     staged_paths = [staging_dir / name for name in names]
     outputs = [output_dir / name for name in names]
+    reviewed_members: dict[Path, os.stat_result] = {}
     for staged in staged_paths:
         try:
             identity = staged.lstat()
@@ -735,6 +765,7 @@ def publish_release_bundle(staging_dir: Path, output_dir: Path) -> None:
             raise RuntimeError(f"Missing staged Update release member: {staged}") from exc
         if not stat.S_ISREG(identity.st_mode) or identity.st_nlink != 1:
             raise RuntimeError(f"Unsafe staged Update release member: {staged}")
+        reviewed_members[staged] = identity
 
     # Do not assume the earlier per-file existence preflight is a mutex.
     # A stale lock is intentionally fail-closed and requires manual recovery.
@@ -749,6 +780,9 @@ def publish_release_bundle(staging_dir: Path, output_dir: Path) -> None:
         reject_existing_release_outputs(outputs)
         try:
             for staged, output in zip(staged_paths, outputs):
+                # A staged member can be changed AFTER the initial scan (or
+                # while os.link is called). Pin the originally reviewed inode.
+                assert_staged_release_member_unchanged(staged, reviewed_members[staged], 1)
                 try:
                     os.link(staged, output)
                 except FileExistsError as exc:
@@ -759,7 +793,11 @@ def publish_release_bundle(staging_dir: Path, output_dir: Path) -> None:
                     raise RuntimeError(
                         f"Safe exclusive Update release group publication unavailable: {output}"
                     ) from exc
+                # Record ownership immediately so a failed post-link check
+                # retracts this publication along with earlier sidecars.
                 published.append((staged, output))
+                assert_staged_release_member_unchanged(staged, reviewed_members[staged], 2)
+                assert_staged_release_member_unchanged(output, reviewed_members[staged], 2)
         except Exception as exc:
             cleanup_errors: list[str] = []
             for staged, output in reversed(published):

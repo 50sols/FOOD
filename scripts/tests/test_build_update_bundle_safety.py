@@ -452,6 +452,81 @@ class BuildUpdateBundleSourceSafetyTest(unittest.TestCase):
                 self.assertEqual(content, (staging / name).read_bytes())
             self.assertFalse((output_dir / ".FOODEX-Update.publish.lock").exists())
 
+    def test_complete_update_release_rejects_prelink_staging_replacement(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            output_dir = Path(directory)
+            staging, contents = self._staged_release_fixture(output_dir)
+            target = staging / "FOODEX-Update.files.txt"
+            original_reject = builder.reject_existing_release_outputs
+
+            def swap_after_initial_scan(paths: list[Path]) -> None:
+                original_reject(paths)
+                target.rename(target.with_suffix(".reviewed"))
+                target.write_bytes(b"ATTACKER-SWAPPED-FILE-LIST")
+
+            with mock.patch.object(
+                builder, "reject_existing_release_outputs", side_effect=swap_after_initial_scan
+            ):
+                with self.assertRaisesRegex(RuntimeError, "changed during publication"):
+                    builder.publish_release_bundle(staging, output_dir)
+
+            for name in contents:
+                self.assertFalse(os.path.lexists(output_dir / name), name)
+            self.assertEqual(
+                contents["FOODEX-Update.files.txt"],
+                target.with_suffix(".reviewed").read_bytes(),
+            )
+            self.assertFalse((output_dir / ".FOODEX-Update.publish.lock").exists())
+
+    def test_complete_update_release_retracts_postcheck_stage_swaps(self) -> None:
+        for attacked in ("FOODEX-Update.json", "FOODEX-Update.zip"):
+            with self.subTest(attacked=attacked):
+                with tempfile.TemporaryDirectory() as directory:
+                    output_dir = Path(directory)
+                    staging, contents = self._staged_release_fixture(output_dir)
+                    real_link = os.link
+                    attack_seen = False
+
+                    def swap_inside_link(source: Path, destination: Path) -> None:
+                        nonlocal attack_seen
+                        if destination.name == attacked:
+                            attack_seen = True
+                            source.rename(source.with_suffix(".reviewed"))
+                            source.write_bytes(b"ATTACKER-SWAPPED-PAYLOAD")
+                        real_link(source, destination)
+
+                    with mock.patch.object(builder.os, "link", side_effect=swap_inside_link):
+                        with self.assertRaisesRegex(RuntimeError, "changed during publication"):
+                            builder.publish_release_bundle(staging, output_dir)
+
+                    self.assertTrue(attack_seen)
+                    for name in contents:
+                        self.assertFalse(os.path.lexists(output_dir / name), name)
+                    self.assertEqual(
+                        contents[attacked],
+                        (staging / attacked).with_suffix(".reviewed").read_bytes(),
+                    )
+                    self.assertFalse((output_dir / ".FOODEX-Update.publish.lock").exists())
+
+    def test_complete_update_release_retracts_inplace_mutation_during_link(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            output_dir = Path(directory)
+            staging, contents = self._staged_release_fixture(output_dir)
+            real_link = os.link
+
+            def rewrite_before_postcheck(source: Path, destination: Path) -> None:
+                real_link(source, destination)
+                if destination.name == "FOODEX-Update.zip":
+                    source.write_bytes(b"INPLACE-UNREVIEWED-DATA")
+
+            with mock.patch.object(builder.os, "link", side_effect=rewrite_before_postcheck):
+                with self.assertRaisesRegex(RuntimeError, "changed during publication"):
+                    builder.publish_release_bundle(staging, output_dir)
+
+            for name in contents:
+                self.assertFalse(os.path.lexists(output_dir / name), name)
+            self.assertFalse((output_dir / ".FOODEX-Update.publish.lock").exists())
+
     def test_complete_update_release_preserves_competing_and_existing_signed_outputs(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             output_dir = Path(directory)
