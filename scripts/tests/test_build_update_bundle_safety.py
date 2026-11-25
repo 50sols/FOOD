@@ -281,6 +281,85 @@ class BuildUpdateBundleSourceSafetyTest(unittest.TestCase):
                         with self.assertRaisesRegex(RuntimeError, "excludes vendor"):
                             builder.verify_composer_runtime_contract(root, "v1.0.125")
 
+    def test_update_zip_rejects_changed_locked_production_packages_and_platform(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "backend").mkdir()
+            previous = {
+                "packages": [
+                    {"name": "laravel/framework", "version": "v12.0.0", "dist": {"reference": "old"}},
+                ],
+                "packages-dev": [{"name": "phpunit/phpunit", "version": "11.5.0"}],
+                "platform": {"php": "^8.2"},
+                "plugin-api-version": "2.6.0",
+            }
+
+            def read_base(*args):
+                if args[0] == "ls-tree":
+                    return "backend/composer.lock\n"
+                if args[0] == "show":
+                    return json.dumps(previous)
+                raise AssertionError(f"Unexpected Git command: {args}")
+
+            for changed_section, changed_value in (
+                ("packages", [{"name": "laravel/framework", "version": "v12.1.0"}]),
+                ("platform", {"php": "^8.4"}),
+                ("plugin-api-version", "2.7.0"),
+            ):
+                with self.subTest(section=changed_section):
+                    current = dict(previous)
+                    current[changed_section] = changed_value
+                    (root / "backend/composer.lock").write_text(
+                        json.dumps(current), encoding="utf-8"
+                    )
+                    with mock.patch.object(builder, "run_git", side_effect=read_base):
+                        with self.assertRaisesRegex(RuntimeError, f"production {changed_section}"):
+                            builder.verify_composer_lock_contract(root, "v1.0.128")
+
+    def test_update_zip_allows_dev_only_lock_changes_with_same_production_resolution(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "backend").mkdir()
+            previous = {
+                "packages": [{"name": "laravel/framework", "version": "v12.0.0"}],
+                "platform": {"php": "^8.2"},
+                "packages-dev": [{"name": "phpunit/phpunit", "version": "11.5.0"}],
+                "content-hash": "old-dev-hash",
+            }
+            current = {
+                **previous,
+                "packages-dev": [{"name": "phpunit/phpunit", "version": "11.6.0"}],
+                "content-hash": "new-dev-hash",
+            }
+            (root / "backend/composer.lock").write_text(json.dumps(current), encoding="utf-8")
+
+            def read_base(*args):
+                return "backend/composer.lock\n" if args[0] == "ls-tree" else json.dumps(previous)
+
+            with mock.patch.object(builder, "run_git", side_effect=read_base):
+                self.assertTrue(builder.verify_composer_lock_contract(root, "v1.0.128"))
+
+    def test_update_zip_lock_verification_handles_legacy_and_missing_target_fail_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "backend").mkdir()
+            with mock.patch.object(builder, "run_git", return_value=""):
+                # Historical base v1.0.125 contains no tracked composer.lock.
+                # This is UNVERIFIED, never a claim of compatibility.
+                self.assertFalse(builder.verify_composer_lock_contract(root, "v1.0.125"))
+
+            def read_base(*args):
+                return "backend/composer.lock\n" if args[0] == "ls-tree" else json.dumps(
+                    {"packages": [{"name": "laravel/framework", "version": "v12.0.0"}]}
+                )
+
+            with mock.patch.object(builder, "run_git", side_effect=read_base):
+                with self.assertRaisesRegex(RuntimeError, "Unable to verify"):
+                    builder.verify_composer_lock_contract(root, "v1.0.128")
+                (root / "backend/composer.lock").write_text('{"packages":{}}', encoding="utf-8")
+                with self.assertRaisesRegex(RuntimeError, "production packages arrays"):
+                    builder.verify_composer_lock_contract(root, "v1.0.128")
+
     def test_update_zip_allows_composer_nonruntime_config_change(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

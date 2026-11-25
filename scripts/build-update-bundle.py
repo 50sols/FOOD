@@ -139,6 +139,60 @@ def verify_composer_runtime_contract(repo_root: Path, base: str) -> None:
             )
 
 
+def verify_composer_lock_contract(repo_root: Path, base: str) -> bool:
+    """Reject ZIP-only upgrades when locked production packages differ.
+
+    Updates do not ship vendor/, so identical composer.json declarations alone
+    are not proof of identical installed Composer package resolutions. Legacy
+    v1.0.125 has no tracked composer.lock: do not invent compatibility evidence
+    for that base; its real-host upgrade remains an external acceptance gate.
+    Returns True only when a tracked baseline lock was compared successfully.
+    """
+    try:
+        tracked = run_git(
+            "ls-tree", "-r", "--name-only", base, "--", "backend/composer.lock"
+        ).splitlines()
+    except subprocess.CalledProcessError as exc:
+        raise RuntimeError("Unable to inspect the baseline Composer lockfile.") from exc
+
+    if not tracked:
+        return False
+    if tracked != ["backend/composer.lock"]:
+        raise RuntimeError("Ambiguous baseline Composer lockfile provenance.")
+
+    try:
+        previous = json.loads(run_git("show", f"{base}:backend/composer.lock"))
+        current = json.loads(
+            (repo_root / "backend/composer.lock").read_text(encoding="utf-8")
+        )
+    except (OSError, ValueError, subprocess.CalledProcessError) as exc:
+        raise RuntimeError(
+            "Unable to verify production Composer lockfile compatibility."
+        ) from exc
+
+    if (
+        not isinstance(previous, dict)
+        or not isinstance(current, dict)
+        or not isinstance(previous.get("packages"), list)
+        or not isinstance(current.get("packages"), list)
+    ):
+        raise RuntimeError("Composer lockfiles must contain production packages arrays.")
+
+    # dev-only packages may differ without changing production vendor/. Do not
+    # compare content-hash, which can change solely for require-dev metadata.
+    for section in (
+        "packages", "platform", "platform-overrides", "plugin-api-version",
+        "aliases", "stability-flags", "minimum-stability", "prefer-stable",
+    ):
+        if previous.get(section) != current.get(section):
+            raise RuntimeError(
+                f"Composer lockfile production {section} differs from the "
+                "supported base; Update ZIP excludes vendor/. Build and "
+                "validate a full dependency-inclusive deployment instead."
+            )
+    return True
+
+
 def is_runtime_path(path: str) -> bool:
     return path in RUNTIME_EXACT or path.startswith(RUNTIME_PREFIXES)
 
@@ -524,6 +578,12 @@ def main() -> int:
 
     run_git("cat-file", "-e", f"{args.base}^{{commit}}")
     verify_composer_runtime_contract(repo_root, args.base)
+    lock_verified = verify_composer_lock_contract(repo_root, args.base)
+    if not lock_verified:
+        print(
+            "composer_lock_comparison=unavailable_legacy_base; "
+            "real-host production dependency compatibility remains unverified"
+        )
     # Dashboard updates are cumulative/self-healing by contract. Package the
     # complete application-owned runtime so drifted shared-host installs can
     # recover missing unchanged Laravel files before migrations execute.
