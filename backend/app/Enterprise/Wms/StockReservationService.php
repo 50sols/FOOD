@@ -184,12 +184,35 @@ final class StockReservationService
             ]);
         }
 
-        return $this->activeQuantityForReference(
+        $quantity = $this->activeQuantityForReference(
             (int) $inventoryId,
             (int) $warehouse->store_id,
             $referenceType,
             $referenceId,
         );
+
+        // A persisted permission DENY or offboarding can arrive while the
+        // final stock_movements aggregate SELECT is running. Rehydrate the
+        // original identity and fail closed before disclosing its quantity.
+        // This guards the read path only, not the bounded write hot path.
+        $this->assertPersistedActorIdentity($actor);
+        $originalId = $actor->getRawOriginal($actor->getKeyName());
+        $currentActor = User::query()->whereKey($originalId)
+            ->where('is_active', true)->first();
+        abort_unless($currentActor instanceof User, 403);
+
+        $currentWarehouse = $this->warehouseScope->assertWarehouse(
+            $currentActor, $warehouseId, 'inventory.view',
+        );
+        abort_unless((int) $currentWarehouse->store_id === (int) $warehouse->store_id, 404);
+
+        // A mid-read inventory reassignment must not be attributed to the
+        // former warehouse's reservation context.
+        abort_unless(Inventory::query()->whereKey($inventoryId)
+            ->where('warehouse_id', $warehouseId)
+            ->where('product_id', $productId)->exists(), 404);
+
+        return $quantity;
     }
 
     /**

@@ -292,6 +292,91 @@ final class EnterpriseStockReservationFoundationTest extends TestCase
         ]);
     }
 
+    public function test_reference_reservation_read_rechecks_live_deny_after_aggregate_in_ar_and_en(): void
+    {
+        $this->seed(CoreReferenceSeeder::class);
+        $fixture = $this->fixture();
+        $actor = $this->inventoryUser($fixture['store_id']);
+        $service = app(StockReservationService::class);
+        $permissionId = DB::table('permissions')->where('code', 'inventory.view')->value('id');
+        $this->assertNotNull($permissionId);
+
+        $this->assertSame(1.0, $service->ensureReservation(
+            $actor, $fixture['warehouse_id'], $fixture['product_id'],
+            1.0, 'enterprise_test_read_revoke', 3102,
+        ));
+        $beforeReserved = DB::table('inventories')
+            ->where('id', $fixture['inventory_id'])->value('reserved_quantity');
+        $beforeMovements = DB::table('stock_movements')->count();
+        $beforeAudits = DB::table('audit_logs')->count();
+        $armed = false;
+        $revoked = false;
+
+        DB::listen(static function ($query) use (&$armed, &$revoked, $actor, $permissionId): void {
+            if (! $armed || $revoked) {
+                return;
+            }
+
+            $sql = strtolower((string) $query->sql);
+            if (! str_contains($sql, 'stock_movements')
+                || ! str_contains($sql, 'active_quantity')
+                || ! str_contains($sql, 'select')) {
+                return;
+            }
+
+            // Injection fires AFTER the aggregate SELECT has returned, but
+            // before the service can disclose the now-revoked stock quantity.
+            $revoked = true;
+            DB::table('user_permission_overrides')->insert([
+                'user_id' => $actor->getKey(),
+                'permission_id' => $permissionId,
+                'scope_key' => 'global',
+                'effect' => 'deny',
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+            DB::table('users')->where('id', $actor->getKey())
+                ->update(['has_permission_overrides' => true]);
+        });
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            $this->assertSame(1.0, $service->activeReservationQuantity(
+                $actor, $fixture['warehouse_id'], $fixture['product_id'],
+                'enterprise_test_read_revoke', 3102,
+            ));
+            $armed = true;
+            $revoked = false;
+
+            for ($attempt = 0; $attempt < 2; $attempt++) {
+                try {
+                    $service->activeReservationQuantity(
+                        $actor, $fixture['warehouse_id'], $fixture['product_id'],
+                        'enterprise_test_read_revoke', 3102,
+                    );
+                    $this->fail('Revoked inventory.view must block active reservation disclosure.');
+                } catch (HttpException $exception) {
+                    $this->assertSame(404, $exception->getStatusCode());
+                }
+            }
+            $this->assertTrue($revoked);
+            $armed = false;
+
+            $this->assertEquals($beforeReserved, DB::table('inventories')
+                ->where('id', $fixture['inventory_id'])->value('reserved_quantity'));
+            $this->assertSame($beforeMovements, DB::table('stock_movements')->count());
+            $this->assertSame($beforeAudits, DB::table('audit_logs')->count());
+            DB::table('user_permission_overrides')->where('user_id', $actor->getKey())
+                ->where('permission_id', $permissionId)->delete();
+            DB::table('users')->where('id', $actor->getKey())
+                ->update(['has_permission_overrides' => false]);
+            $this->assertSame(1.0, $service->activeReservationQuantity(
+                $actor, $fixture['warehouse_id'], $fixture['product_id'],
+                'enterprise_test_read_revoke', 3102,
+            ));
+        }
+    }
+
     public function test_reservation_rejects_overbooking_without_mutating_stock(): void
     {
         $this->seed(CoreReferenceSeeder::class);
