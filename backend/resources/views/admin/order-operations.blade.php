@@ -773,7 +773,7 @@ $dashboardVisible = (bool) ($dashboardVisible ?? false);
         <label style="display:grid;gap:4px;flex:1;min-width:180px">{{ __('customer_service_discount.reason') }}
             <textarea name="reason" minlength="5" maxlength="500" required placeholder="{{ __('customer_service_discount.note_placeholder') }}" style="min-height:44px;width:100%">{{ old('reason') }}</textarea>
         </label>
-        <button class="foodex-primary" type="submit" style="min-height:44px">{{ $actor->hasRole('CUSTOMER_SERVICE_AGENT') && ! $actor->hasRole('CUSTOMER_SERVICE_MANAGER') && ! $actor->hasRole('CUSTOMER_SERVICE_SUPERVISOR') && ! $actor->hasRole('SUPER_ADMIN') ? __('customer_service_discount.request') : __('customer_service_discount.apply') }}</button>
+        <button class="foodex-primary" type="submit" style="min-height:44px">{{ __('customer_service_discount.request') }}</button>
     </form>
 </section>
 @endif
@@ -786,21 +786,7 @@ $dashboardVisible = (bool) ($dashboardVisible ?? false);
             <div><strong>{{ __('customer_service_discount.requester') }}:</strong> {{ $discountRequest->requested_by_name }}</div>
             <div><strong>{{ __('customer_service_discount.percentage') }}:</strong> {{ $discountRequest->percentage }}%</div>
             <p style="overflow-wrap:anywhere">{{ $discountRequest->reason }}</p>
-            <div style="display:flex;flex-wrap:wrap;gap:12px;align-items:end">
-                <form method="post" action="{{ route('admin.operations.orders.customer-service-discount.review', ['order'=>$detail['id'], 'discountRequest'=>$discountRequest->id]) }}">
-                    @csrf
-                    <input type="hidden" name="decision" value="approve">
-                    <button class="foodex-primary" type="submit" style="min-height:44px">{{ __('customer_service_discount.approve') }}</button>
-                </form>
-                <form method="post" action="{{ route('admin.operations.orders.customer-service-discount.review', ['order'=>$detail['id'], 'discountRequest'=>$discountRequest->id]) }}" style="display:flex;flex-wrap:wrap;gap:8px;align-items:end">
-                    @csrf
-                    <input type="hidden" name="decision" value="reject">
-                    <label style="display:grid;gap:4px;min-width:180px">{{ __('customer_service_discount.review_reason') }}
-                        <input type="text" name="review_reason" minlength="5" maxlength="500" required style="min-height:44px;width:100%">
-                    </label>
-                    <button class="foodex-primary" type="submit" style="min-height:44px">{{ __('customer_service_discount.reject') }}</button>
-                </form>
-            </div>
+            <p class="muted" role="status">{{ __('customer_service_discount.accounting_review_only') }}</p>
         </div>
         @endforeach
     </div>

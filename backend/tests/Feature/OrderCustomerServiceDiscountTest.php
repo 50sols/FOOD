@@ -2,7 +2,15 @@
 
 namespace Tests\Feature;
 
+use App\Enterprise\Entitlements\EntitlementScope;
+use App\Enterprise\Entitlements\ModuleEntitlementManager;
+use App\Enterprise\Finance\FinanceFoundationService;
+use App\Enterprise\Modules\ModuleLifecycleManager;
+use App\Enterprise\Modules\ModuleRegistry;
+use App\Enterprise\Modules\ModuleState;
+use App\Enterprise\Organization\OrganizationHierarchyService;
 use App\Models\Role;
+use App\Models\Store;
 use App\Models\User;
 use App\Services\B2bCustomerService;
 use App\Services\WholesalePrincipal;
@@ -22,9 +30,10 @@ class OrderCustomerServiceDiscountTest extends TestCase
         $this->seed(CoreReferenceSeeder::class);
     }
 
-    public function test_discount_replaces_prior_concession_preserves_existing_offer_and_is_idempotent(): void
+    public function test_accounting_review_replaces_prior_concession_preserves_offer_and_is_idempotent(): void
     {
         $manager = $this->userWithRole('CUSTOMER_SERVICE_MANAGER');
+        $accountant = $this->userWithRole('FINANCE');
         $customerUser = User::factory()->create(['is_active' => true]);
         $id = $this->orderFor($customerUser);
         $firstKey = (string) Str::uuid();
@@ -34,17 +43,29 @@ class OrderCustomerServiceDiscountTest extends TestCase
             'percentage' => '10', 'reason' => 'Customer loyalty correction',
             'idempotency_key' => $firstKey,
         ])->assertRedirect();
-        $this->assertDatabaseHas('orders', [
-            'id' => $id, 'discount_total' => 1.900, 'grand_total' => 8.100,
+        // Managers submit a request; only Accounting can apply it.
+        $this->assertDatabaseHas('orders', ['id' => $id, 'discount_total' => 1, 'grand_total' => 9]);
+        $this->assertSame(0, DB::table('order_customer_service_discounts')->where('order_id', $id)->count());
+        $this->assertDatabaseHas('order_customer_service_discount_requests', [
+            'order_id' => $id, 'idempotency_key' => $firstKey,
+            'requested_by_user_id' => $manager->id, 'status' => 'pending',
         ]);
+        $this->assertSame(0, DB::table('notifications')
+            ->where('user_id', $customerUser->id)->where('type', 'order.updated')->count());
+
+        $requestId = (int) DB::table('order_customer_service_discount_requests')
+            ->where('order_id', $id)->where('idempotency_key', $firstKey)->value('id');
+        $this->actingAs($manager)->post(route('admin.operations.orders.customer-service-discount.review', [
+            'order' => $id, 'discountRequest' => $requestId,
+        ]), ['decision' => 'approve'])->assertNotFound();
+        $this->actingAs($accountant)->post(route('admin.operations.orders.customer-service-discount.review', [
+            'order' => $id, 'discountRequest' => $requestId,
+        ]), ['decision' => 'approve'])->assertRedirect();
+
+        $this->assertDatabaseHas('orders', ['id' => $id, 'discount_total' => 1.900, 'grand_total' => 8.100]);
         $this->assertDatabaseHas('order_customer_service_discounts', [
-            'order_id' => $id, 'revision' => 1,
-            'customer_service_discount' => 0.900,
-            'reason' => 'Customer loyalty correction',
-        ]);
-        $this->assertDatabaseHas('audit_logs', [
-            'event' => 'order.customer_service_discount.applied',
-            'user_id' => $manager->id,
+            'order_id' => $id, 'revision' => 1, 'customer_service_discount' => 0.900,
+            'reason' => 'Customer loyalty correction', 'applied_by_user_id' => $accountant->id,
         ]);
         $this->assertSame(1, DB::table('notifications')
             ->where('user_id', $customerUser->id)->where('type', 'order.updated')->count());
@@ -53,11 +74,9 @@ class OrderCustomerServiceDiscountTest extends TestCase
             'percentage' => '10', 'reason' => 'Customer loyalty correction',
             'idempotency_key' => $firstKey,
         ])->assertRedirect();
-        $this->assertSame(1, DB::table('order_customer_service_discounts')
+        $this->assertSame(1, DB::table('order_customer_service_discount_requests')
             ->where('order_id', $id)->count());
 
-        // Re-entry into the pending CS stage allows a new reasoned revision;
-        // percent is not applied on top of the earlier CS concession.
         DB::table('orders')->where('id', $id)->update(['status' => 'confirmed']);
         $this->actingAs($manager)->post($route, [
             'percentage' => '20', 'reason' => 'Not yet back to CS stage',
@@ -65,15 +84,18 @@ class OrderCustomerServiceDiscountTest extends TestCase
         ])->assertSessionHasErrors('percentage');
         DB::table('orders')->where('id', $id)->update(['status' => 'pending']);
 
+        $secondKey = (string) Str::uuid();
         $this->actingAs($manager)->post($route, [
             'percentage' => '20', 'reason' => 'Service recovery adjustment',
-            'idempotency_key' => (string) Str::uuid(),
+            'idempotency_key' => $secondKey,
         ])->assertRedirect();
-        $this->assertDatabaseHas('orders', [
-            'id' => $id, 'discount_total' => 2.800, 'grand_total' => 7.200,
-        ]);
-        $this->assertSame(2, DB::table('order_customer_service_discounts')
-            ->where('order_id', $id)->count());
+        $secondRequestId = (int) DB::table('order_customer_service_discount_requests')
+            ->where('order_id', $id)->where('idempotency_key', $secondKey)->value('id');
+        $this->actingAs($accountant)->post(route('admin.operations.orders.customer-service-discount.review', [
+            'order' => $id, 'discountRequest' => $secondRequestId,
+        ]), ['decision' => 'approve'])->assertRedirect();
+        $this->assertDatabaseHas('orders', ['id' => $id, 'discount_total' => 2.800, 'grand_total' => 7.200]);
+        $this->assertSame(2, DB::table('order_customer_service_discounts')->where('order_id', $id)->count());
         $this->assertSame(2, DB::table('notifications')
             ->where('user_id', $customerUser->id)->where('type', 'order.updated')->count());
     }
@@ -185,10 +207,11 @@ class OrderCustomerServiceDiscountTest extends TestCase
         $this->actingAs($support)
             ->post(route('admin.operations.orders.customer-service-discount', ['order' => $orders[0]]), $payload)
             ->assertRedirect();
-        $this->assertDatabaseHas('orders', ['id' => $orders[0], 'grand_total' => 17.5]);
-        $this->assertDatabaseHas('order_customer_service_discounts', [
-            'order_id' => $orders[0], 'applied_by_user_id' => $support->id,
+        $this->assertDatabaseHas('orders', ['id' => $orders[0], 'grand_total' => 20]);
+        $this->assertDatabaseHas('order_customer_service_discount_requests', [
+            'order_id' => $orders[0], 'requested_by_user_id' => $support->id, 'status' => 'pending',
         ]);
+        $this->assertDatabaseMissing('order_customer_service_discounts', ['order_id' => $orders[0]]);
 
         $payload['idempotency_key'] = (string) Str::uuid();
         $this->actingAs($support)
@@ -196,6 +219,57 @@ class OrderCustomerServiceDiscountTest extends TestCase
             ->assertNotFound();
         $this->assertDatabaseHas('orders', ['id' => $orders[1], 'grand_total' => 20]);
         $this->assertDatabaseMissing('order_customer_service_discounts', ['order_id' => $orders[1]]);
+
+        // Retail Finance may review its own-store request only. B2B Finance
+        // cannot exercise B2C authority and Retail Finance cannot cross stores.
+        $finance = User::factory()->create(['is_active' => true, 'locale' => 'en']);
+        $retailFinanceRole = (int) Role::query()->where('code', 'RETAIL_FINANCE')->value('id');
+        $ownStore = (int) DB::table('orders')->where('id', $orders[0])->value('store_id');
+        DB::table('user_store_roles')->insert([
+            'user_id' => $finance->id, 'store_id' => $ownStore, 'role_id' => $retailFinanceRole,
+            'created_at' => now(), 'updated_at' => now(),
+        ]);
+        $this->enableFinanceForStore($finance, $ownStore);
+        $requestId = (int) DB::table('order_customer_service_discount_requests')
+            ->where('order_id', $orders[0])->value('id');
+        $reviewUrl = route('admin.operations.orders.customer-service-discount.review', [
+            'order' => $orders[0], 'discountRequest' => $requestId,
+        ]);
+        $this->actingAs($this->userWithRole('FINANCE'))->post($reviewUrl, [
+            'decision' => 'approve',
+        ])->assertNotFound();
+        $this->actingAs($finance)->post($reviewUrl, ['decision' => 'approve'])->assertRedirect();
+        $this->assertDatabaseHas('orders', ['id' => $orders[0], 'grand_total' => 17.5]);
+        $this->assertDatabaseHas('order_customer_service_discounts', [
+            'order_id' => $orders[0], 'applied_by_user_id' => $finance->id,
+        ]);
+        $this->assertDatabaseMissing('order_customer_service_discounts', ['order_id' => $orders[1]]);
+    }
+
+    private function enableFinanceForStore(User $actor, int $storeId): void
+    {
+        $store = Store::query()->findOrFail($storeId);
+        app(OrganizationHierarchyService::class)->ensureDefaultScopeForStore($store);
+        $modules = app(ModuleRegistry::class);
+        config()->set(
+            'enterprise_module_readiness.certified_versions.finance',
+            $modules->manifest(FinanceFoundationService::MODULE)->version,
+        );
+        if (! $modules->isEnabled(FinanceFoundationService::MODULE)) {
+            app(ModuleLifecycleManager::class)->transition(
+                FinanceFoundationService::MODULE, ModuleState::ENABLING, $actor,
+            );
+            app(ModuleLifecycleManager::class)->transition(
+                FinanceFoundationService::MODULE, ModuleState::ENABLED, $actor,
+            );
+        }
+        $scope = app(OrganizationHierarchyService::class)->scopeForStore($storeId);
+        $this->assertNotNull($scope);
+        app(ModuleEntitlementManager::class)->set(
+            FinanceFoundationService::MODULE,
+            new EntitlementScope(EntitlementScope::LEGAL_ENTITY, $scope['legal_entity_id']),
+            true, ['finance.foundation.read', 'finance.ar.read'], $actor,
+        );
     }
 
     private function orderFor(?User $customerUser = null): int
@@ -229,6 +303,9 @@ class OrderCustomerServiceDiscountTest extends TestCase
     {
         $user = User::factory()->create(['is_active' => true, 'locale' => 'en']);
         $user->roles()->attach(Role::query()->where('code', $code)->firstOrFail());
+        if ($code === 'FINANCE') {
+            $this->enableFinanceForStore($user, app(WholesalePrincipal::class)->storeId());
+        }
 
         return $user->fresh();
     }
