@@ -1138,6 +1138,84 @@ final class V2OrganizationSetupGuidanceTest extends TestCase
         $this->assertSame($originalName, $organization->fresh()->name);
     }
 
+    public function test_http_organization_pages_and_setup_preview_reject_stale_revoked_admin_in_ar_and_en(): void
+    {
+        $permissionId = DB::table('permissions')->where('code', 'platform.manage')->value('id');
+        $this->assertNotNull($permissionId);
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            $actor = $this->actor('SYSTEM_ADMINISTRATOR', $locale);
+            $this->assertTrue($actor->hasPermission('platform.manage'));
+            $organization = EnterpriseOrganization::query()->create([
+                'code' => 'v2_http_revoked_'.$locale,
+                'name' => 'Protected organization '.$locale,
+                'is_active' => true,
+            ]);
+            $payload = [
+                'code' => 'v2_http_forbidden_'.$locale,
+                'name' => 'Forbidden organization',
+                'is_active' => '1',
+                '_setup_form' => 'create',
+            ];
+
+            $this->actingAs($actor)->get(route('admin.enterprise-organizations.index'))->assertOk();
+            $this->get(route('admin.enterprise-organizations.show', $organization))->assertOk();
+
+            // A persisted global DENY can be committed while the request's
+            // authenticated Eloquent instance still holds an old false flag.
+            DB::table('user_permission_overrides')->insert([
+                'user_id' => $actor->id,
+                'permission_id' => $permissionId,
+                'scope_key' => 'global',
+                'store_id' => null,
+                'effect' => 'deny',
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+            DB::table('users')->where('id', $actor->id)
+                ->update(['has_permission_overrides' => true]);
+            $this->assertFalse((bool) $actor->has_permission_overrides);
+            $this->assertTrue((bool) $actor->fresh()->has_permission_overrides);
+            $this->assertFalse($actor->fresh()->hasPermission('platform.manage'));
+            $auditBefore = DB::table('audit_logs')->count();
+
+            // Reading the organization tree and 'Test Inputs' is protected
+            // just as strictly as the final Save service call.
+            $this->actingAs($actor)
+                ->get(route('admin.enterprise-organizations.index'))->assertForbidden();
+            $this->get(route('admin.enterprise-organizations.show', $organization))->assertForbidden();
+            $this->post(route('admin.enterprise-organizations.store'), [
+                ...$payload, '_setup_test' => 'create',
+            ])->assertForbidden();
+            $this->post(route('admin.enterprise-organizations.store'), $payload)->assertForbidden();
+
+            $this->assertDatabaseMissing('enterprise_organizations', [
+                'code' => 'v2_http_forbidden_'.$locale,
+            ]);
+            $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+            $this->assertSame('Protected organization '.$locale, $organization->fresh()->name);
+
+            // Removing the DENY restores existing authorized GET and Preview
+            // even though the test's actingAs User is still the old instance.
+            DB::table('user_permission_overrides')
+                ->where('user_id', $actor->id)
+                ->where('permission_id', $permissionId)
+                ->delete();
+            DB::table('users')->where('id', $actor->id)
+                ->update(['has_permission_overrides' => false]);
+            $this->actingAs($actor)
+                ->get(route('admin.enterprise-organizations.index'))->assertOk();
+            $this->post(route('admin.enterprise-organizations.store'), [
+                ...$payload, '_setup_test' => 'create',
+            ])->assertRedirect();
+            $this->assertDatabaseMissing('enterprise_organizations', [
+                'code' => 'v2_http_forbidden_'.$locale,
+            ]);
+            $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+        }
+    }
+
     public function test_non_admin_cannot_test_or_save_organization_inputs(): void
     {
         $finance = $this->actor('FINANCE', 'en');

@@ -304,9 +304,25 @@ final class EnterpriseOrganizationAdministrationController extends Controller
     {
         $actor = $request->user();
         abort_unless($actor instanceof User, 401);
-        Gate::forUser($actor)->authorize('platform.manage');
 
-        return $actor;
+        // The authenticated Eloquent User may have been loaded before an
+        // explicit platform.manage DENY or an offboarding was persisted.
+        // The service already checks fresh permission state before writes;
+        // every read-only hierarchy page and Setup Preview needs the same
+        // protection. Never follow a caller-mutated in-memory primary key.
+        $originalId = $actor->getRawOriginal($actor->getKeyName());
+        abort_unless($actor->exists
+            && $originalId !== null
+            && (string) $actor->getAuthIdentifier() === (string) $originalId, 403);
+
+        $currentActor = User::query()
+            ->whereKey($originalId)
+            ->where('is_active', true)
+            ->first();
+        abort_unless($currentActor instanceof User, 403);
+        Gate::forUser($currentActor)->authorize('platform.manage');
+
+        return $currentActor;
     }
 
     private function page(User $actor, string $screen, array $data): View
