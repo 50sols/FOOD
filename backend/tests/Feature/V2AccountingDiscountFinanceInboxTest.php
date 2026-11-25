@@ -354,6 +354,18 @@ final class V2AccountingDiscountFinanceInboxTest extends TestCase
             $lifecycle->transition(FinanceFoundationService::MODULE, ModuleState::ENABLING, $actor);
             $lifecycle->transition(FinanceFoundationService::MODULE, ModuleState::ENABLED, $actor);
         }
+        // P135 enforces signed workflow readiness on Finance HTTP routes.
+        // Its ephemeral Ed25519 evidence helper exists only after that branch
+        // integrates. Keep this older atomic Finance PR compatible without
+        // weakening the production readiness middleware or trusting unsigned
+        // evidence. The synthetic signing key never leaves PHPUnit memory.
+        if (class_exists(\\Tests\\Support\\SyntheticErpWorkflowEvidence::class)) {
+            \\Tests\\Support\\SyntheticErpWorkflowEvidence::install();
+            config()->set(
+                'enterprise_module_readiness.certified_versions.'.FinanceFoundationService::MODULE,
+                app(ModuleRegistry::class)->manifest(FinanceFoundationService::MODULE)->version,
+            );
+        }
         $scope = app(OrganizationHierarchyService::class)->scopeForStore($store->id);
         $this->assertNotNull($scope);
         app(ModuleEntitlementManager::class)->set(
