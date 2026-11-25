@@ -1606,6 +1606,19 @@ final class ProcurementCompletionManager
     ): void {
         $scope = $this->scope($actor, $context, 'procurement.purchase_orders.manage');
         DB::transaction(function () use ($actor, $scope, $orderId, $contractId): void {
+            // Scope authorization is an unlocked preflight. Serialize this
+            // association with procurement shutdown before taking the order
+            // and contract locks or mutating the canonical PO and audit.
+            $module = DB::table('enterprise_modules')
+                ->where('code', 'procurement')
+                ->lockForUpdate()
+                ->first();
+            abort_unless(
+                $module !== null && $module->state === ModuleState::ENABLED->value,
+                404,
+                'Procurement module is disabled.',
+            );
+
             $order = DB::table('enterprise_purchase_orders')
                 ->where('organization_id', $scope->organizationId)
                 ->where('company_id', $scope->companyId)
