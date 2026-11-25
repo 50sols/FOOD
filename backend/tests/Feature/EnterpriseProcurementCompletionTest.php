@@ -493,6 +493,23 @@ final class EnterpriseProcurementCompletionTest extends TestCase
         $foreignStore = $this->createRetailStore('PROC-DOC-READ-FOREIGN');
         $directory = app(SupplierDirectory::class);
         $completion = app(ProcurementCompletionManager::class);
+        $documentQueries = [];
+
+        // Register a single listener across both locales. Registering inside
+        // the loop leaves prior callbacks attached and double-counts the
+        // English query through their shared by-reference collection.
+        DB::listen(static function ($query) use (&$documentQueries): void {
+            $sql = strtolower((string) $query->sql);
+            // Module readiness may independently SELECT from this table.
+            // Count only the document-identity lookup that joins its
+            // current contract, rather than unrelated preflight probes.
+            if (str_contains($sql, 'enterprise_procurement_contract_documents')
+                && str_contains($sql, 'enterprise_procurement_contracts')
+                && str_contains($sql, 'join')
+                && str_contains($sql, 'select')) {
+                $documentQueries[] = $sql;
+            }
+        });
 
         foreach (['ar', 'en'] as $locale) {
             app()->setLocale($locale);
@@ -517,19 +534,6 @@ final class EnterpriseProcurementCompletionTest extends TestCase
             );
             $auditBefore = DB::table('audit_logs')->count();
             $documentQueries = [];
-
-            DB::listen(static function ($query) use (&$documentQueries): void {
-                $sql = strtolower((string) $query->sql);
-                // Module readiness may independently SELECT from this table.
-                // Count only the document-identity lookup that joins its
-                // current contract, rather than unrelated preflight probes.
-                if (str_contains($sql, 'enterprise_procurement_contract_documents')
-                    && str_contains($sql, 'enterprise_procurement_contracts')
-                    && str_contains($sql, 'join')
-                    && str_contains($sql, 'select')) {
-                    $documentQueries[] = $sql;
-                }
-            });
 
             $visible = $completion->contractDocument($actor, $context, $contract->id, $document->id);
             $this->assertSame((int) $document->id, (int) $visible->id);
