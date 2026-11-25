@@ -2,7 +2,9 @@
 
 namespace Tests\Feature;
 
+use App\Domain\Pricing\B2bPriceResolver;
 use App\Models\B2bAccount;
+use App\Models\B2bCustomer;
 use App\Models\Customer;
 use App\Models\Role;
 use App\Models\User;
@@ -110,6 +112,90 @@ class B2bPricingTest extends TestCase
             ->assertJsonPath('items.0.ordering_increment', 5)
             ->assertJsonPath('items.0.pack_size', 12)
             ->assertJsonPath('subtotal', 36.25);
+    }
+
+    public function test_direct_pricing_rejects_dirty_or_unsaved_customer_identity_in_ar_and_en(): void
+    {
+        $this->seed(CoreReferenceSeeder::class);
+        [$storeId, $productId, $tierId] = $this->catalog();
+        $this->setPricingTiers($storeId, true);
+        DB::table('b2b_price_rules')->insert([
+            'price_tier_id' => $tierId,
+            'store_id' => $storeId,
+            'product_id' => $productId,
+            'unit_price' => 7.250,
+            'minimum_quantity' => 1,
+            'ordering_increment' => 1,
+            'pack_size' => 1,
+            'is_active' => true,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $victimUser = User::query()->create([
+            'name' => 'Private Tier Owner',
+            'email' => 'pricing-identity-owner@example.test',
+            'password' => 'password',
+            'is_active' => true,
+        ]);
+        $victimLegacy = Customer::query()->create([
+            'user_id' => $victimUser->id,
+            'type' => 'b2b',
+            'name' => 'Private Tier Owner',
+            'email' => $victimUser->email,
+        ]);
+        $victim = B2bCustomer::query()->firstOrCreate(
+            ['legacy_customer_id' => $victimLegacy->id],
+            ['user_id' => $victimUser->id, 'name' => 'Private Tier Owner', 'email' => $victimUser->email],
+        );
+        B2bAccount::query()->create([
+            'customer_id' => $victimLegacy->id,
+            'b2b_customer_id' => $victim->id,
+            'price_tier_id' => $tierId,
+            'company_name' => 'Private Tier Company',
+            'status' => 'active',
+        ]);
+
+        $otherUser = User::query()->create([
+            'name' => 'Unrelated Pricing Caller',
+            'email' => 'pricing-identity-other@example.test',
+            'password' => 'password',
+            'is_active' => true,
+        ]);
+        $other = B2bCustomer::query()->create([
+            'user_id' => $otherUser->id,
+            'name' => 'Unrelated Pricing Caller',
+            'email' => $otherUser->email,
+        ]);
+        $originalOtherId = $other->getRawOriginal('id');
+        $this->assertNotSame((int) $victim->id, (int) $originalOtherId);
+        $other->setAttribute('id', $victim->id);
+        $unsaved = new B2bCustomer(['name' => 'Unpersisted Pricing Caller']);
+        $unsaved->setAttribute('id', $victim->id);
+
+        $pricing = app(B2bPriceResolver::class);
+        $beforeAudit = DB::table('audit_logs')->count();
+        $beforeOrders = DB::table('orders')->count();
+        $beforeMovements = DB::table('stock_movements')->count();
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            $this->assertSame(7.25, $pricing->resolve($victim, $storeId, $productId)['price']);
+
+            foreach ([$other, $unsaved] as $untrusted) {
+                try {
+                    $pricing->resolve($untrusted, $storeId, $productId);
+                    $this->fail('An untrusted B2B customer identity must not resolve a foreign tier price.');
+                } catch (\Symfony\Component\HttpKernel\Exception\HttpException $exception) {
+                    $this->assertSame(403, $exception->getStatusCode());
+                }
+            }
+        }
+
+        $this->assertSame($beforeAudit, DB::table('audit_logs')->count());
+        $this->assertSame($beforeOrders, DB::table('orders')->count());
+        $this->assertSame($beforeMovements, DB::table('stock_movements')->count());
+        $this->assertSame((int) $originalOtherId, (int) $other->getRawOriginal('id'));
+        $this->assertSame(7.25, $pricing->resolve($victim, $storeId, $productId)['price']);
     }
 
     public function test_revoked_wholesale_price_tier_cannot_price_customer_catalog_or_cart(): void

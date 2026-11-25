@@ -55,6 +55,20 @@ class B2bPriceResolver
             return [];
         }
 
+        // This unguarded Eloquent model can be passed by service callers with
+        // a dirty primary key. Never use that caller-visible key to select a
+        // different customer's active account or confidential price tier.
+        $originalCustomerId = $customer->getRawOriginal($customer->getKeyName());
+        if (! $customer->exists || $originalCustomerId === null
+            || (string) $customer->getKey() !== (string) $originalCustomerId) {
+            throw new HttpException(403, 'Persisted B2B customer identity is required.');
+        }
+
+        $customer = B2bCustomer::query()->whereKey($originalCustomerId)->first();
+        if (! $customer instanceof B2bCustomer) {
+            throw new HttpException(403, 'Persisted B2B customer identity is required.');
+        }
+
         $account = B2bAccount::query()
             ->where('b2b_customer_id', $customer->getKey())
             ->where('status', 'active')
