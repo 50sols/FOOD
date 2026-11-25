@@ -57,7 +57,7 @@ final class SystemUpdateController extends Controller
             ->map(static fn ($count): int => (int) $count)
             ->all();
 
-        return view('admin.system-update', [
+        $viewData = [
             'user' => $actor,
             // optimize:clear inside the updater may reset the view factory's
             // middleware-shared globals for the next request in the same PHP
@@ -72,7 +72,14 @@ final class SystemUpdateController extends Controller
             'isProduction' => app()->environment('production'),
             'hostingChecks' => $this->hostingPermissionChecks(),
             'signatureVerificationConfigured' => $this->hasConfiguredTrustedPublisher(),
-        ]);
+        ];
+
+        // Sensitive history, backups and recovery metadata must not be returned
+        // after the original Super Admin was disabled during a multiquery read.
+        // The initial authorization is retained before any side effects.
+        $viewData['user'] = $this->authorizeSuperAdminUpdate($request);
+
+        return view('admin.system-update', $viewData);
     }
 
     public function store(Request $request): RedirectResponse

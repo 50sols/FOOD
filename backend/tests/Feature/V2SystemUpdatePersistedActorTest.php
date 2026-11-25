@@ -58,6 +58,39 @@ final class V2SystemUpdatePersistedActorTest extends TestCase
         }
     }
 
+    public function test_update_center_refuses_history_and_recovery_metadata_after_midquery_admin_offboarding_in_ar_and_en(): void
+    {
+        // The SQL listener supplies deterministic same-connection interleaving,
+        // not independent two-session MySQL concurrency certification.
+        $this->withoutMiddleware();
+        $actor = $this->superAdmin();
+        $this->actingAs($actor);
+        $auditBefore = DB::table('audit_logs')->count();
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            $revokedDuringRead = false;
+            DB::listen(function ($event) use ($actor, &$revokedDuringRead): void {
+                $sql = strtolower(ltrim($event->sql));
+                if ($revokedDuringRead || ! str_starts_with($sql, 'select')
+                    || ! str_contains($sql, 'update_history')) {
+                    return;
+                }
+
+                $revokedDuringRead = true;
+                DB::table('users')->where('id', $actor->id)->update(['is_active' => false]);
+            });
+
+            $this->get(route('admin.system-update.index'))->assertForbidden();
+            $this->assertTrue($revokedDuringRead, 'A real update history read must trigger revocation.');
+            $this->assertTrue((bool) $actor->is_active, 'The request principal stays cached.');
+            $this->assertFalse((bool) $actor->fresh()->is_active);
+            $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+            $this->assertDatabaseCount('update_history', 0);
+            DB::table('users')->where('id', $actor->id)->update(['is_active' => true]);
+        }
+    }
+
     public function test_updater_authorization_rebinds_original_identity_and_rejects_dirty_primary_key(): void
     {
         $actor = $this->superAdmin();
