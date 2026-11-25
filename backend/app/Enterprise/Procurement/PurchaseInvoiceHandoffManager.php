@@ -66,7 +66,7 @@ final class PurchaseInvoiceHandoffManager
         // Preserve typed symbols; only the appended suffix '%' is a wildcard.
         $literalPrefix = str_replace(['!', '%', '_'], ['!!', '!%', '!_'], $term).'%';
 
-        return $this->visibleQuery($scope)
+        $page = $this->visibleQuery($scope)
             ->when(
                 $validated['status'] ?? null,
                 fn (Builder $query, string $status): Builder => $query->where('status', $status),
@@ -90,6 +90,12 @@ final class PurchaseInvoiceHandoffManager
             ->orderByDesc('id')
             ->paginate($perPage)
             ->withQueryString();
+
+        // A permission revoked during COUNT/rows/eager loading must not
+        // disclose invoice financial data to the former authorized actor.
+        $this->authorizedScope($actor, $context, self::VIEW_PERMISSION);
+
+        return $page;
     }
 
     public function detail(
@@ -109,6 +115,8 @@ final class PurchaseInvoiceHandoffManager
         // SELECT but before its supplier, receipt and financial lines are
         // loaded. Never return an earlier owner's stale invoice details.
         $this->findVisible($scope, $invoiceId);
+        // Reauthorize the original persisted actor after header/lines loading.
+        $this->authorizedScope($actor, $context, self::VIEW_PERMISSION);
 
         return $invoice;
     }

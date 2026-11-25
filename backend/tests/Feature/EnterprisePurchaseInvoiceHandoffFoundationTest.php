@@ -59,6 +59,100 @@ final class EnterprisePurchaseInvoiceHandoffFoundationTest extends TestCase
         );
     }
 
+    public function test_purchase_invoice_late_view_deny_blocks_scoped_list_and_detail_in_both_locales(): void
+    {
+        $this->enableProcurement();
+        [$actor, $store, $context] = $this->scopedUser($this->allPermissions(), 'PINV-READ-RACE');
+        [, $warehouse] = $this->stockTarget($store, 'PINV-READ-RACE-SKU');
+        $receipt = $this->postedReceipt(
+            $actor, $context, $warehouse, 'PINV-READ-RACE-SUP', 'PINV-READ-RACE-SKU', 2,
+        );
+        $manager = app(PurchaseInvoiceHandoffManager::class);
+        $invoice = $manager->createFromPostedReceipt($actor, $context, $receipt->id, [
+            'supplier_invoice_number' => 'PINV-READ-RACE-001',
+            'invoice_date' => '2026-10-16',
+            'lines' => [[
+                'goods_receipt_line_id' => $receipt->lines()->firstOrFail()->id,
+                'quantity' => 1,
+            ]],
+        ]);
+        $permissionId = (int) Permission::query()
+            ->where('code', 'procurement.purchase_invoices.view')->value('id');
+        $this->assertGreaterThan(0, $permissionId);
+        $this->assertFalse((bool) $actor->has_permission_overrides);
+
+        $armed = false;
+        $injected = false;
+        DB::listen(static function ($query) use (&$armed, &$injected, $actor, $permissionId): void {
+            $sql = strtolower((string) $query->sql);
+            if (! $armed || $injected
+                || ! str_contains($sql, 'enterprise_purchase_invoices')
+                || ! str_contains($sql, 'select')
+                || str_contains($sql, 'join')) {
+                return;
+            }
+
+            // After the authorized invoice SQL: deterministic same-connection
+            // race injection, not independent two-session MySQL certification.
+            $armed = false;
+            $injected = true;
+            DB::table('user_permission_overrides')->insert([
+                'user_id' => $actor->id,
+                'permission_id' => $permissionId,
+                'scope_key' => 'global',
+                'store_id' => null,
+                'effect' => 'deny',
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+            DB::table('users')->where('id', $actor->id)
+                ->update(['has_permission_overrides' => true]);
+        });
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            foreach (['list', 'detail'] as $read) {
+                $readInvoice = $read === 'list'
+                    ? fn () => $manager->paginate($actor, $context, ['status' => 'draft'])
+                    : fn () => $manager->detail($actor, $context, $invoice->id);
+                $this->assertNotNull($readInvoice());
+
+                $auditBefore = DB::table('audit_logs')->count();
+                $linesBefore = DB::table('enterprise_purchase_invoice_lines')->count();
+                $outboxBefore = DB::table('enterprise_outbox_messages')->count();
+                $injected = false;
+                $armed = true;
+                foreach ([1, 2] as $attempt) {
+                    try {
+                        $readInvoice();
+                        $this->fail('An invoice read after persisted view DENY must fail closed.');
+                    } catch (HttpExceptionInterface $exception) {
+                        $this->assertSame(403, $exception->getStatusCode());
+                    }
+                    if ($attempt === 1) {
+                        $this->assertTrue($injected, 'The DENY must occur during a scoped invoice SELECT.');
+                        $this->assertFalse((bool) $actor->has_permission_overrides);
+                        $this->assertTrue((bool) $actor->fresh()->has_permission_overrides);
+                    }
+                }
+                $this->assertDatabaseHas('enterprise_purchase_invoices', [
+                    'id' => $invoice->id, 'status' => 'draft', 'outbox_event_id' => null,
+                ]);
+                $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+                $this->assertSame($linesBefore, DB::table('enterprise_purchase_invoice_lines')->count());
+                $this->assertSame($outboxBefore, DB::table('enterprise_outbox_messages')->count());
+
+                DB::table('user_permission_overrides')
+                    ->where('user_id', $actor->id)
+                    ->where('permission_id', $permissionId)
+                    ->delete();
+                DB::table('users')->where('id', $actor->id)
+                    ->update(['has_permission_overrides' => false]);
+                $this->assertSame($invoice->id, $manager->detail($actor, $context, $invoice->id)->id);
+            }
+        }
+    }
+
     public function test_invoice_direct_service_denies_forged_actor_before_finance_writes_in_ar_and_en(): void
     {
         $this->enableProcurement();
