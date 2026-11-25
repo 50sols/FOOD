@@ -248,14 +248,26 @@ final class InventoryOwnershipRuleService
         // supplier, warehouse or source-document scope is revoked. Fail closed
         // rather than silently falling back to a less specific policy: the
         // checker must re-evaluate the explicit business scope first.
-        if ($first !== null && (! $this->revisionMatchesProposal($first['rule'])
-            || ! $this->referencesStillValid($first['rule']))) {
-            return ['state' => 'UNKNOWN', 'certified' => false, 'policy' => null];
-        }
+        $invalidPolicy = $first !== null && (! $this->revisionMatchesProposal($first['rule'])
+            || ! $this->referencesStillValid($first['rule']));
 
         $ambiguous = $first !== null && $ranked->count() > 1
             && $ranked[1]['specificity'] === $first['specificity']
             && $ranked[1]['rule']->rule_uuid !== $first['rule']->rule_uuid;
+
+        // A policy reader can be offboarded during the rule SELECT or reference
+        // checks. Never disclose even non-certifying supplier/title policy
+        // metadata using a stale in-memory Super Admin or store-role grant.
+        $currentActor = User::query()
+            ->whereKey($actor->getKey())->where('is_active', true)->first();
+        abort_unless($currentActor !== null, 403);
+        $this->authorize($currentActor, $storeId, 'inventory.view');
+        abort_unless($this->companyForStore($storeId) === $companyId, 404);
+        $this->assertChannel($storeId, $channel);
+
+        if ($invalidPolicy) {
+            return ['state' => 'UNKNOWN', 'certified' => false, 'policy' => null];
+        }
 
         return ['state' => $ambiguous ? 'CONFLICT' : 'UNKNOWN', 'certified' => false,
             'policy' => $ambiguous ? null : ($first['rule'] ?? null)];

@@ -2612,6 +2612,65 @@ SQL);
         $this->assertFalse($advisory['certified']);
         $this->assertSame($approved->id, $advisory['policy']->id);
 
+        // A Super Admin removed during the selected approved-policy query must
+        // not receive a cached legal-title rule, even with a stale active model.
+        $armedCheckerId = null;
+        $offboarded = false;
+        DB::listen(static function ($query) use (&$armedCheckerId, &$offboarded): void {
+            if ($armedCheckerId === null || $offboarded) {
+                return;
+            }
+
+            $sql = strtolower(ltrim((string) $query->sql));
+            if (! str_starts_with($sql, 'select')
+                || ! str_contains($sql, 'enterprise_inventory_ownership_rule_revisions')
+                || ! str_contains($sql, 'effective_at')) {
+                return;
+            }
+
+            $offboarded = true;
+            DB::table('users')->where('id', $armedCheckerId)
+                ->update(['is_active' => false]);
+        });
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            $offboarded = false;
+            $beforeAudit = DB::table('audit_logs')->count();
+            $beforeRules = DB::table('enterprise_inventory_ownership_rule_revisions')->count();
+            $beforeMovements = DB::table('stock_movements')->count();
+            $armedCheckerId = $checker->id;
+            try {
+                $service->advisoryFor($checker, $stock['store_id'], 'B2C', null, (int) $request['warehouse_id']);
+                $this->fail('A reviewer offboarded during a rule read must not receive the approved policy.');
+            } catch (HttpException $exception) {
+                $this->assertSame(403, $exception->getStatusCode());
+            } finally {
+                $armedCheckerId = null;
+            }
+
+            $this->assertTrue($offboarded, 'The real approved-policy SELECT must trigger offboarding.');
+            $this->assertTrue((bool) $checker->is_active);
+            $this->assertFalse((bool) $checker->fresh()->is_active);
+            try {
+                $service->advisoryFor($checker, $stock['store_id'], 'B2C', null, (int) $request['warehouse_id']);
+                $this->fail('A stale original actor must not bypass persisted offboarding.');
+            } catch (HttpException $exception) {
+                $this->assertSame(403, $exception->getStatusCode());
+            }
+
+            $this->assertSame($beforeRules, DB::table('enterprise_inventory_ownership_rule_revisions')->count());
+            $this->assertSame($beforeAudit, DB::table('audit_logs')->count());
+            $this->assertSame($beforeMovements, DB::table('stock_movements')->count());
+            DB::table('users')->where('id', $checker->id)
+                ->update(['is_active' => true]);
+            $restoredRule = $service->advisoryFor(
+                $checker, $stock['store_id'], 'B2C', null, (int) $request['warehouse_id'],
+            );
+            $this->assertSame($approved->id, $restoredRule['policy']->id);
+            $this->assertFalse($restoredRule['certified']);
+        }
+
         // A proposed immutable SHA must bind the same exact trigger and
         // evidence policy later reviewed. Direct-row drift cannot become
         // an approved operational policy, and its request UUID cannot be
