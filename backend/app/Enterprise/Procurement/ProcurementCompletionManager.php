@@ -402,9 +402,22 @@ final class ProcurementCompletionManager
             ->select('documents.*')
             ->firstOrFail();
 
-        // This query deliberately resolves the document and CURRENT scoped
-        // parent in one SELECT. A view grant can be revoked while it runs;
-        // do not return the private storage path without a final fresh check.
+        // The first scoped SELECT can finish just before the RFQ or quote is
+        // reassigned to another store. Re-read the exact document/quote/RFQ
+        // ownership without selecting its private storage_path: the caller
+        // must not receive an attachment that no longer belongs to its store.
+        DB::table('enterprise_procurement_quote_documents as documents')
+            ->join('enterprise_procurement_quotes as quotes', 'quotes.id', '=', 'documents.quote_id')
+            ->join('enterprise_procurement_rfqs as rfqs', 'rfqs.id', '=', 'quotes.rfq_id')
+            ->where('rfqs.organization_id', $scope->organizationId)
+            ->where('rfqs.company_id', $scope->companyId)
+            ->where('rfqs.store_id', $scope->storeId)
+            ->where('rfqs.id', $rfqId)
+            ->where('documents.id', $documentId)
+            ->firstOrFail(['documents.id']);
+
+        // A view grant can also be revoked during either SELECT. Reauthorize
+        // the original persisted actor after the current ownership check.
         $this->scope($actor, $context, 'procurement.purchase_requests.view');
 
         return $document;
