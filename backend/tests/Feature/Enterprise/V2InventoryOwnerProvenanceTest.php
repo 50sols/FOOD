@@ -2294,6 +2294,80 @@ SQL);
         app(InventoryOwnerProvenanceReadService::class)->snapshot($actor, $foreign['inventory_id']);
     }
 
+    public function test_owner_snapshot_refuses_midread_position_balance_revision_in_ar_and_en(): void
+    {
+        $this->seed(CoreReferenceSeeder::class);
+        $reader = app(InventoryOwnerProvenanceReadService::class);
+        $armedInventoryId = null;
+        $revised = false;
+
+        DB::listen(static function ($query) use (&$armedInventoryId, &$revised): void {
+            if ($armedInventoryId === null || $revised) {
+                return;
+            }
+
+            $sql = strtolower((string) $query->sql);
+            if (! str_contains($sql, 'enterprise_inventory_owner_positions')
+                || ! str_contains($sql, 'select')) {
+                return;
+            }
+
+            // The original owner rows were returned to the reader. A separate
+            // legitimate allocation update changes legal owner quantities
+            // without necessarily modifying the canonical inventory balance.
+            $revised = true;
+            DB::table('enterprise_inventory_owner_positions')
+                ->where('inventory_id', $armedInventoryId)
+                ->where('owner_key', 'FOODEX')
+                ->update(['quantity' => '9.000']);
+        });
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            $stock = $this->stock('P110-OWNER-REVISION-'.strtoupper($locale));
+            $actor = $this->inventoryActor($stock['store_id']);
+            $this->position($stock['inventory_id'], 'FOODEX', null, 10, 3, $actor->id, $actor->id, false);
+
+            $initial = $reader->snapshot($actor, $stock['inventory_id']);
+            $this->assertSame('UNVERIFIED', $initial['state']);
+            $this->assertSame('10.000', $initial['positions'][0]['quantity']);
+
+            $auditBefore = DB::table('audit_logs')->count();
+            $movementBefore = DB::table('stock_movements')->count();
+            $titleBefore = DB::table('enterprise_inventory_title_attestations')->count();
+
+            $armedInventoryId = $stock['inventory_id'];
+            $revised = false;
+            try {
+                $reader->snapshot($actor, $stock['inventory_id']);
+                $this->fail('A post-read owner allocation revision must not leak stale title balances.');
+            } catch (HttpException $exception) {
+                $this->assertSame(404, $exception->getStatusCode());
+                $this->assertTrue($revised, 'The allocation must change after the initial owner SELECT.');
+            }
+            $armedInventoryId = null;
+
+            $current = $reader->snapshot($actor, $stock['inventory_id']);
+            $this->assertSame('STALE', $current['state']);
+            $this->assertSame('9.000', $current['positions'][0]['quantity']);
+            $this->assertFalse($current['certified']);
+            $this->assertDatabaseHas('inventories', [
+                'id' => $stock['inventory_id'], 'quantity' => 10, 'reserved_quantity' => 3,
+            ]);
+            $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+            $this->assertSame($movementBefore, DB::table('stock_movements')->count());
+            $this->assertSame($titleBefore, DB::table('enterprise_inventory_title_attestations')->count());
+
+            DB::table('enterprise_inventory_owner_positions')
+                ->where('inventory_id', $stock['inventory_id'])
+                ->where('owner_key', 'FOODEX')
+                ->update(['quantity' => '10.000']);
+            $restored = $reader->snapshot($actor, $stock['inventory_id']);
+            $this->assertSame('UNVERIFIED', $restored['state']);
+            $this->assertSame('10.000', $restored['positions'][0]['quantity']);
+        }
+    }
+
     public function test_owner_snapshot_denies_former_store_if_inventory_moves_during_read_in_ar_and_en(): void
     {
         $this->seed(CoreReferenceSeeder::class);

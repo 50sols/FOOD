@@ -218,6 +218,16 @@ final class InventoryOwnerProvenanceReadService
             );
         }
 
+        // An authorized writer can revise legal-owner balances after the
+        // initial positions SELECT without changing canonical stock totals.
+        // Re-read the entire partition set before disclosing title/quantity.
+        // This is a last-read race guard, not a serializable transaction.
+        $currentRows = DB::table('enterprise_inventory_owner_positions')
+            ->where('inventory_id', $inventoryId)
+            ->orderBy('owner_key')
+            ->get();
+        abort_unless($rows->toJson() === $currentRows->toJson(), 404);
+
         return [
             'inventory_id' => $inventoryId,
             'store_id' => (int) $warehouse->store_id,
