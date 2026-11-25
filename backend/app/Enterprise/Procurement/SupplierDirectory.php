@@ -222,7 +222,7 @@ final class SupplierDirectory
                 $lockedSupplier,
                 null,
                 [
-                    'supplier_id' => $supplier->id,
+                    'supplier_id' => $lockedSupplier->id,
                     'document_id' => $document->id,
                     'category' => $document->category,
                     'title' => $document->title,
