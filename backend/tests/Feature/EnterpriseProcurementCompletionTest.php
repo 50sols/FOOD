@@ -368,6 +368,7 @@ final class EnterpriseProcurementCompletionTest extends TestCase
             'code' => 'PROC-CTR-LIVE-SUP',
             'name_en' => 'Live Contract Supplier',
         ]);
+        $foreignStore = $this->createRetailStore('PROC-CTR-FOREIGN');
         $completion = app(ProcurementCompletionManager::class);
 
         foreach (['ar', 'en'] as $locale) {
@@ -395,7 +396,7 @@ final class EnterpriseProcurementCompletionTest extends TestCase
             $this->assertSame($beforeAudit, DB::table('audit_logs')->count());
 
             DB::table('enterprise_suppliers')->where('id', $supplier->id)
-                ->update(['status' => 'active', 'store_id' => null, 'scope_type' => 'store']);
+                ->update(['status' => 'active', 'store_id' => $foreignStore->id, 'scope_type' => 'store']);
             try {
                 $completion->createContract($actor, $context, [
                     'supplier_id' => $supplier->id,
