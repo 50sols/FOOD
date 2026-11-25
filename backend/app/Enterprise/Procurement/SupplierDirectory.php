@@ -54,7 +54,7 @@ final class SupplierDirectory
         // dropping them or allowing SQL LIKE wildcards to broaden supplier results.
         $literalPrefix = str_replace(['!', '%', '_'], ['!!', '!%', '!_'], $term).'%';
 
-        return $this->visibleQuery($scope)
+        $page = $this->visibleQuery($scope)
             ->when(
                 $validated['status'] ?? null,
                 fn (Builder $query, string $status): Builder => $query->where('status', $status),
@@ -78,6 +78,41 @@ final class SupplierDirectory
             ->orderBy('id')
             ->paginate($perPage)
             ->withQueryString();
+
+        // A supplier may be reassigned to a different store after its row was
+        // hydrated, even while the original actor still holds VIEW permission.
+        // Recheck only the bounded current page against the same org/company
+        // and store visibility boundary before returning any supplier details.
+        $pageIds = $page->getCollection()->pluck('id')->map(static fn ($id): int => (int) $id)->all();
+        if ($pageIds !== []) {
+            abort_unless(
+                $this->visibleQuery($scope)->whereKey($pageIds)->count() === count($pageIds),
+                404,
+            );
+        }
+
+        // Permission DENY or offboarding may be committed during COUNT/rows.
+        // Never return a supplier page authorized only by its initial query.
+        $this->authorizedScope($actor, $context, self::VIEW_PERMISSION);
+
+        return $page;
+    }
+
+    /**
+     * Use exactly the Create validator, authorization and company-scoped
+     * uniqueness check without persisting a supplier or writing an audit log.
+     * This preflight never certifies an external registration/tax number.
+     *
+     * @param  array<string, mixed>  $attributes
+     */
+    public function validateCandidate(
+        User $actor,
+        ResolvedTenantContext $context,
+        array $attributes,
+    ): void {
+        $scope = $this->authorizedScope($actor, $context, self::MANAGE_PERMISSION);
+        $data = $this->validatedSupplier($attributes);
+        $this->assertCodeAvailable($scope, (string) $data['code']);
     }
 
     /** @param array<string, mixed> $attributes */
@@ -136,7 +171,16 @@ final class SupplierDirectory
             if (isset($data['scope_type'])) {
                 $data['store_id'] = $data['scope_type'] === 'company' ? null : $scope->storeId;
             }
-            $locked->fill([...$data, 'updated_by' => $actor->id]);
+            $locked->fill($data);
+            // Retrying an already applied edit/archive must not mutate the
+            // record or append another success audit. In particular, a
+            // different replaying actor must not rewrite updated_by when
+            // no business field changed. The row remains scope-locked.
+            if (! $locked->isDirty()) {
+                return $locked->refresh();
+            }
+
+            $locked->updated_by = $actor->id;
             $locked->save();
 
             $this->audit->record(
@@ -275,6 +319,12 @@ final class SupplierDirectory
             ->get()
             ->all();
 
+        // Header, documents, activity, finance and contracts span separate
+        // SELECTs. Recheck current supplier ownership and permission before
+        // disclosing the hydrated 360-degree profile or financial aggregates.
+        $this->findVisible($scope, $supplierId);
+        $this->authorizedScope($actor, $context, self::VIEW_PERMISSION);
+
         return [
             'supplier' => $supplier,
             'documents' => $documents,
@@ -295,11 +345,25 @@ final class SupplierDirectory
         ResolvedTenantContext $context,
         string $permission,
     ): EnterpriseDataScope {
+        // Never trust a stale User permission-override flag or a dirty
+        // in-memory primary key as authority for direct supplier services.
+        $persistedActorId = $actor->getRawOriginal($actor->getKeyName());
+        abort_unless(
+            $actor->exists
+                && $persistedActorId !== null
+                && (string) $actor->getKey() === (string) $persistedActorId,
+            403,
+        );
         abort_if($context->enterpriseScope === null, 409, 'Enterprise data scope is required.');
 
         $scope = $context->enterpriseScope;
+        $currentActor = User::query()
+            ->whereKey($persistedActorId)
+            ->where('is_active', true)
+            ->first();
+        abort_unless($currentActor !== null, 403);
         $this->authorizer->authorize(
-            $actor,
+            $currentActor,
             $context,
             $permission,
             'company',
