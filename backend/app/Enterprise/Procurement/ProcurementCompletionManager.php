@@ -1322,11 +1322,18 @@ final class ProcurementCompletionManager
     ): array {
         $scope = $this->scope($actor, $context, 'procurement.purchase_orders.view');
         $contract = $this->visibleContract($scope, $contractId);
-        $documents = DB::table('enterprise_procurement_contract_documents')
-            ->where('contract_id', $contract->id)
-            ->orderByDesc('id')
+        // Attachment paths must be scoped against the contract's CURRENT
+        // owner in the same SELECT, not against a stale visibleContract()
+        // preflight. A transfer between the two reads must not leak files.
+        $documents = DB::table('enterprise_procurement_contract_documents as documents')
+            ->join('enterprise_procurement_contracts as contracts', 'contracts.id', '=', 'documents.contract_id')
+            ->where('contracts.organization_id', $scope->organizationId)
+            ->where('contracts.company_id', $scope->companyId)
+            ->where('contracts.store_id', $scope->storeId)
+            ->where('contracts.id', $contractId)
+            ->orderByDesc('documents.id')
             ->limit(50)
-            ->get()
+            ->get(['documents.*'])
             ->all();
 
         return compact('contract', 'documents');
