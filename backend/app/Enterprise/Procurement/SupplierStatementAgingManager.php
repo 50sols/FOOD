@@ -277,6 +277,44 @@ final class SupplierStatementAgingManager
 
     private function amount(mixed $value): string
     {
-        return number_format((float) $value, 3, '.', '');
+        // MySQL/MariaDB DECIMAL SUM returns an exact decimal string. Casting
+        // that string to float rounds away the mills at large, valid values.
+        // SQLite test aggregates can be float; normalize their small
+        // aggregates without ever float-coercing the exact SQL string.
+        $raw = is_float($value)
+            ? sprintf('%.9F', $value)
+            : (string) ($value ?? 0);
+        if (! preg_match('/\A([+-]?)(\d+)(?:\.(\d+))?\z/D', $raw, $match)) {
+            throw new \UnexpectedValueException('Invalid supplier-aging decimal aggregate.');
+        }
+
+        $integer = ltrim($match[2], '0');
+        $integer = $integer === '' ? '0' : $integer;
+        $fraction = str_pad($match[3] ?? '', 4, '0');
+        $mills = (int) substr($fraction, 0, 3);
+        if ((int) $fraction[3] >= 5) {
+            $mills++;
+        }
+
+        if ($mills === 1000) {
+            $mills = 0;
+            // Propagate a carry in decimal-string arithmetic: an aggregate
+            // may be too large for a native PHP integer as well as a float.
+            for ($index = strlen($integer) - 1; $index >= 0; $index--) {
+                if ($integer[$index] !== '9') {
+                    $integer[$index] = (string) ((int) $integer[$index] + 1);
+                    break;
+                }
+                $integer[$index] = '0';
+            }
+            if ($index < 0) {
+                $integer = '1'.$integer;
+            }
+        }
+
+        $fractional = str_pad((string) $mills, 3, '0', STR_PAD_LEFT);
+        $negative = ($match[1] ?? '') === '-' && ($integer !== '0' || $mills !== 0);
+
+        return ($negative ? '-' : '').$integer.'.'.$fractional;
     }
 }

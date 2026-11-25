@@ -246,6 +246,47 @@ final class EnterpriseSupplierStatementAgingFoundationTest extends TestCase
         );
     }
 
+    public function test_supplier_aging_decimal_aggregates_preserve_exact_mills_without_float_rounding_in_both_locales(): void
+    {
+        $manager = app(SupplierStatementAgingManager::class);
+        $formatter = new \ReflectionMethod(SupplierStatementAgingManager::class, 'amount');
+
+        // All are exact SQL DECIMAL values or ordinary SQLite aggregate
+        // representations. In particular, DECIMAL(18,3) can hold the first
+        // amount even though a PHP float cannot represent its mills.
+        $cases = [
+            ['999999999999999.999', '999999999999999.999'],
+            ['900719925474099.125', '900719925474099.125'],
+            ['999999999999999.9995', '1000000000000000.000'],
+            ['1.9995', '2.000'],
+            ['1.250', '1.250'],
+            ['7.5', '7.500'],
+            [7.5, '7.500'],
+            ['-1.250', '-1.250'],
+            ['-0.0004', '0.000'],
+            ['-0.0005', '-0.001'],
+            [null, '0.000'],
+        ];
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            foreach ($cases as [$input, $expected]) {
+                $this->assertSame(
+                    $expected,
+                    $formatter->invoke($manager, $input),
+                    'Supplier aging must retain exact mills in '.$locale.' for '.(string) $input,
+                );
+            }
+        }
+    }
+
+    public function test_supplier_aging_rejects_non_decimal_aggregate_instead_of_reporting_fake_zero(): void
+    {
+        $formatter = new \ReflectionMethod(SupplierStatementAgingManager::class, 'amount');
+        $this->expectException(\UnexpectedValueException::class);
+        $formatter->invoke(app(SupplierStatementAgingManager::class), 'not-a-decimal');
+    }
+
     public function test_aging_is_deterministic_by_currency_and_due_date_bucket(): void
     {
         $this->enableProcurement();
