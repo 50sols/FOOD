@@ -933,6 +933,20 @@ final class LaravelUpdateRuntime implements UpdateRuntime
         $pathComponents = explode('/', $normalized);
         $lastComponent = array_key_last($pathComponents);
         foreach ($pathComponents as $index => $component) {
+            // A valid signed digest does not make an embedded credential store
+            // an acceptable release target. Match the source ZIP publisher's
+            // XDG/GitHub/Cloud CLI and package-manager secret exclusions.
+            $folded = strtolower($component);
+            if (in_array($folded, [
+                'auth.json', '.npmrc', '.netrc', '.pypirc', '.yarnrc.yml',
+                '.git-credentials', 'azureprofile.json', 'accesstokens.json',
+                'terraform.tfstate', 'terraform.tfstate.backup',
+                'application_default_credentials.json',
+            ], true) || ($index > 0 && strtolower($pathComponents[$index - 1]) === '.config'
+                && in_array($folded, ['git', 'gh', 'gcloud'], true))) {
+                throw new RuntimeException('Update archive targets a protected credential path.');
+            }
+
             // On Windows and some shared-host filesystems, trailing periods
             // or spaces in a component alias a different live path. Reject
             // them before protected-directory and symlink checks.

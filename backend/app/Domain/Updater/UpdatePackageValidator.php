@@ -239,6 +239,20 @@ final class UpdatePackageValidator
         $lastIndex = array_key_last($components);
 
         foreach ($components as $index => $component) {
+            // A valid signed digest does not make an embedded credential store
+            // an acceptable release target. Match the source ZIP publisher's
+            // XDG/GitHub/Cloud CLI and package-manager secret exclusions.
+            $folded = strtolower($component);
+            if (in_array($folded, [
+                'auth.json', '.npmrc', '.netrc', '.pypirc', '.yarnrc.yml',
+                '.git-credentials', 'azureprofile.json', 'accesstokens.json',
+                'terraform.tfstate', 'terraform.tfstate.backup',
+                'application_default_credentials.json',
+            ], true) || ($index > 0 && strtolower($components[$index - 1]) === '.config'
+                && in_array($folded, ['git', 'gh', 'gcloud'], true))) {
+                throw new InvalidArgumentException('Update archive targets a protected credential path.');
+            }
+
             $isExampleTemplate = $index === $lastIndex
                 && preg_match('/^\\.env(?:\\.[A-Za-z0-9_-]+)*\\.example$/', $component) === 1;
 
