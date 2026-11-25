@@ -262,6 +262,89 @@ final class EnterprisePurchaseReturnFoundationTest extends TestCase
         $this->assertNull($line->refresh()->stock_movement_id);
     }
 
+    public function test_p110_dirty_return_and_source_keys_cannot_redirect_stock_reversal(): void
+    {
+        $this->enableProcurement();
+        [$actor, $store, $context] = $this->scopedUser($this->allPermissions(), 'PRTN-P110-DIRTY-ID');
+        [$product, $warehouse] = $this->stockTarget($store, 'PRTN-P110-DIRTY-SKU');
+        $receipt = $this->postedReceipt(
+            $actor, $context, $warehouse, 'PRTN-P110-DIRTY-SUP', 'PRTN-P110-DIRTY-SKU', 4,
+        );
+        $source = $receipt->lines()->firstOrFail();
+        $manager = app(PurchaseReturnManager::class);
+        $payload = ['lines' => [['goods_receipt_line_id' => $source->id, 'quantity' => 1]]];
+        $original = $manager->createFromPostedReceipt($actor, $context, $receipt->id, $payload);
+        $other = $manager->createFromPostedReceipt($actor, $context, $receipt->id, $payload);
+        $originalLine = $original->lines()->firstOrFail();
+        $otherLine = $other->lines()->firstOrFail();
+        $service = app(PurchaseReturnInventoryHandoff::class);
+        $inventory = DB::table('inventories')
+            ->where('warehouse_id', $warehouse->id)
+            ->where('product_id', $product->id)->firstOrFail();
+        $beforeStock = (array) DB::table('inventories')->where('id', $inventory->id)->first();
+        $beforeOwners = DB::table('enterprise_inventory_owner_positions')
+            ->where('inventory_id', $inventory->id)->get()->toArray();
+        $beforeMovements = DB::table('stock_movements')->count();
+        $beforeEvents = DB::table('enterprise_inventory_owner_movement_events')->count();
+        $beforeAudit = DB::table('audit_logs')->count();
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            $forgedReturn = $original->fresh();
+            $forgedLine = $originalLine->fresh();
+            $this->assertNotNull($forgedReturn);
+            $this->assertNotNull($forgedLine);
+            // Both drafts share a posted GRN and a valid source line. A
+            // direct writer must honor the original Eloquent identity.
+            $forgedReturn->forceFill(['id' => $other->id]);
+            $forgedLine->forceFill(['id' => $otherLine->id, 'purchase_return_id' => $other->id]);
+            $this->assertNotSame($forgedReturn->getRawOriginal('id'), $forgedReturn->getKey());
+            try {
+                DB::transaction(static function () use (
+                    $service, $actor, $store, $forgedReturn, $forgedLine, $source
+                ): void {
+                    $service->reverse($actor, $store->id, $forgedReturn, $forgedLine, $source);
+                });
+                $this->fail('Dirty return and line IDs must never redirect the stock debit.');
+            } catch (ValidationException $exception) {
+                $this->assertArrayHasKey('goods_receipt_line_id', $exception->errors());
+            }
+
+            $forgedSource = $source->fresh();
+            $this->assertNotNull($forgedSource);
+            $forgedSource->forceFill(['id' => $source->id + 999999]);
+            try {
+                DB::transaction(static function () use (
+                    $service, $actor, $store, $original, $originalLine, $forgedSource
+                ): void {
+                    $service->reverse($actor, $store->id, $original, $originalLine, $forgedSource);
+                });
+                $this->fail('Dirty GRN source-line key must not be followed.');
+            } catch (ValidationException $exception) {
+                $this->assertArrayHasKey('goods_receipt_line_id', $exception->errors());
+            }
+
+            $this->assertSame($beforeStock, (array) DB::table('inventories')
+                ->where('id', $inventory->id)->first());
+            $this->assertEquals($beforeOwners, DB::table('enterprise_inventory_owner_positions')
+                ->where('inventory_id', $inventory->id)->get()->toArray());
+            $this->assertSame($beforeMovements, DB::table('stock_movements')->count());
+            $this->assertSame($beforeEvents, DB::table('enterprise_inventory_owner_movement_events')->count());
+            $this->assertSame($beforeAudit, DB::table('audit_logs')->count());
+            $this->assertNull($originalLine->fresh()->stock_movement_id);
+            $this->assertNull($otherLine->fresh()->stock_movement_id);
+        }
+
+        DB::transaction(static function () use ($service, $actor, $store, $original, $originalLine, $source): void {
+            $service->reverse($actor, $store->id, $original, $originalLine, $source);
+        });
+        $this->assertSame(3.0, (float) DB::table('inventories')
+            ->where('id', $inventory->id)->value('quantity'));
+        $this->assertSame($beforeMovements + 1, DB::table('stock_movements')->count());
+        $this->assertNotNull($originalLine->fresh()->stock_movement_id);
+        $this->assertNull($otherLine->fresh()->stock_movement_id);
+    }
+
     public function test_p110_direct_purchase_return_handoff_rejects_substituted_source_and_return_without_stock_writes(): void
     {
         $this->enableProcurement();
