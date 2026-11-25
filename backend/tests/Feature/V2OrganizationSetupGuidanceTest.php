@@ -12,10 +12,12 @@ use App\Models\Store;
 use App\Models\User;
 use App\Services\EnterpriseOrganizationAdministration;
 use Database\Seeders\CoreReferenceSeeder;
+use Illuminate\Auth\Access\AuthorizationException;
 use Illuminate\Database\MultipleRecordsFoundException;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
+use Symfony\Component\HttpKernel\Exception\HttpException;
 use Tests\TestCase;
 
 final class V2OrganizationSetupGuidanceTest extends TestCase
@@ -1823,7 +1825,7 @@ final class V2OrganizationSetupGuidanceTest extends TestCase
                     try {
                         $write();
                         $this->fail("The {$case} actor must not {$operation} enterprise scope.");
-                    } catch (\Symfony\Component\HttpKernel\Exception\HttpException $exception) {
+                    } catch (HttpException $exception) {
                         $this->assertSame(403, $exception->getStatusCode());
                     }
                 }
@@ -1848,7 +1850,7 @@ final class V2OrganizationSetupGuidanceTest extends TestCase
                 try {
                     $write();
                     $this->fail("FINANCE actor must not {$operation} enterprise hierarchy.");
-                } catch (\Illuminate\Auth\Access\AuthorizationException $exception) {
+                } catch (AuthorizationException $exception) {
                     $this->assertSame(403, $exception->status() ?? 403);
                 }
             }
