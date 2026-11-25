@@ -279,9 +279,14 @@ def safe_path(path: str) -> str:
     package_credentials = {"auth.json", ".npmrc", ".netrc", ".pypirc", ".yarnrc.yml"}
     # Recursively staged assets may contain credential homes with generic
     # secret filenames (credentials, config.json), not just private keys.
-    credential_directories = {".aws", ".ssh", ".docker", ".kube", ".gnupg"}
+    credential_directories = {".aws", ".ssh", ".docker", ".kube", ".gnupg", ".azure", ".terraform"}
     credential_files = {".git-credentials"}
-    for part in parts:
+    for index, part in enumerate(parts):
+        # gcloud credentials are routinely stored as .config/gcloud/*.
+        if part.casefold() == "gcloud" and index > 0 and parts[index - 1].casefold() == ".config":
+            raise RuntimeError(f"Credential storage is not allowed in updates: {path}")
+        if part.casefold() == "application_default_credentials.json":
+            raise RuntimeError(f"Credential storage is not allowed in updates: {path}")
         if part.casefold() in credential_directories or part.casefold() in credential_files:
             raise RuntimeError(f"Credential storage is not allowed in updates: {path}")
         if part.casefold() in package_credentials:

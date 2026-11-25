@@ -116,6 +116,11 @@ class BuildUpdateBundleSourceSafetyTest(unittest.TestCase):
             "backend/public/assets/.gnupg/pubring.kbx",
             "backend/public/assets/.git-credentials",
             "backend/config/.GIT-CREDENTIALS",
+            "backend/public/assets/.azure/accessTokens.json",
+            "backend/public/assets/.TERRAFORM/terraform.tfstate",
+            "backend/public/assets/.config/gcloud/credentials.db",
+            "backend/public/assets/.CONFIG/GCLOUD/configurations/config_default",
+            "backend/public/preview/driver/application_default_credentials.json",
         ):
             with self.subTest(member=member):
                 with self.assertRaisesRegex(RuntimeError, "Credential storage"):
