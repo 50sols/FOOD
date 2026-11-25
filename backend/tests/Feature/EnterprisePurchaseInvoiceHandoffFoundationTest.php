@@ -127,6 +127,93 @@ final class EnterprisePurchaseInvoiceHandoffFoundationTest extends TestCase
         }
     }
 
+    public function test_grn_late_supplier_store_transfer_denies_priced_reads_post_retry_and_new_receipts_in_ar_and_en(): void
+    {
+        $this->enableProcurement();
+        [$actor, $store, $context] = $this->scopedUser($this->allPermissions(), 'GRN-LIVE-SUP');
+        $foreignStore = $this->createRetailStore('GRN-SUP-FOREIGN');
+        [, $warehouse] = $this->stockTarget($store, 'GRN-SUP-SKU');
+        $manager = app(GoodsReceiptManager::class);
+        $armed = false;
+        $transferred = false;
+        $targetSupplier = null;
+
+        DB::listen(static function ($query) use (&$armed, &$transferred, &$targetSupplier, $foreignStore): void {
+            $sql = strtolower((string) $query->sql);
+            if (! $armed || $transferred || $targetSupplier === null
+                || ! str_contains($sql, 'select')
+                || ! str_contains($sql, 'enterprise_goods_receipts')) {
+                return;
+            }
+
+            // Exercise the gap after the first authorized GRN SELECT,
+            // not an independent multi-session MySQL race certification.
+            $armed = false;
+            $transferred = true;
+            DB::table('enterprise_suppliers')->where('id', $targetSupplier)
+                ->update(['store_id' => $foreignStore->id]);
+        });
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            $receipt = $this->postedReceipt(
+                $actor, $context, $warehouse, 'GRN-SUP-XFER-'.strtoupper($locale), 'GRN-SUP-SKU', 2,
+            );
+            $targetSupplier = (int) $receipt->supplier_id;
+            $this->assertSame($receipt->id, $manager->detail($actor, $context, $receipt->id)->id);
+            $this->assertSame(1, $manager->paginate($actor, $context, [
+                'purchase_order_id' => $receipt->purchase_order_id,
+            ])->total());
+
+            $auditBefore = DB::table('audit_logs')->count();
+            $linesBefore = DB::table('enterprise_goods_receipt_lines')->count();
+            $outboxBefore = DB::table('enterprise_outbox_messages')->count();
+            $transferred = false;
+            $armed = true;
+            try {
+                $manager->detail($actor, $context, $receipt->id);
+                $this->fail('Late supplier transfer must not reveal old-store GRN prices.');
+            } catch (ModelNotFoundException) {
+                $this->assertTrue($transferred);
+            }
+
+            $this->assertSame(0, $manager->paginate($actor, $context, [
+                'purchase_order_id' => $receipt->purchase_order_id,
+            ])->total());
+            foreach ([
+                fn () => $manager->detail($actor, $context, $receipt->id),
+                fn () => $manager->post($actor, $context, $receipt->id),
+                fn () => $manager->cancel($actor, $context, $receipt->id),
+                fn () => $manager->createFromIssuedOrder($actor, $context, $receipt->purchase_order_id, [
+                    'lines' => [[
+                        'purchase_order_line_id' => $receipt->lines()->firstOrFail()->purchase_order_line_id,
+                        'warehouse_id' => $warehouse->id,
+                        'quantity' => 1,
+                    ]],
+                ]),
+            ] as $operation) {
+                try {
+                    $operation();
+                    $this->fail('Foreign-store supplier must deny GRN financial reads and writes.');
+                } catch (ModelNotFoundException) {
+                    $this->assertTrue(true);
+                }
+            }
+
+            $this->assertDatabaseHas('enterprise_goods_receipts', [
+                'id' => $receipt->id, 'status' => 'posted',
+            ]);
+            $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+            $this->assertSame($linesBefore, DB::table('enterprise_goods_receipt_lines')->count());
+            $this->assertSame($outboxBefore, DB::table('enterprise_outbox_messages')->count());
+
+            DB::table('enterprise_suppliers')->where('id', $targetSupplier)
+                ->update(['store_id' => $store->id]);
+            $this->assertSame($receipt->id, $manager->detail($actor, $context, $receipt->id)->id);
+            $this->assertSame('posted', $manager->post($actor, $context, $receipt->id)->status);
+        }
+    }
+
     public function test_disabled_procurement_performs_no_purchase_invoice_query_work(): void
     {
         [$actor, , $context] = $this->scopedUser($this->allPermissions(), 'PINV-OFF');

@@ -209,6 +209,9 @@ final class GoodsReceiptManager
             // Source PO, warehouse and cumulative-quantity reads may outlive
             // the original manage permission. Reauthorize before any write.
             $this->authorizedScope($actor, $context, self::MANAGE_PERMISSION);
+            // Supplier reassignment is independent of PO ownership. Recheck
+            // live supplier eligibility after quantity and warehouse reads.
+            $this->visibleOrderQuery($scope)->whereKey($orderId)->firstOrFail();
 
             $publicId = (string) Str::uuid();
             $receipt = EnterpriseGoodsReceipt::query()->create([
@@ -317,6 +320,10 @@ final class GoodsReceiptManager
 
             // Deny a revoked principal even on an idempotent posted retry.
             $this->authorizedScope($actor, $context, self::POST_PERMISSION);
+            // Do not return historical supplier/price lines on posted retries
+            // after the supplier moves out of this authorized store.
+            $this->findVisible($scope, $receiptId);
+            $this->visibleOrderQuery($scope)->whereKey($receipt->purchase_order_id)->firstOrFail();
             if ($alreadyPosted) {
                 return $receipt->refresh()->load('lines');
             }
@@ -383,6 +390,10 @@ final class GoodsReceiptManager
             // Never post stock or write success audit on permissions revoked
             // while the GRN and PO line/quantity queries were executing.
             $this->authorizedScope($actor, $context, self::POST_PERMISSION);
+            // Initial PO/GRN row locks do not protect a separately updated
+            // supplier. Abort before inventory and audit side effects.
+            $this->findVisible($scope, $receiptId);
+            $this->visibleOrderQuery($scope)->whereKey($receipt->purchase_order_id)->firstOrFail();
 
             foreach ($lines as $line) {
                 $this->inventory->receive($actor, $scope->storeId, $receipt, $line);
@@ -422,6 +433,7 @@ final class GoodsReceiptManager
             $receipt = $this->lockVisible($scope, $receiptId);
             // Locking the row is not a lease on the previous manage grant.
             $this->authorizedScope($actor, $context, self::MANAGE_PERMISSION);
+            $this->findVisible($scope, $receiptId);
             if ($receipt->status === 'cancelled') {
                 return $receipt->refresh();
             }
@@ -510,7 +522,18 @@ final class GoodsReceiptManager
         return EnterpriseGoodsReceipt::query()
             ->where('organization_id', $scope->organizationId)
             ->where('company_id', $scope->companyId)
-            ->where('store_id', $scope->storeId);
+            ->where('store_id', $scope->storeId)
+            ->whereHas('supplier', function (Builder $supplier) use ($scope): void {
+                $supplier->where('organization_id', $scope->organizationId)
+                    ->where('company_id', $scope->companyId)
+                    ->where(function (Builder $query) use ($scope): void {
+                        $query->where('scope_type', 'company')
+                            ->orWhere(function (Builder $store) use ($scope): void {
+                                $store->where('scope_type', 'store')
+                                    ->where('store_id', $scope->storeId);
+                            });
+                    });
+            });
     }
 
     /** @return Builder<EnterprisePurchaseOrder> */
@@ -519,7 +542,18 @@ final class GoodsReceiptManager
         return EnterprisePurchaseOrder::query()
             ->where('organization_id', $scope->organizationId)
             ->where('company_id', $scope->companyId)
-            ->where('store_id', $scope->storeId);
+            ->where('store_id', $scope->storeId)
+            ->whereHas('supplier', function (Builder $supplier) use ($scope): void {
+                $supplier->where('organization_id', $scope->organizationId)
+                    ->where('company_id', $scope->companyId)
+                    ->where(function (Builder $query) use ($scope): void {
+                        $query->where('scope_type', 'company')
+                            ->orWhere(function (Builder $store) use ($scope): void {
+                                $store->where('scope_type', 'store')
+                                    ->where('store_id', $scope->storeId);
+                            });
+                    });
+            });
     }
 
     private function findVisible(
