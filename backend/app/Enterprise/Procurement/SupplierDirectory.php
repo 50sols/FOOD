@@ -79,6 +79,18 @@ final class SupplierDirectory
             ->paginate($perPage)
             ->withQueryString();
 
+        // A supplier may be reassigned to a different store after its row was
+        // hydrated, even while the original actor still holds VIEW permission.
+        // Recheck only the bounded current page against the same org/company
+        // and store visibility boundary before returning any supplier details.
+        $pageIds = $page->getCollection()->pluck('id')->map(static fn ($id): int => (int) $id)->all();
+        if ($pageIds !== []) {
+            abort_unless(
+                $this->visibleQuery($scope)->whereKey($pageIds)->count() === count($pageIds),
+                404,
+            );
+        }
+
         // Permission DENY or offboarding may be committed during COUNT/rows.
         // Never return a supplier page authorized only by its initial query.
         $this->authorizedScope($actor, $context, self::VIEW_PERMISSION);

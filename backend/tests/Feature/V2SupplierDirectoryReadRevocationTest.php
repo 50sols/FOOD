@@ -162,4 +162,116 @@ final class V2SupplierDirectoryReadRevocationTest extends TestCase
             }
         }
     }
+
+    public function test_supplier_page_rejects_inflight_foreign_store_transfer_in_ar_and_en(): void
+    {
+        $typeId = DB::table('store_types')->where('code', 'B2C')->value('id');
+        if ($typeId === null) {
+            $typeId = DB::table('store_types')->insertGetId([
+                'code' => 'B2C',
+                'name' => 'Retail',
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+        }
+
+        $store = Store::query()->create([
+            'store_type_id' => $typeId,
+            'code' => 'P111-PAGE-STORE-OWN',
+            'name' => 'Original supplier store',
+            'is_active' => true,
+        ]);
+        $foreignStore = Store::query()->create([
+            'store_type_id' => $typeId,
+            'code' => 'P111-PAGE-STORE-OTHER',
+            'name' => 'Foreign supplier store',
+            'is_active' => true,
+        ]);
+        app(OrganizationHierarchyService::class)->ensureDefaultScopeForStore($store);
+        app(OrganizationHierarchyService::class)->ensureDefaultScopeForStore($foreignStore);
+
+        $role = Role::query()->create([
+            'code' => 'P111_SUPPLIER_PAGE_READER',
+            'name' => 'Supplier page reader',
+            'scope' => 'store',
+            'is_active' => true,
+            'is_system' => false,
+        ]);
+        foreach (['procurement.suppliers.view', 'procurement.suppliers.manage'] as $code) {
+            $permission = Permission::query()->firstOrCreate(['code' => $code], ['name' => $code]);
+            $role->permissions()->syncWithoutDetaching([$permission->id]);
+        }
+
+        $actor = User::factory()->create([
+            'is_active' => true,
+            'has_permission_overrides' => false,
+        ]);
+        DB::table('user_store_roles')->insert([
+            'user_id' => $actor->id,
+            'store_id' => $store->id,
+            'role_id' => $role->id,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        $context = app(TenantContextResolver::class)->retail($actor, $store->id);
+        $directory = app(SupplierDirectory::class);
+        $supplier = $directory->create($actor, $context, [
+            'scope_type' => 'store',
+            'code' => 'P111-LATE-MOVE-SUPPLIER',
+            'name_en' => 'Foreign transfer must be invisible',
+        ]);
+
+        $armed = false;
+        $transferred = false;
+        DB::listen(static function ($event) use ($supplier, $foreignStore, &$armed, &$transferred): void {
+            $sql = strtolower(ltrim((string) $event->sql));
+            if (! $armed || $transferred || ! str_starts_with($sql, 'select')
+                || ! str_contains($sql, 'enterprise_suppliers')
+                || ! str_contains($sql, 'order by')
+                || ! str_contains($sql, 'limit')) {
+                return;
+            }
+
+            // Eloquent already hydrated the scoped page; transfer ownership
+            // before the service releases that in-memory supplier to callers.
+            $armed = false;
+            $transferred = true;
+            DB::table('enterprise_suppliers')
+                ->where('id', $supplier->id)
+                ->update(['store_id' => $foreignStore->id]);
+        });
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            $this->assertSame(1, $directory->paginate($actor, $context)->total());
+            $auditBefore = DB::table('audit_logs')->count();
+            $supplierCount = DB::table('enterprise_suppliers')->count();
+            $armed = true;
+            $transferred = false;
+
+            try {
+                $directory->paginate($actor, $context);
+                $this->fail('An in-flight supplier page must not reveal an already transferred store supplier.');
+            } catch (HttpExceptionInterface $exception) {
+                $this->assertSame(404, $exception->getStatusCode());
+            } finally {
+                $armed = false;
+            }
+
+            $this->assertTrue($transferred, 'The real ordered supplier page SELECT must trigger the transfer.');
+            $this->assertSame(0, $directory->paginate($actor, $context)->total());
+            $this->assertSame($foreignStore->id, (int) $supplier->fresh()->store_id);
+            $this->assertSame($supplierCount, DB::table('enterprise_suppliers')->count());
+            $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+
+            DB::table('enterprise_suppliers')
+                ->where('id', $supplier->id)
+                ->update(['store_id' => $store->id]);
+            $restored = $directory->paginate($actor, $context);
+            $this->assertSame(1, $restored->total());
+            $this->assertSame($supplier->id, $restored->items()[0]->id);
+            $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+        }
+    }
+
 }
