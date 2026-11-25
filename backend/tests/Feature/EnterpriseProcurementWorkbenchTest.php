@@ -6,6 +6,7 @@ use App\Enterprise\Modules\ModuleLifecycleManager;
 use App\Enterprise\Modules\ModuleRegistry;
 use App\Enterprise\Modules\ModuleState;
 use App\Enterprise\Organization\OrganizationHierarchyService;
+use App\Enterprise\Procurement\PurchaseRequestManager;
 use App\Models\Permission;
 use App\Models\Role;
 use App\Models\Store;
@@ -130,6 +131,64 @@ final class EnterpriseProcurementWorkbenchTest extends TestCase
             ->assertOk()
             ->assertSee('UI-SUP-1')
             ->assertSee('مُصدر');
+    }
+
+    public function test_direct_procurement_manager_rejects_forged_actor_identity_in_both_locales(): void
+    {
+        $this->enableProcurement();
+        [$maker, $store] = $this->operator('ERP-UI-FAKE-USER');
+        $other = User::factory()->create(['locale' => 'en', 'is_active' => true]);
+        $this->grantPlatformErpAccess($other);
+        $roleId = Role::query()->where('code', 'B2C_STORE_ADMIN')->firstOrFail()->id;
+        DB::table('user_store_roles')->insert([
+            'user_id' => $other->id,
+            'store_id' => $store->id,
+            'role_id' => $roleId,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        $service = app(PurchaseRequestManager::class);
+        $context = app(TenantContextResolver::class)->retail($maker, $store->id);
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            $reason = 'Original maker actor key '.$locale;
+            $this->actingAs($maker)->post(route('admin.erp.procurement.requests.store'), [
+                'store_id' => $store->id,
+                'currency_code' => 'KWD',
+                'reason' => $reason,
+                'item_code' => 'ACTOR-ID-SKU',
+                'description' => 'Maker identity protected',
+                'quantity' => 1,
+                'unit' => 'case',
+                'estimated_unit_cost' => 2.500,
+            ])->assertRedirect();
+            $requestId = (int) DB::table('enterprise_purchase_requests')->where('reason', $reason)->value('id');
+            $this->assertGreaterThan(0, $requestId);
+
+            $forged = $other->fresh();
+            $this->assertNotNull($forged);
+            $forged->forceFill(['id' => $maker->id]);
+            $this->assertNotSame($forged->getRawOriginal('id'), $forged->getKey());
+            $auditBefore = DB::table('audit_logs')->count();
+            foreach (['submit', 'cancel'] as $operation) {
+                try {
+                    $service->{$operation}($forged, $context, $requestId);
+                    $this->fail('Dirty actor identity must not impersonate the original maker.');
+                } catch (\Symfony\Component\HttpKernel\Exception\HttpException $exception) {
+                    $this->assertSame(403, $exception->getStatusCode());
+                }
+                $this->assertDatabaseHas('enterprise_purchase_requests', [
+                    'id' => $requestId, 'status' => 'draft', 'created_by' => $maker->id,
+                ]);
+                $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+            }
+
+            $this->assertSame('submitted', $service->submit($maker, $context, $requestId)->status);
+            $this->assertDatabaseHas('enterprise_purchase_requests', [
+                'id' => $requestId, 'submitted_by' => $maker->id, 'status' => 'submitted',
+            ]);
+        }
     }
 
     public function test_same_store_manager_cannot_submit_another_makers_purchase_request_in_both_locales(): void
