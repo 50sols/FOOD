@@ -309,6 +309,23 @@ final class ProcurementCompletionManager
         $scope = $this->scope($actor, $context, 'procurement.purchase_requests.view');
         $rfq = $this->visibleRfq($scope, $rfqId);
 
+        // The purchase request is an independent persisted ownership boundary.
+        // The RFQ list already requires both records to belong to this store;
+        // detail and download must not expose a former-store request's quotes.
+        $assertCurrentSourceRequest = static function () use ($scope, $rfqId): void {
+            DB::table('enterprise_procurement_rfqs as rfqs')
+                ->join('enterprise_purchase_requests as requests', 'requests.id', '=', 'rfqs.purchase_request_id')
+                ->where('rfqs.id', $rfqId)
+                ->where('rfqs.organization_id', $scope->organizationId)
+                ->where('rfqs.company_id', $scope->companyId)
+                ->where('rfqs.store_id', $scope->storeId)
+                ->where('requests.organization_id', $scope->organizationId)
+                ->where('requests.company_id', $scope->companyId)
+                ->where('requests.store_id', $scope->storeId)
+                ->firstOrFail(['rfqs.id']);
+        };
+        $assertCurrentSourceRequest();
+
         // A previously visible RFQ can be transferred to another store between
         // the first authorization read and subsequent detail queries. Every
         // child collection, particularly quote attachment storage paths, must
@@ -370,6 +387,7 @@ final class ProcurementCompletionManager
         // Do not return a stale RFQ header when its owner changed during the
         // detail read. A newly transferred RFQ belongs only to its new store.
         $this->visibleRfq($scope, $rfqId);
+        $assertCurrentSourceRequest();
 
         // Relations and attachment paths were fetched under an earlier read
         // grant. Recheck the same persisted principal's live permission
@@ -394,9 +412,13 @@ final class ProcurementCompletionManager
         $document = DB::table('enterprise_procurement_quote_documents as documents')
             ->join('enterprise_procurement_quotes as quotes', 'quotes.id', '=', 'documents.quote_id')
             ->join('enterprise_procurement_rfqs as rfqs', 'rfqs.id', '=', 'quotes.rfq_id')
+            ->join('enterprise_purchase_requests as requests', 'requests.id', '=', 'rfqs.purchase_request_id')
             ->where('rfqs.organization_id', $scope->organizationId)
             ->where('rfqs.company_id', $scope->companyId)
             ->where('rfqs.store_id', $scope->storeId)
+            ->where('requests.organization_id', $scope->organizationId)
+            ->where('requests.company_id', $scope->companyId)
+            ->where('requests.store_id', $scope->storeId)
             ->where('rfqs.id', $rfqId)
             ->where('documents.id', $documentId)
             ->select('documents.*')
@@ -410,9 +432,13 @@ final class ProcurementCompletionManager
         DB::table('enterprise_procurement_quote_documents as documents')
             ->join('enterprise_procurement_quotes as quotes', 'quotes.id', '=', 'documents.quote_id')
             ->join('enterprise_procurement_rfqs as rfqs', 'rfqs.id', '=', 'quotes.rfq_id')
+            ->join('enterprise_purchase_requests as requests', 'requests.id', '=', 'rfqs.purchase_request_id')
             ->where('rfqs.organization_id', $scope->organizationId)
             ->where('rfqs.company_id', $scope->companyId)
             ->where('rfqs.store_id', $scope->storeId)
+            ->where('requests.organization_id', $scope->organizationId)
+            ->where('requests.company_id', $scope->companyId)
+            ->where('requests.store_id', $scope->storeId)
             ->where('rfqs.id', $rfqId)
             ->where('documents.id', $documentId)
             ->where('documents.quote_id', $document->quote_id)

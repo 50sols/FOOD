@@ -687,6 +687,85 @@ final class EnterpriseProcurementCompletionTest extends TestCase
         }
     }
 
+    public function test_rfq_detail_denies_late_foreign_source_request_in_ar_and_en(): void
+    {
+        $this->enableProcurement();
+        [$actor, $store, $context] = $this->scopedUser($this->allPermissions(), 'P135-RFQ-DETAIL-REQUEST-SCOPE');
+        $foreignStore = $this->createRetailStore('P135-RFQ-DETAIL-REQUEST-OTHER');
+        $requests = app(PurchaseRequestManager::class);
+        $completion = app(ProcurementCompletionManager::class);
+
+        $armed = false;
+        $injected = false;
+        $requestId = null;
+        DB::listen(static function ($query) use (&$armed, &$injected, &$requestId, $foreignStore): void {
+            $sql = strtolower((string) $query->sql);
+            if (! $armed || $injected || $requestId === null
+                || ! str_contains($sql, 'select')
+                || ! str_contains($sql, 'enterprise_procurement_rfqs')
+                || str_contains($sql, 'join')) {
+                return;
+            }
+            // The linked request moves AFTER the initial authorized RFQ
+            // SELECT; this is deterministic same-connection interleaving,
+            // not evidence of an atomic two-session MySQL guarantee.
+            $armed = false;
+            $injected = true;
+            DB::table('enterprise_purchase_requests')->where('id', $requestId)
+                ->update(['store_id' => $foreignStore->id]);
+        });
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            $request = $requests->create($actor, $context, [
+                'currency_code' => 'KWD',
+                'reason' => 'RFQ detail linked request authorization '.$locale,
+                'lines' => [[
+                    'item_code' => 'RFQ-SOURCE-DETAIL-'.strtoupper($locale),
+                    'description' => 'Protected linked source',
+                    'quantity' => 1,
+                    'unit' => 'case',
+                    'estimated_unit_cost' => 5.000,
+                ]],
+            ]);
+            $requests->submit($actor, $context, $request->id);
+            $rfq = $completion->createRfq($actor, $context, $request->id, [
+                'title' => 'Private RFQ with independently owned source '.$locale,
+            ]);
+            $this->assertSame((int) $rfq->id, (int) $completion->rfqDetail($actor, $context, $rfq->id)['rfq']->id);
+            $beforeAudit = DB::table('audit_logs')->count();
+            $beforeQuotes = DB::table('enterprise_procurement_quotes')->count();
+
+            $requestId = (int) $request->id;
+            $injected = false;
+            $armed = true;
+            try {
+                $completion->rfqDetail($actor, $context, $rfq->id);
+                $this->fail('RFQ details must never expose a request transferred after the initial SELECT.');
+            } catch (RecordNotFoundException $exception) {
+                $this->assertTrue($injected);
+            } finally {
+                $armed = false;
+            }
+            $this->assertDatabaseHas('enterprise_purchase_requests', [
+                'id' => $request->id,
+                'store_id' => $foreignStore->id,
+            ]);
+            try {
+                $completion->rfqDetail($actor, $context, $rfq->id);
+                $this->fail('Repeated reads cannot expose a foreign source request.');
+            } catch (RecordNotFoundException $exception) {
+                $this->assertNotEmpty($exception->getMessage());
+            }
+            DB::table('enterprise_purchase_requests')->where('id', $request->id)
+                ->update(['store_id' => $store->id]);
+            $this->assertSame((int) $rfq->id, (int) $completion->rfqDetail($actor, $context, $rfq->id)['rfq']->id);
+            $this->assertSame($beforeAudit, DB::table('audit_logs')->count());
+            $this->assertSame($beforeQuotes, DB::table('enterprise_procurement_quotes')->count());
+            $requestId = null;
+        }
+    }
+
     public function test_rfq_detail_rejects_quote_attachment_paths_after_store_transfer_in_ar_and_en(): void
     {
         Storage::fake('local');
@@ -812,7 +891,7 @@ final class EnterpriseProcurementCompletionTest extends TestCase
     {
         Storage::fake('local');
         $this->enableProcurement();
-        [$actor, , $context] = $this->scopedUser($this->allPermissions(), 'PROC-QUOTE-DOC-ATOMIC');
+        [$actor, $store, $context] = $this->scopedUser($this->allPermissions(), 'PROC-QUOTE-DOC-ATOMIC');
         $foreignStore = $this->createRetailStore('PROC-QUOTE-DOC-FOREIGN');
         $directory = app(SupplierDirectory::class);
         $requests = app(PurchaseRequestManager::class);
@@ -884,6 +963,20 @@ final class EnterpriseProcurementCompletionTest extends TestCase
             $this->assertStringContainsString('organization_id', $documentQueries[0]);
             $this->assertStringContainsString('company_id', $documentQueries[0]);
             $this->assertStringContainsString('store_id', $documentQueries[0]);
+
+            // Moving only the SOURCE request must also hide the attachment;
+            // the RFQ itself can still physically reside in this store.
+            DB::table('enterprise_purchase_requests')->where('id', $request->id)
+                ->update(['store_id' => $foreignStore->id]);
+            try {
+                $completion->quoteDocument($actor, $context, $rfq->id, $document->id);
+                $this->fail('A foreign source request must block quote-document access.');
+            } catch (RecordNotFoundException $exception) {
+                $this->assertNotEmpty($exception->getMessage());
+            }
+            DB::table('enterprise_purchase_requests')->where('id', $request->id)
+                ->update(['store_id' => $store->id]);
+            $this->assertSame((int) $document->id, (int) $completion->quoteDocument($actor, $context, $rfq->id, $document->id)->id);
 
             // A transfer must invalidate the former store's attachment read,
             // without deleting a quoted file or changing the original audit.
