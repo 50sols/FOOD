@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import importlib.util
+import hashlib
+import io
 import json
 import os
 from pathlib import Path
@@ -395,8 +397,6 @@ class BuildUpdateBundleSourceSafetyTest(unittest.TestCase):
     def _staged_release_fixture(self, output_dir: Path) -> tuple[Path, dict[str, bytes]]:
         staging = output_dir / "private-build"
         staging.mkdir(mode=0o700)
-        import io
-
         binary = io.BytesIO()
         with zipfile.ZipFile(binary, "w", compression=zipfile.ZIP_DEFLATED) as archive:
             archive.writestr("backend/artisan", b"<?php // staged reviewed Laravel CLI")
@@ -409,10 +409,10 @@ class BuildUpdateBundleSourceSafetyTest(unittest.TestCase):
                     "sha256": digest,
                     "source_commit": "123",
                     "delta": {"files_manifest": "FOODEX-Update.files.txt"},
-                }) + "\\n"
+                }) + "\n"
             ).encode("utf-8"),
-            "FOODEX-Update.files.txt": b"backend/artisan\\n",
-            "FOODEX-Update.sha256.txt": f"{digest}  FOODEX-Update.zip\\n".encode("utf-8"),
+            "FOODEX-Update.files.txt": b"backend/artisan\n",
+            "FOODEX-Update.sha256.txt": f"{digest}  FOODEX-Update.zip\n".encode("utf-8"),
             "FOODEX-Update.zip": zipped,
         }
         for name, data in contents.items():
@@ -426,10 +426,10 @@ class BuildUpdateBundleSourceSafetyTest(unittest.TestCase):
                 p["FOODEX-Update.json"].replace(b'"sha256": "', b'"sha256": "0')
             ),
             "checksum_sidecar": lambda p: p.__setitem__(
-                "FOODEX-Update.sha256.txt", b"0" * 64 + b"  FOODEX-Update.zip\\n"
+                "FOODEX-Update.sha256.txt", b"0" * 64 + b"  FOODEX-Update.zip\n"
             ),
             "file_list": lambda p: p.__setitem__(
-                "FOODEX-Update.files.txt", b"backend/incorrect-artisan\\n"
+                "FOODEX-Update.files.txt", b"backend/incorrect-artisan\n"
             ),
             "zip_bytes": lambda p: p.__setitem__(
                 "FOODEX-Update.zip", p["FOODEX-Update.zip"] + b"ATTACKER-BYTES"

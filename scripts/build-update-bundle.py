@@ -762,7 +762,7 @@ def assert_staged_release_consistency(staging_dir: Path) -> None:
             or re.fullmatch(r"[0-9a-f]{64}", expected_hash) is None
         ):
             raise RuntimeError("Update release manifest metadata does not match output names.")
-        if digest_path.read_text(encoding="utf-8") != f"{expected_hash}  {archive_path.name}\\n":
+        if digest_path.read_text(encoding="utf-8") != f"{expected_hash}  {archive_path.name}\n":
             raise RuntimeError("Update release checksum sidecar does not match manifest.")
         filenames = files_path.read_text(encoding="utf-8").splitlines()
         if not filenames or len(set(filenames)) != len(filenames):
