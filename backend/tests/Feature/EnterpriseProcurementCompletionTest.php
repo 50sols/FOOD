@@ -359,6 +359,74 @@ final class EnterpriseProcurementCompletionTest extends TestCase
         $this->assertNotEmpty($dashboard['charts']['savings']);
     }
 
+    public function test_contract_document_rechecks_live_scope_after_preflight_and_removes_orphan_upload(): void
+    {
+        Storage::fake('local');
+        $this->enableProcurement();
+        [$actor, $store, $context] = $this->scopedUser($this->allPermissions(), 'PROC-CTR-DOC-SCOPE');
+        $otherStore = $this->createRetailStore('PROC-CTR-DOC-OTHER');
+        $supplier = app(SupplierDirectory::class)->create($actor, $context, [
+            'scope_type' => 'store',
+            'code' => 'PROC-CTR-DOC-SUP',
+            'name_en' => 'Scoped Document Supplier',
+        ]);
+        $completion = app(ProcurementCompletionManager::class);
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            $contract = $completion->createContract($actor, $context, [
+                'supplier_id' => $supplier->id,
+                'title' => 'Contract document scope '.$locale,
+                'currency_code' => 'KWD',
+                'starts_on' => now()->toDateString(),
+                'ends_on' => now()->addDays(30)->toDateString(),
+            ]);
+            $beforeDocuments = DB::table('enterprise_procurement_contract_documents')->count();
+            $beforeAudit = DB::table('audit_logs')->count();
+            $changed = false;
+
+            // Simulate a transfer immediately after the first visibleContract
+            // query has returned its now-stale result, before the upload/write.
+            DB::listen(static function ($query) use (&$changed, $contract, $otherStore): void {
+                $sql = strtolower((string) $query->sql);
+                if ($changed || ! str_contains($sql, 'enterprise_procurement_contracts')
+                    || ! str_contains($sql, 'select')) {
+                    return;
+                }
+                $changed = true;
+                DB::table('enterprise_procurement_contracts')
+                    ->where('id', $contract->id)
+                    ->update(['store_id' => $otherStore->id]);
+            });
+
+            try {
+                $completion->addContractDocument(
+                    $actor,
+                    $context,
+                    $contract->id,
+                    ['title' => 'Must reject stale contract scope'],
+                    UploadedFile::fake()->create('scope-proof.pdf', 4, 'application/pdf'),
+                );
+                $this->fail('A transferred contract must reject document registration.');
+            } catch (RecordNotFoundException $exception) {
+                $this->assertNotEmpty($exception->getMessage());
+            }
+
+            $this->assertTrue($changed, 'Race simulation must execute on preflight.');
+            $this->assertSame($beforeDocuments, DB::table('enterprise_procurement_contract_documents')->count());
+            $this->assertSame($beforeAudit, DB::table('audit_logs')->count());
+            $this->assertSame(
+                [],
+                Storage::disk('local')->allFiles('procurement/contracts/'.$contract->public_id),
+                'A rejected registration must delete the uploaded document.',
+            );
+            $this->assertDatabaseHas('enterprise_procurement_contracts', [
+                'id' => $contract->id,
+                'store_id' => $otherStore->id,
+            ]);
+        }
+    }
+
     public function test_contract_creation_never_writes_when_procurement_module_is_disabled_in_both_locales(): void
     {
         $this->enableProcurement();
