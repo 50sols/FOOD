@@ -1489,7 +1489,7 @@ final class EnterpriseProcurementCompletionTest extends TestCase
             $this->assertCount(1, $visible['documents']);
             $this->assertSame((int) $document->id, (int) $visible['documents'][0]->id);
             $this->assertSame($document->storage_path, $visible['documents'][0]->storage_path);
-            $this->assertCount(1, $documentQueries, 'Attachment details must use one current-store JOIN.');
+            $this->assertCount(2, $documentQueries, 'Attachment details require a live scoped SELECT and a final private path recheck.');
             $this->assertStringContainsString('organization_id', $documentQueries[0]);
             $this->assertStringContainsString('company_id', $documentQueries[0]);
             $this->assertStringContainsString('store_id', $documentQueries[0]);
@@ -1523,6 +1523,108 @@ final class EnterpriseProcurementCompletionTest extends TestCase
             } catch (RecordNotFoundException $exception) {
                 $this->assertNotEmpty($exception->getMessage());
             }
+        }
+    }
+
+    public function test_contract_detail_rejects_late_private_path_or_document_reparenting_in_ar_and_en(): void
+    {
+        Storage::fake('local');
+        $this->enableProcurement();
+        [$actor, , $context] = $this->scopedUser($this->allPermissions(), 'P135-CTR-DETAIL-PATH');
+        $directory = app(SupplierDirectory::class);
+        $completion = app(ProcurementCompletionManager::class);
+
+        $armed = false;
+        $changed = false;
+        $documentId = 0;
+        $otherContractId = 0;
+        $mode = '';
+        $replacementPath = '';
+        // Deterministic same-connection interleaving after the actual initial
+        // private-document SELECT, not a claim about two-session MySQL races.
+        DB::listen(static function ($query) use (
+            &$armed, &$changed, &$documentId, &$otherContractId, &$mode, &$replacementPath
+        ): void {
+            $sql = strtolower(ltrim((string) $query->sql));
+            if (! $armed || $changed || $documentId === 0
+                || ! str_starts_with($sql, 'select')
+                || ! str_contains($sql, 'enterprise_procurement_contract_documents')
+                || ! str_contains($sql, 'enterprise_procurement_contracts')
+                || ! str_contains($sql, 'order by')) {
+                return;
+            }
+
+            $armed = false;
+            $changed = true;
+            DB::table('enterprise_procurement_contract_documents')
+                ->where('id', $documentId)
+                ->update($mode === 'path'
+                    ? ['storage_path' => $replacementPath]
+                    : ['contract_id' => $otherContractId]);
+        });
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            $supplier = $directory->create($actor, $context, [
+                'scope_type' => 'store',
+                'code' => 'P135-CTR-PATH-'.strtoupper($locale),
+                'name_en' => 'Private detail document vendor '.$locale,
+            ]);
+            $attributes = [
+                'supplier_id' => $supplier->id,
+                'currency_code' => 'KWD',
+                'starts_on' => now()->subDay()->toDateString(),
+                'ends_on' => now()->addDays(30)->toDateString(),
+            ];
+            $contract = $completion->createContract(
+                $actor, $context, $attributes + ['title' => 'Original private contract '.$locale],
+            );
+            $otherContract = $completion->createContract(
+                $actor, $context, $attributes + ['title' => 'Other local contract '.$locale],
+            );
+            $document = $completion->addContractDocument(
+                $actor, $context, $contract->id,
+                ['title' => 'Private original '.$locale],
+                UploadedFile::fake()->create('original.pdf', 4, 'application/pdf'),
+            );
+            $originalPath = (string) $document->storage_path;
+            $replacementPath = 'procurement/contracts/'.$contract->public_id.'/replacement-'.$locale.'.pdf';
+            Storage::disk('local')->put($replacementPath, 'private replacement bytes');
+            $documentId = (int) $document->id;
+            $otherContractId = (int) $otherContract->id;
+            $read = fn (): array => $completion->contractDetail($actor, $context, $contract->id);
+            $this->assertSame($originalPath, $read()['documents'][0]->storage_path);
+            $beforeAudit = DB::table('audit_logs')->count();
+            $beforeDocs = DB::table('enterprise_procurement_contract_documents')->count();
+
+            foreach (['path', 'parent'] as $mode) {
+                $changed = false;
+                $armed = true;
+                try {
+                    $read();
+                    $this->fail('Private contract document snapshot drift must fail closed.');
+                } catch (HttpException $exception) {
+                    $this->assertSame(404, $exception->getStatusCode());
+                } finally {
+                    $armed = false;
+                }
+                $this->assertTrue($changed, 'Document must change AFTER the initial joined SQL.');
+                $this->assertDatabaseHas('enterprise_procurement_contract_documents', [
+                    'id' => $document->id,
+                    'contract_id' => $mode === 'parent' ? $otherContract->id : $contract->id,
+                    'storage_path' => $mode === 'path' ? $replacementPath : $originalPath,
+                ]);
+                $this->assertSame($beforeAudit, DB::table('audit_logs')->count());
+                $this->assertSame($beforeDocs, DB::table('enterprise_procurement_contract_documents')->count());
+                Storage::disk('local')->assertExists($originalPath);
+                Storage::disk('local')->assertExists($replacementPath);
+
+                DB::table('enterprise_procurement_contract_documents')
+                    ->where('id', $document->id)
+                    ->update(['contract_id' => $contract->id, 'storage_path' => $originalPath]);
+                $this->assertSame($originalPath, $read()['documents'][0]->storage_path);
+            }
+            $documentId = 0;
         }
     }
 

@@ -1661,9 +1661,48 @@ final class ProcurementCompletionManager
         // Recheck the originally authorized supplier after reading private
         // attachment paths, not only at the beginning of this request.
         $this->visibleSupplier($scope, (int) $contract->supplier_id);
-        // The live-owner read above prevents scope transfer. A separately
-        // persisted actor offboarding or VIEW DENY during attachment SQL
-        // must also block this response and its private storage paths.
+        // The document SELECT may finish before its contract_id or private
+        // storage_path changes. The contract and supplier remaining local
+        // does not authorize a stale document path or reassigned attachment.
+        // Verify the bounded (max 50) snapshot against CURRENT legal/store
+        // ownership immediately before returning the private metadata.
+        if ($documents !== []) {
+            $documentSnapshot = collect($documents)
+                ->mapWithKeys(static fn ($document): array => [
+                    (int) $document->id => [
+                        'contract_id' => (int) $document->contract_id,
+                        'storage_path' => $document->storage_path,
+                    ],
+                ])
+                ->sortKeys()
+                ->all();
+            $liveDocuments = DB::table('enterprise_procurement_contract_documents as documents')
+                ->join('enterprise_procurement_contracts as contracts', 'contracts.id', '=', 'documents.contract_id')
+                ->join('enterprise_suppliers as suppliers', 'suppliers.id', '=', 'contracts.supplier_id')
+                ->where('contracts.organization_id', $scope->organizationId)
+                ->where('contracts.company_id', $scope->companyId)
+                ->where('contracts.store_id', $scope->storeId)
+                ->where('contracts.id', $contractId)
+                ->where('contracts.supplier_id', $contract->supplier_id)
+                ->where(fn (QueryBuilder $query) => $this->scopeJoinedSupplier($query, $scope))
+                ->whereIn('documents.id', array_keys($documentSnapshot))
+                ->get(['documents.id', 'documents.contract_id', 'documents.storage_path'])
+                ->mapWithKeys(static fn ($document): array => [
+                    (int) $document->id => [
+                        'contract_id' => (int) $document->contract_id,
+                        'storage_path' => $document->storage_path,
+                    ],
+                ])
+                ->sortKeys()
+                ->all();
+            abort_unless(
+                $liveDocuments === $documentSnapshot,
+                404,
+                'Procurement contract private attachment changed during detail retrieval.',
+            );
+        }
+        // A separately persisted actor offboarding or VIEW DENY during any
+        // attachment SQL must also block this response and its private paths.
         $this->scope($actor, $context, 'procurement.purchase_orders.view');
 
         return compact('contract', 'documents');
