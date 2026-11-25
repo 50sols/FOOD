@@ -31,6 +31,10 @@ final class InventoryOwnerProvenanceReadService
      */
     public function snapshot(User $actor, int $inventoryId): array
     {
+        // Service callers may retain stale role/override flags or a modified
+        // primary key. Current persisted authority controls stock disclosure.
+        $actor = $this->persistedReader($actor);
+
         $inventory = DB::table('inventories')
             ->where('id', $inventoryId)
             ->first();
@@ -247,6 +251,10 @@ final class InventoryOwnerProvenanceReadService
      */
     private function assertCurrentSnapshotScope(User $actor, object $initial, int $initialStoreId): void
     {
+        // A permission DENY or offboarding can be persisted while legal-title
+        // positions are read. Reauthorize from current state before return.
+        $actor = $this->persistedReader($actor);
+
         $current = DB::table('inventories')
             ->where('id', (int) $initial->id)
             ->first(['warehouse_id', 'product_id', 'quantity', 'reserved_quantity', 'updated_at']);
@@ -270,6 +278,24 @@ final class InventoryOwnerProvenanceReadService
             'inventory.view',
         );
         abort_unless((int) $warehouse->store_id === $initialStoreId, 404);
+    }
+
+    /**
+     * Accept only the original persisted identity and latest active principal.
+     * Rehydrate the override flag rather than trusting an in-memory User.
+     */
+    private function persistedReader(User $actor): User
+    {
+        $originalId = $actor->exists ? $actor->getRawOriginal($actor->getKeyName()) : null;
+        abort_unless(
+            $originalId !== null && (string) $actor->getKey() === (string) $originalId,
+            403,
+        );
+
+        $current = User::query()->whereKey($originalId)->where('is_active', true)->first();
+        abort_unless($current instanceof User, 403);
+
+        return $current;
     }
 
     /**

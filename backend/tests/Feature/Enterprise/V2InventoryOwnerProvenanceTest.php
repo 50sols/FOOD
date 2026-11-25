@@ -3574,6 +3574,83 @@ SQL);
         ];
     }
 
+    public function test_owner_snapshot_enforces_live_user_permission_denials_in_ar_and_en(): void
+    {
+        $this->seed(CoreReferenceSeeder::class);
+        $reader = app(InventoryOwnerProvenanceReadService::class);
+        $permissionId = DB::table('permissions')->where('code', 'inventory.view')->value('id');
+        $this->assertNotNull($permissionId);
+
+        // Inject the DENY after initial warehouse authorization, when the
+        // owner partition SELECT fires. This proves final-read reauthorization.
+        $armedUserId = null;
+        $revoked = false;
+        DB::listen(static function ($query) use (&$armedUserId, &$revoked, $permissionId): void {
+            if ($armedUserId === null || $revoked) {
+                return;
+            }
+
+            $sql = strtolower((string) $query->sql);
+            if (! str_contains($sql, 'enterprise_inventory_owner_positions')
+                || ! str_contains($sql, 'select')) {
+                return;
+            }
+
+            $revoked = true;
+            DB::table('user_permission_overrides')->insert([
+                'user_id' => $armedUserId,
+                'permission_id' => $permissionId,
+                'scope_key' => 'global',
+                'effect' => 'deny',
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+            DB::table('users')->where('id', $armedUserId)
+                ->update(['has_permission_overrides' => true]);
+        });
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            $stock = $this->stock('P110-DENY-'.strtoupper($locale));
+            $actor = $this->inventoryActor($stock['store_id']);
+            $allowed = $reader->snapshot($actor, $stock['inventory_id']);
+            $this->assertSame('UNKNOWN', $allowed['state']);
+
+            $beforeAudit = DB::table('audit_logs')->count();
+            $beforeMovements = DB::table('stock_movements')->count();
+            $beforeTitle = DB::table('enterprise_inventory_title_attestations')->count();
+            $armedUserId = $actor->id;
+            $revoked = false;
+
+            try {
+                $reader->snapshot($actor, $stock['inventory_id']);
+                $this->fail('A midread persisted DENY must block legal-title disclosure.');
+            } catch (HttpException $exception) {
+                $this->assertSame(404, $exception->getStatusCode());
+                $this->assertTrue($revoked);
+            }
+            $armedUserId = null;
+
+            $this->assertFalse((bool) $actor->has_permission_overrides);
+            try {
+                $reader->snapshot($actor, $stock['inventory_id']);
+                $this->fail('A stale actor flag must not bypass an already persisted DENY.');
+            } catch (HttpException $exception) {
+                $this->assertSame(404, $exception->getStatusCode());
+            }
+
+            $this->assertSame($beforeAudit, DB::table('audit_logs')->count());
+            $this->assertSame($beforeMovements, DB::table('stock_movements')->count());
+            $this->assertSame($beforeTitle, DB::table('enterprise_inventory_title_attestations')->count());
+
+            DB::table('user_permission_overrides')->where('user_id', $actor->id)->delete();
+            DB::table('users')->where('id', $actor->id)
+                ->update(['has_permission_overrides' => false]);
+            $restored = $reader->snapshot($actor, $stock['inventory_id']);
+            $this->assertSame($stock['store_id'], $restored['store_id']);
+        }
+    }
+
     private function inventoryActor(int $storeId): User
     {
         $this->enableEnterpriseWmsForStore($storeId);
