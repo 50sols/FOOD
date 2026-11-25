@@ -121,6 +121,10 @@ class BuildUpdateBundleSourceSafetyTest(unittest.TestCase):
             "backend/public/assets/.config/gcloud/credentials.db",
             "backend/public/assets/.CONFIG/GCLOUD/configurations/config_default",
             "backend/public/preview/driver/application_default_credentials.json",
+            "backend/public/assets/admin/azureProfile.json",
+            "backend/public/assets/admin/ACCESSTOKENS.JSON",
+            "backend/public/assets/admin/terraform.tfstate",
+            "backend/public/assets/admin/TERRAFORM.TFSTATE.BACKUP",
         ):
             with self.subTest(member=member):
                 with self.assertRaisesRegex(RuntimeError, "Credential storage"):
@@ -139,8 +143,8 @@ class BuildUpdateBundleSourceSafetyTest(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeError, "Credential storage"):
                     builder.build_zip(
                         root,
-                        [("backend/public/assets/.aws/credentials",
-                          "backend/public/assets/.aws/credentials")],
+                        [("backend/public/assets/terraform.tfstate",
+                          "backend/public/assets/terraform.tfstate")],
                         output,
                     )
                 staged.assert_not_called()

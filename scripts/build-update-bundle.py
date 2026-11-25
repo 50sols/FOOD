@@ -280,7 +280,7 @@ def safe_path(path: str) -> str:
     # Recursively staged assets may contain credential homes with generic
     # secret filenames (credentials, config.json), not just private keys.
     credential_directories = {".aws", ".ssh", ".docker", ".kube", ".gnupg", ".azure", ".terraform"}
-    credential_files = {".git-credentials"}
+    credential_files = {".git-credentials", "azureprofile.json", "accesstokens.json", "terraform.tfstate", "terraform.tfstate.backup"}
     for index, part in enumerate(parts):
         # gcloud credentials are routinely stored as .config/gcloud/*.
         if part.casefold() == "gcloud" and index > 0 and parts[index - 1].casefold() == ".config":
