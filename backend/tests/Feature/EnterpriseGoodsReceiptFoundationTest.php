@@ -55,6 +55,64 @@ final class EnterpriseGoodsReceiptFoundationTest extends TestCase
         );
     }
 
+    public function test_direct_goods_receipt_writes_reject_forged_original_actor_identity_in_ar_and_en(): void
+    {
+        $this->enableProcurement();
+        [$maker, $store, $context] = $this->scopedUser($this->allPermissions(), 'GRN-ACTOR-KEY');
+        $other = User::factory()->create(['is_active' => true]);
+        [$product, $warehouse] = $this->stockTarget($store, 'GRN-ACTOR-SKU');
+        $manager = app(GoodsReceiptManager::class);
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            $order = $this->issuedOrder($maker, $context, 'GRN-ACTOR-SUP-'.$locale, 'GRN-ACTOR-SKU', 5);
+            $forged = $other->fresh();
+            $this->assertNotNull($forged);
+            $forged->forceFill(['id' => $maker->id]);
+            $this->assertNotSame($forged->getRawOriginal('id'), $forged->getKey());
+
+            $auditBefore = DB::table('audit_logs')->count();
+            try {
+                $manager->createFromIssuedOrder($forged, $context, $order->id, [
+                    'lines' => [[
+                        'purchase_order_line_id' => $order->lines()->firstOrFail()->id,
+                        'warehouse_id' => $warehouse->id,
+                        'quantity' => 1,
+                    ]],
+                ]);
+                $this->fail('Unsaved actor key substitution must not create a receipt.');
+            } catch (HttpExceptionInterface $exception) {
+                $this->assertSame(403, $exception->getStatusCode());
+            }
+
+            $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+            $this->assertDatabaseMissing('enterprise_goods_receipts', [
+                'purchase_order_id' => $order->id,
+            ]);
+
+            $receipt = $manager->createFromIssuedOrder($maker, $context, $order->id, [
+                'lines' => [[
+                    'purchase_order_line_id' => $order->lines()->firstOrFail()->id,
+                    'warehouse_id' => $warehouse->id,
+                    'quantity' => 1,
+                ]],
+            ]);
+            $auditAfterCreate = DB::table('audit_logs')->count();
+            try {
+                $manager->post($forged, $context, $receipt->id);
+                $this->fail('Unsaved actor key substitution must not post a receipt.');
+            } catch (HttpExceptionInterface $exception) {
+                $this->assertSame(403, $exception->getStatusCode());
+            }
+
+            $this->assertDatabaseHas('enterprise_goods_receipts', [
+                'id' => $receipt->id, 'status' => 'draft',
+            ]);
+            $this->assertSame($auditAfterCreate, DB::table('audit_logs')->count());
+            $this->assertSame('posted', $manager->post($maker, $context, $receipt->id)->status);
+        }
+    }
+
     public function test_posted_grn_hands_inventory_off_once_and_is_retry_safe(): void
     {
         $this->enableProcurement();
