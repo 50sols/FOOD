@@ -59,6 +59,99 @@ final class EnterprisePurchaseReturnFoundationTest extends TestCase
         );
     }
 
+    public function test_p110_direct_purchase_return_handoff_denies_forged_or_offboarded_actor_before_debit(): void
+    {
+        $this->enableProcurement();
+        $service = app(PurchaseReturnInventoryHandoff::class);
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            [$actor, $store, $context] = $this->scopedUser(
+                $this->allPermissions(), 'PRTN-P110-ACTOR-'.strtoupper($locale),
+            );
+            [$product, $warehouse] = $this->stockTarget($store, 'PRTN-P110-ACTOR-SKU-'.strtoupper($locale));
+            $receipt = $this->postedReceipt(
+                $actor, $context, $warehouse,
+                'PRTN-P110-ACTOR-SUP-'.strtoupper($locale),
+                'PRTN-P110-ACTOR-SKU-'.strtoupper($locale), 3,
+            );
+            $source = $receipt->lines()->firstOrFail();
+            $draft = app(PurchaseReturnManager::class)->createFromPostedReceipt(
+                $actor, $context, $receipt->id, [
+                    'lines' => [['goods_receipt_line_id' => $source->id, 'quantity' => 1]],
+                ],
+            );
+            $line = $draft->lines()->firstOrFail();
+            $inventory = DB::table('inventories')
+                ->where('warehouse_id', $warehouse->id)
+                ->where('product_id', $product->id)->firstOrFail();
+            $beforeStock = (array) DB::table('inventories')->where('id', $inventory->id)->first();
+            $beforeOwners = DB::table('enterprise_inventory_owner_positions')
+                ->where('inventory_id', $inventory->id)->get()->toArray();
+            $beforeMovements = DB::table('stock_movements')->count();
+            $beforeEvents = DB::table('enterprise_inventory_owner_movement_events')->count();
+            $beforeAudit = DB::table('audit_logs')->count();
+
+            $decoy = User::factory()->create(['is_active' => true]);
+            $dirtyActor = $actor->fresh();
+            $this->assertNotNull($dirtyActor);
+            $dirtyActor->forceFill(['id' => $decoy->id]);
+            $this->assertNotSame($dirtyActor->getRawOriginal('id'), $dirtyActor->getKey());
+
+            foreach (['forged' => $dirtyActor, 'offboarded' => $actor] as $scenario => $selectedActor) {
+                if ($scenario === 'offboarded') {
+                    // Keep the in-memory actor active after the persisted
+                    // account is revoked; direct writers must re-check it.
+                    DB::table('users')->where('id', $actor->id)->update(['is_active' => false]);
+                    $this->assertTrue((bool) $actor->is_active);
+                }
+                try {
+                    DB::transaction(static function () use (
+                        $service, $selectedActor, $store, $draft, $line, $source
+                    ): void {
+                        $service->reverse($selectedActor, $store->id, $draft, $line, $source);
+                    });
+                    $this->fail($scenario.' actor must not debit stock or forge provenance.');
+                } catch (HttpExceptionInterface $exception) {
+                    $this->assertSame(403, $exception->getStatusCode(), $scenario);
+                }
+
+                $this->assertSame($beforeStock, (array) DB::table('inventories')
+                    ->where('id', $inventory->id)->first(), $scenario);
+                $this->assertEquals($beforeOwners, DB::table('enterprise_inventory_owner_positions')
+                    ->where('inventory_id', $inventory->id)->get()->toArray(), $scenario);
+                $this->assertSame($beforeMovements, DB::table('stock_movements')->count(), $scenario);
+                $this->assertSame($beforeEvents, DB::table('enterprise_inventory_owner_movement_events')->count(), $scenario);
+                $this->assertSame($beforeAudit, DB::table('audit_logs')->count(), $scenario);
+                $this->assertNull($line->fresh()->stock_movement_id);
+                $this->assertDatabaseHas('enterprise_purchase_returns', [
+                    'id' => $draft->id, 'status' => 'draft',
+                ]);
+            }
+
+            // Restoring the real account permits one legitimate debit,
+            // recorded against that account and never the forged identity.
+            DB::table('users')->where('id', $actor->id)->update(['is_active' => true]);
+            DB::transaction(static function () use ($service, $actor, $store, $draft, $line, $source): void {
+                $service->reverse($actor, $store->id, $draft, $line, $source);
+            });
+            $this->assertSame(2.0, (float) DB::table('inventories')
+                ->where('id', $inventory->id)->value('quantity'));
+            $this->assertSame($beforeMovements + 1, DB::table('stock_movements')->count());
+            $this->assertDatabaseHas('stock_movements', [
+                'reference_type' => 'enterprise_purchase_return_line',
+                'reference_id' => $line->id,
+                'user_id' => $actor->id,
+                'quantity' => -1,
+            ]);
+            $this->assertDatabaseMissing('stock_movements', [
+                'reference_type' => 'enterprise_purchase_return_line',
+                'reference_id' => $line->id,
+                'user_id' => $decoy->id,
+            ]);
+        }
+    }
+
     public function test_p110_direct_purchase_return_handoff_rejects_nonpositive_line_without_stock_or_owner_mutation(): void
     {
         $this->enableProcurement();
