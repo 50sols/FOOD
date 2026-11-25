@@ -1359,6 +1359,12 @@ final class ProcurementCompletionManager
             ->get(['documents.*'])
             ->all();
 
+        // The attachment query is scoped, but the contract header above was
+        // captured before it. A concurrent store transfer can leave a former
+        // owner with stale supplier/title/currency details even when document
+        // paths are correctly withheld. Fail closed for the entire response.
+        $this->visibleContract($scope, $contractId);
+
         return compact('contract', 'documents');
     }
 
