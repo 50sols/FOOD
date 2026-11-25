@@ -96,6 +96,11 @@ final class PurchaseOrderManager
         // financial or supplier detail to its former owner after reassignment.
         $this->findVisible($scope, $orderId);
 
+        // The relationship queries and second store check can run after a
+        // persisted VIEW revocation. Re-read the same original active actor's
+        // current effective permission before releasing priced lines or supplier data.
+        $this->authorizedScope($actor, $context, self::VIEW_PERMISSION);
+
         return $order;
     }
 

@@ -779,6 +779,89 @@ final class EnterprisePurchaseOrderFoundationTest extends TestCase
         }
     }
 
+    public function test_purchase_order_detail_rechecks_view_permission_after_priced_lines_when_revoked_midquery_in_ar_and_en(): void
+    {
+        [$actor, , $context] = $this->scopedUser($this->allPermissions(), 'PO-DETAIL-MIDQUERY-DENY');
+        $orders = app(PurchaseOrderManager::class);
+        $permissionId = Permission::query()
+            ->where('code', 'procurement.purchase_orders.view')
+            ->firstOrFail()->id;
+
+        $armed = false;
+        $injected = false;
+        DB::listen(static function ($query) use ($actor, $permissionId, &$armed, &$injected): void {
+            $sql = strtolower((string) $query->sql);
+            if (! $armed || $injected
+                || ! str_contains($sql, 'select')
+                || ! str_contains($sql, 'enterprise_purchase_order_lines')) {
+                return;
+            }
+
+            // Revoke after the authorized order header and priced-line SELECT.
+            // This is a deterministic same-connection interleaving, not proof
+            // of a separate committed MySQL transaction or serializability.
+            $armed = false;
+            $injected = true;
+            DB::table('user_permission_overrides')->insert([
+                'user_id' => $actor->id,
+                'permission_id' => $permissionId,
+                'scope_key' => 'global',
+                'store_id' => null,
+                'effect' => 'deny',
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+            DB::table('users')->where('id', $actor->id)
+                ->update(['has_permission_overrides' => true]);
+        });
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            $order = $this->approvedOrder($actor, $context, 'PO-DETAIL-DENY-'.strtoupper($locale));
+            $visible = $orders->detail($actor, $context, $order->id);
+            $this->assertSame($order->id, $visible->id);
+            $this->assertCount(1, $visible->lines);
+            $this->assertFalse((bool) $actor->has_permission_overrides);
+
+            $orderCount = DB::table('enterprise_purchase_orders')->count();
+            $linesCount = DB::table('enterprise_purchase_order_lines')->count();
+            $auditCount = DB::table('audit_logs')->count();
+            $armed = true;
+            $injected = false;
+
+            try {
+                $orders->detail($actor, $context, $order->id);
+                $this->fail('Revocation during priced-line hydration must block the PO detail response.');
+            } catch (HttpException $exception) {
+                $this->assertTrue($injected, 'Persisted DENY must be injected after loading priced PO lines.');
+                $this->assertSame(403, $exception->getStatusCode());
+            }
+
+            $this->assertFalse((bool) $actor->has_permission_overrides);
+            $this->assertTrue((bool) $actor->fresh()->has_permission_overrides);
+            try {
+                $orders->detail($actor, $context, $order->id);
+                $this->fail('A repeated PO detail read after effective DENY must also fail.');
+            } catch (HttpException $exception) {
+                $this->assertSame(403, $exception->getStatusCode());
+            }
+
+            $this->assertSame($orderCount, DB::table('enterprise_purchase_orders')->count());
+            $this->assertSame($linesCount, DB::table('enterprise_purchase_order_lines')->count());
+            $this->assertSame($auditCount, DB::table('audit_logs')->count());
+
+            DB::table('user_permission_overrides')
+                ->where('user_id', $actor->id)
+                ->where('permission_id', $permissionId)
+                ->delete();
+            DB::table('users')->where('id', $actor->id)
+                ->update(['has_permission_overrides' => false]);
+            $restored = $orders->detail($actor, $context, $order->id);
+            $this->assertSame($order->id, $restored->id);
+            $this->assertCount(1, $restored->lines);
+        }
+    }
+
     private function approvedOrder(
         User $actor,
         ResolvedTenantContext $context,
