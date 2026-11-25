@@ -321,6 +321,16 @@ final class SupplierDirectory
         ResolvedTenantContext $context,
         string $permission,
     ): EnterpriseDataScope {
+        // A direct service call must not authenticate as a different account
+        // through a dirty, unsaved Eloquent primary key.
+        $persistedActorId = $actor->getRawOriginal($actor->getKeyName());
+        abort_unless(
+            $actor->exists
+                && $persistedActorId !== null
+                && (string) $actor->getKey() === (string) $persistedActorId,
+            403,
+        );
+
         abort_if($context->enterpriseScope === null, 409, 'Enterprise data scope is required.');
 
         $scope = $context->enterpriseScope;
