@@ -4,6 +4,7 @@ namespace App\Enterprise\Procurement;
 
 use App\Enterprise\Events\VersionedDomainEvent;
 use App\Enterprise\Modules\ModuleRegistry;
+use App\Enterprise\Modules\ModuleState;
 use App\Enterprise\Outbox\TransactionalOutbox;
 use App\Models\EnterpriseGoodsReceipt;
 use App\Models\EnterpriseGoodsReceiptLine;
@@ -116,6 +117,8 @@ final class PurchaseInvoiceHandoffManager
         $data = $this->validatedInvoice($attributes);
 
         return DB::transaction(function () use ($actor, $scope, $receiptId, $data): EnterprisePurchaseInvoice {
+            $this->assertProcurementEnabledForWrite();
+
             $receipt = $this->visibleReceiptQuery($scope)
                 ->whereKey($receiptId)
                 ->lockForUpdate()
@@ -272,6 +275,8 @@ final class PurchaseInvoiceHandoffManager
         $scope = $this->authorizedScope($actor, $context, self::HANDOFF_PERMISSION);
 
         return DB::transaction(function () use ($actor, $scope, $invoiceId): EnterprisePurchaseInvoice {
+            $this->assertProcurementEnabledForWrite();
+
             $invoice = $this->lockVisible($scope, $invoiceId);
             if ($invoice->status === 'handed_off') {
                 return $invoice->refresh()->load('lines');
@@ -394,6 +399,8 @@ final class PurchaseInvoiceHandoffManager
         $scope = $this->authorizedScope($actor, $context, self::MANAGE_PERMISSION);
 
         return DB::transaction(function () use ($actor, $scope, $invoiceId): EnterprisePurchaseInvoice {
+            $this->assertProcurementEnabledForWrite();
+
             $invoice = $this->lockVisible($scope, $invoiceId);
             if ($invoice->status === 'cancelled') {
                 return $invoice->refresh();
@@ -454,6 +461,21 @@ final class PurchaseInvoiceHandoffManager
         );
 
         return $scope;
+    }
+
+    private function assertProcurementEnabledForWrite(): void
+    {
+        // Match ModuleLifecycleManager's lock before invoice/receipt locks.
+        // A successful permission preflight cannot outlive module shutdown.
+        $module = DB::table('enterprise_modules')
+            ->where('code', 'procurement')
+            ->lockForUpdate()
+            ->first();
+        abort_unless(
+            $module !== null && $module->state === ModuleState::ENABLED->value,
+            404,
+            'Procurement module is disabled.',
+        );
     }
 
     private function assertProcurementEnabled(): void
