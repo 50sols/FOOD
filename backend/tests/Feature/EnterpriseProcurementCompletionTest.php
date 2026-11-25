@@ -986,6 +986,9 @@ final class EnterpriseProcurementCompletionTest extends TestCase
         $requests = app(PurchaseRequestManager::class);
         $completion = app(ProcurementCompletionManager::class);
         $documentQueries = [];
+        $supplierTransferArmed = false;
+        $supplierTransferred = false;
+        $supplierTransferId = 0;
 
         // A listener is registered only once: listeners persist across the
         // AR/EN loop, otherwise a shared captured array double-counts reads.
@@ -998,6 +1001,27 @@ final class EnterpriseProcurementCompletionTest extends TestCase
                 && str_contains($sql, 'select')) {
                 $documentQueries[] = $sql;
             }
+        });
+
+        DB::listen(static function ($query) use (
+            &$supplierTransferArmed, &$supplierTransferred, &$supplierTransferId, $foreignStore
+        ): void {
+            $sql = strtolower((string) $query->sql);
+            if (! $supplierTransferArmed || $supplierTransferred || $supplierTransferId < 1
+                || ! str_contains($sql, 'select')
+                || ! str_contains($sql, 'enterprise_procurement_quote_documents')
+                || ! str_contains($sql, 'enterprise_procurement_quotes')
+                || ! str_contains($sql, 'enterprise_suppliers')
+                || ! str_contains($sql, 'join')) {
+                return;
+            }
+
+            // Move the original supplier AFTER the initial SELECT returned a
+            // private document path, before the final ownership recheck.
+            $supplierTransferArmed = false;
+            $supplierTransferred = true;
+            DB::table('enterprise_suppliers')->where('id', $supplierTransferId)
+                ->update(['store_id' => $foreignStore->id]);
         });
 
         foreach (['ar', 'en'] as $locale) {
@@ -1066,6 +1090,47 @@ final class EnterpriseProcurementCompletionTest extends TestCase
             DB::table('enterprise_purchase_requests')->where('id', $request->id)
                 ->update(['store_id' => $store->id]);
             $this->assertSame((int) $document->id, (int) $completion->quoteDocument($actor, $context, $rfq->id, $document->id)->id);
+
+            // Historical RFQ/quote ownership is insufficient once a
+            // store-scoped linked supplier is reassigned independently.
+            DB::table('enterprise_suppliers')->where('id', $supplier->id)
+                ->update(['store_id' => $foreignStore->id]);
+            $detailWithoutSupplier = $completion->rfqDetail($actor, $context, $rfq->id);
+            $this->assertCount(0, $detailWithoutSupplier['invitations']);
+            $this->assertCount(0, $detailWithoutSupplier['quotes']);
+            $this->assertTrue($detailWithoutSupplier['quoteDocuments']->isEmpty());
+            try {
+                $completion->quoteDocument($actor, $context, $rfq->id, $document->id);
+                $this->fail('Transferred supplier must not disclose the old RFQ private quote path.');
+            } catch (RecordNotFoundException $exception) {
+                $this->assertNotEmpty($exception->getMessage());
+            }
+            DB::table('enterprise_suppliers')->where('id', $supplier->id)
+                ->update(['store_id' => $store->id]);
+            $this->assertSame(1, $completion->rfqDetail($actor, $context, $rfq->id)['quotes']->count());
+            $this->assertSame((int) $document->id,
+                (int) $completion->quoteDocument($actor, $context, $rfq->id, $document->id)->id);
+
+            $supplierTransferred = false;
+            $supplierTransferId = (int) $supplier->id;
+            $supplierTransferArmed = true;
+            try {
+                $completion->quoteDocument($actor, $context, $rfq->id, $document->id);
+                $this->fail('Supplier transfer after private attachment SELECT must reject cached path.');
+            } catch (RecordNotFoundException $exception) {
+                $this->assertNotEmpty($exception->getMessage());
+            } finally {
+                $supplierTransferArmed = false;
+            }
+            $this->assertTrue($supplierTransferred, 'First document SELECT must trigger supplier move.');
+            $this->assertSame($foreignStore->id, (int) DB::table('enterprise_suppliers')
+                ->where('id', $supplier->id)->value('store_id'));
+            DB::table('enterprise_suppliers')->where('id', $supplier->id)
+                ->update(['store_id' => $store->id]);
+            Storage::disk('local')->assertExists($document->storage_path);
+            $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+            $this->assertSame((int) $document->id,
+                (int) $completion->quoteDocument($actor, $context, $rfq->id, $document->id)->id);
 
             // A transfer must invalidate the former store's attachment read,
             // without deleting a quoted file or changing the original audit.

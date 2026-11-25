@@ -13,6 +13,7 @@ use App\Support\EnterpriseScopeAuthorizer;
 use App\Support\ResolvedTenantContext;
 use Carbon\CarbonImmutable;
 use Illuminate\Http\UploadedFile;
+use Illuminate\Database\Query\Builder as QueryBuilder;
 use Illuminate\Pagination\LengthAwarePaginator;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
@@ -347,6 +348,7 @@ final class ProcurementCompletionManager
             ->join('enterprise_procurement_rfqs as rfqs', 'rfqs.id', '=', 'invitations.rfq_id')
             ->join('enterprise_suppliers as suppliers', 'suppliers.id', '=', 'invitations.supplier_id')
             ->where($visibleRfq)
+            ->where(fn (QueryBuilder $query) => $this->scopeJoinedSupplier($query, $scope))
             ->orderBy('suppliers.code')
             ->get([
                 'invitations.id',
@@ -363,6 +365,7 @@ final class ProcurementCompletionManager
             ->join('enterprise_procurement_rfqs as rfqs', 'rfqs.id', '=', 'quotes.rfq_id')
             ->join('enterprise_suppliers as suppliers', 'suppliers.id', '=', 'quotes.supplier_id')
             ->where($visibleRfq)
+            ->where(fn (QueryBuilder $query) => $this->scopeJoinedSupplier($query, $scope))
             ->orderBy('quotes.total_amount')
             ->orderBy('quotes.id')
             ->get([
@@ -377,7 +380,9 @@ final class ProcurementCompletionManager
             : DB::table('enterprise_procurement_quote_documents as documents')
                 ->join('enterprise_procurement_quotes as quotes', 'quotes.id', '=', 'documents.quote_id')
                 ->join('enterprise_procurement_rfqs as rfqs', 'rfqs.id', '=', 'quotes.rfq_id')
+                ->join('enterprise_suppliers as suppliers', 'suppliers.id', '=', 'quotes.supplier_id')
                 ->where($visibleRfq)
+                ->where(fn (QueryBuilder $query) => $this->scopeJoinedSupplier($query, $scope))
                 ->whereIn('documents.quote_id', $quotes->pluck('id')->all())
                 ->orderByDesc('documents.id')
                 ->select('documents.*')
@@ -388,6 +393,30 @@ final class ProcurementCompletionManager
         // detail read. A newly transferred RFQ belongs only to its new store.
         $this->visibleRfq($scope, $rfqId);
         $assertCurrentSourceRequest();
+
+        // Supplier eligibility is separately mutable from the RFQ. A supplier
+        // transferred after a quote/invitation SELECT must not release cached
+        // vendor names, offer amounts or private attachment paths.
+        foreach ([
+            [$invitations, 'enterprise_procurement_rfq_invitations', 'invitations'],
+            [$quotes, 'enterprise_procurement_quotes', 'quotes'],
+        ] as [$rows, $table, $alias]) {
+            $ids = $rows->pluck('id')->all();
+            if ($ids === []) {
+                continue;
+            }
+
+            abort_unless(
+                DB::table($table.' as '.$alias)
+                    ->join('enterprise_suppliers as suppliers', 'suppliers.id', '=', $alias.'.supplier_id')
+                    ->where($alias.'.rfq_id', $rfqId)
+                    ->whereIn($alias.'.id', $ids)
+                    ->where(fn (QueryBuilder $query) => $this->scopeJoinedSupplier($query, $scope))
+                    ->count() === count($ids),
+                404,
+                'RFQ quote supplier eligibility changed during detail retrieval.',
+            );
+        }
 
         // Relations and attachment paths were fetched under an earlier read
         // grant. Recheck the same persisted principal's live permission
@@ -413,6 +442,8 @@ final class ProcurementCompletionManager
             ->join('enterprise_procurement_quotes as quotes', 'quotes.id', '=', 'documents.quote_id')
             ->join('enterprise_procurement_rfqs as rfqs', 'rfqs.id', '=', 'quotes.rfq_id')
             ->join('enterprise_purchase_requests as requests', 'requests.id', '=', 'rfqs.purchase_request_id')
+            ->join('enterprise_suppliers as suppliers', 'suppliers.id', '=', 'quotes.supplier_id')
+            ->where(fn (QueryBuilder $query) => $this->scopeJoinedSupplier($query, $scope))
             ->where('rfqs.organization_id', $scope->organizationId)
             ->where('rfqs.company_id', $scope->companyId)
             ->where('rfqs.store_id', $scope->storeId)
@@ -433,6 +464,8 @@ final class ProcurementCompletionManager
             ->join('enterprise_procurement_quotes as quotes', 'quotes.id', '=', 'documents.quote_id')
             ->join('enterprise_procurement_rfqs as rfqs', 'rfqs.id', '=', 'quotes.rfq_id')
             ->join('enterprise_purchase_requests as requests', 'requests.id', '=', 'rfqs.purchase_request_id')
+            ->join('enterprise_suppliers as suppliers', 'suppliers.id', '=', 'quotes.supplier_id')
+            ->where(fn (QueryBuilder $query) => $this->scopeJoinedSupplier($query, $scope))
             ->where('rfqs.organization_id', $scope->organizationId)
             ->where('rfqs.company_id', $scope->companyId)
             ->where('rfqs.store_id', $scope->storeId)
@@ -3126,6 +3159,23 @@ final class ProcurementCompletionManager
         }
 
         return $query->firstOrFail();
+    }
+
+    /**
+     * Every RFQ quote/invitation and private attachment read must check the
+     * supplier's CURRENT legal company and store scope, not its historical RFQ.
+     */
+    private function scopeJoinedSupplier(QueryBuilder $query, EnterpriseDataScope $scope): void
+    {
+        $query->where('suppliers.organization_id', $scope->organizationId)
+            ->where('suppliers.company_id', $scope->companyId)
+            ->where(function (QueryBuilder $eligible) use ($scope): void {
+                $eligible->where('suppliers.scope_type', 'company')
+                    ->orWhere(function (QueryBuilder $store) use ($scope): void {
+                        $store->where('suppliers.scope_type', 'store')
+                            ->where('suppliers.store_id', $scope->storeId);
+                    });
+            });
     }
 
     private function visibleSupplier(EnterpriseDataScope $scope, int $supplierId, bool $lock = false): EnterpriseSupplier
