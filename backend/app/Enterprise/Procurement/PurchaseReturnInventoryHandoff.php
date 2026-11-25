@@ -35,6 +35,20 @@ final class PurchaseReturnInventoryHandoff
             throw new LogicException('Purchase return stock reversal requires an active database transaction.');
         }
 
+        // This public stock-debit boundary cannot trust a caller-owned User
+        // instance: an unsaved primary-key change would forge movement.user_id,
+        // and a stale model may still appear active after offboarding. Bind
+        // attribution to the originally persisted, currently active user.
+        $actorId = $actor->getRawOriginal($actor->getKeyName());
+        abort_unless(
+            $actor->exists
+                && $actorId !== null
+                && (string) $actor->getKey() === (string) $actorId,
+            403,
+        );
+        $actor = User::query()->whereKey($actorId)->first();
+        abort_unless($actor instanceof User && $actor->is_active, 403);
+
         // Lock and re-read the canonical return header first, using the same
         // lock order as PurchaseReturnManager::post (header before lines).
         // A caller retaining an old draft model after cancellation must not
