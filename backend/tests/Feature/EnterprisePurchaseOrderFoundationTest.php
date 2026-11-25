@@ -694,6 +694,75 @@ final class EnterprisePurchaseOrderFoundationTest extends TestCase
         }
     }
 
+    public function test_purchase_order_page_rejects_postquery_store_transfer_in_ar_and_en(): void
+    {
+        [$actor, $originalStore, $context] = $this->scopedUser(
+            $this->allPermissions(), 'PO-PAGE-XFER',
+        );
+        $foreignStore = $this->createRetailStore('PO-PAGE-FOREIGN');
+        $orders = app(PurchaseOrderManager::class);
+
+        $armed = false;
+        $moved = false;
+        $targetOrderId = null;
+        DB::listen(static function ($query) use ($foreignStore, &$armed, &$moved, &$targetOrderId): void {
+            $sql = strtolower((string) $query->sql);
+            if (! $armed || $moved || $targetOrderId === null
+                || ! str_contains($sql, 'select')
+                || ! str_contains($sql, 'enterprise_purchase_orders')
+                || ! str_contains($sql, 'order by')) {
+                return;
+            }
+
+            // The scoped paginator has already selected this financial PO.
+            // Move it out of the authorized store before its caller receives
+            // hydrated rows, without involving another user or changing roles.
+            $armed = false;
+            $moved = true;
+            DB::table('enterprise_purchase_orders')
+                ->where('id', $targetOrderId)
+                ->update(['store_id' => $foreignStore->id]);
+        });
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            $order = $this->approvedOrder(
+                $actor, $context, 'PO-PAGE-SUP-'.strtoupper($locale),
+            );
+            $filter = ['q' => $order->order_number];
+            $this->assertSame(1, $orders->paginate($actor, $context, $filter)->total());
+            $auditBefore = DB::table('audit_logs')->count();
+            $lineCountBefore = DB::table('enterprise_purchase_order_lines')->count();
+            $targetOrderId = $order->id;
+            $moved = false;
+            $armed = true;
+
+            try {
+                $orders->paginate($actor, $context, $filter);
+                $this->fail('PO transferred after the page SELECT must not expose its cached supplier/price.');
+            } catch (HttpException $exception) {
+                $this->assertTrue($moved, 'The store transfer must occur after the actual ordered PO page query.');
+                $this->assertSame(404, $exception->getStatusCode());
+            }
+
+            $this->assertDatabaseHas('enterprise_purchase_orders', [
+                'id' => $order->id,
+                'store_id' => $foreignStore->id,
+                'status' => 'draft',
+            ]);
+            $this->assertSame(0, $orders->paginate($actor, $context, $filter)->total());
+            $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+            $this->assertSame($lineCountBefore, DB::table('enterprise_purchase_order_lines')->count());
+
+            DB::table('enterprise_purchase_orders')->where('id', $order->id)
+                ->update(['store_id' => $originalStore->id]);
+            $this->assertSame(1, $orders->paginate($actor, $context, $filter)->total());
+            // Keep the next locale fixture isolated from this historical PO.
+            DB::table('enterprise_purchase_orders')->where('id', $order->id)
+                ->update(['store_id' => $foreignStore->id]);
+        }
+    }
+
     public function test_purchase_order_pagination_rechecks_permission_after_rows_when_revoked_midquery_in_ar_and_en(): void
     {
         [$actor, , $context] = $this->scopedUser($this->allPermissions(), 'PO-MIDQUERY-DENY');

@@ -67,6 +67,19 @@ final class PurchaseOrderManager
             ->paginate($perPage)
             ->withQueryString();
 
+        // Supplier hydration and page selection are separate queries. A PO
+        // transferred to a different store after the scoped row SELECT must
+        // not be returned as a cached former-store financial record. Confirm
+        // every bounded page ID remains visible without N+1 queries.
+        $pageIds = $orders->getCollection()->pluck('id')->all();
+        if ($pageIds !== []) {
+            abort_unless(
+                $this->visibleQuery($scope)->whereKey($pageIds)->count() === count($pageIds),
+                404,
+                'Purchase order ownership changed during pagination.',
+            );
+        }
+
         // The COUNT, page SELECT and eager-loaded supplier rows are separate
         // reads. A persisted view DENY may be committed after preflight but
         // before the paginator is returned; never release that stale snapshot.
