@@ -302,6 +302,139 @@ final class EnterprisePurchaseInvoiceHandoffFoundationTest extends TestCase
         }
     }
 
+    public function test_invoice_mutations_recheck_persisted_permission_revoked_mid_transaction_in_both_locales(): void
+    {
+        $this->enableProcurement();
+        [$actor, $store, $context] = $this->scopedUser($this->allPermissions(), 'PINV-MID-TX-DENY');
+        [, $warehouse] = $this->stockTarget($store, 'PINV-MID-TX-SKU');
+        $receipt = $this->postedReceipt(
+            $actor, $context, $warehouse, 'PINV-MID-TX-SUP', 'PINV-MID-TX-SKU', 8,
+        );
+        $manager = app(PurchaseInvoiceHandoffManager::class);
+        $receiptLineId = $receipt->lines()->firstOrFail()->id;
+        $armed = false;
+        $injected = false;
+        $targetTable = '';
+        $permissionId = 0;
+
+        // Persist DENY immediately after an actual finance SQL read inside
+        // the write transaction. Same-connection injection rolls back along
+        // with the refused write; this is not two independent MySQL sessions.
+        DB::listen(static function ($query) use ($actor, &$armed, &$injected, &$targetTable, &$permissionId): void {
+            $sql = strtolower((string) $query->sql);
+            if (! $armed || $injected || ! str_contains($sql, 'select')
+                || ! str_contains($sql, $targetTable)) {
+                return;
+            }
+
+            $armed = false;
+            $injected = true;
+            DB::table('user_permission_overrides')->insert([
+                'user_id' => $actor->id,
+                'permission_id' => $permissionId,
+                'scope_key' => 'global',
+                'store_id' => null,
+                'effect' => 'deny',
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+            DB::table('users')->where('id', $actor->id)
+                ->update(['has_permission_overrides' => true]);
+        });
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            $payload = static fn (string $reference): array => [
+                'supplier_invoice_number' => $reference,
+                'invoice_date' => '2026-10-16',
+                'lines' => [[
+                    'goods_receipt_line_id' => $receiptLineId,
+                    'quantity' => 1,
+                ]],
+            ];
+
+            $permissionId = (int) Permission::query()
+                ->where('code', 'procurement.purchase_invoices.manage')
+                ->value('id');
+            $this->assertGreaterThan(0, $permissionId);
+            $targetTable = 'enterprise_purchase_invoices';
+            $armed = true;
+            $injected = false;
+            $auditBefore = DB::table('audit_logs')->count();
+            $outboxBefore = DB::table('enterprise_outbox_messages')->count();
+            try {
+                $manager->createFromPostedReceipt($actor, $context, $receipt->id, $payload('MID-TX-DENIED-'.strtoupper($locale)));
+                $this->fail('A revoked actor must not create an invoice after preflight.');
+            } catch (HttpExceptionInterface $exception) {
+                $this->assertSame(403, $exception->getStatusCode());
+            }
+            $this->assertTrue($injected, 'Invoice duplicate-check SQL must execute the DENY.');
+            $this->assertDatabaseMissing('enterprise_purchase_invoices', [
+                'supplier_invoice_number' => 'MID-TX-DENIED-'.strtoupper($locale),
+            ]);
+            $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+            $this->assertSame($outboxBefore, DB::table('enterprise_outbox_messages')->count());
+            $this->assertDatabaseMissing('user_permission_overrides', [
+                'user_id' => $actor->id, 'permission_id' => $permissionId, 'effect' => 'deny',
+            ]);
+            $this->assertFalse((bool) $actor->fresh()->has_permission_overrides);
+
+            $invoice = $manager->createFromPostedReceipt(
+                $actor, $context, $receipt->id, $payload('MID-TX-VALID-'.strtoupper($locale)),
+            );
+            $this->assertSame('draft', $invoice->status);
+            $permissionId = (int) Permission::query()
+                ->where('code', 'procurement.purchase_invoices.handoff')
+                ->value('id');
+            $this->assertGreaterThan(0, $permissionId);
+            $targetTable = 'enterprise_purchase_invoice_lines';
+            $armed = true;
+            $injected = false;
+            $auditBefore = DB::table('audit_logs')->count();
+            $outboxBefore = DB::table('enterprise_outbox_messages')->count();
+            try {
+                $manager->handoff($actor, $context, $invoice->id);
+                $this->fail('A revoked actor must not publish a Finance invoice event.');
+            } catch (HttpExceptionInterface $exception) {
+                $this->assertSame(403, $exception->getStatusCode());
+            }
+            $this->assertTrue($injected, 'Handoff invoice-line SQL must execute the DENY.');
+            $this->assertDatabaseHas('enterprise_purchase_invoices', [
+                'id' => $invoice->id, 'status' => 'draft', 'outbox_event_id' => null,
+            ]);
+            $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+            $this->assertSame($outboxBefore, DB::table('enterprise_outbox_messages')->count());
+            $this->assertFalse((bool) $actor->fresh()->has_permission_overrides);
+            $this->assertSame('handed_off', $manager->handoff($actor, $context, $invoice->id)->status);
+
+            $cancelDraft = $manager->createFromPostedReceipt(
+                $actor, $context, $receipt->id, $payload('MID-TX-CANCEL-'.strtoupper($locale)),
+            );
+            $permissionId = (int) Permission::query()
+                ->where('code', 'procurement.purchase_invoices.manage')
+                ->value('id');
+            $targetTable = 'enterprise_purchase_invoices';
+            $armed = true;
+            $injected = false;
+            $auditBefore = DB::table('audit_logs')->count();
+            $outboxBefore = DB::table('enterprise_outbox_messages')->count();
+            try {
+                $manager->cancel($actor, $context, $cancelDraft->id);
+                $this->fail('A revoked actor must not cancel a locked invoice.');
+            } catch (HttpExceptionInterface $exception) {
+                $this->assertSame(403, $exception->getStatusCode());
+            }
+            $this->assertTrue($injected, 'Cancellation row-lock SQL must execute the DENY.');
+            $this->assertDatabaseHas('enterprise_purchase_invoices', [
+                'id' => $cancelDraft->id, 'status' => 'draft',
+            ]);
+            $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+            $this->assertSame($outboxBefore, DB::table('enterprise_outbox_messages')->count());
+            $this->assertFalse((bool) $actor->fresh()->has_permission_overrides);
+            $this->assertSame('cancelled', $manager->cancel($actor, $context, $cancelDraft->id)->status);
+        }
+    }
+
     public function test_invoice_mutations_recheck_procurement_shutdown_before_writes_in_both_locales(): void
     {
         $this->enableProcurement();

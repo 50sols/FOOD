@@ -131,7 +131,7 @@ final class PurchaseInvoiceHandoffManager
         $scope = $this->authorizedScope($actor, $context, self::MANAGE_PERMISSION);
         $data = $this->validatedInvoice($attributes);
 
-        return DB::transaction(function () use ($actor, $scope, $receiptId, $data): EnterprisePurchaseInvoice {
+        return DB::transaction(function () use ($actor, $context, $scope, $receiptId, $data): EnterprisePurchaseInvoice {
             $this->assertProcurementEnabledForWrite();
 
             $receipt = $this->visibleReceiptQuery($scope)
@@ -207,6 +207,11 @@ final class PurchaseInvoiceHandoffManager
                     : (float) $receiptLine->unit_price;
                 $totalAmount += round($invoiceUnitPrice * (float) $line['quantity'], 3);
             }
+
+            // Supplier/receipt/quantity reads may outlive the initial grant.
+            // Reauthorize the current persisted principal before any invoice
+            // lines, audit or downstream Finance-matching writes begin.
+            $this->authorizedScope($actor, $context, self::MANAGE_PERMISSION);
 
             $publicId = (string) Str::uuid();
             $invoice = EnterprisePurchaseInvoice::query()->create([
@@ -289,10 +294,13 @@ final class PurchaseInvoiceHandoffManager
     ): EnterprisePurchaseInvoice {
         $scope = $this->authorizedScope($actor, $context, self::HANDOFF_PERMISSION);
 
-        return DB::transaction(function () use ($actor, $scope, $invoiceId): EnterprisePurchaseInvoice {
+        return DB::transaction(function () use ($actor, $context, $scope, $invoiceId): EnterprisePurchaseInvoice {
             $this->assertProcurementEnabledForWrite();
 
             $invoice = $this->lockVisible($scope, $invoiceId);
+            // Even an idempotent replay must not disclose a locked invoice
+            // to a user whose permission was revoked during row lookup.
+            $this->authorizedScope($actor, $context, self::HANDOFF_PERMISSION);
             if ($invoice->status === 'handed_off') {
                 return $invoice->refresh()->load('lines');
             }
@@ -355,6 +363,10 @@ final class PurchaseInvoiceHandoffManager
                     $invoicedTotals,
                 );
             }
+
+            // A committed permission revocation after the GRN/line/match
+            // reads must abort before an immutable Finance outbox event.
+            $this->authorizedScope($actor, $context, self::HANDOFF_PERMISSION);
 
             $event = VersionedDomainEvent::create(
                 type: self::EVENT_TYPE,
@@ -426,10 +438,13 @@ final class PurchaseInvoiceHandoffManager
     ): EnterprisePurchaseInvoice {
         $scope = $this->authorizedScope($actor, $context, self::MANAGE_PERMISSION);
 
-        return DB::transaction(function () use ($actor, $scope, $invoiceId): EnterprisePurchaseInvoice {
+        return DB::transaction(function () use ($actor, $context, $scope, $invoiceId): EnterprisePurchaseInvoice {
             $this->assertProcurementEnabledForWrite();
 
             $invoice = $this->lockVisible($scope, $invoiceId);
+            // Recheck after the authoritative row lock, including retries,
+            // before returning sensitive data or mutating financial state.
+            $this->authorizedScope($actor, $context, self::MANAGE_PERMISSION);
             if ($invoice->status === 'cancelled') {
                 return $invoice->refresh();
             }
