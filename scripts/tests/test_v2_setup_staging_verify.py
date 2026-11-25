@@ -248,7 +248,7 @@ class V2SetupStagingVerifierTest(unittest.TestCase):
             "public/preview/customer/dropper.php.jpg",
             "public/js/.htaccess",
             "public/.user.ini",
-            "PUBLIC/ASSETS/admin/config.web.config",
+            "PUBLIC/ASSETS/admin/web.config",
             "PUBLIC/js/hidden.PHTML",
         ):
             with self.subTest(name=name):
