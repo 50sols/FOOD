@@ -1616,14 +1616,24 @@ final class V2ErpProcurementRfqReceiptFlowTest extends TestCase
             foreach (['ar', 'en'] as $locale) {
                 app()->setLocale($locale);
                 $checker->forceFill(['locale' => $locale])->save();
-                $this->actingAs($checker->fresh())
+                $response = $this->actingAs($checker->fresh())
                     ->post(route('admin.erp.procurement.receipts.post', $receipt->id), [
                         'store_id' => $store->id,
-                    ])->assertRedirect()->assertSessionHasErrors('purchase_order_id');
-                $this->assertSame(
-                    __('enterprise_procurement.errors.receipt_source_invalid', [], $locale),
-                    session('errors')->first('purchase_order_id'),
-                );
+                    ]);
+                if (array_key_exists('supplier_id', $tamper)) {
+                    // A forged foreign-store supplier is invisible at the
+                    // initial live-supplier scope boundary (404), before the
+                    // GRN/PO header snapshot validation can run.
+                    $response->assertNotFound();
+                } else {
+                    // Other in-scope header corruptions must still return the
+                    // existing localized purchase_order_id validation error.
+                    $response->assertRedirect()->assertSessionHasErrors('purchase_order_id');
+                    $this->assertSame(
+                        __('enterprise_procurement.errors.receipt_source_invalid', [], $locale),
+                        session('errors')->first('purchase_order_id'),
+                    );
+                }
                 $this->assertDatabaseHas('enterprise_goods_receipts', [
                     'id' => $receipt->id, 'store_id' => $store->id,
                     'status' => 'draft', 'posted_by' => null,
