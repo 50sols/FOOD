@@ -135,6 +135,10 @@ final class PurchaseOrderManager
                 ->first();
 
             if ($existing instanceof EnterprisePurchaseOrder) {
+                // A previously scoped PO may now point at a supplier reassigned
+                // to another store. Reusing it must enforce the same current
+                // supplier visibility as detail/pagination before leaking lines.
+                $this->visibleWithSupplier($scope)->whereKey($existing->id)->firstOrFail();
                 $existing->load('lines');
                 $this->authorizedScope($actor, $context, self::MANAGE_PERMISSION);
 
@@ -232,6 +236,9 @@ final class PurchaseOrderManager
         return DB::transaction(function () use ($actor, $context, $scope, $orderId): EnterprisePurchaseOrder {
             $order = $this->lockVisible($scope, $orderId);
             if ($order->status === 'issued') {
+                // An idempotent issuance is still a response containing the
+                // supplier/price snapshot; do not bypass current store scope.
+                $this->visibleWithSupplier($scope)->whereKey($order->id)->firstOrFail();
                 $order->refresh();
                 $this->authorizedScope($actor, $context, self::ISSUE_PERMISSION);
 

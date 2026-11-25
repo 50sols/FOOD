@@ -212,6 +212,63 @@ final class EnterprisePurchaseOrderFoundationTest extends TestCase
         );
     }
 
+    public function test_idempotent_purchase_order_retries_deny_transferred_supplier_in_ar_and_en(): void
+    {
+        [$actor, $ownStore, $context] = $this->scopedUser($this->allPermissions(), 'PO-IDEMP-SCOPE');
+        $foreignStore = $this->createRetailStore('PO-IDEMP-FOREIGN');
+        $orders = app(PurchaseOrderManager::class);
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            $order = $this->approvedOrder($actor, $context, 'PO-IDEMP-SUP-'.strtoupper($locale));
+            $auditAfterCreate = DB::table('audit_logs')->count();
+
+            DB::table('enterprise_suppliers')->where('id', $order->supplier_id)
+                ->update(['store_id' => $foreignStore->id]);
+
+            try {
+                $orders->createFromApprovedRequest($actor, $context, $order->purchase_request_id);
+                $this->fail('Idempotent PO creation must not disclose a transferred supplier or priced lines.');
+            } catch (ModelNotFoundException) {
+                $this->assertTrue(true);
+            }
+
+            $this->assertDatabaseHas('enterprise_purchase_orders', [
+                'id' => $order->id, 'status' => 'draft', 'issued_by' => null,
+            ]);
+            $this->assertSame($auditAfterCreate, DB::table('audit_logs')->count());
+
+            DB::table('enterprise_suppliers')->where('id', $order->supplier_id)
+                ->update(['store_id' => $ownStore->id]);
+            $this->assertSame(
+                $order->id,
+                $orders->createFromApprovedRequest($actor, $context, $order->purchase_request_id)->id,
+            );
+            $this->assertSame('issued', $orders->issue($actor, $context, $order->id)->status);
+            $auditAfterIssue = DB::table('audit_logs')->count();
+
+            DB::table('enterprise_suppliers')->where('id', $order->supplier_id)
+                ->update(['store_id' => $foreignStore->id]);
+
+            try {
+                $orders->issue($actor, $context, $order->id);
+                $this->fail('An already issued PO cannot bypass current supplier store scope on retry.');
+            } catch (ModelNotFoundException) {
+                $this->assertTrue(true);
+            }
+
+            $this->assertDatabaseHas('enterprise_purchase_orders', [
+                'id' => $order->id, 'status' => 'issued', 'issued_by' => $actor->id,
+            ]);
+            $this->assertSame($auditAfterIssue, DB::table('audit_logs')->count());
+
+            DB::table('enterprise_suppliers')->where('id', $order->supplier_id)
+                ->update(['store_id' => $ownStore->id]);
+            $this->assertSame('issued', $orders->issue($actor, $context, $order->id)->status);
+            $this->assertSame($auditAfterIssue, DB::table('audit_logs')->count());
+        }
+    }
+
     public function test_issue_revalidates_active_qualified_supplier_after_draft(): void
     {
         [$actor, , $context] = $this->scopedUser($this->allPermissions(), 'PO-ELIG');
