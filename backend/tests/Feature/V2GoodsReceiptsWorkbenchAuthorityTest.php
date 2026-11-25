@@ -8,15 +8,18 @@ use App\Enterprise\Modules\ModuleLifecycleManager;
 use App\Enterprise\Modules\ModuleRegistry;
 use App\Enterprise\Modules\ModuleState;
 use App\Enterprise\Organization\OrganizationHierarchyService;
+use App\Enterprise\Procurement\GoodsReceiptManager;
 use App\Models\Permission;
 use App\Models\Role;
 use App\Models\Store;
 use App\Models\User;
 use App\Support\AdminNavigation;
+use App\Support\TenantContextResolver;
 use Database\Seeders\CoreReferenceSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Route;
+use Symfony\Component\HttpKernel\Exception\HttpExceptionInterface;
 use Tests\Support\SyntheticErpWorkflowEvidence;
 use Tests\TestCase;
 
@@ -181,6 +184,84 @@ final class V2GoodsReceiptsWorkbenchAuthorityTest extends TestCase
                 'tab' => 'receipts', 'store_id' => $ownStore->id,
             ], false))
             ->assertForbidden();
+    }
+
+    public function test_direct_receipt_service_honors_persisted_permission_deny_on_stale_actor_in_ar_and_en(): void
+    {
+        $store = $this->store('B2B', 'P135-GRN-STALE-DENY');
+        $this->enableProcurement();
+        $actor = $this->actor('PROCUREMENT_MANAGER');
+        $context = app(TenantContextResolver::class)->wholesale($actor, $store->id);
+        $manager = app(GoodsReceiptManager::class);
+        $this->assertFalse((bool) $actor->has_permission_overrides);
+        $this->assertSame(0, $manager->paginate($actor, $context)->total());
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            foreach ([
+                'procurement.goods_receipts.view',
+                'procurement.goods_receipts.manage',
+                'procurement.goods_receipts.post',
+            ] as $permissionCode) {
+                $permissionId = (int) Permission::query()->where('code', $permissionCode)->value('id');
+                $this->assertGreaterThan(0, $permissionId);
+                DB::table('user_permission_overrides')->insert([
+                    'user_id' => $actor->id,
+                    'permission_id' => $permissionId,
+                    'scope_key' => 'global',
+                    'store_id' => null,
+                    'effect' => 'deny',
+                    'created_at' => now(),
+                    'updated_at' => now(),
+                ]);
+                DB::table('users')->where('id', $actor->id)
+                    ->update(['has_permission_overrides' => true]);
+
+                // This User was loaded before DENY; the database is now the
+                // only authoritative source for effective RBAC restrictions.
+                $this->assertFalse((bool) $actor->has_permission_overrides);
+                $this->assertTrue((bool) $actor->fresh()->has_permission_overrides);
+                $auditBefore = DB::table('audit_logs')->count();
+                $receiptBefore = DB::table('enterprise_goods_receipts')->count();
+                $operations = match ($permissionCode) {
+                    'procurement.goods_receipts.view' => [
+                        fn () => $manager->paginate($actor, $context),
+                        fn () => $manager->detail($actor, $context, 999999),
+                    ],
+                    'procurement.goods_receipts.manage' => [
+                        fn () => $manager->createFromIssuedOrder($actor, $context, 999999, [
+                            'lines' => [[
+                                'purchase_order_line_id' => 999999,
+                                'warehouse_id' => 999999,
+                                'quantity' => 1,
+                            ]],
+                        ]),
+                    ],
+                    default => [
+                        fn () => $manager->post($actor, $context, 999999),
+                    ],
+                };
+                foreach ($operations as $operation) {
+                    try {
+                        $operation();
+                        $this->fail('Persisted GRN permission DENY must reject a stale direct-service actor.');
+                    } catch (HttpExceptionInterface $exception) {
+                        $this->assertSame(403, $exception->getStatusCode());
+                    }
+                }
+
+                $this->assertSame($receiptBefore, DB::table('enterprise_goods_receipts')->count());
+                $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+                DB::table('user_permission_overrides')
+                    ->where('user_id', $actor->id)
+                    ->where('permission_id', $permissionId)
+                    ->delete();
+                DB::table('users')->where('id', $actor->id)
+                    ->update(['has_permission_overrides' => false]);
+                $this->assertFalse((bool) $actor->fresh()->has_permission_overrides);
+                $this->assertSame(0, $manager->paginate($actor, $context)->total());
+            }
+        }
     }
 
     private function store(string $channel, string $code): Store

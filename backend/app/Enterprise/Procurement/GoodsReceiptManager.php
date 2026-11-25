@@ -436,9 +436,19 @@ final class GoodsReceiptManager
         $this->assertProcurementEnabled();
         abort_if($context->enterpriseScope === null, 409, 'Enterprise data scope is required.');
 
+        // The direct caller may retain an old has_permission_overrides flag
+        // after an administrator has persisted a new global/store DENY.
+        // Authorize the current active instance of the *original* principal,
+        // not either a stale model or an unsaved replacement primary key.
+        $currentActor = User::query()
+            ->whereKey($persistedActorId)
+            ->where('is_active', true)
+            ->first();
+        abort_unless($currentActor instanceof User, 403);
+
         $scope = $context->enterpriseScope;
         $this->authorizer->authorize(
-            $actor,
+            $currentActor,
             $context,
             $permission,
             'company',
