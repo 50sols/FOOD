@@ -2115,6 +2115,65 @@ final class V2OrganizationSetupGuidanceTest extends TestCase
         }
     }
 
+    public function test_existing_enterprise_scope_cannot_be_reused_after_store_or_ancestor_deactivation_in_ar_and_en(): void
+    {
+        $hierarchy = app(OrganizationHierarchyService::class);
+        $unit = EnterpriseBusinessUnit::query()
+            ->where('code', OrganizationHierarchyService::DEFAULT_BUSINESS_UNIT)
+            ->whereHas('legalEntity.company.organization', fn ($query) => $query
+                ->where('code', OrganizationHierarchyService::DEFAULT_ORGANIZATION))
+            ->firstOrFail();
+        $typeId = DB::table('store_types')->where('code', 'B2B')->value('id');
+        $this->assertNotNull($typeId);
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            $store = Store::query()->create([
+                'store_type_id' => $typeId,
+                'code' => 'v2-existing-inactive-scope-'.$locale,
+                'name' => 'Existing Scope '.$locale,
+                'is_active' => true,
+            ]);
+            $scope = $hierarchy->ensureDefaultScopeForStore($store);
+            $loadedWhileActive = $store->fresh();
+            $auditBefore = DB::table('audit_logs')->count();
+            $this->assertNotNull($hierarchy->scopeForStore((int) $store->id));
+
+            DB::table('stores')->where('id', $store->id)->update(['is_active' => false]);
+            $this->assertNull($hierarchy->scopeForStore((int) $store->id));
+            try {
+                $hierarchy->ensureDefaultScopeForStore($loadedWhileActive);
+                $this->fail('An inactive persisted store must not reuse its historical scope.');
+            } catch (\\LogicException $exception) {
+                $this->assertStringContainsString('inactive store or hierarchy', $exception->getMessage());
+            }
+            $this->assertDatabaseHas('enterprise_store_scopes', [
+                'id' => $scope->id, 'store_id' => $store->id, 'business_unit_id' => $unit->id,
+            ]);
+            $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+
+            DB::table('stores')->where('id', $store->id)->update(['is_active' => true]);
+            $this->assertSame((int) $scope->id, (int) $hierarchy->ensureDefaultScopeForStore($loadedWhileActive)->id);
+
+            DB::table('enterprise_business_units')->where('id', $unit->id)->update(['is_active' => false]);
+            $this->assertNull($hierarchy->scopeForStore((int) $store->id));
+            try {
+                $hierarchy->ensureDefaultScopeForStore($loadedWhileActive);
+                $this->fail('A disabled persisted ancestor must not authorize existing scope reuse.');
+            } catch (\\LogicException $exception) {
+                $this->assertStringContainsString('inactive store or hierarchy', $exception->getMessage());
+            }
+            $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+            $this->assertDatabaseHas('enterprise_store_scopes', [
+                'id' => $scope->id, 'store_id' => $store->id, 'business_unit_id' => $unit->id,
+            ]);
+
+            DB::table('enterprise_business_units')->where('id', $unit->id)->update(['is_active' => true]);
+            $this->assertSame((int) $scope->id, (int) $hierarchy->ensureDefaultScopeForStore($loadedWhileActive)->id);
+            $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+        }
+    }
+
     public function test_direct_organization_writes_reject_forged_and_offboarded_audit_actors_in_both_locales(): void
     {
         $service = app(EnterpriseOrganizationAdministration::class);

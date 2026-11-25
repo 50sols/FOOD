@@ -84,6 +84,14 @@ final class OrganizationHierarchyService
 
         $existing = EnterpriseStoreScope::query()->where('store_id', $store->getKey())->first();
         if ($existing instanceof EnterpriseStoreScope) {
+            // An existing binding is historical ownership, not current
+            // operational authority. Reject an inactive persisted store or
+            // disabled ancestor before callers reuse this idempotent result
+            // for feature provisioning or an enterprise entitlement.
+            if ($this->scopeForStore((int) $store->getKey()) === null) {
+                throw new LogicException('Cannot reuse enterprise scope for an inactive store or hierarchy.');
+            }
+
             return $existing;
         }
 
