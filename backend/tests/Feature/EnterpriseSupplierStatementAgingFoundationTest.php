@@ -104,6 +104,61 @@ final class EnterpriseSupplierStatementAgingFoundationTest extends TestCase
         }
     }
 
+    public function test_supplier_document_registration_rechecks_locked_scope_after_preflight_in_both_locales(): void
+    {
+        $this->enableProcurement();
+        [$actor, , $context] = $this->scopedUser($this->allPermissions(), 'SAGE-DOC-RACE');
+        $foreignStore = $this->createRetailStore('SAGE-DOC-OTHER');
+        $directory = app(SupplierDirectory::class);
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            $supplier = $directory->create($actor, $context, [
+                'scope_type' => 'store',
+                'code' => 'SAGE-DOC-'.strtoupper($locale),
+                'name_en' => 'Supplier document scope '.$locale,
+            ]);
+            $auditBefore = DB::table('audit_logs')->count();
+            $switched = false;
+
+            // The first supplier SELECT is the public preflight. Mimic
+            // concurrent reassignment immediately after its result is read.
+            // The transaction must not trust that now-stale supplier object.
+            DB::listen(static function ($query) use (&$switched, $supplier, $foreignStore): void {
+                $sql = strtolower((string) $query->sql);
+                if ($switched || ! str_contains($sql, 'enterprise_suppliers') || ! str_contains($sql, 'select')) {
+                    return;
+                }
+
+                $switched = true;
+                DB::table('enterprise_suppliers')
+                    ->where('id', $supplier->id)
+                    ->update(['store_id' => $foreignStore->id]);
+            });
+
+            try {
+                $directory->registerDocument($actor, $context, $supplier->id, [
+                    'category' => 'registration',
+                    'title' => 'Must not escape store scope',
+                ]);
+                $this->fail('Supplier reassignment after preflight must reject document registration.');
+            } catch (HttpExceptionInterface $exception) {
+                $this->assertSame(404, $exception->getStatusCode());
+            }
+
+            $this->assertTrue($switched, 'Preflight race injection must actually execute.');
+            $this->assertDatabaseMissing('enterprise_supplier_documents', [
+                'supplier_id' => $supplier->id,
+                'title' => 'Must not escape store scope',
+            ]);
+            $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+            $this->assertDatabaseHas('enterprise_suppliers', [
+                'id' => $supplier->id,
+                'store_id' => $foreignStore->id,
+            ]);
+        }
+    }
+
     public function test_disabled_procurement_performs_no_supplier_statement_query_work(): void
     {
         [$actor, , $context] = $this->scopedUser($this->allPermissions(), 'SAGE-OFF');
