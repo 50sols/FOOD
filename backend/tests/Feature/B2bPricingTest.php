@@ -198,6 +198,108 @@ class B2bPricingTest extends TestCase
         $this->assertSame(7.25, $pricing->resolve($victim, $storeId, $productId)['price']);
     }
 
+    public function test_midquery_account_suspension_never_returns_private_tier_price_in_ar_and_en(): void
+    {
+        $this->seed(CoreReferenceSeeder::class);
+        [$storeId, $productId, $tierId] = $this->catalog();
+        $this->setPricingTiers($storeId, true);
+        DB::table('b2b_price_rules')->insert([
+            'price_tier_id' => $tierId,
+            'store_id' => $storeId,
+            'product_id' => $productId,
+            'unit_price' => 7.250,
+            'minimum_quantity' => 1,
+            'ordering_increment' => 1,
+            'pack_size' => 1,
+            'is_active' => true,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $buyer = User::query()->create([
+            'name' => 'Postquery Revocation Buyer',
+            'email' => 'pricing-late-revoke@example.test',
+            'password' => 'password',
+            'is_active' => true,
+        ]);
+        $legacy = Customer::query()->create([
+            'user_id' => $buyer->id,
+            'type' => 'b2b',
+            'name' => 'Postquery Revocation Buyer',
+            'email' => $buyer->email,
+        ]);
+        $customer = B2bCustomer::query()->firstOrCreate(
+            ['legacy_customer_id' => $legacy->id],
+            ['user_id' => $buyer->id, 'name' => 'Postquery Revocation Buyer', 'email' => $buyer->email],
+        );
+        $account = B2bAccount::query()->create([
+            'customer_id' => $legacy->id,
+            'b2b_customer_id' => $customer->id,
+            'price_tier_id' => $tierId,
+            'company_name' => 'Postquery Revocation Company',
+            'status' => 'active',
+        ]);
+        $accountId = (int) $account->id;
+        $pricing = app(B2bPriceResolver::class);
+        $armed = false;
+        $injected = false;
+
+        // Laravel fires QueryExecuted only after the actual tier-rule SQL
+        // returns, but before the resolver serializes private account prices.
+        DB::listen(static function ($query) use ($accountId, &$armed, &$injected): void {
+            $sql = strtolower(ltrim((string) $query->sql));
+            if (! $armed || $injected || ! str_starts_with($sql, 'select')
+                || ! str_contains($sql, 'b2b_price_rules')) {
+                return;
+            }
+
+            $injected = true;
+            $armed = false;
+            DB::table('b2b_accounts')->where('id', $accountId)->update([
+                'status' => 'suspended',
+                'updated_at' => now(),
+            ]);
+        });
+
+        $beforeAudit = DB::table('audit_logs')->count();
+        $beforeOrders = DB::table('orders')->count();
+        $beforeMovements = DB::table('stock_movements')->count();
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            $this->assertSame(7.25, $pricing->resolve($customer, $storeId, $productId)['price']);
+
+            $injected = false;
+            $armed = true;
+            try {
+                $pricing->resolve($customer, $storeId, $productId);
+                $this->fail('A suspended account must not receive a price after its tier SQL completed.');
+            } catch (\Symfony\Component\HttpKernel\Exception\HttpException $exception) {
+                $this->assertSame(403, $exception->getStatusCode());
+            } finally {
+                $armed = false;
+            }
+
+            $this->assertTrue($injected, 'Real tier-rule SELECT must trigger account suspension.');
+            $this->assertSame('suspended', DB::table('b2b_accounts')->where('id', $accountId)->value('status'));
+            try {
+                $pricing->resolve($customer, $storeId, $productId);
+                $this->fail('Persisted suspended account must remain denied.');
+            } catch (\Symfony\Component\HttpKernel\Exception\HttpException $exception) {
+                $this->assertSame(403, $exception->getStatusCode());
+            }
+
+            DB::table('b2b_accounts')->where('id', $accountId)->update([
+                'status' => 'active',
+                'updated_at' => now(),
+            ]);
+            $this->assertSame(7.25, $pricing->resolve($customer, $storeId, $productId)['price']);
+        }
+
+        $this->assertSame($beforeAudit, DB::table('audit_logs')->count());
+        $this->assertSame($beforeOrders, DB::table('orders')->count());
+        $this->assertSame($beforeMovements, DB::table('stock_movements')->count());
+    }
+
     public function test_revoked_wholesale_price_tier_cannot_price_customer_catalog_or_cart(): void
     {
         $this->seed(CoreReferenceSeeder::class);

@@ -82,6 +82,21 @@ class B2bPriceResolver
             throw new HttpException(403, 'Approved B2B pricing account is required.');
         }
 
+        // Account revocation or reassignment can be persisted during the
+        // subsequent product/rule queries. Do not disclose a stale private
+        // tier price under an earlier active-account snapshot.
+        $requireCurrentAccount = static function () use ($account, $customer): void {
+            $stillAllowed = B2bAccount::query()
+                ->whereKey($account->getKey())
+                ->where('b2b_customer_id', $customer->getKey())
+                ->where('status', 'active')
+                ->where('price_tier_id', $account->price_tier_id)
+                ->exists();
+            if (! $stillAllowed) {
+                throw new HttpException(403, 'Approved B2B pricing account is required.');
+            }
+        };
+
         $tiersEnabledByStore = [];
         foreach ($targets->pluck('store_id')->unique() as $storeId) {
             $storeId = (int) $storeId;
@@ -97,12 +112,17 @@ class B2bPriceResolver
 
         $baseResolved = $this->platformFallbackMany($baseTargets->all());
         if ($tierTargets->isEmpty()) {
+            $requireCurrentAccount();
+
             return $baseResolved;
         }
 
         if ($account->price_tier_id === null) {
             if ($isPlatformCustomer) {
-                return $baseResolved + $this->platformFallbackMany($tierTargets->all());
+                $fallback = $this->platformFallbackMany($tierTargets->all());
+                $requireCurrentAccount();
+
+                return $baseResolved + $fallback;
             }
 
             throw new HttpException(403, 'Approved B2B pricing account is required.');
@@ -170,6 +190,8 @@ class B2bPriceResolver
         }
 
         if (! $isPlatformCustomer) {
+            $requireCurrentAccount();
+
             return $baseResolved + $resolved;
         }
 
@@ -180,7 +202,10 @@ class B2bPriceResolver
             ->values()
             ->all();
 
-        return $baseResolved + $resolved + $this->platformFallbackMany($missing);
+        $fallback = $this->platformFallbackMany($missing);
+        $requireCurrentAccount();
+
+        return $baseResolved + $resolved + $fallback;
     }
 
     /**
