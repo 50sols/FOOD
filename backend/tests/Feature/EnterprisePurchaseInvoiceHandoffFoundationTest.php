@@ -58,6 +58,65 @@ final class EnterprisePurchaseInvoiceHandoffFoundationTest extends TestCase
         );
     }
 
+    public function test_invoice_direct_service_denies_forged_actor_before_finance_writes_in_ar_and_en(): void
+    {
+        $this->enableProcurement();
+        [$maker, $store, $context] = $this->scopedUser($this->allPermissions(), 'PINV-ACTOR');
+        [, $warehouse] = $this->stockTarget($store, 'PINV-ACTOR-SKU');
+        $receipt = $this->postedReceipt(
+            $maker, $context, $warehouse, 'PINV-ACTOR-SUP', 'PINV-ACTOR-SKU', 5,
+        );
+        $other = User::factory()->create(['is_active' => true]);
+        $manager = app(PurchaseInvoiceHandoffManager::class);
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            $forged = $other->fresh();
+            $this->assertNotNull($forged);
+            $forged->forceFill(['id' => $maker->id]);
+            $this->assertNotSame($forged->getRawOriginal('id'), $forged->getKey());
+            $reference = 'PINV-FORGED-'.strtoupper($locale);
+            $data = [
+                'supplier_invoice_number' => $reference,
+                'invoice_date' => '2026-10-16',
+                'lines' => [[
+                    'goods_receipt_line_id' => $receipt->lines()->firstOrFail()->id,
+                    'quantity' => 1,
+                ]],
+            ];
+            $auditBefore = DB::table('audit_logs')->count();
+
+            try {
+                $manager->createFromPostedReceipt($forged, $context, $receipt->id, $data);
+                $this->fail('Dirty actor ID must not create a purchase invoice.');
+            } catch (HttpExceptionInterface $exception) {
+                $this->assertSame(403, $exception->getStatusCode());
+            }
+            $this->assertDatabaseMissing('enterprise_purchase_invoices', [
+                'supplier_invoice_number' => $reference,
+            ]);
+            $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+
+            $invoice = $manager->createFromPostedReceipt($maker, $context, $receipt->id, $data);
+            $auditAfterCreate = DB::table('audit_logs')->count();
+
+            try {
+                $manager->handoff($forged, $context, $invoice->id);
+                $this->fail('Dirty actor ID must not hand off a purchase invoice.');
+            } catch (HttpExceptionInterface $exception) {
+                $this->assertSame(403, $exception->getStatusCode());
+            }
+            $this->assertDatabaseHas('enterprise_purchase_invoices', [
+                'id' => $invoice->id, 'status' => 'draft',
+            ]);
+            $this->assertSame($auditAfterCreate, DB::table('audit_logs')->count());
+
+            $posted = $manager->handoff($maker, $context, $invoice->id);
+            $this->assertSame('handed_off', $posted->status);
+            $this->assertNotNull($posted->outbox_event_id);
+        }
+    }
+
     public function test_handoff_is_transactional_retry_safe_and_emits_one_outbox_event(): void
     {
         $this->enableProcurement();
