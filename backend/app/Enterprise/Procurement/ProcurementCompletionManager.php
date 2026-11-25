@@ -1363,35 +1363,51 @@ final class ProcurementCompletionManager
         }
 
         try {
-            $id = DB::table('enterprise_procurement_contract_documents')->insertGetId([
-                'contract_id' => $contract->id,
-                'title' => $data['title'],
-                'reference' => $data['reference'] ?? null,
-                'storage_path' => $storagePath,
-                'original_name' => $originalName,
-                'mime_type' => $mimeType,
-                'size_bytes' => $sizeBytes,
-                'created_by' => $actor->id,
-                'created_at' => now(),
-                'updated_at' => now(),
-            ]);
-        } catch (\Throwable $exception) {
+            return DB::transaction(function () use ($actor, $scope, $contractId, $data, $storagePath, $originalName, $mimeType, $sizeBytes): object {
+                // Serialize document registration with module shutdown and
+                // contract reassignment. Preflight visibility is insufficient
+                // after an upload or any other operation between the two.
+                $module = DB::table('enterprise_modules')
+                    ->where('code', 'procurement')
+                    ->lockForUpdate()
+                    ->first();
+                abort_unless(
+                    $module !== null && $module->state === ModuleState::ENABLED->value,
+                    404,
+                    'Procurement module is disabled.',
+                );
+                $currentContract = $this->visibleContract($scope, $contractId, true);
+                $id = DB::table('enterprise_procurement_contract_documents')->insertGetId([
+                    'contract_id' => $currentContract->id,
+                    'title' => $data['title'],
+                    'reference' => $data['reference'] ?? null,
+                    'storage_path' => $storagePath,
+                    'original_name' => $originalName,
+                    'mime_type' => $mimeType,
+                    'size_bytes' => $sizeBytes,
+                    'created_by' => $actor->id,
+                    'created_at' => now(),
+                    'updated_at' => now(),
+                ]);
+
+                $document = DB::table('enterprise_procurement_contract_documents')
+                    ->where('id', $id)->firstOrFail();
+                $this->audit->record('enterprise.procurement.contract.document_registered', $actor, null, null, [
+                    'store_id' => $scope->storeId,
+                    'contract_id' => $currentContract->id,
+                    'document_id' => $id,
+                    'title' => $document->title,
+                    'has_attachment' => $storagePath !== null,
+                ]);
+
+                return $document;
+            });
+        } catch (\\Throwable $exception) {
             if ($storagePath !== null) {
                 Storage::disk('local')->delete($storagePath);
             }
             throw $exception;
         }
-
-        $document = DB::table('enterprise_procurement_contract_documents')->where('id', $id)->firstOrFail();
-        $this->audit->record('enterprise.procurement.contract.document_registered', $actor, null, null, [
-            'store_id' => $scope->storeId,
-            'contract_id' => $contract->id,
-            'document_id' => $id,
-            'title' => $document->title,
-            'has_attachment' => $storagePath !== null,
-        ]);
-
-        return $document;
     }
 
     public function contractDocument(
