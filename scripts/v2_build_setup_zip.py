@@ -190,9 +190,15 @@ def build_setup_zip(source_root: Path, output: Path, source_epoch: int) -> str:
         # Keep the canonical Laravel front controller and root .htaccess.
         public_asset = (
             folded_parts[:2] == ("backend", "public")
+            or folded_parts[:1] == ("public",)
             or folded_parts[:1] in (("assets",), ("brand",), ("demo",), ("preview",))
         )
-        canonical_bootstrap = name in ("backend/public/index.php", "backend/public/.htaccess")
+        canonical_bootstrap = name in (
+            "backend/public/index.php",
+            "backend/public/.htaccess",
+            "public/index.php",
+            "public/.htaccess",
+        )
         if public_asset and not canonical_bootstrap and any(
             re.search(r"\.(?:php[0-9]*|phtml|phar|cgi|pl|py|sh|asp|aspx|jsp)(?:\.|$)", part, re.IGNORECASE)
             or re.fullmatch(r"(?:\.htaccess|\.user\.ini|web\.config)(?:\..*)?", part, re.IGNORECASE)

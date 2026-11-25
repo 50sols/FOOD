@@ -459,6 +459,12 @@ class DeterministicSetupZipTest(unittest.TestCase):
             "backend/public/assets/admin/web.config",
             "backend/public/js/hidden.phtml",
             "backend/public/brand/backdoor.phar",
+            "public/assets/admin/shell.php",
+            "public/preview/customer/dropper.php.jpg",
+            "public/js/.htaccess",
+            "public/.user.ini",
+            "PUBLIC/ASSETS/admin/config.web.config",
+            "PUBLIC/js/hidden.PHTML",
         )
         with tempfile.TemporaryDirectory() as temporary:
             base = Path(temporary)
@@ -480,6 +486,27 @@ class DeterministicSetupZipTest(unittest.TestCase):
                     self.assertFalse(output.exists())
                     self.assertEqual(unsafe.read_bytes(), b"NOT-AN-ASSET")
             self.assertEqual(list(base.glob(".v2-setup-*.zip")), [])
+
+    def test_root_public_mirror_keeps_laravel_bootstrap_and_static_assets(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            root = base / "source"
+            root.mkdir()
+            (root / "VERSION").write_bytes(b"1.0.1\n")
+            for name, payload in (
+                ("public/index.php", b"<?php // bootstrap"),
+                ("public/.htaccess", b"RewriteEngine On"),
+                ("public/assets/admin/app.css", b"body {}"),
+            ):
+                file = root / name
+                file.parent.mkdir(parents=True, exist_ok=True)
+                file.write_bytes(payload)
+            output = base / "setup.zip"
+            with mock.patch("v2_build_setup_zip._open_verified_member", side_effect=lambda path, *_: path.open("rb")):
+                self.assertEqual(64, len(build_setup_zip(root, output, SOURCE_DATE_EPOCH)))
+            with zipfile.ZipFile(output) as archive:
+                for name in ("public/index.php", "public/.htaccess", "public/assets/admin/app.css"):
+                    self.assertIn(name, archive.namelist())
 
     def test_nonportable_zip_names_fail_before_temp_archive_creation(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

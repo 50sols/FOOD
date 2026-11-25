@@ -227,9 +227,15 @@ def _member_target(member: zipfile.ZipInfo) -> tuple[str, str, bool]:
     # front controller and top-level public .htaccess are exceptions.
     public_asset = (
         folded_parts[:2] == ["backend", "public"]
+        or folded_parts[:1] == ["public"]
         or folded_parts[:1] in (["assets"], ["brand"], ["demo"], ["preview"])
     )
-    bootstrap = normalized in ("backend/public/index.php", "backend/public/.htaccess")
+    bootstrap = normalized in (
+        "backend/public/index.php",
+        "backend/public/.htaccess",
+        "public/index.php",
+        "public/.htaccess",
+    )
     _require(
         not (
             public_asset
