@@ -42,6 +42,68 @@ final class EnterpriseSupplierStatementAgingFoundationTest extends TestCase
         SyntheticErpWorkflowEvidence::install();
     }
 
+    public function test_supplier_directory_rejects_forged_original_actor_key_without_writes_in_ar_and_en(): void
+    {
+        $this->enableProcurement();
+        [$maker, , $context] = $this->scopedUser($this->allPermissions(), 'SAGE-ACTOR-KEY');
+        $other = User::factory()->create(['is_active' => true]);
+        $directory = app(SupplierDirectory::class);
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            $code = 'SAGE-ACTOR-'.strtoupper($locale);
+            $forged = $other->fresh();
+            $this->assertNotNull($forged);
+            $forged->forceFill(['id' => $maker->id]);
+            $this->assertNotSame($forged->getRawOriginal('id'), $forged->getKey());
+            $auditBefore = DB::table('audit_logs')->count();
+
+            try {
+                $directory->create($forged, $context, [
+                    'scope_type' => 'store', 'code' => $code, 'name_en' => $code,
+                ]);
+                $this->fail('Dirty actor identity must not register a supplier.');
+            } catch (HttpExceptionInterface $exception) {
+                $this->assertSame(403, $exception->getStatusCode());
+            }
+
+            $this->assertDatabaseMissing('enterprise_suppliers', ['code' => $code]);
+            $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+
+            $supplier = $directory->create($maker, $context, [
+                'scope_type' => 'store', 'code' => $code, 'name_en' => $code,
+            ]);
+            $auditAfterCreate = DB::table('audit_logs')->count();
+
+            try {
+                $directory->update($forged, $context, $supplier->id, ['name_en' => 'FORGED']);
+                $this->fail('Dirty actor identity must not modify supplier data.');
+            } catch (HttpExceptionInterface $exception) {
+                $this->assertSame(403, $exception->getStatusCode());
+            }
+
+            try {
+                $directory->registerDocument($forged, $context, $supplier->id, [
+                    'category' => 'registration', 'title' => 'FORGED',
+                ]);
+                $this->fail('Dirty actor identity must not create supplier documents.');
+            } catch (HttpExceptionInterface $exception) {
+                $this->assertSame(403, $exception->getStatusCode());
+            }
+
+            $this->assertDatabaseHas('enterprise_suppliers', [
+                'id' => $supplier->id, 'name_en' => $code, 'created_by' => $maker->id,
+            ]);
+            $this->assertDatabaseMissing('enterprise_supplier_documents', [
+                'supplier_id' => $supplier->id, 'title' => 'FORGED',
+            ]);
+            $this->assertSame($auditAfterCreate, DB::table('audit_logs')->count());
+            $this->assertSame('ACTIVE '.strtoupper($locale), $directory->update(
+                $maker, $context, $supplier->id, ['name_en' => 'ACTIVE '.strtoupper($locale)],
+            )->name_en);
+        }
+    }
+
     public function test_disabled_procurement_performs_no_supplier_statement_query_work(): void
     {
         [$actor, , $context] = $this->scopedUser($this->allPermissions(), 'SAGE-OFF');
