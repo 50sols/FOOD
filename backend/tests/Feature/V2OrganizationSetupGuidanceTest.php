@@ -2284,6 +2284,92 @@ final class V2OrganizationSetupGuidanceTest extends TestCase
         }
     }
 
+    public function test_store_scope_assignment_denies_permission_revoked_inside_canonical_transaction_in_ar_and_en(): void
+    {
+        $service = app(EnterpriseOrganizationAdministration::class);
+        $unit = EnterpriseBusinessUnit::query()
+            ->where('code', OrganizationHierarchyService::DEFAULT_BUSINESS_UNIT)
+            ->whereHas('legalEntity.company.organization', fn ($query) => $query
+                ->where('code', OrganizationHierarchyService::DEFAULT_ORGANIZATION))
+            ->firstOrFail();
+        $typeId = DB::table('store_types')->where('code', 'B2B')->value('id');
+        $permissionId = DB::table('permissions')->where('code', 'platform.manage')->value('id');
+        $this->assertNotNull($typeId);
+        $this->assertNotNull($permissionId);
+
+        $armed = false;
+        $revoked = false;
+        $actorId = 0;
+        DB::listen(static function ($query) use (&$armed, &$revoked, &$actorId, $permissionId): void {
+            $sql = strtolower((string) $query->sql);
+            if (! $armed || $revoked || ! str_contains($sql, 'select')
+                || ! str_contains($sql, 'enterprise_store_scopes')) {
+                return;
+            }
+
+            // This SELECT occurs *inside* the canonical assignment
+            // transaction, after the Administration wrapper's final
+            // external permission check but before updateOrCreate().
+            $armed = false;
+            $revoked = true;
+            DB::table('user_permission_overrides')->insert([
+                'user_id' => $actorId,
+                'permission_id' => $permissionId,
+                'scope_key' => 'global',
+                'store_id' => null,
+                'effect' => 'deny',
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+            DB::table('users')->where('id', $actorId)
+                ->update(['has_permission_overrides' => true]);
+        });
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            $actor = $this->actor('SYSTEM_ADMINISTRATOR', $locale);
+            $actorId = (int) $actor->id;
+            $this->assertTrue($actor->hasPermission('platform.manage'));
+            $store = Store::query()->create([
+                'store_type_id' => $typeId,
+                'code' => 'v2-in-tx-revoke-'.$locale,
+                'name' => 'Store '.$locale,
+                'is_active' => true,
+            ]);
+            $auditBefore = DB::table('audit_logs')->count();
+
+            $revoked = false;
+            $armed = true;
+            try {
+                $service->assignStore($store, $unit, $actor);
+                $this->fail('A DENY issued after locked scope lookup must prevent assignment.');
+            } catch (AuthorizationException $exception) {
+                $this->assertSame(403, $exception->status() ?? 403);
+            }
+
+            $this->assertTrue($revoked, 'The test must revoke permission during canonical scope SQL.');
+            $this->assertDatabaseMissing('enterprise_store_scopes', ['store_id' => $store->id]);
+            $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+            // The injected DENY shared the rejected write transaction, so
+            // its rollback is expected, unlike a separate committed session.
+            $this->assertDatabaseMissing('user_permission_overrides', [
+                'user_id' => $actor->id,
+                'permission_id' => $permissionId,
+                'effect' => 'deny',
+            ]);
+            $this->assertFalse((bool) $actor->fresh()->has_permission_overrides);
+
+            $service->assignStore($store, $unit, $actor);
+            $this->assertDatabaseHas('enterprise_store_scopes', [
+                'store_id' => $store->id,
+                'business_unit_id' => $unit->id,
+            ]);
+            $this->assertSame($auditBefore + 1, DB::table('audit_logs')->count());
+            $service->assignStore($store, $unit, $actor);
+            $this->assertSame($auditBefore + 1, DB::table('audit_logs')->count());
+        }
+    }
+
     private function actor(string $roleCode, string $locale): User
     {
         $user = User::query()->create([

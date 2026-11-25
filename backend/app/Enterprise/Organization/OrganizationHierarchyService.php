@@ -105,8 +105,9 @@ final class OrganizationHierarchyService
         Store $store,
         EnterpriseBusinessUnit $businessUnit,
         ?Authenticatable $actor = null,
+        ?callable $authorizeBeforeMutation = null,
     ): EnterpriseStoreScope {
-        return DB::transaction(function () use ($store, $businessUnit, $actor): EnterpriseStoreScope {
+        return DB::transaction(function () use ($store, $businessUnit, $actor, $authorizeBeforeMutation): EnterpriseStoreScope {
             // The canonical writer is also used outside the Admin wrapper.
             // Rebind BOTH identities by their originally loaded database keys:
             // refresh() and getKey() on a dirty Eloquent instance may point
@@ -160,6 +161,13 @@ final class OrganizationHierarchyService
                 }
 
                 if ((int) $existing->business_unit_id === (int) $businessUnit->getKey()) {
+                    // The admin wrapper must also authorize current persisted
+                    // permissions after all locked scope reads, even for a
+                    // non-mutating idempotent retry of the assignment.
+                    if ($authorizeBeforeMutation !== null) {
+                        $authorizeBeforeMutation();
+                    }
+
                     return $existing;
                 }
             }
@@ -170,6 +178,14 @@ final class OrganizationHierarchyService
             // The identity and lifecycle were re-read under the same row lock.
             if (! $store->is_active) {
                 throw new LogicException('Cannot assign enterprise scope to an inactive store.');
+            }
+
+            // Scope/lineage SELECTs above can outlive a live permission revoke.
+            // Keep the admin authorization callback inside the write
+            // transaction, immediately before scope persistence and audit.
+            // Other trusted internal callers may omit this callback.
+            if ($authorizeBeforeMutation !== null) {
+                $authorizeBeforeMutation();
             }
 
             $scope = EnterpriseStoreScope::query()->updateOrCreate(

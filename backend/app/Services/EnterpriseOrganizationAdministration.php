@@ -204,7 +204,12 @@ final class EnterpriseOrganizationAdministration
         $this->assertPersistedActiveActor($actor);
 
         try {
-            $this->hierarchy->assignStore($store, $unit, $actor);
+            $this->hierarchy->assignStore(
+                $store,
+                $unit,
+                $actor,
+                fn () => $this->assertPersistedActiveActor($actor),
+            );
         } catch (\LogicException) {
             throw ValidationException::withMessages(['store' => [__('enterprise_organization.cross_scope_denied')]]);
         }
