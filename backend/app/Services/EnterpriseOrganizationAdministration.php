@@ -8,6 +8,7 @@ use App\Models\EnterpriseCompany;
 use App\Models\EnterpriseLegalEntity;
 use App\Models\EnterpriseOrganization;
 use App\Models\Store;
+use App\Models\User;
 use Illuminate\Contracts\Auth\Authenticatable;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Facades\DB;
@@ -22,6 +23,8 @@ final class EnterpriseOrganizationAdministration
 
     public function createOrganization(array $data, Authenticatable $actor): EnterpriseOrganization
     {
+        $this->assertPersistedActiveActor($actor);
+
         // Service callers, not only HTTP controllers, must respect the same
         // editable field boundary on unguarded Eloquent hierarchy models.
         $this->assertWritableRecordFields($data);
@@ -36,6 +39,8 @@ final class EnterpriseOrganizationAdministration
 
     public function updateOrganization(EnterpriseOrganization $organization, array $data, Authenticatable $actor): EnterpriseOrganization
     {
+        $this->assertPersistedActiveActor($actor);
+
         $this->assertUpdateAllowed($organization, $data);
 
         return $this->update($organization, $data, $actor, 'enterprise.organization.updated');
@@ -43,6 +48,8 @@ final class EnterpriseOrganizationAdministration
 
     public function createCompany(EnterpriseOrganization $organization, array $data, Authenticatable $actor): EnterpriseCompany
     {
+        $this->assertPersistedActiveActor($actor);
+
         // Service callers, not only HTTP controllers, must respect the same
         // editable field boundary on unguarded Eloquent hierarchy models.
         $this->assertWritableRecordFields($data);
@@ -69,6 +76,8 @@ final class EnterpriseOrganizationAdministration
 
     public function updateCompany(EnterpriseCompany $company, array $data, Authenticatable $actor): EnterpriseCompany
     {
+        $this->assertPersistedActiveActor($actor);
+
         $this->assertUpdateAllowed($company, $data);
 
         return $this->update($company, $data, $actor, 'enterprise.company.updated');
@@ -76,6 +85,8 @@ final class EnterpriseOrganizationAdministration
 
     public function createLegalEntity(EnterpriseCompany $company, array $data, Authenticatable $actor): EnterpriseLegalEntity
     {
+        $this->assertPersistedActiveActor($actor);
+
         // Service callers, not only HTTP controllers, must respect the same
         // editable field boundary on unguarded Eloquent hierarchy models.
         $this->assertWritableRecordFields($data);
@@ -102,6 +113,8 @@ final class EnterpriseOrganizationAdministration
 
     public function updateLegalEntity(EnterpriseLegalEntity $entity, array $data, Authenticatable $actor): EnterpriseLegalEntity
     {
+        $this->assertPersistedActiveActor($actor);
+
         $this->assertUpdateAllowed($entity, $data);
 
         return $this->update($entity, $data, $actor, 'enterprise.legal_entity.updated');
@@ -109,6 +122,8 @@ final class EnterpriseOrganizationAdministration
 
     public function createBusinessUnit(EnterpriseLegalEntity $entity, array $data, Authenticatable $actor): EnterpriseBusinessUnit
     {
+        $this->assertPersistedActiveActor($actor);
+
         // Service callers, not only HTTP controllers, must respect the same
         // editable field boundary on unguarded Eloquent hierarchy models.
         $this->assertWritableRecordFields($data);
@@ -135,6 +150,8 @@ final class EnterpriseOrganizationAdministration
 
     public function updateBusinessUnit(EnterpriseBusinessUnit $unit, array $data, Authenticatable $actor): EnterpriseBusinessUnit
     {
+        $this->assertPersistedActiveActor($actor);
+
         $this->assertUpdateAllowed($unit, $data);
 
         return $this->update($unit, $data, $actor, 'enterprise.business_unit.updated');
@@ -142,6 +159,8 @@ final class EnterpriseOrganizationAdministration
 
     public function assignStore(Store $store, EnterpriseBusinessUnit $unit, Authenticatable $actor): void
     {
+        $this->assertPersistedActiveActor($actor);
+
         // Untrusted service callers can carry dirty Eloquent primary keys:
         // fresh() follows the caller-visible key, which may redirect a store
         // scope to an unrelated unit. Bind both identities to their original
@@ -437,6 +456,25 @@ final class EnterpriseOrganizationAdministration
 
             return $record->refresh();
         });
+    }
+
+    /**
+     * The HTTP Gate protects the route; the canonical service must separately
+     * protect audit attribution against a dirty or offboarded Eloquent actor.
+     * Do not trust a caller-mutated getAuthIdentifier() or stale is_active.
+     */
+    private function assertPersistedActiveActor(Authenticatable $actor): void
+    {
+        if (! $actor instanceof User || ! $actor->exists) {
+            abort(403);
+        }
+
+        $originalId = $actor->getRawOriginal($actor->getKeyName());
+        if ($originalId === null
+            || (string) $actor->getAuthIdentifier() !== (string) $originalId
+            || ! User::query()->whereKey($originalId)->where('is_active', true)->exists()) {
+            abort(403);
+        }
     }
 
     private function snapshot(Model $model): array
