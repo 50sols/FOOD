@@ -12,6 +12,7 @@ use Database\Seeders\CoreReferenceSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Laravel\Sanctum\Sanctum;
+use Symfony\Component\HttpKernel\Exception\HttpException;
 use Tests\TestCase;
 
 class B2bPricingTest extends TestCase
@@ -185,7 +186,7 @@ class B2bPricingTest extends TestCase
                 try {
                     $pricing->resolve($untrusted, $storeId, $productId);
                     $this->fail('An untrusted B2B customer identity must not resolve a foreign tier price.');
-                } catch (\Symfony\Component\HttpKernel\Exception\HttpException $exception) {
+                } catch (HttpException $exception) {
                     $this->assertSame(403, $exception->getStatusCode());
                 }
             }
@@ -273,7 +274,7 @@ class B2bPricingTest extends TestCase
             try {
                 $pricing->resolve($customer, $storeId, $productId);
                 $this->fail('A suspended account must not receive a price after its tier SQL completed.');
-            } catch (\Symfony\Component\HttpKernel\Exception\HttpException $exception) {
+            } catch (HttpException $exception) {
                 $this->assertSame(403, $exception->getStatusCode());
             } finally {
                 $armed = false;
@@ -284,7 +285,7 @@ class B2bPricingTest extends TestCase
             try {
                 $pricing->resolve($customer, $storeId, $productId);
                 $this->fail('Persisted suspended account must remain denied.');
-            } catch (\Symfony\Component\HttpKernel\Exception\HttpException $exception) {
+            } catch (HttpException $exception) {
                 $this->assertSame(403, $exception->getStatusCode());
             }
 
