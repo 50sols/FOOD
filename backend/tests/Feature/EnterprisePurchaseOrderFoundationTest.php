@@ -126,6 +126,55 @@ final class EnterprisePurchaseOrderFoundationTest extends TestCase
         app(PurchaseOrderManager::class)->createFromApprovedRequest($actor, $context, $request->id);
     }
 
+    public function test_direct_purchase_order_issue_and_cancel_reject_forged_actor_id_in_both_locales(): void
+    {
+        [$actor, , $context] = $this->scopedUser($this->allPermissions(), 'PO-ACTOR-KEY');
+        $other = User::factory()->create(['is_active' => true]);
+        $orders = app(PurchaseOrderManager::class);
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            $order = $this->approvedOrder($actor, $context, 'PO-KEY-SUP-'.$locale);
+
+            $forged = $other->fresh();
+            $this->assertNotNull($forged);
+            $forged->forceFill(['id' => $actor->id]);
+            $this->assertNotSame($forged->getRawOriginal('id'), $forged->getKey());
+
+            $auditBefore = DB::table('audit_logs')->count();
+            try {
+                $orders->issue($forged, $context, $order->id);
+                $this->fail('Dirty actor key must never issue a purchase order as a second user.');
+            } catch (HttpException $exception) {
+                $this->assertSame(403, $exception->getStatusCode());
+            }
+            $this->assertDatabaseHas('enterprise_purchase_orders', [
+                'id' => $order->id, 'status' => 'draft', 'issued_by' => null,
+            ]);
+            $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+
+            $this->assertSame('issued', $orders->issue($actor, $context, $order->id)->status);
+            $auditAfterIssue = DB::table('audit_logs')->count();
+            try {
+                $orders->cancel($forged, $context, $order->id);
+                $this->fail('Dirty actor key must never cancel an issued purchase order.');
+            } catch (HttpException $exception) {
+                $this->assertSame(403, $exception->getStatusCode());
+            }
+            $this->assertDatabaseHas('enterprise_purchase_orders', [
+                'id' => $order->id, 'status' => 'issued', 'issued_by' => $actor->id,
+                'cancelled_by' => null,
+            ]);
+            $this->assertSame($auditAfterIssue, DB::table('audit_logs')->count());
+
+            $this->assertSame('cancelled', $orders->cancel($actor, $context, $order->id)->status);
+            $this->assertDatabaseHas('enterprise_purchase_orders', [
+                'id' => $order->id, 'status' => 'cancelled',
+                'cancelled_by' => $actor->id,
+            ]);
+        }
+    }
+
     public function test_issue_and_cancel_are_retry_safe_and_audited(): void
     {
         [$actor, , $context] = $this->scopedUser($this->allPermissions(), 'PO-C');
