@@ -283,8 +283,10 @@ final class PurchaseInvoiceHandoffManager
             }
 
             $this->requireStatus($invoice, ['draft'], 'handed off');
-            $this->completion->assertMatchAllowsHandoff($invoice->id);
 
+            // Lock the posted GRN before validating the three-way match.
+            // Otherwise the source can change after match approval but before
+            // Finance receives its immutable outbox event.
             $receipt = $this->visibleReceiptQuery($scope)
                 ->whereKey($invoice->goods_receipt_id)
                 ->lockForUpdate()
@@ -299,6 +301,8 @@ final class PurchaseInvoiceHandoffManager
                     ],
                 ]);
             }
+
+            $this->completion->assertMatchAllowsHandoff($invoice->id);
 
             $lines = $invoice->lines()->orderBy('line_no')->get();
             if ($lines->isEmpty()) {

@@ -322,6 +322,84 @@ final class EnterprisePurchaseInvoiceHandoffFoundationTest extends TestCase
         ]);
     }
 
+    public function test_finance_handoff_rechecks_locked_grn_source_after_preflight_in_ar_and_en(): void
+    {
+        $this->enableProcurement();
+        [$actor, $store, $context] = $this->scopedUser($this->allPermissions(), 'PINV-GRN-RACE');
+        [, $warehouse] = $this->stockTarget($store, 'PINV-GRN-RACE-SKU');
+        $manager = app(PurchaseInvoiceHandoffManager::class);
+
+        // Listen once: Laravel query listeners survive both locale iterations.
+        $armed = false;
+        $injected = false;
+        $targetReceiptId = 0;
+        $tamperedOrder = '';
+        DB::listen(static function ($query) use (&$armed, &$injected, &$targetReceiptId, &$tamperedOrder): void {
+            $sql = strtolower((string) $query->sql);
+            if (! $armed
+                || ! str_contains($sql, 'select')
+                || ! str_contains($sql, 'enterprise_goods_receipts')
+                || str_contains($sql, ' join ')) {
+                return;
+            }
+
+            $armed = false;
+            $injected = true;
+            // The select that obtains the GRN row lock has returned; emulate
+            // a source correction in the pre-existing time-of-check gap.
+            DB::table('enterprise_goods_receipts')->where('id', $targetReceiptId)
+                ->update(['source_order_number' => $tamperedOrder]);
+        });
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            $receipt = $this->postedReceipt(
+                $actor, $context, $warehouse, 'PINV-RACE-SUP-'.strtoupper($locale),
+                'PINV-GRN-RACE-SKU', 3,
+            );
+            $invoice = $manager->createFromPostedReceipt($actor, $context, $receipt->id, [
+                'supplier_invoice_number' => 'PINV-GRN-RACE-'.strtoupper($locale),
+                'invoice_date' => '2026-10-16',
+                'lines' => [[
+                    'goods_receipt_line_id' => $receipt->lines()->firstOrFail()->id,
+                    'quantity' => 1,
+                ]],
+            ]);
+            $sourceOrderNumber = $receipt->source_order_number;
+            $tamperedOrder = 'TAMPER-GRN-'.strtoupper($locale);
+            $targetReceiptId = (int) $receipt->id;
+            $auditBefore = DB::table('audit_logs')->count();
+            $outboxBefore = DB::table('enterprise_outbox_messages')
+                ->where('event_type', 'ProcurementPurchaseInvoiceHandedOff')->count();
+            $injected = false;
+            $armed = true;
+
+            try {
+                $manager->handoff($actor, $context, $invoice->id);
+                $this->fail('A GRN source changed before the match must never reach Finance.');
+            } catch (ValidationException $exception) {
+                $this->assertArrayHasKey('three_way_match', $exception->errors());
+            } finally {
+                $armed = false;
+            }
+
+            $this->assertTrue($injected, 'Race injection did not reach the locked GRN query.');
+            $this->assertDatabaseHas('enterprise_goods_receipts', [
+                'id' => $receipt->id,
+                'source_order_number' => $sourceOrderNumber,
+            ]);
+            $this->assertDatabaseHas('enterprise_purchase_invoices', [
+                'id' => $invoice->id,
+                'status' => 'draft',
+                'outbox_event_id' => null,
+            ]);
+            $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+            $this->assertSame($outboxBefore, DB::table('enterprise_outbox_messages')
+                ->where('event_type', 'ProcurementPurchaseInvoiceHandedOff')->count());
+            $this->assertSame('handed_off', $manager->handoff($actor, $context, $invoice->id)->status);
+        }
+    }
+
     public function test_stale_overlapping_draft_is_rechecked_at_handoff(): void
     {
         $this->enableProcurement();
