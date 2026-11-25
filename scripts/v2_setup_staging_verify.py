@@ -221,6 +221,27 @@ def _member_target(member: zipfile.ZipInfo) -> tuple[str, str, bool]:
 
     normalized = "/".join(parts)
     folded_parts = [p.casefold() for p in parts]
+    # A crafted archive must not bypass the Setup builder's public static
+    # asset policy by injecting scripts or server configuration into a
+    # web-served compiled assets tree. Only the canonical Laravel bootstrap
+    # front controller and top-level public .htaccess are exceptions.
+    public_asset = (
+        folded_parts[:2] == ["backend", "public"]
+        or folded_parts[:1] in (["assets"], ["brand"], ["demo"], ["preview"])
+    )
+    bootstrap = normalized in ("backend/public/index.php", "backend/public/.htaccess")
+    _require(
+        not (
+            public_asset
+            and not bootstrap
+            and any(
+                re.search(r"\.(?:php[0-9]*|phtml|phar|cgi|pl|py|sh|asp|aspx|jsp)(?:\.|$)", part, re.IGNORECASE)
+                or re.fullmatch(r"(?:\.htaccess|\.user\.ini|web\.config)(?:\..*)?", part, re.IGNORECASE)
+                for part in parts
+            )
+        ),
+        f"Executable public static asset in Setup ZIP: {name!r}",
+    )
     # Public upload roots are live runtime data, not fresh-install source.
     # Reject the roots themselves (including directory-only ZIP members)
     # because they can shadow an installer-created public/storage symlink;
