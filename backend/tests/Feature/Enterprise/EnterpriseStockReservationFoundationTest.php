@@ -11,6 +11,7 @@ use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Validation\ValidationException;
+use Symfony\Component\HttpKernel\Exception\HttpException;
 use Symfony\Component\HttpKernel\Exception\NotFoundHttpException;
 use Tests\Feature\Enterprise\Concerns\EnablesEnterpriseWms;
 use Tests\TestCase;
@@ -122,6 +123,81 @@ final class EnterpriseStockReservationFoundationTest extends TestCase
         $this->assertDatabaseHas('audit_logs', [
             'event' => 'enterprise.wms.stock_reservation.changed',
             'store_id' => $fixture['store_id'],
+        ]);
+    }
+
+    public function test_direct_wms_reservation_rejects_mutated_actor_identity_in_ar_and_en(): void
+    {
+        $this->seed(CoreReferenceSeeder::class);
+        $fixture = $this->fixture();
+        $actor = $this->inventoryUser($fixture['store_id']);
+        $originalActorId = (int) $actor->getKey();
+
+        // Even if another account has the identical store role, an unsaved
+        // Eloquent primary-key substitution cannot become movement.user_id.
+        $other = User::query()->create([
+            'name' => 'Other WMS Reservation User',
+            'email' => 'other-wms-reservation@example.test',
+            'password' => 'password',
+            'is_active' => true,
+        ]);
+        UserStoreRole::query()->create([
+            'user_id' => $other->getKey(),
+            'store_id' => $fixture['store_id'],
+            'role_id' => Role::query()->where('code', 'RETAIL_INVENTORY')->firstOrFail()->getKey(),
+        ]);
+        $service = app(StockReservationService::class);
+        $beforeReserved = DB::table('inventories')
+            ->where('id', $fixture['inventory_id'])->value('reserved_quantity');
+        $beforeOwners = DB::table('enterprise_inventory_owner_positions')
+            ->where('inventory_id', $fixture['inventory_id'])->count();
+        $beforeMovements = DB::table('stock_movements')
+            ->where('inventory_id', $fixture['inventory_id'])->count();
+        $beforeAudits = DB::table('audit_logs')
+            ->where('event', 'enterprise.wms.stock_reservation.changed')->count();
+
+        $actor->setAttribute($actor->getKeyName(), $other->getKey());
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            foreach (['write', 'read'] as $operation) {
+                try {
+                    if ($operation === 'write') {
+                        $service->ensureReservation(
+                            $actor, $fixture['warehouse_id'], $fixture['product_id'],
+                            1.0, 'enterprise_test_forged_actor', 3101,
+                        );
+                    } else {
+                        $service->activeReservationQuantity(
+                            $actor, $fixture['warehouse_id'], $fixture['product_id'],
+                            'enterprise_test_forged_actor', 3101,
+                        );
+                    }
+                    $this->fail('Mutated actor key must be denied at WMS service boundary.');
+                } catch (HttpException $exception) {
+                    $this->assertSame(403, $exception->getStatusCode());
+                }
+            }
+            $this->assertEquals($beforeReserved, DB::table('inventories')
+                ->where('id', $fixture['inventory_id'])->value('reserved_quantity'));
+            $this->assertSame($beforeOwners, DB::table('enterprise_inventory_owner_positions')
+                ->where('inventory_id', $fixture['inventory_id'])->count());
+            $this->assertSame($beforeMovements, DB::table('stock_movements')
+                ->where('inventory_id', $fixture['inventory_id'])->count());
+            $this->assertSame($beforeAudits, DB::table('audit_logs')
+                ->where('event', 'enterprise.wms.stock_reservation.changed')->count());
+        }
+
+        $actor->setAttribute($actor->getKeyName(), $originalActorId);
+        $this->assertSame(1.0, $service->ensureReservation(
+            $actor, $fixture['warehouse_id'], $fixture['product_id'],
+            1.0, 'enterprise_test_forged_actor', 3101,
+        ));
+        $this->assertDatabaseHas('stock_movements', [
+            'inventory_id' => $fixture['inventory_id'],
+            'user_id' => $originalActorId,
+            'reference_type' => 'enterprise_test_forged_actor',
+            'reference_id' => 3101,
+            'type' => 'reserve',
         ]);
     }
 
