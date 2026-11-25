@@ -404,8 +404,9 @@ final class ProcurementCompletionManager
 
         // The first scoped SELECT can finish just before the RFQ or quote is
         // reassigned to another store. Re-read the exact document/quote/RFQ
-        // ownership without selecting its private storage_path: the caller
-        // must not receive an attachment that no longer belongs to its store.
+        // ownership and ORIGINAL document identity without selecting its
+        // private storage_path: a moved quote or replaced path must not let
+        // the caller receive a stale attachment no longer in the live record.
         DB::table('enterprise_procurement_quote_documents as documents')
             ->join('enterprise_procurement_quotes as quotes', 'quotes.id', '=', 'documents.quote_id')
             ->join('enterprise_procurement_rfqs as rfqs', 'rfqs.id', '=', 'quotes.rfq_id')
@@ -414,6 +415,8 @@ final class ProcurementCompletionManager
             ->where('rfqs.store_id', $scope->storeId)
             ->where('rfqs.id', $rfqId)
             ->where('documents.id', $documentId)
+            ->where('documents.quote_id', $document->quote_id)
+            ->where('documents.storage_path', $document->storage_path)
             ->firstOrFail(['documents.id']);
 
         // A view grant can also be revoked during either SELECT. Reauthorize

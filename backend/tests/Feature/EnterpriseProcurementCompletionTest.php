@@ -1014,6 +1014,114 @@ final class EnterpriseProcurementCompletionTest extends TestCase
         }
     }
 
+    public function test_quote_document_download_rejects_replaced_private_storage_path_after_select_in_ar_and_en(): void
+    {
+        Storage::fake('local');
+        $this->enableProcurement();
+        [$actor, , $context] = $this->scopedUser($this->allPermissions(), 'P135-QUOTE-PATH-IDENTITY');
+        $directory = app(SupplierDirectory::class);
+        $requests = app(PurchaseRequestManager::class);
+        $completion = app(ProcurementCompletionManager::class);
+
+        $armed = false;
+        $replaced = false;
+        $targetDocumentId = 0;
+        $replacementPath = '';
+        // The initial SQL returns a previously valid storage_path. Change
+        // that SAME document's path after SELECT, but before the final
+        // live identity check. A store-only recheck would still incorrectly
+        // authorize and return the obsolete private path.
+        DB::listen(static function ($query) use (
+            &$armed, &$replaced, &$targetDocumentId, &$replacementPath
+        ): void {
+            $sql = strtolower(ltrim((string) $query->sql));
+            if (! $armed || $replaced || ! str_starts_with($sql, 'select')
+                || ! str_contains($sql, 'enterprise_procurement_quote_documents')
+                || ! str_contains($sql, 'enterprise_procurement_quotes')
+                || ! str_contains($sql, 'enterprise_procurement_rfqs')
+                || ! str_contains($sql, 'join')) {
+                return;
+            }
+
+            $armed = false;
+            $replaced = true;
+            DB::table('enterprise_procurement_quote_documents')
+                ->where('id', $targetDocumentId)
+                ->update(['storage_path' => $replacementPath]);
+        });
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            $supplier = $directory->create($actor, $context, [
+                'scope_type' => 'store',
+                'code' => 'P135-QUOTE-ID-'.strtoupper($locale),
+                'name_en' => 'Live quote document identity '.$locale,
+            ]);
+            $request = $requests->create($actor, $context, [
+                'currency_code' => 'KWD',
+                'reason' => 'Private document replacement '.$locale,
+                'lines' => [[
+                    'item_code' => 'P135-DOC-ID-'.strtoupper($locale),
+                    'description' => 'Quote path replacement item',
+                    'quantity' => 1,
+                    'unit' => 'case',
+                    'estimated_unit_cost' => 5.000,
+                ]],
+            ]);
+            $requests->submit($actor, $context, $request->id);
+            [$checker, $checkerContext] = ProcurementSecondApprover::forSameStore($actor, $context);
+            $requests->approve($checker, $checkerContext, $request->id);
+            $rfq = $completion->createRfq($actor, $context, $request->id, [
+                'title' => 'Quote document identity '.$locale,
+            ]);
+            $invitations = $completion->publishRfq($actor, $context, $rfq->id, [$supplier->id]);
+            $lineId = (int) DB::table('enterprise_procurement_rfq_lines')
+                ->where('rfq_id', $rfq->id)->value('id');
+            $this->post(route('supplier.rfq.submit', ['token' => $invitations[0]['token']]), [
+                'valid_until' => now()->addDays(14)->toDateString(),
+                'attachment' => UploadedFile::fake()->create('private-quote.pdf', 4, 'application/pdf'),
+                'lines' => [[
+                    'rfq_line_id' => $lineId,
+                    'unit_price' => 4.000,
+                ]],
+            ])->assertRedirect();
+
+            $quoteId = (int) DB::table('enterprise_procurement_quotes')->where('rfq_id', $rfq->id)->value('id');
+            $document = DB::table('enterprise_procurement_quote_documents')
+                ->where('quote_id', $quoteId)->firstOrFail();
+            $read = static fn () => $completion->quoteDocument($actor, $context, $rfq->id, $document->id);
+            $this->assertSame($document->storage_path, $read()->storage_path);
+            $originalPath = $document->storage_path;
+            $replacementPath = 'supplier-quotes/replaced-'.strtolower($locale).'-'.$document->id.'.pdf';
+            Storage::disk('local')->put($replacementPath, 'Replacement belongs to the same tenant and quote.');
+            $this->assertTrue(Storage::disk('local')->exists($replacementPath));
+            $auditBefore = DB::table('audit_logs')->count();
+            $documentCount = DB::table('enterprise_procurement_quote_documents')->count();
+            $targetDocumentId = (int) $document->id;
+            $replaced = false;
+            $armed = true;
+            try {
+                $read();
+                $this->fail('An attachment path replaced during SELECT must never return its stale private path.');
+            } catch (RecordNotFoundException $exception) {
+                $this->assertNotEmpty($exception->getMessage());
+            } finally {
+                $armed = false;
+            }
+            $this->assertTrue($replaced, 'Actual document SELECT must trigger a post-query path replacement.');
+            $this->assertDatabaseHas('enterprise_procurement_quote_documents', [
+                'id' => $document->id,
+                'quote_id' => $quoteId,
+                'storage_path' => $replacementPath,
+            ]);
+            $this->assertSame($replacementPath, $read()->storage_path, 'A new call may read the new live path.');
+            $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+            $this->assertSame($documentCount, DB::table('enterprise_procurement_quote_documents')->count());
+            Storage::disk('local')->assertExists($originalPath);
+            Storage::disk('local')->assertExists($replacementPath);
+        }
+    }
+
     public function test_contract_detail_does_not_expose_attachment_paths_after_store_transfer_in_ar_and_en(): void
     {
         Storage::fake('local');
