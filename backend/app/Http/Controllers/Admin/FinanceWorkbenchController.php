@@ -1135,14 +1135,16 @@ final class FinanceWorkbenchController extends Controller
             // Inbox access never grants posting/approval: the existing Orders
             // POST independently enforces exact role, scoped permissions,
             // pending state and maker/checker separation under row locks.
+            // The Finance discount POST requires finance.foundation.read at
+            // the same legal entity and store. Never display an actionable
+            // review inbox for AR/GL/AP-only entitlements that POST will deny.
             'discount_review' => $actor->is_active
                 && ($context->isRetail()
                     ? $actor->hasRole('RETAIL_FINANCE', $storeId)
                     : $actor->hasRole('FINANCE'))
                 && $permitted('finance.view')
                 && $permitted('finance.manage')
-                && ($entitled('finance.foundation.read') || $entitled('finance.ar.read')
-                    || $entitled('finance.gl.read') || $entitled('finance.ap.read')),
+                && $entitled('finance.foundation.read'),
             'ap_read' => $permitted('finance.view') && $entitled('finance.ap.read'),
             'credit_read' => $permitted('finance.view') && $entitled('finance.credit_terms.read'),
             'credit_manage' => $permitted('finance.manage') && $entitled('finance.credit_terms.manage'),

@@ -5,6 +5,7 @@ namespace Tests\Feature;
 use App\Enterprise\Entitlements\EntitlementScope;
 use App\Enterprise\Entitlements\ModuleEntitlementManager;
 use App\Enterprise\Finance\FinanceFoundationService;
+use App\Enterprise\Finance\FinanceWorkbenchAccess;
 use App\Enterprise\Modules\ModuleLifecycleManager;
 use App\Enterprise\Modules\ModuleRegistry;
 use App\Enterprise\Modules\ModuleState;
@@ -19,6 +20,7 @@ use Database\Seeders\CoreReferenceSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
+use Tests\Support\SyntheticErpWorkflowEvidence;
 use Tests\TestCase;
 
 final class V2AccountingDiscountFinanceInboxTest extends TestCase
@@ -146,6 +148,65 @@ final class V2AccountingDiscountFinanceInboxTest extends TestCase
             'id' => $requestId, 'status' => 'rejected',
         ]);
         $this->actingAs($finance)->get($inbox)->assertOk()->assertDontSee('INBOX-REJECT-4397');
+    }
+
+    public function test_ar_only_finance_entitlement_cannot_expose_unactionable_discount_inbox_in_ar_and_en(): void
+    {
+        $finance = $this->roleUser('FINANCE');
+        $requester = $this->roleUser('CUSTOMER_SERVICE_AGENT');
+        $store = Store::query()->findOrFail(app(WholesalePrincipal::class)->storeId());
+        $this->enableFinance($finance, $store);
+        $scope = app(OrganizationHierarchyService::class)->scopeForStore($store->id);
+        $this->assertNotNull($scope);
+        $entitlements = app(ModuleEntitlementManager::class);
+
+        // AR-only can still access Finance. However this reviewer lacks
+        // finance.foundation.read, which the protected decision POST requires.
+        $entitlements->set(
+            FinanceFoundationService::MODULE,
+            new EntitlementScope(EntitlementScope::LEGAL_ENTITY, $scope['legal_entity_id']),
+            true, ['finance.ar.read'], $finance,
+        );
+        $this->assertTrue(app(FinanceWorkbenchAccess::class)->canRead($finance, $store->id));
+
+        $orderId = $this->order($store, 'b2b', 'INBOX-AR-ONLY-4397');
+        $requestId = $this->pendingRequest($orderId, $requester);
+        $inbox = route('admin.erp.finance.index', [
+            'store_id' => $store->id, 'tab' => 'discount_approvals',
+        ]);
+        $receivables = route('admin.erp.finance.index', [
+            'store_id' => $store->id, 'tab' => 'receivables',
+        ]);
+        $review = route('admin.operations.orders.customer-service-discount.review', [
+            'order' => $orderId, 'discountRequest' => $requestId,
+        ]);
+        $auditBefore = DB::table('audit_logs')->count();
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            $finance->forceFill(['locale' => $locale])->save();
+            // The AR-only entitlement still authorizes real HTTP receivables.
+            // Denying discount decisions must not accidentally deny all Finance.
+            $this->actingAs($finance->fresh())->get($receivables)->assertOk()
+                ->assertDontSee('INBOX-AR-ONLY-4397');
+            $this->actingAs($finance->fresh())->get($inbox)->assertForbidden();
+            $this->actingAs($finance->fresh())->post($review, ['decision' => 'approve'])->assertForbidden();
+            $this->assertDatabaseHas('order_customer_service_discount_requests', [
+                'id' => $requestId, 'status' => 'pending',
+            ]);
+            $this->assertDatabaseHas('orders', ['id' => $orderId, 'grand_total' => 9]);
+        }
+        $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+
+        // Restoring the precise entitlement makes the existing positive
+        // Finance inbox actionable without widening the protected POST.
+        $entitlements->set(
+            FinanceFoundationService::MODULE,
+            new EntitlementScope(EntitlementScope::LEGAL_ENTITY, $scope['legal_entity_id']),
+            true, ['finance.foundation.read', 'finance.ar.read'], $finance,
+        );
+        $this->actingAs($finance->fresh())->get($inbox)->assertOk()
+            ->assertSee('INBOX-AR-ONLY-4397');
     }
 
     public function test_direct_finance_approval_post_requires_live_module_and_store_entitlement(): void
@@ -293,6 +354,18 @@ final class V2AccountingDiscountFinanceInboxTest extends TestCase
         if (! app(ModuleRegistry::class)->isEnabled(FinanceFoundationService::MODULE)) {
             $lifecycle->transition(FinanceFoundationService::MODULE, ModuleState::ENABLING, $actor);
             $lifecycle->transition(FinanceFoundationService::MODULE, ModuleState::ENABLED, $actor);
+        }
+        // P135 enforces signed workflow readiness on Finance HTTP routes.
+        // Its ephemeral Ed25519 evidence helper exists only after that branch
+        // integrates. Keep this older atomic Finance PR compatible without
+        // weakening the production readiness middleware or trusting unsigned
+        // evidence. The synthetic signing key never leaves PHPUnit memory.
+        if (class_exists(SyntheticErpWorkflowEvidence::class)) {
+            SyntheticErpWorkflowEvidence::install();
+            config()->set(
+                'enterprise_module_readiness.certified_versions.'.FinanceFoundationService::MODULE,
+                app(ModuleRegistry::class)->manifest(FinanceFoundationService::MODULE)->version,
+            );
         }
         $scope = app(OrganizationHierarchyService::class)->scopeForStore($store->id);
         $this->assertNotNull($scope);
