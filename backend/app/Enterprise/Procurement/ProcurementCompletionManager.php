@@ -190,6 +190,7 @@ final class ProcurementCompletionManager
             'procurement.purchase_requests.view' => $canRequests,
             'procurement.purchase_orders.view' => $canOrders,
             'procurement.purchase_invoices.view' => $canInvoices,
+            'procurement.suppliers.view' => $canSuppliers,
             'procurement.supplier_statements.view' => $canStatements,
         ] as $viewPermission => $wasAuthorized) {
             if ($wasAuthorized) {

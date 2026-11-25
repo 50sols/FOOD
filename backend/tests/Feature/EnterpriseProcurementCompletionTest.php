@@ -1920,6 +1920,87 @@ final class EnterpriseProcurementCompletionTest extends TestCase
         }
     }
 
+    public function test_dashboard_denies_supplier_view_revoked_during_final_exception_query_in_ar_and_en(): void
+    {
+        $this->enableProcurement();
+        [$actor, , $context] = $this->scopedUser($this->allPermissions(), 'P135-DASH-SUP-REVOKE');
+        $supplier = app(SupplierDirectory::class)->create($actor, $context, [
+            'scope_type' => 'store',
+            'code' => 'P135-DASH-SUP-REVOKE',
+            'name_en' => 'Supplier exception security fixture',
+        ]);
+        DB::table('enterprise_suppliers')->where('id', $supplier->id)->update(['status' => 'on_hold']);
+
+        $manager = app(ProcurementCompletionManager::class);
+        $permissionId = Permission::query()
+            ->where('code', 'procurement.suppliers.view')->firstOrFail()->id;
+        $armed = false;
+        $injected = false;
+
+        // Inject a persisted revoke AFTER the final supplier exception COUNT
+        // SELECT has executed, not during the initial permission preflight.
+        DB::listen(static function ($query) use ($actor, $permissionId, &$armed, &$injected): void {
+            $sql = strtolower(ltrim((string) $query->sql));
+            if (! $armed || $injected || ! str_starts_with($sql, 'select')
+                || ! str_contains($sql, 'enterprise_suppliers')
+                || ! str_contains($sql, 'count(')) {
+                return;
+            }
+
+            $injected = true;
+            $armed = false;
+            DB::table('user_permission_overrides')->insert([
+                'user_id' => $actor->id,
+                'permission_id' => $permissionId,
+                'scope_key' => 'global',
+                'store_id' => null,
+                'effect' => 'deny',
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+            DB::table('users')->where('id', $actor->id)
+                ->update(['has_permission_overrides' => true]);
+        });
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            $visible = $manager->dashboard($actor, $context);
+            $this->assertSame(1, collect($visible['exceptions'])->firstWhere('key', 'blocked_suppliers')['count']);
+            $auditBefore = DB::table('audit_logs')->count();
+            $injected = false;
+            $armed = true;
+
+            try {
+                $manager->dashboard($actor, $context);
+                $this->fail('Revoking supplier VIEW during exception SQL must abort the in-flight dashboard.');
+            } catch (HttpException $exception) {
+                $this->assertSame(403, $exception->getStatusCode());
+            } finally {
+                $armed = false;
+            }
+
+            $this->assertTrue($injected, 'Real supplier exception COUNT SQL must trigger persisted DENY.');
+            $this->assertFalse((bool) $actor->has_permission_overrides);
+            $this->assertTrue((bool) $actor->fresh()->has_permission_overrides);
+
+            // A subsequent request may serve independently granted PO data
+            // but must not calculate or return a denied supplier exception.
+            $redacted = $manager->dashboard($actor, $context);
+            $this->assertNull(collect($redacted['exceptions'])->firstWhere('key', 'blocked_suppliers'));
+            $this->assertNotNull(collect($redacted['kpis'])->firstWhere('key', 'open_orders')['value']);
+            $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+            $this->assertSame('on_hold', DB::table('enterprise_suppliers')
+                ->where('id', $supplier->id)->value('status'));
+
+            DB::table('user_permission_overrides')
+                ->where('user_id', $actor->id)->where('permission_id', $permissionId)->delete();
+            DB::table('users')->where('id', $actor->id)->update(['has_permission_overrides' => false]);
+            $this->assertSame(1, collect($manager->dashboard($actor, $context)['exceptions'])
+                ->firstWhere('key', 'blocked_suppliers')['count']);
+            $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+        }
+    }
+
     public function test_dashboard_denies_invoice_permission_revoked_mid_kpi_query_in_ar_and_en(): void
     {
         $this->enableProcurement();
