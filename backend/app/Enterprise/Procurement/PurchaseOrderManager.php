@@ -543,13 +543,6 @@ final class PurchaseOrderManager
             ->where('store_id', $scope->storeId);
     }
 
-    private function findVisible(
-        EnterpriseDataScope $scope,
-        int $orderId,
-    ): EnterprisePurchaseOrder {
-        return $this->visibleQuery($scope)->whereKey($orderId)->firstOrFail();
-    }
-
     private function lockVisible(
         EnterpriseDataScope $scope,
         int $orderId,
