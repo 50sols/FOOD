@@ -19,6 +19,7 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Gate;
 use Illuminate\Support\ViewErrorBag;
 use RuntimeException;
+use Symfony\Component\HttpKernel\Exception\HttpExceptionInterface;
 use Symfony\Component\Process\ExecutableFinder;
 use Throwable;
 use ZipArchive;
@@ -188,6 +189,12 @@ final class SystemUpdateController extends Controller
                     'version' => $history->to_version,
                 ]));
         } catch (RuntimeException $exception) {
+            // abort(403) is itself a RuntimeException. Never convert a
+            // revoked Super Admin into a successful HTTP redirect.
+            if ($exception instanceof HttpExceptionInterface) {
+                throw $exception;
+            }
+
             return redirect()
                 ->route('admin.system-update.index')
                 ->withErrors(['update' => $exception->getMessage()]);
@@ -229,6 +236,12 @@ final class SystemUpdateController extends Controller
                     'reference' => (string) $backup['reference'],
                 ]));
         } catch (RuntimeException $exception) {
+            // abort(403) is itself a RuntimeException. Never convert a
+            // revoked Super Admin into a successful HTTP redirect.
+            if ($exception instanceof HttpExceptionInterface) {
+                throw $exception;
+            }
+
             report($exception);
 
             return redirect()
@@ -277,6 +290,12 @@ final class SystemUpdateController extends Controller
                     'reference' => $backupReference,
                 ]));
         } catch (RuntimeException $exception) {
+            // abort(403) is itself a RuntimeException. Never convert a
+            // revoked Super Admin into a successful HTTP redirect.
+            if ($exception instanceof HttpExceptionInterface) {
+                throw $exception;
+            }
+
             report($exception);
 
             return redirect()
