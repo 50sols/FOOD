@@ -315,6 +315,117 @@ final class EnterpriseSupplierStatementAgingFoundationTest extends TestCase
         }
     }
 
+    public function test_supplier_reports_deny_permission_revoked_during_invoice_reads_in_both_locales(): void
+    {
+        $this->enableProcurement();
+        [$actor, $store, $context] = $this->scopedUser($this->allPermissions(), 'SAGE-MID-REVOKE');
+        [, $warehouse] = $this->stockTarget($store, 'SAGE-MID-REVOKE-SKU');
+        $receipt = $this->postedReceipt(
+            $actor, $context, $warehouse, 'SAGE-MID-REVOKE-SUP', 'SAGE-MID-REVOKE-SKU', 2,
+        );
+        $invoiceService = app(PurchaseInvoiceHandoffManager::class);
+        $invoice = $invoiceService->createFromPostedReceipt($actor, $context, $receipt->id, [
+            'supplier_invoice_number' => 'SAGE-MID-REVOKE-INV',
+            'invoice_date' => '2026-10-10',
+            'due_date' => '2026-10-20',
+            'lines' => [[
+                'goods_receipt_line_id' => $receipt->lines()->firstOrFail()->id,
+                'quantity' => 1,
+            ]],
+        ]);
+        $invoiceService->handoff($actor, $context, $invoice->id);
+
+        $manager = app(SupplierStatementAgingManager::class);
+        $supplierId = (int) $receipt->supplier_id;
+        $permissionId = Permission::query()
+            ->where('code', 'procurement.supplier_statements.view')
+            ->firstOrFail()->id;
+        $armed = false;
+        $revoked = false;
+
+        // Execute the permission mutation AFTER the invoice/aggregate SELECT,
+        // between the initial authorization and the final response guard.
+        DB::listen(static function ($query) use (&$armed, &$revoked, $actor, $permissionId): void {
+            $sql = strtolower((string) $query->sql);
+            if (! $armed || $revoked || ! str_contains($sql, 'enterprise_purchase_invoices')
+                || ! str_contains($sql, 'select')) {
+                return;
+            }
+
+            $armed = false;
+            $revoked = true;
+            DB::table('user_permission_overrides')->insert([
+                'user_id' => $actor->id,
+                'permission_id' => $permissionId,
+                'scope_key' => 'global',
+                'store_id' => null,
+                'effect' => 'deny',
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+            DB::table('users')->where('id', $actor->id)
+                ->update(['has_permission_overrides' => true]);
+        });
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            foreach (['statement', 'aging'] as $report) {
+                $read = static fn () => $report === 'statement'
+                    ? $manager->statement($actor, $context, $supplierId, [
+                        'from' => '2026-10-01', 'to' => '2026-10-31',
+                    ])
+                    : $manager->aging($actor, $context, $supplierId, [
+                        'as_of' => '2026-10-31', 'currency_code' => 'KWD',
+                    ]);
+
+                $positive = $read();
+                if ($report === 'statement') {
+                    $this->assertSame(1, $positive->total());
+                } else {
+                    $this->assertSame(1, $positive['invoice_count']);
+                    $this->assertSame('1.250', $positive['gross_exposure']);
+                }
+
+                $auditBefore = DB::table('audit_logs')->count();
+                $lineCount = DB::table('enterprise_purchase_invoice_lines')->count();
+                $armed = true;
+                $revoked = false;
+
+                try {
+                    $read();
+                    $this->fail('Permission revoked after invoice SELECT must deny supplier financial response.');
+                } catch (HttpExceptionInterface $exception) {
+                    $this->assertSame(403, $exception->getStatusCode());
+                }
+
+                $this->assertTrue($revoked, 'The DENY must be persisted during the invoice read.');
+                $this->assertTrue((bool) $actor->fresh()->has_permission_overrides);
+                $this->assertFalse((bool) $actor->has_permission_overrides);
+                try {
+                    $read();
+                    $this->fail('Repeated reads under persisted DENY must still fail.');
+                } catch (HttpExceptionInterface $exception) {
+                    $this->assertSame(403, $exception->getStatusCode());
+                }
+
+                $this->assertDatabaseHas('enterprise_purchase_invoices', [
+                    'id' => $invoice->id, 'status' => 'handed_off',
+                ]);
+                $this->assertSame($lineCount, DB::table('enterprise_purchase_invoice_lines')->count());
+                $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+
+                DB::table('user_permission_overrides')
+                    ->where('user_id', $actor->id)
+                    ->where('permission_id', $permissionId)
+                    ->delete();
+                DB::table('users')->where('id', $actor->id)
+                    ->update(['has_permission_overrides' => false]);
+                $this->assertFalse((bool) $actor->fresh()->has_permission_overrides);
+                $this->assertNotNull($read());
+            }
+        }
+    }
+
     public function test_disabled_procurement_performs_no_supplier_statement_query_work(): void
     {
         [$actor, , $context] = $this->scopedUser($this->allPermissions(), 'SAGE-OFF');

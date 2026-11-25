@@ -74,6 +74,9 @@ final class SupplierStatementAgingManager
         // The supplier could transfer to a different store after the first
         // visible-supplier SELECT and before its invoices are fetched.
         $this->findVisibleSupplier($scope, $supplierId);
+        // A user's report permission can also be revoked during pagination.
+        // Rehydrate the original actor and reject late DENY/offboarding.
+        $this->authorizedScope($actor, $context);
 
         return $page;
     }
@@ -174,6 +177,9 @@ final class SupplierStatementAgingManager
         // Each aggregate is a separate SQL read. Never return financial
         // exposure for a supplier that left the authorized store mid-read.
         $this->findVisibleSupplier($scope, $supplierId);
+        // Reauthorize the current persisted actor after the final aggregate.
+        // A permission revoked during the report must not return stale money.
+        $this->authorizedScope($actor, $context);
 
         return $result;
     }
