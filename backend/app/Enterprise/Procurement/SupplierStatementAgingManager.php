@@ -313,7 +313,7 @@ final class SupplierStatementAgingManager
         }
 
         $fractional = str_pad((string) $mills, 3, '0', STR_PAD_LEFT);
-        $negative = ($match[1] ?? '') === '-' && ($integer !== '0' || $mills !== 0);
+        $negative = $match[1] === '-' && ($integer !== '0' || $mills !== 0);
 
         return ($negative ? '-' : '').$integer.'.'.$fractional;
     }
