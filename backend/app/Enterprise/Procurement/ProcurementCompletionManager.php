@@ -2750,6 +2750,17 @@ final class ProcurementCompletionManager
         ResolvedTenantContext $context,
         string $permission,
     ): EnterpriseDataScope {
+        // A direct-service caller may change an Eloquent actor primary key in
+        // memory without saving it. Never authorize procurement decisions or
+        // attribute RFQ/contract writes to that substituted identity.
+        $originalActorId = $actor->getRawOriginal($actor->getKeyName());
+        abort_unless(
+            $actor->exists
+                && $originalActorId !== null
+                && (string) $actor->getKey() === (string) $originalActorId,
+            403,
+        );
+
         abort_unless($this->modules->isEnabled('procurement'), 404, 'Procurement module is disabled.');
         abort_if($context->enterpriseScope === null, 409, 'Enterprise data scope is required.');
 
