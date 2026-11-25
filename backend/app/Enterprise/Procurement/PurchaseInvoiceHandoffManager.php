@@ -431,6 +431,16 @@ final class PurchaseInvoiceHandoffManager
         ResolvedTenantContext $context,
         string $permission,
     ): EnterpriseDataScope {
+        // Direct service callers must not borrow a different persisted user's
+        // permissions by changing an Eloquent primary key without saving it.
+        $persistedActorId = $actor->getRawOriginal($actor->getKeyName());
+        abort_unless(
+            $actor->exists
+                && $persistedActorId !== null
+                && (string) $actor->getKey() === (string) $persistedActorId,
+            403,
+        );
+
         $this->assertProcurementEnabled();
         abort_if($context->enterpriseScope === null, 409, 'Enterprise data scope is required.');
 
