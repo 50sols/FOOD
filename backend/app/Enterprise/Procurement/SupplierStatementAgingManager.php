@@ -53,7 +53,7 @@ final class SupplierStatementAgingManager
             ? strtoupper((string) $validated['currency_code'])
             : null;
 
-        $page = $this->visibleInvoiceQuery($scope)
+        $visibleInvoices = $this->visibleInvoiceQuery($scope)
             ->where('supplier_id', $supplierId)
             ->where('status', 'handed_off')
             ->where('invoice_date', '>=', $window['from'])
@@ -65,11 +65,25 @@ final class SupplierStatementAgingManager
             ->when(
                 $currency,
                 fn (Builder $query, string $code): Builder => $query->where('currency_code', $code),
-            )
+            );
+
+        $page = (clone $visibleInvoices)
             ->orderByDesc('invoice_date')
             ->orderByDesc('id')
             ->paginate($perPage)
             ->withQueryString();
+
+        // The hydrated page may outlive the scoped SELECT. Recheck the
+        // complete supplier, store, status, date and currency predicates for
+        // its bounded (<=100) row IDs before exposing invoice financials.
+        // Never return a cached row transferred to another store mid-read.
+        $pageIds = $page->getCollection()->pluck('id')->all();
+        if ($pageIds !== []) {
+            abort_unless(
+                (clone $visibleInvoices)->whereIn('id', $pageIds)->count() === count($pageIds),
+                404,
+            );
+        }
 
         // The supplier could transfer to a different store after the first
         // visible-supplier SELECT and before its invoices are fetched.

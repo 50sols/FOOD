@@ -14,6 +14,7 @@ use App\Enterprise\Procurement\SupplierDirectory;
 use App\Enterprise\Procurement\SupplierStatementAgingManager;
 use App\Models\Catalog;
 use App\Models\EnterpriseGoodsReceipt;
+use App\Models\EnterprisePurchaseInvoice;
 use App\Models\EnterpriseSupplier;
 use App\Models\Permission;
 use App\Models\Product;
@@ -220,6 +221,82 @@ final class EnterpriseSupplierStatementAgingFoundationTest extends TestCase
             $this->assertSame(1, $manager->aging($maker, $context, $supplierId, [
                 'as_of' => '2026-10-31', 'currency_code' => 'KWD',
             ])['invoice_count']);
+        }
+    }
+
+    public function test_supplier_statement_rejects_late_invoice_store_transfer_in_ar_and_en(): void
+    {
+        $this->enableProcurement();
+        [$actor, $store, $context] = $this->scopedUser($this->allPermissions(), 'SAGE-LATE-STORE');
+        $foreignStore = $this->createRetailStore('SAGE-LATE-OTHER');
+        [, $warehouse] = $this->stockTarget($store, 'SAGE-LATE-SKU');
+        $receipt = $this->postedReceipt(
+            $actor, $context, $warehouse, 'SAGE-LATE-SUP', 'SAGE-LATE-SKU', 2,
+        );
+        $invoices = app(PurchaseInvoiceHandoffManager::class);
+        $invoice = $invoices->createFromPostedReceipt($actor, $context, $receipt->id, [
+            'supplier_invoice_number' => 'SAGE-LATE-INV',
+            'invoice_date' => '2026-10-10',
+            'due_date' => '2026-10-20',
+            'lines' => [[
+                'goods_receipt_line_id' => $receipt->lines()->firstOrFail()->id,
+                'quantity' => 1,
+            ]],
+        ]);
+        $invoices->handoff($actor, $context, $invoice->id);
+
+        $manager = app(SupplierStatementAgingManager::class);
+        $supplierId = (int) $receipt->supplier_id;
+        $filters = ['from' => '2026-10-01', 'to' => '2026-10-31'];
+        $armed = false;
+        $moved = false;
+
+        // Eloquent hydrates the in-scope invoice, but a concurrent store
+        // reassignment can persist before the statement returns the page.
+        EnterprisePurchaseInvoice::retrieved(static function (EnterprisePurchaseInvoice $loaded) use (
+            &$armed, &$moved, $invoice, $foreignStore
+        ): void {
+            if (! $armed || $moved || (int) $loaded->id !== (int) $invoice->id) {
+                return;
+            }
+
+            $armed = false;
+            $moved = true;
+            DB::table('enterprise_purchase_invoices')
+                ->where('id', $invoice->id)
+                ->update(['store_id' => $foreignStore->id]);
+        });
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            $this->assertSame(1, $manager->statement($actor, $context, $supplierId, $filters)->total());
+            $auditBefore = DB::table('audit_logs')->count();
+            $lineCount = DB::table('enterprise_purchase_invoice_lines')->count();
+            $moved = false;
+            $armed = true;
+
+            try {
+                $manager->statement($actor, $context, $supplierId, $filters);
+                $this->fail('A late foreign-store transfer must not expose a cached invoice.');
+            } catch (HttpExceptionInterface $exception) {
+                $this->assertSame(404, $exception->getStatusCode());
+            }
+
+            $this->assertTrue($moved, 'The invoice must have transferred after hydration.');
+            $this->assertDatabaseHas('enterprise_purchase_invoices', [
+                'id' => $invoice->id,
+                'store_id' => $foreignStore->id,
+            ]);
+            $this->assertSame(0, $manager->statement($actor, $context, $supplierId, $filters)->total());
+            $this->assertSame($lineCount, DB::table('enterprise_purchase_invoice_lines')->count());
+            $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+
+            DB::table('enterprise_purchase_invoices')
+                ->where('id', $invoice->id)
+                ->update(['store_id' => $store->id]);
+            $restored = $manager->statement($actor, $context, $supplierId, $filters);
+            $this->assertSame(1, $restored->total());
+            $this->assertSame($invoice->id, $restored->items()[0]->id);
         }
     }
 
