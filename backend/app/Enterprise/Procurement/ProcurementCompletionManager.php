@@ -1675,6 +1675,19 @@ final class ProcurementCompletionManager
         ])->validate();
 
         return DB::transaction(function () use ($actor, $scope, $supplierId, $data): EnterpriseSupplier {
+            // The scoped module check is only a preflight. Serialize the
+            // supplier governance mutation with procurement shutdown before
+            // locking supplier state or writing any audit record.
+            $module = DB::table('enterprise_modules')
+                ->where('code', 'procurement')
+                ->lockForUpdate()
+                ->first();
+            abort_unless(
+                $module !== null && $module->state === ModuleState::ENABLED->value,
+                404,
+                'Procurement module is disabled.',
+            );
+
             $supplier = EnterpriseSupplier::query()
                 ->where('id', $supplierId)
                 ->where('organization_id', $scope->organizationId)
