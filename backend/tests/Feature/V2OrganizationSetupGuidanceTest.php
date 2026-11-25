@@ -1781,6 +1781,7 @@ final class V2OrganizationSetupGuidanceTest extends TestCase
             app()->setLocale($locale);
             $originalActor = $this->actor('SUPER_ADMIN', $locale);
             $independentActor = $this->actor('SUPER_ADMIN', $locale);
+            $nonAdminActor = $this->actor('FINANCE', $locale);
             $organization = $service->createOrganization([
                 'code' => 'v2_actor_guard_'.$locale,
                 'name' => 'Original organization '.$locale,
@@ -1827,6 +1828,33 @@ final class V2OrganizationSetupGuidanceTest extends TestCase
                     }
                 }
             }
+
+            // Active FINANCE identity is genuine but does not have the
+            // platform.manage capability. The canonical service must deny
+            // direct writes just as the protected HTTP route does.
+            foreach ([
+                'create' => fn () => $service->createOrganization([
+                    'code' => 'v2_forbidden_unprivileged_'.$locale,
+                    'name' => 'Unauthorized organization',
+                    'is_active' => true,
+                ], $nonAdminActor),
+                'update' => fn () => $service->updateOrganization($organization, [
+                    'code' => $organization->code,
+                    'name' => 'Unauthorized rename',
+                    'is_active' => true,
+                ], $nonAdminActor),
+                'assign' => fn () => $service->assignStore($store, $unit, $nonAdminActor),
+            ] as $operation => $write) {
+                try {
+                    $write();
+                    $this->fail("FINANCE actor must not {$operation} enterprise hierarchy.");
+                } catch (\Illuminate\Auth\Access\AuthorizationException $exception) {
+                    $this->assertSame(403, $exception->status() ?? 403);
+                }
+            }
+            $this->assertDatabaseMissing('enterprise_organizations', [
+                'code' => 'v2_forbidden_unprivileged_'.$locale,
+            ]);
 
             $this->assertDatabaseMissing('enterprise_organizations', [
                 'code' => 'v2_forbidden_forged_'.$locale,
