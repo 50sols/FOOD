@@ -2144,7 +2144,7 @@ final class V2OrganizationSetupGuidanceTest extends TestCase
             try {
                 $hierarchy->ensureDefaultScopeForStore($loadedWhileActive);
                 $this->fail('An inactive persisted store must not reuse its historical scope.');
-            } catch (\\LogicException $exception) {
+            } catch (\LogicException $exception) {
                 $this->assertStringContainsString('inactive store or hierarchy', $exception->getMessage());
             }
             $this->assertDatabaseHas('enterprise_store_scopes', [
@@ -2160,7 +2160,7 @@ final class V2OrganizationSetupGuidanceTest extends TestCase
             try {
                 $hierarchy->ensureDefaultScopeForStore($loadedWhileActive);
                 $this->fail('A disabled persisted ancestor must not authorize existing scope reuse.');
-            } catch (\\LogicException $exception) {
+            } catch (\LogicException $exception) {
                 $this->assertStringContainsString('inactive store or hierarchy', $exception->getMessage());
             }
             $this->assertSame($auditBefore, DB::table('audit_logs')->count());
