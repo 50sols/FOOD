@@ -274,6 +274,88 @@ final class V2BiSidebarReadinessAuthorityTest extends TestCase
         $this->actingAs($roleless)->get(route('admin.erp.bi'))->assertForbidden();
     }
 
+    public function test_scheduled_bi_page_rechecks_persisted_permission_revoke_after_sql_read_in_ar_and_en(): void
+    {
+        $this->enableBi();
+        $store = $this->store('V2-P135-BI-MIDREAD-DENY');
+        $actor = $this->analyst($store);
+        app(ModuleEntitlementManager::class)->set(
+            'enterprise_bi',
+            new EntitlementScope(EntitlementScope::STORE, $store->id),
+            true,
+        );
+        $permission = Permission::query()->where('code', 'reports.view')->firstOrFail();
+        $armed = false;
+        $revoked = false;
+
+        DB::listen(static function ($query) use ($actor, $permission, &$armed, &$revoked): void {
+            $sql = strtolower(ltrim((string) $query->sql));
+            if (! $armed || $revoked || ! str_starts_with($sql, 'select')
+                || ! str_contains($sql, 'enterprise_scheduled_reports')) {
+                return;
+            }
+
+            // The scheduled-report SQL has already fetched its rows. A fresh
+            // persisted DENY must invalidate this very HTTP response.
+            $armed = false;
+            $revoked = true;
+            DB::table('user_permission_overrides')->insert([
+                'user_id' => $actor->id,
+                'permission_id' => $permission->id,
+                'scope_key' => 'global',
+                'store_id' => null,
+                'effect' => 'deny',
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+            DB::table('users')->where('id', $actor->id)
+                ->update(['has_permission_overrides' => true]);
+        });
+
+        $url = route('admin.erp.bi', ['bi_tab' => 'schedules']);
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            $actor->forceFill(['locale' => $locale])->save();
+            app()->forgetInstance(AdminNavigation::class);
+
+            $this->actingAs($actor)->get($url)
+                ->assertOk()
+                ->assertViewIs('admin.enterprise-bi');
+
+            $auditCount = DB::table('audit_logs')->count();
+            $scheduleCount = DB::table('enterprise_scheduled_reports')->count();
+            $exportCount = DB::table('enterprise_report_exports')->count();
+            $revoked = false;
+            $armed = true;
+            try {
+                $this->actingAs($actor)->get($url)->assertForbidden();
+            } finally {
+                $armed = false;
+            }
+
+            $this->assertTrue($revoked, 'The actual scheduled report SELECT must trigger revocation.');
+            $this->assertFalse((bool) $actor->has_permission_overrides);
+            $this->assertTrue((bool) $actor->fresh()->has_permission_overrides);
+            $this->actingAs($actor)->get($url)->assertForbidden();
+
+            $this->assertSame($auditCount, DB::table('audit_logs')->count());
+            $this->assertSame($scheduleCount, DB::table('enterprise_scheduled_reports')->count());
+            $this->assertSame($exportCount, DB::table('enterprise_report_exports')->count());
+
+            DB::table('user_permission_overrides')
+                ->where('user_id', $actor->id)
+                ->where('permission_id', $permission->id)
+                ->delete();
+            DB::table('users')->where('id', $actor->id)
+                ->update(['has_permission_overrides' => false]);
+            app()->forgetInstance(AdminNavigation::class);
+            $this->actingAs($actor)->get($url)
+                ->assertOk()
+                ->assertViewIs('admin.enterprise-bi');
+            $this->assertSame($auditCount, DB::table('audit_logs')->count());
+        }
+    }
+
     private function enableBi(): void
     {
         app(ModuleRegistry::class)->syncManifest('enterprise_bi');

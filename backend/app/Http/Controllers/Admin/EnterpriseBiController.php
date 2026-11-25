@@ -175,17 +175,7 @@ final class EnterpriseBiController extends Controller
         ReportBuilderExecutor $executor,
         EnterpriseBiWorkspaceService $workspace,
     ): View {
-        $actor = $request->user();
-        abort_unless($actor instanceof User && $actor->is_active, 403);
-        abort_unless($actor->hasRole('SUPER_ADMIN') || $actor->hasPermission('reports.view'), 403);
-        // Match the canonical Sidebar/ERP Center: a reporting permission is
-        // not a grant to enter an unentitled platform BI workspace.
-        abort_unless(
-            $this->navigation->canAccessPlatformErp($actor)
-                && ! $this->navigation->usesCustomerServiceDashboardProfile($actor),
-            403,
-        );
-        abort_unless($actor->isPlatformOwner() || $this->hasBiEntitlement($actor), 403);
+        $actor = $this->currentBiActor($request->user());
 
         // The Blade already renders one independent BI workspace at a time.
         // Resolve that same GET selection before evaluating any read models;
@@ -238,7 +228,7 @@ final class EnterpriseBiController extends Controller
             }
         }
 
-        return view('admin.enterprise-bi', [
+        $page = view('admin.enterprise-bi', [
             'user' => $actor,
             'navGroups' => $this->navigation->groupsFor($actor),
             'navContext' => 'reports_center',
@@ -256,6 +246,39 @@ final class EnterpriseBiController extends Controller
             'exceptions' => $biTab === 'exports' ? $this->exceptionSummary($actor) : null,
             'legacyReportsUrl' => Route::has('admin.reports.index') ? route('admin.reports.index') : null,
         ]);
+
+        // BI catalog, financial reports, exports and schedules use multiple
+        // SQL queries. Reject a permission DENY or offboarding committed
+        // while those queries execute, before any view data is returned.
+        $this->currentBiActor($actor);
+
+        return $page;
+    }
+
+    private function currentBiActor(mixed $requestActor): User
+    {
+        // Preserve the immutable original account identity. A cached request
+        // User can predate a persisted permission override or deactivation.
+        abort_unless($requestActor instanceof User && $requestActor->exists, 403);
+        $persistedId = $requestActor->getRawOriginal($requestActor->getKeyName());
+        abort_unless(
+            $persistedId !== null
+                && (string) $requestActor->getKey() === (string) $persistedId,
+            403,
+        );
+        $actor = User::query()->whereKey($persistedId)->where('is_active', true)->first();
+        abort_unless($actor !== null, 403);
+        abort_unless($actor->hasRole('SUPER_ADMIN') || $actor->hasPermission('reports.view'), 403);
+        // Match the canonical Sidebar/ERP Center: a reporting permission is
+        // not a grant to enter an unentitled platform BI workspace.
+        abort_unless(
+            $this->navigation->canAccessPlatformErp($actor)
+                && ! $this->navigation->usesCustomerServiceDashboardProfile($actor),
+            403,
+        );
+        abort_unless($actor->isPlatformOwner() || $this->hasBiEntitlement($actor), 403);
+
+        return $actor;
     }
 
     private function hasBiEntitlement(User $actor): bool
