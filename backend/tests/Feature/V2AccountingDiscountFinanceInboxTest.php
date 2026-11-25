@@ -173,6 +173,9 @@ final class V2AccountingDiscountFinanceInboxTest extends TestCase
         $inbox = route('admin.erp.finance.index', [
             'store_id' => $store->id, 'tab' => 'discount_approvals',
         ]);
+        $receivables = route('admin.erp.finance.index', [
+            'store_id' => $store->id, 'tab' => 'receivables',
+        ]);
         $review = route('admin.operations.orders.customer-service-discount.review', [
             'order' => $orderId, 'discountRequest' => $requestId,
         ]);
@@ -181,6 +184,10 @@ final class V2AccountingDiscountFinanceInboxTest extends TestCase
         foreach (['ar', 'en'] as $locale) {
             app()->setLocale($locale);
             $finance->forceFill(['locale' => $locale])->save();
+            // The AR-only entitlement still authorizes real HTTP receivables.
+            // Denying discount decisions must not accidentally deny all Finance.
+            $this->actingAs($finance->fresh())->get($receivables)->assertOk()
+                ->assertDontSee('INBOX-AR-ONLY-4397');
             $this->actingAs($finance->fresh())->get($inbox)->assertForbidden();
             $this->actingAs($finance->fresh())->post($review, ['decision' => 'approve'])->assertForbidden();
             $this->assertDatabaseHas('order_customer_service_discount_requests', [
