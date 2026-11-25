@@ -258,13 +258,27 @@ final class ProcurementCompletionManager
         $scope = $this->scope($actor, $context, 'procurement.purchase_requests.view');
         $rfq = $this->visibleRfq($scope, $rfqId);
 
-        $lines = DB::table('enterprise_procurement_rfq_lines')
-            ->where('rfq_id', $rfq->id)
-            ->orderBy('line_no')
+        // A previously visible RFQ can be transferred to another store between
+        // the first authorization read and subsequent detail queries. Every
+        // child collection, particularly quote attachment storage paths, must
+        // join the RFQ's CURRENT organization/company/store authorization.
+        $visibleRfq = static function ($query) use ($scope, $rfqId): void {
+            $query->where('rfqs.id', $rfqId)
+                ->where('rfqs.organization_id', $scope->organizationId)
+                ->where('rfqs.company_id', $scope->companyId)
+                ->where('rfqs.store_id', $scope->storeId);
+        };
+
+        $lines = DB::table('enterprise_procurement_rfq_lines as lines')
+            ->join('enterprise_procurement_rfqs as rfqs', 'rfqs.id', '=', 'lines.rfq_id')
+            ->where($visibleRfq)
+            ->orderBy('lines.line_no')
+            ->select('lines.*')
             ->get();
         $invitations = DB::table('enterprise_procurement_rfq_invitations as invitations')
+            ->join('enterprise_procurement_rfqs as rfqs', 'rfqs.id', '=', 'invitations.rfq_id')
             ->join('enterprise_suppliers as suppliers', 'suppliers.id', '=', 'invitations.supplier_id')
-            ->where('invitations.rfq_id', $rfq->id)
+            ->where($visibleRfq)
             ->orderBy('suppliers.code')
             ->get([
                 'invitations.id',
@@ -278,8 +292,9 @@ final class ProcurementCompletionManager
                 'suppliers.name_ar as supplier_name_ar',
             ]);
         $quotes = DB::table('enterprise_procurement_quotes as quotes')
+            ->join('enterprise_procurement_rfqs as rfqs', 'rfqs.id', '=', 'quotes.rfq_id')
             ->join('enterprise_suppliers as suppliers', 'suppliers.id', '=', 'quotes.supplier_id')
-            ->where('quotes.rfq_id', $rfq->id)
+            ->where($visibleRfq)
             ->orderBy('quotes.total_amount')
             ->orderBy('quotes.id')
             ->get([
@@ -291,11 +306,19 @@ final class ProcurementCompletionManager
 
         $quoteDocuments = $quotes->isEmpty()
             ? collect()
-            : DB::table('enterprise_procurement_quote_documents')
-                ->whereIn('quote_id', $quotes->pluck('id')->all())
-                ->orderByDesc('id')
+            : DB::table('enterprise_procurement_quote_documents as documents')
+                ->join('enterprise_procurement_quotes as quotes', 'quotes.id', '=', 'documents.quote_id')
+                ->join('enterprise_procurement_rfqs as rfqs', 'rfqs.id', '=', 'quotes.rfq_id')
+                ->where($visibleRfq)
+                ->whereIn('documents.quote_id', $quotes->pluck('id')->all())
+                ->orderByDesc('documents.id')
+                ->select('documents.*')
                 ->get()
                 ->groupBy('quote_id');
+
+        // Do not return a stale RFQ header when its owner changed during the
+        // detail read. A newly transferred RFQ belongs only to its new store.
+        $this->visibleRfq($scope, $rfqId);
 
         return compact('rfq', 'lines', 'invitations', 'quotes', 'quoteDocuments');
     }
