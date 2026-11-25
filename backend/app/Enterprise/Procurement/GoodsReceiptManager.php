@@ -60,7 +60,7 @@ final class GoodsReceiptManager
         // Keep operator-entered receipt-number symbols literal across SQL drivers.
         $pattern = str_replace(['!', '%', '_'], ['!!', '!%', '!_'], $term).'%';
 
-        return $this->visibleQuery($scope)
+        $page = $this->visibleQuery($scope)
             ->when(
                 $validated['status'] ?? null,
                 fn (Builder $query, string $status): Builder => $query->where('status', $status),
@@ -76,6 +76,13 @@ final class GoodsReceiptManager
             ->orderByDesc('id')
             ->paginate($perPage)
             ->withQueryString();
+
+        // COUNT and page SELECT may outlive the initial authorization. A
+        // committed DENY or offboarding during those queries must prevent
+        // returning supplier/receipt data to the original caller.
+        $this->authorizedScope($actor, $context, self::VIEW_PERMISSION);
+
+        return $page;
     }
 
     public function detail(

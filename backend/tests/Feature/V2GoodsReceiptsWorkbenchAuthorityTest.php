@@ -264,6 +264,85 @@ final class V2GoodsReceiptsWorkbenchAuthorityTest extends TestCase
         }
     }
 
+    public function test_receipt_page_rechecks_revocation_after_database_read_in_ar_and_en(): void
+    {
+        $store = $this->store('B2B', 'P135-GRN-MIDREAD-DENY');
+        $this->enableProcurement();
+        $actor = $this->actor('PROCUREMENT_MANAGER');
+        $context = app(TenantContextResolver::class)->wholesale($actor, $store->id);
+        $manager = app(GoodsReceiptManager::class);
+        $permission = Permission::query()
+            ->where('code', 'procurement.goods_receipts.view')
+            ->firstOrFail();
+
+        $shouldRevoke = false;
+        $didRevoke = false;
+        DB::listen(static function ($event) use ($actor, $permission, &$shouldRevoke, &$didRevoke): void {
+            $sql = strtolower(ltrim((string) $event->sql));
+            if (! $shouldRevoke || $didRevoke
+                || ! str_starts_with($sql, 'select')
+                || ! str_contains($sql, 'enterprise_goods_receipts')) {
+                return;
+            }
+
+            // This SELECT already passed the legitimate read preflight.
+            // The same-connection hook emulates revocation between that
+            // preflight and the scoped GRN result's return.
+            $didRevoke = true;
+            DB::table('user_permission_overrides')->insert([
+                'user_id' => $actor->id,
+                'permission_id' => $permission->id,
+                'scope_key' => 'global',
+                'store_id' => null,
+                'effect' => 'deny',
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+            DB::table('users')->where('id', $actor->id)
+                ->update(['has_permission_overrides' => true]);
+        });
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            $this->assertFalse((bool) $actor->fresh()->has_permission_overrides);
+            $this->assertSame(0, $manager->paginate($actor, $context)->total());
+            $auditBefore = DB::table('audit_logs')->count();
+
+            $didRevoke = false;
+            $shouldRevoke = true;
+            try {
+                $manager->paginate($actor, $context);
+                $this->fail('GRN list must not return after a persisted mid-read DENY.');
+            } catch (HttpExceptionInterface $exception) {
+                $this->assertSame(403, $exception->getStatusCode());
+            } finally {
+                $shouldRevoke = false;
+            }
+
+            $this->assertTrue($didRevoke, 'The live GRN SELECT must trigger persisted revocation.');
+            $this->assertFalse((bool) $actor->has_permission_overrides);
+            $this->assertTrue((bool) $actor->fresh()->has_permission_overrides);
+            try {
+                $manager->paginate($actor, $context);
+                $this->fail('Persisted DENY must also reject subsequent GRN reads.');
+            } catch (HttpExceptionInterface $exception) {
+                $this->assertSame(403, $exception->getStatusCode());
+            }
+            $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+            $this->assertDatabaseCount('enterprise_goods_receipts', 0);
+
+            DB::table('user_permission_overrides')
+                ->where('user_id', $actor->id)
+                ->where('permission_id', $permission->id)
+                ->delete();
+            DB::table('users')->where('id', $actor->id)
+                ->update(['has_permission_overrides' => false]);
+
+            $this->assertSame(0, $manager->paginate($actor, $context)->total());
+            $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+        }
+    }
+
     private function store(string $channel, string $code): Store
     {
         $store = Store::query()->create([
