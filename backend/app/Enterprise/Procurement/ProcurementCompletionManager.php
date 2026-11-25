@@ -1276,7 +1276,7 @@ final class ProcurementCompletionManager
         $prefix = $literal.'%';
         $contains = '%'.$literal.'%';
 
-        return DB::table('enterprise_procurement_contracts as contracts')
+        $page = DB::table('enterprise_procurement_contracts as contracts')
             ->join('enterprise_suppliers as suppliers', 'suppliers.id', '=', 'contracts.supplier_id')
             ->where('contracts.organization_id', $scope->organizationId)
             ->where('contracts.company_id', $scope->companyId)
@@ -1315,6 +1315,30 @@ final class ProcurementCompletionManager
             ->orderByDesc('contracts.id')
             ->paginate(max(10, min(100, $perPage)))
             ->withQueryString();
+
+        // Supplier/contract rows are cached after their scoped SELECT. A
+        // contract transferred to another store before return must not leak
+        // its price, title, supplier or currency to the previous store.
+        // Check the at-most-100 selected IDs against current ownership once.
+        $pageIds = $page->getCollection()->pluck('id')->all();
+        if ($pageIds !== []) {
+            abort_unless(
+                DB::table('enterprise_procurement_contracts')
+                    ->where('organization_id', $scope->organizationId)
+                    ->where('company_id', $scope->companyId)
+                    ->where('store_id', $scope->storeId)
+                    ->whereIn('id', $pageIds)
+                    ->count() === count($pageIds),
+                404,
+                'Procurement contract ownership changed during pagination.',
+            );
+        }
+
+        // Original actor's effective VIEW may be persistently revoked during
+        // COUNT/SELECT; a previously authorized request is not a durable grant.
+        $this->scope($actor, $context, 'procurement.purchase_orders.view');
+
+        return $page;
     }
 
     /** @return list<object> */

@@ -236,6 +236,118 @@ final class EnterpriseProcurementCompletionTest extends TestCase
         ]);
     }
 
+    public function test_contract_page_rejects_late_store_transfer_and_persisted_view_revoke_in_ar_and_en(): void
+    {
+        $this->enableProcurement();
+        [$actor, $store, $context] = $this->scopedUser($this->allPermissions(), 'P135-CTR-PAGE-LIVE');
+        $foreignStore = $this->createRetailStore('P135-CTR-PAGE-FOREIGN');
+        $directory = app(SupplierDirectory::class);
+        $completion = app(ProcurementCompletionManager::class);
+        $permissionId = Permission::query()->where('code', 'procurement.purchase_orders.view')->firstOrFail()->id;
+
+        $armed = false;
+        $injected = false;
+        $mode = '';
+        $targetContractId = null;
+        DB::listen(static function ($query) use (
+            $actor, $permissionId, $foreignStore, &$armed, &$injected, &$mode, &$targetContractId
+        ): void {
+            $sql = strtolower((string) $query->sql);
+            if (! $armed || $injected || $targetContractId === null
+                || ! str_contains($sql, 'select')
+                || ! str_contains($sql, 'enterprise_procurement_contracts')
+                || ! str_contains($sql, 'order by')) {
+                return;
+            }
+
+            // Deliberate post-SELECT same-connection interleaving. This is
+            // not independently verified two-session MySQL concurrency.
+            $armed = false;
+            $injected = true;
+            if ($mode === 'transfer') {
+                DB::table('enterprise_procurement_contracts')
+                    ->where('id', $targetContractId)
+                    ->update(['store_id' => $foreignStore->id]);
+            } else {
+                DB::table('user_permission_overrides')->insert([
+                    'user_id' => $actor->id,
+                    'permission_id' => $permissionId,
+                    'scope_key' => 'global',
+                    'store_id' => null,
+                    'effect' => 'deny',
+                    'created_at' => now(),
+                    'updated_at' => now(),
+                ]);
+                DB::table('users')->where('id', $actor->id)
+                    ->update(['has_permission_overrides' => true]);
+            }
+        });
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            $supplier = $directory->create($actor, $context, [
+                'scope_type' => 'store',
+                'code' => 'P135-CTR-PAGE-'.strtoupper($locale),
+                'name_en' => 'Safe contract pagination '.$locale,
+            ]);
+            $contract = $completion->createContract($actor, $context, [
+                'supplier_id' => $supplier->id,
+                'title' => 'Protected store contract '.$locale,
+                'currency_code' => 'KWD',
+                'starts_on' => now()->subDay()->toDateString(),
+                'ends_on' => now()->addDays(30)->toDateString(),
+            ]);
+            $filter = ['q' => $contract->contract_number];
+            $this->assertSame(1, $completion->paginateContracts($actor, $context, $filter)->total());
+
+            $targetContractId = $contract->id;
+            $auditBefore = DB::table('audit_logs')->count();
+            $contractCount = DB::table('enterprise_procurement_contracts')->count();
+            foreach (['transfer', 'revoke'] as $mode) {
+                $injected = false;
+                $armed = true;
+                try {
+                    $completion->paginateContracts($actor, $context, $filter);
+                    $this->fail('Late loss of store scope or VIEW must never return cached contract financial data.');
+                } catch (HttpException $exception) {
+                    $this->assertTrue($injected, 'The denial must be injected after actual contract page SQL.');
+                    $this->assertSame($mode === 'transfer' ? 404 : 403, $exception->getStatusCode());
+                } finally {
+                    $armed = false;
+                }
+
+                if ($mode === 'transfer') {
+                    $this->assertSame(0, $completion->paginateContracts($actor, $context, $filter)->total());
+                    DB::table('enterprise_procurement_contracts')
+                        ->where('id', $contract->id)
+                        ->update(['store_id' => $store->id]);
+                } else {
+                    $this->assertFalse((bool) $actor->has_permission_overrides);
+                    $this->assertTrue((bool) $actor->fresh()->has_permission_overrides);
+                    try {
+                        $completion->paginateContracts($actor, $context, $filter);
+                        $this->fail('Persisted VIEW DENY must block repeated reads.');
+                    } catch (HttpException $exception) {
+                        $this->assertSame(403, $exception->getStatusCode());
+                    }
+                    DB::table('user_permission_overrides')
+                        ->where('user_id', $actor->id)
+                        ->where('permission_id', $permissionId)
+                        ->delete();
+                    DB::table('users')->where('id', $actor->id)
+                        ->update(['has_permission_overrides' => false]);
+                }
+                $this->assertSame($contractCount, DB::table('enterprise_procurement_contracts')->count());
+                $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+                $this->assertSame(1, $completion->paginateContracts($actor, $context, $filter)->total());
+            }
+            // Do not pollute the next locale's contract match.
+            DB::table('enterprise_procurement_contracts')
+                ->where('id', $contract->id)
+                ->update(['store_id' => $foreignStore->id]);
+        }
+    }
+
     public function test_rfq_portal_quote_award_and_savings_preserve_canonical_procurement_chain(): void
     {
         Storage::fake('local');
