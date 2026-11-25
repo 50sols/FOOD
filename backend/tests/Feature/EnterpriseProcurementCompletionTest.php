@@ -485,6 +485,127 @@ final class EnterpriseProcurementCompletionTest extends TestCase
         }
     }
 
+    public function test_rfq_detail_rejects_quote_attachment_paths_after_store_transfer_in_ar_and_en(): void
+    {
+        Storage::fake('local');
+        $this->enableProcurement();
+        [$actor, , $context] = $this->scopedUser($this->allPermissions(), 'PROC-RFQ-DETAIL-TRANSFER');
+        $foreignStore = $this->createRetailStore('PROC-RFQ-DETAIL-FOREIGN');
+        $directory = app(SupplierDirectory::class);
+        $requests = app(PurchaseRequestManager::class);
+        $completion = app(ProcurementCompletionManager::class);
+
+        $armed = false;
+        $moved = false;
+        $targetRfqId = null;
+        $documentQueries = [];
+        // A listener survives both locales. Move the RFQ immediately after
+        // the initially authorized RFQ SELECT, before detail children load.
+        DB::listen(static function ($query) use (&$armed, &$moved, &$targetRfqId, &$documentQueries, $foreignStore): void {
+            $sql = strtolower((string) $query->sql);
+            if (str_contains($sql, 'enterprise_procurement_quote_documents')
+                && str_contains($sql, 'enterprise_procurement_rfqs')
+                && str_contains($sql, 'select')
+                && str_contains($sql, 'join')) {
+                $documentQueries[] = $sql;
+            }
+
+            if (! $armed || $moved || $targetRfqId === null
+                || ! str_contains($sql, 'enterprise_procurement_rfqs')
+                || ! str_contains($sql, 'select')
+                || str_contains($sql, 'join')) {
+                return;
+            }
+
+            $armed = false;
+            $moved = true;
+            DB::table('enterprise_procurement_rfqs')
+                ->where('id', $targetRfqId)
+                ->update(['store_id' => $foreignStore->id]);
+        });
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            $supplier = $directory->create($actor, $context, [
+                'scope_type' => 'store',
+                'code' => 'PROC-RFQ-DETAIL-'.strtoupper($locale),
+                'name_en' => 'RFQ detail attachment supplier '.$locale,
+            ]);
+            $request = $requests->create($actor, $context, [
+                'currency_code' => 'KWD',
+                'reason' => 'RFQ detail attachment store transfer '.$locale,
+                'lines' => [[
+                    'item_code' => 'RFQ-DETAIL-SKU',
+                    'description' => 'Private quote detail',
+                    'quantity' => 1,
+                    'unit' => 'case',
+                    'estimated_unit_cost' => 5.000,
+                ]],
+            ]);
+            $requests->submit($actor, $context, $request->id);
+            [$checker, $checkerContext] = ProcurementSecondApprover::forSameStore($actor, $context);
+            $requests->approve($checker, $checkerContext, $request->id);
+            $rfq = $completion->createRfq($actor, $context, $request->id, [
+                'title' => 'Private RFQ detail '.$locale,
+            ]);
+            $invitations = $completion->publishRfq($actor, $context, $rfq->id, [$supplier->id]);
+            $lineId = (int) DB::table('enterprise_procurement_rfq_lines')
+                ->where('rfq_id', $rfq->id)->value('id');
+
+            $this->post(route('supplier.rfq.submit', ['token' => $invitations[0]['token']]), [
+                'valid_until' => now()->addDays(14)->toDateString(),
+                'attachment' => UploadedFile::fake()->create('private-rfq.pdf', 4, 'application/pdf'),
+                'lines' => [[
+                    'rfq_line_id' => $lineId,
+                    'unit_price' => 4.000,
+                ]],
+            ])->assertRedirect();
+
+            $quoteId = (int) DB::table('enterprise_procurement_quotes')
+                ->where('rfq_id', $rfq->id)->value('id');
+            $document = DB::table('enterprise_procurement_quote_documents')
+                ->where('quote_id', $quoteId)->firstOrFail();
+            $beforeAudit = DB::table('audit_logs')->count();
+            $documentQueries = [];
+
+            $visible = $completion->rfqDetail($actor, $context, $rfq->id);
+            $this->assertCount(1, $visible['quotes']);
+            $this->assertCount(1, $visible['quoteDocuments']->get($quoteId));
+            $this->assertSame($document->storage_path, $visible['quoteDocuments']->get($quoteId)->first()->storage_path);
+            $this->assertCount(1, $documentQueries, 'The RFQ detail attachment SELECT must join its current RFQ.');
+            $this->assertStringContainsString('organization_id', $documentQueries[0]);
+            $this->assertStringContainsString('company_id', $documentQueries[0]);
+            $this->assertStringContainsString('store_id', $documentQueries[0]);
+
+            $targetRfqId = (int) $rfq->id;
+            $moved = false;
+            $armed = true;
+            try {
+                $completion->rfqDetail($actor, $context, $rfq->id);
+                $this->fail('Transferred RFQ details must not expose the old store quote or document.');
+            } catch (RecordNotFoundException $exception) {
+                $this->assertNotEmpty($exception->getMessage());
+            } finally {
+                $armed = false;
+            }
+            $this->assertTrue($moved, 'RFQ transfer was not triggered after its initial scoped read.');
+            $this->assertDatabaseHas('enterprise_procurement_rfqs', [
+                'id' => $rfq->id,
+                'store_id' => $foreignStore->id,
+            ]);
+            $this->assertSame($beforeAudit, DB::table('audit_logs')->count());
+            Storage::disk('local')->assertExists($document->storage_path);
+            $targetRfqId = null;
+
+            try {
+                $completion->rfqDetail($actor, $context, $rfq->id);
+                $this->fail('A transferred RFQ must remain hidden from its former store.');
+            } catch (RecordNotFoundException $exception) {
+                $this->assertNotEmpty($exception->getMessage());
+            }
+        }
+    }
+
     public function test_quote_document_download_checks_current_rfq_store_in_one_scoped_query_in_ar_and_en(): void
     {
         Storage::fake('local');
