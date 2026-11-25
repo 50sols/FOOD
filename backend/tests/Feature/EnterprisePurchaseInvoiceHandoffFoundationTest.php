@@ -118,6 +118,96 @@ final class EnterprisePurchaseInvoiceHandoffFoundationTest extends TestCase
         }
     }
 
+    public function test_invoice_direct_service_honors_persisted_denies_with_stale_actor_in_ar_and_en(): void
+    {
+        $this->enableProcurement();
+        [$actor, $store, $context] = $this->scopedUser($this->allPermissions(), 'PINV-STALE-DENY');
+        [, $warehouse] = $this->stockTarget($store, 'PINV-STALE-SKU');
+        $receipt = $this->postedReceipt(
+            $actor, $context, $warehouse, 'PINV-STALE-SUP', 'PINV-STALE-SKU', 5,
+        );
+        $manager = app(PurchaseInvoiceHandoffManager::class);
+        $this->assertFalse((bool) $actor->has_permission_overrides);
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            $invoice = $manager->createFromPostedReceipt($actor, $context, $receipt->id, [
+                'supplier_invoice_number' => 'PINV-STALE-'.strtoupper($locale),
+                'invoice_date' => '2026-10-16',
+                'lines' => [[
+                    'goods_receipt_line_id' => $receipt->lines()->firstOrFail()->id,
+                    'quantity' => 1,
+                ]],
+            ]);
+            $this->assertSame($invoice->id, $manager->detail($actor, $context, $invoice->id)->id);
+
+            foreach ([
+                'procurement.purchase_invoices.view',
+                'procurement.purchase_invoices.manage',
+                'procurement.purchase_invoices.handoff',
+            ] as $permissionCode) {
+                $permissionId = (int) Permission::query()->where('code', $permissionCode)->value('id');
+                $this->assertGreaterThan(0, $permissionId);
+                DB::table('user_permission_overrides')->insert([
+                    'user_id' => $actor->id,
+                    'permission_id' => $permissionId,
+                    'scope_key' => 'global',
+                    'store_id' => null,
+                    'effect' => 'deny',
+                    'created_at' => now(),
+                    'updated_at' => now(),
+                ]);
+                DB::table('users')->where('id', $actor->id)
+                    ->update(['has_permission_overrides' => true]);
+
+                // Simulate a legitimate long-lived direct service caller
+                // loaded before an independent admin revoked this permission.
+                $this->assertFalse((bool) $actor->has_permission_overrides);
+                $this->assertTrue((bool) $actor->fresh()->has_permission_overrides);
+                $auditBefore = DB::table('audit_logs')->count();
+                $lineCount = DB::table('enterprise_purchase_invoice_lines')->count();
+
+                $operations = match ($permissionCode) {
+                    'procurement.purchase_invoices.view' => [
+                        fn () => $manager->detail($actor, $context, $invoice->id),
+                        fn () => $manager->paginate($actor, $context),
+                    ],
+                    'procurement.purchase_invoices.manage' => [
+                        fn () => $manager->cancel($actor, $context, $invoice->id),
+                    ],
+                    default => [
+                        fn () => $manager->handoff($actor, $context, $invoice->id),
+                    ],
+                };
+                foreach ($operations as $operation) {
+                    try {
+                        $operation();
+                        $this->fail('A persisted invoice permission DENY must block stale service actors.');
+                    } catch (HttpExceptionInterface $exception) {
+                        $this->assertSame(403, $exception->getStatusCode());
+                    }
+                }
+
+                $this->assertDatabaseHas('enterprise_purchase_invoices', [
+                    'id' => $invoice->id, 'status' => 'draft', 'outbox_event_id' => null,
+                ]);
+                $this->assertSame($lineCount, DB::table('enterprise_purchase_invoice_lines')->count());
+                $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+
+                DB::table('user_permission_overrides')
+                    ->where('user_id', $actor->id)
+                    ->where('permission_id', $permissionId)
+                    ->delete();
+                DB::table('users')->where('id', $actor->id)
+                    ->update(['has_permission_overrides' => false]);
+                $this->assertFalse((bool) $actor->fresh()->has_permission_overrides);
+                $this->assertSame($invoice->id, $manager->detail($actor, $context, $invoice->id)->id);
+            }
+
+            $this->assertSame('handed_off', $manager->handoff($actor, $context, $invoice->id)->status);
+        }
+    }
+
     public function test_invoice_mutations_recheck_procurement_shutdown_before_writes_in_both_locales(): void
     {
         $this->enableProcurement();

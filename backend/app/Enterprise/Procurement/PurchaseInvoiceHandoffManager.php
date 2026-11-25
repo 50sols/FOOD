@@ -471,9 +471,18 @@ final class PurchaseInvoiceHandoffManager
         $this->assertProcurementEnabled();
         abort_if($context->enterpriseScope === null, 409, 'Enterprise data scope is required.');
 
+        // Do not trust a long-lived caller's stale permission-override flag.
+        // Rehydrate only the originally loaded, persisted active identity:
+        // direct service calls must observe committed role/permission DENYs.
+        $currentActor = User::query()
+            ->whereKey($persistedActorId)
+            ->where('is_active', true)
+            ->first();
+        abort_unless($currentActor instanceof User, 403);
+
         $scope = $context->enterpriseScope;
         $this->authorizer->authorize(
-            $actor,
+            $currentActor,
             $context,
             $permission,
             'company',
