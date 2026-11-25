@@ -406,6 +406,16 @@ final class EnterpriseOrganizationAdministration
                 'name' => [__('validation.required', ['attribute' => 'name'])],
             ]);
         }
+
+        // A direct service caller must not bypass the HTTP boolean validator:
+        // arbitrary strings cast truthy and can silently activate an entity.
+        // Preserve all standard Laravel boolean input representations.
+        if (array_key_exists('is_active', $data)
+            && ! in_array($data['is_active'], [true, false, 1, 0, '1', '0'], true)) {
+            throw ValidationException::withMessages([
+                'is_active' => [__('validation.boolean', ['attribute' => 'is_active'])],
+            ]);
+        }
     }
 
     /**

@@ -1690,11 +1690,12 @@ final class V2OrganizationSetupGuidanceTest extends TestCase
                     ['code' => 'p112_invalid_blank', 'name' => '   ', 'error' => 'name'],
                     ['code' => str_repeat('a', 101), 'name' => 'Rejected', 'error' => 'code'],
                     ['code' => 'p112_invalid_long_name', 'name' => str_repeat('N', 256), 'error' => 'name'],
+                    ['code' => 'p112_invalid_flag', 'name' => 'Rejected', 'is_active' => 'enabled', 'error' => 'is_active'],
                 ] as $invalid) {
                     $createData = [
                         'code' => $invalid['code'],
                         'name' => $invalid['name'],
-                        'is_active' => true,
+                        'is_active' => $invalid['is_active'] ?? true,
                     ];
 
                     try {
@@ -1733,6 +1734,14 @@ final class V2OrganizationSetupGuidanceTest extends TestCase
         ], $admin);
         $this->assertSame('Authorized Canonical Rename', $organization->fresh()->name);
         $this->assertSame($auditBefore + 1, DB::table('audit_logs')->count());
+
+        $inactive = $service->createOrganization([
+            'code' => 'p112_direct_valid_inactive',
+            'name' => 'Valid Inactive Hierarchy',
+            'is_active' => '0',
+        ], $admin);
+        $this->assertFalse((bool) $inactive->is_active);
+        $this->assertSame($auditBefore + 2, DB::table('audit_logs')->count());
     }
 
     public function test_child_creation_uses_persisted_parent_identity_and_rejects_stale_inactive_parent(): void
