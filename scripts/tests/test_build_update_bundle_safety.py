@@ -178,6 +178,70 @@ class BuildUpdateBundleSourceSafetyTest(unittest.TestCase):
                 for name, _ in entries:
                     self.assertEqual(archive.read(name), source.read_bytes())
 
+    def test_update_zip_refuses_existing_output_without_staging(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "repo"
+            source = root / "backend/public/assets/admin/app.css"
+            source.parent.mkdir(parents=True)
+            source.write_bytes(b"reviewed-css")
+            output = root / "dist/FOODEX-Update.zip"
+            output.parent.mkdir(parents=True)
+            output.write_bytes(b"previously-signed-release")
+            member = "backend/public/assets/admin/app.css"
+            with mock.patch.object(builder.tempfile, "mkstemp") as staging:
+                with self.assertRaisesRegex(RuntimeError, "already exists"):
+                    builder.build_zip(root, [(member, member)], output)
+                staging.assert_not_called()
+            self.assertEqual(output.read_bytes(), b"previously-signed-release")
+
+            output.unlink()
+            try:
+                output.symlink_to(root / "nonexistent-private-target.zip")
+            except (OSError, NotImplementedError):
+                self.skipTest("Symbolic links are unavailable on this host")
+            with mock.patch.object(builder.tempfile, "mkstemp") as staging:
+                with self.assertRaisesRegex(RuntimeError, "already exists"):
+                    builder.build_zip(root, [(member, member)], output)
+                staging.assert_not_called()
+            self.assertTrue(output.is_symlink())
+
+    def test_update_zip_refuses_late_competing_publish_without_clobbering(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "repo"
+            source = root / "backend/public/assets/admin/app.css"
+            source.parent.mkdir(parents=True)
+            source.write_bytes(b"reviewed-css")
+            output = root / "dist/FOODEX-Update.zip"
+            member = "backend/public/assets/admin/app.css"
+            real_link = os.link
+
+            def competing_publish(staging: Path, destination: Path) -> None:
+                # A different publisher wins AFTER this builder validates its
+                # ZIP but BEFORE exclusive publication.
+                destination.write_bytes(b"other-builder-verified-zip")
+                real_link(staging, destination)
+
+            with mock.patch.object(builder.os, "link", side_effect=competing_publish) as link:
+                with self.assertRaisesRegex(RuntimeError, "already exists"):
+                    builder.build_zip(root, [(member, member)], output)
+                link.assert_called_once()
+            self.assertEqual(output.read_bytes(), b"other-builder-verified-zip")
+            self.assertEqual(list(output.parent.glob(".*.staging")), [])
+
+    def test_update_zip_fails_closed_when_exclusive_publish_unsupported(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "repo"
+            source = root / "backend/public/assets/admin/app.css"
+            source.parent.mkdir(parents=True)
+            source.write_bytes(b"reviewed-css")
+            output = root / "dist/FOODEX-Update.zip"
+            member = "backend/public/assets/admin/app.css"
+            with mock.patch.object(builder.os, "link", side_effect=OSError("hardlinks denied")):
+                with self.assertRaisesRegex(RuntimeError, "exclusive Update ZIP publication unavailable"):
+                    builder.build_zip(root, [(member, member)], output)
+            self.assertFalse(os.path.lexists(output))
+            self.assertEqual(list(output.parent.glob(".*.staging")), [])
+
     def test_bad_archive_alias_fails_before_writing_output(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary) / "repo"

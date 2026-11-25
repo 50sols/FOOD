@@ -545,6 +545,11 @@ def build_zip(repo_root: Path, entries: list[tuple[str, str]], output: Path) -> 
         reviewed = trusted_source_file(repo_root, source_relative)
         verified.append((canonical, source_relative, reviewed.lstat()))
 
+    # Rebuilding must never silently replace a previously validated/signed
+    # release archive. Include dangling symlinks, which Path.exists() misses.
+    if os.path.lexists(output):
+        raise RuntimeError(f"Update ZIP output already exists; refusing overwrite: {output}")
+
     output.parent.mkdir(parents=True, exist_ok=True)
     fd, temporary_name = tempfile.mkstemp(
         prefix=f".{output.name}.", suffix=".staging", dir=output.parent
@@ -602,9 +607,20 @@ def build_zip(repo_root: Path, entries: list[tuple[str, str]], output: Path) -> 
                 if name.endswith("/"):
                     raise RuntimeError(f"Unexpected directory entry in update ZIP: {name}")
 
-        # A failed build only ever leaves a disposable private staging file.
-        # Never expose a partially written archive at the delivery path.
-        os.replace(temporary, output)
+        # The staging archive is complete. Publish ONLY if nobody has
+        # published first, with a same-directory atomic no-replace hard link.
+        # os.replace() would overwrite an already verified/signed ZIP in a
+        # concurrent builder race. If links are unsupported, fail closed.
+        try:
+            os.link(temporary, output)
+        except FileExistsError as exc:
+            raise RuntimeError(
+                f"Update ZIP output already exists; refusing overwrite: {output}"
+            ) from exc
+        except OSError as exc:
+            raise RuntimeError(
+                "Safe exclusive Update ZIP publication unavailable; no archive published."
+            ) from exc
     finally:
         temporary.unlink(missing_ok=True)
 
