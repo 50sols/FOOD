@@ -23,6 +23,7 @@ use App\Models\Store;
 use App\Models\User;
 use App\Support\ResolvedTenantContext;
 use App\Support\TenantContextResolver;
+use Illuminate\Database\Eloquent\ModelNotFoundException;
 use Illuminate\Database\RecordNotFoundException;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\UploadedFile;
@@ -404,7 +405,7 @@ final class EnterpriseProcurementCompletionTest extends TestCase
                     'ends_on' => now()->addDays(30)->toDateString(),
                 ]);
                 $this->fail('A supplier outside the selected store scope cannot be contracted.');
-            } catch (RecordNotFoundException $exception) {
+            } catch (ModelNotFoundException $exception) {
                 $this->assertNotEmpty($exception->getMessage());
             }
             $this->assertSame($beforeContracts, DB::table('enterprise_procurement_contracts')->count());
