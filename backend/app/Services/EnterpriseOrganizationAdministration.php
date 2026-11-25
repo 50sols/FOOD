@@ -472,15 +472,22 @@ final class EnterpriseOrganizationAdministration
 
         $originalId = $actor->getRawOriginal($actor->getKeyName());
         if ($originalId === null
-            || (string) $actor->getAuthIdentifier() !== (string) $originalId
-            || ! User::query()->whereKey($originalId)->where('is_active', true)->exists()) {
+            || (string) $actor->getAuthIdentifier() !== (string) $originalId) {
             abort(403);
         }
 
-        // The HTTP controller enforces this gate, but the canonical write
-        // service may also be invoked directly. Never grant an active
-        // non-platform administrator a mutation/audit capability.
-        Gate::forUser($actor)->authorize('platform.manage');
+        // A long-lived service caller can hold an old has_permission_overrides
+        // flag even after a global DENY was committed. The gate must evaluate
+        // today's persisted authorization state, not the caller's snapshot.
+        // Keep the original identity check above to reject dirty-key actors.
+        $currentActor = User::query()->whereKey($originalId)->where('is_active', true)->first();
+        if (! $currentActor instanceof User) {
+            abort(403);
+        }
+
+        // Enforce the same capability as the HTTP controller for every direct
+        // service write without trusting stale role/override memoization.
+        Gate::forUser($currentActor)->authorize('platform.manage');
     }
 
     private function snapshot(Model $model): array
