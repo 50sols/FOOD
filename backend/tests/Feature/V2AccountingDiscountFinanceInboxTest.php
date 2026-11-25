@@ -20,6 +20,7 @@ use Database\Seeders\CoreReferenceSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
+use Tests\Support\SyntheticErpWorkflowEvidence;
 use Tests\TestCase;
 
 final class V2AccountingDiscountFinanceInboxTest extends TestCase
@@ -359,8 +360,8 @@ final class V2AccountingDiscountFinanceInboxTest extends TestCase
         // integrates. Keep this older atomic Finance PR compatible without
         // weakening the production readiness middleware or trusting unsigned
         // evidence. The synthetic signing key never leaves PHPUnit memory.
-        if (class_exists(\Tests\Support\SyntheticErpWorkflowEvidence::class)) {
-            \Tests\Support\SyntheticErpWorkflowEvidence::install();
+        if (class_exists(SyntheticErpWorkflowEvidence::class)) {
+            SyntheticErpWorkflowEvidence::install();
             config()->set(
                 'enterprise_module_readiness.certified_versions.'.FinanceFoundationService::MODULE,
                 app(ModuleRegistry::class)->manifest(FinanceFoundationService::MODULE)->version,
