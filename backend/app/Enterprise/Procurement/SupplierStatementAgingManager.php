@@ -170,6 +170,16 @@ final class SupplierStatementAgingManager
         User $actor,
         ResolvedTenantContext $context,
     ): EnterpriseDataScope {
+        // A mutated, unsaved Eloquent user ID must never grant access to
+        // another principal's supplier invoices or aging balances.
+        $persistedActorId = $actor->getRawOriginal($actor->getKeyName());
+        abort_unless(
+            $actor->exists
+                && $persistedActorId !== null
+                && (string) $actor->getKey() === (string) $persistedActorId,
+            403,
+        );
+
         abort_unless(
             $this->modules->isEnabled('procurement'),
             404,
