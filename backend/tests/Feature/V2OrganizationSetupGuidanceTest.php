@@ -1892,6 +1892,94 @@ final class V2OrganizationSetupGuidanceTest extends TestCase
         }
     }
 
+    public function test_direct_organization_writes_recheck_persisted_permission_denial_in_both_locales(): void
+    {
+        $service = app(EnterpriseOrganizationAdministration::class);
+        $unit = EnterpriseBusinessUnit::query()
+            ->where('code', OrganizationHierarchyService::DEFAULT_BUSINESS_UNIT)
+            ->whereHas('legalEntity.company.organization', fn ($query) => $query
+                ->where('code', OrganizationHierarchyService::DEFAULT_ORGANIZATION))
+            ->firstOrFail();
+        $typeId = DB::table('store_types')->where('code', 'B2B')->value('id');
+        $permissionId = DB::table('permissions')->where('code', 'platform.manage')->value('id');
+        $this->assertNotNull($typeId);
+        $this->assertNotNull($permissionId);
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            $admin = $this->actor('SYSTEM_ADMINISTRATOR', $locale);
+            $this->assertTrue($admin->hasPermission('platform.manage'));
+            $staleActor = $admin->fresh();
+
+            $organization = EnterpriseOrganization::query()->create([
+                'code' => 'v2_revocation_existing_'.$locale,
+                'name' => 'Original name',
+                'is_active' => true,
+            ]);
+            $store = Store::query()->create([
+                'store_type_id' => $typeId,
+                'code' => 'v2-revocation-'.$locale,
+                'name' => 'Revocation check',
+                'is_active' => true,
+            ]);
+
+            // Simulate a live role override revocation after an authenticated
+            // service caller captured the user. HTTP middleware normally
+            // rehydrates the user; direct service entry points must too.
+            DB::table('user_permission_overrides')->insert([
+                'user_id' => $admin->id,
+                'permission_id' => $permissionId,
+                'scope_key' => 'global',
+                'store_id' => null,
+                'effect' => 'deny',
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+            DB::table('users')->where('id', $admin->id)
+                ->update(['has_permission_overrides' => true]);
+
+            $this->assertFalse((bool) $staleActor->has_permission_overrides);
+            $this->assertTrue($staleActor->hasPermission('platform.manage'));
+            $this->assertFalse($admin->fresh()->hasPermission('platform.manage'));
+            $auditBefore = DB::table('audit_logs')->count();
+
+            foreach ([
+                'create' => fn () => $service->createOrganization([
+                    'code' => 'v2_revocation_forbidden_'.$locale,
+                    'name' => 'Forbidden',
+                    'is_active' => true,
+                ], $staleActor),
+                'update' => fn () => $service->updateOrganization($organization, [
+                    'name' => 'Unauthorized rename',
+                ], $staleActor),
+                'assign' => fn () => $service->assignStore($store, $unit, $staleActor),
+            ] as $operation => $write) {
+                try {
+                    $write();
+                    $this->fail("Stale permission override must deny {$operation}.");
+                } catch (AuthorizationException $exception) {
+                    $this->assertSame(403, $exception->status() ?? 403);
+                }
+            }
+
+            $this->assertDatabaseMissing('enterprise_organizations', [
+                'code' => 'v2_revocation_forbidden_'.$locale,
+            ]);
+            $this->assertSame('Original name', $organization->fresh()->name);
+            $this->assertDatabaseMissing('enterprise_store_scopes', ['store_id' => $store->id]);
+            $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+
+            // Removing the DENY restores the legitimate administrator path,
+            // even when the caller still holds its original user instance.
+            DB::table('user_permission_overrides')->where('user_id', $admin->id)->delete();
+            DB::table('users')->where('id', $admin->id)
+                ->update(['has_permission_overrides' => false]);
+            $service->updateOrganization($organization, ['name' => 'Authorized rename'], $staleActor);
+            $this->assertSame('Authorized rename', $organization->fresh()->name);
+            $this->assertSame($auditBefore + 1, DB::table('audit_logs')->count());
+        }
+    }
+
     private function actor(string $roleCode, string $locale): User
     {
         $user = User::query()->create([
