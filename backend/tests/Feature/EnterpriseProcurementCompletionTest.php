@@ -359,6 +359,54 @@ final class EnterpriseProcurementCompletionTest extends TestCase
         $this->assertNotEmpty($dashboard['charts']['savings']);
     }
 
+    public function test_contract_creation_never_writes_when_procurement_module_is_disabled_in_both_locales(): void
+    {
+        $this->enableProcurement();
+        [$actor, , $context] = $this->scopedUser($this->allPermissions(), 'PROC-CTR-MODULE');
+        $supplier = app(SupplierDirectory::class)->create($actor, $context, [
+            'scope_type' => 'store',
+            'code' => 'PROC-CTR-MODULE-SUP',
+            'name_en' => 'Module Lifecycle Supplier',
+        ]);
+        $completion = app(ProcurementCompletionManager::class);
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            DB::table('enterprise_modules')->where('code', 'procurement')
+                ->update(['state' => ModuleState::DISABLED->value]);
+            $contractsBefore = DB::table('enterprise_procurement_contracts')->count();
+            $auditBefore = DB::table('audit_logs')->count();
+
+            try {
+                $completion->createContract($actor, $context, [
+                    'supplier_id' => $supplier->id,
+                    'title' => 'Disabled module contract '.$locale,
+                    'currency_code' => 'KWD',
+                    'starts_on' => now()->toDateString(),
+                    'ends_on' => now()->addDays(30)->toDateString(),
+                ]);
+                $this->fail('Disabled procurement cannot create supplier contracts.');
+            } catch (HttpException $exception) {
+                $this->assertSame(404, $exception->getStatusCode());
+            }
+            $this->assertSame($contractsBefore, DB::table('enterprise_procurement_contracts')->count());
+            $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+
+            DB::table('enterprise_modules')->where('code', 'procurement')
+                ->update(['state' => ModuleState::ENABLED->value]);
+            $created = $completion->createContract($actor, $context, [
+                'supplier_id' => $supplier->id,
+                'title' => 'Enabled module contract '.$locale,
+                'currency_code' => 'KWD',
+                'starts_on' => now()->toDateString(),
+                'ends_on' => now()->addDays(30)->toDateString(),
+            ]);
+            $this->assertSame((int) $supplier->id, (int) $created->supplier_id);
+            $this->assertSame($contractsBefore + 1, DB::table('enterprise_procurement_contracts')->count());
+            $this->assertSame($auditBefore + 1, DB::table('audit_logs')->count());
+        }
+    }
+
     public function test_contract_creation_revalidates_live_supplier_scope_and_status_in_both_locales(): void
     {
         $this->enableProcurement();
