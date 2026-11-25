@@ -485,6 +485,79 @@ final class EnterpriseProcurementCompletionTest extends TestCase
         }
     }
 
+    public function test_contract_document_download_reads_live_store_and_document_in_one_scoped_query_in_ar_and_en(): void
+    {
+        Storage::fake('local');
+        $this->enableProcurement();
+        [$actor, , $context] = $this->scopedUser($this->allPermissions(), 'PROC-DOC-READ-ATOMIC');
+        $foreignStore = $this->createRetailStore('PROC-DOC-READ-FOREIGN');
+        $directory = app(SupplierDirectory::class);
+        $completion = app(ProcurementCompletionManager::class);
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            $supplier = $directory->create($actor, $context, [
+                'scope_type' => 'store',
+                'code' => 'PROC-DOC-READ-'.strtoupper($locale),
+                'name_en' => 'Scoped document download supplier '.$locale,
+            ]);
+            $contract = $completion->createContract($actor, $context, [
+                'supplier_id' => $supplier->id,
+                'title' => 'Atomic attachment read '.$locale,
+                'currency_code' => 'KWD',
+                'starts_on' => now()->toDateString(),
+                'ends_on' => now()->addDays(30)->toDateString(),
+            ]);
+            $document = $completion->addContractDocument(
+                $actor,
+                $context,
+                $contract->id,
+                ['title' => 'Owned contract file '.$locale],
+                UploadedFile::fake()->create('owned.pdf', 4, 'application/pdf'),
+            );
+            $auditBefore = DB::table('audit_logs')->count();
+            $documentQueries = [];
+
+            DB::listen(static function ($query) use (&$documentQueries): void {
+                $sql = strtolower((string) $query->sql);
+                if (str_contains($sql, 'enterprise_procurement_contract_documents')
+                    && str_contains($sql, 'select')) {
+                    $documentQueries[] = $sql;
+                }
+            });
+
+            $visible = $completion->contractDocument($actor, $context, $contract->id, $document->id);
+            $this->assertSame((int) $document->id, (int) $visible->id);
+            $this->assertNotNull($visible->storage_path);
+            $this->assertTrue(Storage::disk('local')->exists($visible->storage_path));
+            $this->assertCount(1, $documentQueries, 'Attachment identity and contract ownership must be resolved in one SELECT.');
+            $this->assertStringContainsString('join', $documentQueries[0]);
+            $this->assertStringContainsString('enterprise_procurement_contracts', $documentQueries[0]);
+            $this->assertStringContainsString('organization_id', $documentQueries[0]);
+            $this->assertStringContainsString('company_id', $documentQueries[0]);
+            $this->assertStringContainsString('store_id', $documentQueries[0]);
+
+            // An existing document remains on disk but must become unreadable
+            // to the former store immediately after the canonical transfer.
+            DB::table('enterprise_procurement_contracts')
+                ->where('id', $contract->id)
+                ->update(['store_id' => $foreignStore->id]);
+            try {
+                $completion->contractDocument($actor, $context, $contract->id, $document->id);
+                $this->fail('A transferred contract attachment must not be readable by its former store.');
+            } catch (RecordNotFoundException $exception) {
+                $this->assertNotEmpty($exception->getMessage());
+            }
+
+            $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+            $this->assertTrue(Storage::disk('local')->exists($visible->storage_path));
+            $this->assertDatabaseHas('enterprise_procurement_contracts', [
+                'id' => $contract->id,
+                'store_id' => $foreignStore->id,
+            ]);
+        }
+    }
+
     public function test_contract_document_rechecks_live_scope_after_preflight_and_removes_orphan_upload(): void
     {
         Storage::fake('local');
