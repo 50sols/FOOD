@@ -516,16 +516,14 @@ final class EnterpriseProcurementCompletionTest extends TestCase
             // Inject a scoped transfer exactly at that seam. A generic SQL
             // listener can accidentally fire on an unrelated SELECT instead.
             $fixture = UploadedFile::fake()->create('scope-proof.pdf', 4, 'application/pdf');
-            $attachment = new class(
-                $fixture->getPathname(),
-                $fixture->getClientOriginalName(),
-                static function () use (&$changed, $contract, $otherStore): void {
-                    $changed = true;
-                    DB::table('enterprise_procurement_contracts')
-                        ->where('id', $contract->id)
-                        ->update(['store_id' => $otherStore->id]);
-                },
+            $attachment = new class($fixture->getPathname(), $fixture->getClientOriginalName(), static function () use (&$changed, $contract, $otherStore): void {
+                $changed = true;
+                DB::table('enterprise_procurement_contracts')
+                    ->where('id', $contract->id)
+                    ->update(['store_id' => $otherStore->id]);
+            },
             ) extends UploadedFile {
+
                 public function __construct(string $path, string $name, private readonly \Closure $transfer)
                 {
                     parent::__construct($path, $name, 'application/pdf', null, true);
