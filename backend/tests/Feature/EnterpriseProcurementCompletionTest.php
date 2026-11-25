@@ -1404,6 +1404,100 @@ final class EnterpriseProcurementCompletionTest extends TestCase
         }
     }
 
+    public function test_contract_detail_and_document_refuse_late_supplier_transfer_in_ar_and_en(): void
+    {
+        Storage::fake('local');
+        $this->enableProcurement();
+        [$actor, $ownStore, $context] = $this->scopedUser($this->allPermissions(), 'P135-CTR-DETAIL-SUPPLIER');
+        $foreignStore = $this->createRetailStore('P135-CTR-DETAIL-SUPPLIER-FOREIGN');
+        $directory = app(SupplierDirectory::class);
+        $completion = app(ProcurementCompletionManager::class);
+
+        $armed = false;
+        $moved = false;
+        $supplierId = 0;
+        DB::listen(static function ($query) use (&$armed, &$moved, &$supplierId, $foreignStore): void {
+            $sql = strtolower(ltrim((string) $query->sql));
+            if (! $armed || $moved || $supplierId === 0
+                || ! str_starts_with($sql, 'select')
+                || ! str_contains($sql, 'enterprise_procurement_contract_documents')
+                || ! str_contains($sql, 'enterprise_procurement_contracts')
+                || ! str_contains($sql, 'join')) {
+                return;
+            }
+
+            // Persist a transfer AFTER the private document SELECT. This is
+            // a same-connection regression, not a multi-session race proof.
+            $armed = false;
+            $moved = true;
+            DB::table('enterprise_suppliers')->where('id', $supplierId)
+                ->update(['store_id' => $foreignStore->id]);
+        });
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            $supplier = $directory->create($actor, $context, [
+                'scope_type' => 'store',
+                'code' => 'P135-DETAIL-SUP-'.strtoupper($locale),
+                'name_en' => 'Private document supplier '.$locale,
+            ]);
+            $contract = $completion->createContract($actor, $context, [
+                'supplier_id' => $supplier->id,
+                'title' => 'Sensitive supplier contract '.$locale,
+                'currency_code' => 'KWD',
+                'starts_on' => now()->toDateString(),
+                'ends_on' => now()->addDays(30)->toDateString(),
+            ]);
+            $document = $completion->addContractDocument(
+                $actor, $context, $contract->id,
+                ['title' => 'Private attachment '.$locale],
+                UploadedFile::fake()->create('private.pdf', 4, 'application/pdf'),
+            );
+            $supplierId = (int) $supplier->id;
+            $detail = fn (): array => $completion->contractDetail($actor, $context, $contract->id);
+            $attachment = fn (): object => $completion->contractDocument($actor, $context, $contract->id, $document->id);
+            $this->assertSame($document->storage_path, $detail()['documents'][0]->storage_path);
+            $this->assertSame($document->storage_path, $attachment()->storage_path);
+            $auditBefore = DB::table('audit_logs')->count();
+            $docCount = DB::table('enterprise_procurement_contract_documents')->count();
+
+            foreach (['detail', 'attachment'] as $read) {
+                $moved = false;
+                $armed = true;
+                try {
+                    if ($read === 'detail') {
+                        $detail();
+                    } else {
+                        $attachment();
+                    }
+                    $this->fail('Stale private contract data must not escape a supplier transfer.');
+                } catch (ModelNotFoundException|RecordNotFoundException $exception) {
+                    $this->assertNotEmpty($exception->getMessage());
+                } finally {
+                    $armed = false;
+                }
+                $this->assertTrue($moved, 'Supplier must move after the scoped document SELECT.');
+                foreach ([$detail, $attachment] as $readAgain) {
+                    try {
+                        $readAgain();
+                        $this->fail('A foreign-store supplier must deny repeated contract reads.');
+                    } catch (ModelNotFoundException|RecordNotFoundException $exception) {
+                        $this->assertNotEmpty($exception->getMessage());
+                    }
+                }
+                DB::table('enterprise_suppliers')->where('id', $supplier->id)
+                    ->update(['store_id' => $ownStore->id]);
+                $this->assertSame($document->storage_path, $detail()['documents'][0]->storage_path);
+                $this->assertSame($document->storage_path, $attachment()->storage_path);
+            }
+
+            $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+            $this->assertSame($docCount, DB::table('enterprise_procurement_contract_documents')->count());
+            Storage::disk('local')->assertExists($document->storage_path);
+            $supplierId = 0;
+        }
+    }
+
     public function test_contract_document_download_reads_live_store_and_document_in_one_scoped_query_in_ar_and_en(): void
     {
         Storage::fake('local');

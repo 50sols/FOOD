@@ -1556,6 +1556,9 @@ final class ProcurementCompletionManager
     ): array {
         $scope = $this->scope($actor, $context, 'procurement.purchase_orders.view');
         $contract = $this->visibleContract($scope, $contractId);
+        // Supplier ownership can change independently of the contract's store.
+        $this->visibleSupplier($scope, (int) $contract->supplier_id);
+
         // Attachment paths must be scoped against the contract's CURRENT
         // owner in the same SELECT, not against a stale visibleContract()
         // preflight. A transfer between the two reads must not leak files.
@@ -1574,7 +1577,15 @@ final class ProcurementCompletionManager
         // captured before it. A concurrent store transfer can leave a former
         // owner with stale supplier/title/currency details even when document
         // paths are correctly withheld. Fail closed for the entire response.
-        $this->visibleContract($scope, $contractId);
+        $liveContract = $this->visibleContract($scope, $contractId);
+        abort_unless(
+            (int) $liveContract->supplier_id === (int) $contract->supplier_id,
+            404,
+            'Procurement contract supplier changed during detail read.',
+        );
+        // Recheck the originally authorized supplier after reading private
+        // attachment paths, not only at the beginning of this request.
+        $this->visibleSupplier($scope, (int) $contract->supplier_id);
         // The live-owner read above prevents scope transfer. A separately
         // persisted actor offboarding or VIEW DENY during attachment SQL
         // must also block this response and its private storage paths.
@@ -1682,9 +1693,19 @@ final class ProcurementCompletionManager
         // database statement so a transferred contract cannot expose a file.
         $document = DB::table('enterprise_procurement_contract_documents as documents')
             ->join('enterprise_procurement_contracts as contracts', 'contracts.id', '=', 'documents.contract_id')
+            ->join('enterprise_suppliers as suppliers', 'suppliers.id', '=', 'contracts.supplier_id')
             ->where('contracts.organization_id', $scope->organizationId)
             ->where('contracts.company_id', $scope->companyId)
             ->where('contracts.store_id', $scope->storeId)
+            ->where('suppliers.organization_id', $scope->organizationId)
+            ->where('suppliers.company_id', $scope->companyId)
+            ->where(function ($query) use ($scope): void {
+                $query->where('suppliers.scope_type', 'company')
+                    ->orWhere(function ($store) use ($scope): void {
+                        $store->where('suppliers.scope_type', 'store')
+                            ->where('suppliers.store_id', $scope->storeId);
+                    });
+            })
             ->where('contracts.id', $contractId)
             ->where('documents.id', $documentId)
             ->select('documents.*')
@@ -1696,9 +1717,19 @@ final class ProcurementCompletionManager
         // cached path: a pre-query store grant is not a post-query grant.
         DB::table('enterprise_procurement_contract_documents as documents')
             ->join('enterprise_procurement_contracts as contracts', 'contracts.id', '=', 'documents.contract_id')
+            ->join('enterprise_suppliers as suppliers', 'suppliers.id', '=', 'contracts.supplier_id')
             ->where('contracts.organization_id', $scope->organizationId)
             ->where('contracts.company_id', $scope->companyId)
             ->where('contracts.store_id', $scope->storeId)
+            ->where('suppliers.organization_id', $scope->organizationId)
+            ->where('suppliers.company_id', $scope->companyId)
+            ->where(function ($query) use ($scope): void {
+                $query->where('suppliers.scope_type', 'company')
+                    ->orWhere(function ($store) use ($scope): void {
+                        $store->where('suppliers.scope_type', 'store')
+                            ->where('suppliers.store_id', $scope->storeId);
+                    });
+            })
             ->where('contracts.id', $contractId)
             ->where('documents.id', $documentId)
             ->where('documents.contract_id', $document->contract_id)
