@@ -14,6 +14,7 @@ use App\Enterprise\Procurement\SupplierDirectory;
 use App\Enterprise\Procurement\SupplierStatementAgingManager;
 use App\Models\Catalog;
 use App\Models\EnterpriseGoodsReceipt;
+use App\Models\EnterpriseSupplier;
 use App\Models\Permission;
 use App\Models\Product;
 use App\Models\Role;
@@ -121,12 +122,13 @@ final class EnterpriseSupplierStatementAgingFoundationTest extends TestCase
             $auditBefore = DB::table('audit_logs')->count();
             $switched = false;
 
-            // The first supplier SELECT is the public preflight. Mimic
-            // concurrent reassignment immediately after its result is read.
-            // The transaction must not trust that now-stale supplier object.
-            DB::listen(static function ($query) use (&$switched, $supplier, $foreignStore): void {
-                $sql = strtolower((string) $query->sql);
-                if ($switched || ! str_contains($sql, 'enterprise_suppliers') || ! str_contains($sql, 'select')) {
+            // Eloquent's retrieved callback runs after the preflight SQL
+            // result is fetched but before findVisible() returns its original
+            // scoped Supplier. This precise seam is safer than a broad SQL
+            // listener which may match an unrelated supplier SELECT first.
+            // The final locked query MUST see the reassigned persisted store.
+            EnterpriseSupplier::retrieved(static function (EnterpriseSupplier $loaded) use (&$switched, $supplier, $foreignStore): void {
+                if ($switched || (int) $loaded->id !== (int) $supplier->id) {
                     return;
                 }
 
