@@ -199,8 +199,10 @@ def build_setup_zip(source_root: Path, output: Path, source_epoch: int) -> str:
         # Fail before creating the temporary archive. Keep the same checks
         # in the packaging loop to detect a later swap of the staged member.
         allowed_templates = {".env.example", ".env.production.example"}
-        for part in source_path.relative_to(source_root).parts:
+        for index, part in enumerate(components):
             folded = part.casefold()
+            if index > 0 and components[index - 1].casefold() == ".config" and folded == "gcloud":
+                raise SetupBuildError(f"Credential storage in Setup staging: {name}")
             if folded == ".git":
                 raise SetupBuildError(f"Source control metadata in Setup staging: {name}")
             if folded in CREDENTIAL_STORAGE_PARTS:
@@ -311,8 +313,10 @@ def build_setup_zip(source_root: Path, output: Path, source_epoch: int) -> str:
                 # downstream ZIP verifier rejects these too, but a builder
                 # must fail before publishing a secret-bearing archive.
                 allowed_templates = {".env.example", ".env.production.example"}
-                for component in path.relative_to(source_root).parts:
+                for index, component in enumerate(path.relative_to(source_root).parts):
                     folded = component.casefold()
+                    if index > 0 and path.relative_to(source_root).parts[index - 1].casefold() == ".config" and folded == "gcloud":
+                        raise SetupBuildError(f"Credential storage in Setup staging: {name}")
                     if folded == ".git":
                         raise SetupBuildError(f"Source control metadata in Setup staging: {name}")
                     if folded in CREDENTIAL_STORAGE_PARTS:

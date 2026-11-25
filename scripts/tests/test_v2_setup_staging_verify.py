@@ -177,6 +177,8 @@ class V2SetupStagingVerifierTest(unittest.TestCase):
             "backend/resources/admin/application_default_credentials.json",
             "backend/public/assets/admin/terraform.tfstate.backup",
             "backend/resources/admin/accessTokens.json",
+            "backend/public/assets/.config/gcloud/credentials.db",
+            "backend/resources/admin/.CONFIG/GCLOUD/credentials.db",
         ):
             with self.subTest(member=member):
                 self.pack({member: b"DO-NOT-PUBLISH-CREDENTIALS"})

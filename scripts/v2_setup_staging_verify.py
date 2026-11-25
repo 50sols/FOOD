@@ -217,7 +217,11 @@ def _member_target(member: zipfile.ZipInfo) -> tuple[str, str, bool]:
     _require(all(part not in ("", ".", "..") for part in parts),
              f"Unsafe Setup ZIP component: {name!r}")
 
-    for part in parts:
+    for index, part in enumerate(parts):
+        _require(
+            not (index > 0 and parts[index - 1].casefold() == ".config" and part.casefold() == "gcloud"),
+            f"Credential storage in Setup ZIP: {name!r}",
+        )
         _require(
             part == part.rstrip(" .")
             and not any(ch in '<>:"|?*' or ord(ch) < 32 or ord(ch) == 127 for ch in part)
