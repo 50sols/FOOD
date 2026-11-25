@@ -54,7 +54,12 @@ def _open_verified_member(path: Path, meta: os.stat_result, name: str, source_ro
     # directory being swapped for a symlink after the rglob scan. Traverse
     # from the trusted root using dirfd-relative opens; each component must
     # still be a real directory when it is opened.
-    if not hasattr(os, "O_DIRECTORY") or not hasattr(os, "O_NOFOLLOW") or os.open not in os.supports_dir_fd:
+    if (
+        not hasattr(os, "O_DIRECTORY")
+        or not hasattr(os, "O_NOFOLLOW")
+        or not hasattr(os, "O_NONBLOCK")
+        or os.open not in os.supports_dir_fd
+    ):
         raise SetupBuildError("Safe directory-relative Setup staging opens are unavailable.")
     parts = Path(name).parts
     if not parts or any(part in ("", ".", "..") for part in parts):
@@ -69,7 +74,10 @@ def _open_verified_member(path: Path, meta: os.stat_result, name: str, source_ro
             os.close(directory_fd)
             directory_fd = child_fd
         descriptor = os.open(
-            parts[-1], os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_BINARY", 0),
+            parts[-1],
+            # O_NONBLOCK prevents a checked regular file replaced with a FIFO
+            # from blocking forever before fstat rejects its changed type.
+            os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | getattr(os, "O_BINARY", 0),
             dir_fd=directory_fd,
         )
         opened = os.fstat(descriptor)

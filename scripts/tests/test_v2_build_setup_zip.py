@@ -640,6 +640,48 @@ class DeterministicSetupZipTest(unittest.TestCase):
                     build_setup_zip(stage, output, SOURCE_DATE_EPOCH)
             self.assertFalse(output.exists(), "Symlinked secrets must not be archived")
 
+    def test_fifo_replaced_after_preflight_cannot_hang_or_publish_setup_zip(self) -> None:
+        # A preflighted regular file can be swapped with a named pipe before
+        # the secure fd-relative source open. O_RDONLY without O_NONBLOCK
+        # would hang forever waiting for an attacker-controlled FIFO writer.
+        if not hasattr(os, "mkfifo") or not hasattr(os, "O_NONBLOCK"):
+            self.skipTest("FIFO/nonblocking source opens unavailable on this platform")
+        if not hasattr(os, "O_DIRECTORY") or not hasattr(os, "O_NOFOLLOW") or os.open not in os.supports_dir_fd:
+            self.skipTest("Safe fd-relative source opens unavailable on this platform")
+
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            stage = base / "source"
+            stage.mkdir()
+            source = stage / "VERSION"
+            source.write_bytes(b"1.0.1\\n")
+            output = base / "setup.zip"
+            original_bytes = source.read_bytes()
+            from v2_build_setup_zip import _open_verified_member
+
+            swapped = False
+
+            def swap_checked_file_for_fifo(path, meta, name, source_root):
+                nonlocal swapped
+                if name == "VERSION" and not swapped:
+                    swapped = True
+                    path.rename(stage / "VERSION.reviewed")
+                    try:
+                        os.mkfifo(path)
+                    except OSError as exc:
+                        self.skipTest(f"Cannot create FIFO on this platform: {exc}")
+                return _open_verified_member(path, meta, name, source_root)
+
+            with mock.patch("v2_build_setup_zip._open_verified_member", side_effect=swap_checked_file_for_fifo):
+                with self.assertRaisesRegex(SetupBuildError, "changed before packaging"):
+                    build_setup_zip(stage, output, SOURCE_DATE_EPOCH)
+
+            self.assertTrue(swapped)
+            self.assertFalse(output.exists(), "Never publish an archive after FIFO source replacement")
+            self.assertEqual((stage / "VERSION.reviewed").read_bytes(), original_bytes)
+            self.assertEqual(list(base.glob(".v2-setup-*.zip")), [])
+
+
     def test_parent_directory_symlink_swap_never_packages_external_file(self) -> None:
         if not hasattr(os, "O_DIRECTORY") or not hasattr(os, "O_NOFOLLOW") or os.open not in os.supports_dir_fd:
             self.skipTest("Safe dirfd-relative opens unavailable on this platform")
