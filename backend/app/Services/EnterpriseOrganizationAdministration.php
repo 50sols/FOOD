@@ -384,6 +384,28 @@ final class EnterpriseOrganizationAdministration
                 'record' => [__('enterprise_organization.cross_scope_denied')],
             ]);
         }
+
+        // HTTP Preview and Save share canonical field validation, but these
+        // public service methods also accept direct internal callers. Without
+        // this guard, unguarded hierarchy models can persist path-like codes,
+        // mixed-case identities or blank names that the setup form rejects.
+        if (array_key_exists('code', $data)
+            && (! is_string($data['code'])
+                || strlen($data['code']) > 100
+                || preg_match('/\\A[a-z][a-z0-9_-]*\\z/D', $data['code']) !== 1)) {
+            throw ValidationException::withMessages([
+                'code' => [__('validation.regex', ['attribute' => 'code'])],
+            ]);
+        }
+
+        if (array_key_exists('name', $data)
+            && (! is_string($data['name'])
+                || trim($data['name']) === ''
+                || mb_strlen($data['name']) > 255)) {
+            throw ValidationException::withMessages([
+                'name' => [__('validation.required', ['attribute' => 'name'])],
+            ]);
+        }
     }
 
     /**

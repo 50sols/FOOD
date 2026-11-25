@@ -1652,6 +1652,87 @@ final class V2OrganizationSetupGuidanceTest extends TestCase
         $this->assertSame($beforeAudit, DB::table('audit_logs')->count());
     }
 
+    public function test_direct_hierarchy_service_rejects_uncanonical_master_data_in_ar_and_en(): void
+    {
+        $admin = $this->actor('SUPER_ADMIN', 'en');
+        $service = app(EnterpriseOrganizationAdministration::class);
+        $organization = EnterpriseOrganization::query()->create([
+            'code' => 'p112_direct_integrity_org', 'name' => 'Direct Integrity Organization', 'is_active' => true,
+        ]);
+        $company = EnterpriseCompany::query()->create([
+            'organization_id' => $organization->id, 'code' => 'p112_direct_integrity_company',
+            'name' => 'Direct Integrity Company', 'is_active' => true,
+        ]);
+        $entity = EnterpriseLegalEntity::query()->create([
+            'company_id' => $company->id, 'code' => 'p112_direct_integrity_entity',
+            'name' => 'Direct Integrity Entity', 'is_active' => true,
+        ]);
+        $unit = EnterpriseBusinessUnit::query()->create([
+            'legal_entity_id' => $entity->id, 'code' => 'p112_direct_integrity_unit',
+            'name' => 'Direct Integrity Unit', 'is_active' => true,
+        ]);
+        $cases = [
+            [$organization, null, 'createOrganization', 'updateOrganization', 'enterprise_organizations'],
+            [$company, $organization, 'createCompany', 'updateCompany', 'enterprise_companies'],
+            [$entity, $company, 'createLegalEntity', 'updateLegalEntity', 'enterprise_legal_entities'],
+            [$unit, $entity, 'createBusinessUnit', 'updateBusinessUnit', 'enterprise_business_units'],
+        ];
+        $auditBefore = DB::table('audit_logs')->count();
+
+        // Service entry points must enforce the same stored code/name
+        // invariants as the authenticated setup Preview and Save endpoints.
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            foreach ($cases as [$record, $parent, $create, $update, $table]) {
+                foreach ([
+                    ['code' => '../unsafe', 'name' => 'Rejected', 'error' => 'code'],
+                    ['code' => 'MIXED_CODE', 'name' => 'Rejected', 'error' => 'code'],
+                    ['code' => 'p112_invalid_blank', 'name' => " \\t ", 'error' => 'name'],
+                ] as $invalid) {
+                    $createData = [
+                        'code' => $invalid['code'],
+                        'name' => $invalid['name'],
+                        'is_active' => true,
+                    ];
+
+                    try {
+                        if ($parent === null) {
+                            $service->{$create}($createData, $admin);
+                        } else {
+                            $service->{$create}($parent, $createData, $admin);
+                        }
+                        $this->fail('Direct hierarchy creation must reject uncanonical fields.');
+                    } catch (ValidationException $exception) {
+                        $this->assertArrayHasKey($invalid['error'], $exception->errors());
+                    }
+
+                    try {
+                        $service->{$update}($record, $createData, $admin);
+                        $this->fail('Direct hierarchy update must reject uncanonical fields.');
+                    } catch (ValidationException $exception) {
+                        $this->assertArrayHasKey($invalid['error'], $exception->errors());
+                    }
+
+                    $this->assertDatabaseMissing($table, [
+                        'code' => $invalid['code'], 'name' => $invalid['name'],
+                    ]);
+                    $this->assertSame($record->code, $record->fresh()->code);
+                    $this->assertSame($record->name, $record->fresh()->name);
+                    $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+                }
+            }
+        }
+
+        // Legitimate canonical direct updates still work and remain audited.
+        $service->updateOrganization($organization, [
+            'code' => $organization->code,
+            'name' => 'Authorized Canonical Rename',
+            'is_active' => true,
+        ], $admin);
+        $this->assertSame('Authorized Canonical Rename', $organization->fresh()->name);
+        $this->assertSame($auditBefore + 1, DB::table('audit_logs')->count());
+    }
+
     public function test_child_creation_uses_persisted_parent_identity_and_rejects_stale_inactive_parent(): void
     {
         $admin = $this->actor('SUPER_ADMIN', 'en');
