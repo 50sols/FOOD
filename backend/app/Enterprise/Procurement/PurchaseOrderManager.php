@@ -328,7 +328,17 @@ final class PurchaseOrderManager
                             $lines->selectRaw('1')
                                 ->from('enterprise_goods_receipt_lines as received_lines')
                                 ->whereColumn('received_lines.goods_receipt_id', 'enterprise_goods_receipts.id')
-                                ->whereNotNull('received_lines.stock_movement_id');
+                                ->where(function ($handoff): void {
+                                    $handoff->whereNotNull('received_lines.stock_movement_id')
+                                        ->orWhereExists(function ($movements): void {
+                                            $movements->selectRaw('1')
+                                                ->from('stock_movements as received_stock')
+                                                ->whereColumn('received_stock.reference_id', 'received_lines.id')
+                                                ->whereColumn('received_stock.store_id', 'enterprise_goods_receipts.store_id')
+                                                ->where('received_stock.reference_type', 'enterprise_goods_receipt_line')
+                                                ->where('received_stock.type', 'purchase_receipt');
+                                        });
+                                });
                         });
                 })
                 ->exists()) {
