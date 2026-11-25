@@ -94,6 +94,39 @@ class BuildUpdateBundleSourceSafetyTest(unittest.TestCase):
         for name in ("backend/public/assets/admin/app.css", "assets/admin/app.css"):
             self.assertEqual(builder.safe_path(name), name)
 
+    def test_public_storage_mirror_cannot_package_user_uploads(self) -> None:
+        # cPanel hosts may materialize Laravel's public/storage symlink as a
+        # real directory containing customer attachments. It is not an asset.
+        for name in (
+            "backend/public/storage/invoices/private.pdf",
+            "backend/public/STORAGE/customer/photo.jpg",
+            "public/storage/private.txt",
+            "PUBLIC/Storage/customer/receipt.png",
+            "backend/public/storage",
+        ):
+            with self.subTest(name=name):
+                with self.assertRaisesRegex(RuntimeError, "Public uploaded/runtime content"):
+                    builder.safe_path(name)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "repo"
+            private = root / "backend/public/storage/customer/receipt.pdf"
+            private.parent.mkdir(parents=True)
+            private.write_bytes(b"PRIVATE-CUSTOMER-STORAGE-CONTENT")
+            output = root / "dist/FOODEX-Update.zip"
+            with mock.patch.object(builder.tempfile, "mkstemp") as create:
+                with self.assertRaisesRegex(RuntimeError, "Public uploaded/runtime content"):
+                    builder.complete_runtime_files(root)
+                create.assert_not_called()
+            self.assertFalse(output.exists())
+            self.assertEqual(private.read_bytes(), b"PRIVATE-CUSTOMER-STORAGE-CONTENT")
+
+        # Canonical compiled assets outside runtime storage remain eligible.
+        self.assertEqual(
+            builder.safe_path("backend/public/assets/admin/app.css"),
+            "backend/public/assets/admin/app.css",
+        )
+
     def test_regular_files_create_the_expected_deterministic_zip(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary) / "repo"
