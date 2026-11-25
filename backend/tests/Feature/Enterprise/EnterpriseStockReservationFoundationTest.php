@@ -3,6 +3,7 @@
 namespace Tests\Feature\Enterprise;
 
 use App\Enterprise\Wms\StockReservationService;
+use App\Enterprise\Wms\UnknownInventoryOwnerProjection;
 use App\Models\Role;
 use App\Models\User;
 use App\Models\UserStoreRole;
@@ -198,6 +199,96 @@ final class EnterpriseStockReservationFoundationTest extends TestCase
             'reference_type' => 'enterprise_test_forged_actor',
             'reference_id' => 3101,
             'type' => 'reserve',
+        ]);
+    }
+
+    public function test_attested_unknown_owner_projection_denies_post_mutation_rewrite_and_rolls_back_in_ar_and_en(): void
+    {
+        $this->seed(CoreReferenceSeeder::class);
+        $fixture = $this->fixture();
+        $checker = User::query()->create([
+            'name' => 'Title Attestation Integrity Checker',
+            'email' => 'title-attestation-integrity@example.test',
+            'password' => 'password',
+            'is_active' => true,
+        ]);
+        $inventoryId = $fixture['inventory_id'];
+        $positionId = (int) DB::table('enterprise_inventory_owner_positions')->insertGetId([
+            'inventory_id' => $inventoryId,
+            'owner_key' => 'UNKNOWN',
+            'owner_kind' => 'UNKNOWN',
+            'supplier_id' => null,
+            'quantity' => '10.000',
+            'reserved_quantity' => '2.000',
+            'source_inventory_updated_at' => DB::table('inventories')
+                ->where('id', $inventoryId)->value('updated_at'),
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        DB::table('enterprise_inventory_title_attestations')->insert([
+            'owner_position_id' => $positionId,
+            'stock_revision_sha256' => str_repeat('a', 64),
+            'document_kind' => 'title_evidence',
+            'document_path' => 'private/test-title-evidence.pdf',
+            'document_sha256' => str_repeat('b', 64),
+            'trusted_key_id' => 'nontrusted-test-key',
+            'signature_base64' => base64_encode('invalid-signature'),
+            'checked_by' => $checker->getKey(),
+            'signed_at' => now(),
+            'expires_at' => now()->addDay(),
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        $beforeAudits = DB::table('audit_logs')->count();
+        $beforeMovements = DB::table('stock_movements')->count();
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            try {
+                DB::transaction(function () use ($inventoryId): void {
+                    DB::table('inventories')->where('id', $inventoryId)
+                        ->lockForUpdate()->first(['id']);
+                    DB::table('inventories')->where('id', $inventoryId)
+                        ->update(['quantity' => '9.000', 'updated_at' => now()]);
+                    app(UnknownInventoryOwnerProjection::class)
+                        ->afterUnattributedInventoryMutation($inventoryId);
+                });
+                $this->fail('Attested UNKNOWN owner position must reject post-mutation projection.');
+            } catch (HttpException $exception) {
+                $this->assertSame(409, $exception->getStatusCode());
+            }
+
+            $this->assertSame(10.0, (float) DB::table('inventories')
+                ->where('id', $inventoryId)->value('quantity'));
+            $this->assertSame(2.0, (float) DB::table('inventories')
+                ->where('id', $inventoryId)->value('reserved_quantity'));
+            $this->assertSame(10.0, (float) DB::table('enterprise_inventory_owner_positions')
+                ->where('id', $positionId)->value('quantity'));
+            $this->assertSame(1, DB::table('enterprise_inventory_title_attestations')
+                ->where('owner_position_id', $positionId)->count());
+            $this->assertSame($beforeAudits, DB::table('audit_logs')->count());
+            $this->assertSame($beforeMovements, DB::table('stock_movements')->count());
+        }
+
+        // The normal, unattested UNKNOWN projection remains functional.
+        $otherInventoryId = (int) DB::table('inventories')
+            ->where('warehouse_id', $fixture['other_warehouse_id'])
+            ->where('product_id', $fixture['product_id'])
+            ->value('id');
+        DB::transaction(function () use ($otherInventoryId): void {
+            DB::table('inventories')->where('id', $otherInventoryId)
+                ->lockForUpdate()->first(['id']);
+            DB::table('inventories')->where('id', $otherInventoryId)
+                ->update(['quantity' => '4.000', 'updated_at' => now()]);
+            app(UnknownInventoryOwnerProjection::class)
+                ->afterUnattributedInventoryMutation($otherInventoryId);
+        });
+        $this->assertDatabaseHas('enterprise_inventory_owner_positions', [
+            'inventory_id' => $otherInventoryId,
+            'owner_key' => 'UNKNOWN',
+            'owner_kind' => 'UNKNOWN',
+            'quantity' => 4,
+            'reserved_quantity' => 0,
         ]);
     }
 

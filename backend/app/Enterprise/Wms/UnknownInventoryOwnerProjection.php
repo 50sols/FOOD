@@ -211,6 +211,15 @@ SQL;
                 || $row->supplier_id !== null) {
                 return;
             }
+
+            // Even UNKNOWN positions can carry immutable title evidence.
+            // A caller that skipped the preflight must not silently rewrite
+            // an attested stock revision after changing canonical inventory.
+            if (DB::table('enterprise_inventory_title_attestations')
+                ->where('owner_position_id', (int) $row->id)
+                ->exists()) {
+                throw new HttpException(409, 'Attested inventory title requires an approved per-owner movement.');
+            }
         }
 
         $data = [
