@@ -485,6 +485,103 @@ final class EnterpriseProcurementCompletionTest extends TestCase
         }
     }
 
+    public function test_quote_document_download_checks_current_rfq_store_in_one_scoped_query_in_ar_and_en(): void
+    {
+        Storage::fake('local');
+        $this->enableProcurement();
+        [$actor, , $context] = $this->scopedUser($this->allPermissions(), 'PROC-QUOTE-DOC-ATOMIC');
+        $foreignStore = $this->createRetailStore('PROC-QUOTE-DOC-FOREIGN');
+        $directory = app(SupplierDirectory::class);
+        $requests = app(PurchaseRequestManager::class);
+        $completion = app(ProcurementCompletionManager::class);
+        $documentQueries = [];
+
+        // A listener is registered only once: listeners persist across the
+        // AR/EN loop, otherwise a shared captured array double-counts reads.
+        DB::listen(static function ($query) use (&$documentQueries): void {
+            $sql = strtolower((string) $query->sql);
+            if (str_contains($sql, 'enterprise_procurement_quote_documents')
+                && str_contains($sql, 'enterprise_procurement_quotes')
+                && str_contains($sql, 'enterprise_procurement_rfqs')
+                && str_contains($sql, 'join')
+                && str_contains($sql, 'select')) {
+                $documentQueries[] = $sql;
+            }
+        });
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            $supplier = $directory->create($actor, $context, [
+                'scope_type' => 'store',
+                'code' => 'PROC-QUOTE-DOC-'.strtoupper($locale),
+                'name_en' => 'Scoped RFQ quote supplier '.$locale,
+            ]);
+            $request = $requests->create($actor, $context, [
+                'currency_code' => 'KWD',
+                'reason' => 'Quote attachment scope '.$locale,
+                'lines' => [[
+                    'item_code' => 'QUOTE-DOC-SKU',
+                    'description' => 'Quoted line',
+                    'quantity' => 1,
+                    'unit' => 'case',
+                    'estimated_unit_cost' => 5.000,
+                ]],
+            ]);
+            $requests->submit($actor, $context, $request->id);
+            [$checker, $checkerContext] = ProcurementSecondApprover::forSameStore($actor, $context);
+            $requests->approve($checker, $checkerContext, $request->id);
+            $rfq = $completion->createRfq($actor, $context, $request->id, [
+                'title' => 'Quote attachment atomic read '.$locale,
+            ]);
+            $invitations = $completion->publishRfq($actor, $context, $rfq->id, [$supplier->id]);
+            $lineId = (int) DB::table('enterprise_procurement_rfq_lines')
+                ->where('rfq_id', $rfq->id)->value('id');
+
+            $this->post(route('supplier.rfq.submit', ['token' => $invitations[0]['token']]), [
+                'valid_until' => now()->addDays(14)->toDateString(),
+                'attachment' => UploadedFile::fake()->create('quote.pdf', 4, 'application/pdf'),
+                'lines' => [[
+                    'rfq_line_id' => $lineId,
+                    'unit_price' => 4.000,
+                ]],
+            ])->assertRedirect();
+
+            $quoteId = (int) DB::table('enterprise_procurement_quotes')
+                ->where('rfq_id', $rfq->id)->value('id');
+            $document = DB::table('enterprise_procurement_quote_documents')
+                ->where('quote_id', $quoteId)->firstOrFail();
+            $auditBefore = DB::table('audit_logs')->count();
+            $documentQueries = [];
+
+            $visible = $completion->quoteDocument($actor, $context, $rfq->id, $document->id);
+            $this->assertSame((int) $document->id, (int) $visible->id);
+            $this->assertSame($document->storage_path, $visible->storage_path);
+            Storage::disk('local')->assertExists($visible->storage_path);
+            $this->assertCount(1, $documentQueries, 'The quote document and RFQ ownership must resolve in one SELECT.');
+            $this->assertStringContainsString('organization_id', $documentQueries[0]);
+            $this->assertStringContainsString('company_id', $documentQueries[0]);
+            $this->assertStringContainsString('store_id', $documentQueries[0]);
+
+            // A transfer must invalidate the former store's attachment read,
+            // without deleting a quoted file or changing the original audit.
+            DB::table('enterprise_procurement_rfqs')->where('id', $rfq->id)
+                ->update(['store_id' => $foreignStore->id]);
+            try {
+                $completion->quoteDocument($actor, $context, $rfq->id, $document->id);
+                $this->fail('A transferred RFQ attachment must not be visible to the former store.');
+            } catch (RecordNotFoundException $exception) {
+                $this->assertNotEmpty($exception->getMessage());
+            }
+
+            $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+            Storage::disk('local')->assertExists($visible->storage_path);
+            $this->assertDatabaseHas('enterprise_procurement_rfqs', [
+                'id' => $rfq->id,
+                'store_id' => $foreignStore->id,
+            ]);
+        }
+    }
+
     public function test_contract_document_download_reads_live_store_and_document_in_one_scoped_query_in_ar_and_en(): void
     {
         Storage::fake('local');
