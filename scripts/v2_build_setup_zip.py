@@ -146,6 +146,9 @@ def build_setup_zip(source_root: Path, output: Path, source_epoch: int) -> str:
     # loop can start compressing an oversized tree before rejecting it.
     preflight_total = 0
     portable_paths = set()
+    # Do not accept a NEW file identity at packaging time as the baseline:
+    # a formerly clean dotenv example could gain secrets after inspection.
+    preflight_identities = {}
     for source_path in paths:
         name = source_path.relative_to(source_root).as_posix()
         components = name.split("/")
@@ -224,6 +227,7 @@ def build_setup_zip(source_root: Path, output: Path, source_epoch: int) -> str:
             preflight_total += source_meta.st_size
             if preflight_total > MAX_TOTAL_SIZE:
                 raise SetupBuildError("Setup ZIP staging expanded size exceeds budget.")
+        preflight_identities[name] = _member_identity(source_meta)
 
     output.parent.mkdir(parents=True, exist_ok=True)
     handle, temporary_name = tempfile.mkstemp(prefix=".v2-setup-", suffix=".zip", dir=output.parent)
@@ -237,7 +241,10 @@ def build_setup_zip(source_root: Path, output: Path, source_epoch: int) -> str:
         total_size = 0
         with zipfile.ZipFile(temporary, "w", allowZip64=True) as archive:
             for path in paths:
+                name = path.relative_to(source_root).as_posix()
                 meta = path.lstat()
+                if _member_identity(meta) != preflight_identities[name]:
+                    raise SetupBuildError(f"Setup staging member changed after preflight: {name}")
                 if stat.S_ISLNK(meta.st_mode) or not (stat.S_ISDIR(meta.st_mode) or stat.S_ISREG(meta.st_mode)):
                     raise SetupBuildError(f"Unsafe non-regular Setup staging member: {path.relative_to(source_root)!s}")
                 if stat.S_ISREG(meta.st_mode) and meta.st_nlink > 1:

@@ -107,6 +107,34 @@ class DeterministicSetupZipTest(unittest.TestCase):
                     self.assertFalse(output.exists())
                     self.assertEqual(list(base.glob(".v2-setup-*.zip")), [])
 
+    def test_clean_env_template_swapped_to_secret_after_preflight_is_not_packaged(self) -> None:
+        # Preflight parses the clean example before mkstemp. A later change
+        # must not become a new trusted metadata baseline during packaging.
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            root = base / "source"
+            env_file = root / "backend/.env.example"
+            env_file.parent.mkdir(parents=True)
+            env_file.write_bytes(b"APP_KEY=\\nDB_PASSWORD=\\n")
+            (root / "VERSION").write_bytes(b"1.0.1\\n")
+            output = base / "setup.zip"
+            original_mkstemp = tempfile.mkstemp
+
+            def replace_after_preflight(*args, **kwargs):
+                descriptor, temporary_name = original_mkstemp(*args, **kwargs)
+                env_file.write_bytes(b"APP_KEY=base64:injected-secret\\nDB_PASSWORD=\\n")
+                return descriptor, temporary_name
+
+            def open_fixture_member(path, meta, name, source_root):
+                return path.open("rb")
+
+            with mock.patch("v2_build_setup_zip._open_verified_member", side_effect=open_fixture_member):
+                with mock.patch("v2_build_setup_zip.tempfile.mkstemp", side_effect=replace_after_preflight):
+                    with self.assertRaisesRegex(SetupBuildError, "changed after preflight"):
+                        build_setup_zip(root, output, SOURCE_DATE_EPOCH)
+            self.assertFalse(output.exists())
+            self.assertEqual(list(base.glob(".v2-setup-*.zip")), [])
+
     def test_empty_env_secrets_and_redis_null_are_allowed_in_setup_staging(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             base = Path(temporary)
