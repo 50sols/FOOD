@@ -307,11 +307,18 @@ final class ProcurementCompletionManager
         int $documentId,
     ): object {
         $scope = $this->scope($actor, $context, 'procurement.purchase_requests.view');
-        $rfq = $this->visibleRfq($scope, $rfqId);
 
+        // Resolve attachment identity and the RFQ's CURRENT tenant/store
+        // ownership in the same SELECT. A visibleRfq() preflight followed by
+        // an unscoped document lookup could disclose a stored file path if
+        // the RFQ is reassigned between the two statements.
         return DB::table('enterprise_procurement_quote_documents as documents')
             ->join('enterprise_procurement_quotes as quotes', 'quotes.id', '=', 'documents.quote_id')
-            ->where('quotes.rfq_id', $rfq->id)
+            ->join('enterprise_procurement_rfqs as rfqs', 'rfqs.id', '=', 'quotes.rfq_id')
+            ->where('rfqs.organization_id', $scope->organizationId)
+            ->where('rfqs.company_id', $scope->companyId)
+            ->where('rfqs.store_id', $scope->storeId)
+            ->where('rfqs.id', $rfqId)
             ->where('documents.id', $documentId)
             ->select('documents.*')
             ->firstOrFail();
