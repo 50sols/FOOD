@@ -358,6 +358,73 @@ final class EnterpriseProcurementCompletionTest extends TestCase
         $this->assertNotEmpty($dashboard['charts']['savings']);
     }
 
+    public function test_contract_creation_revalidates_live_supplier_scope_and_status_in_both_locales(): void
+    {
+        $this->enableProcurement();
+        [$actor, $store, $context] = $this->scopedUser($this->allPermissions(), 'PROC-CTR-LIVE');
+        $supplier = app(SupplierDirectory::class)->create($actor, $context, [
+            'scope_type' => 'store',
+            'code' => 'PROC-CTR-LIVE-SUP',
+            'name_en' => 'Live Contract Supplier',
+        ]);
+        $completion = app(ProcurementCompletionManager::class);
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            $beforeContracts = DB::table('enterprise_procurement_contracts')->count();
+            $beforeAudit = DB::table('audit_logs')->count();
+
+            // The original supplier model may still say active, but the
+            // canonical DB row must be read again before any contract write.
+            DB::table('enterprise_suppliers')->where('id', $supplier->id)
+                ->update(['status' => 'on_hold']);
+            try {
+                $completion->createContract($actor, $context, [
+                    'supplier_id' => $supplier->id,
+                    'title' => 'Disallowed held supplier '.$locale,
+                    'currency_code' => 'KWD',
+                    'starts_on' => now()->toDateString(),
+                    'ends_on' => now()->addDays(30)->toDateString(),
+                ]);
+                $this->fail('A held supplier cannot back a new contract.');
+            } catch (ValidationException $exception) {
+                $this->assertArrayHasKey('supplier_id', $exception->errors());
+            }
+            $this->assertSame($beforeContracts, DB::table('enterprise_procurement_contracts')->count());
+            $this->assertSame($beforeAudit, DB::table('audit_logs')->count());
+
+            DB::table('enterprise_suppliers')->where('id', $supplier->id)
+                ->update(['status' => 'active', 'store_id' => null, 'scope_type' => 'store']);
+            try {
+                $completion->createContract($actor, $context, [
+                    'supplier_id' => $supplier->id,
+                    'title' => 'Disallowed moved supplier '.$locale,
+                    'currency_code' => 'KWD',
+                    'starts_on' => now()->toDateString(),
+                    'ends_on' => now()->addDays(30)->toDateString(),
+                ]);
+                $this->fail('A supplier outside the selected store scope cannot be contracted.');
+            } catch (RecordNotFoundException $exception) {
+                $this->assertNotEmpty($exception->getMessage());
+            }
+            $this->assertSame($beforeContracts, DB::table('enterprise_procurement_contracts')->count());
+            $this->assertSame($beforeAudit, DB::table('audit_logs')->count());
+
+            DB::table('enterprise_suppliers')->where('id', $supplier->id)
+                ->update(['store_id' => $store->id]);
+            $created = $completion->createContract($actor, $context, [
+                'supplier_id' => $supplier->id,
+                'title' => 'Valid supplier '.$locale,
+                'currency_code' => 'KWD',
+                'starts_on' => now()->toDateString(),
+                'ends_on' => now()->addDays(30)->toDateString(),
+            ]);
+            $this->assertSame((int) $supplier->id, (int) $created->supplier_id);
+            $this->assertSame($beforeContracts + 1, DB::table('enterprise_procurement_contracts')->count());
+            $this->assertSame($beforeAudit + 1, DB::table('audit_logs')->count());
+        }
+    }
+
     public function test_contract_ceiling_commitment_private_documents_and_cancel_release_are_enforced(): void
     {
         Storage::fake('local');
