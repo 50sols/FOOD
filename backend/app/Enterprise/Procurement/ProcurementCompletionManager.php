@@ -170,6 +170,32 @@ final class ProcurementCompletionManager
         $supplierPerformance = $canOrders ? $this->supplierPerformance($storeId, $from, $to, $scope->organizationId, $scope->companyId) : [];
         $savings = $canRequests ? $this->savingsChart($storeId, $from, $to, $scope->organizationId, $scope->companyId) : [];
         $contractHorizon = $canOrders ? $this->contractExpiryHorizon($storeId, $scope->organizationId, $scope->companyId) : [];
+        // Exceptions include supplier and invoice data and must be fetched
+        // BEFORE the final permission check, not inside the return value.
+        $exceptions = $this->exceptions(
+            $storeId,
+            $scope->organizationId,
+            $scope->companyId,
+            $canOrders,
+            $canInvoices,
+            $canSuppliers,
+        );
+
+        // The KPI/chart grants were captured before multiple finance, supplier
+        // and RFQ SELECTs. A persisted view DENY or offboarding issued during
+        // those reads must not release already-hydrated monetary information.
+        // Check ONLY permissions that contributed real data to this response.
+        $this->baseScope($actor, $context);
+        foreach ([
+            'procurement.purchase_requests.view' => $canRequests,
+            'procurement.purchase_orders.view' => $canOrders,
+            'procurement.purchase_invoices.view' => $canInvoices,
+            'procurement.supplier_statements.view' => $canStatements,
+        ] as $viewPermission => $wasAuthorized) {
+            if ($wasAuthorized) {
+                $this->scope($actor, $context, $viewPermission);
+            }
+        }
 
         return [
             'selected_from' => $from,
@@ -186,14 +212,7 @@ final class ProcurementCompletionManager
                 'savings' => $savings,
                 'contract_expiry' => $contractHorizon,
             ],
-            'exceptions' => $this->exceptions(
-                $storeId,
-                $scope->organizationId,
-                $scope->companyId,
-                $canOrders,
-                $canInvoices,
-                $canSuppliers,
-            ),
+            'exceptions' => $exceptions,
             'state' => collect($kpis)->contains(fn (array $metric): bool => $metric['value'] !== null)
                 ? 'current'
                 : 'permission',
@@ -2117,7 +2136,15 @@ final class ProcurementCompletionManager
             $scope->companyId,
         );
 
-        return $this->reportForStore($report, $scope->storeId, $filters, $limit, 0, $scope);
+        $rows = $this->reportForStore($report, $scope->storeId, $filters, $limit, 0, $scope);
+
+        // Both permissions authorize this response: the Reports entry grant
+        // and the underlying financial/RFQ document grant. Recheck the same
+        // persisted active actor AFTER the scoped report SQL completes.
+        $this->scope($actor, $context, 'procurement.supplier_statements.view');
+        $this->scope($actor, $context, $documentPermission);
+
+        return $rows;
     }
 
     /**

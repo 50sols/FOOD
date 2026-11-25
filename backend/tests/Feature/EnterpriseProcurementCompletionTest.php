@@ -1920,6 +1920,174 @@ final class EnterpriseProcurementCompletionTest extends TestCase
         }
     }
 
+    public function test_dashboard_denies_invoice_permission_revoked_mid_kpi_query_in_ar_and_en(): void
+    {
+        $this->enableProcurement();
+        [$actor, , $context] = $this->scopedUser($this->allPermissions(), 'P135-DASHBOARD-MID-DENY');
+        $supplier = app(SupplierDirectory::class)->create($actor, $context, [
+            'scope_type' => 'store',
+            'code' => 'P135-DASHBOARD-MID-SUP',
+            'name_en' => 'Dashboard source supplier',
+        ]);
+        $order = $this->approvedOrder($actor, $context, $supplier->id, 2, 1.250);
+        $this->assertNotNull($order->id);
+        $manager = app(ProcurementCompletionManager::class);
+        $permissionId = Permission::query()
+            ->where('code', 'procurement.purchase_invoices.view')->firstOrFail()->id;
+
+        $armed = false;
+        $injected = false;
+        DB::listen(static function ($query) use ($actor, $permissionId, &$armed, &$injected): void {
+            $sql = strtolower(ltrim((string) $query->sql));
+            if (! $armed || $injected || ! str_starts_with($sql, 'select')
+                || ! str_contains($sql, 'enterprise_purchase_invoices')) {
+                return;
+            }
+
+            $injected = true;
+            $armed = false;
+            DB::table('user_permission_overrides')->insert([
+                'user_id' => $actor->id,
+                'permission_id' => $permissionId,
+                'scope_key' => 'global',
+                'store_id' => null,
+                'effect' => 'deny',
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+            DB::table('users')->where('id', $actor->id)
+                ->update(['has_permission_overrides' => true]);
+        });
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            $positive = $manager->dashboard($actor, $context);
+            $this->assertNotNull(collect($positive['kpis'])->firstWhere('key', 'open_orders')['value']);
+            $this->assertArrayHasKey('spend_trend', $positive['charts']);
+            $auditBefore = DB::table('audit_logs')->count();
+            $ordersBefore = DB::table('enterprise_purchase_orders')->count();
+            $injected = false;
+            $armed = true;
+
+            try {
+                $manager->dashboard($actor, $context);
+                $this->fail('An invoice VIEW revoked during KPI SQL must deny all hydrated financial metrics.');
+            } catch (HttpException $exception) {
+                $this->assertSame(403, $exception->getStatusCode());
+            } finally {
+                $armed = false;
+            }
+
+            $this->assertTrue($injected, 'Financial KPI SQL must trigger the persisted DENY.');
+            $this->assertFalse((bool) $actor->has_permission_overrides);
+            $this->assertTrue((bool) $actor->fresh()->has_permission_overrides);
+            try {
+                $manager->dashboard($actor, $context);
+                $this->fail('Persisted invoice VIEW DENY must also forbid repeated KPI responses.');
+            } catch (HttpException $exception) {
+                $this->assertSame(403, $exception->getStatusCode());
+            }
+
+            $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+            $this->assertSame($ordersBefore, DB::table('enterprise_purchase_orders')->count());
+            DB::table('user_permission_overrides')
+                ->where('user_id', $actor->id)->where('permission_id', $permissionId)->delete();
+            DB::table('users')->where('id', $actor->id)
+                ->update(['has_permission_overrides' => false]);
+            $this->assertNotNull($manager->dashboard($actor, $context)['kpis']);
+            $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+        }
+    }
+
+    public function test_open_orders_report_denies_entry_or_document_view_revoked_after_sql_in_ar_and_en(): void
+    {
+        $this->enableProcurement();
+        [$actor, , $context] = $this->scopedUser($this->allPermissions(), 'P135-REPORT-MID-DENY');
+        $supplier = app(SupplierDirectory::class)->create($actor, $context, [
+            'scope_type' => 'store',
+            'code' => 'P135-REPORT-MID-SUP',
+            'name_en' => 'Report source supplier',
+        ]);
+        $order = $this->approvedOrder($actor, $context, $supplier->id, 2, 1.250);
+        $manager = app(ProcurementCompletionManager::class);
+        $permissionIds = [];
+        foreach (['procurement.supplier_statements.view', 'procurement.purchase_orders.view'] as $code) {
+            $permissionIds[$code] = Permission::query()->where('code', $code)->firstOrFail()->id;
+        }
+        $armed = false;
+        $injected = false;
+        $currentPermissionId = null;
+
+        DB::listen(static function ($query) use ($actor, &$armed, &$injected, &$currentPermissionId): void {
+            $sql = strtolower(ltrim((string) $query->sql));
+            if (! $armed || $injected || $currentPermissionId === null
+                || ! str_starts_with($sql, 'select')
+                || ! str_contains($sql, 'enterprise_purchase_orders')
+                || ! str_contains($sql, 'order_value')) {
+                return;
+            }
+
+            $armed = false;
+            $injected = true;
+            DB::table('user_permission_overrides')->insert([
+                'user_id' => $actor->id,
+                'permission_id' => $currentPermissionId,
+                'scope_key' => 'global',
+                'store_id' => null,
+                'effect' => 'deny',
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+            DB::table('users')->where('id', $actor->id)
+                ->update(['has_permission_overrides' => true]);
+        });
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            foreach ($permissionIds as $permissionCode => $permissionId) {
+                $read = static fn () => $manager->report($actor, $context, 'open_orders');
+                $positive = $read();
+                $this->assertCount(1, $positive['rows']);
+                $this->assertSame($order->order_number, $positive['rows'][0]['order_number']);
+                $auditBefore = DB::table('audit_logs')->count();
+                $orderCount = DB::table('enterprise_purchase_orders')->count();
+                $currentPermissionId = $permissionId;
+                $injected = false;
+                $armed = true;
+
+                try {
+                    $read();
+                    $this->fail('A permission revoked midreport must not expose supplier and PO monetary details: '.$permissionCode);
+                } catch (HttpException $exception) {
+                    $this->assertSame(403, $exception->getStatusCode());
+                } finally {
+                    $armed = false;
+                }
+
+                $this->assertTrue($injected, 'The actual priced open-orders report SELECT must trigger DENY.');
+                $this->assertFalse((bool) $actor->has_permission_overrides);
+                $this->assertTrue((bool) $actor->fresh()->has_permission_overrides);
+                try {
+                    $read();
+                    $this->fail('Repeat reporting under a persisted DENY must remain forbidden.');
+                } catch (HttpException $exception) {
+                    $this->assertSame(403, $exception->getStatusCode());
+                }
+                $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+                $this->assertSame($orderCount, DB::table('enterprise_purchase_orders')->count());
+
+                DB::table('user_permission_overrides')
+                    ->where('user_id', $actor->id)
+                    ->where('permission_id', $permissionId)
+                    ->delete();
+                DB::table('users')->where('id', $actor->id)
+                    ->update(['has_permission_overrides' => false]);
+                $this->assertCount(1, $read()['rows']);
+                $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+            }
+        }
+    }
+
     private function enableProcurement(): void
     {
         $lifecycle = app(ModuleLifecycleManager::class);
