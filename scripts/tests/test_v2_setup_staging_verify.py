@@ -179,6 +179,8 @@ class V2SetupStagingVerifierTest(unittest.TestCase):
             "backend/resources/admin/accessTokens.json",
             "backend/public/assets/.config/gcloud/credentials.db",
             "backend/resources/admin/.CONFIG/GCLOUD/credentials.db",
+            "backend/public/assets/.config/gh/hosts.yml",
+            "backend/resources/admin/.CONFIG/GH/hosts.yml",
         ):
             with self.subTest(member=member):
                 self.pack({member: b"DO-NOT-PUBLISH-CREDENTIALS"})

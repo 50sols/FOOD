@@ -201,7 +201,7 @@ def build_setup_zip(source_root: Path, output: Path, source_epoch: int) -> str:
         allowed_templates = {".env.example", ".env.production.example"}
         for index, part in enumerate(components):
             folded = part.casefold()
-            if index > 0 and components[index - 1].casefold() == ".config" and folded == "gcloud":
+            if index > 0 and components[index - 1].casefold() == ".config" and folded in {"gcloud", "gh"}:
                 raise SetupBuildError(f"Credential storage in Setup staging: {name}")
             if folded == ".git":
                 raise SetupBuildError(f"Source control metadata in Setup staging: {name}")
@@ -315,7 +315,7 @@ def build_setup_zip(source_root: Path, output: Path, source_epoch: int) -> str:
                 allowed_templates = {".env.example", ".env.production.example"}
                 for index, component in enumerate(path.relative_to(source_root).parts):
                     folded = component.casefold()
-                    if index > 0 and path.relative_to(source_root).parts[index - 1].casefold() == ".config" and folded == "gcloud":
+                    if index > 0 and path.relative_to(source_root).parts[index - 1].casefold() == ".config" and folded in {"gcloud", "gh"}:
                         raise SetupBuildError(f"Credential storage in Setup staging: {name}")
                     if folded == ".git":
                         raise SetupBuildError(f"Source control metadata in Setup staging: {name}")

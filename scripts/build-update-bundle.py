@@ -283,7 +283,7 @@ def safe_path(path: str) -> str:
     credential_files = {".git-credentials", "azureprofile.json", "accesstokens.json", "terraform.tfstate", "terraform.tfstate.backup"}
     for index, part in enumerate(parts):
         # gcloud credentials are routinely stored as .config/gcloud/*.
-        if part.casefold() == "gcloud" and index > 0 and parts[index - 1].casefold() == ".config":
+        if part.casefold() in {"gcloud", "gh"} and index > 0 and parts[index - 1].casefold() == ".config":
             raise RuntimeError(f"Credential storage is not allowed in updates: {path}")
         if part.casefold() == "application_default_credentials.json":
             raise RuntimeError(f"Credential storage is not allowed in updates: {path}")

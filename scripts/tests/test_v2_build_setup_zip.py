@@ -68,6 +68,8 @@ class DeterministicSetupZipTest(unittest.TestCase):
             "backend/resources/admin/terraform.tfstate.backup",
             "backend/public/assets/.config/gcloud/credentials.db",
             "backend/resources/admin/.CONFIG/GCLOUD/credentials.db",
+            "backend/public/assets/.config/gh/hosts.yml",
+            "backend/resources/admin/.CONFIG/GH/hosts.yml",
         )
         with tempfile.TemporaryDirectory() as temporary:
             base = Path(temporary)
