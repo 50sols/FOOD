@@ -1109,6 +1109,76 @@ SQL);
         }
     }
 
+    public function test_supplier_revocation_between_name_read_and_disclosure_fails_closed_in_ar_and_en(): void
+    {
+        $this->seed(CoreReferenceSeeder::class);
+        $reader = app(InventoryOwnerProvenanceReadService::class);
+        $armedSupplierId = null;
+        $revoked = false;
+
+        DB::listen(static function ($query) use (&$armedSupplierId, &$revoked): void {
+            if ($armedSupplierId === null || $revoked) {
+                return;
+            }
+
+            $sql = strtolower((string) $query->sql);
+            if (! str_contains($sql, 'enterprise_suppliers') || ! str_contains($sql, 'select')) {
+                return;
+            }
+
+            // The supplier SELECT already returned its previous active scope.
+            // Revoke live supplier identity before the owner snapshot returns.
+            $revoked = true;
+            DB::table('enterprise_suppliers')->where('id', $armedSupplierId)
+                ->update(['status' => 'inactive']);
+        });
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            $stock = $this->stock('P110-SUPPLIER-REVOKE-'.strtoupper($locale));
+            $actor = $this->inventoryActor($stock['store_id']);
+            $supplierId = $this->supplier($stock['store_id']);
+            $this->position($stock['inventory_id'], 'SUPPLIER', $supplierId, 10, 3, $actor->id, $actor->id, false);
+
+            $authorized = $reader->snapshot($actor, $stock['inventory_id']);
+            $this->assertSame('UNVERIFIED', $authorized['state']);
+            $this->assertSame($supplierId, $authorized['positions'][0]['supplier_id']);
+
+            $auditBefore = DB::table('audit_logs')->count();
+            $movementBefore = DB::table('stock_movements')->count();
+            $titleBefore = DB::table('enterprise_inventory_title_attestations')->count();
+            $armedSupplierId = $supplierId;
+            $revoked = false;
+
+            try {
+                $reader->snapshot($actor, $stock['inventory_id']);
+                $this->fail('A post-read supplier revocation must deny stale legal owner disclosure.');
+            } catch (HttpException $exception) {
+                $this->assertSame(404, $exception->getStatusCode());
+                $this->assertTrue($revoked, 'The supplier must be revoked after the first scoped SELECT.');
+            }
+            $armedSupplierId = null;
+
+            // A subsequent request sees the revoked identity from the start
+            // and masks the partition as UNKNOWN, never leaking its old name.
+            $masked = $reader->snapshot($actor, $stock['inventory_id']);
+            $this->assertSame('UNKNOWN', $masked['state']);
+            $this->assertNull($masked['positions'][0]['supplier_id']);
+            $this->assertNull($masked['positions'][0]['supplier_name']);
+            $this->assertFalse($masked['certified']);
+
+            $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+            $this->assertSame($movementBefore, DB::table('stock_movements')->count());
+            $this->assertSame($titleBefore, DB::table('enterprise_inventory_title_attestations')->count());
+
+            DB::table('enterprise_suppliers')->where('id', $supplierId)
+                ->update(['status' => 'active']);
+            $restored = $reader->snapshot($actor, $stock['inventory_id']);
+            $this->assertSame('UNVERIFIED', $restored['state']);
+            $this->assertSame($supplierId, $restored['positions'][0]['supplier_id']);
+        }
+    }
+
     public function test_company_scoped_supplier_title_read_respects_ar_en_and_denies_revoked_or_foreign_scope(): void
     {
         $this->seed(CoreReferenceSeeder::class);

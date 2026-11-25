@@ -106,45 +106,9 @@ final class InventoryOwnerProvenanceReadService
             ->unique()
             ->values()
             ->all();
-        $suppliers = collect();
-        if ($supplierIds !== []) {
-            $company = DB::table('enterprise_store_scopes as scope')
-                ->join('enterprise_business_units as unit', 'unit.id', '=', 'scope.business_unit_id')
-                ->join('enterprise_legal_entities as entity', 'entity.id', '=', 'unit.legal_entity_id')
-                ->join('enterprise_companies as company', 'company.id', '=', 'entity.company_id')
-                ->join('enterprise_organizations as organization', 'organization.id', '=', 'company.organization_id')
-                ->where('scope.store_id', (int) $warehouse->store_id)
-                ->where('unit.is_active', true)
-                ->where('entity.is_active', true)
-                ->where('company.is_active', true)
-                ->where('organization.is_active', true)
-                ->first(['company.id as company_id', 'company.organization_id']);
-
-            if ($company !== null) {
-                // Supplier organization_id and company_id are independent FKs.
-                // Both must follow the store's CURRENT legal hierarchy; a
-                // forged cross-organization supplier cannot retain legal title.
-                $suppliers = DB::table('enterprise_suppliers')
-                    ->where('organization_id', (int) $company->organization_id)
-                    ->where('company_id', (int) $company->company_id)
-                    ->where('status', 'active')
-                    // Follow the canonical supplier directory: a legal
-                    // company-wide supplier is visible to its company stores,
-                    // but not to another company or another store's scope.
-                    ->where(function ($scope) use ($warehouse): void {
-                        $scope->where(function ($store) use ($warehouse): void {
-                            $store->where('scope_type', 'store')
-                                ->where('store_id', (int) $warehouse->store_id);
-                        })->orWhere(function ($company): void {
-                            $company->where('scope_type', 'company')
-                                ->whereNull('store_id');
-                        });
-                    })
-                    ->whereIn('id', $supplierIds)
-                    ->get(['id', 'name_en', 'name_ar'])
-                    ->keyBy('id');
-            }
-        }
+        // Scoped identity may be revoked before the response is returned.
+        // The same scoped lookup is repeated at the final disclosure gate.
+        $suppliers = $this->scopedSuppliers($supplierIds, (int) $warehouse->store_id);
 
         foreach ($rows as $row) {
             $kind = (string) $row->owner_kind;
@@ -231,6 +195,27 @@ final class InventoryOwnerProvenanceReadService
         // snapshot if the inventory moved stores or stock revised mid-read.
         $this->assertCurrentSnapshotScope($actor, $inventory, (int) $warehouse->store_id);
 
+        // A supplier can be disabled, moved to another company/store, or have
+        // its display identity changed after the first supplier SELECT. Do not
+        // disclose stale per-owner supplier names/title claims on that read.
+        // Previously invalid owner IDs remain UNKNOWN and never gain a claim.
+        if ($suppliers->isNotEmpty()) {
+            $currentSuppliers = $this->scopedSuppliers(
+                $suppliers->keys()->map(static fn ($id): int => (int) $id)->all(),
+                (int) $warehouse->store_id,
+            );
+            $identity = static fn ($supplier): array => [
+                (int) $supplier->id,
+                (string) $supplier->name_en,
+                (string) $supplier->name_ar,
+            ];
+            abort_unless(
+                $suppliers->sortKeys()->map($identity)->all()
+                    === $currentSuppliers->sortKeys()->map($identity)->all(),
+                404,
+            );
+        }
+
         return [
             'inventory_id' => $inventoryId,
             'store_id' => (int) $warehouse->store_id,
@@ -242,6 +227,53 @@ final class InventoryOwnerProvenanceReadService
             'certified' => $certified,
             'positions' => $positions,
         ];
+    }
+
+    /**
+     * Load currently active supplier identities under this store's live
+     * enterprise company hierarchy. An owner partition alone grants nothing.
+     *
+     * @param list<int> $supplierIds
+     * @return \Illuminate\Support\Collection<int|string, object>
+     */
+    private function scopedSuppliers(array $supplierIds, int $storeId): \Illuminate\Support\Collection
+    {
+        if ($supplierIds === []) {
+            return collect();
+        }
+
+        $company = DB::table('enterprise_store_scopes as scope')
+            ->join('enterprise_business_units as unit', 'unit.id', '=', 'scope.business_unit_id')
+            ->join('enterprise_legal_entities as entity', 'entity.id', '=', 'unit.legal_entity_id')
+            ->join('enterprise_companies as company', 'company.id', '=', 'entity.company_id')
+            ->join('enterprise_organizations as organization', 'organization.id', '=', 'company.organization_id')
+            ->where('scope.store_id', $storeId)
+            ->where('unit.is_active', true)
+            ->where('entity.is_active', true)
+            ->where('company.is_active', true)
+            ->where('organization.is_active', true)
+            ->first(['company.id as company_id', 'company.organization_id']);
+
+        if ($company === null) {
+            return collect();
+        }
+
+        // Both independent supplier FKs must remain consistent with this
+        // store's current legal hierarchy, including company-wide suppliers.
+        return DB::table('enterprise_suppliers')
+            ->where('organization_id', (int) $company->organization_id)
+            ->where('company_id', (int) $company->company_id)
+            ->where('status', 'active')
+            ->where(function ($scope) use ($storeId): void {
+                $scope->where(function ($store) use ($storeId): void {
+                    $store->where('scope_type', 'store')->where('store_id', $storeId);
+                })->orWhere(function ($company): void {
+                    $company->where('scope_type', 'company')->whereNull('store_id');
+                });
+            })
+            ->whereIn('id', $supplierIds)
+            ->get(['id', 'name_en', 'name_ar'])
+            ->keyBy('id');
     }
 
     /**
