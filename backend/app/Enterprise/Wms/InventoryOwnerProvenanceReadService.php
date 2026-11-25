@@ -228,6 +228,11 @@ final class InventoryOwnerProvenanceReadService
             ->get();
         abort_unless($rows->toJson() === $currentRows->toJson(), 404);
 
+        // The final owner-position SELECT itself can race a persisted DENY.
+        // Reauthorize the same original active principal after that read,
+        // before supplier identity or legal-stock quantities are disclosed.
+        $this->assertCurrentSnapshotScope($actor, $inventory, (int) $warehouse->store_id);
+
         return [
             'inventory_id' => $inventoryId,
             'store_id' => (int) $warehouse->store_id,

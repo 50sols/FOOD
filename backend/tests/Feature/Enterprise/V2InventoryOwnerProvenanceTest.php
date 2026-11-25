@@ -3795,6 +3795,92 @@ SQL);
         }
     }
 
+    public function test_owner_snapshot_denies_revocation_during_final_owner_rows_query_in_ar_and_en(): void
+    {
+        $this->seed(CoreReferenceSeeder::class);
+        $reader = app(InventoryOwnerProvenanceReadService::class);
+        $permissionId = DB::table('permissions')->where('code', 'inventory.view')->value('id');
+        $this->assertNotNull($permissionId);
+
+        // The first owner SELECT is followed by the current-scope check;
+        // revoke on the SECOND owner SELECT, after that check but before return.
+        $armedUserId = null;
+        $ownerSelects = 0;
+        $revoked = false;
+        DB::listen(static function ($query) use (&$armedUserId, &$ownerSelects, &$revoked, $permissionId): void {
+            if ($armedUserId === null || $revoked) {
+                return;
+            }
+
+            $sql = strtolower((string) $query->sql);
+            if (! str_contains($sql, 'select')
+                || ! str_contains($sql, 'enterprise_inventory_owner_positions')) {
+                return;
+            }
+
+            $ownerSelects++;
+            if ($ownerSelects !== 2) {
+                return;
+            }
+
+            $revoked = true;
+            DB::table('user_permission_overrides')->insert([
+                'user_id' => $armedUserId,
+                'permission_id' => $permissionId,
+                'scope_key' => 'global',
+                'effect' => 'deny',
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+            DB::table('users')->where('id', $armedUserId)
+                ->update(['has_permission_overrides' => true]);
+        });
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            $stock = $this->stock('P110-LAST-DENY-'.strtoupper($locale));
+            $actor = $this->inventoryActor($stock['store_id']);
+            $this->position($stock['inventory_id'], 'FOODEX', null, 10, 3, $actor->id, $actor->id, false);
+
+            $this->assertSame('UNVERIFIED', $reader->snapshot($actor, $stock['inventory_id'])['state']);
+            $beforeAudit = DB::table('audit_logs')->count();
+            $beforeMovements = DB::table('stock_movements')->count();
+            $beforeTitle = DB::table('enterprise_inventory_title_attestations')->count();
+
+            $ownerSelects = 0;
+            $revoked = false;
+            $armedUserId = $actor->id;
+            try {
+                $reader->snapshot($actor, $stock['inventory_id']);
+                $this->fail('A DENY committed during the final owner SELECT must block disclosure.');
+            } catch (HttpException $exception) {
+                $this->assertSame(404, $exception->getStatusCode());
+                $this->assertTrue($revoked);
+                $this->assertSame(2, $ownerSelects);
+            }
+            $armedUserId = null;
+
+            $this->assertFalse((bool) $actor->has_permission_overrides);
+            try {
+                $reader->snapshot($actor, $stock['inventory_id']);
+                $this->fail('The old in-memory actor must not bypass persisted revocation.');
+            } catch (HttpException $exception) {
+                $this->assertSame(404, $exception->getStatusCode());
+            }
+
+            $this->assertSame($beforeAudit, DB::table('audit_logs')->count());
+            $this->assertSame($beforeMovements, DB::table('stock_movements')->count());
+            $this->assertSame($beforeTitle, DB::table('enterprise_inventory_title_attestations')->count());
+
+            DB::table('user_permission_overrides')->where('user_id', $actor->id)->delete();
+            DB::table('users')->where('id', $actor->id)
+                ->update(['has_permission_overrides' => false]);
+            $restored = $reader->snapshot($actor, $stock['inventory_id']);
+            $this->assertSame('UNVERIFIED', $restored['state']);
+            $this->assertSame('10.000', $restored['quantity']);
+        }
+    }
+
     private function inventoryActor(int $storeId): User
     {
         $this->enableEnterpriseWmsForStore($storeId);
