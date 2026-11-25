@@ -27,6 +27,7 @@ final class StockReservationService
         int $referenceId,
         string $reason = 'Enterprise WMS stock reservation',
     ): float {
+        $this->assertPersistedActorIdentity($actor);
         $warehouse = $this->warehouseScope->assertWarehouse($actor, $warehouseId, 'inventory.manage');
         $targetQuantity = $this->normalizeQuantity($quantity);
         $referenceType = $this->normalizeReferenceType($referenceType);
@@ -162,6 +163,7 @@ final class StockReservationService
         string $referenceType,
         int $referenceId,
     ): float {
+        $this->assertPersistedActorIdentity($actor);
         $warehouse = $this->warehouseScope->assertWarehouse($actor, $warehouseId, 'inventory.view');
         $referenceType = $this->normalizeReferenceType($referenceType);
 
@@ -187,6 +189,22 @@ final class StockReservationService
             (int) $warehouse->store_id,
             $referenceType,
             $referenceId,
+        );
+    }
+
+    /**
+     * Reject a caller-owned Eloquent actor whose primary key was changed in
+     * memory: WMS movement attribution and reads must use its persisted key.
+     * No additional SQL on the 18-query reservation hot path.
+     */
+    private function assertPersistedActorIdentity(User $actor): void
+    {
+        $originalId = $actor->getRawOriginal($actor->getKeyName());
+        abort_unless(
+            $actor->exists
+                && $originalId !== null
+                && (string) $actor->getKey() === (string) $originalId,
+            403,
         );
     }
 
