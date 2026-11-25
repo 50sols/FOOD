@@ -421,6 +421,17 @@ final class PurchaseRequestManager
         ResolvedTenantContext $context,
         string $permission,
     ): EnterpriseDataScope {
+        // This public ERP manager accepts Eloquent actors from internal callers.
+        // Never resolve permissions or maker/checker attribution through an
+        // unsaved primary-key substitution on another persisted User object.
+        $persistedActorId = $actor->getRawOriginal($actor->getKeyName());
+        abort_unless(
+            $actor->exists
+                && $persistedActorId !== null
+                && (string) $actor->getKey() === (string) $persistedActorId,
+            403,
+        );
+
         abort_if($context->enterpriseScope === null, 409, 'Enterprise data scope is required.');
 
         $scope = $context->enterpriseScope;
