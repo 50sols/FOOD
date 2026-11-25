@@ -1417,11 +1417,19 @@ final class ProcurementCompletionManager
         int $documentId,
     ): object {
         $scope = $this->scope($actor, $context, 'procurement.purchase_orders.view');
-        $contract = $this->visibleContract($scope, $contractId);
 
-        return DB::table('enterprise_procurement_contract_documents')
-            ->where('contract_id', $contract->id)
-            ->where('id', $documentId)
+        // A separate visibleContract() preflight would leave a read-time
+        // ownership gap before fetching the attachment's storage path.
+        // Resolve both identities and the live tenant/store scope in one
+        // database statement so a transferred contract cannot expose a file.
+        return DB::table('enterprise_procurement_contract_documents as documents')
+            ->join('enterprise_procurement_contracts as contracts', 'contracts.id', '=', 'documents.contract_id')
+            ->where('contracts.organization_id', $scope->organizationId)
+            ->where('contracts.company_id', $scope->companyId)
+            ->where('contracts.store_id', $scope->storeId)
+            ->where('contracts.id', $contractId)
+            ->where('documents.id', $documentId)
+            ->select('documents.*')
             ->firstOrFail();
     }
 
