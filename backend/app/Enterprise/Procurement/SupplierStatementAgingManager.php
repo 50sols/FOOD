@@ -200,8 +200,15 @@ final class SupplierStatementAgingManager
         abort_if($context->enterpriseScope === null, 409, 'Enterprise data scope is required.');
 
         $scope = $context->enterpriseScope;
+        // A stale in-memory User may predate a persisted explicit DENY.
+        // Authorize current database state, not its old permission flag.
+        $currentActor = User::query()
+            ->whereKey($persistedActorId)
+            ->where('is_active', true)
+            ->first();
+        abort_unless($currentActor !== null, 403);
         $this->authorizer->authorize(
-            $actor,
+            $currentActor,
             $context,
             self::VIEW_PERMISSION,
             'company',

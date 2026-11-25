@@ -223,6 +223,98 @@ final class EnterpriseSupplierStatementAgingFoundationTest extends TestCase
         }
     }
 
+    public function test_supplier_statement_and_aging_honor_persisted_deny_after_actor_was_loaded_in_ar_and_en(): void
+    {
+        $this->enableProcurement();
+        [$actor, $store, $context] = $this->scopedUser($this->allPermissions(), 'SAGE-STALE-DENY');
+        [, $warehouse] = $this->stockTarget($store, 'SAGE-STALE-SKU');
+        $receipt = $this->postedReceipt(
+            $actor, $context, $warehouse, 'SAGE-STALE-SUP', 'SAGE-STALE-SKU', 2,
+        );
+        $invoices = app(PurchaseInvoiceHandoffManager::class);
+        $invoice = $invoices->createFromPostedReceipt($actor, $context, $receipt->id, [
+            'supplier_invoice_number' => 'SAGE-STALE-INVOICE',
+            'invoice_date' => '2026-10-10',
+            'due_date' => '2026-10-20',
+            'lines' => [[
+                'goods_receipt_line_id' => $receipt->lines()->firstOrFail()->id,
+                'quantity' => 1,
+            ]],
+        ]);
+        $invoices->handoff($actor, $context, $invoice->id);
+
+        $manager = app(SupplierStatementAgingManager::class);
+        $supplierId = (int) $receipt->supplier_id;
+        $permissionId = Permission::query()
+            ->where('code', 'procurement.supplier_statements.view')
+            ->firstOrFail()->id;
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            $this->assertSame(1, $manager->statement($actor, $context, $supplierId, [
+                'from' => '2026-10-01', 'to' => '2026-10-31',
+            ])->total());
+            $this->assertSame(1, $manager->aging($actor, $context, $supplierId, [
+                'as_of' => '2026-10-31', 'currency_code' => 'KWD',
+            ])['invoice_count']);
+
+            // The supplied actor was loaded before the DENY flag was stored.
+            $this->assertFalse((bool) $actor->has_permission_overrides);
+            DB::table('user_permission_overrides')->insert([
+                'user_id' => $actor->id,
+                'permission_id' => $permissionId,
+                'scope_key' => 'global',
+                'store_id' => null,
+                'effect' => 'deny',
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+            DB::table('users')->where('id', $actor->id)
+                ->update(['has_permission_overrides' => true]);
+            $this->assertTrue((bool) $actor->fresh()->has_permission_overrides);
+            $this->assertFalse((bool) $actor->has_permission_overrides);
+            $auditBefore = DB::table('audit_logs')->count();
+
+            try {
+                $manager->statement($actor, $context, $supplierId, [
+                    'from' => '2026-10-01', 'to' => '2026-10-31',
+                ]);
+                $this->fail('Persisted permission DENY must immediately block supplier statements.');
+            } catch (HttpExceptionInterface $exception) {
+                $this->assertSame(403, $exception->getStatusCode());
+            }
+
+            try {
+                $manager->aging($actor, $context, $supplierId, [
+                    'as_of' => '2026-10-31', 'currency_code' => 'KWD',
+                ]);
+                $this->fail('Persisted permission DENY must immediately block supplier aging.');
+            } catch (HttpExceptionInterface $exception) {
+                $this->assertSame(403, $exception->getStatusCode());
+            }
+
+            $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+            $this->assertDatabaseHas('enterprise_purchase_invoices', [
+                'id' => $invoice->id, 'status' => 'handed_off',
+            ]);
+
+            // Revocation is reversible; reauthorize using the same stale User
+            // only after the persisted DENY and its cache flag are removed.
+            DB::table('user_permission_overrides')
+                ->where('user_id', $actor->id)
+                ->where('permission_id', $permissionId)
+                ->delete();
+            DB::table('users')->where('id', $actor->id)
+                ->update(['has_permission_overrides' => false]);
+            $this->assertSame(1, $manager->statement($actor, $context, $supplierId, [
+                'from' => '2026-10-01', 'to' => '2026-10-31',
+            ])->total());
+            $this->assertSame(1, $manager->aging($actor, $context, $supplierId, [
+                'as_of' => '2026-10-31', 'currency_code' => 'KWD',
+            ])['invoice_count']);
+        }
+    }
+
     public function test_disabled_procurement_performs_no_supplier_statement_query_work(): void
     {
         [$actor, , $context] = $this->scopedUser($this->allPermissions(), 'SAGE-OFF');
