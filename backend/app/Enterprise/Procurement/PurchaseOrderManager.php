@@ -322,7 +322,15 @@ final class PurchaseOrderManager
                 ->where('organization_id', $scope->organizationId)
                 ->where('company_id', $scope->companyId)
                 ->where('store_id', $scope->storeId)
-                ->where('status', 'posted')
+                ->where(function ($receipts): void {
+                    $receipts->where('status', 'posted')
+                        ->orWhereExists(function ($lines): void {
+                            $lines->selectRaw('1')
+                                ->from('enterprise_goods_receipt_lines as received_lines')
+                                ->whereColumn('received_lines.goods_receipt_id', 'enterprise_goods_receipts.id')
+                                ->whereNotNull('received_lines.stock_movement_id');
+                        });
+                })
                 ->exists()) {
                 throw ValidationException::withMessages([
                     'status' => ['A purchase order with posted receipts cannot be cancelled; use the authorized return or correction workflow.'],
