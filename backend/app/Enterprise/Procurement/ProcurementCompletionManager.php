@@ -1429,6 +1429,18 @@ final class ProcurementCompletionManager
         ])->validate();
 
         return DB::transaction(function () use ($actor, $scope, $data): object {
+            // Serialize new agreements with module shutdown. The earlier
+            // permission/preflight alone cannot protect the write transaction.
+            $module = DB::table('enterprise_modules')
+                ->where('code', 'procurement')
+                ->lockForUpdate()
+                ->first();
+            abort_unless(
+                $module !== null && $module->state === ModuleState::ENABLED->value,
+                404,
+                'Procurement module is disabled.',
+            );
+
             // Supplier qualification and legal scope are mutable after a
             // preflight. Lock the current row through creation and audit so
             // stale supplier references cannot produce an invalid agreement.
