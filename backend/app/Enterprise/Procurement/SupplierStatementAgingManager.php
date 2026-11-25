@@ -148,19 +148,22 @@ SQL, [
             $due90,
         ])->firstOrFail();
 
+        // Model properties are limited to declared schema columns; SQL aggregate
+        // aliases belong to this single query result. Read raw attributes so
+        // PHPStan can type-check them without losing exact DECIMAL strings.
         $result = [
             'supplier' => $supplier,
             'as_of' => $asOf->toDateString(),
             'currency_code' => $currency,
-            'invoice_count' => (int) $aggregate->invoice_count,
-            'gross_exposure' => $this->amount($aggregate->gross_exposure),
+            'invoice_count' => (int) $aggregate->getRawOriginal('invoice_count'),
+            'gross_exposure' => $this->amount($aggregate->getRawOriginal('gross_exposure')),
             'buckets' => [
-                'not_due' => $this->amount($aggregate->not_due),
-                'due_0_30' => $this->amount($aggregate->due_0_30),
-                'due_31_60' => $this->amount($aggregate->due_31_60),
-                'due_61_90' => $this->amount($aggregate->due_61_90),
-                'due_over_90' => $this->amount($aggregate->due_over_90),
-                'no_due_date' => $this->amount($aggregate->no_due_date),
+                'not_due' => $this->amount($aggregate->getRawOriginal('not_due')),
+                'due_0_30' => $this->amount($aggregate->getRawOriginal('due_0_30')),
+                'due_31_60' => $this->amount($aggregate->getRawOriginal('due_31_60')),
+                'due_61_90' => $this->amount($aggregate->getRawOriginal('due_61_90')),
+                'due_over_90' => $this->amount($aggregate->getRawOriginal('due_over_90')),
+                'no_due_date' => $this->amount($aggregate->getRawOriginal('no_due_date')),
             ],
         ];
 
