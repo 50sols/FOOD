@@ -116,6 +116,10 @@ final class SystemUpdateController extends Controller
                 ->withErrors(['update' => __('update_signed_manifest.invalid_signature')]);
         }
 
+        // Publisher verification is not a durable authorization grant:
+        // rebind the original persisted Super Admin before staging a ZIP.
+        $this->authorizeSuperAdminUpdate($request);
+
         $directory = storage_path('app/private/updates/incoming');
         if (! $this->hostPathWritableWithoutMutation($directory)) {
             return redirect()
@@ -159,9 +163,15 @@ final class SystemUpdateController extends Controller
                 throw new RuntimeException(__('update_signed_manifest.invalid_signature'));
             }
 
+            // currentVersion() performs database reads. A disabled or
+            // offboarded Super Admin must not use a stale actor snapshot to
+            // start maintenance, database backup, or release activation.
+            $currentVersion = $this->currentVersion();
+            $user = $this->authorizeSuperAdminUpdate($request);
+
             $history = $this->manager->execute(
                 $manifest,
-                $this->currentVersion(),
+                $currentVersion,
                 $packagePath,
                 $user,
             );
@@ -201,11 +211,16 @@ final class SystemUpdateController extends Controller
         ]);
 
         try {
+            // Version discovery can outlive an earlier authorization. Check
+            // the same persisted actor again before capturing database bytes.
+            $sourceVersion = $this->currentVersion();
+            $actor = $this->authorizeSuperAdminUpdate($request);
+
             $backup = $this->systemRuntime->createDatabaseBackup(
                 $actor,
                 $request,
                 (string) $validated['reason'],
-                $this->currentVersion(),
+                $sourceVersion,
             );
 
             return redirect()
@@ -239,6 +254,11 @@ final class SystemUpdateController extends Controller
         ]);
 
         try {
+            // A Super Admin can be offboarded while reading the installed
+            // version. Reauthorize before any restore or maintenance mutation.
+            $targetVersion = $this->currentVersion();
+            $actor = $this->authorizeSuperAdminUpdate($request);
+
             $this->systemRuntime->restoreDatabaseBackup(
                 $actor,
                 $request,
@@ -248,7 +268,7 @@ final class SystemUpdateController extends Controller
                 isset($validated['production_confirmation'])
                     ? (string) $validated['production_confirmation']
                     : null,
-                $this->currentVersion(),
+                $targetVersion,
             );
 
             return redirect()

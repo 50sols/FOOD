@@ -149,6 +149,63 @@ final class V2SystemUpdatePersistedActorTest extends TestCase
         }
     }
 
+    public function test_backup_and_restore_refuse_midversion_super_admin_revocation_in_both_locales(): void
+    {
+        // Exercise the controller itself without upstream security middleware.
+        // DB::listen forces a deterministic same-connection revocation after
+        // an actual installed-version SELECT, not a two-session MySQL race.
+        $this->withoutMiddleware();
+        $actor = $this->superAdmin();
+        $this->actingAs($actor);
+
+        $armed = false;
+        $revoked = false;
+        DB::listen(static function ($query) use ($actor, &$armed, &$revoked): void {
+            $sql = strtolower(ltrim((string) $query->sql));
+            if (! $armed || ! str_starts_with($sql, 'select')
+                || ! str_contains($sql, 'system_versions')) {
+                return;
+            }
+
+            $armed = false;
+            $revoked = true;
+            DB::table('users')->where('id', $actor->id)->update(['is_active' => false]);
+        });
+
+        $reference = '20261017-120000-database-aaaaaaaaaa';
+        $auditBefore = DB::table('audit_logs')->count();
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+
+            foreach (['backup', 'restore'] as $operation) {
+                DB::table('users')->where('id', $actor->id)->update(['is_active' => true]);
+                $armed = true;
+                $revoked = false;
+
+                if ($operation === 'backup') {
+                    $response = $this->post(route('admin.system-update.backups.store'), [
+                        'reason' => 'Safe backup authorization check',
+                    ]);
+                } else {
+                    $response = $this->post(route('admin.system-update.backups.restore', [
+                        'backupReference' => $reference,
+                    ]), [
+                        'reason' => 'Safe restore authorization check',
+                        'confirm_reference' => $reference,
+                    ]);
+                }
+
+                $response->assertForbidden();
+                $this->assertTrue($revoked, 'A real version SELECT must revoke the actor before '.$operation.'.');
+                $this->assertTrue((bool) $actor->is_active, 'The request principal stays stale.');
+                $this->assertFalse((bool) $actor->fresh()->is_active);
+                $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+                $this->assertDatabaseCount('update_history', 0);
+            }
+        }
+    }
+
     public function test_updater_authorization_rebinds_original_identity_and_rejects_dirty_primary_key(): void
     {
         $actor = $this->superAdmin();
