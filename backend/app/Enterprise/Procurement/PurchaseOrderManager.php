@@ -399,6 +399,18 @@ final class PurchaseOrderManager
         ResolvedTenantContext $context,
         string $permission,
     ): EnterpriseDataScope {
+        // Direct-service Eloquent actors must be tied to the originally loaded
+        // persisted account, not an unsaved replacement of the primary key.
+        // Otherwise order issuance/cancellation could be attributed to a
+        // different authorized user without authenticating that user.
+        $persistedActorId = $actor->getRawOriginal($actor->getKeyName());
+        abort_unless(
+            $actor->exists
+                && $persistedActorId !== null
+                && (string) $actor->getKey() === (string) $persistedActorId,
+            403,
+        );
+
         abort_if($context->enterpriseScope === null, 409, 'Enterprise data scope is required.');
 
         $scope = $context->enterpriseScope;
