@@ -628,7 +628,7 @@ final class ProcurementCompletionManager
     ): object {
         $scope = $this->scope($actor, $context, 'procurement.purchase_requests.approve');
         $this->authorizer->authorize(
-            $actor,
+            $this->persistedActor($actor),
             $context,
             'procurement.purchase_orders.manage',
             'company',
@@ -2085,7 +2085,7 @@ final class ProcurementCompletionManager
             ]),
         };
         $this->authorizer->authorize(
-            $actor,
+            $this->persistedActor($actor),
             $context,
             $documentPermission,
             'company',
@@ -2855,14 +2855,14 @@ final class ProcurementCompletionManager
         return $this->scope($actor, $context, 'procurement.suppliers.view');
     }
 
-    private function scope(
-        User $actor,
-        ResolvedTenantContext $context,
-        string $permission,
-    ): EnterpriseDataScope {
-        // A direct-service caller may change an Eloquent actor primary key in
-        // memory without saving it. Never authorize procurement decisions or
-        // attribute RFQ/contract writes to that substituted identity.
+    /**
+     * Existing controller and direct-service callers can retain an Eloquent
+     * User loaded before a global DENY or account deactivation was committed.
+     * Bind authorization to the immutable original identity AND the current
+     * persisted override flag rather than trusting the old model snapshot.
+     */
+    private function persistedActor(User $actor): User
+    {
         $originalActorId = $actor->getRawOriginal($actor->getKeyName());
         abort_unless(
             $actor->exists
@@ -2871,11 +2871,24 @@ final class ProcurementCompletionManager
             403,
         );
 
+        $current = User::query()->whereKey($originalActorId)->where('is_active', true)->first();
+        abort_unless($current instanceof User, 403);
+
+        return $current;
+    }
+
+    private function scope(
+        User $actor,
+        ResolvedTenantContext $context,
+        string $permission,
+    ): EnterpriseDataScope {
+        $currentActor = $this->persistedActor($actor);
+
         abort_unless($this->modules->isEnabled('procurement'), 404, 'Procurement module is disabled.');
         abort_if($context->enterpriseScope === null, 409, 'Enterprise data scope is required.');
 
         $scope = $context->enterpriseScope;
-        $this->authorizer->authorize($actor, $context, $permission, 'company', $scope->companyId);
+        $this->authorizer->authorize($currentActor, $context, $permission, 'company', $scope->companyId);
 
         return $scope;
     }
@@ -2886,6 +2899,8 @@ final class ProcurementCompletionManager
         string $permission,
         EnterpriseDataScope $scope,
     ): bool {
-        return $this->authorizer->allows($actor, $context, $permission, 'company', $scope->companyId);
+        return $this->authorizer->allows(
+            $this->persistedActor($actor), $context, $permission, 'company', $scope->companyId,
+        );
     }
 }

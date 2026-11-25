@@ -1542,6 +1542,79 @@ final class EnterpriseProcurementCompletionTest extends TestCase
         ]));
     }
 
+    public function test_procurement_completion_reloads_persisted_rbac_for_direct_reads_reports_and_kpis_in_both_locales(): void
+    {
+        $this->enableProcurement();
+        $completion = app(ProcurementCompletionManager::class);
+        $codes = ['procurement.purchase_requests.view', 'procurement.purchase_orders.view'];
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            [$actor, $store, $context] = $this->scopedUser($this->allPermissions(), 'PROC-RBAC-LIVE-'.strtoupper($locale));
+            $this->assertFalse((bool) $actor->has_permission_overrides);
+
+            // Real allowed operations in the same Retail store and module:
+            // the empty collection and zero KPI are authorized, not hidden.
+            $this->assertSame(0, $completion->paginateRfqs($actor, $context)->total());
+            $this->assertArrayHasKey('rows', $completion->report($actor, $context, 'open_orders'));
+            $initialDashboard = $completion->dashboard($actor, $context);
+            $initialOrders = collect($initialDashboard['kpis'])->firstWhere('key', 'open_orders');
+            $this->assertNotNull($initialOrders);
+            $this->assertNotNull($initialOrders['value']);
+
+            $auditBefore = DB::table('audit_logs')->count();
+            foreach ($codes as $code) {
+                $permissionId = Permission::query()->where('code', $code)->value('id');
+                $this->assertNotNull($permissionId);
+                DB::table('user_permission_overrides')->insert([
+                    'user_id' => $actor->id,
+                    'permission_id' => $permissionId,
+                    'scope_key' => 'global',
+                    'store_id' => null,
+                    'effect' => 'deny',
+                    'created_at' => now(),
+                    'updated_at' => now(),
+                ]);
+            }
+            DB::table('users')->where('id', $actor->id)->update(['has_permission_overrides' => true]);
+
+            $this->assertFalse((bool) $actor->has_permission_overrides);
+            $this->assertTrue((bool) $actor->fresh()->has_permission_overrides);
+            foreach ([
+                'rfq_list' => fn () => $completion->paginateRfqs($actor, $context),
+                'open_orders_report' => fn () => $completion->report($actor, $context, 'open_orders'),
+            ] as $operation => $read) {
+                try {
+                    $read();
+                    $this->fail("A persisted DENY must prevent {$operation} for a stale actor.");
+                } catch (HttpException $exception) {
+                    $this->assertSame(403, $exception->getStatusCode());
+                }
+            }
+
+            // Supplier overview remains permitted, but a stale purchase-order
+            // permission cannot disclose order/finance KPI or chart values.
+            $dashboard = $completion->dashboard($actor, $context);
+            $orders = collect($dashboard['kpis'])->firstWhere('key', 'open_orders');
+            $this->assertNotNull($orders);
+            $this->assertNull($orders['value']);
+            $this->assertSame([], $dashboard['charts']['po_status']);
+            $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+
+            DB::table('user_permission_overrides')->where('user_id', $actor->id)->delete();
+            DB::table('users')->where('id', $actor->id)->update(['has_permission_overrides' => false]);
+
+            // Existing same stale User object becomes authorized again only
+            // when the persisted DENY is actually removed.
+            $this->assertSame(0, $completion->paginateRfqs($actor, $context)->total());
+            $this->assertArrayHasKey('rows', $completion->report($actor, $context, 'open_orders'));
+            $restored = collect($completion->dashboard($actor, $context)['kpis'])->firstWhere('key', 'open_orders');
+            $this->assertNotNull($restored['value']);
+            $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+            $this->assertSame((int) $store->id, (int) $context->storeId);
+        }
+    }
+
     private function enableProcurement(): void
     {
         $lifecycle = app(ModuleLifecycleManager::class);
