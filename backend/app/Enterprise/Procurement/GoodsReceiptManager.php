@@ -103,6 +103,11 @@ final class GoodsReceiptManager
         // the old store's receipt header or costs after ownership has moved.
         $this->findVisible($scope, $receiptId);
 
+        // Permission or account state can also change while loading supplier
+        // and financial lines. Reauthorize the persisted original principal
+        // after those queries and before releasing the hydrated detail.
+        $this->authorizedScope($actor, $context, self::VIEW_PERMISSION);
+
         return $receipt;
     }
 
