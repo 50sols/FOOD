@@ -101,6 +101,54 @@ final class V2SystemUpdatePersistedActorTest extends TestCase
         }
     }
 
+    public function test_update_center_does_not_schedule_artifacts_after_midversion_super_admin_offboarding_in_ar_and_en(): void
+    {
+        // Deterministic single-connection SQL interleaving: not a
+        // multi-session MySQL race or production hosting attestation.
+        $this->withoutMiddleware();
+        $this->app['events']->listen(RouteMatched::class, static function (RouteMatched $matched): void {
+            $session = app('session')->driver();
+            $session->start();
+            $matched->request->setLaravelSession($session);
+        });
+
+        $actor = $this->superAdmin();
+        $this->actingAs($actor);
+        $armed = false;
+        $revoked = false;
+        DB::listen(static function ($query) use ($actor, &$armed, &$revoked): void {
+            $sql = strtolower(ltrim((string) $query->sql));
+            if (! $armed || ! str_starts_with($sql, 'select')
+                || ! str_contains($sql, 'system_versions')) {
+                return;
+            }
+            $armed = false;
+            $revoked = true;
+            DB::table('users')->where('id', $actor->id)->update(['is_active' => false]);
+        });
+
+        $auditBefore = DB::table('audit_logs')->count();
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            $revoked = false;
+            $armed = true;
+
+            // A previous completed update's flash normally causes a mirror
+            // scheduling side effect before returning the Update Center view.
+            $this->withSession(['status' => 'Update complete'])
+                ->get(route('admin.system-update.index'))->assertForbidden();
+
+            $this->assertTrue($revoked, 'The installed-version SELECT must trigger the revocation.');
+            $this->assertTrue((bool) $actor->is_active, 'Request identity remains cached.');
+            $this->assertFalse((bool) $actor->fresh()->is_active);
+            $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+            $this->assertDatabaseCount('update_history', 0);
+            $this->assertDatabaseCount('mobile_release_artifacts', 0);
+
+            DB::table('users')->where('id', $actor->id)->update(['is_active' => true]);
+        }
+    }
+
     public function test_updater_authorization_rebinds_original_identity_and_rejects_dirty_primary_key(): void
     {
         $actor = $this->superAdmin();

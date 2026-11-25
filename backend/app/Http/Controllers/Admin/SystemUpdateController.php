@@ -39,6 +39,11 @@ final class SystemUpdateController extends Controller
         $actor = $this->authorizeSuperAdminUpdate($request);
         $currentVersion = $this->currentVersion();
 
+        // Reading the installed version may run SQL after the first grant.
+        // If the original principal was disabled during that read, deny
+        // BEFORE a success flash can schedule mobile-release mirror writes.
+        $actor = $this->authorizeSuperAdminUpdate($request);
+
         // The feature's own first patch is executed by the old PHP request.
         // Its redirect is the first request using the new code, so the existing
         // success flash is the bootstrap signal for the new local APK mirror.
