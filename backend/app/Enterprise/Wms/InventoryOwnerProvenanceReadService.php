@@ -5,6 +5,7 @@ namespace App\Enterprise\Wms;
 use App\Models\User;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
+use stdClass;
 
 /**
  * A conservative read boundary for supplier/FOODEX legal stock title.
@@ -235,7 +236,7 @@ final class InventoryOwnerProvenanceReadService
      * enterprise company hierarchy. An owner partition alone grants nothing.
      *
      * @param  list<int>  $supplierIds
-     * @return Collection<int|string, object>
+     * @return Collection<int|string, stdClass>
      */
     private function scopedSuppliers(array $supplierIds, int $storeId): Collection
     {
