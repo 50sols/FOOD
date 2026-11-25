@@ -1981,12 +1981,15 @@ final class EnterpriseProcurementCompletionTest extends TestCase
             $this->assertTrue($injected, 'Financial KPI SQL must trigger the persisted DENY.');
             $this->assertFalse((bool) $actor->has_permission_overrides);
             $this->assertTrue((bool) $actor->fresh()->has_permission_overrides);
-            try {
-                $manager->dashboard($actor, $context);
-                $this->fail('Persisted invoice VIEW DENY must also forbid repeated KPI responses.');
-            } catch (HttpException $exception) {
-                $this->assertSame(403, $exception->getStatusCode());
-            }
+            // The dashboard is permission-aware: a subsequent request may still
+            // show independently authorized KPIs, but must never hydrate invoice
+            // metrics or charts after the persisted invoice VIEW DENY.
+            $redacted = $manager->dashboard($actor, $context);
+            $this->assertNotNull(collect($redacted['kpis'])->firstWhere('key', 'open_orders')['value']);
+            $this->assertNull(collect($redacted['kpis'])->firstWhere('key', 'unmatched_invoices')['value']);
+            $this->assertSame([], $redacted['charts']['spend_trend']);
+            $this->assertSame([], $redacted['charts']['spend_by_supplier']);
+            $this->assertSame([], $redacted['charts']['spend_by_category']);
 
             $this->assertSame($auditBefore, DB::table('audit_logs')->count());
             $this->assertSame($ordersBefore, DB::table('enterprise_purchase_orders')->count());
