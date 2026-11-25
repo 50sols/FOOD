@@ -575,6 +575,42 @@ class BuildUpdateBundleSourceSafetyTest(unittest.TestCase):
                 self.assertFalse(os.path.lexists(output_dir / name), name)
             self.assertFalse((output_dir / ".FOODEX-Update.publish.lock").exists())
 
+    def test_release_group_retracts_same_size_restored_mtime_postlink_tampering(self) -> None:
+        # An os.link call updates ctime. Once the file is linked, changing
+        # the bytes and restoring original mtime/size passes metadata-only
+        # postchecks; it must fail the final reviewed-content digest instead.
+        for altered in ("FOODEX-Update.zip", "FOODEX-Update.files.txt"):
+            with self.subTest(altered=altered):
+                with tempfile.TemporaryDirectory() as directory:
+                    output_dir = Path(directory)
+                    staging, originals = self._staged_release_fixture(output_dir)
+                    real_link = os.link
+                    changed = None
+
+                    def mutate_on_final_link(source: Path, destination: Path) -> None:
+                        nonlocal changed
+                        real_link(source, destination)
+                        if destination.name == "FOODEX-Update.zip":
+                            target = staging / altered
+                            original_stat = target.stat()
+                            current = target.read_bytes()
+                            changed = bytes([current[0] ^ 1]) + current[1:]
+                            target.write_bytes(changed)
+                            os.utime(
+                                target, ns=(original_stat.st_atime_ns, original_stat.st_mtime_ns)
+                            )
+
+                    with mock.patch.object(builder.os, "link", side_effect=mutate_on_final_link):
+                        with self.assertRaisesRegex(RuntimeError, "contents changed"):
+                            builder.publish_release_bundle(staging, output_dir)
+
+                    self.assertIsNotNone(changed)
+                    self.assertEqual((staging / altered).read_bytes(), changed)
+                    self.assertEqual((staging / altered).stat().st_size, len(originals[altered]))
+                    for name in originals:
+                        self.assertFalse(os.path.lexists(output_dir / name), name)
+                    self.assertFalse((output_dir / ".FOODEX-Update.publish.lock").exists())
+
     def test_complete_update_release_preserves_competing_and_existing_signed_outputs(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             output_dir = Path(directory)

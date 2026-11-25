@@ -739,7 +739,46 @@ def assert_staged_release_member_unchanged(
         )
 
 
-def assert_staged_release_consistency(staging_dir: Path) -> None:
+def sha256_pinned_release_member(
+    path: Path,
+    reviewed: os.stat_result,
+    expected_links: int,
+) -> str:
+    """Hash the exact reviewed regular inode; detect writes during the read.
+
+    A hardlink changes ctime, so postlink identity checks cannot alone prove
+    that same-size bytes were not rewritten with their mtime restored.
+    """
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+    try:
+        fd = os.open(path, flags)
+        with os.fdopen(fd, "rb") as stream:
+            first = os.fstat(stream.fileno())
+            if (
+                not stat.S_ISREG(first.st_mode)
+                or (first.st_dev, first.st_ino, first.st_size, first.st_mtime_ns)
+                != (reviewed.st_dev, reviewed.st_ino, reviewed.st_size, reviewed.st_mtime_ns)
+                or first.st_nlink != expected_links
+                or (expected_links == 1 and first.st_ctime_ns != reviewed.st_ctime_ns)
+            ):
+                raise RuntimeError(f"Update release member changed before hashing: {path}")
+            checksum = hashlib.sha256()
+            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                checksum.update(chunk)
+            last = os.fstat(stream.fileno())
+            if (
+                (first.st_dev, first.st_ino, first.st_size, first.st_mtime_ns,
+                 first.st_ctime_ns, first.st_nlink)
+                != (last.st_dev, last.st_ino, last.st_size, last.st_mtime_ns,
+                    last.st_ctime_ns, last.st_nlink)
+            ):
+                raise RuntimeError(f"Update release member changed while hashing: {path}")
+            return checksum.hexdigest()
+    except OSError as exc:
+        raise RuntimeError(f"Unable to hash pinned Update release member: {path}") from exc
+
+
+def assert_staged_release_consistency(staging_dir: Path) -> str:
     """Refuse mismatched manifest, file list, checksum and actual ZIP bytes.
 
     A valid digest sidecar alone does not prove publisher authenticity. This
@@ -777,6 +816,7 @@ def assert_staged_release_consistency(staging_dir: Path) -> None:
         with zipfile.ZipFile(archive_path) as archive:
             if archive.namelist() != filenames:
                 raise RuntimeError("Update release file list does not match ZIP members.")
+        return expected_hash
     except (OSError, UnicodeError, ValueError, zipfile.BadZipFile) as exc:
         raise RuntimeError("Update release staged artifact consistency check failed.") from exc
 
@@ -822,8 +862,15 @@ def publish_release_bundle(staging_dir: Path, output_dir: Path) -> None:
         # Recheck the actual bytes and cross-file provenance while holding the
         # publisher mutex. Each staged identity is pinned again below before
         # hardlinking, and after publication against the target hardlink.
-        assert_staged_release_consistency(staging_dir)
+        expected_zip_hash = assert_staged_release_consistency(staging_dir)
+        reviewed_hashes: dict[Path, str] = {}
         for staged in staged_paths:
+            assert_staged_release_member_unchanged(staged, reviewed_members[staged], 1)
+            reviewed_hashes[staged] = (
+                expected_zip_hash
+                if staged.name == "FOODEX-Update.zip"
+                else sha256_pinned_release_member(staged, reviewed_members[staged], 1)
+            )
             assert_staged_release_member_unchanged(staged, reviewed_members[staged], 1)
         reject_existing_release_outputs(outputs)
         try:
@@ -844,6 +891,17 @@ def publish_release_bundle(staging_dir: Path, output_dir: Path) -> None:
                 # Record ownership immediately so a failed post-link check
                 # retracts this publication along with earlier sidecars.
                 published.append((staged, output))
+                assert_staged_release_member_unchanged(staged, reviewed_members[staged], 2)
+                assert_staged_release_member_unchanged(output, reviewed_members[staged], 2)
+            # Verify all hardlinked outputs, not only the last one. A prior
+            # sidecar can be rewritten while the final ZIP link is created.
+            # These hashes are compared against pre-publication reviewed bytes
+            # and a pinned descriptor, then the output names are checked again.
+            for staged, output in published:
+                assert_staged_release_member_unchanged(staged, reviewed_members[staged], 2)
+                assert_staged_release_member_unchanged(output, reviewed_members[staged], 2)
+                if sha256_pinned_release_member(output, reviewed_members[staged], 2) != reviewed_hashes[staged]:
+                    raise RuntimeError(f"Published Update release contents changed: {output}")
                 assert_staged_release_member_unchanged(staged, reviewed_members[staged], 2)
                 assert_staged_release_member_unchanged(output, reviewed_members[staged], 2)
         except Exception as exc:
