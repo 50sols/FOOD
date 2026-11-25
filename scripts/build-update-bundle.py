@@ -213,6 +213,17 @@ def safe_path(path: str) -> str:
     if any(part in {"", ".", ".."} for part in parts):
         raise RuntimeError(f"Unsafe update path: {path}")
 
+    # Public uploads on a reused cPanel/shared-host staging tree are live
+    # user content, NOT release source. The runtime inventory includes
+    # backend/public/**, so reject these paths before any ZIP is created.
+    # Case-folding also blocks aliases on case-insensitive extractors.
+    folded_path = path.casefold()
+    if any(
+        folded_path == root or folded_path.startswith(root + "/")
+        for root in ("backend/public/uploads", "public/uploads")
+    ):
+        raise RuntimeError(f"Public uploaded/runtime content is not allowed in updates: {path}")
+
     for part in parts:
         if (
             part.rstrip(" .") != part

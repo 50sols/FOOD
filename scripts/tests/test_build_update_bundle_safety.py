@@ -63,6 +63,37 @@ class BuildUpdateBundleSourceSafetyTest(unittest.TestCase):
             with self.subTest(name=name), self.assertRaises(RuntimeError):
                 builder.safe_path(name)
 
+    def test_public_uploaded_content_is_excluded_before_update_zip_creation(self) -> None:
+        # A dirty shared-host staging copy may contain customer uploads inside
+        # backend/public/. These must never become authenticated release bytes.
+        # Case aliases are dangerous on cPanel and desktop ZIP extractors.
+        for name in (
+            "backend/public/uploads/customer/invoice.pdf",
+            "backend/public/UPLOADS/photo.jpg",
+            "public/uploads/customer/private.png",
+            "PUBLIC/Uploads/private.txt",
+        ):
+            with self.subTest(name=name):
+                with self.assertRaisesRegex(RuntimeError, "Public uploaded/runtime content"):
+                    builder.safe_path(name)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "repo"
+            upload = root / "backend/public/uploads/customer/receipt.pdf"
+            upload.parent.mkdir(parents=True)
+            upload.write_bytes(b"PRIVATE-CUSTOMER-UPLOAD")
+            output = root / "dist/FOODEX-Update.zip"
+            with mock.patch.object(builder.tempfile, "mkstemp") as create:
+                with self.assertRaisesRegex(RuntimeError, "Public uploaded/runtime content"):
+                    builder.complete_runtime_files(root)
+                create.assert_not_called()
+            self.assertFalse(output.exists())
+            self.assertEqual(upload.read_bytes(), b"PRIVATE-CUSTOMER-UPLOAD")
+
+        # Canonical compiled/static assets remain valid runtime package inputs.
+        for name in ("backend/public/assets/admin/app.css", "assets/admin/app.css"):
+            self.assertEqual(builder.safe_path(name), name)
+
     def test_regular_files_create_the_expected_deterministic_zip(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary) / "repo"
