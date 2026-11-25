@@ -24,6 +24,7 @@ return [
         'journals' => 'القيود',
         'opening_balances' => 'الأرصدة الافتتاحية',
         'receivables' => 'المدينون',
+        'discount_approvals' => 'اعتماد خصومات خدمة العملاء',
         'payables' => 'الدائنون',
         'credit_terms' => 'شروط الائتمان',
         'budgets' => 'الموازنات',

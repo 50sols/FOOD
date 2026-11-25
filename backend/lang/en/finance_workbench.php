@@ -24,6 +24,7 @@ return [
         'journals' => 'Journals',
         'opening_balances' => 'Opening Balances',
         'receivables' => 'Receivables',
+        'discount_approvals' => 'Customer Service discount approvals',
         'payables' => 'Payables',
         'credit_terms' => 'Credit Terms',
         'budgets' => 'Budgets',
