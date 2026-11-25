@@ -3,6 +3,7 @@
 namespace App\Enterprise\Wms;
 
 use App\Models\User;
+use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 
 /**
@@ -233,10 +234,10 @@ final class InventoryOwnerProvenanceReadService
      * Load currently active supplier identities under this store's live
      * enterprise company hierarchy. An owner partition alone grants nothing.
      *
-     * @param list<int> $supplierIds
-     * @return \Illuminate\Support\Collection<int|string, object>
+     * @param  list<int>  $supplierIds
+     * @return Collection<int|string, object>
      */
-    private function scopedSuppliers(array $supplierIds, int $storeId): \Illuminate\Support\Collection
+    private function scopedSuppliers(array $supplierIds, int $storeId): Collection
     {
         if ($supplierIds === []) {
             return collect();
