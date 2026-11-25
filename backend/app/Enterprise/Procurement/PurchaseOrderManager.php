@@ -111,7 +111,7 @@ final class PurchaseOrderManager
     ): EnterprisePurchaseOrder {
         $scope = $this->authorizedScope($actor, $context, self::MANAGE_PERMISSION);
 
-        return DB::transaction(function () use ($actor, $scope, $requestId): EnterprisePurchaseOrder {
+        return DB::transaction(function () use ($actor, $context, $scope, $requestId): EnterprisePurchaseOrder {
             $request = $this->visibleRequestQuery($scope)
                 ->whereKey($requestId)
                 ->lockForUpdate()
@@ -122,7 +122,10 @@ final class PurchaseOrderManager
                 ->first();
 
             if ($existing instanceof EnterprisePurchaseOrder) {
-                return $existing->load('lines');
+                $existing->load('lines');
+                $this->authorizedScope($actor, $context, self::MANAGE_PERMISSION);
+
+                return $existing;
             }
 
             if ($request->status !== 'approved') {
@@ -145,6 +148,9 @@ final class PurchaseOrderManager
             $supplier = $this->activeVisibleSupplier($scope, (int) $request->supplier_id);
             $lines = $request->lines()->orderBy('line_no')->get();
             abort_if($lines->isEmpty(), 409, 'A purchase order must contain at least one line.');
+
+            // A revoked operator cannot create a PO after supplier/line preflight.
+            $this->authorizedScope($actor, $context, self::MANAGE_PERMISSION);
 
             $publicId = (string) Str::uuid();
             $order = EnterprisePurchaseOrder::query()->create([
@@ -178,6 +184,9 @@ final class PurchaseOrderManager
                 ]);
             }
 
+            // Roll back PO and all line inserts if access was revoked mid-write.
+            $this->authorizedScope($actor, $context, self::MANAGE_PERMISSION);
+
             $this->audit->record(
                 'enterprise.purchase_order.created',
                 $actor,
@@ -207,10 +216,13 @@ final class PurchaseOrderManager
     ): EnterprisePurchaseOrder {
         $scope = $this->authorizedScope($actor, $context, self::ISSUE_PERMISSION);
 
-        return DB::transaction(function () use ($actor, $scope, $orderId): EnterprisePurchaseOrder {
+        return DB::transaction(function () use ($actor, $context, $scope, $orderId): EnterprisePurchaseOrder {
             $order = $this->lockVisible($scope, $orderId);
             if ($order->status === 'issued') {
-                return $order->refresh();
+                $order->refresh();
+                $this->authorizedScope($actor, $context, self::ISSUE_PERMISSION);
+
+                return $order;
             }
 
             $this->requireStatus($order, ['draft'], 'issued');
@@ -290,6 +302,9 @@ final class PurchaseOrderManager
                     ]);
                 }
 
+                // Contract commitment must not be changed by a revoked issuer.
+                $this->authorizedScope($actor, $context, self::ISSUE_PERMISSION);
+
                 DB::table('enterprise_procurement_contracts')
                     ->where('id', $contract->id)
                     ->update([
@@ -299,6 +314,10 @@ final class PurchaseOrderManager
                         'updated_at' => now(),
                     ]);
             }
+
+            // Recheck after all supplier/line/contract reads; 403 rolls back
+            // any previous commitment changes in this same transaction.
+            $this->authorizedScope($actor, $context, self::ISSUE_PERMISSION);
 
             $before = $order->toArray();
             $order->forceFill([
@@ -327,10 +346,13 @@ final class PurchaseOrderManager
     ): EnterprisePurchaseOrder {
         $scope = $this->authorizedScope($actor, $context, self::MANAGE_PERMISSION);
 
-        return DB::transaction(function () use ($actor, $scope, $orderId): EnterprisePurchaseOrder {
+        return DB::transaction(function () use ($actor, $context, $scope, $orderId): EnterprisePurchaseOrder {
             $order = $this->lockVisible($scope, $orderId);
             if ($order->status === 'cancelled') {
-                return $order->refresh();
+                $order->refresh();
+                $this->authorizedScope($actor, $context, self::MANAGE_PERMISSION);
+
+                return $order;
             }
 
             $this->requireStatus($order, ['draft', 'issued'], 'cancelled');
@@ -385,6 +407,10 @@ final class PurchaseOrderManager
                         fn ($line): float => (float) ($line->unit_price ?? 0) * (float) $line->quantity,
                     ), 3);
                     $orderQuantity = round((float) $lines->sum('quantity'), 3);
+                    // Releasing an issued contract commitment also requires
+                    // the caller's current persisted manage permission.
+                    $this->authorizedScope($actor, $context, self::MANAGE_PERMISSION);
+
                     DB::table('enterprise_procurement_contracts')
                         ->where('id', $contract->id)
                         ->update([
@@ -395,6 +421,10 @@ final class PurchaseOrderManager
                         ]);
                 }
             }
+
+            // Protect the non-contract path and roll back any earlier
+            // commitment release if a permission was revoked during reads.
+            $this->authorizedScope($actor, $context, self::MANAGE_PERMISSION);
 
             $order->forceFill([
                 'status' => 'cancelled',

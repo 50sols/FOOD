@@ -862,6 +862,154 @@ final class EnterprisePurchaseOrderFoundationTest extends TestCase
         }
     }
 
+    public function test_purchase_order_mutations_reauthorize_after_transactional_reads_in_ar_and_en(): void
+    {
+        [$actor, , $context] = $this->scopedUser($this->allPermissions(), 'PO-WRITE-MIDQUERY');
+        $orders = app(PurchaseOrderManager::class);
+        $requests = app(PurchaseRequestManager::class);
+        $permissionIds = [
+            'manage' => (int) Permission::query()->where('code', 'procurement.purchase_orders.manage')->value('id'),
+            'issue' => (int) Permission::query()->where('code', 'procurement.purchase_orders.issue')->value('id'),
+        ];
+        $this->assertGreaterThan(0, $permissionIds['manage']);
+        $this->assertGreaterThan(0, $permissionIds['issue']);
+
+        $armed = false;
+        $injected = false;
+        $table = '';
+        $permissionId = 0;
+        DB::listen(static function ($query) use ($actor, &$armed, &$injected, &$table, &$permissionId): void {
+            $sql = strtolower((string) $query->sql);
+            if (! $armed || $injected || ! str_contains($sql, 'select')
+                || ! str_contains($sql, $table)) {
+                return;
+            }
+
+            // Interleave a same-connection persisted DENY after an actual
+            // transactional prewrite SELECT. The rejected transaction must
+            // roll back the injected DENY along with every business change.
+            $armed = false;
+            $injected = true;
+            DB::table('user_permission_overrides')->insert([
+                'user_id' => $actor->id,
+                'permission_id' => $permissionId,
+                'scope_key' => 'global',
+                'store_id' => null,
+                'effect' => 'deny',
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+            DB::table('users')->where('id', $actor->id)
+                ->update(['has_permission_overrides' => true]);
+        });
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            $supplier = app(SupplierDirectory::class)->create($actor, $context, [
+                'scope_type' => 'store',
+                'code' => 'PO-WRITE-'.strtoupper($locale),
+                'name_en' => 'PO transaction authorization '.$locale,
+            ]);
+            $request = $requests->create($actor, $context, [
+                'supplier_id' => $supplier->id,
+                'currency_code' => 'KWD',
+                'reason' => 'Transaction authorization regression',
+                'lines' => [[
+                    'description' => 'Bounded transactional item',
+                    'quantity' => 1,
+                    'unit' => 'each',
+                    'estimated_unit_cost' => 1.250,
+                ]],
+            ]);
+            $requests->submit($actor, $context, $request->id);
+            [$checker, $checkerContext] = ProcurementSecondApprover::forSameStore($actor, $context);
+            $requests->approve($checker, $checkerContext, $request->id);
+            $order = null;
+
+            foreach ([
+                ['create', 'manage', 'enterprise_purchase_request_lines', null, 'draft'],
+                ['issue', 'issue', 'enterprise_purchase_order_lines', 'draft', 'issued'],
+                ['cancel', 'manage', 'enterprise_goods_receipts', 'issued', 'cancelled'],
+            ] as [$operation, $permission, $readTable, $beforeStatus, $afterStatus]) {
+                $permissionId = $permissionIds[$permission];
+                $table = $readTable;
+                $armed = true;
+                $injected = false;
+                $run = static function () use ($orders, $actor, $context, $request, &$order, $operation) {
+                    return match ($operation) {
+                        'create' => $orders->createFromApprovedRequest($actor, $context, $request->id),
+                        'issue' => $orders->issue($actor, $context, $order->id),
+                        'cancel' => $orders->cancel($actor, $context, $order->id),
+                    };
+                };
+                $countBefore = DB::table('enterprise_purchase_orders')->count();
+                $auditBefore = DB::table('audit_logs')->count();
+                $linesBefore = DB::table('enterprise_purchase_order_lines')->count();
+
+                try {
+                    $run();
+                    $this->fail('A mid-transaction permission revoke must stop '.$operation.' before mutation.');
+                } catch (HttpException $exception) {
+                    $this->assertTrue($injected, $operation.' must execute its prewrite query before DENY.');
+                    $this->assertSame(403, $exception->getStatusCode());
+                }
+
+                $this->assertSame($countBefore, DB::table('enterprise_purchase_orders')->count());
+                $this->assertSame($linesBefore, DB::table('enterprise_purchase_order_lines')->count());
+                $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+                if ($order !== null) {
+                    $this->assertDatabaseHas('enterprise_purchase_orders', [
+                        'id' => $order->id,
+                        'status' => $beforeStatus,
+                    ]);
+                } else {
+                    $this->assertDatabaseMissing('enterprise_purchase_orders', [
+                        'purchase_request_id' => $request->id,
+                    ]);
+                }
+                $this->assertDatabaseMissing('user_permission_overrides', [
+                    'user_id' => $actor->id,
+                    'permission_id' => $permissionId,
+                    'scope_key' => 'global',
+                ]);
+                $this->assertFalse((bool) $actor->fresh()->has_permission_overrides);
+
+                // Persist the DENY outside the refused transaction: a repeated
+                // direct-service operation must reject even with stale actor.
+                DB::table('user_permission_overrides')->insert([
+                    'user_id' => $actor->id,
+                    'permission_id' => $permissionId,
+                    'scope_key' => 'global',
+                    'store_id' => null,
+                    'effect' => 'deny',
+                    'created_at' => now(),
+                    'updated_at' => now(),
+                ]);
+                DB::table('users')->where('id', $actor->id)
+                    ->update(['has_permission_overrides' => true]);
+                try {
+                    $run();
+                    $this->fail('Repeated '.$operation.' with committed DENY must be forbidden.');
+                } catch (HttpException $exception) {
+                    $this->assertSame(403, $exception->getStatusCode());
+                }
+
+                DB::table('user_permission_overrides')
+                    ->where('user_id', $actor->id)
+                    ->where('permission_id', $permissionId)
+                    ->delete();
+                DB::table('users')->where('id', $actor->id)
+                    ->update(['has_permission_overrides' => false]);
+                $result = $run();
+                $this->assertSame($afterStatus, $result->status);
+                if ($operation === 'create') {
+                    $order = $result;
+                    $this->assertSame($request->id, $order->purchase_request_id);
+                }
+            }
+        }
+    }
+
     private function approvedOrder(
         User $actor,
         ResolvedTenantContext $context,
