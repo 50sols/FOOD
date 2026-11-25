@@ -115,14 +115,14 @@ class DeterministicSetupZipTest(unittest.TestCase):
             root = base / "source"
             env_file = root / "backend/.env.example"
             env_file.parent.mkdir(parents=True)
-            env_file.write_bytes(b"APP_KEY=\\nDB_PASSWORD=\\n")
-            (root / "VERSION").write_bytes(b"1.0.1\\n")
+            env_file.write_bytes(b"APP_KEY=\nDB_PASSWORD=\n")
+            (root / "VERSION").write_bytes(b"1.0.1\n")
             output = base / "setup.zip"
             original_mkstemp = tempfile.mkstemp
 
             def replace_after_preflight(*args, **kwargs):
                 descriptor, temporary_name = original_mkstemp(*args, **kwargs)
-                env_file.write_bytes(b"APP_KEY=base64:injected-secret\\nDB_PASSWORD=\\n")
+                env_file.write_bytes(b"APP_KEY=base64:injected-secret\nDB_PASSWORD=\n")
                 return descriptor, temporary_name
 
             def open_fixture_member(path, meta, name, source_root):
