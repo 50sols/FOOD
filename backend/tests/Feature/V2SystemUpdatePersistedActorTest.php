@@ -8,6 +8,7 @@ use App\Models\User;
 use Database\Seeders\CoreReferenceSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Request;
+use Illuminate\Routing\Events\RouteMatched;
 use Illuminate\Support\Facades\DB;
 use ReflectionMethod;
 use Symfony\Component\HttpKernel\Exception\HttpException;
@@ -63,6 +64,15 @@ final class V2SystemUpdatePersistedActorTest extends TestCase
         // The SQL listener supplies deterministic same-connection interleaving,
         // not independent two-session MySQL concurrency certification.
         $this->withoutMiddleware();
+        // Bypass security middleware to test the controller guard itself, but
+        // restore ONLY the session normally attached by StartSession. Without
+        // this fixture, the authorised GET fails with an unrelated 500 before
+        // the history SELECT can trigger the persisted revocation.
+        $this->app['events']->listen(RouteMatched::class, static function (RouteMatched $matched): void {
+            $session = app('session')->driver();
+            $session->start();
+            $matched->request->setLaravelSession($session);
+        });
         $actor = $this->superAdmin();
         $this->actingAs($actor);
         $auditBefore = DB::table('audit_logs')->count();
