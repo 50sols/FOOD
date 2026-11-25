@@ -426,6 +426,88 @@ final class EnterpriseSupplierStatementAgingFoundationTest extends TestCase
         }
     }
 
+    public function test_supplier_aging_uses_one_atomic_invoice_snapshot_even_if_amount_changes_after_select_ar_en(): void
+    {
+        $this->enableProcurement();
+        [$actor, $store, $context] = $this->scopedUser($this->allPermissions(), 'SAGE-ATOMIC-SQL');
+        [, $warehouse] = $this->stockTarget($store, 'SAGE-ATOMIC-SKU');
+        $receipt = $this->postedReceipt(
+            $actor, $context, $warehouse, 'SAGE-ATOMIC-SUP', 'SAGE-ATOMIC-SKU', 2,
+        );
+        $invoices = app(PurchaseInvoiceHandoffManager::class);
+        $invoice = $invoices->createFromPostedReceipt($actor, $context, $receipt->id, [
+            'supplier_invoice_number' => 'SAGE-ATOMIC-INVOICE',
+            'invoice_date' => '2026-10-10',
+            'due_date' => '2026-10-20',
+            'lines' => [[
+                'goods_receipt_line_id' => $receipt->lines()->firstOrFail()->id,
+                'quantity' => 1,
+            ]],
+        ]);
+        $invoices->handoff($actor, $context, $invoice->id);
+        $supplierId = (int) $receipt->supplier_id;
+        $aging = app(SupplierStatementAgingManager::class);
+        $armed = false;
+        $changed = false;
+        $invoiceSelects = 0;
+
+        // Simulate an external post-query change immediately after the
+        // aggregate SELECT completes. The response must describe the
+        // pre-change snapshot, not blend old COUNT and new SUM queries.
+        DB::listen(static function ($query) use ($invoice, &$armed, &$changed, &$invoiceSelects): void {
+            $sql = strtolower(ltrim((string) $query->sql));
+            if (! $armed || ! str_starts_with($sql, 'select')
+                || ! str_contains($sql, 'enterprise_purchase_invoices')) {
+                return;
+            }
+            $invoiceSelects++;
+            if ($changed) {
+                return;
+            }
+
+            $changed = true;
+            DB::table('enterprise_purchase_invoices')
+                ->where('id', $invoice->id)
+                ->update(['total_amount' => '9.750']);
+        });
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            DB::table('enterprise_purchase_invoices')
+                ->where('id', $invoice->id)
+                ->update(['total_amount' => '1.250']);
+            $auditBefore = DB::table('audit_logs')->count();
+            $linesBefore = DB::table('enterprise_purchase_invoice_lines')->count();
+            $invoiceSelects = 0;
+            $changed = false;
+            $armed = true;
+
+            try {
+                $result = $aging->aging($actor, $context, $supplierId, [
+                    'as_of' => '2026-10-31',
+                    'currency_code' => 'KWD',
+                ]);
+            } finally {
+                $armed = false;
+            }
+
+            $this->assertTrue($changed, 'The SQL listener must mutate after the invoice aggregate SELECT.');
+            $this->assertSame(1, $invoiceSelects, 'All aging totals must share one SQL invoice snapshot.');
+            $this->assertSame(1, $result['invoice_count']);
+            $this->assertSame('1.250', $result['gross_exposure']);
+            $this->assertSame('1.250', $result['buckets']['due_0_30']);
+            foreach (['not_due', 'due_31_60', 'due_61_90', 'due_over_90', 'no_due_date'] as $bucket) {
+                $this->assertSame('0.000', $result['buckets'][$bucket]);
+            }
+            $this->assertDatabaseHas('enterprise_purchase_invoices', [
+                'id' => $invoice->id,
+                'total_amount' => '9.750',
+            ]);
+            $this->assertSame($linesBefore, DB::table('enterprise_purchase_invoice_lines')->count());
+            $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+        }
+    }
+
     public function test_disabled_procurement_performs_no_supplier_statement_query_work(): void
     {
         [$actor, , $context] = $this->scopedUser($this->allPermissions(), 'SAGE-OFF');

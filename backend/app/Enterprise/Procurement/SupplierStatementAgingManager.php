@@ -126,58 +126,48 @@ final class SupplierStatementAgingManager
         $due60 = $asOf->subDays(60)->toDateString();
         $due90 = $asOf->subDays(90)->toDateString();
 
+        // A financial exposure report must be ONE database statement snapshot.
+        // Eight independent COUNT/SUM calls can observe different invoice
+        // versions between buckets and report inconsistent gross exposure.
+        // Binding date thresholds retains the same due-date semantics without
+        // interpolating request values into SQL.
+        $aggregate = $base->selectRaw(<<<'SQL'
+COUNT(*) AS invoice_count,
+SUM(total_amount) AS gross_exposure,
+SUM(CASE WHEN due_date >= ? THEN total_amount ELSE 0 END) AS not_due,
+SUM(CASE WHEN due_date >= ? AND due_date < ? THEN total_amount ELSE 0 END) AS due_0_30,
+SUM(CASE WHEN due_date >= ? AND due_date < ? THEN total_amount ELSE 0 END) AS due_31_60,
+SUM(CASE WHEN due_date >= ? AND due_date < ? THEN total_amount ELSE 0 END) AS due_61_90,
+SUM(CASE WHEN due_date < ? THEN total_amount ELSE 0 END) AS due_over_90,
+SUM(CASE WHEN due_date IS NULL THEN total_amount ELSE 0 END) AS no_due_date
+SQL, [
+            $nextDay,
+            $due30, $nextDay,
+            $due60, $due30,
+            $due90, $due60,
+            $due90,
+        ])->firstOrFail();
+
         $result = [
             'supplier' => $supplier,
             'as_of' => $asOf->toDateString(),
             'currency_code' => $currency,
-            'invoice_count' => (clone $base)->count(),
-            'gross_exposure' => $this->amount((clone $base)->sum('total_amount')),
+            'invoice_count' => (int) $aggregate->invoice_count,
+            'gross_exposure' => $this->amount($aggregate->gross_exposure),
             'buckets' => [
-                'not_due' => $this->amount(
-                    (clone $base)
-                        ->whereNotNull('due_date')
-                        ->where('due_date', '>=', $nextDay)
-                        ->sum('total_amount'),
-                ),
-                'due_0_30' => $this->amount(
-                    (clone $base)
-                        ->whereNotNull('due_date')
-                        ->where('due_date', '>=', $due30)
-                        ->where('due_date', '<', $nextDay)
-                        ->sum('total_amount'),
-                ),
-                'due_31_60' => $this->amount(
-                    (clone $base)
-                        ->whereNotNull('due_date')
-                        ->where('due_date', '>=', $due60)
-                        ->where('due_date', '<', $due30)
-                        ->sum('total_amount'),
-                ),
-                'due_61_90' => $this->amount(
-                    (clone $base)
-                        ->whereNotNull('due_date')
-                        ->where('due_date', '>=', $due90)
-                        ->where('due_date', '<', $due60)
-                        ->sum('total_amount'),
-                ),
-                'due_over_90' => $this->amount(
-                    (clone $base)
-                        ->whereNotNull('due_date')
-                        ->where('due_date', '<', $due90)
-                        ->sum('total_amount'),
-                ),
-                'no_due_date' => $this->amount(
-                    (clone $base)
-                        ->whereNull('due_date')
-                        ->sum('total_amount'),
-                ),
+                'not_due' => $this->amount($aggregate->not_due),
+                'due_0_30' => $this->amount($aggregate->due_0_30),
+                'due_31_60' => $this->amount($aggregate->due_31_60),
+                'due_61_90' => $this->amount($aggregate->due_61_90),
+                'due_over_90' => $this->amount($aggregate->due_over_90),
+                'no_due_date' => $this->amount($aggregate->no_due_date),
             ],
         ];
 
-        // Each aggregate is a separate SQL read. Never return financial
-        // exposure for a supplier that left the authorized store mid-read.
+        // Never return financial exposure for a supplier that left the
+        // authorized store while the atomic aggregate was being fetched.
         $this->findVisibleSupplier($scope, $supplierId);
-        // Reauthorize the current persisted actor after the final aggregate.
+        // Reauthorize the current persisted actor after the aggregate query.
         // A permission revoked during the report must not return stale money.
         $this->authorizedScope($actor, $context);
 
