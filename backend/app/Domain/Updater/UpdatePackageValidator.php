@@ -131,7 +131,7 @@ final class UpdatePackageValidator
                     if ($component === ''
                         || rtrim($component, ' .') !== $component
                         || preg_match('/[<>:"|?*]/', $component) === 1
-                        || preg_match('/\A(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\..*)?\z/iD', $component) === 1) {
+                        || preg_match('/\A(?:con|conin\$|conout\$|prn|aux|nul|com[1-9]|lpt[1-9])(?:\..*)?\z/iD', $component) === 1) {
                         throw new InvalidArgumentException('Update archive contains an unsafe portable member name.');
                     }
                 }

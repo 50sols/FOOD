@@ -172,6 +172,126 @@ final class V2UpdaterPortableZipNamesTest extends TestCase
         );
     }
 
+    public function test_windows_reserved_devices_and_forbidden_punctuation_fail_before_mutation(): void
+    {
+        // ZIPs with these names may be valid on Linux but collide with
+        // devices or invalid path components on Windows/shared-host tooling.
+        // Preflight, file backup and extraction must all refuse them.
+        foreach ([
+            'CONIN    {
+        $package = $this->createArchive([
+            $this->releaseName.'/sentinel.txt' => 'تحديث café',
+            $this->releaseName.'/alpha.php' => 'alpha',
+            $this->releaseName.'/Nested/' => '',
+            $this->releaseName.'/Nested/bravo.php' => 'bravo',
+        ]);
+        $runtime = app(LaravelUpdateRuntime::class);
+        UpdateArchivePreflightFixture::withBackupableSqlite(
+            fn () => $runtime->preflight($this->manifest($package), $package),
+        );
+        $backup = $runtime->backupFiles($package);
+        $this->assertFileExists($backup.'/files.json');
+        $runtime->extractRelease($package);
+
+        $this->assertSame('تحديث café', file_get_contents($this->releaseDirectory.'/sentinel.txt'));
+        $this->assertSame('alpha', file_get_contents($this->releaseDirectory.'/alpha.php'));
+        $this->assertSame('bravo', file_get_contents($this->releaseDirectory.'/Nested/bravo.php'));
+
+        $runtime->rollbackFiles($backup);
+
+        $this->assertSame('UNCHANGED', file_get_contents($this->releaseDirectory.'/sentinel.txt'));
+        $this->assertFileDoesNotExist($this->releaseDirectory.'/alpha.php');
+        $this->assertFileDoesNotExist($this->releaseDirectory.'/Nested/bravo.php');
+
+        $example = $this->createArchive([
+            'backend/.env.example' => 'template',
+            'backend/.env.production.example' => 'template',
+        ]);
+        UpdateArchivePreflightFixture::withBackupableSqlite(
+            fn () => $runtime->preflight($this->manifest($example), $example),
+        );
+    }
+
+    /**
+     * @param  array<string, string>  $files
+     */
+    private function assertRejectsBeforeMutation(array $files, string $message, ?string $symlink = null): void
+    {
+        $package = $this->createArchive([
+            $this->releaseName.'/sentinel.txt' => 'ATTEMPTED OVERWRITE',
+            ...$files,
+        ], $symlink);
+        $runtime = app(LaravelUpdateRuntime::class);
+
+        $connection = DB::connection();
+        $connection->enableQueryLog();
+        foreach (['preflight', 'backupFiles', 'extractRelease'] as $operation) {
+            $connection->flushQueryLog();
+            try {
+                if ($operation === 'preflight') {
+                    $runtime->preflight($this->manifest($package), $package);
+                } else {
+                    $runtime->{$operation}($package);
+                }
+                $this->fail('Unsafe ZIP accepted by '.$operation);
+            } catch (RuntimeException $exception) {
+                $this->assertSame($message, $exception->getMessage(), $operation);
+            }
+
+            $this->assertSame('UNCHANGED', file_get_contents($this->releaseDirectory.'/sentinel.txt'));
+            $this->assertSame([], glob($this->backupDirectory.'/*') ?: []);
+            $this->assertSame(['sentinel.txt'], array_values(array_diff(scandir($this->releaseDirectory), ['.', '..'])));
+            $this->assertSame([], $connection->getQueryLog());
+        }
+    }
+
+    /** @param  array<string, string>  $files */
+    private function createArchive(array $files, ?string $symlink = null): string
+    {
+        $path = tempnam(sys_get_temp_dir(), 'foodex-zip-portable-');
+        if (! is_string($path)) {
+            throw new RuntimeException('Could not allocate ZIP regression fixture.');
+        }
+
+        $this->archives[] = $path;
+        $zip = new ZipArchive;
+        $this->assertTrue($zip->open($path, ZipArchive::CREATE | ZipArchive::OVERWRITE) === true);
+
+        foreach ($files as $name => $contents) {
+            $this->assertTrue(str_ends_with($name, '/')
+                ? $zip->addEmptyDir($name)
+                : $zip->addFromString($name, $contents));
+            if ($name === $symlink) {
+                $this->assertTrue($zip->setExternalAttributesName($name, ZipArchive::OPSYS_UNIX, 0120777 << 16));
+            }
+        }
+
+        $this->assertTrue($zip->close());
+
+        return $path;
+    }
+
+    private function manifest(string $package): UpdatePackageManifest
+    {
+        return new UpdatePackageManifest('99.0.2', '99.0.1', hash_file('sha256', $package), 'Portable ZIP path regression', false);
+    }
+}
+,
+            'conout$.log',
+            'PrN.txt',
+            'LPT1.csv',
+            'name?query.css',
+            'name:stream.css',
+            'name|pipe.css',
+            'name*glob.css',
+        ] as $name) {
+            $this->assertRejectsBeforeMutation(
+                [$this->releaseName.'/assets/'.$name => 'UNSAFE'],
+                'Update archive contains an unsafe portable member name.',
+            );
+        }
+    }
+
     public function test_portable_distinct_zip_is_accepted_and_backup_and_rollback_are_lossless(): void
     {
         $package = $this->createArchive([

@@ -940,6 +940,14 @@ final class LaravelUpdateRuntime implements UpdateRuntime
                 throw new RuntimeException('Update archive contains an unsafe path.');
             }
 
+            // Windows shared hosts treat device names and forbidden ASCII
+            // punctuation as nonportable release targets. Match Verify
+            // Package and the ZIP producer before backup or extraction.
+            if (preg_match('/[<>:"|?*]/', $component) === 1
+                || preg_match('/\A(?:con|conin\$|conout\$|prn|aux|nul|com[1-9]|lpt[1-9])(?:\..*)?\z/iD', $component) === 1) {
+                throw new RuntimeException('Update archive contains an unsafe portable member name.');
+            }
+
             $isExampleTemplate = $index === $lastComponent
                 && preg_match('/^\.env(?:\.[A-Za-z0-9_-]+)*\.example$/', $component) === 1;
 
