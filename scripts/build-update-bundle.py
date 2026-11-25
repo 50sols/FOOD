@@ -352,6 +352,7 @@ def _open_pinned_source(
     if (
         not hasattr(os, "O_NOFOLLOW")
         or not hasattr(os, "O_DIRECTORY")
+        or not hasattr(os, "O_NONBLOCK")
         or os.open not in os.supports_dir_fd
     ):
         raise RuntimeError("Safe directory-relative update packaging is unavailable.")
@@ -370,7 +371,9 @@ def _open_pinned_source(
 
         file_fd = os.open(
             components[-1],
-            os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_BINARY", 0),
+            # O_NONBLOCK prevents a post-preflight FIFO swap from hanging
+            # forever before the regular-file fstat check can reject it.
+            os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | getattr(os, "O_BINARY", 0),
             dir_fd=parent_fd,
         )
         opened = os.fstat(file_fd)

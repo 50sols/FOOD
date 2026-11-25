@@ -143,6 +143,38 @@ class BuildUpdateBundleSourceSafetyTest(unittest.TestCase):
             self.assertEqual(secret.read_bytes(), b"DO-NOT-PACKAGE-PRIVATE-KEY")
             self.assertEqual(list(output.parent.glob("*.staging")), [])
 
+    def test_replace_checked_file_with_fifo_after_preflight_does_not_block(self) -> None:
+        # A FIFO is NOT a symlink. Blocking O_RDONLY open would wait forever
+        # for a writer before the source could be rejected by fstat.
+        if not hasattr(os, "mkfifo"):
+            self.skipTest("Named pipes are unavailable on this host")
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "repo"
+            source = root / "backend/public/assets/admin/app.css"
+            source.parent.mkdir(parents=True)
+            source.write_bytes(b"reviewed-style")
+            output = root / "dist/FOODEX-Update.zip"
+            member = "backend/public/assets/admin/app.css"
+            original_zip = zipfile.ZipFile
+            swapped = False
+
+            def swap_for_fifo_after_preflight(*args, **kwargs):
+                nonlocal swapped
+                if not swapped and len(args) > 1 and args[1] == "w":
+                    swapped = True
+                    source.rename(source.with_suffix(".reviewed"))
+                    os.mkfifo(source)
+                return original_zip(*args, **kwargs)
+
+            with mock.patch.object(builder.zipfile, "ZipFile", side_effect=swap_for_fifo_after_preflight):
+                with self.assertRaisesRegex(RuntimeError, "changed after preflight"):
+                    builder.build_zip(root, [(member, member)], output)
+
+            self.assertTrue(swapped, "FIFO replacement must happen after preflight.")
+            self.assertFalse(output.exists(), "Do not publish an invalid ZIP.")
+            self.assertEqual(source.with_suffix(".reviewed").read_bytes(), b"reviewed-style")
+            self.assertEqual(list(output.parent.glob("*.staging")), [])
+
     def test_replace_checked_parent_with_offtree_symlink_during_zip_open_fails_closed(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             base = Path(temporary)
