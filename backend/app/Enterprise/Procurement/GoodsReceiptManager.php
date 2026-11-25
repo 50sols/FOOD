@@ -416,6 +416,16 @@ final class GoodsReceiptManager
         ResolvedTenantContext $context,
         string $permission,
     ): EnterpriseDataScope {
+        // Bind direct-service actors to the persisted account originally loaded
+        // from the database. A dirty Eloquent primary key is not authentication.
+        $persistedActorId = $actor->getRawOriginal($actor->getKeyName());
+        abort_unless(
+            $actor->exists
+                && $persistedActorId !== null
+                && (string) $actor->getKey() === (string) $persistedActorId,
+            403,
+        );
+
         $this->assertProcurementEnabled();
         abort_if($context->enterpriseScope === null, 409, 'Enterprise data scope is required.');
 
