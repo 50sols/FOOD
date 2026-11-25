@@ -332,6 +332,41 @@ final class EnterprisePurchaseOrderFoundationTest extends TestCase
             ->where('event', 'enterprise.purchase_order.cancelled')
             ->where('auditable_id', $order->id)
             ->count());
+
+        // Simulate a legacy importer/retry that changed only the GRN header
+        // back to draft after the canonical stock movement was committed.
+        // Actual inventory provenance must still block PO cancellation.
+        DB::table('enterprise_goods_receipts')->where('id', $receipt->id)
+            ->update(['status' => 'draft']);
+        $this->assertDatabaseHas('enterprise_goods_receipts', [
+            'id' => $receipt->id, 'status' => 'draft',
+        ]);
+        $this->assertNotNull($receipt->lines()->firstOrFail()->stock_movement_id);
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            try {
+                $orders->cancel($actor, $context, $order->id);
+                $this->fail('Committed GRN stock cannot be bypassed by a stale draft receipt header.');
+            } catch (ValidationException $exception) {
+                $this->assertArrayHasKey('status', $exception->errors());
+            }
+            $this->assertDatabaseHas('enterprise_purchase_orders', [
+                'id' => $order->id, 'status' => 'issued',
+            ]);
+            $this->assertSame(1.0, (float) DB::table('inventories')
+                ->where('warehouse_id', $warehouse->id)
+                ->where('product_id', $product->id)
+                ->value('quantity'));
+            $this->assertSame(1, DB::table('stock_movements')
+                ->where('type', 'purchase_receipt')
+                ->where('store_id', $store->id)
+                ->count());
+            $this->assertSame(0, DB::table('audit_logs')
+                ->where('event', 'enterprise.purchase_order.cancelled')
+                ->where('auditable_id', $order->id)
+                ->count());
+        }
     }
 
     public function test_po_number_is_unique_per_company_even_for_imported_duplicate(): void
