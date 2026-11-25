@@ -359,6 +359,69 @@ final class EnterpriseProcurementCompletionTest extends TestCase
         $this->assertNotEmpty($dashboard['charts']['savings']);
     }
 
+    public function test_supplier_governance_rechecks_module_shutdown_after_preflight_in_ar_and_en(): void
+    {
+        $this->enableProcurement();
+        [$actor, , $context] = $this->scopedUser($this->allPermissions(), 'PROC-SUP-GOV-SHUTDOWN');
+        $directory = app(SupplierDirectory::class);
+        $completion = app(ProcurementCompletionManager::class);
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            $supplier = $directory->create($actor, $context, [
+                'scope_type' => 'store',
+                'code' => 'PROC-GOV-SHUTDOWN-'.strtoupper($locale),
+                'name_en' => 'Shutdown Governance Supplier '.$locale,
+            ]);
+            $before = DB::table('enterprise_suppliers')->where('id', $supplier->id)->first();
+            $auditBefore = DB::table('audit_logs')->count();
+            $shutdownAfterPreflight = false;
+
+            // Revoke the module immediately after ModuleRegistry's preflight
+            // SELECT returned its enabled registration. The write transaction
+            // must independently lock/recheck state before supplier mutation.
+            DB::listen(static function ($query) use (&$shutdownAfterPreflight): void {
+                $sql = strtolower((string) $query->sql);
+                if ($shutdownAfterPreflight
+                    || ! str_contains($sql, 'enterprise_modules')
+                    || ! str_contains($sql, 'select')) {
+                    return;
+                }
+
+                $shutdownAfterPreflight = true;
+                DB::table('enterprise_modules')->where('code', 'procurement')
+                    ->update(['state' => ModuleState::DISABLED->value]);
+            });
+
+            $attributes = [
+                'qualification_status' => 'qualified',
+                'blocked' => true,
+                'blocked_reason' => 'Governance shutdown regression',
+            ];
+            try {
+                $completion->updateSupplierGovernance($actor, $context, $supplier->id, $attributes);
+                $this->fail('Supplier governance cannot write after procurement shuts down.');
+            } catch (HttpException $exception) {
+                $this->assertSame(404, $exception->getStatusCode());
+            }
+
+            $this->assertTrue($shutdownAfterPreflight, 'Must disable after the enabled preflight.');
+            $unchanged = DB::table('enterprise_suppliers')->where('id', $supplier->id)->first();
+            $this->assertSame($before->status, $unchanged->status);
+            $this->assertSame($before->qualification_status, $unchanged->qualification_status);
+            $this->assertSame($before->blocked_reason, $unchanged->blocked_reason);
+            $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+
+            DB::table('enterprise_modules')->where('code', 'procurement')
+                ->update(['state' => ModuleState::ENABLED->value]);
+            $updated = $completion->updateSupplierGovernance($actor, $context, $supplier->id, $attributes);
+            $this->assertSame('on_hold', $updated->status);
+            $this->assertSame('qualified', $updated->qualification_status);
+            $this->assertSame('Governance shutdown regression', $updated->blocked_reason);
+            $this->assertSame($auditBefore + 1, DB::table('audit_logs')->count());
+        }
+    }
+
     public function test_contract_assignment_rechecks_procurement_shutdown_after_preflight_in_ar_and_en(): void
     {
         $this->enableProcurement();
