@@ -634,6 +634,101 @@ final class EnterprisePurchaseOrderFoundationTest extends TestCase
         }
     }
 
+    public function test_purchase_order_read_paths_recheck_linked_supplier_store_scope_in_ar_and_en(): void
+    {
+        [$actor, $ownStore, $context] = $this->scopedUser($this->allPermissions(), 'PO-LIVE-SUPPLIER');
+        $foreignStore = $this->createRetailStore('PO-LIVE-SUPPLIER-FOREIGN');
+        $orders = app(PurchaseOrderManager::class);
+
+        $armed = false;
+        $moved = false;
+        $targetSupplierId = null;
+        $read = '';
+        DB::listen(static function ($query) use (
+            &$armed, &$moved, &$targetSupplierId, &$read, $foreignStore
+        ): void {
+            $sql = strtolower((string) $query->sql);
+            if (! $armed || $moved || $targetSupplierId === null
+                || ! str_starts_with(ltrim($sql), 'select')) {
+                return;
+            }
+
+            $isPage = $read === 'page'
+                && str_contains($sql, 'enterprise_purchase_orders')
+                && str_contains($sql, 'order by');
+            $isDetail = $read === 'detail'
+                && str_contains($sql, 'enterprise_purchase_order_lines');
+            if (! $isPage && ! $isDetail) {
+                return;
+            }
+
+            // Deterministic same-connection transfer AFTER the real SELECT.
+            // This is not a proven independent two-session MySQL race.
+            $armed = false;
+            $moved = true;
+            DB::table('enterprise_suppliers')->where('id', $targetSupplierId)
+                ->update(['store_id' => $foreignStore->id]);
+        });
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            $order = $this->approvedOrder(
+                $actor, $context, 'PO-LIVE-SUP-'.strtoupper($locale),
+            );
+            $targetSupplierId = (int) $order->supplier_id;
+            $filter = ['q' => $order->order_number];
+            $this->assertSame(1, $orders->paginate($actor, $context, $filter)->total());
+            $this->assertSame($order->id, $orders->detail($actor, $context, $order->id)->id);
+            $auditBefore = DB::table('audit_logs')->count();
+            $linesBefore = DB::table('enterprise_purchase_order_lines')->count();
+
+            foreach (['page', 'detail'] as $read) {
+                $armed = true;
+                $moved = false;
+                try {
+                    if ($read === 'page') {
+                        $orders->paginate($actor, $context, $filter);
+                    } else {
+                        $orders->detail($actor, $context, $order->id);
+                    }
+                    $this->fail('Transferred supplier must not expose old-store PO financials.');
+                } catch (HttpException $exception) {
+                    $this->assertSame('page', $read);
+                    $this->assertSame(404, $exception->getStatusCode());
+                } catch (ModelNotFoundException) {
+                    $this->assertSame('detail', $read);
+                } finally {
+                    $armed = false;
+                }
+
+                $this->assertTrue($moved, 'Supplier move must occur after a real selected PO row.');
+                $this->assertDatabaseHas('enterprise_suppliers', [
+                    'id' => $targetSupplierId,
+                    'store_id' => $foreignStore->id,
+                ]);
+                $this->assertSame(0, $orders->paginate($actor, $context, $filter)->total());
+                try {
+                    $orders->detail($actor, $context, $order->id);
+                    $this->fail('A formerly scoped PO detail must stay inaccessible.');
+                } catch (ModelNotFoundException) {
+                    $this->assertTrue(true);
+                }
+                $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+                $this->assertSame($linesBefore, DB::table('enterprise_purchase_order_lines')->count());
+
+                DB::table('enterprise_suppliers')->where('id', $targetSupplierId)
+                    ->update(['store_id' => $ownStore->id]);
+                $this->assertSame(1, $orders->paginate($actor, $context, $filter)->total());
+                $this->assertSame($order->id, $orders->detail($actor, $context, $order->id)->id);
+            }
+
+            // An earlier locale fixture must not affect the next scoped read.
+            DB::table('enterprise_suppliers')->where('id', $targetSupplierId)
+                ->update(['store_id' => $foreignStore->id]);
+            $targetSupplierId = null;
+        }
+    }
+
     public function test_purchase_order_detail_denies_stale_supplier_and_financial_lines_after_store_transfer_in_ar_and_en(): void
     {
         [$actor, , $context] = $this->scopedUser($this->allPermissions(), 'PO-DETAIL-LIVE');

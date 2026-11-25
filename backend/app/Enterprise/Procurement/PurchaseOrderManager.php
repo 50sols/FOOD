@@ -53,7 +53,7 @@ final class PurchaseOrderManager
         $term = trim((string) ($validated['q'] ?? ''));
         $pattern = str_replace(['!', '%', '_'], ['!!', '!%', '!_'], $term).'%';
 
-        $orders = $this->visibleQuery($scope)
+        $orders = $this->visibleWithSupplier($scope)
             ->with('supplier:id,code,name_en,name_ar,status')
             ->when(
                 $validated['status'] ?? null,
@@ -74,7 +74,7 @@ final class PurchaseOrderManager
         $pageIds = $orders->getCollection()->pluck('id')->all();
         if ($pageIds !== []) {
             abort_unless(
-                $this->visibleQuery($scope)->whereKey($pageIds)->count() === count($pageIds),
+                $this->visibleWithSupplier($scope)->whereKey($pageIds)->count() === count($pageIds),
                 404,
                 'Purchase order ownership changed during pagination.',
             );
@@ -97,7 +97,7 @@ final class PurchaseOrderManager
     ): EnterprisePurchaseOrder {
         $scope = $this->authorizedScope($actor, $context, self::VIEW_PERMISSION);
 
-        $order = $this->findVisible($scope, $orderId)
+        $order = $this->visibleWithSupplier($scope)->whereKey($orderId)->firstOrFail()
             ->load([
                 'supplier:id,code,name_en,name_ar,status',
                 'purchaseRequest:id,request_number,status',
@@ -107,7 +107,7 @@ final class PurchaseOrderManager
         // A purchase order can move stores between the scoped header SELECT
         // and the separate supplier/request/line reads. Never return stale
         // financial or supplier detail to its former owner after reassignment.
-        $this->findVisible($scope, $orderId);
+        $this->visibleWithSupplier($scope)->whereKey($orderId)->firstOrFail();
 
         // The relationship queries and second store check can run after a
         // persisted VIEW revocation. Re-read the same original active actor's
@@ -508,6 +508,30 @@ final class PurchaseOrderManager
             ->where('organization_id', $scope->organizationId)
             ->where('company_id', $scope->companyId)
             ->where('store_id', $scope->storeId);
+    }
+
+    /**
+     * A retained Purchase Order can reference a supplier that has since been
+     * reassigned to another store. Read-side authorization must verify both
+     * objects against CURRENT org/company and the supplier's company/store
+     * scope; validating the PO alone leaks supplier names and priced lines.
+     *
+     * @return Builder<EnterprisePurchaseOrder>
+     */
+    private function visibleWithSupplier(EnterpriseDataScope $scope): Builder
+    {
+        return $this->visibleQuery($scope)
+            ->whereHas('supplier', function (Builder $supplier) use ($scope): void {
+                $supplier->where('organization_id', $scope->organizationId)
+                    ->where('company_id', $scope->companyId)
+                    ->where(function (Builder $query) use ($scope): void {
+                        $query->where('scope_type', 'company')
+                            ->orWhere(function (Builder $store) use ($scope): void {
+                                $store->where('scope_type', 'store')
+                                    ->where('store_id', $scope->storeId);
+                            });
+                    });
+            });
     }
 
     /** @return Builder<EnterprisePurchaseRequest> */
