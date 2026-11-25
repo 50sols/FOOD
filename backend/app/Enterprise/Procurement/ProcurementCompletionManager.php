@@ -1324,7 +1324,7 @@ final class ProcurementCompletionManager
     ): array {
         $scope = $this->scope($actor, $context, 'procurement.purchase_requests.view');
 
-        return DB::table('enterprise_purchase_requests as requests')
+        $requests = DB::table('enterprise_purchase_requests as requests')
             ->leftJoin('enterprise_procurement_rfqs as rfqs', 'rfqs.purchase_request_id', '=', 'requests.id')
             ->where('requests.organization_id', $scope->organizationId)
             ->where('requests.company_id', $scope->companyId)
@@ -1341,6 +1341,12 @@ final class ProcurementCompletionManager
                 'requests.needed_by',
             ])
             ->all();
+
+        // Avoid disclosing request identities/currency when an original
+        // operator's effective VIEW permission is revoked during SQL.
+        $this->scope($actor, $context, 'procurement.purchase_requests.view');
+
+        return $requests;
     }
 
     /** @return list<object> */
@@ -1352,7 +1358,7 @@ final class ProcurementCompletionManager
     ): array {
         $scope = $this->scope($actor, $context, 'procurement.purchase_orders.view');
 
-        return DB::table('enterprise_procurement_contracts as contracts')
+        $contracts = DB::table('enterprise_procurement_contracts as contracts')
             ->join('enterprise_suppliers as suppliers', 'suppliers.id', '=', 'contracts.supplier_id')
             ->where('contracts.organization_id', $scope->organizationId)
             ->where('contracts.company_id', $scope->companyId)
@@ -1373,6 +1379,12 @@ final class ProcurementCompletionManager
                 'suppliers.code as supplier_code',
             ])
             ->all();
+
+        // Agreement dates, supplier identity and currency are sensitive even
+        // when authorization is revoked after the initial current-user check.
+        $this->scope($actor, $context, 'procurement.purchase_orders.view');
+
+        return $contracts;
     }
 
     /** @return array{contract:object,documents:list<object>} */
@@ -1402,6 +1414,10 @@ final class ProcurementCompletionManager
         // owner with stale supplier/title/currency details even when document
         // paths are correctly withheld. Fail closed for the entire response.
         $this->visibleContract($scope, $contractId);
+        // The live-owner read above prevents scope transfer. A separately
+        // persisted actor offboarding or VIEW DENY during attachment SQL
+        // must also block this response and its private storage paths.
+        $this->scope($actor, $context, 'procurement.purchase_orders.view');
 
         return compact('contract', 'documents');
     }

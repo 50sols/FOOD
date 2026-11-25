@@ -2088,6 +2088,169 @@ final class EnterpriseProcurementCompletionTest extends TestCase
         }
     }
 
+    public function test_direct_erp_option_reads_and_private_contract_detail_deny_midquery_view_revocation_in_ar_and_en(): void
+    {
+        Storage::fake('local');
+        $this->enableProcurement();
+        [$actor, , $context] = $this->scopedUser($this->allPermissions(), 'P135-OPTION-READ-LIVE-RBAC');
+        $completion = app(ProcurementCompletionManager::class);
+        $directory = app(SupplierDirectory::class);
+        $requests = app(PurchaseRequestManager::class);
+        $permissionIds = [
+            'procurement.purchase_requests.view' => Permission::query()
+                ->where('code', 'procurement.purchase_requests.view')->firstOrFail()->id,
+            'procurement.purchase_orders.view' => Permission::query()
+                ->where('code', 'procurement.purchase_orders.view')->firstOrFail()->id,
+        ];
+        $armed = false;
+        $revoked = false;
+        $target = '';
+        $permissionId = 0;
+
+        // One listener for the entire AR/EN matrix. The DENY is injected
+        // after the actual scoped SQL returns, not at the preflight check.
+        // It simulates ordering, NOT two independent MySQL sessions.
+        DB::listen(static function ($query) use ($actor, &$armed, &$revoked, &$target, &$permissionId): void {
+            $sql = strtolower(ltrim((string) $query->sql));
+            if (! $armed || $revoked || ! str_starts_with($sql, 'select')) {
+                return;
+            }
+
+            $isTarget = match ($target) {
+                'request_options' => str_contains($sql, 'enterprise_purchase_requests')
+                    && str_contains($sql, 'enterprise_procurement_rfqs')
+                    && str_contains($sql, 'join'),
+                'contract_options' => str_contains($sql, 'enterprise_procurement_contracts')
+                    && str_contains($sql, 'enterprise_suppliers')
+                    && str_contains($sql, 'join'),
+                'contract_detail' => str_contains($sql, 'enterprise_procurement_contract_documents')
+                    && str_contains($sql, 'enterprise_procurement_contracts')
+                    && str_contains($sql, 'join'),
+                default => false,
+            };
+            if (! $isTarget) {
+                return;
+            }
+
+            $revoked = true;
+            $armed = false;
+            DB::table('user_permission_overrides')->insert([
+                'user_id' => $actor->id,
+                'permission_id' => $permissionId,
+                'scope_key' => 'global',
+                'store_id' => null,
+                'effect' => 'deny',
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+            DB::table('users')->where('id', $actor->id)
+                ->update(['has_permission_overrides' => true]);
+        });
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            $supplier = $directory->create($actor, $context, [
+                'scope_type' => 'store',
+                'code' => 'P135-OPTIONS-'.strtoupper($locale),
+                'name_en' => 'Scoped option supplier '.$locale,
+            ]);
+            $request = $requests->create($actor, $context, [
+                'currency_code' => 'KWD',
+                'reason' => 'Scope option request '.$locale,
+                'lines' => [[
+                    'item_code' => 'OPTION-'.strtoupper($locale),
+                    'description' => 'RFQ option input',
+                    'quantity' => 1,
+                    'unit' => 'each',
+                    'estimated_unit_cost' => 1.250,
+                ]],
+            ]);
+            $requests->submit($actor, $context, $request->id);
+            $contract = $completion->createContract($actor, $context, [
+                'supplier_id' => $supplier->id,
+                'title' => 'Protected option contract '.$locale,
+                'currency_code' => 'KWD',
+                'starts_on' => now()->toDateString(),
+                'ends_on' => now()->addDays(30)->toDateString(),
+            ]);
+            $document = $completion->addContractDocument(
+                $actor, $context, $contract->id, ['title' => 'Private option document '.$locale],
+                UploadedFile::fake()->create('private-option.pdf', 4, 'application/pdf'),
+            );
+            [$checker, $checkerContext] = ProcurementSecondApprover::forSameStore($actor, $context);
+            $completion->activateContract($checker, $checkerContext, $contract->id);
+            $this->assertSame('active', DB::table('enterprise_procurement_contracts')
+                ->where('id', $contract->id)->value('status'));
+
+            foreach ([
+                'request_options' => [
+                    'permission' => 'procurement.purchase_requests.view',
+                    'read' => static fn () => $completion->rfqRequestOptions($actor, $context),
+                    'expected_id' => $request->id,
+                ],
+                'contract_options' => [
+                    'permission' => 'procurement.purchase_orders.view',
+                    'read' => static fn () => $completion->activeContractOptions($actor, $context),
+                    'expected_id' => $contract->id,
+                ],
+                'contract_detail' => [
+                    'permission' => 'procurement.purchase_orders.view',
+                    'read' => static fn () => $completion->contractDetail($actor, $context, $contract->id),
+                    'expected_id' => $contract->id,
+                ],
+            ] as $name => $case) {
+                $target = $name;
+                $read = $case['read'];
+                $visible = $read();
+                if ($name === 'contract_detail') {
+                    $this->assertSame((int) $case['expected_id'], (int) $visible['contract']->id);
+                    $this->assertSame($document->storage_path, $visible['documents'][0]->storage_path);
+                } else {
+                    $this->assertContains((int) $case['expected_id'], array_map(
+                        static fn ($record): int => (int) $record->id, $visible,
+                    ));
+                }
+
+                $auditBefore = DB::table('audit_logs')->count();
+                $documentsBefore = DB::table('enterprise_procurement_contract_documents')->count();
+                $requestsBefore = DB::table('enterprise_purchase_requests')->count();
+                $permissionId = (int) $permissionIds[$case['permission']];
+                $revoked = false;
+                $armed = true;
+
+                try {
+                    $read();
+                    $this->fail('A persisted VIEW DENY during scoped SQL must block '.$name.' in '.$locale);
+                } catch (HttpException $exception) {
+                    $this->assertSame(403, $exception->getStatusCode());
+                } finally {
+                    $armed = false;
+                }
+
+                $this->assertTrue($revoked, 'Actual scoped '.$name.' SELECT must trigger the VIEW DENY.');
+                $this->assertFalse((bool) $actor->has_permission_overrides);
+                $this->assertTrue((bool) $actor->fresh()->has_permission_overrides);
+                try {
+                    $read();
+                    $this->fail('Persisted VIEW DENY must also block repeated '.$name);
+                } catch (HttpException $exception) {
+                    $this->assertSame(403, $exception->getStatusCode());
+                }
+
+                $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+                $this->assertSame($documentsBefore, DB::table('enterprise_procurement_contract_documents')->count());
+                $this->assertSame($requestsBefore, DB::table('enterprise_purchase_requests')->count());
+                Storage::disk('local')->assertExists($document->storage_path);
+                DB::table('user_permission_overrides')
+                    ->where('user_id', $actor->id)->where('permission_id', $permissionId)->delete();
+                DB::table('users')->where('id', $actor->id)
+                    ->update(['has_permission_overrides' => false]);
+                $this->assertNotEmpty($read());
+                $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+            }
+        }
+    }
+
     private function enableProcurement(): void
     {
         $lifecycle = app(ModuleLifecycleManager::class);
