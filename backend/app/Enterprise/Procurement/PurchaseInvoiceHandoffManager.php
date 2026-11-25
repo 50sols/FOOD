@@ -307,6 +307,15 @@ final class PurchaseInvoiceHandoffManager
                 ]);
             }
 
+            // Imported/altered drafts can repeat a GRN source with distinct line
+            // numbers. Per-line availability is not an aggregate validation:
+            // reject duplicates before publishing any immutable Finance event.
+            if ($lines->pluck('goods_receipt_line_id')->unique()->count() !== $lines->count()) {
+                throw ValidationException::withMessages([
+                    'lines' => [__('enterprise_procurement.errors.invoice_line_source_changed')],
+                ]);
+            }
+
             $receiptLines = $receipt->lines()->get()->keyBy('id');
             $returnedTotals = $this->postedReturnTotals($receipt->id);
             $invoicedTotals = $this->handedOffInvoiceTotals($receipt->id);

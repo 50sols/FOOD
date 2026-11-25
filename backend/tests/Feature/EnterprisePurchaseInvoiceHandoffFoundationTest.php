@@ -369,6 +369,75 @@ final class EnterprisePurchaseInvoiceHandoffFoundationTest extends TestCase
         );
     }
 
+    public function test_handoff_rejects_duplicate_persisted_grn_line_without_finance_mutation_in_ar_and_en(): void
+    {
+        $this->enableProcurement();
+        [$actor, $store, $context] = $this->scopedUser($this->allPermissions(), 'PINV-DUP-GRN');
+        [, $warehouse] = $this->stockTarget($store, 'PINV-DUP-SKU');
+        $receipt = $this->postedReceipt(
+            $actor, $context, $warehouse, 'PINV-DUP-SUP', 'PINV-DUP-SKU', 3,
+        );
+        $manager = app(PurchaseInvoiceHandoffManager::class);
+        $receiptLineId = $receipt->lines()->firstOrFail()->id;
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            $invoice = $manager->createFromPostedReceipt($actor, $context, $receipt->id, [
+                'supplier_invoice_number' => 'PINV-DUP-'.strtoupper($locale),
+                'invoice_date' => '2026-10-16',
+                'lines' => [[
+                    'goods_receipt_line_id' => $receiptLineId,
+                    'quantity' => 2,
+                ]],
+            ]);
+
+            // Imported/altered draft: each row fits 3 received units, but
+            // two rows using the same GRN line would invoice 4 units.
+            $original = (array) DB::table('enterprise_purchase_invoice_lines')
+                ->where('purchase_invoice_id', $invoice->id)->first();
+            $this->assertNotEmpty($original);
+            $duplicate = $original;
+            unset($duplicate['id']);
+            $duplicate['line_no'] = 2;
+            DB::table('enterprise_purchase_invoice_lines')->insert($duplicate);
+            DB::table('enterprise_purchase_invoices')->where('id', $invoice->id)
+                ->update(['total_amount' => round((float) $original['line_total'] * 2, 3)]);
+
+            $auditBefore = DB::table('audit_logs')->count();
+            $outboxBefore = DB::table('enterprise_outbox_messages')
+                ->where('event_type', 'ProcurementPurchaseInvoiceHandedOff')->count();
+
+            try {
+                $manager->handoff($actor, $context, $invoice->id);
+                $this->fail('One GRN line must not be billed twice in a Finance handoff.');
+            } catch (ValidationException $exception) {
+                $this->assertArrayHasKey('lines', $exception->errors());
+            }
+
+            $this->assertDatabaseHas('enterprise_purchase_invoices', [
+                'id' => $invoice->id,
+                'status' => 'draft',
+                'outbox_event_id' => null,
+            ]);
+            $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+            $this->assertSame(
+                $outboxBefore,
+                DB::table('enterprise_outbox_messages')
+                    ->where('event_type', 'ProcurementPurchaseInvoiceHandedOff')->count(),
+            );
+        }
+
+        $valid = $manager->createFromPostedReceipt($actor, $context, $receipt->id, [
+            'supplier_invoice_number' => 'PINV-DUP-VALID',
+            'invoice_date' => '2026-10-16',
+            'lines' => [[
+                'goods_receipt_line_id' => $receiptLineId,
+                'quantity' => 2,
+            ]],
+        ]);
+        $this->assertSame('handed_off', $manager->handoff($actor, $context, $valid->id)->status);
+    }
+
     public function test_supplier_invoice_number_is_unique_and_reads_are_scope_bounded(): void
     {
         $this->enableProcurement();
