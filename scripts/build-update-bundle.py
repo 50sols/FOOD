@@ -130,13 +130,32 @@ def verify_composer_runtime_contract(repo_root: Path, base: str) -> None:
     if not isinstance(previous, dict) or not isinstance(current, dict):
         raise RuntimeError("Composer runtime contract must be a JSON object.")
 
-    for section in ("require", "autoload", "repositories"):
+    # Update ZIP does not ship vendor/ or run Composer on the live host.
+    # Package replacement/provision, package-discovery metadata and Composer
+    # lifecycle scripts can change runtime behavior without a require diff.
+    for section in (
+        "require", "autoload", "repositories", "replace", "provide",
+        "conflict", "extra", "bin", "scripts",
+    ):
         if previous.get(section, {}) != current.get(section, {}):
             raise RuntimeError(
                 f"Composer runtime {section} differs from the supported base; "
                 "normal Update ZIP excludes vendor/. Build and validate a "
                 "full production-dependency upgrade instead."
             )
+
+    previous_config = previous.get("config", {})
+    current_config = current.get("config", {})
+    if not isinstance(previous_config, dict) or not isinstance(current_config, dict):
+        raise RuntimeError("Composer runtime config must be a JSON object.")
+    # Changed Composer plugins can invalidate the production build even when
+    # the dependency list and lockfile resolutions are unchanged.
+    if previous_config.get("allow-plugins", {}) != current_config.get("allow-plugins", {}):
+        raise RuntimeError(
+            "Composer runtime config.allow-plugins differs from the supported base; "
+            "normal Update ZIP excludes vendor/. Build and validate a "
+            "full production-dependency upgrade instead."
+        )
 
 
 def verify_composer_lock_contract(repo_root: Path, base: str) -> bool:

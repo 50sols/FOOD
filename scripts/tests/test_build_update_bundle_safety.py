@@ -334,6 +334,12 @@ class BuildUpdateBundleSourceSafetyTest(unittest.TestCase):
                 ("require", {"php": "^8.2", "laravel/framework": "^13.0"}),
                 ("autoload", {"psr-4": {"New\\\\": "app/"}}),
                 ("repositories", [{"type": "vcs", "url": "https://example.invalid/pkg"}]),
+                ("replace", {"illuminate/contracts": "*"}),
+                ("provide", {"virtual/queue": "*"}),
+                ("conflict", {"laravel/framework": "<12.0"}),
+                ("extra", {"laravel": {"dont-discover": ["acme/package"]}}),
+                ("bin", ["bin/custom-command"]),
+                ("scripts", {"post-autoload-dump": ["@php artisan package:discover"]}),
             ):
                 with self.subTest(section=changed_section):
                     current = dict(previous)
@@ -344,6 +350,44 @@ class BuildUpdateBundleSourceSafetyTest(unittest.TestCase):
                     with mock.patch.object(builder, "run_git", return_value=json.dumps(previous)):
                         with self.assertRaisesRegex(RuntimeError, "excludes vendor"):
                             builder.verify_composer_runtime_contract(root, "v1.0.125")
+
+    def test_update_zip_rejects_changed_composer_plugin_permission(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "backend").mkdir()
+            previous = {
+                "require": {"php": "^8.2"},
+                "config": {"allow-plugins": {"trusted/composer-plugin": True}},
+            }
+            for changed in (
+                {"allow-plugins": {"trusted/composer-plugin": False}},
+                {"allow-plugins": {"trusted/composer-plugin": True, "untrusted/plugin": True}},
+            ):
+                with self.subTest(config=changed):
+                    current = {**previous, "config": changed}
+                    (root / "backend/composer.json").write_text(
+                        json.dumps(current), encoding="utf-8"
+                    )
+                    with mock.patch.object(builder, "run_git", return_value=json.dumps(previous)):
+                        with self.assertRaisesRegex(RuntimeError, "config.allow-plugins"):
+                            builder.verify_composer_runtime_contract(root, "v1.0.125")
+
+    def test_update_zip_allows_unchanged_composer_runtime_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "backend").mkdir()
+            previous = {
+                "require": {"php": "^8.2"},
+                "scripts": {"post-autoload-dump": ["@php artisan package:discover"]},
+                "extra": {"laravel": {"dont-discover": []}},
+                "config": {"allow-plugins": {"trusted/plugin": True}, "preferred-install": "dist"},
+            }
+            current = {**previous, "config": {**previous["config"], "sort-packages": True}}
+            (root / "backend/composer.json").write_text(
+                json.dumps(current), encoding="utf-8"
+            )
+            with mock.patch.object(builder, "run_git", return_value=json.dumps(previous)):
+                builder.verify_composer_runtime_contract(root, "v1.0.125")
 
     def test_update_zip_rejects_changed_locked_production_packages_and_platform(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
