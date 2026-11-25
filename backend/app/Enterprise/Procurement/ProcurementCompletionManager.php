@@ -2108,7 +2108,7 @@ final class ProcurementCompletionManager
         // anchors a prefix search against fixed, parameter-bound columns.
         $prefix = str_replace(['!', '%', '_'], ['!!', '!%', '!_'], $term).'%';
 
-        return DB::table('enterprise_purchase_invoices as invoices')
+        $page = DB::table('enterprise_purchase_invoices as invoices')
             ->leftJoin('enterprise_procurement_match_reviews as match_reviews', 'match_reviews.purchase_invoice_id', '=', 'invoices.id')
             ->where('invoices.organization_id', $scope->organizationId)
             ->where('invoices.company_id', $scope->companyId)
@@ -2143,6 +2143,29 @@ final class ProcurementCompletionManager
             ->orderByDesc('invoices.id')
             ->paginate(max(10, min(100, $perPage)))
             ->withQueryString();
+
+        // Match exceptions expose supplier references and financial variance.
+        // Recheck the CURRENT invoice owner after the scoped page SELECT so a
+        // moved invoice cannot leak a stale former-store financial row.
+        $invoiceIds = $page->getCollection()->pluck('purchase_invoice_id')->all();
+        if ($invoiceIds !== []) {
+            abort_unless(
+                DB::table('enterprise_purchase_invoices')
+                    ->where('organization_id', $scope->organizationId)
+                    ->where('company_id', $scope->companyId)
+                    ->where('store_id', $scope->storeId)
+                    ->whereIn('id', $invoiceIds)
+                    ->count() === count($invoiceIds),
+                404,
+                'Purchase invoice ownership changed during match pagination.',
+            );
+        }
+
+        // A persisted finance VIEW revocation during COUNT or SELECT must
+        // invalidate the original actor, not leave cached approval intact.
+        $this->scope($actor, $context, 'procurement.purchase_invoices.view');
+
+        return $page;
     }
 
     /**
