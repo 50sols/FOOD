@@ -201,8 +201,17 @@ final class SupplierDirectory
             'expires_at' => ['nullable', 'date'],
         ])->validate();
 
-        return DB::transaction(function () use ($actor, $supplier, $data): EnterpriseSupplierDocument {
-            $document = $supplier->documents()->create([
+        return DB::transaction(function () use ($actor, $scope, $supplierId, $data): EnterpriseSupplierDocument {
+            // The preflight visibility check is not an authorization lease.
+            // Lock the current persisted supplier and recheck store ownership
+            // before attaching a document or recording a success audit.
+            $lockedSupplier = EnterpriseSupplier::query()
+                ->whereKey($supplierId)
+                ->lockForUpdate()
+                ->firstOrFail();
+            abort_unless($this->isVisible($lockedSupplier, $scope), 404);
+
+            $document = $lockedSupplier->documents()->create([
                 ...$data,
                 'created_by' => $actor->id,
             ]);
@@ -210,7 +219,7 @@ final class SupplierDirectory
             $this->audit->record(
                 'enterprise.supplier.document_registered',
                 $actor,
-                $supplier,
+                $lockedSupplier,
                 null,
                 [
                     'supplier_id' => $supplier->id,
