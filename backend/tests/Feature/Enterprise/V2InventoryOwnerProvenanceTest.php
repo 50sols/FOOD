@@ -2763,6 +2763,147 @@ SQL);
         ]);
     }
 
+    public function test_ownership_rule_proposal_retries_and_checker_approval_revoke_on_live_offboarding_in_ar_en(): void
+    {
+        $this->seed(CoreReferenceSeeder::class);
+        $stock = $this->stock('POLICY-LIVE-AUTH');
+        $unitId = (int) DB::table('enterprise_business_units')->value('id');
+        $this->assertGreaterThan(0, $unitId);
+        DB::table('enterprise_store_scopes')->insert([
+            'store_id' => $stock['store_id'],
+            'business_unit_id' => $unitId,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $role = Role::query()->where('code', 'SUPER_ADMIN')->firstOrFail();
+        $maker = User::query()->create([
+            'name' => 'Ownership Policy Late Maker',
+            'email' => 'p110-policy-late-maker@example.test',
+            'password' => 'password',
+            'is_active' => true,
+        ]);
+        $checker = User::query()->create([
+            'name' => 'Ownership Policy Late Checker',
+            'email' => 'p110-policy-late-checker@example.test',
+            'password' => 'password',
+            'is_active' => true,
+        ]);
+        foreach ([$maker, $checker] as $user) {
+            DB::table('role_user')->insert(['user_id' => $user->id, 'role_id' => $role->id]);
+        }
+
+        $service = app(InventoryOwnershipRuleService::class);
+        $request = [
+            'store_id' => $stock['store_id'],
+            'channel' => 'B2C',
+            'warehouse_id' => DB::table('inventories')
+                ->where('id', $stock['inventory_id'])->value('warehouse_id'),
+            'initial_owner_kind' => 'FOODEX',
+            'title_transfer_trigger' => 'CONTRACT_EVENT',
+            'required_evidence_classes' => ['SIGNED_CONTRACT'],
+            'checker_permission' => 'inventory_ownership_rules.review',
+            'effective_at' => now()->addDays(2)->startOfDay()->toDateTimeString(),
+            'rule_uuid' => (string) Str::uuid(),
+        ];
+
+        $armedActorId = null;
+        $watchSql = '';
+        $offboarded = false;
+        // This deterministic same-connection SQL interleaving is not an
+        // independent two-session MySQL race or legal-title attestation.
+        DB::listen(static function ($query) use (&$armedActorId, &$watchSql, &$offboarded): void {
+            $sql = strtolower(ltrim((string) $query->sql));
+            if ($armedActorId === null || $offboarded
+                || ! str_starts_with($sql, 'select')
+                || ! str_contains($sql, $watchSql)) {
+                return;
+            }
+
+            $offboarded = true;
+            DB::table('users')->where('id', $armedActorId)->update(['is_active' => false]);
+        });
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            $request['request_uuid'] = (string) Str::uuid();
+            $draft = $service->propose($maker, $request);
+            $this->assertSame('DRAFT', $draft->status);
+            $this->assertSame($draft->id, $service->propose($maker, $request)->id);
+
+            $beforeRules = DB::table('enterprise_inventory_ownership_rule_revisions')->count();
+            $beforeAudit = DB::table('audit_logs')->count();
+            $beforeMovements = DB::table('stock_movements')->count();
+
+            // Replaying an existing proposal must not leak even its metadata
+            // to a maker disabled during the idempotency-key SELECT.
+            $armedActorId = $maker->id;
+            $watchSql = 'request_uuid';
+            $offboarded = false;
+            try {
+                $service->propose($maker, $request);
+                $this->fail('Offboarded maker must not replay a policy revision.');
+            } catch (HttpException $exception) {
+                $this->assertSame(403, $exception->getStatusCode());
+            } finally {
+                $armedActorId = null;
+            }
+            $this->assertTrue($offboarded);
+            $this->assertTrue((bool) $maker->fresh()->is_active, 'Rejected transaction must roll back offboarding injection.');
+            $this->assertSame($beforeRules, DB::table('enterprise_inventory_ownership_rule_revisions')->count());
+            $this->assertSame($beforeAudit, DB::table('audit_logs')->count());
+            $this->assertSame($beforeMovements, DB::table('stock_movements')->count());
+            $this->assertSame($draft->id, $service->propose($maker, $request)->id);
+
+            // Approval must fail if checker offboarding occurs after the
+            // initial role check, during a real warehouse-reference SELECT.
+            $armedActorId = $checker->id;
+            $watchSql = 'warehouses';
+            $offboarded = false;
+            try {
+                $service->review($checker, (int) $draft->id, true);
+                $this->fail('Offboarded checker must not approve a policy.');
+            } catch (HttpException $exception) {
+                $this->assertSame(403, $exception->getStatusCode());
+            } finally {
+                $armedActorId = null;
+            }
+            $this->assertTrue($offboarded);
+            $this->assertTrue((bool) $checker->fresh()->is_active);
+            $this->assertDatabaseHas('enterprise_inventory_ownership_rule_revisions', [
+                'id' => $draft->id, 'status' => 'DRAFT', 'reviewed_by' => null,
+            ]);
+            $this->assertSame($beforeAudit, DB::table('audit_logs')->count());
+            $this->assertSame($beforeMovements, DB::table('stock_movements')->count());
+
+            // Unrevoked independent checker can approve exactly once.
+            $approved = $service->review($checker, (int) $draft->id, true);
+            $this->assertSame('APPROVED_RULE', $approved->status);
+            $this->assertSame($checker->id, (int) $approved->reviewed_by);
+
+            // An already-approved retry must independently reauthorize
+            // after source checks before returning the policy snapshot.
+            $armedActorId = $checker->id;
+            $watchSql = 'warehouses';
+            $offboarded = false;
+            try {
+                $service->review($checker, (int) $draft->id, true);
+                $this->fail('Offboarded checker must not read approved policy on retry.');
+            } catch (HttpException $exception) {
+                $this->assertSame(403, $exception->getStatusCode());
+            } finally {
+                $armedActorId = null;
+            }
+            $this->assertTrue($offboarded);
+            $this->assertSame('APPROVED_RULE', DB::table('enterprise_inventory_ownership_rule_revisions')
+                ->where('id', $draft->id)->value('status'));
+            $this->assertSame($draft->id, $service->review($checker, (int) $draft->id, true)->id);
+            $this->assertSame($beforeRules, DB::table('enterprise_inventory_ownership_rule_revisions')->count());
+            $this->assertSame($beforeAudit, DB::table('audit_logs')->count());
+            $this->assertSame($beforeMovements, DB::table('stock_movements')->count());
+        }
+    }
+
     public function test_owner_rule_configuration_denies_wrong_store_supplier_and_retroactivity(): void
     {
         $this->seed(CoreReferenceSeeder::class);

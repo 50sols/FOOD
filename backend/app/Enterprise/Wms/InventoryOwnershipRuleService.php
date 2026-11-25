@@ -98,6 +98,10 @@ final class InventoryOwnershipRuleService
                     throw ValidationException::withMessages(['request_uuid' => ['Conflicting policy request replay.']]);
                 }
 
+                // A replay exposes the original legal-title policy snapshot.
+                // Its authorization must still be live after the revision SELECT.
+                $this->authorize($actor, (int) $snapshot['store_id'], 'inventory_ownership_rules.manage');
+
                 return $existing;
             }
 
@@ -128,6 +132,9 @@ final class InventoryOwnershipRuleService
                 'created_at' => now(),
                 'updated_at' => now(),
             ];
+            // Supplier, warehouse and latest-revision checks may outlive a
+            // maker's active role. Do not persist a new policy after offboarding.
+            $this->authorize($actor, (int) $snapshot['store_id'], 'inventory_ownership_rules.manage');
             DB::table('enterprise_inventory_ownership_rule_revisions')->insertOrIgnore($insert);
             $created = DB::table('enterprise_inventory_ownership_rule_revisions')
                 ->where('request_uuid', $requestUuid)->first();
@@ -135,6 +142,10 @@ final class InventoryOwnershipRuleService
                 || (int) $created->proposed_by !== (int) $actor->id) {
                 throw ValidationException::withMessages(['request_uuid' => ['Conflicting concurrent policy revision.']]);
             }
+
+            // A rejected actor must not receive a created policy or leave a
+            // successful write if revocation occurred during SQL execution.
+            $this->authorize($actor, (int) $snapshot['store_id'], 'inventory_ownership_rules.manage');
 
             return $created;
         });
@@ -165,6 +176,9 @@ final class InventoryOwnershipRuleService
             if ($rule->status !== 'DRAFT') {
                 abort_unless($rule->status === $target && (int) $rule->reviewed_by === (int) $checker->id, 409);
 
+                // Idempotent checker reads are still privileged disclosures.
+                $this->authorize($checker, (int) $rule->store_id, (string) $rule->checker_permission);
+
                 return $rule;
             }
             if ($approve) {
@@ -184,6 +198,9 @@ final class InventoryOwnershipRuleService
                 }
                 abort_if($conflict->exists(), 409);
             }
+            // Scope/reference/conflict checks are not a perpetual checker
+            // grant. Rebind the original persisted user just before approval.
+            $this->authorize($checker, (int) $rule->store_id, (string) $rule->checker_permission);
             DB::table('enterprise_inventory_ownership_rule_revisions')->where('id', $revisionId)->update([
                 'status' => $target,
                 'reviewed_by' => (int) $checker->id,
@@ -191,7 +208,13 @@ final class InventoryOwnershipRuleService
                 'updated_at' => now(),
             ]);
 
-            return DB::table('enterprise_inventory_ownership_rule_revisions')->where('id', $revisionId)->first();
+            $reviewed = DB::table('enterprise_inventory_ownership_rule_revisions')
+                ->where('id', $revisionId)->first();
+            // Revoke even after the database UPDATE/SELECT; throwing here
+            // rolls back the entire policy decision transaction.
+            $this->authorize($checker, (int) $rule->store_id, (string) $rule->checker_permission);
+
+            return $reviewed;
         });
     }
 
@@ -393,8 +416,20 @@ final class InventoryOwnershipRuleService
 
     private function authorize(User $actor, int $storeId, string $permission): void
     {
-        abort_unless($actor->hasRole('SUPER_ADMIN') || $actor->hasPermission($permission, $storeId), 403);
-        $this->stores->assertStore($actor, $storeId, 'inventory.view');
+        // Never use a cached role or a dirty Eloquent primary key to grant
+        // ownership-policy access. Every caller, including idempotent retry
+        // paths, must prove the original persisted account is still active.
+        $originalId = $actor->getRawOriginal($actor->getKeyName());
+        abort_unless(
+            $actor->exists
+                && $originalId !== null
+                && (string) $actor->getKey() === (string) $originalId,
+            403,
+        );
+        $current = User::query()->whereKey($originalId)->where('is_active', true)->first();
+        abort_unless($current instanceof User, 403);
+        abort_unless($current->hasRole('SUPER_ADMIN') || $current->hasPermission($permission, $storeId), 403);
+        $this->stores->assertStore($current, $storeId, 'inventory.view');
     }
 
     private function companyForStore(int $storeId): int
