@@ -2,7 +2,15 @@
 
 namespace Tests\Feature;
 
+use App\Enterprise\Entitlements\EntitlementScope;
+use App\Enterprise\Entitlements\ModuleEntitlementManager;
+use App\Enterprise\Finance\FinanceFoundationService;
+use App\Enterprise\Modules\ModuleLifecycleManager;
+use App\Enterprise\Modules\ModuleRegistry;
+use App\Enterprise\Modules\ModuleState;
+use App\Enterprise\Organization\OrganizationHierarchyService;
 use App\Models\Role;
+use App\Models\Store;
 use App\Models\User;
 use App\Services\B2bCustomerService;
 use App\Services\WholesalePrincipal;
@@ -24,16 +32,16 @@ final class V2ApprovedDiscountHistoryAuthorityTest extends TestCase
 
     public function test_approved_history_is_visible_on_exact_order_after_fulfillment_changes_in_arabic_and_english(): void
     {
-        [$agent, $reviewer, $orderId, $requestId] = $this->approvedDiscount();
+        [$agent, $reviewer, $orderId, $requestId, $accountant] = $this->approvedDiscount();
 
         $this->assertDatabaseHas('order_customer_service_discount_requests', [
             'id' => $requestId,
             'status' => 'approved',
-            'reviewed_by_user_id' => $reviewer->getKey(),
+            'reviewed_by_user_id' => $accountant->getKey(),
         ]);
         $this->assertDatabaseHas('audit_logs', [
             'event' => 'order.customer_service_discount.approved',
-            'user_id' => $reviewer->getKey(),
+            'user_id' => $accountant->getKey(),
         ]);
 
         // Approval history remains visible after the pending-stage form closes.
@@ -153,7 +161,10 @@ final class V2ApprovedDiscountHistoryAuthorityTest extends TestCase
     private function approvedDiscount(): array
     {
         $agent = $this->roleUser('CUSTOMER_SERVICE_AGENT');
+        // Operational managers retain scoped read-only approved history,
+        // while only an independent Accounting actor records the approval.
         $reviewer = $this->roleUser('CUSTOMER_SERVICE_MANAGER');
+        $accountant = $this->roleUser('FINANCE');
         $orderId = $this->makeOrder();
 
         DB::table('order_customer_service_assignments')->insert([
@@ -177,7 +188,7 @@ final class V2ApprovedDiscountHistoryAuthorityTest extends TestCase
         $requestId = (int) DB::table('order_customer_service_discount_requests')
             ->where('order_id', $orderId)->value('id');
         $this->assertGreaterThan(0, $requestId);
-        $this->actingAs($reviewer)->post(
+        $this->actingAs($accountant)->post(
             route('admin.operations.orders.customer-service-discount.review', [
                 'order' => $orderId,
                 'discountRequest' => $requestId,
@@ -185,15 +196,45 @@ final class V2ApprovedDiscountHistoryAuthorityTest extends TestCase
             ['decision' => 'approve'],
         )->assertRedirect();
 
-        return [$agent, $reviewer, $orderId, $requestId];
+        return [$agent, $reviewer, $orderId, $requestId, $accountant];
     }
 
     private function roleUser(string $code): User
     {
         $user = User::factory()->create(['is_active' => true, 'locale' => 'en']);
         $user->roles()->attach(Role::query()->where('code', $code)->firstOrFail());
+        if ($code === 'FINANCE') {
+            $this->enableFinanceForStore($user);
+        }
 
         return $user->fresh();
+    }
+
+    private function enableFinanceForStore(User $actor): void
+    {
+        $storeId = app(WholesalePrincipal::class)->storeId();
+        $store = Store::query()->findOrFail($storeId);
+        app(OrganizationHierarchyService::class)->ensureDefaultScopeForStore($store);
+        $modules = app(ModuleRegistry::class);
+        config()->set(
+            'enterprise_module_readiness.certified_versions.finance',
+            $modules->manifest(FinanceFoundationService::MODULE)->version,
+        );
+        if (! $modules->isEnabled(FinanceFoundationService::MODULE)) {
+            app(ModuleLifecycleManager::class)->transition(
+                FinanceFoundationService::MODULE, ModuleState::ENABLING, $actor,
+            );
+            app(ModuleLifecycleManager::class)->transition(
+                FinanceFoundationService::MODULE, ModuleState::ENABLED, $actor,
+            );
+        }
+        $scope = app(OrganizationHierarchyService::class)->scopeForStore($storeId);
+        $this->assertNotNull($scope);
+        app(ModuleEntitlementManager::class)->set(
+            FinanceFoundationService::MODULE,
+            new EntitlementScope(EntitlementScope::LEGAL_ENTITY, $scope['legal_entity_id']),
+            true, ['finance.foundation.read', 'finance.ar.read'], $actor,
+        );
     }
 
     private function makeOrder(): int

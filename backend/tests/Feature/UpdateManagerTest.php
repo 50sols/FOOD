@@ -6,7 +6,9 @@ use App\Domain\Updater\UpdateManager;
 use App\Domain\Updater\UpdatePackageManifest;
 use App\Domain\Updater\UpdatePackageValidator;
 use App\Domain\Updater\UpdateRuntime;
+use App\Models\SystemVersion;
 use App\Models\UpdateHistory;
+use App\Models\User;
 use App\Services\AuditLogger;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use RuntimeException;
@@ -89,9 +91,9 @@ class UpdateManagerTest extends TestCase
         $this->assertSame([
             'preflight',
             'backup_files',
+            'enter_maintenance_mode',
             'backup_database',
             'verify_database_backup',
-            'enter_maintenance_mode',
             'extract_release',
             'run_migrations',
             'rebuild_caches',
@@ -145,9 +147,9 @@ class UpdateManagerTest extends TestCase
         $this->assertSame([
             'preflight',
             'backup_files',
+            'enter_maintenance_mode',
             'backup_database',
             'verify_database_backup',
-            'enter_maintenance_mode',
             'extract_release',
             'run_migrations',
             'rebuild_caches',
@@ -177,6 +179,176 @@ class UpdateManagerTest extends TestCase
         $this->assertSame('passed', $failedHistory->execution_evidence['rollback_health_check'] ?? null);
         $this->assertDatabaseMissing('system_versions', ['version' => '1.1.0']);
         $this->assertDatabaseHas('audit_logs', ['event' => 'updater.failed']);
+    }
+
+    public function test_quiescent_database_rollback_snapshot_captures_writes_before_maintenance_and_never_rewinds_them(): void
+    {
+        $email = 'pre-maintenance-window-write@example.test';
+        $capturedBeforeRelease = false;
+        $runtime = new RecordingUpdateRuntime(
+            failAt: 'health_check',
+            afterFileBackup: static function () use ($email): void {
+                // A real public write can still complete while the initial
+                // files-only backup is in progress.
+                User::factory()->create(['email' => $email, 'is_active' => true]);
+            },
+            onDatabaseBackup: static function () use ($email, &$capturedBeforeRelease): void {
+                $capturedBeforeRelease = User::query()->where('email', $email)->exists();
+            },
+        );
+        $manager = new UpdateManager(
+            new UpdatePackageValidator,
+            $runtime,
+            app(AuditLogger::class),
+        );
+
+        try {
+            $manager->execute($this->manifest(true), '1.0.0', $this->packagePath);
+            $this->fail('Injected health failure must trigger the verified rollback.');
+        } catch (RuntimeException $exception) {
+            $this->assertStringContainsString('health_check', $exception->getMessage());
+        }
+
+        $this->assertTrue($capturedBeforeRelease);
+        $this->assertDatabaseHas('users', ['email' => $email]);
+        $this->assertSame([
+            'preflight',
+            'backup_files',
+            'enter_maintenance_mode',
+            'backup_database',
+            'verify_database_backup',
+            'extract_release',
+            'run_migrations',
+            'rebuild_caches',
+            'health_check',
+            'rollback_files',
+            'rollback_database',
+            'health_check',
+            'exit_maintenance_mode',
+        ], $runtime->calls);
+        $this->assertDatabaseHas('update_history', [
+            'to_version' => '1.1.0',
+            'status' => 'failed',
+            'failed_stage' => 'health_check',
+            'rollback_status' => 'succeeded',
+            'maintenance_mode_remained' => false,
+        ]);
+    }
+
+    public function test_failed_quiescent_database_backup_exits_maintenance_without_activation_or_rollback(): void
+    {
+        $runtime = new RecordingUpdateRuntime('backup_database');
+        $manager = new UpdateManager(
+            new UpdatePackageValidator,
+            $runtime,
+            app(AuditLogger::class),
+        );
+
+        try {
+            $manager->execute($this->manifest(true), '1.0.0', $this->packagePath);
+            $this->fail('A database backup error must stop the update before release mutation.');
+        } catch (RuntimeException $exception) {
+            $this->assertStringContainsString('backup_database', $exception->getMessage());
+        }
+
+        $this->assertSame([
+            'preflight',
+            'backup_files',
+            'enter_maintenance_mode',
+            'backup_database',
+            'exit_maintenance_mode',
+        ], $runtime->calls);
+        $this->assertDatabaseHas('update_history', [
+            'to_version' => '1.1.0',
+            'status' => 'failed',
+            'failed_stage' => 'backup_database',
+            'rollback_status' => 'not_required',
+            'maintenance_mode_remained' => false,
+        ]);
+        $this->assertDatabaseMissing('system_versions', ['version' => '1.1.0']);
+    }
+
+    public function test_post_exit_version_failure_never_rolls_back_data_written_after_site_reopened(): void
+    {
+        $email = 'post-maintenance-write@example.test';
+        $runtime = new RecordingUpdateRuntime(
+            afterMaintenanceExit: static function () use ($email): void {
+                User::factory()->create([
+                    'email' => $email,
+                    'is_active' => true,
+                ]);
+            },
+        );
+        $manager = new UpdateManager(
+            new UpdatePackageValidator,
+            $runtime,
+            app(AuditLogger::class),
+        );
+
+        // Simulate a metadata persistence failure after the updater has
+        // exited maintenance and a real new business write could occur.
+        SystemVersion::creating(static function ($version): void {
+            if ($version->version === '1.1.0') {
+                throw new RuntimeException('Simulated late version-recording failure.');
+            }
+        });
+
+        try {
+            $manager->execute($this->manifest(true), '1.0.0', $this->packagePath);
+            $this->fail('A late version persistence failure should fail the update.');
+        } catch (RuntimeException $exception) {
+            $this->assertStringContainsString('record_version', $exception->getMessage());
+            $this->assertStringContainsString('manual recovery is required', $exception->getMessage());
+        } finally {
+            SystemVersion::flushEventListeners();
+        }
+
+        $this->assertSame(2, count(array_filter(
+            $runtime->calls,
+            static fn (string $call): bool => $call === 'enter_maintenance_mode',
+        )));
+        $this->assertNotContains('rollback_files', $runtime->calls);
+        $this->assertNotContains('rollback_database', $runtime->calls);
+        $this->assertDatabaseHas('users', ['email' => $email]);
+        $this->assertDatabaseHas('update_history', [
+            'to_version' => '1.1.0',
+            'status' => 'failed',
+            'failed_stage' => 'record_version',
+            'rollback_status' => 'incomplete',
+            'maintenance_mode_remained' => true,
+        ]);
+        $history = UpdateHistory::query()->where('to_version', '1.1.0')->firstOrFail();
+        $this->assertSame('skipped_unsafe', $history->execution_evidence['rollback_files'] ?? null);
+        $this->assertSame('skipped_unsafe', $history->execution_evidence['rollback_database'] ?? null);
+        $this->assertDatabaseMissing('system_versions', ['version' => '1.1.0']);
+    }
+
+    public function test_failing_exit_maintenance_may_have_exposed_users_and_cannot_rewind_database(): void
+    {
+        $runtime = new RecordingUpdateRuntime('exit_maintenance_mode');
+        $manager = new UpdateManager(
+            new UpdatePackageValidator,
+            $runtime,
+            app(AuditLogger::class),
+        );
+
+        try {
+            $manager->execute($this->manifest(true), '1.0.0', $this->packagePath);
+            $this->fail('An exit error must not report success.');
+        } catch (RuntimeException $exception) {
+            $this->assertStringContainsString('exit_maintenance_mode', $exception->getMessage());
+            $this->assertStringContainsString('manual recovery is required', $exception->getMessage());
+        }
+
+        $this->assertNotContains('rollback_files', $runtime->calls);
+        $this->assertNotContains('rollback_database', $runtime->calls);
+        $this->assertDatabaseHas('update_history', [
+            'to_version' => '1.1.0',
+            'status' => 'failed',
+            'failed_stage' => 'exit_maintenance_mode',
+            'rollback_status' => 'incomplete',
+            'maintenance_mode_remained' => true,
+        ]);
     }
 
     public function test_failed_file_rollback_keeps_maintenance_enabled(): void
@@ -243,9 +415,14 @@ final class RecordingUpdateRuntime implements UpdateRuntime
 
     private bool $primaryFailureTriggered = false;
 
+    private bool $maintenanceExitNotified = false;
+
     public function __construct(
         private readonly ?string $failAt = null,
         private readonly ?string $failRollbackAt = null,
+        private readonly ?\Closure $afterMaintenanceExit = null,
+        private readonly ?\Closure $afterFileBackup = null,
+        private readonly ?\Closure $onDatabaseBackup = null,
     ) {}
 
     public function preflight(UpdatePackageManifest $manifest, string $packagePath): void
@@ -256,6 +433,9 @@ final class RecordingUpdateRuntime implements UpdateRuntime
     public function backupFiles(string $packagePath): string
     {
         $this->record('backup_files');
+        if ($this->afterFileBackup !== null) {
+            ($this->afterFileBackup)();
+        }
 
         return 'files-backup';
     }
@@ -263,6 +443,9 @@ final class RecordingUpdateRuntime implements UpdateRuntime
     public function backupDatabase(bool $required): ?string
     {
         $this->record('backup_database');
+        if ($this->onDatabaseBackup !== null) {
+            ($this->onDatabaseBackup)();
+        }
 
         return $required ? 'database-backup' : null;
     }
@@ -310,6 +493,12 @@ final class RecordingUpdateRuntime implements UpdateRuntime
     public function exitMaintenanceMode(): void
     {
         $this->record('exit_maintenance_mode');
+        if (! $this->maintenanceExitNotified) {
+            $this->maintenanceExitNotified = true;
+            if ($this->afterMaintenanceExit !== null) {
+                ($this->afterMaintenanceExit)();
+            }
+        }
     }
 
     private function record(string $stage): void

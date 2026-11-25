@@ -5,6 +5,7 @@ namespace Tests\Feature;
 use App\Domain\Updater\LaravelUpdateRuntime;
 use App\Domain\Updater\UpdatePackageManifest;
 use RuntimeException;
+use Tests\Support\UpdateArchivePreflightFixture;
 use Tests\TestCase;
 use ZipArchive;
 
@@ -75,7 +76,9 @@ final class V2UpdateZipCaseAliasGuardTest extends TestCase
             'backend/config/production.php',
         ]);
 
-        app(LaravelUpdateRuntime::class)->preflight($this->manifest($archive), $archive);
+        UpdateArchivePreflightFixture::withBackupableSqlite(
+            fn () => app(LaravelUpdateRuntime::class)->preflight($this->manifest($archive), $archive),
+        );
         $this->assertFileExists($archive);
     }
 
