@@ -1983,11 +1983,15 @@ final class EnterpriseProcurementCompletionTest extends TestCase
             $this->assertFalse((bool) $actor->has_permission_overrides);
             $this->assertTrue((bool) $actor->fresh()->has_permission_overrides);
 
-            // A subsequent request may serve independently granted PO data
-            // but must not calculate or return a denied supplier exception.
-            $redacted = $manager->dashboard($actor, $context);
-            $this->assertNull(collect($redacted['exceptions'])->firstWhere('key', 'blocked_suppliers'));
-            $this->assertNotNull(collect($redacted['kpis'])->firstWhere('key', 'open_orders')['value']);
+            // Unlike invoice VIEW, supplier VIEW is the required baseScope
+            // for the entire procurement dashboard. Repeated requests must
+            // fail closed, not reveal even otherwise granted PO indicators.
+            try {
+                $manager->dashboard($actor, $context);
+                $this->fail('Persisted supplier VIEW DENY must reject repeated dashboard access.');
+            } catch (HttpException $exception) {
+                $this->assertSame(403, $exception->getStatusCode());
+            }
             $this->assertSame($auditBefore, DB::table('audit_logs')->count());
             $this->assertSame('on_hold', DB::table('enterprise_suppliers')
                 ->where('id', $supplier->id)->value('status'));
