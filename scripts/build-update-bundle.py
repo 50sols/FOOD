@@ -99,6 +99,30 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def validate_update_version_range(target_version: str, minimum_current_version: str) -> None:
+    """Reject malformed or non-advancing Update ZIP version metadata before staging.
+
+    Producer-side validation is mandatory even if the runtime updater performs
+    its own independent signed-manifest compatibility checks.
+    """
+    pattern = r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)"
+    versions: list[tuple[int, int, int]] = []
+    for label, value in (
+        ("target_version", target_version),
+        ("minimum_current_version", minimum_current_version),
+    ):
+        if not re.fullmatch(pattern, value):
+            raise RuntimeError(
+                f"Invalid {label}: expected canonical MAJOR.MINOR.PATCH version."
+            )
+        versions.append(tuple(int(part) for part in value.split(".")))
+
+    if versions[0] <= versions[1]:
+        raise RuntimeError(
+            "Update target_version must be greater than minimum_current_version."
+        )
+
+
 def run_git(*args: str) -> str:
     result = subprocess.run(
         ["git", *args],
@@ -663,6 +687,7 @@ def publish_release_sidecar(path: Path, content: str) -> None:
 
 def main() -> int:
     args = parse_args()
+    validate_update_version_range(args.target_version, args.minimum_current_version)
     repo_root = Path(run_git("rev-parse", "--show-toplevel").strip())
 
     installed_version = (repo_root / "VERSION").read_text(encoding="utf-8").strip()

@@ -20,6 +20,45 @@ _SPEC.loader.exec_module(builder)
 
 
 class BuildUpdateBundleSourceSafetyTest(unittest.TestCase):
+    def test_update_release_versions_require_canonical_advancing_semver(self) -> None:
+        for target, minimum in (
+            ("1.0.128", "1.0.125"),
+            ("1.0.128", "1.0.127"),
+            ("2.0.0", "1.999.999"),
+        ):
+            with self.subTest(target=target, minimum=minimum):
+                builder.validate_update_version_range(target, minimum)
+
+        for target, minimum, error in (
+            ("1.0", "0.9.0", "Invalid target_version"),
+            ("1.0.01", "1.0.0", "Invalid target_version"),
+            ("v1.0.128", "1.0.125", "Invalid target_version"),
+            ("1.0.128+unsigned", "1.0.125", "Invalid target_version"),
+            ("1.0.128-rc.1", "1.0.125", "Invalid target_version"),
+            ("1.0.128 ", "1.0.125", "Invalid target_version"),
+            ("1.0.128", "01.0.125", "Invalid minimum_current_version"),
+            ("1.0.128", "1.0.127\n", "Invalid minimum_current_version"),
+            ("1.0.127", "1.0.127", "must be greater"),
+            ("1.0.126", "1.0.127", "must be greater"),
+            ("1.9.99", "2.0.0", "must be greater"),
+        ):
+            with self.subTest(target=target, minimum=minimum):
+                with self.assertRaisesRegex(RuntimeError, error):
+                    builder.validate_update_version_range(target, minimum)
+
+    def test_invalid_update_version_fails_before_git_or_any_staging(self) -> None:
+        arguments = type("Args", (), {
+            "target_version": "1.0.127",
+            "minimum_current_version": "1.0.127",
+        })()
+        with mock.patch.object(builder, "parse_args", return_value=arguments):
+            with mock.patch.object(builder, "run_git") as git:
+                with mock.patch.object(builder.tempfile, "mkstemp") as staged:
+                    with self.assertRaisesRegex(RuntimeError, "must be greater"):
+                        builder.main()
+                    git.assert_not_called()
+                    staged.assert_not_called()
+
     def test_canonical_source_and_example_template_remain_valid(self) -> None:
         for name in (
             "VERSION",
