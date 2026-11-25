@@ -998,6 +998,85 @@ final class EnterprisePurchaseInvoiceHandoffFoundationTest extends TestCase
         }
     }
 
+    public function test_invoice_page_denies_postquery_foreign_store_transfer_in_ar_and_en(): void
+    {
+        $this->enableProcurement();
+        [$actor, $store, $context] = $this->scopedUser($this->allPermissions(), 'PINV-PAGE-LIVE');
+        $foreignStore = $this->createRetailStore('PINV-PAGE-FOREIGN');
+        [, $warehouse] = $this->stockTarget($store, 'PINV-PAGE-LIVE-SKU');
+        $manager = app(PurchaseInvoiceHandoffManager::class);
+
+        $armed = false;
+        $moved = false;
+        $targetInvoiceId = null;
+        DB::listen(static function ($query) use ($foreignStore, &$armed, &$moved, &$targetInvoiceId): void {
+            $sql = strtolower((string) $query->sql);
+            if (! $armed || $moved || $targetInvoiceId === null
+                || ! str_contains($sql, 'select')
+                || ! str_contains($sql, 'enterprise_purchase_invoices')
+                || ! str_contains($sql, 'order by')) {
+                return;
+            }
+
+            // Fire after the ordered scoped page SELECT; the hydrated row
+            // retains its old store ID, but persisted ownership has changed.
+            $armed = false;
+            $moved = true;
+            DB::table('enterprise_purchase_invoices')
+                ->where('id', $targetInvoiceId)
+                ->update(['store_id' => $foreignStore->id]);
+        });
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            $receipt = $this->postedReceipt(
+                $actor, $context, $warehouse,
+                'PINV-PAGE-SUP-'.strtoupper($locale), 'PINV-PAGE-LIVE-SKU', 2,
+            );
+            $invoice = $manager->createFromPostedReceipt($actor, $context, $receipt->id, [
+                'supplier_invoice_number' => 'PINV-PAGE-'.strtoupper($locale),
+                'invoice_date' => '2026-10-16',
+                'lines' => [[
+                    'goods_receipt_line_id' => $receipt->lines()->firstOrFail()->id,
+                    'quantity' => 1,
+                ]],
+            ]);
+            $filter = ['q' => $invoice->invoice_number];
+            $this->assertSame(1, $manager->paginate($actor, $context, $filter)->total());
+
+            $targetInvoiceId = (int) $invoice->id;
+            $auditBefore = DB::table('audit_logs')->count();
+            $linesBefore = DB::table('enterprise_purchase_invoice_lines')->count();
+            $moved = false;
+            $armed = true;
+
+            try {
+                $manager->paginate($actor, $context, $filter);
+                $this->fail('An invoice transferred after page selection must not leak financial header data.');
+            } catch (HttpExceptionInterface $exception) {
+                $this->assertTrue($moved, 'The transfer must follow the actual ordered invoice SELECT.');
+                $this->assertSame(404, $exception->getStatusCode());
+            }
+
+            $this->assertDatabaseHas('enterprise_purchase_invoices', [
+                'id' => $invoice->id,
+                'store_id' => $foreignStore->id,
+                'status' => 'draft',
+            ]);
+            $this->assertSame(0, $manager->paginate($actor, $context, $filter)->total());
+            $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+            $this->assertSame($linesBefore, DB::table('enterprise_purchase_invoice_lines')->count());
+
+            DB::table('enterprise_purchase_invoices')
+                ->where('id', $invoice->id)
+                ->update(['store_id' => $store->id]);
+            $this->assertSame(1, $manager->paginate($actor, $context, $filter)->total());
+            DB::table('enterprise_purchase_invoices')
+                ->where('id', $invoice->id)
+                ->update(['store_id' => $foreignStore->id]);
+        }
+    }
+
     public function test_invoice_detail_denies_stale_header_and_financial_lines_after_store_transfer_in_ar_and_en(): void
     {
         $this->enableProcurement();

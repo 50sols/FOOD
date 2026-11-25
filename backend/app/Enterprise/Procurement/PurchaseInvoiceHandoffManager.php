@@ -91,6 +91,18 @@ final class PurchaseInvoiceHandoffManager
             ->paginate($perPage)
             ->withQueryString();
 
+        // An invoice can be reassigned to a foreign store after the scoped
+        // page SELECT but before this cached financial row is returned. Check
+        // every bounded page ID against CURRENT ownership in one query.
+        $pageIds = $page->getCollection()->pluck('id')->all();
+        if ($pageIds !== []) {
+            abort_unless(
+                $this->visibleQuery($scope)->whereKey($pageIds)->count() === count($pageIds),
+                404,
+                'Purchase invoice ownership changed during pagination.',
+            );
+        }
+
         // A permission revoked during COUNT/rows/eager loading must not
         // disclose invoice financial data to the former authorized actor.
         $this->authorizedScope($actor, $context, self::VIEW_PERMISSION);
