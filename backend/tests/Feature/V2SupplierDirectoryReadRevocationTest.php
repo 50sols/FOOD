@@ -273,5 +273,4 @@ final class V2SupplierDirectoryReadRevocationTest extends TestCase
             $this->assertSame($auditBefore, DB::table('audit_logs')->count());
         }
     }
-
 }
