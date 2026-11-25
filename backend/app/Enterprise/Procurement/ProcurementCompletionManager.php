@@ -223,7 +223,7 @@ final class ProcurementCompletionManager
         $prefix = $literal.'%';
         $contains = '%'.$literal.'%';
 
-        return DB::table('enterprise_procurement_rfqs as rfqs')
+        $page = DB::table('enterprise_procurement_rfqs as rfqs')
             ->join('enterprise_purchase_requests as requests', 'requests.id', '=', 'rfqs.purchase_request_id')
             ->where('rfqs.organization_id', $scope->organizationId)
             ->where('rfqs.company_id', $scope->companyId)
@@ -247,6 +247,13 @@ final class ProcurementCompletionManager
             ->orderByDesc('rfqs.id')
             ->paginate(max(10, min(100, $perPage)))
             ->withQueryString();
+
+        // The scoped COUNT/row SELECTs may complete after permission has
+        // been persistently revoked. Never return RFQ or request metadata
+        // using only the earlier authorization decision.
+        $this->scope($actor, $context, 'procurement.purchase_requests.view');
+
+        return $page;
     }
 
     /** @return array<string,mixed> */
@@ -319,6 +326,11 @@ final class ProcurementCompletionManager
         // Do not return a stale RFQ header when its owner changed during the
         // detail read. A newly transferred RFQ belongs only to its new store.
         $this->visibleRfq($scope, $rfqId);
+
+        // Relations and attachment paths were fetched under an earlier read
+        // grant. Recheck the same persisted principal's live permission
+        // before returning supplier/quote/financial details.
+        $this->scope($actor, $context, 'procurement.purchase_requests.view');
 
         return compact('rfq', 'lines', 'invitations', 'quotes', 'quoteDocuments');
     }

@@ -1615,6 +1615,111 @@ final class EnterpriseProcurementCompletionTest extends TestCase
         }
     }
 
+    public function test_rfq_reads_deny_persisted_permission_revoked_during_sql_in_both_locales(): void
+    {
+        $this->enableProcurement();
+        [$actor, , $context] = $this->scopedUser($this->allPermissions(), 'P135-RFQ-MIDREAD-DENY');
+        $requests = app(PurchaseRequestManager::class);
+        $request = $requests->create($actor, $context, [
+            'currency_code' => 'KWD',
+            'reason' => 'RFQ read revocation regression',
+            'lines' => [[
+                'item_code' => 'P135-RFQ-MIDREAD',
+                'description' => 'RFQ supplier privacy scope',
+                'quantity' => 1,
+                'unit' => 'each',
+                'estimated_unit_cost' => 1.250,
+            ]],
+        ]);
+        $requests->submit($actor, $context, $request->id);
+        $completion = app(ProcurementCompletionManager::class);
+        $rfq = $completion->createRfq($actor, $context, $request->id, [
+            'title' => 'RFQ midread permission revocation',
+        ]);
+        $permission = Permission::query()
+            ->where('code', 'procurement.purchase_requests.view')
+            ->firstOrFail();
+
+        $armed = false;
+        $injected = false;
+        DB::listen(static function ($query) use ($actor, $permission, &$armed, &$injected): void {
+            $sql = strtolower(ltrim((string) $query->sql));
+            if (! $armed || $injected || ! str_starts_with($sql, 'select')
+                || ! str_contains($sql, 'enterprise_procurement_rfqs')) {
+                return;
+            }
+
+            // A legitimate scoped RFQ SELECT has completed, but the actor's
+            // effective permission changes before service data is returned.
+            $armed = false;
+            $injected = true;
+            DB::table('user_permission_overrides')->insert([
+                'user_id' => $actor->id,
+                'permission_id' => $permission->id,
+                'scope_key' => 'global',
+                'store_id' => null,
+                'effect' => 'deny',
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+            DB::table('users')->where('id', $actor->id)
+                ->update(['has_permission_overrides' => true]);
+        });
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            foreach (['list', 'detail'] as $surface) {
+                $read = static fn () => $surface === 'list'
+                    ? $completion->paginateRfqs($actor, $context)
+                    : $completion->rfqDetail($actor, $context, (int) $rfq->id);
+
+                $positive = $read();
+                if ($surface === 'list') {
+                    $this->assertSame(1, $positive->total());
+                } else {
+                    $this->assertSame((int) $rfq->id, (int) $positive['rfq']->id);
+                }
+
+                $auditBefore = DB::table('audit_logs')->count();
+                $requestsBefore = DB::table('enterprise_purchase_requests')->count();
+                $rfqsBefore = DB::table('enterprise_procurement_rfqs')->count();
+                $injected = false;
+                $armed = true;
+                try {
+                    $read();
+                    $this->fail('Midquery persisted RFQ read DENY must reject the data response.');
+                } catch (HttpException $exception) {
+                    $this->assertSame(403, $exception->getStatusCode());
+                } finally {
+                    $armed = false;
+                }
+
+                $this->assertTrue($injected, 'Scoped RFQ SELECT must trigger the persisted DENY.');
+                $this->assertFalse((bool) $actor->has_permission_overrides);
+                $this->assertTrue((bool) $actor->fresh()->has_permission_overrides);
+                try {
+                    $read();
+                    $this->fail('Persisted RFQ view DENY must also reject the next read.');
+                } catch (HttpException $exception) {
+                    $this->assertSame(403, $exception->getStatusCode());
+                }
+                $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+                $this->assertSame($requestsBefore, DB::table('enterprise_purchase_requests')->count());
+                $this->assertSame($rfqsBefore, DB::table('enterprise_procurement_rfqs')->count());
+
+                DB::table('user_permission_overrides')
+                    ->where('user_id', $actor->id)
+                    ->where('permission_id', $permission->id)
+                    ->delete();
+                DB::table('users')->where('id', $actor->id)
+                    ->update(['has_permission_overrides' => false]);
+                $this->assertFalse((bool) $actor->fresh()->has_permission_overrides);
+                $this->assertNotNull($read());
+                $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+            }
+        }
+    }
+
     private function enableProcurement(): void
     {
         $lifecycle = app(ModuleLifecycleManager::class);
