@@ -117,6 +117,113 @@ final class EnterprisePurchaseInvoiceHandoffFoundationTest extends TestCase
         }
     }
 
+    public function test_invoice_mutations_recheck_procurement_shutdown_before_writes_in_both_locales(): void
+    {
+        $this->enableProcurement();
+        [$maker, $store, $context] = $this->scopedUser($this->allPermissions(), 'PINV-SHUTDOWN');
+        [, $warehouse] = $this->stockTarget($store, 'PINV-SHUTDOWN-SKU');
+        $receipt = $this->postedReceipt(
+            $maker, $context, $warehouse, 'PINV-SHUTDOWN-SUP', 'PINV-SHUTDOWN-SKU', 8,
+        );
+        $manager = app(PurchaseInvoiceHandoffManager::class);
+        $receiptLineId = $receipt->lines()->firstOrFail()->id;
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            $armed = false;
+            $revocations = 0;
+
+            // The preflight sees ENABLED, then an operator disables the
+            // module before the invoice transaction obtains its row lock.
+            DB::listen(static function ($query) use (&$armed, &$revocations): void {
+                $sql = strtolower((string) $query->sql);
+                if (! $armed || ! str_contains($sql, 'enterprise_modules')
+                    || ! str_contains($sql, 'select')) {
+                    return;
+                }
+
+                $armed = false;
+                $revocations++;
+                DB::table('enterprise_modules')->where('code', 'procurement')
+                    ->update(['state' => ModuleState::DISABLED->value]);
+            });
+
+            $reference = 'PINV-SHUT-'.strtoupper($locale);
+            $attributes = [
+                'supplier_invoice_number' => $reference,
+                'invoice_date' => '2026-10-16',
+                'lines' => [[
+                    'goods_receipt_line_id' => $receiptLineId,
+                    'quantity' => 1,
+                ]],
+            ];
+
+            $auditBefore = DB::table('audit_logs')->count();
+            $invoiceCountBefore = DB::table('enterprise_purchase_invoices')->count();
+            $armed = true;
+
+            try {
+                $manager->createFromPostedReceipt($maker, $context, $receipt->id, $attributes);
+                $this->fail('Disabled Procurement must not create an invoice after preflight.');
+            } catch (HttpExceptionInterface $exception) {
+                $this->assertSame(404, $exception->getStatusCode());
+            }
+
+            $this->assertSame(1, $revocations);
+            $this->assertSame($invoiceCountBefore, DB::table('enterprise_purchase_invoices')->count());
+            $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+
+            DB::table('enterprise_modules')->where('code', 'procurement')
+                ->update(['state' => ModuleState::ENABLED->value]);
+            $invoice = $manager->createFromPostedReceipt($maker, $context, $receipt->id, $attributes);
+
+            $auditBefore = DB::table('audit_logs')->count();
+            $outboxBefore = DB::table('enterprise_outbox_messages')->count();
+            $armed = true;
+
+            try {
+                $manager->handoff($maker, $context, $invoice->id);
+                $this->fail('Disabled Procurement must not hand an invoice to Finance.');
+            } catch (HttpExceptionInterface $exception) {
+                $this->assertSame(404, $exception->getStatusCode());
+            }
+
+            $this->assertSame(2, $revocations);
+            $this->assertDatabaseHas('enterprise_purchase_invoices', [
+                'id' => $invoice->id, 'status' => 'draft',
+            ]);
+            $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+            $this->assertSame($outboxBefore, DB::table('enterprise_outbox_messages')->count());
+
+            DB::table('enterprise_modules')->where('code', 'procurement')
+                ->update(['state' => ModuleState::ENABLED->value]);
+            $this->assertSame('handed_off', $manager->handoff($maker, $context, $invoice->id)->status);
+
+            $draft = $manager->createFromPostedReceipt($maker, $context, $receipt->id, [
+                ...$attributes, 'supplier_invoice_number' => $reference.'-CANCEL',
+            ]);
+            $auditBefore = DB::table('audit_logs')->count();
+            $armed = true;
+
+            try {
+                $manager->cancel($maker, $context, $draft->id);
+                $this->fail('Disabled Procurement must not cancel invoices after preflight.');
+            } catch (HttpExceptionInterface $exception) {
+                $this->assertSame(404, $exception->getStatusCode());
+            }
+
+            $this->assertSame(3, $revocations);
+            $this->assertDatabaseHas('enterprise_purchase_invoices', [
+                'id' => $draft->id, 'status' => 'draft',
+            ]);
+            $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+
+            DB::table('enterprise_modules')->where('code', 'procurement')
+                ->update(['state' => ModuleState::ENABLED->value]);
+            $this->assertSame('cancelled', $manager->cancel($maker, $context, $draft->id)->status);
+        }
+    }
+
     public function test_handoff_is_transactional_retry_safe_and_emits_one_outbox_event(): void
     {
         $this->enableProcurement();
