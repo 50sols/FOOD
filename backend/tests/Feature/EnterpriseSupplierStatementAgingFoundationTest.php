@@ -159,6 +159,68 @@ final class EnterpriseSupplierStatementAgingFoundationTest extends TestCase
         }
     }
 
+    public function test_supplier_statement_reads_deny_forged_persisted_actor_identity_in_both_locales(): void
+    {
+        $this->enableProcurement();
+        [$maker, $store, $context] = $this->scopedUser($this->allPermissions(), 'SAGE-READ-ID');
+        [, $warehouse] = $this->stockTarget($store, 'SAGE-READ-SKU');
+        $receipt = $this->postedReceipt(
+            $maker, $context, $warehouse, 'SAGE-READ-SUP', 'SAGE-READ-SKU', 2,
+        );
+        $invoices = app(PurchaseInvoiceHandoffManager::class);
+        $invoice = $invoices->createFromPostedReceipt($maker, $context, $receipt->id, [
+            'supplier_invoice_number' => 'SAGE-READ-INVOICE',
+            'invoice_date' => '2026-10-10',
+            'due_date' => '2026-10-20',
+            'lines' => [[
+                'goods_receipt_line_id' => $receipt->lines()->firstOrFail()->id,
+                'quantity' => 1,
+            ]],
+        ]);
+        $invoices->handoff($maker, $context, $invoice->id);
+
+        $other = User::factory()->create(['is_active' => true]);
+        $manager = app(SupplierStatementAgingManager::class);
+        $supplierId = (int) $receipt->supplier_id;
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            $forged = $other->fresh();
+            $this->assertNotNull($forged);
+            $forged->forceFill(['id' => $maker->id]);
+            $this->assertNotSame($forged->getRawOriginal('id'), $forged->getKey());
+            $auditBefore = DB::table('audit_logs')->count();
+
+            try {
+                $manager->statement($forged, $context, $supplierId, [
+                    'from' => '2026-10-01',
+                    'to' => '2026-10-31',
+                ]);
+                $this->fail('Dirty actor primary key must not expose supplier invoices.');
+            } catch (HttpExceptionInterface $exception) {
+                $this->assertSame(403, $exception->getStatusCode());
+            }
+
+            try {
+                $manager->aging($forged, $context, $supplierId, [
+                    'as_of' => '2026-10-31', 'currency_code' => 'KWD',
+                ]);
+                $this->fail('Dirty actor primary key must not expose aging balances.');
+            } catch (HttpExceptionInterface $exception) {
+                $this->assertSame(403, $exception->getStatusCode());
+            }
+
+            $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+            $this->assertSame(1, $manager->statement($maker, $context, $supplierId, [
+                'from' => '2026-10-01',
+                'to' => '2026-10-31',
+            ])->total());
+            $this->assertSame(1, $manager->aging($maker, $context, $supplierId, [
+                'as_of' => '2026-10-31', 'currency_code' => 'KWD',
+            ])['invoice_count']);
+        }
+    }
+
     public function test_disabled_procurement_performs_no_supplier_statement_query_work(): void
     {
         [$actor, , $context] = $this->scopedUser($this->allPermissions(), 'SAGE-OFF');
