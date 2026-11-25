@@ -1391,6 +1391,22 @@ final class ProcurementCompletionManager
             ])
             ->all();
 
+        // Selected option rows may change store AFTER their scoped SELECT.
+        // Recheck the bounded IDs before returning request numbers/currency.
+        $requestIds = array_map(static fn ($request): int => (int) $request->id, $requests);
+        if ($requestIds !== []) {
+            abort_unless(
+                DB::table('enterprise_purchase_requests')
+                    ->where('organization_id', $scope->organizationId)
+                    ->where('company_id', $scope->companyId)
+                    ->where('store_id', $scope->storeId)
+                    ->whereIn('id', $requestIds)
+                    ->count() === count($requestIds),
+                404,
+                'Purchase-request ownership changed during option lookup.',
+            );
+        }
+
         // Avoid disclosing request identities/currency when an original
         // operator's effective VIEW permission is revoked during SQL.
         $this->scope($actor, $context, 'procurement.purchase_requests.view');
@@ -1428,6 +1444,22 @@ final class ProcurementCompletionManager
                 'suppliers.code as supplier_code',
             ])
             ->all();
+
+        // A scoped contract may move during the option SELECT; never return
+        // a cached former-store supplier identity, currency or expiry date.
+        $contractIds = array_map(static fn ($contract): int => (int) $contract->id, $contracts);
+        if ($contractIds !== []) {
+            abort_unless(
+                DB::table('enterprise_procurement_contracts')
+                    ->where('organization_id', $scope->organizationId)
+                    ->where('company_id', $scope->companyId)
+                    ->where('store_id', $scope->storeId)
+                    ->whereIn('id', $contractIds)
+                    ->count() === count($contractIds),
+                404,
+                'Procurement contract ownership changed during option lookup.',
+            );
+        }
 
         // Agreement dates, supplier identity and currency are sensitive even
         // when authorization is revoked after the initial current-user check.

@@ -2541,6 +2541,124 @@ final class EnterpriseProcurementCompletionTest extends TestCase
         }
     }
 
+    public function test_direct_procurement_options_deny_foreign_store_transfer_after_select_in_ar_and_en(): void
+    {
+        $this->enableProcurement();
+        [$actor, $store, $context] = $this->scopedUser($this->allPermissions(), 'P135-OPTIONS-LIVE-OWNER');
+        $foreignStore = $this->createRetailStore('P135-OPTIONS-FOREIGN-OWNER');
+        $completion = app(ProcurementCompletionManager::class);
+        $requests = app(PurchaseRequestManager::class);
+        $directory = app(SupplierDirectory::class);
+
+        $armed = false;
+        $injected = false;
+        $target = '';
+        $targetId = 0;
+        // Deterministic post-SELECT single-connection interleaving, not a
+        // substitute for independent two-session MySQL / production UAT.
+        DB::listen(static function ($query) use (
+            $foreignStore, &$armed, &$injected, &$target, &$targetId
+        ): void {
+            $sql = strtolower(ltrim((string) $query->sql));
+            if (! $armed || $injected || ! str_starts_with($sql, 'select')) {
+                return;
+            }
+            $matched = match ($target) {
+                'request' => str_contains($sql, 'enterprise_purchase_requests')
+                    && str_contains($sql, 'enterprise_procurement_rfqs')
+                    && str_contains($sql, 'order by'),
+                'contract' => str_contains($sql, 'enterprise_procurement_contracts')
+                    && str_contains($sql, 'enterprise_suppliers')
+                    && str_contains($sql, 'order by'),
+                default => false,
+            };
+            if (! $matched) {
+                return;
+            }
+            $armed = false;
+            $injected = true;
+            DB::table($target === 'request'
+                ? 'enterprise_purchase_requests'
+                : 'enterprise_procurement_contracts')
+                ->where('id', $targetId)
+                ->update(['store_id' => $foreignStore->id]);
+        });
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            $request = $requests->create($actor, $context, [
+                'currency_code' => 'KWD',
+                'reason' => 'Protected request option '.$locale,
+                'lines' => [[
+                    'item_code' => 'OPTIONS-OWNER-'.strtoupper($locale),
+                    'description' => 'Scoped request option',
+                    'quantity' => 1,
+                    'unit' => 'each',
+                    'estimated_unit_cost' => 1.250,
+                ]],
+            ]);
+            $requests->submit($actor, $context, $request->id);
+            $supplier = $directory->create($actor, $context, [
+                'scope_type' => 'store',
+                'code' => 'P135-OPT-OWNER-'.strtoupper($locale),
+                'name_en' => 'Scoped supplier '.$locale,
+            ]);
+            $contract = $completion->createContract($actor, $context, [
+                'supplier_id' => $supplier->id,
+                'title' => 'Scoped agreement '.$locale,
+                'currency_code' => 'KWD',
+                'starts_on' => now()->toDateString(),
+                'ends_on' => now()->addDays(30)->toDateString(),
+            ]);
+            [$checker, $checkerContext] = ProcurementSecondApprover::forSameStore($actor, $context);
+            $completion->activateContract($checker, $checkerContext, $contract->id);
+
+            foreach ([
+                'request' => [
+                    'table' => 'enterprise_purchase_requests',
+                    'id' => (int) $request->id,
+                    'read' => static fn (): array => $completion->rfqRequestOptions($actor, $context),
+                ],
+                'contract' => [
+                    'table' => 'enterprise_procurement_contracts',
+                    'id' => (int) $contract->id,
+                    'read' => static fn (): array => $completion->activeContractOptions($actor, $context),
+                ],
+            ] as $name => $case) {
+                $target = $name;
+                $targetId = $case['id'];
+                $read = $case['read'];
+                $ids = static fn (): array => array_map(
+                    static fn ($row): int => (int) $row->id, $read(),
+                );
+                $this->assertContains($targetId, $ids());
+                $auditBefore = DB::table('audit_logs')->count();
+                $requestsBefore = DB::table('enterprise_purchase_requests')->count();
+                $contractsBefore = DB::table('enterprise_procurement_contracts')->count();
+                $injected = false;
+                $armed = true;
+                try {
+                    $read();
+                    $this->fail('Post-SELECT '.$name.' transfer must deny stale results in '.$locale);
+                } catch (HttpException $exception) {
+                    $this->assertSame(404, $exception->getStatusCode());
+                } finally {
+                    $armed = false;
+                }
+
+                $this->assertTrue($injected, 'Actual '.$name.' option SELECT did not trigger transfer.');
+                $this->assertNotContains($targetId, $ids());
+                $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+                $this->assertSame($requestsBefore, DB::table('enterprise_purchase_requests')->count());
+                $this->assertSame($contractsBefore, DB::table('enterprise_procurement_contracts')->count());
+
+                DB::table($case['table'])->where('id', $targetId)->update(['store_id' => $store->id]);
+                $this->assertContains($targetId, $ids());
+                $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+            }
+        }
+    }
+
     private function enableProcurement(): void
     {
         $lifecycle = app(ModuleLifecycleManager::class);
