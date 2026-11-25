@@ -2322,7 +2322,7 @@ final class V2OrganizationSetupGuidanceTest extends TestCase
                 try {
                     $write();
                     $this->fail('Revoked platform.manage must block a write after the initial actor preflight.');
-                } catch (\Illuminate\Auth\Access\AuthorizationException $exception) {
+                } catch (AuthorizationException $exception) {
                     $this->assertSame(403, $exception->status() ?? 403);
                 }
 
@@ -2335,7 +2335,7 @@ final class V2OrganizationSetupGuidanceTest extends TestCase
                 try {
                     $write();
                     $this->fail('Persisted DENY must block repeat writes.');
-                } catch (\Illuminate\Auth\Access\AuthorizationException $exception) {
+                } catch (AuthorizationException $exception) {
                     $this->assertSame(403, $exception->status() ?? 403);
                 }
 
