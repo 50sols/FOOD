@@ -520,7 +520,12 @@ final class EnterpriseProcurementCompletionTest extends TestCase
 
             DB::listen(static function ($query) use (&$documentQueries): void {
                 $sql = strtolower((string) $query->sql);
+                // Module readiness may independently SELECT from this table.
+                // Count only the document-identity lookup that joins its
+                // current contract, rather than unrelated preflight probes.
                 if (str_contains($sql, 'enterprise_procurement_contract_documents')
+                    && str_contains($sql, 'enterprise_procurement_contracts')
+                    && str_contains($sql, 'join')
                     && str_contains($sql, 'select')) {
                     $documentQueries[] = $sql;
                 }
