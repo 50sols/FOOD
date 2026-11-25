@@ -53,7 +53,7 @@ final class PurchaseOrderManager
         $term = trim((string) ($validated['q'] ?? ''));
         $pattern = str_replace(['!', '%', '_'], ['!!', '!%', '!_'], $term).'%';
 
-        return $this->visibleQuery($scope)
+        $orders = $this->visibleQuery($scope)
             ->with('supplier:id,code,name_en,name_ar,status')
             ->when(
                 $validated['status'] ?? null,
@@ -66,6 +66,15 @@ final class PurchaseOrderManager
             ->orderByDesc('id')
             ->paginate($perPage)
             ->withQueryString();
+
+        // The COUNT, page SELECT and eager-loaded supplier rows are separate
+        // reads. A persisted view DENY may be committed after preflight but
+        // before the paginator is returned; never release that stale snapshot.
+        // Re-check the immutable persisted caller through the existing scope
+        // authorizer (which fetches the currently active user and overrides).
+        $this->authorizedScope($actor, $context, self::VIEW_PERMISSION);
+
+        return $orders;
     }
 
     public function detail(

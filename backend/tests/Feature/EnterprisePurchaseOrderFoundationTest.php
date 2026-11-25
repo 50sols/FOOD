@@ -693,6 +693,92 @@ final class EnterprisePurchaseOrderFoundationTest extends TestCase
         }
     }
 
+    public function test_purchase_order_pagination_rechecks_permission_after_rows_when_revoked_midquery_in_ar_and_en(): void
+    {
+        [$actor, , $context] = $this->scopedUser($this->allPermissions(), 'PO-MIDQUERY-DENY');
+        $orders = app(PurchaseOrderManager::class);
+        $permissionId = Permission::query()
+            ->where('code', 'procurement.purchase_orders.view')
+            ->firstOrFail()->id;
+
+        $armed = false;
+        $injected = false;
+        DB::listen(static function ($query) use ($actor, $permissionId, &$armed, &$injected): void {
+            $sql = strtolower((string) $query->sql);
+            if (! $armed || $injected
+                || ! str_contains($sql, 'select')
+                || ! str_contains($sql, 'enterprise_purchase_orders')
+                || str_contains($sql, 'count(')) {
+                return;
+            }
+
+            // Simulate a committed revoke after the scoped page SELECT, before
+            // the eager supplier read and the service response. This is a
+            // deterministic same-connection interleaving, not a two-DB race.
+            $armed = false;
+            $injected = true;
+            DB::table('user_permission_overrides')->insert([
+                'user_id' => $actor->id,
+                'permission_id' => $permissionId,
+                'scope_key' => 'global',
+                'store_id' => null,
+                'effect' => 'deny',
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+            DB::table('users')->where('id', $actor->id)
+                ->update(['has_permission_overrides' => true]);
+        });
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            $order = $this->approvedOrder($actor, $context, 'PO-MIDQUERY-'.strtoupper($locale));
+            $this->assertFalse((bool) $actor->has_permission_overrides);
+            $this->assertContains(
+                $order->id,
+                array_map(static fn ($item): int => (int) $item->id, $orders->paginate($actor, $context)->items()),
+            );
+
+            $ordersBefore = DB::table('enterprise_purchase_orders')->count();
+            $linesBefore = DB::table('enterprise_purchase_order_lines')->count();
+            $auditBefore = DB::table('audit_logs')->count();
+            $injected = false;
+            $armed = true;
+
+            try {
+                $orders->paginate($actor, $context);
+                $this->fail('A mid-query persisted DENY must block the already-selected supplier and PO rows.');
+            } catch (HttpException $exception) {
+                $this->assertTrue($injected, 'Revoke must happen after the scoped purchase-order page SELECT.');
+                $this->assertSame(403, $exception->getStatusCode());
+            }
+
+            $this->assertFalse((bool) $actor->has_permission_overrides);
+            $this->assertTrue((bool) $actor->fresh()->has_permission_overrides);
+            try {
+                $orders->paginate($actor, $context);
+                $this->fail('A second request with a revoked view permission must also be denied.');
+            } catch (HttpException $exception) {
+                $this->assertSame(403, $exception->getStatusCode());
+            }
+
+            $this->assertSame($ordersBefore, DB::table('enterprise_purchase_orders')->count());
+            $this->assertSame($linesBefore, DB::table('enterprise_purchase_order_lines')->count());
+            $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+
+            DB::table('user_permission_overrides')
+                ->where('user_id', $actor->id)
+                ->where('permission_id', $permissionId)
+                ->delete();
+            DB::table('users')->where('id', $actor->id)
+                ->update(['has_permission_overrides' => false]);
+            $this->assertContains(
+                $order->id,
+                array_map(static fn ($item): int => (int) $item->id, $orders->paginate($actor, $context)->items()),
+            );
+        }
+    }
+
     private function approvedOrder(
         User $actor,
         ResolvedTenantContext $context,
