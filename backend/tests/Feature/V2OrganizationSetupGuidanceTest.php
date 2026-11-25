@@ -1652,6 +1652,68 @@ final class V2OrganizationSetupGuidanceTest extends TestCase
         $this->assertSame($beforeAudit, DB::table('audit_logs')->count());
     }
 
+    public function test_direct_hierarchy_creation_requires_code_and_name_before_database_write_in_both_locales(): void
+    {
+        $admin = $this->actor('SUPER_ADMIN', 'en');
+        $service = app(EnterpriseOrganizationAdministration::class);
+        $organization = EnterpriseOrganization::query()->create([
+            'code' => 'p112_required_field_org', 'name' => 'Required Parent Organization', 'is_active' => true,
+        ]);
+        $company = EnterpriseCompany::query()->create([
+            'organization_id' => $organization->id,
+            'code' => 'p112_required_field_company', 'name' => 'Required Parent Company', 'is_active' => true,
+        ]);
+        $entity = EnterpriseLegalEntity::query()->create([
+            'company_id' => $company->id,
+            'code' => 'p112_required_field_entity', 'name' => 'Required Parent Entity', 'is_active' => true,
+        ]);
+        $cases = [
+            [null, 'createOrganization', 'enterprise_organizations'],
+            [$organization, 'createCompany', 'enterprise_companies'],
+            [$company, 'createLegalEntity', 'enterprise_legal_entities'],
+            [$entity, 'createBusinessUnit', 'enterprise_business_units'],
+        ];
+        $auditBefore = DB::table('audit_logs')->count();
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            foreach ($cases as $index => [$parent, $method, $table]) {
+                foreach (['code', 'name'] as $missing) {
+                    $data = [
+                        'code' => 'p112_required_'.$index.'_'.$locale,
+                        'name' => 'Valid Required Name',
+                        'is_active' => true,
+                    ];
+                    unset($data[$missing]);
+
+                    try {
+                        if ($parent === null) {
+                            $service->{$method}($data, $admin);
+                        } else {
+                            $service->{$method}($parent, $data, $admin);
+                        }
+                        $this->fail('Direct creation must reject a missing required master-data field.');
+                    } catch (ValidationException $exception) {
+                        $this->assertArrayHasKey($missing, $exception->errors());
+                    }
+
+                    if ($missing === 'name') {
+                        $this->assertDatabaseMissing($table, ['code' => $data['code']]);
+                    }
+                    $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+                }
+            }
+        }
+
+        $created = $service->createOrganization([
+            'code' => 'p112_required_positive',
+            'name' => 'Valid Required Master Data',
+            'is_active' => true,
+        ], $admin);
+        $this->assertSame('p112_required_positive', $created->code);
+        $this->assertSame($auditBefore + 1, DB::table('audit_logs')->count());
+    }
+
     public function test_direct_hierarchy_service_rejects_uncanonical_master_data_in_ar_and_en(): void
     {
         $admin = $this->actor('SUPER_ADMIN', 'en');

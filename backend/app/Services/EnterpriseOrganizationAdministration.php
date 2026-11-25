@@ -28,7 +28,7 @@ final class EnterpriseOrganizationAdministration
 
         // Service callers, not only HTTP controllers, must respect the same
         // editable field boundary on unguarded Eloquent hierarchy models.
-        $this->assertWritableRecordFields($data);
+        $this->assertWritableRecordFields($data, creating: true);
 
         return DB::transaction(function () use ($data, $actor): EnterpriseOrganization {
             $organization = EnterpriseOrganization::query()->create($data);
@@ -53,7 +53,7 @@ final class EnterpriseOrganizationAdministration
 
         // Service callers, not only HTTP controllers, must respect the same
         // editable field boundary on unguarded Eloquent hierarchy models.
-        $this->assertWritableRecordFields($data);
+        $this->assertWritableRecordFields($data, creating: true);
 
         $this->assertCreationParentActive($organization);
 
@@ -90,7 +90,7 @@ final class EnterpriseOrganizationAdministration
 
         // Service callers, not only HTTP controllers, must respect the same
         // editable field boundary on unguarded Eloquent hierarchy models.
-        $this->assertWritableRecordFields($data);
+        $this->assertWritableRecordFields($data, creating: true);
 
         $this->assertCreationParentActive($company);
 
@@ -127,7 +127,7 @@ final class EnterpriseOrganizationAdministration
 
         // Service callers, not only HTTP controllers, must respect the same
         // editable field boundary on unguarded Eloquent hierarchy models.
-        $this->assertWritableRecordFields($data);
+        $this->assertWritableRecordFields($data, creating: true);
 
         $this->assertCreationParentActive($entity);
 
@@ -372,7 +372,7 @@ final class EnterpriseOrganizationAdministration
      *
      * @param  array<string, mixed>  $data
      */
-    private function assertWritableRecordFields(array $data, ?string $unchangedParentKey = null): void
+    private function assertWritableRecordFields(array $data, ?string $unchangedParentKey = null, bool $creating = false): void
     {
         $writable = ['code', 'name', 'is_active'];
         if ($unchangedParentKey !== null) {
@@ -383,6 +383,20 @@ final class EnterpriseOrganizationAdministration
             throw ValidationException::withMessages([
                 'record' => [__('enterprise_organization.cross_scope_denied')],
             ]);
+        }
+
+        // HTTP Test Inputs and Save both require these master-data fields.
+        // A direct service create must reject missing values before Eloquent
+        // hits an unguarded model or an underlying NOT NULL constraint.
+        // Updates intentionally permit metadata-only partial payloads.
+        if ($creating) {
+            foreach (['code', 'name'] as $required) {
+                if (! array_key_exists($required, $data)) {
+                    throw ValidationException::withMessages([
+                        $required => [__('validation.required', ['attribute' => $required])],
+                    ]);
+                }
+            }
         }
 
         // HTTP Preview and Save share canonical field validation, but these
