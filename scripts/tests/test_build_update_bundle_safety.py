@@ -315,6 +315,122 @@ class BuildUpdateBundleSourceSafetyTest(unittest.TestCase):
             self.assertFalse(os.path.lexists(file_list))
             self.assertEqual(list(root.glob(".*.staging")), [])
 
+    def _staged_release_fixture(self, output_dir: Path) -> tuple[Path, dict[str, bytes]]:
+        staging = output_dir / "private-build"
+        staging.mkdir(mode=0o700)
+        contents = {
+            "FOODEX-Update.json": b'{"sha256":"abc","source_commit":"123"}\n',
+            "FOODEX-Update.files.txt": b"backend/artisan\n",
+            "FOODEX-Update.sha256.txt": b"abc  FOODEX-Update.zip\n",
+            "FOODEX-Update.zip": b"PK\x03\x04release-bytes",
+        }
+        for name, data in contents.items():
+            (staging / name).write_bytes(data)
+        return staging, contents
+
+    def test_complete_update_release_publishes_zip_last_under_exclusive_lock(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            output_dir = Path(directory)
+            staging, contents = self._staged_release_fixture(output_dir)
+            order: list[str] = []
+            actual_link = os.link
+
+            def observe_link(source: Path, destination: Path) -> None:
+                if destination.name == "FOODEX-Update.zip":
+                    for sidecar in list(contents)[:-1]:
+                        self.assertTrue((output_dir / sidecar).is_file())
+                else:
+                    self.assertFalse(os.path.lexists(output_dir / "FOODEX-Update.zip"))
+                order.append(destination.name)
+                actual_link(source, destination)
+
+            with mock.patch.object(builder.os, "link", side_effect=observe_link):
+                builder.publish_release_bundle(staging, output_dir)
+
+            self.assertEqual(list(contents), order)
+            for name, data in contents.items():
+                self.assertEqual(data, (output_dir / name).read_bytes())
+            self.assertFalse((output_dir / ".FOODEX-Update.publish.lock").exists())
+
+    def test_complete_update_release_rolls_back_midpublication_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            output_dir = Path(directory)
+            staging, contents = self._staged_release_fixture(output_dir)
+            actual_link = os.link
+            count = 0
+
+            def fail_third_link(source: Path, destination: Path) -> None:
+                nonlocal count
+                count += 1
+                if count == 3:
+                    raise OSError("filesystem refused third artifact")
+                actual_link(source, destination)
+
+            with mock.patch.object(builder.os, "link", side_effect=fail_third_link):
+                with self.assertRaisesRegex(RuntimeError, "group publication unavailable"):
+                    builder.publish_release_bundle(staging, output_dir)
+            self.assertEqual(3, count)
+            for name, content in contents.items():
+                self.assertFalse(os.path.lexists(output_dir / name), name)
+                self.assertEqual(content, (staging / name).read_bytes())
+            self.assertFalse((output_dir / ".FOODEX-Update.publish.lock").exists())
+
+    def test_complete_update_release_preserves_competing_and_existing_signed_outputs(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            output_dir = Path(directory)
+            staging, contents = self._staged_release_fixture(output_dir)
+            signed = output_dir / "FOODEX-Update.json"
+            signed.write_bytes(b"EXISTING-SIGNED-MANIFEST")
+            with self.assertRaisesRegex(RuntimeError, "already exists"):
+                builder.publish_release_bundle(staging, output_dir)
+            self.assertEqual(b"EXISTING-SIGNED-MANIFEST", signed.read_bytes())
+            self.assertFalse((output_dir / "FOODEX-Update.zip").exists())
+            signed.unlink()
+
+            actual_link = os.link
+            count = 0
+
+            def competing_publisher(source: Path, destination: Path) -> None:
+                nonlocal count
+                count += 1
+                if count == 2:
+                    destination.write_bytes(b"WINNING-INDEPENDENT-PUBLISHER")
+                actual_link(source, destination)
+
+            with mock.patch.object(builder.os, "link", side_effect=competing_publisher):
+                with self.assertRaisesRegex(RuntimeError, "already exists"):
+                    builder.publish_release_bundle(staging, output_dir)
+            self.assertEqual(b"WINNING-INDEPENDENT-PUBLISHER",
+                             (output_dir / "FOODEX-Update.files.txt").read_bytes())
+            self.assertFalse((output_dir / "FOODEX-Update.json").exists())
+            self.assertFalse((output_dir / "FOODEX-Update.zip").exists())
+            self.assertFalse((output_dir / ".FOODEX-Update.publish.lock").exists())
+            self.assertEqual(contents["FOODEX-Update.zip"],
+                             (staging / "FOODEX-Update.zip").read_bytes())
+
+    def test_complete_update_release_rejects_busy_lock_and_symlinked_staging(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            output_dir = Path(directory)
+            staging, contents = self._staged_release_fixture(output_dir)
+            lock = output_dir / ".FOODEX-Update.publish.lock"
+            lock.mkdir()
+            with self.assertRaisesRegex(RuntimeError, "publication lock unavailable"):
+                builder.publish_release_bundle(staging, output_dir)
+            self.assertTrue(lock.is_dir())
+            lock.rmdir()
+
+            candidate = staging / "FOODEX-Update.sha256.txt"
+            candidate.unlink()
+            try:
+                candidate.symlink_to(output_dir / "missing")
+            except (OSError, NotImplementedError):
+                self.skipTest("Symlinks unavailable")
+            with self.assertRaisesRegex(RuntimeError, "Unsafe staged Update release member"):
+                builder.publish_release_bundle(staging, output_dir)
+            for name in contents:
+                self.assertFalse(os.path.lexists(output_dir / name))
+            self.assertFalse(lock.exists())
+
     def test_update_zip_refuses_existing_output_without_staging(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary) / "repo"

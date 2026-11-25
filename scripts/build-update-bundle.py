@@ -698,6 +698,77 @@ def publish_release_sidecar(path: Path, content: str) -> None:
         temporary.unlink(missing_ok=True)
 
 
+def publish_release_bundle(staging_dir: Path, output_dir: Path) -> None:
+    """Publish all verified sidecars first; the ZIP is the last release marker.
+
+    The staging tree is private and on the output filesystem. A failed
+    publisher retracts only links to its own staged inodes under the lock.
+    Readers must not interpret loose sidecars without the final ZIP as a
+    complete release; this is not a cryptographic signature verifier.
+    """
+    names = (
+        "FOODEX-Update.json",
+        "FOODEX-Update.files.txt",
+        "FOODEX-Update.sha256.txt",
+        "FOODEX-Update.zip",
+    )
+    if staging_dir.is_symlink() or not staging_dir.is_dir():
+        raise RuntimeError("Unsafe Update release staging directory.")
+    staged_paths = [staging_dir / name for name in names]
+    outputs = [output_dir / name for name in names]
+    for staged in staged_paths:
+        try:
+            identity = staged.lstat()
+        except OSError as exc:
+            raise RuntimeError(f"Missing staged Update release member: {staged}") from exc
+        if not stat.S_ISREG(identity.st_mode) or identity.st_nlink != 1:
+            raise RuntimeError(f"Unsafe staged Update release member: {staged}")
+
+    # Do not assume the earlier per-file existence preflight is a mutex.
+    # A stale lock is intentionally fail-closed and requires manual recovery.
+    lock = output_dir / ".FOODEX-Update.publish.lock"
+    try:
+        lock.mkdir(mode=0o700)
+    except OSError as exc:
+        raise RuntimeError("Exclusive Update release publication lock unavailable.") from exc
+
+    published: list[tuple[Path, Path]] = []
+    try:
+        reject_existing_release_outputs(outputs)
+        try:
+            for staged, output in zip(staged_paths, outputs):
+                try:
+                    os.link(staged, output)
+                except FileExistsError as exc:
+                    raise RuntimeError(
+                        f"Update release output already exists; refusing overwrite: {output}"
+                    ) from exc
+                except OSError as exc:
+                    raise RuntimeError(
+                        f"Safe exclusive Update release group publication unavailable: {output}"
+                    ) from exc
+                published.append((staged, output))
+        except Exception as exc:
+            cleanup_errors: list[str] = []
+            for staged, output in reversed(published):
+                try:
+                    original = staged.lstat()
+                    current = output.lstat()
+                    if (original.st_dev, original.st_ino) != (current.st_dev, current.st_ino):
+                        raise RuntimeError(f"Published Update output no longer owned: {output}")
+                    output.unlink()
+                except (OSError, RuntimeError) as cleanup_error:
+                    cleanup_errors.append(str(cleanup_error))
+            if cleanup_errors:
+                raise RuntimeError(
+                    "Update release group rollback incomplete; manual recovery required: "
+                    + "; ".join(cleanup_errors)
+                ) from exc
+            raise
+    finally:
+        lock.rmdir()
+
+
 def main() -> int:
     args = parse_args()
     validate_update_version_range(args.target_version, args.minimum_current_version)
@@ -729,52 +800,58 @@ def main() -> int:
     output_dir = repo_root / args.output_dir
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    package = output_dir / "FOODEX-Update.zip"
-    manifest_path = output_dir / "FOODEX-Update.json"
-    files_path = output_dir / "FOODEX-Update.files.txt"
-    hash_path = output_dir / "FOODEX-Update.sha256.txt"
+    with tempfile.TemporaryDirectory(prefix=".foodex-update-build-", dir=output_dir) as staging_name:
+        staging_dir = Path(staging_name)
+        package = staging_dir / "FOODEX-Update.zip"
+        manifest_path = staging_dir / "FOODEX-Update.json"
+        files_path = staging_dir / "FOODEX-Update.files.txt"
+        hash_path = staging_dir / "FOODEX-Update.sha256.txt"
 
-    # Fail before publishing a ZIP when an earlier manifest, checksum or
-    # file-list exists. Final sidecar publication still checks atomically.
-    reject_existing_release_outputs([package, manifest_path, files_path, hash_path])
-    build_zip(repo_root, entries, package)
-    package_hash = sha256(package)
+        # Fail before publishing a ZIP when an earlier manifest, checksum or
+        # file-list exists. Final sidecar publication still checks atomically.
+        reject_existing_release_outputs([output_dir / p.name for p in (package, manifest_path, files_path, hash_path)])
+        build_zip(repo_root, entries, package)
+        package_hash = sha256(package)
 
-    source_commit = run_git("rev-parse", "HEAD").strip()
-    manifest = {
-        "schema_version": 1,
-        "available": True,
-        "package": package.name,
-        "target_version": args.target_version,
-        "minimum_current_version": args.minimum_current_version,
-        "source_base": run_git("rev-parse", args.base).strip(),
-        "source_commit": source_commit,
-        "sha256": package_hash,
-        "contains_migrations": contains_migrations,
-        "migrations": migrations,
-        "delta": {
-            "file_count": len(entries),
-            "source_file_count": len(files),
-            "files_manifest": "FOODEX-Update.files.txt",
-        },
-        "requires_full_redeploy": False,
-        "reason": None,
-        "release_notes": args.release_notes,
-        "dashboard_fields": {
+        source_commit = run_git("rev-parse", "HEAD").strip()
+        manifest = {
+            "schema_version": 1,
+            "available": True,
+            "package": package.name,
             "target_version": args.target_version,
             "minimum_current_version": args.minimum_current_version,
+            "source_base": run_git("rev-parse", args.base).strip(),
             "source_commit": source_commit,
             "sha256": package_hash,
             "contains_migrations": contains_migrations,
+            "migrations": migrations,
+            "delta": {
+                "file_count": len(entries),
+                "source_file_count": len(files),
+                "files_manifest": "FOODEX-Update.files.txt",
+            },
+            "requires_full_redeploy": False,
+            "reason": None,
             "release_notes": args.release_notes,
-        },
-    }
+            "dashboard_fields": {
+                "target_version": args.target_version,
+                "minimum_current_version": args.minimum_current_version,
+                "source_commit": source_commit,
+                "sha256": package_hash,
+                "contains_migrations": contains_migrations,
+                "release_notes": args.release_notes,
+            },
+        }
 
-    publish_release_sidecar(
-        manifest_path, json.dumps(manifest, ensure_ascii=False, indent=2) + "\n"
-    )
-    publish_release_sidecar(files_path, "\n".join(name for name, _ in entries) + "\n")
-    publish_release_sidecar(hash_path, f"{package_hash}  {package.name}\n")
+        publish_release_sidecar(
+            manifest_path, json.dumps(manifest, ensure_ascii=False, indent=2) + "\n"
+        )
+        publish_release_sidecar(files_path, "\n".join(name for name, _ in entries) + "\n")
+        publish_release_sidecar(hash_path, f"{package_hash}  {package.name}\n")
+
+        publish_release_bundle(staging_dir, output_dir)
+
+    package = output_dir / "FOODEX-Update.zip"
 
     print(f"FOODEX update package: {package}")
     print(f"target_version={args.target_version}")
