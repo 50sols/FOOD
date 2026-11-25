@@ -6,6 +6,7 @@ use App\Enterprise\Modules\ModuleLifecycleManager;
 use App\Enterprise\Modules\ModuleRegistry;
 use App\Enterprise\Modules\ModuleState;
 use App\Enterprise\Organization\OrganizationHierarchyService;
+use App\Enterprise\Procurement\ProcurementCompletionManager;
 use App\Enterprise\Procurement\PurchaseRequestManager;
 use App\Models\Permission;
 use App\Models\Role;
@@ -132,6 +133,61 @@ final class EnterpriseProcurementWorkbenchTest extends TestCase
             ->assertOk()
             ->assertSee('UI-SUP-1')
             ->assertSee('مُصدر');
+    }
+
+    public function test_completion_manager_rejects_dirty_actor_identity_before_rfq_writes_in_ar_and_en(): void
+    {
+        $this->enableProcurement();
+        [$maker, $store] = $this->operator('ERP-UI-COMPLETION-ACTOR');
+        $other = User::factory()->create(['locale' => 'en', 'is_active' => true]);
+        $this->grantPlatformErpAccess($other);
+        $roleId = Role::query()->where('code', 'B2C_STORE_ADMIN')->firstOrFail()->id;
+        DB::table('user_store_roles')->insert([
+            'user_id' => $other->id,
+            'store_id' => $store->id,
+            'role_id' => $roleId,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $context = app(TenantContextResolver::class)->retail($maker, $store->id);
+        $completion = app(ProcurementCompletionManager::class);
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            $forged = $other->fresh();
+            $this->assertNotNull($forged);
+            $forged->forceFill(['id' => $maker->id]);
+            $this->assertNotSame($forged->getRawOriginal('id'), $forged->getKey());
+            $auditBefore = DB::table('audit_logs')->count();
+            $rfqsBefore = DB::table('enterprise_procurement_rfqs')->count();
+
+            try {
+                $completion->createRfq($forged, $context, 99999999, [
+                    'title' => 'Forged procurement actor '.$locale,
+                ]);
+                $this->fail('A dirty actor must not reach RFQ creation.');
+            } catch (HttpException $exception) {
+                $this->assertSame(403, $exception->getStatusCode());
+            }
+
+            $this->assertSame($rfqsBefore, DB::table('enterprise_procurement_rfqs')->count());
+            $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+
+            // The real maker passes identity and authorization, reaching the
+            // missing source request (404), not the actor guard (403).
+            try {
+                $completion->createRfq($maker, $context, 99999999, [
+                    'title' => 'Genuine procurement actor '.$locale,
+                ]);
+                $this->fail('A missing request must remain scoped and invisible.');
+            } catch (HttpException $exception) {
+                $this->assertSame(404, $exception->getStatusCode());
+            }
+
+            $this->assertSame($rfqsBefore, DB::table('enterprise_procurement_rfqs')->count());
+            $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+        }
     }
 
     public function test_direct_procurement_manager_rejects_forged_actor_identity_in_both_locales(): void
