@@ -75,12 +75,19 @@ final class PurchaseOrderManager
     ): EnterprisePurchaseOrder {
         $scope = $this->authorizedScope($actor, $context, self::VIEW_PERMISSION);
 
-        return $this->findVisible($scope, $orderId)
+        $order = $this->findVisible($scope, $orderId)
             ->load([
                 'supplier:id,code,name_en,name_ar,status',
                 'purchaseRequest:id,request_number,status',
                 'lines' => fn ($query) => $query->orderBy('line_no'),
             ]);
+
+        // A purchase order can move stores between the scoped header SELECT
+        // and the separate supplier/request/line reads. Never return stale
+        // financial or supplier detail to its former owner after reassignment.
+        $this->findVisible($scope, $orderId);
+
+        return $order;
     }
 
     public function createFromApprovedRequest(

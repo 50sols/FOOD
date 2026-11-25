@@ -564,6 +564,66 @@ final class EnterprisePurchaseOrderFoundationTest extends TestCase
         $orders->detail($actorB, $contextB, $order->id);
     }
 
+    public function test_purchase_order_detail_denies_stale_supplier_and_financial_lines_after_store_transfer_in_ar_and_en(): void
+    {
+        [$actor, , $context] = $this->scopedUser($this->allPermissions(), 'PO-DETAIL-LIVE');
+        $foreignStore = $this->createRetailStore('PO-DETAIL-FOREIGN');
+        $orders = app(PurchaseOrderManager::class);
+
+        $armed = false;
+        $moved = false;
+        $targetOrderId = null;
+        DB::listen(static function ($query) use (&$armed, &$moved, &$targetOrderId, $foreignStore): void {
+            $sql = strtolower((string) $query->sql);
+            if (! $armed || $moved || $targetOrderId === null
+                || ! str_contains($sql, 'enterprise_purchase_orders')
+                || ! str_contains($sql, 'select')
+                || str_contains($sql, 'join')) {
+                return;
+            }
+
+            // Transfer just after the authorized header SELECT, before
+            // Eloquent loads supplier, request and priced order lines.
+            $armed = false;
+            $moved = true;
+            DB::table('enterprise_purchase_orders')
+                ->where('id', $targetOrderId)
+                ->update(['store_id' => $foreignStore->id]);
+        });
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            $order = $this->approvedOrder($actor, $context, 'PO-DETAIL-SUP-'.strtoupper($locale));
+            $visible = $orders->detail($actor, $context, $order->id);
+            $this->assertSame($order->id, $visible->id);
+            $this->assertCount(1, $visible->lines);
+
+            $targetOrderId = (int) $order->id;
+            $auditBefore = DB::table('audit_logs')->count();
+            $linesBefore = DB::table('enterprise_purchase_order_lines')->count();
+            $armed = true;
+            $moved = false;
+            try {
+                $orders->detail($actor, $context, $order->id);
+                $this->fail('Former store must not read a transferred order header, supplier, or prices.');
+            } catch (ModelNotFoundException) {
+                $this->assertTrue($moved, 'Transfer must occur after the scoped first SELECT.');
+            }
+
+            $this->assertSame((int) $foreignStore->id, (int) DB::table('enterprise_purchase_orders')
+                ->where('id', $order->id)->value('store_id'));
+            $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+            $this->assertSame($linesBefore, DB::table('enterprise_purchase_order_lines')->count());
+
+            try {
+                $orders->detail($actor, $context, $order->id);
+                $this->fail('Repeated former-store detail must be denied.');
+            } catch (ModelNotFoundException) {
+                $this->assertTrue(true);
+            }
+        }
+    }
+
     private function approvedOrder(
         User $actor,
         ResolvedTenantContext $context,
