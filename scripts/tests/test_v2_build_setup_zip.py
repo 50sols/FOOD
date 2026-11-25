@@ -51,6 +51,55 @@ class DeterministicSetupZipTest(unittest.TestCase):
                     self.assertFalse(archive.exists())
                     self.assertEqual(leaked.read_bytes(), b"DO-NOT-PUBLISH-PRIVATE-MATERIAL")
 
+    def test_credential_home_paths_are_rejected_before_any_setup_zip_staging(self) -> None:
+        # The producer must reject itself: verifier-only checks are too late
+        # once a temporary ZIP has already serialized sensitive bytes.
+        examples = (
+            "backend/resources/admin/.aws/credentials",
+            "backend/resources/admin/.SSH/config",
+            "backend/public/assets/.docker/config.json",
+            "backend/resources/admin/.kube/config",
+            "backend/resources/admin/.gnupg/pubring.kbx",
+            "backend/public/assets/.AZURE/azureProfile.json",
+            "backend/resources/admin/.terraform/terraform.tfstate",
+            "backend/resources/admin/.git-credentials",
+            "backend/public/assets/application_default_credentials.json",
+            "backend/resources/admin/accessTokens.json",
+            "backend/resources/admin/terraform.tfstate.backup",
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            for index, member in enumerate(examples):
+                with self.subTest(member=member):
+                    root = base / f"credential-root-{index}"
+                    root.mkdir()
+                    (root / "VERSION").write_text("1.0.127\\n", encoding="utf-8")
+                    unsafe = root / member
+                    unsafe.parent.mkdir(parents=True, exist_ok=True)
+                    unsafe.write_bytes(b"DO-NOT-SERIALIZE-CLOUD-TOKENS")
+                    output = base / f"credential-root-{index}.zip"
+                    with mock.patch(
+                        "v2_build_setup_zip.tempfile.mkstemp",
+                        side_effect=AssertionError("Never create a ZIP before rejecting credential homes"),
+                    ):
+                        with self.assertRaisesRegex(SetupBuildError, "Credential storage"):
+                            build_setup_zip(root, output, SOURCE_DATE_EPOCH)
+                    self.assertFalse(output.exists())
+
+    def test_empty_credential_home_directory_is_rejected_before_archive_creation(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "source"
+            (root / "backend/resources/admin/.aws").mkdir(parents=True)
+            (root / "VERSION").write_text("1.0.127\\n", encoding="utf-8")
+            output = Path(temporary) / "setup.zip"
+            with mock.patch(
+                "v2_build_setup_zip.tempfile.mkstemp",
+                side_effect=AssertionError("Do not stage credential directories"),
+            ):
+                with self.assertRaisesRegex(SetupBuildError, "Credential storage"):
+                    build_setup_zip(root, output, SOURCE_DATE_EPOCH)
+            self.assertFalse(output.exists())
+
     def test_public_ca_pem_and_ssh_pubkey_are_not_private_material(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             stage = Path(temporary) / "source"

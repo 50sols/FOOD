@@ -28,6 +28,16 @@ MAX_ENTRIES = 100_000
 MAX_ENTRY_SIZE = 512 * 1024 * 1024
 MAX_TOTAL_SIZE = 4 * 1024 * 1024 * 1024
 
+# Keep the producer at least as strict as the independent G004 ZIP verifier:
+# client credential homes and their generic config/state files must never be
+# copied into a temporary archive, even in a dirty release staging checkout.
+CREDENTIAL_STORAGE_PARTS = frozenset({
+    ".aws", ".ssh", ".docker", ".kube", ".gnupg", ".azure", ".terraform",
+    ".git-credentials", "application_default_credentials.json",
+    "azureprofile.json", "accesstokens.json", "terraform.tfstate",
+    "terraform.tfstate.backup",
+})
+
 # Shared-host extractors may interpret these names differently or refuse them.
 RESERVED_DEVICE = re.compile(
     r"^(?:con|conin\$|conout\$|prn|aux|nul|com[1-9¹²³]|lpt[1-9¹²³])(?:\..*)?$",
@@ -193,6 +203,8 @@ def build_setup_zip(source_root: Path, output: Path, source_epoch: int) -> str:
             folded = part.casefold()
             if folded == ".git":
                 raise SetupBuildError(f"Source control metadata in Setup staging: {name}")
+            if folded in CREDENTIAL_STORAGE_PARTS:
+                raise SetupBuildError(f"Credential storage in Setup staging: {name}")
             if folded in ("auth.json", ".npmrc", ".netrc", ".pypirc", ".yarnrc.yml"):
                 raise SetupBuildError(f"Package manager credentials in Setup staging: {name}")
             if _is_sensitive_private_file(folded):
@@ -303,6 +315,8 @@ def build_setup_zip(source_root: Path, output: Path, source_epoch: int) -> str:
                     folded = component.casefold()
                     if folded == ".git":
                         raise SetupBuildError(f"Source control metadata in Setup staging: {name}")
+                    if folded in CREDENTIAL_STORAGE_PARTS:
+                        raise SetupBuildError(f"Credential storage in Setup staging: {name}")
                     if folded in ("auth.json", ".npmrc", ".netrc", ".pypirc", ".yarnrc.yml"):
                         raise SetupBuildError(f"Package manager credentials in Setup staging: {name}")
                     if _is_sensitive_private_file(folded):
