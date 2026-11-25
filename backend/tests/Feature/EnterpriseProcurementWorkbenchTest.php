@@ -16,6 +16,7 @@ use Illuminate\Database\Events\QueryExecuted;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Route;
+use Symfony\Component\HttpKernel\Exception\HttpException;
 use Tests\Support\ProcurementSecondApprover;
 use Tests\Support\SyntheticErpWorkflowEvidence;
 use Tests\TestCase;
@@ -175,7 +176,7 @@ final class EnterpriseProcurementWorkbenchTest extends TestCase
                 try {
                     $service->{$operation}($forged, $context, $requestId);
                     $this->fail('Dirty actor identity must not impersonate the original maker.');
-                } catch (\Symfony\Component\HttpKernel\Exception\HttpException $exception) {
+                } catch (HttpException $exception) {
                     $this->assertSame(403, $exception->getStatusCode());
                 }
                 $this->assertDatabaseHas('enterprise_purchase_requests', [
