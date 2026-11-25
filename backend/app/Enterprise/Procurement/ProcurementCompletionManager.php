@@ -1402,7 +1402,7 @@ final class ProcurementCompletionManager
 
                 return $document;
             });
-        } catch (\\Throwable $exception) {
+        } catch (\Throwable $exception) {
             if ($storagePath !== null) {
                 Storage::disk('local')->delete($storagePath);
             }
