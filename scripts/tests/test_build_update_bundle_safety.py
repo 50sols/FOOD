@@ -105,6 +105,42 @@ class BuildUpdateBundleSourceSafetyTest(unittest.TestCase):
             with self.subTest(name=name), self.assertRaises(RuntimeError):
                 builder.safe_path(name)
 
+    def test_cloud_and_client_credential_homes_are_never_update_members(self) -> None:
+        # Generic names must be blocked through their credential-bearing parent.
+        for member in (
+            "backend/public/assets/admin/.aws/credentials",
+            "backend/public/preview/customer/.AWS/config",
+            "backend/app/ThirdParty/.ssh/id_ed25519.pub",
+            "backend/public/assets/.docker/config.json",
+            "backend/public/assets/.KUBE/config",
+            "backend/public/assets/.gnupg/pubring.kbx",
+            "backend/public/assets/.git-credentials",
+            "backend/config/.GIT-CREDENTIALS",
+        ):
+            with self.subTest(member=member):
+                with self.assertRaisesRegex(RuntimeError, "Credential storage"):
+                    builder.safe_path(member)
+
+        self.assertEqual(
+            builder.safe_path("backend/public/assets/admin/styles.css"),
+            "backend/public/assets/admin/styles.css",
+        )
+
+    def test_credential_archive_member_is_rejected_before_zip_staging(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            output = root / "FOODEX-Update.zip"
+            with mock.patch.object(builder.tempfile, "mkstemp") as staged:
+                with self.assertRaisesRegex(RuntimeError, "Credential storage"):
+                    builder.build_zip(
+                        root,
+                        [("backend/public/assets/.aws/credentials",
+                          "backend/public/assets/.aws/credentials")],
+                        output,
+                    )
+                staged.assert_not_called()
+            self.assertFalse(output.exists())
+
     def test_windows_console_device_member_is_rejected_before_zip_staging(self) -> None:
         # ASCII CONIN$/CONOUT$ are reserved on Windows even when suffixed
         # or nested in an otherwise portable Laravel runtime path.

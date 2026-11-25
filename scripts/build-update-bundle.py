@@ -277,7 +277,13 @@ def safe_path(path: str) -> str:
     # the G004 Setup package. A staged package-manager auth file can contain
     # bearer tokens despite having a perfectly portable ZIP member name.
     package_credentials = {"auth.json", ".npmrc", ".netrc", ".pypirc", ".yarnrc.yml"}
+    # Recursively staged assets may contain credential homes with generic
+    # secret filenames (credentials, config.json), not just private keys.
+    credential_directories = {".aws", ".ssh", ".docker", ".kube", ".gnupg"}
+    credential_files = {".git-credentials"}
     for part in parts:
+        if part.casefold() in credential_directories or part.casefold() in credential_files:
+            raise RuntimeError(f"Credential storage is not allowed in updates: {path}")
         if part.casefold() in package_credentials:
             raise RuntimeError(f"Package-manager credentials are not allowed in updates: {path}")
 
