@@ -1922,6 +1922,15 @@ final class ProcurementCompletionManager
             );
 
             $contract = $this->visibleContract($scope, $contractId, true);
+            // Contracts remain local when a supplier's legal/store ownership
+            // moves elsewhere. Check CURRENT supplier scope before replay or
+            // mutating the formerly local agreement.
+            $supplier = $this->visibleSupplier($scope, (int) $contract->supplier_id, true);
+            if ($supplier->status !== 'active' || $supplier->qualification_status === 'unqualified') {
+                throw ValidationException::withMessages([
+                    'supplier_id' => ['Contract supplier must remain active and qualified or conditional.'],
+                ]);
+            }
             if ($contract->status === 'active') {
                 return;
             }
@@ -1970,6 +1979,9 @@ final class ProcurementCompletionManager
             );
 
             $contract = $this->visibleContract($scope, $contractId, true);
+            // A moved supplier is no longer in the actor's legal/store scope,
+            // even for an idempotent termination replay.
+            $this->visibleSupplier($scope, (int) $contract->supplier_id, true);
             if ($contract->status === 'terminated') {
                 return;
             }
@@ -2025,6 +2037,14 @@ final class ProcurementCompletionManager
             }
 
             $contract = $this->visibleContract($scope, $contractId, true);
+            // A previously active local contract must not be linked to a PO
+            // after its supplier was moved to a different store/company.
+            $supplier = $this->visibleSupplier($scope, (int) $contract->supplier_id, true);
+            if ($supplier->status !== 'active' || $supplier->qualification_status === 'unqualified') {
+                throw ValidationException::withMessages([
+                    'contract_id' => ['Contract supplier is no longer active and qualified.'],
+                ]);
+            }
             if ($contract->status !== 'active') {
                 throw ValidationException::withMessages(['contract_id' => ['Only active contracts can be assigned.']]);
             }

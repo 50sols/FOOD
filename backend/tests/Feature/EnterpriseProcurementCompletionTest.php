@@ -1902,6 +1902,98 @@ final class EnterpriseProcurementCompletionTest extends TestCase
         }
     }
 
+    public function test_contract_activation_assignment_and_termination_deny_moved_supplier_without_writes_in_ar_and_en(): void
+    {
+        $this->enableProcurement();
+        $completion = app(ProcurementCompletionManager::class);
+        $directory = app(SupplierDirectory::class);
+        $foreignStore = $this->createRetailStore('P135-CTR-ACTION-FOREIGN');
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            [$actor, $store, $context] = $this->scopedUser(
+                $this->allPermissions(), 'P135-CTR-ACTION-'.strtoupper($locale),
+            );
+            $supplier = $directory->create($actor, $context, [
+                'scope_type' => 'store',
+                'code' => 'P135-CTR-ACTION-SUP-'.strtoupper($locale),
+                'name_en' => 'Contract action supplier '.$locale,
+            ]);
+            $contract = $completion->createContract($actor, $context, [
+                'supplier_id' => $supplier->id,
+                'title' => 'Store-bound supplier agreement '.$locale,
+                'currency_code' => 'KWD',
+                'starts_on' => now()->subDay()->toDateString(),
+                'ends_on' => now()->addDays(30)->toDateString(),
+            ]);
+            $order = $this->approvedOrder($actor, $context, $supplier->id, 2, 5.000);
+            [$checker, $checkerContext] = ProcurementSecondApprover::forSameStore($actor, $context);
+
+            $assertNoForeignMutation = function (callable $mutation) use ($contract, $order): void {
+                $beforeStatus = DB::table('enterprise_procurement_contracts')
+                    ->where('id', $contract->id)->value('status');
+                $beforeAssigned = DB::table('enterprise_purchase_orders')
+                    ->where('id', $order->id)->value('procurement_contract_id');
+                $beforeAudits = DB::table('audit_logs')->count();
+
+                try {
+                    $mutation();
+                    $this->fail('Transferred supplier must deny even historical contract actions.');
+                } catch (ModelNotFoundException $exception) {
+                    $this->assertNotEmpty($exception->getMessage());
+                }
+
+                $this->assertSame($beforeStatus, DB::table('enterprise_procurement_contracts')
+                    ->where('id', $contract->id)->value('status'));
+                $this->assertSame($beforeAssigned, DB::table('enterprise_purchase_orders')
+                    ->where('id', $order->id)->value('procurement_contract_id'));
+                $this->assertSame($beforeAudits, DB::table('audit_logs')->count());
+            };
+
+            DB::table('enterprise_suppliers')->where('id', $supplier->id)
+                ->update(['store_id' => $foreignStore->id]);
+            $assertNoForeignMutation(
+                fn () => $completion->activateContract($checker, $checkerContext, $contract->id),
+            );
+            DB::table('enterprise_suppliers')->where('id', $supplier->id)
+                ->update(['store_id' => $store->id]);
+            $completion->activateContract($checker, $checkerContext, $contract->id);
+
+            // The already-active replay must not bypass current supplier scope.
+            DB::table('enterprise_suppliers')->where('id', $supplier->id)
+                ->update(['store_id' => $foreignStore->id]);
+            $assertNoForeignMutation(
+                fn () => $completion->activateContract($checker, $checkerContext, $contract->id),
+            );
+            $assertNoForeignMutation(
+                fn () => $completion->assignContractToOrder($actor, $context, $order->id, $contract->id),
+            );
+            $assertNoForeignMutation(
+                fn () => $completion->terminateContract($actor, $context, $contract->id),
+            );
+            DB::table('enterprise_suppliers')->where('id', $supplier->id)
+                ->update(['store_id' => $store->id]);
+
+            $completion->assignContractToOrder($actor, $context, $order->id, $contract->id);
+            $this->assertDatabaseHas('enterprise_purchase_orders', [
+                'id' => $order->id,
+                'procurement_contract_id' => $contract->id,
+            ]);
+            $completion->terminateContract($actor, $context, $contract->id);
+            $this->assertDatabaseHas('enterprise_procurement_contracts', [
+                'id' => $contract->id,
+                'status' => 'terminated',
+            ]);
+
+            // A historical termination replay cannot evade a later transfer.
+            DB::table('enterprise_suppliers')->where('id', $supplier->id)
+                ->update(['store_id' => $foreignStore->id]);
+            $assertNoForeignMutation(
+                fn () => $completion->terminateContract($actor, $context, $contract->id),
+            );
+        }
+    }
+
     public function test_contract_creation_never_writes_when_procurement_module_is_disabled_in_both_locales(): void
     {
         $this->enableProcurement();
