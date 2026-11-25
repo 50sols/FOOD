@@ -1428,50 +1428,55 @@ final class ProcurementCompletionManager
             'renewal_of_id' => ['nullable', 'integer', 'min:1'],
         ])->validate();
 
-        $supplier = $this->visibleSupplier($scope, (int) $data['supplier_id']);
-        if ($supplier->status !== 'active' || $supplier->qualification_status === 'unqualified') {
-            throw ValidationException::withMessages(['supplier_id' => ['Contract supplier must be active and qualified or conditional.']]);
-        }
-
-        if (($data['renewal_of_id'] ?? null) !== null) {
-            $previous = $this->visibleContract($scope, (int) $data['renewal_of_id']);
-            if ((int) $previous->supplier_id !== (int) $supplier->id) {
-                throw ValidationException::withMessages(['renewal_of_id' => ['Renewal must keep the same supplier.']]);
+        return DB::transaction(function () use ($actor, $scope, $data): object {
+            // Supplier qualification and legal scope are mutable after a
+            // preflight. Lock the current row through creation and audit so
+            // stale supplier references cannot produce an invalid agreement.
+            $supplier = $this->visibleSupplier($scope, (int) $data['supplier_id'], true);
+            if ($supplier->status !== 'active' || $supplier->qualification_status === 'unqualified') {
+                throw ValidationException::withMessages(['supplier_id' => ['Contract supplier must be active and qualified or conditional.']]);
             }
-        }
 
-        $publicId = (string) Str::uuid();
-        $contractId = DB::table('enterprise_procurement_contracts')->insertGetId([
-            'public_id' => $publicId,
-            'contract_number' => 'CTR-'.strtoupper(substr(str_replace('-', '', $publicId), 0, 11)),
-            'organization_id' => $scope->organizationId,
-            'company_id' => $scope->companyId,
-            'store_id' => $scope->storeId,
-            'supplier_id' => $supplier->id,
-            'status' => 'draft',
-            'title' => $data['title'],
-            'currency_code' => strtoupper($data['currency_code']),
-            'starts_on' => $data['starts_on'],
-            'ends_on' => $data['ends_on'],
-            'value_ceiling' => $data['value_ceiling'] ?? null,
-            'quantity_ceiling' => $data['quantity_ceiling'] ?? null,
-            'renewal_of_id' => $data['renewal_of_id'] ?? null,
-            'notes' => $data['notes'] ?? null,
-            'created_by' => $actor->id,
-            'updated_by' => $actor->id,
-            'created_at' => now(),
-            'updated_at' => now(),
-        ]);
+            if (($data['renewal_of_id'] ?? null) !== null) {
+                $previous = $this->visibleContract($scope, (int) $data['renewal_of_id'], true);
+                if ((int) $previous->supplier_id !== (int) $supplier->id) {
+                    throw ValidationException::withMessages(['renewal_of_id' => ['Renewal must keep the same supplier.']]);
+                }
+            }
 
-        $contract = DB::table('enterprise_procurement_contracts')->where('id', $contractId)->firstOrFail();
-        $this->audit->record('enterprise.procurement.contract.created', $actor, null, null, [
-            'store_id' => $scope->storeId,
-            'contract_id' => $contractId,
-            'contract_number' => $contract->contract_number,
-            'supplier_id' => $supplier->id,
-        ]);
+            $publicId = (string) Str::uuid();
+            $contractId = DB::table('enterprise_procurement_contracts')->insertGetId([
+                'public_id' => $publicId,
+                'contract_number' => 'CTR-'.strtoupper(substr(str_replace('-', '', $publicId), 0, 11)),
+                'organization_id' => $scope->organizationId,
+                'company_id' => $scope->companyId,
+                'store_id' => $scope->storeId,
+                'supplier_id' => $supplier->id,
+                'status' => 'draft',
+                'title' => $data['title'],
+                'currency_code' => strtoupper($data['currency_code']),
+                'starts_on' => $data['starts_on'],
+                'ends_on' => $data['ends_on'],
+                'value_ceiling' => $data['value_ceiling'] ?? null,
+                'quantity_ceiling' => $data['quantity_ceiling'] ?? null,
+                'renewal_of_id' => $data['renewal_of_id'] ?? null,
+                'notes' => $data['notes'] ?? null,
+                'created_by' => $actor->id,
+                'updated_by' => $actor->id,
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
 
-        return $contract;
+            $contract = DB::table('enterprise_procurement_contracts')->where('id', $contractId)->firstOrFail();
+            $this->audit->record('enterprise.procurement.contract.created', $actor, null, null, [
+                'store_id' => $scope->storeId,
+                'contract_id' => $contractId,
+                'contract_number' => $contract->contract_number,
+                'supplier_id' => $supplier->id,
+            ]);
+
+            return $contract;
+        });
     }
 
     public function activateContract(
