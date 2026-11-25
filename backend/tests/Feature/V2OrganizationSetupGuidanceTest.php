@@ -2180,6 +2180,110 @@ final class V2OrganizationSetupGuidanceTest extends TestCase
         }
     }
 
+    public function test_direct_hierarchy_writes_recheck_permission_revoked_during_preflight_in_both_locales(): void
+    {
+        $service = app(EnterpriseOrganizationAdministration::class);
+        $permissionId = DB::table('permissions')->where('code', 'platform.manage')->value('id');
+        $this->assertNotNull($permissionId);
+        $armed = false;
+        $revoked = false;
+        $actorId = 0;
+        $targetTable = '';
+
+        // Mutate persisted authorization *after* initial actor verification
+        // and *before* the transaction starts. This is a deterministic seam,
+        // not a claim of independent concurrent database connections.
+        DB::listen(static function ($query) use (&$armed, &$revoked, &$actorId, &$targetTable, $permissionId): void {
+            $sql = strtolower((string) $query->sql);
+            if (! $armed || $revoked || ! str_contains($sql, 'select')
+                || ! str_contains($sql, $targetTable)) {
+                return;
+            }
+
+            $armed = false;
+            $revoked = true;
+            DB::table('user_permission_overrides')->insert([
+                'user_id' => $actorId,
+                'permission_id' => $permissionId,
+                'scope_key' => 'global',
+                'store_id' => null,
+                'effect' => 'deny',
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+            DB::table('users')->where('id', $actorId)
+                ->update(['has_permission_overrides' => true]);
+        });
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            foreach (['organization_update', 'company_create'] as $operation) {
+                $actor = $this->actor('SYSTEM_ADMINISTRATOR', $locale);
+                $this->assertTrue($actor->hasPermission('platform.manage'));
+                $organization = EnterpriseOrganization::query()->create([
+                    'code' => 'v2_preflight_'.$locale.'_'.$operation,
+                    'name' => 'Before revocation',
+                    'is_active' => true,
+                ]);
+                $companyCode = 'v2_guard_company_'.$locale;
+                $write = $operation === 'organization_update'
+                    ? static fn () => $service->updateOrganization($organization, [
+                        'name' => 'Unauthorized rename',
+                    ], $actor)
+                    : static fn () => $service->createCompany($organization, [
+                        'code' => $companyCode,
+                        'name' => 'Unauthorized company',
+                        'is_active' => true,
+                    ], $actor);
+
+                $actorId = (int) $actor->id;
+                $targetTable = 'enterprise_organizations';
+                $revoked = false;
+                $auditBefore = DB::table('audit_logs')->count();
+                $armed = true;
+                try {
+                    $write();
+                    $this->fail('Revoked platform.manage must block a write after the initial actor preflight.');
+                } catch (\Illuminate\Auth\Access\AuthorizationException $exception) {
+                    $this->assertSame(403, $exception->status() ?? 403);
+                }
+
+                $this->assertTrue($revoked, 'DENY must be persisted after the initial actor check.');
+                $this->assertFalse((bool) $actor->has_permission_overrides);
+                $this->assertTrue((bool) $actor->fresh()->has_permission_overrides);
+                $this->assertSame('Before revocation', $organization->fresh()->name);
+                $this->assertDatabaseMissing('enterprise_companies', ['code' => $companyCode]);
+                $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+                try {
+                    $write();
+                    $this->fail('Persisted DENY must block repeat writes.');
+                } catch (\Illuminate\Auth\Access\AuthorizationException $exception) {
+                    $this->assertSame(403, $exception->status() ?? 403);
+                }
+
+                DB::table('user_permission_overrides')
+                    ->where('user_id', $actorId)
+                    ->where('permission_id', $permissionId)
+                    ->delete();
+                DB::table('users')->where('id', $actorId)
+                    ->update(['has_permission_overrides' => false]);
+
+                if ($operation === 'organization_update') {
+                    $service->updateOrganization($organization, ['name' => 'Authorized rename'], $actor);
+                    $this->assertSame('Authorized rename', $organization->fresh()->name);
+                } else {
+                    $company = $service->createCompany($organization, [
+                        'code' => $companyCode,
+                        'name' => 'Authorized company',
+                        'is_active' => true,
+                    ], $actor);
+                    $this->assertSame($companyCode, $company->code);
+                }
+                $this->assertSame($auditBefore + 1, DB::table('audit_logs')->count());
+            }
+        }
+    }
+
     private function actor(string $roleCode, string $locale): User
     {
         $user = User::query()->create([

@@ -33,6 +33,9 @@ final class EnterpriseOrganizationAdministration
         $data['name'] = trim($data['name']);
 
         return DB::transaction(function () use ($data, $actor): EnterpriseOrganization {
+            // The actor can lose platform.manage after the first preflight.
+            // Validate persisted authorization again at the write boundary.
+            $this->assertPersistedActiveActor($actor);
             $organization = EnterpriseOrganization::query()->create($data);
             $this->audit->record('enterprise.organization.created', $actor, $organization, null, $this->snapshot($organization));
 
@@ -72,6 +75,7 @@ final class EnterpriseOrganizationAdministration
                 throw ValidationException::withMessages(['parent' => [__('enterprise_organization.inactive_parent')]]);
             }
             $this->assertCreationParentActive($organization);
+            $this->assertPersistedActiveActor($actor);
             $company = $organization->companies()->create($data);
             $this->audit->record('enterprise.company.created', $actor, $company, null, $this->snapshot($company));
 
@@ -111,6 +115,7 @@ final class EnterpriseOrganizationAdministration
                 throw ValidationException::withMessages(['parent' => [__('enterprise_organization.inactive_parent')]]);
             }
             $this->assertCreationParentActive($company);
+            $this->assertPersistedActiveActor($actor);
             $entity = $company->legalEntities()->create($data);
             $this->audit->record('enterprise.legal_entity.created', $actor, $entity, null, $this->snapshot($entity));
 
@@ -150,6 +155,7 @@ final class EnterpriseOrganizationAdministration
                 throw ValidationException::withMessages(['parent' => [__('enterprise_organization.inactive_parent')]]);
             }
             $this->assertCreationParentActive($entity);
+            $this->assertPersistedActiveActor($actor);
             $unit = $entity->businessUnits()->create($data);
             $this->audit->record('enterprise.business_unit.created', $actor, $unit, null, $this->snapshot($unit));
 
@@ -194,6 +200,8 @@ final class EnterpriseOrganizationAdministration
         // A live unit does not make an inactive legal entity, company or
         // organization eligible for new store scope assignments.
         $this->assertCreationParentActive($unit->legalEntity);
+        // Enforce the current permission even if it changed during scope lookup.
+        $this->assertPersistedActiveActor($actor);
 
         try {
             $this->hierarchy->assignStore($store, $unit, $actor);
@@ -504,6 +512,9 @@ final class EnterpriseOrganizationAdministration
                 ->lockForUpdate()
                 ->firstOrFail();
             $this->assertUpdateAllowed($record, $data);
+            // Parent/descendant checks above can outlive a live RBAC DENY.
+            // Never persist or audit a write under the earlier permission snapshot.
+            $this->assertPersistedActiveActor($actor);
             // HTTP Setup Save trims names; direct writes must persist and
             // audit the same canonical human-readable name.
             if (array_key_exists('name', $data)) {
