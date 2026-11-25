@@ -178,6 +178,71 @@ class BuildUpdateBundleSourceSafetyTest(unittest.TestCase):
                 for name, _ in entries:
                     self.assertEqual(archive.read(name), source.read_bytes())
 
+    def test_update_release_sidecars_refuse_existing_manifest_and_dangling_symlink(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            existing = root / "FOODEX-Update.json"
+            existing.write_text('{"signed":true}', encoding="utf-8")
+            with mock.patch.object(builder.tempfile, "mkstemp") as stage:
+                with self.assertRaisesRegex(RuntimeError, "already exists"):
+                    builder.reject_existing_release_outputs(
+                        [root / "FOODEX-Update.zip", existing, root / "FOODEX-Update.sha256.txt"]
+                    )
+                with self.assertRaisesRegex(RuntimeError, "already exists"):
+                    builder.publish_release_sidecar(existing, '{"signed":false}')
+                stage.assert_not_called()
+            self.assertEqual(existing.read_text(encoding="utf-8"), '{"signed":true}')
+
+            dangling = root / "FOODEX-Update.sha256.txt"
+            try:
+                dangling.symlink_to(root / "missing-signature.txt")
+            except (OSError, NotImplementedError):
+                self.skipTest("Symbolic links unavailable on this host")
+            with mock.patch.object(builder.tempfile, "mkstemp") as stage:
+                with self.assertRaisesRegex(RuntimeError, "already exists"):
+                    builder.reject_existing_release_outputs([dangling])
+                stage.assert_not_called()
+            self.assertTrue(dangling.is_symlink())
+
+    def test_update_release_sidecar_exclusive_creation_preserves_exact_bytes(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            text = '{"sha256":"abcdef","source_commit":"12345"}\n'
+            manifest = root / "FOODEX-Update.json"
+            builder.publish_release_sidecar(manifest, text)
+            self.assertEqual(manifest.read_bytes(), text.encode("utf-8"))
+            self.assertEqual(list(root.glob(".*.staging")), [])
+            with self.assertRaisesRegex(RuntimeError, "already exists"):
+                builder.publish_release_sidecar(manifest, "REPLACED")
+            self.assertEqual(manifest.read_bytes(), text.encode("utf-8"))
+
+    def test_update_release_sidecar_refuses_late_competing_publisher(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            hash_file = root / "FOODEX-Update.sha256.txt"
+            real_link = os.link
+
+            def competing_publisher(staging: Path, destination: Path) -> None:
+                destination.write_text("winning-signed-hash\n", encoding="utf-8")
+                real_link(staging, destination)
+
+            with mock.patch.object(builder.os, "link", side_effect=competing_publisher) as link:
+                with self.assertRaisesRegex(RuntimeError, "already exists"):
+                    builder.publish_release_sidecar(hash_file, "losing-hash\n")
+                link.assert_called_once()
+            self.assertEqual(hash_file.read_bytes(), b"winning-signed-hash\n")
+            self.assertEqual(list(root.glob(".*.staging")), [])
+
+    def test_update_release_sidecar_fails_closed_without_exclusive_links(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            file_list = root / "FOODEX-Update.files.txt"
+            with mock.patch.object(builder.os, "link", side_effect=OSError("hardlink blocked")):
+                with self.assertRaisesRegex(RuntimeError, "sidecar publication unavailable"):
+                    builder.publish_release_sidecar(file_list, "backend/artisan\n")
+            self.assertFalse(os.path.lexists(file_list))
+            self.assertEqual(list(root.glob(".*.staging")), [])
+
     def test_update_zip_refuses_existing_output_without_staging(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary) / "repo"

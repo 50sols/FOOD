@@ -625,6 +625,42 @@ def build_zip(repo_root: Path, entries: list[tuple[str, str]], output: Path) -> 
         temporary.unlink(missing_ok=True)
 
 
+def reject_existing_release_outputs(paths: list[Path]) -> None:
+    # A previously checked/signed manifest or hash must be as immutable as
+    # the ZIP it describes. This also detects dangling symlinks.
+    for path in paths:
+        if os.path.lexists(path):
+            raise RuntimeError(f"Update release output already exists; refusing overwrite: {path}")
+
+
+def publish_release_sidecar(path: Path, content: str) -> None:
+    reject_existing_release_outputs([path])
+    fd, temporary_name = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".staging", dir=path.parent
+    )
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as staged:
+            staged.write(content)
+            staged.flush()
+            os.fsync(staged.fileno())
+
+        # Same-directory exclusive publication. Do not use write_text() on
+        # the final path: it truncates a concurrently verified sidecar.
+        try:
+            os.link(temporary, path)
+        except FileExistsError as exc:
+            raise RuntimeError(
+                f"Update release output already exists; refusing overwrite: {path}"
+            ) from exc
+        except OSError as exc:
+            raise RuntimeError(
+                f"Safe exclusive Update release sidecar publication unavailable: {path}"
+            ) from exc
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
 def main() -> int:
     args = parse_args()
     repo_root = Path(run_git("rev-parse", "--show-toplevel").strip())
@@ -660,6 +696,9 @@ def main() -> int:
     files_path = output_dir / "FOODEX-Update.files.txt"
     hash_path = output_dir / "FOODEX-Update.sha256.txt"
 
+    # Fail before publishing a ZIP when an earlier manifest, checksum or
+    # file-list exists. Final sidecar publication still checks atomically.
+    reject_existing_release_outputs([package, manifest_path, files_path, hash_path])
     build_zip(repo_root, entries, package)
     package_hash = sha256(package)
 
@@ -693,12 +732,11 @@ def main() -> int:
         },
     }
 
-    manifest_path.write_text(
-        json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
+    publish_release_sidecar(
+        manifest_path, json.dumps(manifest, ensure_ascii=False, indent=2) + "\n"
     )
-    files_path.write_text("\n".join(name for name, _ in entries) + "\n", encoding="utf-8")
-    hash_path.write_text(f"{package_hash}  {package.name}\n", encoding="utf-8")
+    publish_release_sidecar(files_path, "\n".join(name for name, _ in entries) + "\n")
+    publish_release_sidecar(hash_path, f"{package_hash}  {package.name}\n")
 
     print(f"FOODEX update package: {package}")
     print(f"target_version={args.target_version}")
