@@ -775,10 +775,17 @@ final class EnterpriseProcurementCompletionTest extends TestCase
             $transferContractId = (int) $contract->id;
             $transferred = false;
             $documentQueries = [];
-            $afterTransfer = $completion->contractDetail($actor, $context, $contract->id);
+            // The prior implementation returned the stale contract header
+            // with an empty document list after the ownership transfer. No
+            // contract metadata is now authorized for the former store.
+            try {
+                $completion->contractDetail($actor, $context, $contract->id);
+                $this->fail('Transferred contract details must not return a stale header.');
+            } catch (RecordNotFoundException $exception) {
+                $this->assertNotEmpty($exception->getMessage());
+            }
             $this->assertTrue($transferred, 'Transfer must happen after contract preflight.');
             $this->assertCount(1, $documentQueries);
-            $this->assertSame([], $afterTransfer['documents'], 'Transferred attachment paths are no longer visible.');
             $this->assertSame($auditBefore, DB::table('audit_logs')->count());
             Storage::disk('local')->assertExists($document->storage_path);
             $this->assertDatabaseHas('enterprise_procurement_contracts', [
