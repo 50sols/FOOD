@@ -99,11 +99,18 @@ final class PurchaseInvoiceHandoffManager
     ): EnterprisePurchaseInvoice {
         $scope = $this->authorizedScope($actor, $context, self::VIEW_PERMISSION);
 
-        return $this->findVisible($scope, $invoiceId)->load([
+        $invoice = $this->findVisible($scope, $invoiceId)->load([
             'goodsReceipt:id,receipt_number,status',
             'supplier:id,code,name_en,name_ar,status',
             'lines' => fn ($query) => $query->orderBy('line_no'),
         ]);
+
+        // The invoice may change legal/store ownership after the first scoped
+        // SELECT but before its supplier, receipt and financial lines are
+        // loaded. Never return an earlier owner's stale invoice details.
+        $this->findVisible($scope, $invoiceId);
+
+        return $invoice;
     }
 
     /** @param array<string, mixed> $attributes */

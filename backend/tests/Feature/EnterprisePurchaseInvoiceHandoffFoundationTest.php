@@ -553,6 +553,80 @@ final class EnterprisePurchaseInvoiceHandoffFoundationTest extends TestCase
         }
     }
 
+    public function test_invoice_detail_denies_stale_header_and_financial_lines_after_store_transfer_in_ar_and_en(): void
+    {
+        $this->enableProcurement();
+        [$actor, $store, $context] = $this->scopedUser($this->allPermissions(), 'PINV-DETAIL-LIVE');
+        $foreignStore = $this->createRetailStore('PINV-DETAIL-FOREIGN');
+        [, $warehouse] = $this->stockTarget($store, 'PINV-DETAIL-LIVE-SKU');
+        $manager = app(PurchaseInvoiceHandoffManager::class);
+
+        $armed = false;
+        $moved = false;
+        $targetInvoiceId = null;
+        DB::listen(static function ($query) use (&$armed, &$moved, &$targetInvoiceId, $foreignStore): void {
+            $sql = strtolower((string) $query->sql);
+            if (! $armed || $moved || $targetInvoiceId === null
+                || ! str_contains($sql, 'enterprise_purchase_invoices')
+                || ! str_contains($sql, 'select')
+                || str_contains($sql, 'join')) {
+                return;
+            }
+
+            // Simulate a transfer immediately after the authorized invoice
+            // query, before Eloquent loads its supplier/receipt/line relations.
+            $armed = false;
+            $moved = true;
+            DB::table('enterprise_purchase_invoices')
+                ->where('id', $targetInvoiceId)
+                ->update(['store_id' => $foreignStore->id]);
+        });
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            $receipt = $this->postedReceipt(
+                $actor, $context, $warehouse, 'PINV-DETAIL-SUP-'.strtoupper($locale),
+                'PINV-DETAIL-LIVE-SKU', 2,
+            );
+            $invoice = $manager->createFromPostedReceipt($actor, $context, $receipt->id, [
+                'supplier_invoice_number' => 'PINV-DETAIL-'.strtoupper($locale),
+                'invoice_date' => '2026-10-16',
+                'lines' => [[
+                    'goods_receipt_line_id' => $receipt->lines()->firstOrFail()->id,
+                    'quantity' => 1,
+                ]],
+            ]);
+
+            $visible = $manager->detail($actor, $context, $invoice->id);
+            $this->assertSame($invoice->id, $visible->id);
+            $this->assertCount(1, $visible->lines);
+
+            $targetInvoiceId = (int) $invoice->id;
+            $auditBefore = DB::table('audit_logs')->count();
+            $linesBefore = DB::table('enterprise_purchase_invoice_lines')->count();
+            $moved = false;
+            $armed = true;
+            try {
+                $manager->detail($actor, $context, $invoice->id);
+                $this->fail('A transferred invoice cannot reveal its former store header or line amounts.');
+            } catch (ModelNotFoundException) {
+                $this->assertTrue($moved, 'Transfer must occur after the scoped preflight.');
+            }
+
+            $this->assertSame($foreignStore->id, (int) DB::table('enterprise_purchase_invoices')
+                ->where('id', $invoice->id)->value('store_id'));
+            $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+            $this->assertSame($linesBefore, DB::table('enterprise_purchase_invoice_lines')->count());
+
+            try {
+                $manager->detail($actor, $context, $invoice->id);
+                $this->fail('A second read must also deny the former store.');
+            } catch (ModelNotFoundException) {
+                $this->assertTrue(true);
+            }
+        }
+    }
+
     public function test_purchase_invoice_number_and_supplier_reference_prefix_search_is_literal_scoped_and_read_only(): void
     {
         $this->enableProcurement();
