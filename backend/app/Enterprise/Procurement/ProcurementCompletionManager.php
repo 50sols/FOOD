@@ -1626,8 +1626,23 @@ final class ProcurementCompletionManager
             ->select('documents.*')
             ->firstOrFail();
 
-        // Keep the contract/doc join atomic for scope while denying a caller
-        // whose original persisted view permission changed during the SELECT.
+        // The scoped SELECT can finish before a contract transfer or a
+        // document path/reparenting update commits. Recheck current ownership
+        // AND the original private attachment identity before returning the
+        // cached path: a pre-query store grant is not a post-query grant.
+        DB::table('enterprise_procurement_contract_documents as documents')
+            ->join('enterprise_procurement_contracts as contracts', 'contracts.id', '=', 'documents.contract_id')
+            ->where('contracts.organization_id', $scope->organizationId)
+            ->where('contracts.company_id', $scope->companyId)
+            ->where('contracts.store_id', $scope->storeId)
+            ->where('contracts.id', $contractId)
+            ->where('documents.id', $documentId)
+            ->where('documents.contract_id', $document->contract_id)
+            ->where('documents.storage_path', $document->storage_path)
+            ->firstOrFail(['documents.id']);
+
+        // The original actor's persisted view grant may also have been
+        // revoked during either SELECT. Reauthorize it at the final boundary.
         $this->scope($actor, $context, 'procurement.purchase_orders.view');
 
         return $document;

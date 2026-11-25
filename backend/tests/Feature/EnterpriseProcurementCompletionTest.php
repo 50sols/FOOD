@@ -1276,7 +1276,7 @@ final class EnterpriseProcurementCompletionTest extends TestCase
             $this->assertSame((int) $document->id, (int) $visible->id);
             $this->assertNotNull($visible->storage_path);
             $this->assertTrue(Storage::disk('local')->exists($visible->storage_path));
-            $this->assertCount(1, $documentQueries, 'Attachment identity and contract ownership must be resolved in one SELECT.');
+            $this->assertCount(2, $documentQueries, 'Attachment identity and final contract ownership must each resolve in a current-store joined SELECT.');
             $this->assertStringContainsString('join', $documentQueries[0]);
             $this->assertStringContainsString('enterprise_procurement_contracts', $documentQueries[0]);
             $this->assertStringContainsString('organization_id', $documentQueries[0]);
@@ -1301,6 +1301,126 @@ final class EnterpriseProcurementCompletionTest extends TestCase
                 'id' => $contract->id,
                 'store_id' => $foreignStore->id,
             ]);
+        }
+    }
+
+    public function test_contract_attachment_download_denies_late_store_transfer_or_path_replacement_in_ar_en(): void
+    {
+        Storage::fake('local');
+        $this->enableProcurement();
+        [$actor, $ownStore, $context] = $this->scopedUser($this->allPermissions(), 'P135-CTR-DOC-LATE-OWNER');
+        $foreignStore = $this->createRetailStore('P135-CTR-DOC-LATE-FOREIGN');
+        $directory = app(SupplierDirectory::class);
+        $completion = app(ProcurementCompletionManager::class);
+
+        $armed = false;
+        $injected = false;
+        $mode = '';
+        $targetContractId = 0;
+        $targetDocumentId = 0;
+        $newPath = '';
+        // Interleave a persisted ownership or attachment identity change
+        // after the real joined private-path SELECT, before the final recheck.
+        // A single preflight JOIN + actor reauth would leak the stale path.
+        DB::listen(static function ($query) use (
+            $foreignStore, &$armed, &$injected, &$mode,
+            &$targetContractId, &$targetDocumentId, &$newPath
+        ): void {
+            $sql = strtolower(ltrim((string) $query->sql));
+            if (! $armed || $injected || ! str_starts_with($sql, 'select')
+                || ! str_contains($sql, 'enterprise_procurement_contract_documents')
+                || ! str_contains($sql, 'enterprise_procurement_contracts')
+                || ! str_contains($sql, 'join')) {
+                return;
+            }
+
+            $armed = false;
+            $injected = true;
+            if ($mode === 'transfer') {
+                DB::table('enterprise_procurement_contracts')
+                    ->where('id', $targetContractId)
+                    ->update(['store_id' => $foreignStore->id]);
+            } else {
+                DB::table('enterprise_procurement_contract_documents')
+                    ->where('id', $targetDocumentId)
+                    ->update(['storage_path' => $newPath]);
+            }
+        });
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            $supplier = $directory->create($actor, $context, [
+                'scope_type' => 'store',
+                'code' => 'P135-CTR-DOC-LATE-'.strtoupper($locale),
+                'name_en' => 'Contract private attachment '.$locale,
+            ]);
+            $contract = $completion->createContract($actor, $context, [
+                'supplier_id' => $supplier->id,
+                'title' => 'Late attachment transfer '.$locale,
+                'currency_code' => 'KWD',
+                'starts_on' => now()->toDateString(),
+                'ends_on' => now()->addDays(30)->toDateString(),
+            ]);
+            $document = $completion->addContractDocument(
+                $actor, $context, $contract->id,
+                ['title' => 'Private contract attachment '.$locale],
+                UploadedFile::fake()->create('private-contract.pdf', 4, 'application/pdf'),
+            );
+            $read = static fn () => $completion->contractDocument($actor, $context, $contract->id, $document->id);
+            $this->assertSame($document->storage_path, $read()->storage_path);
+            $oldPath = $document->storage_path;
+            $auditBefore = DB::table('audit_logs')->count();
+            $documentCount = DB::table('enterprise_procurement_contract_documents')->count();
+            $targetContractId = (int) $contract->id;
+            $targetDocumentId = (int) $document->id;
+
+            $mode = 'transfer';
+            $injected = false;
+            $armed = true;
+            try {
+                $read();
+                $this->fail('Transferred contract must not disclose stale private attachment path.');
+            } catch (RecordNotFoundException $exception) {
+                $this->assertNotEmpty($exception->getMessage());
+            } finally {
+                $armed = false;
+            }
+            $this->assertTrue($injected, 'Scoped document SELECT must trigger contract transfer.');
+            try {
+                $read();
+                $this->fail('Repeated reads from the former store must be denied.');
+            } catch (RecordNotFoundException $exception) {
+                $this->assertNotEmpty($exception->getMessage());
+            }
+            $this->assertDatabaseHas('enterprise_procurement_contracts', [
+                'id' => $contract->id, 'store_id' => $foreignStore->id,
+            ]);
+            DB::table('enterprise_procurement_contracts')->where('id', $contract->id)
+                ->update(['store_id' => $ownStore->id]);
+            $this->assertSame($oldPath, $read()->storage_path);
+
+            $newPath = 'private-contracts/replaced-'.strtolower($locale).'-'.$document->id.'.pdf';
+            Storage::disk('local')->put($newPath, 'New same-store private contract document.');
+            $mode = 'path';
+            $injected = false;
+            $armed = true;
+            try {
+                $read();
+                $this->fail('Replaced contract document path must not leak obsolete file data.');
+            } catch (RecordNotFoundException $exception) {
+                $this->assertNotEmpty($exception->getMessage());
+            } finally {
+                $armed = false;
+            }
+            $this->assertTrue($injected, 'Scoped document SELECT must trigger path replacement.');
+            $this->assertDatabaseHas('enterprise_procurement_contract_documents', [
+                'id' => $document->id, 'contract_id' => $contract->id, 'storage_path' => $newPath,
+            ]);
+            $this->assertSame($newPath, $read()->storage_path);
+            $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+            $this->assertSame($documentCount, DB::table('enterprise_procurement_contract_documents')->count());
+            Storage::disk('local')->assertExists($oldPath);
+            Storage::disk('local')->assertExists($newPath);
         }
     }
 
