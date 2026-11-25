@@ -34,13 +34,9 @@ final class SystemUpdateController extends Controller
 
     public function index(Request $request): View
     {
-        $this->authorizeSuperAdminUpdate($request);
-
-        // An updater may rebuild the in-process auth/config caches. The Gate
-        // has already authorized this exact request identity; pass it to the
-        // view rather than resolving a potentially reset global auth guard.
-        $actor = $request->user();
-        abort_unless($actor instanceof User, 401);
+        // Hydrate the same original persisted active user before any
+        // update-history, backup or runtime information is exposed.
+        $actor = $this->authorizeSuperAdminUpdate($request);
         $currentVersion = $this->currentVersion();
 
         // The feature's own first patch is executed by the old PHP request.
@@ -81,15 +77,12 @@ final class SystemUpdateController extends Controller
 
     public function store(Request $request): RedirectResponse
     {
-        $this->authorizeSuperAdminUpdate($request);
+        $user = $this->authorizeSuperAdminUpdate($request);
 
         $request->validate([
             'package' => ['required', 'file', 'max:512000'],
             'signed_manifest' => ['required', 'file', 'max:16'],
         ]);
-
-        $user = $request->user();
-        abort_unless($user instanceof User, 401);
 
         $upload = $request->file('package');
         $signedManifestFile = $request->file('signed_manifest');
@@ -183,7 +176,7 @@ final class SystemUpdateController extends Controller
 
     public function backup(Request $request): RedirectResponse
     {
-        $this->authorizeSuperAdminUpdate($request);
+        $actor = $this->authorizeSuperAdminUpdate($request);
 
         // Audit reasons must satisfy the minimum length after normalization;
         // padded whitespace is not a valid recovery justification.
@@ -194,9 +187,6 @@ final class SystemUpdateController extends Controller
         $validated = $request->validate([
             'reason' => ['required', 'string', 'min:5', 'max:500'],
         ]);
-
-        $actor = $request->user();
-        abort_unless($actor instanceof User, 401);
 
         try {
             $backup = $this->systemRuntime->createDatabaseBackup(
@@ -222,7 +212,7 @@ final class SystemUpdateController extends Controller
 
     public function restore(Request $request, string $backupReference): RedirectResponse
     {
-        $this->authorizeSuperAdminUpdate($request);
+        $actor = $this->authorizeSuperAdminUpdate($request);
 
         // Audit reasons must satisfy the minimum length after normalization;
         // padded whitespace is not a valid recovery justification.
@@ -235,9 +225,6 @@ final class SystemUpdateController extends Controller
             'confirm_reference' => ['required', 'string', 'max:80'],
             'production_confirmation' => ['nullable', 'string', 'max:80'],
         ]);
-
-        $actor = $request->user();
-        abort_unless($actor instanceof User, 401);
 
         try {
             $this->systemRuntime->restoreDatabaseBackup(
@@ -272,15 +259,31 @@ final class SystemUpdateController extends Controller
      * but these high-risk operations require an active global Super Admin.
      * Retain the existing Gate so explicit permission checks are not bypassed.
      */
-    private function authorizeSuperAdminUpdate(Request $request): void
+    private function authorizeSuperAdminUpdate(Request $request): User
     {
-        // A ZIP update rebuilds configuration caches inside an HTTP request.
-        // Bind Gate to the authenticated request actor explicitly, so an
-        // Artisan bootstrap cannot replace the implicit Gate user resolver.
+        // Updates, backups and restores are high-risk mutations. The request
+        // may retain an Eloquent User loaded before its account was disabled.
+        // Always bind authorization to the SAME immutable original identity
+        // and to its currently persisted active state, not a cached snapshot.
         $actor = $request->user();
         abort_unless($actor instanceof User, 401);
-        Gate::forUser($actor)->authorize('system.update');
-        abort_unless($actor->is_active && $actor->hasRole('SUPER_ADMIN'), 403);
+        $originalId = $actor->getRawOriginal($actor->getKeyName());
+        abort_unless(
+            $actor->exists
+                && $originalId !== null
+                && (string) $actor->getKey() === (string) $originalId,
+            403,
+        );
+
+        $current = User::query()->whereKey($originalId)->where('is_active', true)->first();
+        abort_unless($current instanceof User, 403);
+
+        // The update may rebuild in-process auth/config caches, so never
+        // resolve the implicit Gate principal after entering the updater.
+        Gate::forUser($current)->authorize('system.update');
+        abort_unless($current->hasRole('SUPER_ADMIN'), 403);
+
+        return $current;
     }
 
     /**
