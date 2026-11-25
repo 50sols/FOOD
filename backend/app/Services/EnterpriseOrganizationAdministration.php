@@ -12,6 +12,7 @@ use App\Models\User;
 use Illuminate\Contracts\Auth\Authenticatable;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Gate;
 use Illuminate\Validation\ValidationException;
 
 final class EnterpriseOrganizationAdministration
@@ -475,6 +476,11 @@ final class EnterpriseOrganizationAdministration
             || ! User::query()->whereKey($originalId)->where('is_active', true)->exists()) {
             abort(403);
         }
+
+        // The HTTP controller enforces this gate, but the canonical write
+        // service may also be invoked directly. Never grant an active
+        // non-platform administrator a mutation/audit capability.
+        Gate::forUser($actor)->authorize('platform.manage');
     }
 
     private function snapshot(Model $model): array
