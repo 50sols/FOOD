@@ -110,6 +110,35 @@ def run_git(*args: str) -> str:
     return result.stdout
 
 
+def verify_composer_runtime_contract(repo_root: Path, base: str) -> None:
+    """Refuse ZIP-only upgrades needing a different production vendor/autoloader.
+
+    This update format excludes vendor/. Comparing production dependency and
+    autoload declarations is a necessary (not sufficient) compatibility gate.
+    Full installed-package/version and signer trust still require release QA.
+    """
+    try:
+        previous = json.loads(run_git("show", f"{base}:backend/composer.json"))
+        current = json.loads(
+            (repo_root / "backend/composer.json").read_text(encoding="utf-8")
+        )
+    except (OSError, ValueError, subprocess.CalledProcessError) as exc:
+        raise RuntimeError(
+            "Unable to verify Composer runtime compatibility for Update ZIP."
+        ) from exc
+
+    if not isinstance(previous, dict) or not isinstance(current, dict):
+        raise RuntimeError("Composer runtime contract must be a JSON object.")
+
+    for section in ("require", "autoload", "repositories"):
+        if previous.get(section, {}) != current.get(section, {}):
+            raise RuntimeError(
+                f"Composer runtime {section} differs from the supported base; "
+                "normal Update ZIP excludes vendor/. Build and validate a "
+                "full production-dependency upgrade instead."
+            )
+
+
 def is_runtime_path(path: str) -> bool:
     return path in RUNTIME_EXACT or path.startswith(RUNTIME_PREFIXES)
 
@@ -494,6 +523,7 @@ def main() -> int:
         )
 
     run_git("cat-file", "-e", f"{args.base}^{{commit}}")
+    verify_composer_runtime_contract(repo_root, args.base)
     # Dashboard updates are cumulative/self-healing by contract. Package the
     # complete application-owned runtime so drifted shared-host installs can
     # recover missing unchanged Laravel files before migrations execute.

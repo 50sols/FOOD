@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
 from pathlib import Path
 import tempfile
@@ -253,6 +254,54 @@ class BuildUpdateBundleSourceSafetyTest(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "symbolic links"):
                 builder.build_zip(root, [(source, source)], output)
             self.assertFalse(output.exists())
+
+
+    def test_update_zip_rejects_changed_composer_production_runtime_contract(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "backend").mkdir()
+            previous = {
+                "require": {"php": "^8.2", "laravel/framework": "^12.0"},
+                "autoload": {"psr-4": {"App\\\\": "app/"}},
+                "repositories": [{"type": "path", "url": "./local"}],
+                "config": {"preferred-install": "dist"},
+            }
+            for changed_section, replacement in (
+                ("require", {"php": "^8.2", "laravel/framework": "^13.0"}),
+                ("autoload", {"psr-4": {"New\\\\": "app/"}}),
+                ("repositories", [{"type": "vcs", "url": "https://example.invalid/pkg"}]),
+            ):
+                with self.subTest(section=changed_section):
+                    current = dict(previous)
+                    current[changed_section] = replacement
+                    (root / "backend/composer.json").write_text(
+                        json.dumps(current), encoding="utf-8"
+                    )
+                    with mock.patch.object(builder, "run_git", return_value=json.dumps(previous)):
+                        with self.assertRaisesRegex(RuntimeError, "excludes vendor"):
+                            builder.verify_composer_runtime_contract(root, "v1.0.125")
+
+    def test_update_zip_allows_composer_nonruntime_config_change(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "backend").mkdir()
+            previous = {"require": {"php": "^8.2"}, "autoload": {"psr-4": {"App\\\\": "app/"}}}
+            current = {**previous, "config": {"platform": {"php": "8.2.0"}}}
+            (root / "backend/composer.json").write_text(json.dumps(current), encoding="utf-8")
+            with mock.patch.object(builder, "run_git", return_value=json.dumps(previous)):
+                builder.verify_composer_runtime_contract(root, "v1.0.125")
+
+    def test_update_zip_refuses_invalid_or_unverifiable_composer_contract(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "backend").mkdir()
+            (root / "backend/composer.json").write_text('{"require": {}}', encoding="utf-8")
+            with mock.patch.object(builder, "run_git", return_value="not json"):
+                with self.assertRaisesRegex(RuntimeError, "Unable to verify"):
+                    builder.verify_composer_runtime_contract(root, "v1.0.125")
+            with mock.patch.object(builder, "run_git", return_value="[]"):
+                with self.assertRaisesRegex(RuntimeError, "must be a JSON object"):
+                    builder.verify_composer_runtime_contract(root, "v1.0.125")
 
 
 if __name__ == "__main__":
