@@ -15,21 +15,18 @@ final class OperationalTenantScope
         $channel = $channel === null ? null : strtoupper($channel);
         $roleChannel = $channel ?? 'B2C';
 
-        // A caller may retain a formerly active principal or dirty the
-        // in-memory primary key. Neither a stale User nor a forged ID may
-        // authorize the Super Admin shortcut or store-scoped ERP reads.
-        // Rehydrate the original persisted identity before inspecting roles,
-        // permission overrides or the current active state.
+        // A dirty or unsaved User primary key cannot authorize another actor.
+        // Reject local deactivation and retain the original persisted identity.
+        // The following store-role/override queries JOIN users.is_active and
+        // the global/Super Admin store query CROSS JOINs that same live guard.
+        // Do NOT add a standalone User lookup for each scope evaluation:
+        // bounded warehouse and reorder reads rely on constant query counts.
         $originalId = $user->exists ? $user->getRawOriginal($user->getKeyName()) : null;
-        if ($originalId === null || (string) $user->getKey() !== (string) $originalId) {
+        if ($originalId === null
+            || (string) $user->getKey() !== (string) $originalId
+            || ! $user->is_active) {
             return [];
         }
-
-        $persisted = User::query()->whereKey($originalId)->where('is_active', true)->first();
-        if (! $persisted instanceof User) {
-            return [];
-        }
-        $user = $persisted;
 
         if ($user->hasRole('SUPER_ADMIN')) {
             return $this->storeIdsForChannels($channel === null ? ['B2B', 'B2C'] : [$channel], $user);
