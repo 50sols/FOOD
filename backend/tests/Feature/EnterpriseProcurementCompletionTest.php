@@ -2088,6 +2088,7 @@ final class EnterpriseProcurementCompletionTest extends TestCase
         }
     }
 
+    public function test_contract_activation_assignment_and_termination_deny_moved_supplier_without_writes_in_ar_and_en(): void
     {
         $this->enableProcurement();
         $completion = app(ProcurementCompletionManager::class);
