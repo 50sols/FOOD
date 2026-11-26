@@ -3367,6 +3367,77 @@ final class EnterpriseProcurementCompletionTest extends TestCase
         $this->assertSame(0, DB::table('enterprise_purchase_invoices')->count());
     }
 
+    public function test_contract_expiry_report_and_bi_bridge_fail_closed_when_store_supplier_moves_in_ar_and_en(): void
+    {
+        $this->enableProcurement();
+        [$actor, $store, $context] = $this->scopedUser(
+            $this->allPermissions(), 'P135-CTR-REPORT-STORE',
+        );
+        $supplier = app(SupplierDirectory::class)->create($actor, $context, [
+            'scope_type' => 'store',
+            'code' => 'P135-CTR-REPORT-SUP',
+            'name_en' => 'Contract report scoped supplier',
+        ]);
+        $completion = app(ProcurementCompletionManager::class);
+        $contract = $completion->createContract($actor, $context, [
+            'supplier_id' => $supplier->id,
+            'title' => 'Scoped report contract',
+            'currency_code' => 'KWD',
+            'starts_on' => now()->toDateString(),
+            'ends_on' => now()->addDays(30)->toDateString(),
+        ]);
+        $foreignStore = $this->createRetailStore('P135-CTR-REPORT-FOREIGN');
+
+        $readReport = fn (): array => $completion->report($actor, $context, 'contract_expiry')['rows'];
+        $readBridge = fn (): array => $completion->reportForStore(
+            'contract_expiry', $store->id, [], 25, 0, $context->enterpriseScope,
+        )['rows'];
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+
+            $this->assertSame(
+                [$contract->contract_number],
+                array_column($readReport(), 'contract_number'),
+            );
+            $this->assertSame(
+                [$contract->contract_number],
+                array_column($readBridge(), 'contract_number'),
+            );
+
+            $auditBefore = DB::table('audit_logs')->count();
+            // A legacy contract may still point to a supplier whose current
+            // store entitlement was transferred. Neither report can reuse the
+            // formerly permitted supplier identity or financial ceilings.
+            DB::table('enterprise_suppliers')->where('id', $supplier->id)
+                ->update(['store_id' => $foreignStore->id, 'scope_type' => 'store']);
+            $this->assertSame([], $readReport());
+            $this->assertSame([], $readBridge());
+            $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+
+            // Company-scoped supplier is intentionally visible to both
+            // legitimate company stores; store scope is still exact.
+            DB::table('enterprise_suppliers')->where('id', $supplier->id)
+                ->update(['scope_type' => 'company', 'store_id' => null]);
+            $this->assertSame(
+                [$contract->contract_number],
+                array_column($readReport(), 'contract_number'),
+            );
+            $this->assertSame(
+                [$contract->contract_number],
+                array_column($readBridge(), 'contract_number'),
+            );
+
+            DB::table('enterprise_suppliers')->where('id', $supplier->id)
+                ->update(['scope_type' => 'store', 'store_id' => $store->id]);
+            $this->assertSame(
+                [$contract->contract_number],
+                array_column($readReport(), 'contract_number'),
+            );
+            $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+        }
+    }
+
     public function test_procurement_report_and_bi_bridge_ignore_foreign_company_rows_with_same_store_id(): void
     {
         $this->enableProcurement();

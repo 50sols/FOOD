@@ -3272,6 +3272,17 @@ final class ProcurementCompletionManager
             ->where('suppliers.organization_id', $organizationId)
             ->where('suppliers.company_id', $companyId)
             ->where('contracts.store_id', $storeId)
+            // Contract and its supplier are independent scope boundaries.
+            // A store-scoped supplier moved to another store must disappear
+            // from both the Admin report and the BI bridge before its contract
+            // ceilings, commitments and supplier reference are disclosed.
+            ->where(function (QueryBuilder $query) use ($storeId): void {
+                $query->where('suppliers.scope_type', 'company')
+                    ->orWhere(function (QueryBuilder $store) use ($storeId): void {
+                        $store->where('suppliers.scope_type', 'store')
+                            ->where('suppliers.store_id', $storeId);
+                    });
+            })
             ->whereIn('contracts.status', ['active', 'draft'])
             ->orderBy('contracts.ends_on')
             ->offset($offset)
