@@ -3131,6 +3131,73 @@ SQL);
         $this->assertSame($approved->id, $valid['policy']->id);
         $this->assertFalse($valid['certified']);
 
+        // Interleave a scope change after the approved-rule SELECT and
+        // reference validation, just before the final persisted user read.
+        // This proves deterministic same-connection SQL behavior, not an
+        // independent concurrent MySQL transaction.
+        $lateScope = null;
+        $ruleRead = false;
+        $changed = false;
+        DB::listen(static function ($query) use (
+            &$lateScope, &$ruleRead, &$changed, $supplierId, $warehouseId, $foreign
+        ): void {
+            if ($lateScope === null || $changed) {
+                return;
+            }
+            $sql = strtolower((string) $query->sql);
+            if (str_starts_with(ltrim($sql), 'select')
+                && str_contains($sql, 'enterprise_inventory_ownership_rule_revisions')) {
+                $ruleRead = true;
+
+                return;
+            }
+            if (! $ruleRead || (! str_contains($sql, 'from "users"')
+                && ! str_contains($sql, 'from `users`'))) {
+                return;
+            }
+            $changed = true;
+            if ($lateScope === 'supplier') {
+                DB::table('enterprise_suppliers')->where('id', $supplierId)
+                    ->update(['store_id' => $foreign['store_id']]);
+            } else {
+                DB::table('warehouses')->where('id', $warehouseId)
+                    ->update(['is_active' => false]);
+            }
+        });
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            foreach (['supplier', 'warehouse'] as $kind) {
+                $lateScope = $kind;
+                $ruleRead = false;
+                $changed = false;
+                try {
+                    $service->advisoryFor(
+                        $checker, $stock['store_id'], 'B2C', $supplierId, $warehouseId,
+                    );
+                    $this->fail("Late {$kind} revocation must not expose title policy in {$locale}.");
+                } catch (HttpException $exception) {
+                    $this->assertSame(404, $exception->getStatusCode());
+                }
+                $this->assertTrue($changed, "Expected post-policy {$kind} revocation in {$locale}.");
+                $lateScope = null;
+                if ($kind === 'supplier') {
+                    DB::table('enterprise_suppliers')->where('id', $supplierId)
+                        ->update(['store_id' => $stock['store_id']]);
+                } else {
+                    DB::table('warehouses')->where('id', $warehouseId)
+                        ->update(['is_active' => true]);
+                }
+                $restoredRead = $service->advisoryFor(
+                    $checker, $stock['store_id'], 'B2C', $supplierId, $warehouseId,
+                );
+                $this->assertSame($approved->id, $restoredRead['policy']->id);
+                $this->assertFalse($restoredRead['certified']);
+                $this->assertDatabaseHas('enterprise_inventory_ownership_rule_revisions', [
+                    'id' => $approved->id, 'status' => 'APPROVED_RULE',
+                ]);
+            }
+        }
+
         DB::table('enterprise_suppliers')->where('id', $supplierId)
             ->update(['status' => 'inactive']);
         try {

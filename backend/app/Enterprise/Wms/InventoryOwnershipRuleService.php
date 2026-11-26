@@ -294,6 +294,17 @@ final class InventoryOwnershipRuleService
         abort_unless($this->companyForStore($storeId) === $companyId, 404);
         $this->assertChannel($storeId, $channel);
 
+        // A supplier can be transferred or a warehouse disabled after the
+        // original scope SELECT and policy-reference validation. Recheck the
+        // explicit business identities immediately before policy disclosure.
+        if ($supplierId !== null) {
+            abort_unless($this->supplierInScope($supplierId, $companyId, $storeId), 404);
+        }
+        if ($warehouseId !== null) {
+            abort_unless(DB::table('warehouses')->where('id', $warehouseId)
+                ->where('store_id', $storeId)->where('is_active', true)->exists(), 404);
+        }
+
         if ($invalidPolicy) {
             return ['state' => 'UNKNOWN', 'certified' => false, 'policy' => null];
         }
