@@ -821,6 +821,84 @@ class BuildUpdateBundleSourceSafetyTest(unittest.TestCase):
                         (output_dir / ".FOODEX-Update.publish.lock").exists()
                     )
 
+    def test_update_release_group_rejects_unsafe_unix_mode_bits(self) -> None:
+        # A readable ZIP with coherent file list, checksum and manifest is
+        # still not an approved release when a regular member declares
+        # executable, group/world-write, setuid, setgid or sticky bits.
+        # Preserve canonical 0644 and private 0600 regular-file positives.
+        cases = (
+            ("canonical_0644", 0o644, True),
+            ("private_0600", 0o600, True),
+            ("executable_0755", 0o755, False),
+            ("group_write_0664", 0o664, False),
+            ("world_write_0646", 0o646, False),
+            ("setuid_4644", 0o4644, False),
+            ("setgid_2644", 0o2644, False),
+            ("sticky_1644", 0o1644, False),
+        )
+        for variant, permissions, allowed in cases:
+            with self.subTest(variant=variant):
+                with tempfile.TemporaryDirectory() as temporary:
+                    output_dir = Path(temporary)
+                    staging, contents = self._staged_release_fixture(output_dir)
+                    binary = io.BytesIO()
+                    with zipfile.ZipFile(
+                        binary, "w", compression=zipfile.ZIP_DEFLATED
+                    ) as archive:
+                        member = zipfile.ZipInfo("backend/artisan")
+                        member.create_system = 3
+                        member.compress_type = zipfile.ZIP_DEFLATED
+                        member.external_attr = (
+                            (stat.S_IFREG | permissions) << 16
+                        )
+                        archive.writestr(
+                            member, b"<?php // reviewed Laravel CLI"
+                        )
+                    zipped = binary.getvalue()
+                    with zipfile.ZipFile(io.BytesIO(zipped)) as archive:
+                        self.assertEqual(
+                            (archive.infolist()[0].external_attr >> 16) & 0o7777,
+                            permissions,
+                        )
+                        self.assertEqual(
+                            archive.read("backend/artisan"),
+                            b"<?php // reviewed Laravel CLI",
+                        )
+                    digest = hashlib.sha256(zipped).hexdigest()
+                    manifest = json.loads(contents["FOODEX-Update.json"])
+                    manifest["sha256"] = digest
+                    contents["FOODEX-Update.json"] = (
+                        json.dumps(manifest) + "\n"
+                    ).encode("utf-8")
+                    contents["FOODEX-Update.sha256.txt"] = (
+                        f"{digest}  FOODEX-Update.zip\n"
+                    ).encode("utf-8")
+                    contents["FOODEX-Update.zip"] = zipped
+                    for name, payload in contents.items():
+                        (staging / name).write_bytes(payload)
+
+                    if allowed:
+                        builder.publish_release_bundle(staging, output_dir)
+                        for name, payload in contents.items():
+                            self.assertEqual(
+                                (output_dir / name).read_bytes(), payload
+                            )
+                    else:
+                        with self.assertRaisesRegex(
+                            RuntimeError, "Unsafe.*member permissions"
+                        ):
+                            builder.publish_release_bundle(staging, output_dir)
+                        for name, payload in contents.items():
+                            self.assertFalse(
+                                os.path.lexists(output_dir / name), name
+                            )
+                            self.assertEqual(
+                                (staging / name).read_bytes(), payload
+                            )
+                    self.assertFalse(
+                        (output_dir / ".FOODEX-Update.publish.lock").exists()
+                    )
+
     def test_update_release_group_requires_portable_zip_compression(self) -> None:
         # ZIP members and SHA/manifest/sidecars agree, but Python accepts
         # compression methods that shared-host PHP ZipArchive cannot reliably

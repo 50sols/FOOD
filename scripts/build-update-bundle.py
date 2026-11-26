@@ -1038,6 +1038,16 @@ def assert_staged_release_consistency(staging_dir: Path) -> str:
                     or (member.flag_bits & 1)
                 ):
                     raise RuntimeError(f"Unsafe Update release ZIP member type: {canonical}")
+                # Signed metadata can be rehashed with unsafe Unix mode
+                # bits even when the ZIP member is otherwise a regular file.
+                # The first-party builder emits non-executable 0644. Never
+                # advertise a package containing executable, group/world-
+                # writable or privileged regular files for shared hosting.
+                unix_permissions = (member.external_attr >> 16) & 0o7777
+                if unix_permissions & (0o111 | 0o022 | 0o7000):
+                    raise RuntimeError(
+                        f"Unsafe Update release ZIP member permissions: {canonical}"
+                    )
                 # ZIP_BZIP2/ZIP_LZMA may work in Python but are not portable
                 # to the baseline PHP ZipArchive/extension setup on cPanel.
                 # Do not publish a coherent update that cannot be extracted.
