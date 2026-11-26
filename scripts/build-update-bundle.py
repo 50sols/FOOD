@@ -974,6 +974,13 @@ def assert_staged_release_consistency(staging_dir: Path) -> str:
                     or (member.flag_bits & 1)
                 ):
                     raise RuntimeError(f"Unsafe Update release ZIP member type: {canonical}")
+                # ZIP_BZIP2/ZIP_LZMA may work in Python but are not portable
+                # to the baseline PHP ZipArchive/extension setup on cPanel.
+                # Do not publish a coherent update that cannot be extracted.
+                if member.compress_type not in (zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED):
+                    raise RuntimeError(
+                        f"Unsupported Update release ZIP compression method: {canonical}"
+                    )
 
             # A coherent ZIP+SHA256 sidecar does not prove that every
             # compressed member can be decoded. Read ALL members to EOF so

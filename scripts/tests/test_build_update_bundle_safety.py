@@ -821,6 +821,52 @@ class BuildUpdateBundleSourceSafetyTest(unittest.TestCase):
                         (output_dir / ".FOODEX-Update.publish.lock").exists()
                     )
 
+    def test_update_release_group_requires_portable_zip_compression(self) -> None:
+        # ZIP members and SHA/manifest/sidecars agree, but Python accepts
+        # compression methods that shared-host PHP ZipArchive cannot reliably
+        # extract. Reject before the ZIP-last publish marker is created.
+        cases = (
+            ("stored", zipfile.ZIP_STORED, True),
+            ("deflated", zipfile.ZIP_DEFLATED, True),
+            ("bzip2", zipfile.ZIP_BZIP2, False),
+            ("lzma", zipfile.ZIP_LZMA, False),
+        )
+        for method, compression, allowed in cases:
+            with self.subTest(method=method):
+                with tempfile.TemporaryDirectory() as temporary:
+                    output_dir = Path(temporary)
+                    staging, contents = self._staged_release_fixture(output_dir)
+                    binary = io.BytesIO()
+                    with zipfile.ZipFile(binary, "w", compression=compression) as archive:
+                        archive.writestr("backend/artisan", b"<?php // reviewed updater runtime")
+                    zipped = binary.getvalue()
+                    digest = hashlib.sha256(zipped).hexdigest()
+                    manifest = json.loads(contents["FOODEX-Update.json"])
+                    manifest["sha256"] = digest
+                    contents["FOODEX-Update.json"] = (
+                        json.dumps(manifest) + "\n"
+                    ).encode("utf-8")
+                    contents["FOODEX-Update.sha256.txt"] = (
+                        f"{digest}  FOODEX-Update.zip\n"
+                    ).encode("utf-8")
+                    contents["FOODEX-Update.zip"] = zipped
+                    for name, content in contents.items():
+                        (staging / name).write_bytes(content)
+
+                    if allowed:
+                        builder.publish_release_bundle(staging, output_dir)
+                        for name, content in contents.items():
+                            self.assertEqual((output_dir / name).read_bytes(), content)
+                    else:
+                        with self.assertRaisesRegex(RuntimeError, "Unsupported.*compression"):
+                            builder.publish_release_bundle(staging, output_dir)
+                        for name, content in contents.items():
+                            self.assertFalse(os.path.lexists(output_dir / name), name)
+                            self.assertEqual((staging / name).read_bytes(), content)
+                    self.assertFalse(
+                        (output_dir / ".FOODEX-Update.publish.lock").exists()
+                    )
+
     def test_update_release_group_enforces_runtime_expansion_budgets_before_publish(self) -> None:
         # Real Laravel Verify Package defaults reject >50k ZIP entries, >256 MiB
         # per entry or >1 GiB cumulative expanded data. A coherent ZIP and
