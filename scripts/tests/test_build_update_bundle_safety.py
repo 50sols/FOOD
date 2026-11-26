@@ -1071,6 +1071,7 @@ class BuildUpdateBundleSourceSafetyTest(unittest.TestCase):
             ("disk_number", 4, 2),
             ("central_disk_number", 6, 2),
             ("central_size", 12, 4),
+            ("central_header_magic", None, None),
         )
         for variant, field, width in cases:
             with self.subTest(variant=variant):
@@ -1082,6 +1083,11 @@ class BuildUpdateBundleSourceSafetyTest(unittest.TestCase):
                         offset = len(binary) - 22 + field
                         old = int.from_bytes(binary[offset:offset + width], "little")
                         binary[offset:offset + width] = (old + 1).to_bytes(width, "little")
+                    elif variant == "central_header_magic":
+                        # Coherently hashed archive with unreadable central
+                        # header must produce the same precise metadata denial.
+                        central_offset = int.from_bytes(binary[-6:-2], "little")
+                        binary[central_offset:central_offset + 4] = b"BAD!"
                     zipped = bytes(binary)
                     if variant in ("canonical", "entries_this_disk", "total_entries"):
                         # Python still reads all files despite the changed EOCD

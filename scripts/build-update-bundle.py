@@ -986,7 +986,14 @@ def assert_staged_release_consistency(staging_dir: Path) -> str:
             or zip_ending[20:22] != b"\x00\x00"
         ):
             raise RuntimeError("Inconsistent Update release ZIP end-directory metadata.")
-        with zipfile.ZipFile(archive_path) as archive:
+        # Python's central-directory parser may reject a contradictory EOCD
+        # before our physical parity check runs. Fail closed with the same
+        # precise publisher diagnostic, never a generic staging error.
+        try:
+            archive = zipfile.ZipFile(archive_path)
+        except zipfile.BadZipFile as exc:
+            raise RuntimeError("Inconsistent Update release ZIP end-directory metadata.") from exc
+        with archive:
             members = archive.infolist()
             # The canonical producer emits no ZIP-level comments. Coherent
             # manifest/digest sidecars do not authorize opaque unlisted payload
