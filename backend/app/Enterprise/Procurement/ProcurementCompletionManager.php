@@ -1795,9 +1795,12 @@ final class ProcurementCompletionManager
         // paths are correctly withheld. Fail closed for the entire response.
         $liveContract = $this->visibleContract($scope, $contractId);
         abort_unless(
-            (int) $liveContract->supplier_id === (int) $contract->supplier_id,
+            // Rechecking only supplier_id lets a late title, ceiling, currency
+            // or lifecycle mutation return stale financial contract terms.
+            // Both scoped reads use the same complete contract projection.
+            (array) $liveContract === (array) $contract,
             404,
-            'Procurement contract supplier changed during detail read.',
+            'Procurement contract financial snapshot changed during detail read.',
         );
         // Recheck the originally authorized supplier after reading private
         // attachment paths, not only at the beginning of this request.

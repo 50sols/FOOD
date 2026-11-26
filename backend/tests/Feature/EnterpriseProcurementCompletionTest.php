@@ -2243,6 +2243,85 @@ final class EnterpriseProcurementCompletionTest extends TestCase
         }
     }
 
+    public function test_contract_detail_refuses_late_financial_snapshot_drift_in_ar_and_en(): void
+    {
+        Storage::fake('local');
+        $this->enableProcurement();
+        [$actor, , $context] = $this->scopedUser($this->allPermissions(), 'P135-CTR-LATE-FINANCE');
+        $directory = app(SupplierDirectory::class);
+        $completion = app(ProcurementCompletionManager::class);
+
+        $armed = false;
+        $changed = false;
+        $contractId = 0;
+        DB::listen(static function ($query) use (&$armed, &$changed, &$contractId): void {
+            $sql = strtolower(ltrim((string) $query->sql));
+            if (! $armed || $changed || $contractId === 0
+                || ! str_starts_with($sql, 'select')
+                || ! str_contains($sql, 'enterprise_procurement_contract_documents')
+                || ! str_contains($sql, 'enterprise_procurement_contracts')
+                || ! str_contains($sql, 'order by')) {
+                return;
+            }
+
+            // After detail has read the private-document page but before its
+            // terminal contract SELECT, mutate a sensitive financial term.
+            // Same-connection deterministic interleaving, not two-session UAT.
+            $armed = false;
+            $changed = true;
+            DB::table('enterprise_procurement_contracts')->where('id', $contractId)
+                ->update(['currency_code' => 'USD']);
+        });
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            $supplier = $directory->create($actor, $context, [
+                'scope_type' => 'store',
+                'code' => 'P135-CTR-FINANCE-'.strtoupper($locale),
+                'name_en' => 'Financial detail supplier '.$locale,
+            ]);
+            $contract = $completion->createContract($actor, $context, [
+                'supplier_id' => $supplier->id,
+                'title' => 'Sensitive finance snapshot '.$locale,
+                'currency_code' => 'KWD',
+                'starts_on' => now()->toDateString(),
+                'ends_on' => now()->addDays(30)->toDateString(),
+            ]);
+            $document = $completion->addContractDocument(
+                $actor, $context, $contract->id,
+                ['title' => 'Private financial contract '.$locale],
+                UploadedFile::fake()->create('private-finance.pdf', 4, 'application/pdf'),
+            );
+            $beforeAudit = DB::table('audit_logs')->count();
+            $beforeDocuments = DB::table('enterprise_procurement_contract_documents')->count();
+            $this->assertSame('KWD', $completion->contractDetail($actor, $context, $contract->id)['contract']->currency_code);
+
+            $contractId = (int) $contract->id;
+            $changed = false;
+            $armed = true;
+            try {
+                $completion->contractDetail($actor, $context, $contract->id);
+                $this->fail('A stale financial contract detail snapshot must not be disclosed.');
+            } catch (HttpException $exception) {
+                $this->assertSame(404, $exception->getStatusCode());
+            } finally {
+                $armed = false;
+            }
+            $this->assertTrue($changed, 'Expected late contract currency mutation after document SELECT.');
+            $this->assertDatabaseHas('enterprise_procurement_contracts', [
+                'id' => $contract->id,
+                'currency_code' => 'USD',
+            ]);
+            $current = $completion->contractDetail($actor, $context, $contract->id);
+            $this->assertSame('USD', $current['contract']->currency_code);
+            $this->assertSame($document->storage_path, $current['documents'][0]->storage_path);
+            $this->assertSame($beforeDocuments, DB::table('enterprise_procurement_contract_documents')->count());
+            $this->assertSame($beforeAudit, DB::table('audit_logs')->count());
+            Storage::disk('local')->assertExists($document->storage_path);
+            $contractId = 0;
+        }
+    }
+
     public function test_contract_detail_does_not_expose_attachment_paths_after_store_transfer_in_ar_and_en(): void
     {
         Storage::fake('local');
