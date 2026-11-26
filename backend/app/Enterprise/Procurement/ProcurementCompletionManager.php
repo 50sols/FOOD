@@ -1760,6 +1760,11 @@ final class ProcurementCompletionManager
                     'Procurement module is disabled.',
                 );
                 $currentContract = $this->visibleContract($scope, $contractId, true);
+                // The contract may still belong to this store after its supplier
+                // is transferred to another legal company or store. Pin the
+                // supplier's CURRENT ownership in the same write transaction
+                // before registering a private document or creating an audit.
+                $this->visibleSupplier($scope, (int) $currentContract->supplier_id, true);
                 $id = DB::table('enterprise_procurement_contract_documents')->insertGetId([
                     'contract_id' => $currentContract->id,
                     'title' => $data['title'],

@@ -2004,7 +2004,90 @@ final class EnterpriseProcurementCompletionTest extends TestCase
         }
     }
 
-    public function test_contract_activation_assignment_and_termination_deny_moved_supplier_without_writes_in_ar_and_en(): void
+    public function test_contract_document_registration_denies_supplier_transfer_at_upload_seam_in_ar_and_en(): void
+    {
+        Storage::fake('local');
+        $this->enableProcurement();
+        [$actor, $store, $context] = $this->scopedUser(
+            $this->allPermissions(), 'P135-CTR-DOC-SUP-OWNER',
+        );
+        $foreignStore = $this->createRetailStore('P135-CTR-DOC-SUP-FOREIGN');
+        $supplier = app(SupplierDirectory::class)->create($actor, $context, [
+            'scope_type' => 'store',
+            'code' => 'P135-CTR-DOC-SUP-TRANSFER',
+            'name_en' => 'Supplier document transfer guard',
+        ]);
+        $completion = app(ProcurementCompletionManager::class);
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            $contract = $completion->createContract($actor, $context, [
+                'supplier_id' => $supplier->id,
+                'title' => 'Private document after supplier transfer '.$locale,
+                'currency_code' => 'KWD',
+                'starts_on' => now()->toDateString(),
+                'ends_on' => now()->addDays(30)->toDateString(),
+            ]);
+            $beforeDocuments = DB::table('enterprise_procurement_contract_documents')->count();
+            $beforeAudit = DB::table('audit_logs')->count();
+            $changed = false;
+            $fixture = UploadedFile::fake()->create('moved-supplier.pdf', 4, 'application/pdf');
+
+            // Swap only the supplier's legal/store ownership after the
+            // contract preflight; the contract itself remains in this store.
+            // The upload seam precedes the locked registration transaction.
+            $attachment = new class($fixture->getPathname(), $fixture->getClientOriginalName(), static function () use (&$changed, $supplier, $foreignStore): void {
+                $changed = true;
+                DB::table('enterprise_suppliers')->where('id', $supplier->id)
+                    ->update(['store_id' => $foreignStore->id]);
+            }) extends UploadedFile {
+
+                public function __construct(string $path, string $name, private readonly \Closure $transfer)
+                {
+                    parent::__construct($path, $name, 'application/pdf', null, true);
+                }
+
+                public function guessExtension(): ?string
+                {
+                    ($this->transfer)();
+
+                    return 'pdf';
+                }
+            };
+
+            try {
+                $completion->addContractDocument(
+                    $actor, $context, $contract->id,
+                    ['title' => 'Foreign supplier must deny'], $attachment,
+                );
+                $this->fail('A transferred supplier must deny private contract document registration.');
+            } catch (ModelNotFoundException $exception) {
+                $this->assertNotEmpty($exception->getMessage());
+            }
+
+            $this->assertTrue($changed);
+            $this->assertDatabaseHas('enterprise_procurement_contracts', [
+                'id' => $contract->id,
+                'store_id' => $store->id,
+            ]);
+            $this->assertSame($beforeDocuments, DB::table('enterprise_procurement_contract_documents')->count());
+            $this->assertSame($beforeAudit, DB::table('audit_logs')->count());
+            $this->assertSame([], Storage::disk('local')->allFiles('procurement/contracts/'.$contract->public_id));
+
+            DB::table('enterprise_suppliers')->where('id', $supplier->id)
+                ->update(['store_id' => $store->id]);
+            $document = $completion->addContractDocument(
+                $actor, $context, $contract->id,
+                ['title' => 'Authorized local document '.$locale],
+                UploadedFile::fake()->create('authorized.pdf', 4, 'application/pdf'),
+            );
+            $this->assertSame((int) $contract->id, (int) $document->contract_id);
+            $this->assertSame($beforeDocuments + 1, DB::table('enterprise_procurement_contract_documents')->count());
+            $this->assertSame($beforeAudit + 1, DB::table('audit_logs')->count());
+            Storage::disk('local')->assertExists($document->storage_path);
+        }
+    }
+
     {
         $this->enableProcurement();
         $completion = app(ProcurementCompletionManager::class);
