@@ -3229,12 +3229,11 @@ SQL);
                 'request_uuid' => (string) Str::uuid(),
             ]);
             $auditBefore = DB::table('audit_logs')->count();
-            $armed = true;
-            $revoked = false;
+            $race = (object) ['armed' => true, 'revoked' => false];
             // Deterministic same-connection revocation after the competing-rule
             // SELECT, *after* preflight reference validation, before approval.
-            DB::listen(static function ($query) use (&$armed, &$revoked, $supplierId): void {
-                if (! $armed || $revoked) {
+            DB::listen(static function ($query) use ($race, $supplierId): void {
+                if (! $race->armed || $race->revoked) {
                     return;
                 }
                 $sql = strtolower(ltrim((string) $query->sql));
@@ -3244,7 +3243,7 @@ SQL);
                     || ! str_contains($sql, 'exists')) {
                     return;
                 }
-                $revoked = true;
+                $race->revoked = true;
                 DB::table('enterprise_suppliers')->where('id', $supplierId)
                     ->update(['status' => 'inactive']);
             });
@@ -3254,9 +3253,9 @@ SQL);
             } catch (HttpException $exception) {
                 $this->assertSame(409, $exception->getStatusCode());
             } finally {
-                $armed = false;
+                $race->armed = false;
             }
-            $this->assertTrue($revoked, 'Expected supplier revocation after conflict SELECT.');
+            $this->assertTrue($race->revoked, 'Expected supplier revocation after conflict SELECT.');
             $this->assertDatabaseHas('enterprise_inventory_ownership_rule_revisions', [
                 'id' => $draft->id, 'status' => 'DRAFT', 'reviewed_by' => null,
             ]);
