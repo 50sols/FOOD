@@ -272,24 +272,39 @@ final class ProcurementCompletionManager
             ->paginate(max(10, min(100, $perPage)))
             ->withQueryString();
 
-        // A request can be transferred independently from its RFQ. Do not
-        // return former-store RFQ or joined request references after either
-        // record changes tenant ownership during page hydration.
-        $rfqIds = $page->getCollection()->pluck('id')->all();
+        // An RFQ or its joined request can be transferred OR edited after
+        // pagination hydrated the row. Count-only ownership checks allow a
+        // former status, title, currency or source request number to escape
+        // even when all selected IDs still belong to the same store.
+        // Reconcile the entire bounded joined projection before returning.
+        $selectedRows = $page->getCollection();
+        $rfqIds = $selectedRows->pluck('id')->all();
         if ($rfqIds !== []) {
+            $expected = $selectedRows->mapWithKeys(static fn ($row): array => [
+                (int) $row->id => (array) $row,
+            ])->sortKeys()->all();
+            $currentRows = DB::table('enterprise_procurement_rfqs as rfqs')
+                ->join('enterprise_purchase_requests as requests', 'requests.id', '=', 'rfqs.purchase_request_id')
+                ->whereIn('rfqs.id', $rfqIds)
+                ->where('rfqs.organization_id', $scope->organizationId)
+                ->where('rfqs.company_id', $scope->companyId)
+                ->where('rfqs.store_id', $scope->storeId)
+                ->where('requests.organization_id', $scope->organizationId)
+                ->where('requests.company_id', $scope->companyId)
+                ->where('requests.store_id', $scope->storeId)
+                ->get([
+                    'rfqs.*',
+                    'requests.request_number as source_request_number',
+                ]);
+            $current = $currentRows->mapWithKeys(static fn ($row): array => [
+                (int) $row->id => (array) $row,
+            ])->sortKeys()->all();
             abort_unless(
-                DB::table('enterprise_procurement_rfqs as rfqs')
-                    ->join('enterprise_purchase_requests as requests', 'requests.id', '=', 'rfqs.purchase_request_id')
-                    ->whereIn('rfqs.id', $rfqIds)
-                    ->where('rfqs.organization_id', $scope->organizationId)
-                    ->where('rfqs.company_id', $scope->companyId)
-                    ->where('rfqs.store_id', $scope->storeId)
-                    ->where('requests.organization_id', $scope->organizationId)
-                    ->where('requests.company_id', $scope->companyId)
-                    ->where('requests.store_id', $scope->storeId)
-                    ->count() === count($rfqIds),
+                count($expected) === $selectedRows->count()
+                    && count($current) === $currentRows->count()
+                    && $current === $expected,
                 404,
-                'RFQ or source purchase request ownership changed during pagination.',
+                'RFQ or source purchase request data changed during pagination.',
             );
         }
 

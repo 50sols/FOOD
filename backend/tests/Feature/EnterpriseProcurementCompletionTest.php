@@ -229,6 +229,86 @@ final class EnterpriseProcurementCompletionTest extends TestCase
         }
     }
 
+    public function test_rfq_pagination_denies_late_same_store_rfq_or_source_metadata_changes_in_ar_and_en(): void
+    {
+        $this->enableProcurement();
+        [$actor, , $context] = $this->scopedUser($this->allPermissions(), 'P135-RFQ-SNAPSHOT');
+        $requests = app(PurchaseRequestManager::class);
+        $completion = app(ProcurementCompletionManager::class);
+
+        $armed = false;
+        $injected = false;
+        $mutation = [];
+        DB::listen(static function ($query) use (&$armed, &$injected, &$mutation): void {
+            $sql = strtolower((string) $query->sql);
+            if (! $armed || $injected || ! str_contains($sql, 'select')
+                || ! str_contains($sql, 'enterprise_procurement_rfqs')
+                || ! str_contains($sql, 'enterprise_purchase_requests')
+                || ! str_contains($sql, 'order by')) {
+                return;
+            }
+
+            // A real joined page SELECT has completed. A second write on the
+            // same test connection reproduces the stale response boundary;
+            // this is not a two-session database isolation certification.
+            $armed = false;
+            $injected = true;
+            DB::table($mutation['table'])->where('id', $mutation['id'])
+                ->update([$mutation['field'] => $mutation['next']]);
+        });
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            $request = $requests->create($actor, $context, [
+                'currency_code' => 'KWD',
+                'reason' => 'RFQ snapshot verification '.$locale,
+                'lines' => [[
+                    'item_code' => 'P135-RFQ-SNAPSHOT-'.strtoupper($locale),
+                    'description' => 'Same-store late metadata change',
+                    'quantity' => 1,
+                    'unit' => 'each',
+                    'estimated_unit_cost' => 2.000,
+                ]],
+            ]);
+            $requests->submit($actor, $context, $request->id);
+            $rfq = $completion->createRfq($actor, $context, $request->id, [
+                'title' => 'RFQ before select '.$locale,
+            ]);
+            $filter = ['q' => $rfq->rfq_number];
+            $this->assertSame(1, $completion->paginateRfqs($actor, $context, $filter)->total());
+
+            $auditBefore = DB::table('audit_logs')->count();
+            $cases = [
+                ['table' => 'enterprise_procurement_rfqs', 'id' => $rfq->id, 'field' => 'title', 'next' => 'Changed title '.$locale],
+                ['table' => 'enterprise_procurement_rfqs', 'id' => $rfq->id, 'field' => 'status', 'next' => 'cancelled'],
+                ['table' => 'enterprise_purchase_requests', 'id' => $request->id, 'field' => 'request_number', 'next' => 'CHANGED-REQUEST-'.strtoupper($locale)],
+            ];
+
+            foreach ($cases as $mutation) {
+                $original = DB::table($mutation['table'])->where('id', $mutation['id'])
+                    ->value($mutation['field']);
+                $injected = false;
+                $armed = true;
+                try {
+                    $completion->paginateRfqs($actor, $context, $filter);
+                    $this->fail('Late same-store RFQ or source metadata must not escape.');
+                } catch (HttpException $exception) {
+                    $this->assertTrue($injected, 'The joined page SELECT must trigger the late write.');
+                    $this->assertSame(404, $exception->getStatusCode());
+                } finally {
+                    $armed = false;
+                    DB::table($mutation['table'])->where('id', $mutation['id'])
+                        ->update([$mutation['field'] => $original]);
+                }
+
+                $page = $completion->paginateRfqs($actor, $context, $filter);
+                $this->assertSame(1, $page->total());
+                $this->assertSame((int) $rfq->id, (int) $page->items()[0]->id);
+                $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+            }
+        }
+    }
+
     public function test_scoped_supplier_contract_search_preserves_literal_numbers_titles_and_supplier_codes(): void
     {
         $this->enableProcurement();
