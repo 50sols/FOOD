@@ -1060,6 +1060,65 @@ class BuildUpdateBundleSourceSafetyTest(unittest.TestCase):
                         (output_dir / ".FOODEX-Update.publish.lock").exists()
                     )
 
+    def test_update_release_group_rejects_local_header_integrity_drift(self) -> None:
+        # zipfile reads CRC and lengths from the central directory, so
+        # adversarial local-only overrides remain readable even with a
+        # coherent SHA256 + manifest. Reject parser-ambiguous packages.
+        cases = (
+            ("canonical", None),
+            ("local_crc", 14),
+            ("local_compressed_size", 18),
+            ("local_uncompressed_size", 22),
+        )
+        for variant, offset in cases:
+            with self.subTest(variant=variant):
+                with tempfile.TemporaryDirectory() as temporary:
+                    output_dir = Path(temporary)
+                    staging, contents = self._staged_release_fixture(output_dir)
+                    archive_bytes = bytearray(contents["FOODEX-Update.zip"])
+                    if offset is not None:
+                        original_value = int.from_bytes(
+                            archive_bytes[offset:offset + 4], "little"
+                        )
+                        archive_bytes[offset:offset + 4] = (
+                            original_value ^ 1
+                        ).to_bytes(4, "little")
+                    zipped = bytes(archive_bytes)
+                    with zipfile.ZipFile(io.BytesIO(zipped)) as archive:
+                        self.assertEqual(archive.namelist(), ["backend/artisan"])
+                        self.assertEqual(
+                            archive.read("backend/artisan"),
+                            b"<?php // staged reviewed Laravel CLI",
+                        )
+                    digest = hashlib.sha256(zipped).hexdigest()
+                    manifest = json.loads(contents["FOODEX-Update.json"])
+                    manifest["sha256"] = digest
+                    contents["FOODEX-Update.json"] = (
+                        json.dumps(manifest) + "\n"
+                    ).encode("utf-8")
+                    contents["FOODEX-Update.sha256.txt"] = (
+                        f"{digest}  FOODEX-Update.zip\n"
+                    ).encode("utf-8")
+                    contents["FOODEX-Update.zip"] = zipped
+                    for name, payload in contents.items():
+                        (staging / name).write_bytes(payload)
+
+                    if offset is None:
+                        builder.publish_release_bundle(staging, output_dir)
+                        for name, payload in contents.items():
+                            self.assertEqual((output_dir / name).read_bytes(), payload)
+                    else:
+                        with self.assertRaisesRegex(
+                            RuntimeError, "ZIP local-header integrity"
+                        ):
+                            builder.publish_release_bundle(staging, output_dir)
+                        for name, payload in contents.items():
+                            self.assertFalse(os.path.lexists(output_dir / name), name)
+                            self.assertEqual((staging / name).read_bytes(), payload)
+                    self.assertFalse(
+                        (output_dir / ".FOODEX-Update.publish.lock").exists()
+                    )
+
     def test_update_release_group_refuses_undeclared_zip_prefix(self) -> None:
         # zipfile deliberately supports ZIPs with an executable/data prefix,
         # adjusting member offsets so all declared members still read. The

@@ -1077,6 +1077,17 @@ def assert_staged_release_consistency(staging_dir: Path) -> str:
                         or int.from_bytes(header[8:10], "little") != member.compress_type
                     ):
                         raise RuntimeError("Undeclared Update release ZIP interior payload.")
+                    # Python reads CRC and sizes from the central directory,
+                    # not the local header. PHP ZIP consumers may use both.
+                    # Canonical non-descriptor packages must agree bit-for-bit.
+                    if (
+                        int.from_bytes(header[14:18], "little") != member.CRC
+                        or int.from_bytes(header[18:22], "little") != member.compress_size
+                        or int.from_bytes(header[22:26], "little") != member.file_size
+                    ):
+                        raise RuntimeError(
+                            "Inconsistent Update release ZIP local-header integrity fields."
+                        )
                     name_length = int.from_bytes(header[26:28], "little")
                     extra_length = int.from_bytes(header[28:30], "little")
                     if (
