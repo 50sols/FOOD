@@ -2088,6 +2088,103 @@ final class EnterpriseProcurementCompletionTest extends TestCase
         }
     }
 
+    public function test_contract_document_upload_refuses_late_persisted_manage_deny_in_ar_and_en(): void
+    {
+        Storage::fake('local');
+        $this->enableProcurement();
+        [$actor, , $context] = $this->scopedUser(
+            $this->allPermissions(), 'P135-CTR-DOC-MID-DENY',
+        );
+        $supplier = app(SupplierDirectory::class)->create($actor, $context, [
+            'scope_type' => 'store',
+            'code' => 'P135-CTR-DOC-MID-DENY-SUP',
+            'name_en' => 'Mid-upload revoked supplier',
+        ]);
+        $completion = app(ProcurementCompletionManager::class);
+        $permissionId = Permission::query()
+            ->where('code', 'procurement.purchase_orders.manage')->firstOrFail()->id;
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            $contract = $completion->createContract($actor, $context, [
+                'supplier_id' => $supplier->id,
+                'title' => 'Late manage revoke '.$locale,
+                'currency_code' => 'KWD',
+                'starts_on' => now()->toDateString(),
+                'ends_on' => now()->addDays(30)->toDateString(),
+            ]);
+            $beforeDocs = DB::table('enterprise_procurement_contract_documents')->count();
+            $beforeAudit = DB::table('audit_logs')->count();
+            $revoked = false;
+            $fixture = UploadedFile::fake()->create('late-deny.pdf', 4, 'application/pdf');
+
+            // The first scoped manage preflight has completed before the
+            // service invokes guessExtension(). Persist a real RBAC DENY at
+            // this seam, while leaving the supplied User object stale.
+            $attachment = new class($fixture->getPathname(), $fixture->getClientOriginalName(), static function () use (&$revoked, $actor, $permissionId): void {
+                if ($revoked) {
+                    return;
+                }
+                $revoked = true;
+                DB::table('user_permission_overrides')->insert([
+                    'user_id' => $actor->id,
+                    'permission_id' => $permissionId,
+                    'scope_key' => 'global',
+                    'store_id' => null,
+                    'effect' => 'deny',
+                    'created_at' => now(),
+                    'updated_at' => now(),
+                ]);
+                DB::table('users')->where('id', $actor->id)
+                    ->update(['has_permission_overrides' => true]);
+            }) extends UploadedFile {
+
+                public function __construct(string $path, string $name, private readonly \Closure $revoke)
+                {
+                    parent::__construct($path, $name, 'application/pdf', null, true);
+                }
+
+                public function guessExtension(): ?string
+                {
+                    ($this->revoke)();
+
+                    return 'pdf';
+                }
+            };
+
+            try {
+                $completion->addContractDocument(
+                    $actor, $context, $contract->id,
+                    ['title' => 'Must reject revoked writer'], $attachment,
+                );
+                $this->fail('A persisted manage DENY during upload must block document creation.');
+            } catch (HttpException $exception) {
+                $this->assertSame(403, $exception->getStatusCode());
+            }
+
+            $this->assertTrue($revoked);
+            $this->assertFalse((bool) $actor->has_permission_overrides);
+            $this->assertTrue((bool) $actor->fresh()->has_permission_overrides);
+            $this->assertSame($beforeDocs, DB::table('enterprise_procurement_contract_documents')->count());
+            $this->assertSame($beforeAudit, DB::table('audit_logs')->count());
+            $this->assertSame([], Storage::disk('local')->allFiles('procurement/contracts/'.$contract->public_id));
+
+            DB::table('user_permission_overrides')
+                ->where('user_id', $actor->id)->where('permission_id', $permissionId)->delete();
+            DB::table('users')->where('id', $actor->id)
+                ->update(['has_permission_overrides' => false]);
+            $document = $completion->addContractDocument(
+                $actor, $context, $contract->id,
+                ['title' => 'Valid restored upload '.$locale],
+                UploadedFile::fake()->create('restored.pdf', 4, 'application/pdf'),
+            );
+            $this->assertSame((int) $contract->id, (int) $document->contract_id);
+            $this->assertSame($beforeDocs + 1, DB::table('enterprise_procurement_contract_documents')->count());
+            $this->assertSame($beforeAudit + 1, DB::table('audit_logs')->count());
+            Storage::disk('local')->assertExists($document->storage_path);
+        }
+    }
+
     public function test_contract_activation_assignment_and_termination_deny_moved_supplier_without_writes_in_ar_and_en(): void
     {
         $this->enableProcurement();

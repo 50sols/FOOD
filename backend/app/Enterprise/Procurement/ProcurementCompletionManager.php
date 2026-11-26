@@ -1746,7 +1746,7 @@ final class ProcurementCompletionManager
         }
 
         try {
-            return DB::transaction(function () use ($actor, $scope, $contractId, $data, $storagePath, $originalName, $mimeType, $sizeBytes): object {
+            return DB::transaction(function () use ($actor, $context, $scope, $contractId, $data, $storagePath, $originalName, $mimeType, $sizeBytes): object {
                 // Serialize document registration with module shutdown and
                 // contract reassignment. Preflight visibility is insufficient
                 // after an upload or any other operation between the two.
@@ -1759,6 +1759,11 @@ final class ProcurementCompletionManager
                     404,
                     'Procurement module is disabled.',
                 );
+                // An uploaded file is not durable authority. Re-read the
+                // original actor's persisted manage grant inside the write
+                // transaction: a DENY or offboarding during upload must not
+                // authorize private document registration or audit.
+                $this->scope($actor, $context, 'procurement.purchase_orders.manage');
                 $currentContract = $this->visibleContract($scope, $contractId, true);
                 // The contract may still belong to this store after its supplier
                 // is transferred to another legal company or store. Pin the
