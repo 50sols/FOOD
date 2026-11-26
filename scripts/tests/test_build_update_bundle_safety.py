@@ -480,7 +480,7 @@ class BuildUpdateBundleSourceSafetyTest(unittest.TestCase):
             "nonempty_reason": lambda m: m.__setitem__("reason", "Manual redeploy required"),
             "missing_notes": lambda m: m.pop("release_notes"),
             "empty_notes": lambda m: m.__setitem__("release_notes", ""),
-            "blank_notes": lambda m: m.__setitem__("release_notes", " \\t "),
+            "blank_notes": lambda m: m.__setitem__("release_notes", "   "),
             "nonstring_notes": lambda m: m.__setitem__("release_notes", ["not plain text"]),
             "not_available": lambda m: m.__setitem__("available", False),
             "requires_redeploy": lambda m: m.__setitem__("requires_full_redeploy", True),
