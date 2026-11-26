@@ -807,6 +807,70 @@ SQL);
             ->where('inventory_id', $stock['inventory_id'])->count());
     }
 
+    public function test_empty_owner_snapshot_rejects_late_recorded_partition_in_ar_and_en(): void
+    {
+        $this->seed(CoreReferenceSeeder::class);
+        $service = app(InventoryOwnerProvenanceReadService::class);
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            $stock = $this->stock('P110-LATE-POSITION-'.strtoupper($locale));
+            $actor = $this->inventoryActor($stock['store_id']);
+            $auditBefore = DB::table('audit_logs')->count();
+            $armed = true;
+            $injected = false;
+
+            // A real owner row is recorded just AFTER the original empty
+            // partition SELECT. This is deterministic same-connection
+            // interleaving, not independent two-session MySQL certification.
+            DB::listen(static function ($query) use (&$armed, &$injected, $stock): void {
+                $sql = strtolower(ltrim((string) $query->sql));
+                if (! $armed
+                    || $injected
+                    || ! str_starts_with($sql, 'select')
+                    || ! str_contains($sql, 'enterprise_inventory_owner_positions')
+                    || ! str_contains($sql, 'order by')) {
+                    return;
+                }
+
+                $armed = false;
+                $injected = true;
+                DB::table('enterprise_inventory_owner_positions')->insert([
+                    'inventory_id' => $stock['inventory_id'],
+                    'owner_key' => 'FOODEX',
+                    'owner_kind' => 'FOODEX',
+                    'supplier_id' => null,
+                    'quantity' => 10,
+                    'reserved_quantity' => 3,
+                    'created_at' => now(),
+                    'updated_at' => now(),
+                ]);
+            });
+
+            try {
+                $service->snapshot($actor, $stock['inventory_id']);
+                $this->fail('Late legal-owner position must invalidate an empty snapshot.');
+            } catch (HttpException $exception) {
+                $this->assertSame(404, $exception->getStatusCode());
+            }
+
+            $this->assertTrue($injected, 'First ownership query must trigger the race.');
+            $this->assertDatabaseHas('enterprise_inventory_owner_positions', [
+                'inventory_id' => $stock['inventory_id'],
+                'owner_key' => 'FOODEX',
+                'quantity' => 10,
+                'reserved_quantity' => 3,
+            ]);
+            $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+
+            $current = $service->snapshot($actor, $stock['inventory_id']);
+            $this->assertSame('UNVERIFIED', $current['state']);
+            $this->assertSame('FOODEX', $current['positions'][0]['owner_kind']);
+            $this->assertFalse($current['certified']);
+            $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+        }
+    }
+
     public function test_missing_owner_positions_never_mask_invalid_canonical_balances_as_merely_unknown(): void
     {
         $this->seed(CoreReferenceSeeder::class);

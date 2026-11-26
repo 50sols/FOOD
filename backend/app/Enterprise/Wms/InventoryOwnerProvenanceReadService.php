@@ -65,6 +65,19 @@ final class InventoryOwnerProvenanceReadService
             // store after the inventory changes warehouse during this read.
             $this->assertCurrentSnapshotScope($actor, $inventory, (int) $warehouse->store_id);
 
+            // Initial empty ownership can become stale even when canonical
+            // inventory and warehouse rows remain unchanged. A late legal
+            // owner position invalidates the UNKNOWN fast-path response.
+            abort_if(
+                DB::table('enterprise_inventory_owner_positions')
+                    ->where('inventory_id', $inventoryId)
+                    ->exists(),
+                404,
+            );
+            // Reauthorize after the terminal partition query: a persisted
+            // inventory.view DENY can arrive while that query is processed.
+            $this->assertCurrentSnapshotScope($actor, $inventory, (int) $warehouse->store_id);
+
             // Lack of owner provenance must not camouflage an invalid
             // canonical stock balance. This is an accounting/inventory
             // integrity exception, not merely unknown legal ownership.
