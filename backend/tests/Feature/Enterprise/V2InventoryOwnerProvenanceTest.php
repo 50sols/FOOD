@@ -2678,6 +2678,44 @@ SQL);
         $this->assertFalse($advisory['certified']);
         $this->assertSame($approved->id, $advisory['policy']->id);
 
+        // The supplied Eloquent key can be modified after hydration. A caller
+        // without VIEW must not impersonate this valid checker by dirtying its
+        // in-memory primary key or by passing an unsaved fake user.
+        $restricted = User::query()->create([
+            'name' => 'Restricted P110 Policy Reader',
+            'email' => 'p110-unprivileged-reader@example.test',
+            'password' => 'password',
+            'is_active' => true,
+        ]);
+        $forged = $restricted->fresh();
+        $forged->setAttribute($forged->getKeyName(), $checker->id);
+        $unsaved = new User;
+        $unsaved->setAttribute($unsaved->getKeyName(), $checker->id);
+        $priorAudit = DB::table('audit_logs')->count();
+        $priorRuleRows = DB::table('enterprise_inventory_ownership_rule_revisions')->count();
+        $priorMovements = DB::table('stock_movements')->count();
+        $originalLocale = app()->getLocale();
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            foreach ([$forged, $unsaved] as $fake) {
+                try {
+                    $service->advisoryFor($fake, $stock['store_id'], 'B2C', null, (int) $request['warehouse_id']);
+                    $this->fail('An unprivileged actor must not spoof the policy checker via a dirty/unsaved ID.');
+                } catch (HttpException $exception) {
+                    $this->assertSame(403, $exception->getStatusCode());
+                }
+            }
+            $authorized = $service->advisoryFor(
+                $checker, $stock['store_id'], 'B2C', null, (int) $request['warehouse_id'],
+            );
+            $this->assertSame($approved->id, $authorized['policy']->id);
+            $this->assertFalse($authorized['certified']);
+        }
+        app()->setLocale($originalLocale);
+        $this->assertSame($priorRuleRows, DB::table('enterprise_inventory_ownership_rule_revisions')->count());
+        $this->assertSame($priorAudit, DB::table('audit_logs')->count());
+        $this->assertSame($priorMovements, DB::table('stock_movements')->count());
+
         // The approved policy itself can be revoked, moved into the future,
         // or edited AFTER its original scoped SELECT. Revalidate the exact
         // current record before returning the cached legal-title metadata.

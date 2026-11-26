@@ -226,13 +226,10 @@ final class InventoryOwnershipRuleService
      */
     public function advisoryFor(User $actor, int $storeId, string $channel, ?int $supplierId, ?int $warehouseId): array
     {
-        // Do not trust a stale in-memory Super Admin or checker on entry.
-        // A persisted offboarding must deny before any store/scope lookup
-        // can obscure the authorization failure with a 404.
-        $initialActor = User::query()
-            ->whereKey($actor->getKey())->where('is_active', true)->first();
-        abort_unless($initialActor !== null, 403);
-        $this->authorize($initialActor, $storeId, 'inventory.view');
+        // Read authority belongs to the original persisted caller, never an
+        // unsaved/dirty Eloquent primary key impersonating an authorized user.
+        // authorize() rehydrates that original active account from the DB.
+        $this->authorize($actor, $storeId, 'inventory.view');
         // Do not issue even non-certifying guidance for a foreign, deleted or
         // disabled warehouse. The client cannot designate an arbitrary store's
         // warehouse as the context for this store's title policy.
@@ -284,13 +281,9 @@ final class InventoryOwnershipRuleService
             && $ranked[1]['specificity'] === $first['specificity']
             && $ranked[1]['rule']->rule_uuid !== $first['rule']->rule_uuid;
 
-        // A policy reader can be offboarded during the rule SELECT or reference
-        // checks. Never disclose even non-certifying supplier/title policy
-        // metadata using a stale in-memory Super Admin or store-role grant.
-        $currentActor = User::query()
-            ->whereKey($actor->getKey())->where('is_active', true)->first();
-        abort_unless($currentActor !== null, 403);
-        $this->authorize($currentActor, $storeId, 'inventory.view');
+        // The same original persisted actor must STILL hold live read authority
+        // after policy and reference queries; dirty ID aliases are never valid.
+        $this->authorize($actor, $storeId, 'inventory.view');
         abort_unless($this->companyForStore($storeId) === $companyId, 404);
         $this->assertChannel($storeId, $channel);
 
