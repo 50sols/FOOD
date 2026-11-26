@@ -301,6 +301,107 @@ class B2bPricingTest extends TestCase
         $this->assertSame($beforeMovements, DB::table('stock_movements')->count());
     }
 
+    public function test_tier_disabled_after_rule_select_cannot_disclose_private_b2b_prices_in_ar_and_en(): void
+    {
+        $this->seed(CoreReferenceSeeder::class);
+        [$storeId, $productId, $tierId] = $this->catalog();
+        $this->setPricingTiers($storeId, true);
+        DB::table('b2b_price_rules')->insert([
+            'price_tier_id' => $tierId,
+            'store_id' => $storeId,
+            'product_id' => $productId,
+            'unit_price' => 7.250,
+            'minimum_quantity' => 1,
+            'ordering_increment' => 1,
+            'pack_size' => 1,
+            'is_active' => true,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $buyer = User::query()->create([
+            'name' => 'Late Tier Revocation Buyer',
+            'email' => 'pricing-late-tier-revocation@example.test',
+            'password' => 'password',
+            'is_active' => true,
+        ]);
+        $legacy = Customer::query()->create([
+            'user_id' => $buyer->id,
+            'type' => 'b2b',
+            'name' => 'Late Tier Revocation Buyer',
+            'email' => $buyer->email,
+        ]);
+        $customer = B2bCustomer::query()->firstOrCreate(
+            ['legacy_customer_id' => $legacy->id],
+            ['user_id' => $buyer->id, 'name' => 'Late Tier Revocation Buyer', 'email' => $buyer->email],
+        );
+        B2bAccount::query()->create([
+            'customer_id' => $legacy->id,
+            'b2b_customer_id' => $customer->id,
+            'price_tier_id' => $tierId,
+            'company_name' => 'Late Tier Revocation Company',
+            'status' => 'active',
+        ]);
+
+        $resolver = app(B2bPriceResolver::class);
+        $armed = false;
+        $injected = false;
+        // Post-SELECT, same-connection deterministic interleaving. This
+        // proves late revocation handling, not a two-session isolation level.
+        DB::listen(static function ($query) use ($tierId, &$armed, &$injected): void {
+            $sql = strtolower(ltrim((string) $query->sql));
+            if (! $armed || $injected || ! str_starts_with($sql, 'select')
+                || ! str_contains($sql, 'b2b_price_rules')) {
+                return;
+            }
+
+            $injected = true;
+            $armed = false;
+            DB::table('b2b_price_tiers')->where('id', $tierId)->update([
+                'is_active' => false,
+                'updated_at' => now(),
+            ]);
+        });
+
+        $beforeAudit = DB::table('audit_logs')->count();
+        $beforeOrders = DB::table('orders')->count();
+        $beforeMovements = DB::table('stock_movements')->count();
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            $this->assertSame(7.25, $resolver->resolve($customer, $storeId, $productId)['price']);
+
+            $injected = false;
+            $armed = true;
+            try {
+                $resolver->resolve($customer, $storeId, $productId);
+                $this->fail('A tier revoked after rule SELECT must not disclose its private price.');
+            } catch (HttpException $exception) {
+                $this->assertSame(403, $exception->getStatusCode());
+            } finally {
+                $armed = false;
+            }
+
+            $this->assertTrue($injected, 'The actual tier-rule query must trigger late tier revocation.');
+            $this->assertFalse((bool) DB::table('b2b_price_tiers')->where('id', $tierId)->value('is_active'));
+            try {
+                $resolver->resolve($customer, $storeId, $productId);
+                $this->fail('A persistently disabled tier must remain inaccessible.');
+            } catch (HttpException $exception) {
+                $this->assertSame(409, $exception->getStatusCode());
+            }
+
+            DB::table('b2b_price_tiers')->where('id', $tierId)->update([
+                'is_active' => true,
+                'updated_at' => now(),
+            ]);
+            $this->assertSame(7.25, $resolver->resolve($customer, $storeId, $productId)['price']);
+        }
+
+        $this->assertSame($beforeAudit, DB::table('audit_logs')->count());
+        $this->assertSame($beforeOrders, DB::table('orders')->count());
+        $this->assertSame($beforeMovements, DB::table('stock_movements')->count());
+    }
+
     public function test_revoked_wholesale_price_tier_cannot_price_customer_catalog_or_cart(): void
     {
         $this->seed(CoreReferenceSeeder::class);

@@ -97,6 +97,19 @@ class B2bPriceResolver
             }
         };
 
+        // The rule SELECT checks is_active, but the tier may be revoked
+        // before those confidential prices are returned to the caller.
+        // Revalidate at the final service boundary, not only in the join.
+        $requireCurrentTier = static function () use ($account): void {
+            $stillActive = DB::table('b2b_price_tiers')
+                ->where('id', $account->price_tier_id)
+                ->where('is_active', true)
+                ->exists();
+            if (! $stillActive) {
+                throw new HttpException(403, 'Approved B2B price tier is required.');
+            }
+        };
+
         $tiersEnabledByStore = [];
         foreach ($targets->pluck('store_id')->unique() as $storeId) {
             $storeId = (int) $storeId;
@@ -191,6 +204,7 @@ class B2bPriceResolver
 
         if (! $isPlatformCustomer) {
             $requireCurrentAccount();
+            $requireCurrentTier();
 
             return $baseResolved + $resolved;
         }
@@ -204,6 +218,7 @@ class B2bPriceResolver
 
         $fallback = $this->platformFallbackMany($missing);
         $requireCurrentAccount();
+        $requireCurrentTier();
 
         return $baseResolved + $resolved + $fallback;
     }
