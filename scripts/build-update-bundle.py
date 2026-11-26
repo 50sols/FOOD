@@ -843,6 +843,24 @@ def assert_staged_release_consistency(staging_dir: Path) -> str:
         if source_count != canonical_source_count:
             raise RuntimeError("Update release manifest canonical source file count mismatch.")
 
+        # The signed manifest drives migration/backup readiness. A coherently
+        # substituted ZIP+SHA256 must not hide or invent migration entries:
+        # bind the exact ordered migration inventory to actual archive names
+        # before the publication marker becomes visible.
+        selected_migrations = [
+            name for name in filenames
+            if name.startswith("backend/database/migrations/")
+        ]
+        declared_migrations = manifest.get("migrations")
+        declared_flag = manifest.get("contains_migrations")
+        if (
+            type(declared_flag) is not bool
+            or declared_flag != bool(selected_migrations)
+            or not isinstance(declared_migrations, list)
+            or declared_migrations != selected_migrations
+        ):
+            raise RuntimeError("Update release manifest migration inventory mismatch.")
+
         actual_hash = hashlib.sha256()
         with archive_path.open("rb") as binary:
             for chunk in iter(lambda: binary.read(1024 * 1024), b""):

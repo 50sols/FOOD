@@ -414,6 +414,8 @@ class BuildUpdateBundleSourceSafetyTest(unittest.TestCase):
                     "minimum_current_version": "1.0.126",
                     "source_base": "0" * 40,
                     "source_commit": "1" * 40,
+                    "contains_migrations": False,
+                    "migrations": [],
                     "delta": {
                         "files_manifest": "FOODEX-Update.files.txt",
                         "file_count": 1,
@@ -498,6 +500,75 @@ class BuildUpdateBundleSourceSafetyTest(unittest.TestCase):
                     for name, data in modified.items():
                         self.assertFalse(os.path.lexists(output_dir / name), name)
                         self.assertEqual((staging / name).read_bytes(), data)
+                    self.assertFalse(
+                        (output_dir / ".FOODEX-Update.publish.lock").exists()
+                    )
+
+    def test_update_release_group_binds_migration_manifest_to_actual_zip_members(self) -> None:
+        # An attacker can replace the manifest, ZIP and both sidecars as a
+        # coherent group. Only actual migration member names, not file count
+        # or the outer ZIP SHA, prove migration/backup manifest honesty.
+        migration_a = "backend/database/migrations/2026_01_01_000001_first.php"
+        migration_b = "backend/database/migrations/2026_01_01_000002_second.php"
+        expected = [migration_a, migration_b]
+        cases = (
+            ("accurate", True, expected, True),
+            ("hidden", False, [], False),
+            ("false_flag", False, expected, False),
+            ("missing_flag", None, expected, False),
+            ("missing_list", True, None, False),
+            ("partial_list", True, [migration_a], False),
+            ("reversed_list", True, [migration_b, migration_a], False),
+            ("foreign_path", True, [migration_a, "backend/database/migrations/foreign.php"], False),
+            ("duplicates", True, [migration_a, migration_a, migration_b], False),
+            ("numeric_flag", 1, expected, False),
+        )
+        for variant, flag, migrations, allowed in cases:
+            with self.subTest(variant=variant):
+                with tempfile.TemporaryDirectory() as directory:
+                    output_dir = Path(directory)
+                    staging, originals = self._staged_release_fixture(output_dir)
+                    binary = io.BytesIO()
+                    members = ["backend/artisan", *expected]
+                    with zipfile.ZipFile(binary, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+                        for member in members:
+                            archive.writestr(member, b"<?php // reviewed migration runtime")
+                    zipped = binary.getvalue()
+                    digest = hashlib.sha256(zipped).hexdigest()
+                    manifest = json.loads(originals["FOODEX-Update.json"])
+                    manifest["sha256"] = digest
+                    manifest["delta"]["file_count"] = len(members)
+                    manifest["delta"]["source_file_count"] = len(members)
+                    if flag is None:
+                        manifest.pop("contains_migrations", None)
+                    else:
+                        manifest["contains_migrations"] = flag
+                    if migrations is None:
+                        manifest.pop("migrations", None)
+                    else:
+                        manifest["migrations"] = migrations
+                    modified = dict(originals)
+                    modified["FOODEX-Update.json"] = (json.dumps(manifest) + "\n").encode("utf-8")
+                    modified["FOODEX-Update.files.txt"] = (
+                        "\n".join(members) + "\n"
+                    ).encode("utf-8")
+                    modified["FOODEX-Update.sha256.txt"] = (
+                        f"{digest}  FOODEX-Update.zip\n"
+                    ).encode("utf-8")
+                    modified["FOODEX-Update.zip"] = zipped
+                    for name, data in modified.items():
+                        (staging / name).write_bytes(data)
+
+                    if allowed:
+                        builder.publish_release_bundle(staging, output_dir)
+                        for name, data in modified.items():
+                            self.assertEqual((output_dir / name).read_bytes(), data)
+                    else:
+                        with self.assertRaisesRegex(RuntimeError, "migration inventory mismatch"):
+                            builder.publish_release_bundle(staging, output_dir)
+                        for name, data in modified.items():
+                            self.assertFalse(os.path.lexists(output_dir / name), name)
+                            self.assertEqual((staging / name).read_bytes(), data)
                     self.assertFalse(
                         (output_dir / ".FOODEX-Update.publish.lock").exists()
                     )
