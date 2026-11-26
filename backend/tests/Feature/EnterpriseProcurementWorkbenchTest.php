@@ -6,15 +6,20 @@ use App\Enterprise\Modules\ModuleLifecycleManager;
 use App\Enterprise\Modules\ModuleRegistry;
 use App\Enterprise\Modules\ModuleState;
 use App\Enterprise\Organization\OrganizationHierarchyService;
+use App\Enterprise\Procurement\ProcurementCompletionManager;
+use App\Enterprise\Procurement\PurchaseRequestManager;
 use App\Models\Permission;
 use App\Models\Role;
 use App\Models\Store;
 use App\Models\User;
 use App\Support\TenantContextResolver;
+use Illuminate\Database\Events\QueryExecuted;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Route;
+use Symfony\Component\HttpKernel\Exception\HttpException;
 use Tests\Support\ProcurementSecondApprover;
+use Tests\Support\SyntheticErpWorkflowEvidence;
 use Tests\TestCase;
 
 final class EnterpriseProcurementWorkbenchTest extends TestCase
@@ -24,6 +29,7 @@ final class EnterpriseProcurementWorkbenchTest extends TestCase
     protected function setUp(): void
     {
         parent::setUp();
+        SyntheticErpWorkflowEvidence::install();
         // Explicit test-only approval of the exact ERP module version; never a runtime default.
         config()->set('enterprise_module_readiness.certified_versions.procurement', app(ModuleRegistry::class)->manifest('procurement')->version);
     }
@@ -127,6 +133,439 @@ final class EnterpriseProcurementWorkbenchTest extends TestCase
             ->assertOk()
             ->assertSee('UI-SUP-1')
             ->assertSee('مُصدر');
+    }
+
+    public function test_completion_manager_rejects_dirty_actor_identity_before_rfq_writes_in_ar_and_en(): void
+    {
+        $this->enableProcurement();
+        [$maker, $store] = $this->operator('ERP-UI-COMPLETION-ACTOR');
+        $other = User::factory()->create(['locale' => 'en', 'is_active' => true]);
+        $this->grantPlatformErpAccess($other);
+        $roleId = Role::query()->where('code', 'B2C_STORE_ADMIN')->firstOrFail()->id;
+        DB::table('user_store_roles')->insert([
+            'user_id' => $other->id,
+            'store_id' => $store->id,
+            'role_id' => $roleId,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $context = app(TenantContextResolver::class)->retail($maker, $store->id);
+        $completion = app(ProcurementCompletionManager::class);
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            $forged = $other->fresh();
+            $this->assertNotNull($forged);
+            $forged->forceFill(['id' => $maker->id]);
+            $this->assertNotSame($forged->getRawOriginal('id'), $forged->getKey());
+            $auditBefore = DB::table('audit_logs')->count();
+            $rfqsBefore = DB::table('enterprise_procurement_rfqs')->count();
+
+            try {
+                $completion->createRfq($forged, $context, 99999999, [
+                    'title' => 'Forged procurement actor '.$locale,
+                ]);
+                $this->fail('A dirty actor must not reach RFQ creation.');
+            } catch (HttpException $exception) {
+                $this->assertSame(403, $exception->getStatusCode());
+            }
+
+            $this->assertSame($rfqsBefore, DB::table('enterprise_procurement_rfqs')->count());
+            $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+
+            // The real maker passes identity and authorization, reaching the
+            // missing source request (404), not the actor guard (403).
+            try {
+                $completion->createRfq($maker, $context, 99999999, [
+                    'title' => 'Genuine procurement actor '.$locale,
+                ]);
+                $this->fail('A missing request must remain scoped and invisible.');
+            } catch (HttpException $exception) {
+                $this->assertSame(404, $exception->getStatusCode());
+            }
+
+            $this->assertSame($rfqsBefore, DB::table('enterprise_procurement_rfqs')->count());
+            $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+        }
+    }
+
+    public function test_direct_procurement_manager_rejects_forged_actor_identity_in_both_locales(): void
+    {
+        $this->enableProcurement();
+        [$maker, $store] = $this->operator('ERP-UI-FAKE-USER');
+        $other = User::factory()->create(['locale' => 'en', 'is_active' => true]);
+        $this->grantPlatformErpAccess($other);
+        $roleId = Role::query()->where('code', 'B2C_STORE_ADMIN')->firstOrFail()->id;
+        DB::table('user_store_roles')->insert([
+            'user_id' => $other->id,
+            'store_id' => $store->id,
+            'role_id' => $roleId,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        $service = app(PurchaseRequestManager::class);
+        $context = app(TenantContextResolver::class)->retail($maker, $store->id);
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            $reason = 'Original maker actor key '.$locale;
+            $this->actingAs($maker)->post(route('admin.erp.procurement.requests.store'), [
+                'store_id' => $store->id,
+                'currency_code' => 'KWD',
+                'reason' => $reason,
+                'item_code' => 'ACTOR-ID-SKU',
+                'description' => 'Maker identity protected',
+                'quantity' => 1,
+                'unit' => 'case',
+                'estimated_unit_cost' => 2.500,
+            ])->assertRedirect();
+            $requestId = (int) DB::table('enterprise_purchase_requests')->where('reason', $reason)->value('id');
+            $this->assertGreaterThan(0, $requestId);
+
+            $forged = $other->fresh();
+            $this->assertNotNull($forged);
+            $forged->forceFill(['id' => $maker->id]);
+            $this->assertNotSame($forged->getRawOriginal('id'), $forged->getKey());
+            $auditBefore = DB::table('audit_logs')->count();
+            foreach (['submit', 'cancel'] as $operation) {
+                try {
+                    $service->{$operation}($forged, $context, $requestId);
+                    $this->fail('Dirty actor identity must not impersonate the original maker.');
+                } catch (HttpException $exception) {
+                    $this->assertSame(403, $exception->getStatusCode());
+                }
+                $this->assertDatabaseHas('enterprise_purchase_requests', [
+                    'id' => $requestId, 'status' => 'draft', 'created_by' => $maker->id,
+                ]);
+                $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+            }
+
+            $this->assertSame('submitted', $service->submit($maker, $context, $requestId)->status);
+            $this->assertDatabaseHas('enterprise_purchase_requests', [
+                'id' => $requestId, 'submitted_by' => $maker->id, 'status' => 'submitted',
+            ]);
+        }
+    }
+
+    public function test_same_store_manager_cannot_submit_another_makers_purchase_request_in_both_locales(): void
+    {
+        $this->enableProcurement();
+        [$maker, $store] = $this->operator('ERP-UI-MAKER-SUBMIT');
+        $other = User::factory()->create(['locale' => 'en', 'is_active' => true]);
+        $this->grantPlatformErpAccess($other);
+        $roleId = Role::query()->where('code', 'B2C_STORE_ADMIN')->firstOrFail()->id;
+        DB::table('user_store_roles')->insert([
+            'user_id' => $other->id, 'store_id' => $store->id,
+            'role_id' => $roleId, 'created_at' => now(), 'updated_at' => now(),
+        ]);
+
+        foreach (['ar', 'en'] as $locale) {
+            $maker->forceFill(['locale' => $locale])->save();
+            $other->forceFill(['locale' => $locale])->save();
+            $reason = 'Origin maker ownership '.$locale;
+            $this->actingAs($maker)->post(route('admin.erp.procurement.requests.store'), [
+                'store_id' => $store->id,
+                'currency_code' => 'KWD',
+                'reason' => $reason,
+                'item_code' => 'MAKER-SKU',
+                'description' => 'Maker-owned item',
+                'quantity' => 1,
+                'unit' => 'case',
+                'estimated_unit_cost' => 2.500,
+            ])->assertRedirect();
+
+            $requestId = (int) DB::table('enterprise_purchase_requests')->where('reason', $reason)->value('id');
+            $this->assertGreaterThan(0, $requestId);
+            $auditBefore = DB::table('audit_logs')->count();
+            $this->actingAs($other)->post(route('admin.erp.procurement.requests.submit', $requestId), [
+                'store_id' => $store->id,
+            ])->assertForbidden();
+            $this->assertDatabaseHas('enterprise_purchase_requests', [
+                'id' => $requestId, 'status' => 'draft', 'created_by' => $maker->id,
+            ]);
+            $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+
+            $this->actingAs($maker)->post(route('admin.erp.procurement.requests.submit', $requestId), [
+                'store_id' => $store->id,
+            ])->assertRedirect();
+            $this->assertDatabaseHas('enterprise_purchase_requests', [
+                'id' => $requestId, 'status' => 'submitted', 'submitted_by' => $maker->id,
+            ]);
+            $auditAfterSubmit = DB::table('audit_logs')->count();
+            $this->actingAs($other)->post(route('admin.erp.procurement.requests.submit', $requestId), [
+                'store_id' => $store->id,
+            ])->assertForbidden();
+            $this->assertSame($auditAfterSubmit, DB::table('audit_logs')->count());
+            $this->actingAs($maker)->post(route('admin.erp.procurement.requests.submit', $requestId), [
+                'store_id' => $store->id,
+            ])->assertRedirect();
+            $this->assertSame($auditAfterSubmit, DB::table('audit_logs')->count());
+        }
+    }
+
+    public function test_same_store_manager_cannot_cancel_another_makers_draft_but_can_cancel_submitted_request(): void
+    {
+        $this->enableProcurement();
+        [$maker, $store] = $this->operator('ERP-UI-DRAFT-CANCEL');
+        $other = User::factory()->create(['locale' => 'en', 'is_active' => true]);
+        $this->grantPlatformErpAccess($other);
+        $roleId = Role::query()->where('code', 'B2C_STORE_ADMIN')->firstOrFail()->id;
+        DB::table('user_store_roles')->insert([
+            'user_id' => $other->id, 'store_id' => $store->id,
+            'role_id' => $roleId, 'created_at' => now(), 'updated_at' => now(),
+        ]);
+
+        foreach (['ar', 'en'] as $locale) {
+            $maker->forceFill(['locale' => $locale])->save();
+            $other->forceFill(['locale' => $locale])->save();
+            $reason = 'Maker draft cancellation boundary '.$locale;
+            $this->actingAs($maker)->post(route('admin.erp.procurement.requests.store'), [
+                'store_id' => $store->id,
+                'currency_code' => 'KWD',
+                'reason' => $reason,
+                'item_code' => 'CANCEL-SKU',
+                'description' => 'Maker owned draft',
+                'quantity' => 1,
+                'unit' => 'case',
+                'estimated_unit_cost' => 2.500,
+            ])->assertRedirect();
+            $requestId = (int) DB::table('enterprise_purchase_requests')
+                ->where('reason', $reason)->value('id');
+            $this->assertGreaterThan(0, $requestId);
+            $auditBefore = DB::table('audit_logs')->count();
+
+            $this->actingAs($other)->post(route('admin.erp.procurement.requests.cancel', $requestId), [
+                'store_id' => $store->id,
+            ])->assertForbidden();
+            $this->assertDatabaseHas('enterprise_purchase_requests', [
+                'id' => $requestId, 'status' => 'draft', 'created_by' => $maker->id,
+            ]);
+            $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+
+            $this->actingAs($maker)->post(route('admin.erp.procurement.requests.submit', $requestId), [
+                'store_id' => $store->id,
+            ])->assertRedirect();
+            $this->assertDatabaseHas('enterprise_purchase_requests', [
+                'id' => $requestId, 'status' => 'submitted', 'submitted_by' => $maker->id,
+            ]);
+            // A manager retains permission to stop a submitted request;
+            // the draft maker-only guard must not break this existing flow.
+            $this->actingAs($other)->post(route('admin.erp.procurement.requests.cancel', $requestId), [
+                'store_id' => $store->id,
+            ])->assertRedirect();
+            $this->assertDatabaseHas('enterprise_purchase_requests', [
+                'id' => $requestId, 'status' => 'cancelled', 'cancelled_by' => $other->id,
+            ]);
+            $auditAfter = DB::table('audit_logs')->count();
+            $this->actingAs($other)->post(route('admin.erp.procurement.requests.cancel', $requestId), [
+                'store_id' => $store->id,
+            ])->assertRedirect();
+            $this->assertSame($auditAfter, DB::table('audit_logs')->count());
+        }
+    }
+
+    public function test_supplier_hold_between_preflight_and_write_denies_request_create_and_draft_update(): void
+    {
+        $this->enableProcurement();
+        [$maker, $store] = $this->operator('ERP-UI-SUPPLIER-RECHECK');
+        $armed = false;
+        $supplierId = 0;
+        $revocations = 0;
+
+        // Simulate a supplier hold just after the optimistic active-supplier
+        // SELECT returns, before create/update enters the write transaction.
+        DB::listen(function (QueryExecuted $query) use (&$armed, &$supplierId, &$revocations): void {
+            if (! $armed || ! str_starts_with(strtolower(ltrim($query->sql)), 'select')
+                || ! str_contains($query->sql, 'enterprise_suppliers')) {
+                return;
+            }
+            $armed = false;
+            $revocations++;
+            DB::table('enterprise_suppliers')->where('id', $supplierId)
+                ->update(['status' => 'suspended']);
+        });
+
+        foreach (['ar', 'en'] as $locale) {
+            $maker->forceFill(['locale' => $locale])->save();
+            $code = 'ERP-SUP-RACE-'.strtoupper($locale);
+            $this->actingAs($maker)->post(route('admin.erp.procurement.suppliers.store'), [
+                'store_id' => $store->id,
+                'scope_type' => 'store',
+                'code' => $code,
+                'name_en' => 'Race Supplier '.$locale,
+                'name_ar' => 'مورد اختبار '.$locale,
+            ])->assertRedirect();
+            $supplierId = (int) DB::table('enterprise_suppliers')->where('code', $code)->value('id');
+            $this->assertGreaterThan(0, $supplierId);
+            $draftReason = 'Supplier race draft '.$locale;
+            $this->actingAs($maker)->post(route('admin.erp.procurement.requests.store'), [
+                'store_id' => $store->id,
+                'currency_code' => 'KWD',
+                'reason' => $draftReason,
+                'item_code' => 'RACE-SKU',
+                'description' => 'Original draft line',
+                'quantity' => 1,
+                'unit' => 'case',
+                'estimated_unit_cost' => 3.000,
+            ])->assertRedirect();
+            $draftId = (int) DB::table('enterprise_purchase_requests')
+                ->where('reason', $draftReason)->value('id');
+            $this->assertGreaterThan(0, $draftId);
+            $payload = [
+                'store_id' => $store->id,
+                'supplier_id' => $supplierId,
+                'currency_code' => 'KWD',
+                'item_code' => 'RACE-SKU',
+                'description' => 'Supplier-bound line',
+                'quantity' => 1,
+                'unit' => 'case',
+                'estimated_unit_cost' => 3.000,
+            ];
+            $beforeAudit = DB::table('audit_logs')->count();
+            $armed = true;
+            $this->actingAs($maker)->post(route('admin.erp.procurement.requests.store'),
+                $payload + ['purchase_request_id' => $draftId, 'reason' => $draftReason]
+            )->assertNotFound();
+            $this->assertFalse($armed, 'Supplier preflight must be exercised before locked rejection.');
+            $this->assertDatabaseHas('enterprise_suppliers', ['id' => $supplierId, 'status' => 'suspended']);
+            $this->assertDatabaseHas('enterprise_purchase_requests', [
+                'id' => $draftId, 'status' => 'draft', 'supplier_id' => null,
+                'reason' => $draftReason,
+            ]);
+            $this->assertSame($beforeAudit, DB::table('audit_logs')->count());
+
+            DB::table('enterprise_suppliers')->where('id', $supplierId)->update(['status' => 'active']);
+            $newReason = 'Supplier race create '.$locale;
+            $armed = true;
+            $this->actingAs($maker)->post(route('admin.erp.procurement.requests.store'),
+                $payload + ['reason' => $newReason]
+            )->assertNotFound();
+            $this->assertFalse($armed);
+            $this->assertDatabaseMissing('enterprise_purchase_requests', ['reason' => $newReason]);
+            $this->assertSame($beforeAudit, DB::table('audit_logs')->count());
+
+            // A genuinely reactivated supplier may be selected normally.
+            DB::table('enterprise_suppliers')->where('id', $supplierId)->update(['status' => 'active']);
+            $this->actingAs($maker)->post(route('admin.erp.procurement.requests.store'),
+                $payload + ['purchase_request_id' => $draftId, 'reason' => $draftReason]
+            )->assertRedirect();
+            $this->assertDatabaseHas('enterprise_purchase_requests', [
+                'id' => $draftId, 'supplier_id' => $supplierId,
+            ]);
+            $this->actingAs($maker)->post(route('admin.erp.procurement.requests.store'),
+                $payload + ['reason' => $newReason]
+            )->assertRedirect();
+            $this->assertDatabaseHas('enterprise_purchase_requests', [
+                'reason' => $newReason, 'supplier_id' => $supplierId,
+            ]);
+        }
+        $this->assertSame(4, $revocations);
+    }
+
+    public function test_suspended_supplier_cannot_advance_maker_draft_to_submitted_in_both_locales(): void
+    {
+        $this->enableProcurement();
+        [$maker, $store] = $this->operator('ERP-UI-SUPPLIER-SUBMIT');
+
+        foreach (['ar', 'en'] as $locale) {
+            $maker->forceFill(['locale' => $locale])->save();
+            $code = 'ERP-SUP-SUB-'.strtoupper($locale);
+            $this->actingAs($maker)->post(route('admin.erp.procurement.suppliers.store'), [
+                'store_id' => $store->id,
+                'scope_type' => 'store',
+                'code' => $code,
+                'name_en' => 'Submit Supplier '.$locale,
+                'name_ar' => 'مورد تسليم '.$locale,
+            ])->assertRedirect();
+            $supplierId = (int) DB::table('enterprise_suppliers')
+                ->where('code', $code)->value('id');
+            $this->assertGreaterThan(0, $supplierId);
+            $reason = 'Supplier submit revocation '.$locale;
+            $this->actingAs($maker)->post(route('admin.erp.procurement.requests.store'), [
+                'store_id' => $store->id,
+                'supplier_id' => $supplierId,
+                'currency_code' => 'KWD',
+                'reason' => $reason,
+                'item_code' => 'SUP-SUB-SKU',
+                'description' => 'Supplier lifecycle line',
+                'quantity' => 2,
+                'unit' => 'case',
+                'estimated_unit_cost' => 1.500,
+            ])->assertRedirect();
+            $requestId = (int) DB::table('enterprise_purchase_requests')
+                ->where('reason', $reason)->value('id');
+            $this->assertGreaterThan(0, $requestId);
+            DB::table('enterprise_suppliers')->where('id', $supplierId)
+                ->update(['status' => 'suspended']);
+            $auditBefore = DB::table('audit_logs')->count();
+
+            $this->actingAs($maker)->post(route('admin.erp.procurement.requests.submit', $requestId), [
+                'store_id' => $store->id,
+            ])->assertNotFound();
+            $this->assertDatabaseHas('enterprise_purchase_requests', [
+                'id' => $requestId, 'status' => 'draft',
+                'supplier_id' => $supplierId, 'submitted_by' => null,
+            ]);
+            $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+
+            DB::table('enterprise_suppliers')->where('id', $supplierId)
+                ->update(['status' => 'active']);
+            $this->actingAs($maker)->post(route('admin.erp.procurement.requests.submit', $requestId), [
+                'store_id' => $store->id,
+            ])->assertRedirect();
+            $this->assertDatabaseHas('enterprise_purchase_requests', [
+                'id' => $requestId, 'status' => 'submitted',
+                'supplier_id' => $supplierId, 'submitted_by' => $maker->id,
+            ]);
+            $auditAfter = DB::table('audit_logs')->count();
+            $this->actingAs($maker)->post(route('admin.erp.procurement.requests.submit', $requestId), [
+                'store_id' => $store->id,
+            ])->assertRedirect();
+            $this->assertSame($auditAfter, DB::table('audit_logs')->count());
+
+            // Supplier can be revoked again AFTER a valid submission but
+            // BEFORE a different approver makes the financial commitment.
+            [$checker] = ProcurementSecondApprover::forSameStore(
+                $maker,
+                app(TenantContextResolver::class)->retail($maker, $store->id),
+            );
+            $checker->forceFill(['locale' => $locale])->save();
+            $this->grantPlatformErpAccess($checker);
+            DB::table('enterprise_suppliers')->where('id', $supplierId)
+                ->update(['status' => 'suspended']);
+            $this->actingAs($checker)->post(route('admin.erp.procurement.requests.decision', $requestId), [
+                'store_id' => $store->id,
+                'decision' => 'approve',
+            ])->assertNotFound();
+            $this->assertDatabaseHas('enterprise_purchase_requests', [
+                'id' => $requestId, 'status' => 'submitted', 'decided_by' => null,
+            ]);
+            $this->assertSame($auditAfter, DB::table('audit_logs')->count());
+
+            // Re-activating is insufficient when supplier governance has
+            // independently disqualified this vendor before checker review.
+            DB::table('enterprise_suppliers')->where('id', $supplierId)
+                ->update(['status' => 'active', 'qualification_status' => 'unqualified']);
+            $this->actingAs($checker)->post(route('admin.erp.procurement.requests.decision', $requestId), [
+                'store_id' => $store->id,
+                'decision' => 'approve',
+            ])->assertForbidden();
+            $this->assertDatabaseHas('enterprise_purchase_requests', [
+                'id' => $requestId, 'status' => 'submitted', 'decided_by' => null,
+            ]);
+            $this->assertSame($auditAfter, DB::table('audit_logs')->count());
+
+            DB::table('enterprise_suppliers')->where('id', $supplierId)
+                ->update(['status' => 'active', 'qualification_status' => 'qualified']);
+            $this->actingAs($checker)->post(route('admin.erp.procurement.requests.decision', $requestId), [
+                'store_id' => $store->id,
+                'decision' => 'approve',
+            ])->assertRedirect();
+            $this->assertDatabaseHas('enterprise_purchase_requests', [
+                'id' => $requestId, 'status' => 'approved', 'decided_by' => $checker->id,
+            ]);
+        }
     }
 
     public function test_supplier_tab_filters_literal_prefix_and_rejects_foreign_store_access(): void

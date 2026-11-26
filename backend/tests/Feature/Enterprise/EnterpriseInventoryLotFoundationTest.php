@@ -13,6 +13,7 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
 use Symfony\Component\HttpKernel\Exception\NotFoundHttpException;
 use Tests\Feature\Enterprise\Concerns\EnablesEnterpriseWms;
+use Tests\Support\SyntheticErpWorkflowEvidence;
 use Tests\TestCase;
 
 final class EnterpriseInventoryLotFoundationTest extends TestCase
@@ -133,6 +134,9 @@ final class EnterpriseInventoryLotFoundationTest extends TestCase
     public function test_lot_status_http_route_enforces_warehouse_scope_before_validation_in_arabic_and_english(): void
     {
         $this->seed(CoreReferenceSeeder::class);
+        // Only this authorized HTTP-positive fixture gets synthetic signed
+        // WMS evidence; cross-warehouse and invalid input paths stay denied.
+        SyntheticErpWorkflowEvidence::install();
         // This is an HTTP route regression: admit the fixture through the
         // existing ERP gateway without changing production authorization.
         config()->set('enterprise_module_readiness.certified_versions.inventory_wms', app(ModuleRegistry::class)->manifest('inventory_wms')->version);

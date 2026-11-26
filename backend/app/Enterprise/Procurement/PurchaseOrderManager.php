@@ -53,7 +53,7 @@ final class PurchaseOrderManager
         $term = trim((string) ($validated['q'] ?? ''));
         $pattern = str_replace(['!', '%', '_'], ['!!', '!%', '!_'], $term).'%';
 
-        return $this->visibleQuery($scope)
+        $orders = $this->visibleWithSupplier($scope)
             ->with('supplier:id,code,name_en,name_ar,status')
             ->when(
                 $validated['status'] ?? null,
@@ -66,6 +66,28 @@ final class PurchaseOrderManager
             ->orderByDesc('id')
             ->paginate($perPage)
             ->withQueryString();
+
+        // Supplier hydration and page selection are separate queries. A PO
+        // transferred to a different store after the scoped row SELECT must
+        // not be returned as a cached former-store financial record. Confirm
+        // every bounded page ID remains visible without N+1 queries.
+        $pageIds = $orders->getCollection()->pluck('id')->all();
+        if ($pageIds !== []) {
+            abort_unless(
+                $this->visibleWithSupplier($scope)->whereKey($pageIds)->count() === count($pageIds),
+                404,
+                'Purchase order ownership changed during pagination.',
+            );
+        }
+
+        // The COUNT, page SELECT and eager-loaded supplier rows are separate
+        // reads. A persisted view DENY may be committed after preflight but
+        // before the paginator is returned; never release that stale snapshot.
+        // Re-check the immutable persisted caller through the existing scope
+        // authorizer (which fetches the currently active user and overrides).
+        $this->authorizedScope($actor, $context, self::VIEW_PERMISSION);
+
+        return $orders;
     }
 
     public function detail(
@@ -75,12 +97,24 @@ final class PurchaseOrderManager
     ): EnterprisePurchaseOrder {
         $scope = $this->authorizedScope($actor, $context, self::VIEW_PERMISSION);
 
-        return $this->findVisible($scope, $orderId)
+        $order = $this->visibleWithSupplier($scope)->whereKey($orderId)->firstOrFail()
             ->load([
                 'supplier:id,code,name_en,name_ar,status',
                 'purchaseRequest:id,request_number,status',
                 'lines' => fn ($query) => $query->orderBy('line_no'),
             ]);
+
+        // A purchase order can move stores between the scoped header SELECT
+        // and the separate supplier/request/line reads. Never return stale
+        // financial or supplier detail to its former owner after reassignment.
+        $this->visibleWithSupplier($scope)->whereKey($orderId)->firstOrFail();
+
+        // The relationship queries and second store check can run after a
+        // persisted VIEW revocation. Re-read the same original active actor's
+        // current effective permission before releasing priced lines or supplier data.
+        $this->authorizedScope($actor, $context, self::VIEW_PERMISSION);
+
+        return $order;
     }
 
     public function createFromApprovedRequest(
@@ -90,7 +124,7 @@ final class PurchaseOrderManager
     ): EnterprisePurchaseOrder {
         $scope = $this->authorizedScope($actor, $context, self::MANAGE_PERMISSION);
 
-        return DB::transaction(function () use ($actor, $scope, $requestId): EnterprisePurchaseOrder {
+        return DB::transaction(function () use ($actor, $context, $scope, $requestId): EnterprisePurchaseOrder {
             $request = $this->visibleRequestQuery($scope)
                 ->whereKey($requestId)
                 ->lockForUpdate()
@@ -101,7 +135,14 @@ final class PurchaseOrderManager
                 ->first();
 
             if ($existing instanceof EnterprisePurchaseOrder) {
-                return $existing->load('lines');
+                // A previously scoped PO may now point at a supplier reassigned
+                // to another store. Reusing it must enforce the same current
+                // supplier visibility as detail/pagination before leaking lines.
+                $this->visibleWithSupplier($scope)->whereKey($existing->id)->firstOrFail();
+                $existing->load('lines');
+                $this->authorizedScope($actor, $context, self::MANAGE_PERMISSION);
+
+                return $existing;
             }
 
             if ($request->status !== 'approved') {
@@ -124,6 +165,9 @@ final class PurchaseOrderManager
             $supplier = $this->activeVisibleSupplier($scope, (int) $request->supplier_id);
             $lines = $request->lines()->orderBy('line_no')->get();
             abort_if($lines->isEmpty(), 409, 'A purchase order must contain at least one line.');
+
+            // A revoked operator cannot create a PO after supplier/line preflight.
+            $this->authorizedScope($actor, $context, self::MANAGE_PERMISSION);
 
             $publicId = (string) Str::uuid();
             $order = EnterprisePurchaseOrder::query()->create([
@@ -157,6 +201,9 @@ final class PurchaseOrderManager
                 ]);
             }
 
+            // Roll back PO and all line inserts if access was revoked mid-write.
+            $this->authorizedScope($actor, $context, self::MANAGE_PERMISSION);
+
             $this->audit->record(
                 'enterprise.purchase_order.created',
                 $actor,
@@ -186,15 +233,44 @@ final class PurchaseOrderManager
     ): EnterprisePurchaseOrder {
         $scope = $this->authorizedScope($actor, $context, self::ISSUE_PERMISSION);
 
-        return DB::transaction(function () use ($actor, $scope, $orderId): EnterprisePurchaseOrder {
+        return DB::transaction(function () use ($actor, $context, $scope, $orderId): EnterprisePurchaseOrder {
             $order = $this->lockVisible($scope, $orderId);
             if ($order->status === 'issued') {
-                return $order->refresh();
+                // An idempotent issuance is still a response containing the
+                // supplier/price snapshot; do not bypass current store scope.
+                $this->visibleWithSupplier($scope)->whereKey($order->id)->firstOrFail();
+                $order->refresh();
+                $this->authorizedScope($actor, $context, self::ISSUE_PERMISSION);
+
+                return $order;
             }
 
             $this->requireStatus($order, ['draft'], 'issued');
             $lines = $order->lines()->get();
             abort_if($lines->isEmpty(), 409, 'A purchase order must contain at least one line.');
+
+            // A supplier can be blocked or lose qualification after the draft
+            // PO was created. Revalidate under a row lock before issuing.
+            $this->activeVisibleSupplier($scope, (int) $order->supplier_id);
+
+            // The approved PR validates inputs at creation, but persisted PO
+            // lines may have been altered by an import or legacy writer.
+            // Reject invalid quantity/price before any contract commitment,
+            // state transition or audit entry, whether or not a contract exists.
+            foreach ($lines as $line) {
+                if (
+                    ! is_finite((float) $line->quantity)
+                    || (float) $line->quantity <= 0
+                    || ($line->unit_price !== null && (
+                        ! is_finite((float) $line->unit_price)
+                        || (float) $line->unit_price < 0
+                    ))
+                ) {
+                    throw ValidationException::withMessages([
+                        'lines' => ['Purchase order quantities must be positive and unit prices cannot be negative.'],
+                    ]);
+                }
+            }
 
             if ($order->procurement_contract_id !== null) {
                 $contract = DB::table('enterprise_procurement_contracts')
@@ -246,6 +322,9 @@ final class PurchaseOrderManager
                     ]);
                 }
 
+                // Contract commitment must not be changed by a revoked issuer.
+                $this->authorizedScope($actor, $context, self::ISSUE_PERMISSION);
+
                 DB::table('enterprise_procurement_contracts')
                     ->where('id', $contract->id)
                     ->update([
@@ -255,6 +334,10 @@ final class PurchaseOrderManager
                         'updated_at' => now(),
                     ]);
             }
+
+            // Recheck after all supplier/line/contract reads; 403 rolls back
+            // any previous commitment changes in this same transaction.
+            $this->authorizedScope($actor, $context, self::ISSUE_PERMISSION);
 
             $before = $order->toArray();
             $order->forceFill([
@@ -283,13 +366,50 @@ final class PurchaseOrderManager
     ): EnterprisePurchaseOrder {
         $scope = $this->authorizedScope($actor, $context, self::MANAGE_PERMISSION);
 
-        return DB::transaction(function () use ($actor, $scope, $orderId): EnterprisePurchaseOrder {
+        return DB::transaction(function () use ($actor, $context, $scope, $orderId): EnterprisePurchaseOrder {
             $order = $this->lockVisible($scope, $orderId);
             if ($order->status === 'cancelled') {
-                return $order->refresh();
+                $order->refresh();
+                $this->authorizedScope($actor, $context, self::MANAGE_PERMISSION);
+
+                return $order;
             }
 
             $this->requireStatus($order, ['draft', 'issued'], 'cancelled');
+
+            // GRN posting locks the same PO and creates authoritative stock
+            // movements. Do not release contractual commitments or cancel an
+            // issued order once inventory has actually been received.
+            if ($order->status === 'issued' && DB::table('enterprise_goods_receipts')
+                ->where('purchase_order_id', $order->id)
+                ->where('organization_id', $scope->organizationId)
+                ->where('company_id', $scope->companyId)
+                ->where('store_id', $scope->storeId)
+                ->where(function ($receipts): void {
+                    $receipts->where('status', 'posted')
+                        ->orWhereExists(function ($lines): void {
+                            $lines->selectRaw('1')
+                                ->from('enterprise_goods_receipt_lines as received_lines')
+                                ->whereColumn('received_lines.goods_receipt_id', 'enterprise_goods_receipts.id')
+                                ->where(function ($handoff): void {
+                                    $handoff->whereNotNull('received_lines.stock_movement_id')
+                                        ->orWhereExists(function ($movements): void {
+                                            $movements->selectRaw('1')
+                                                ->from('stock_movements as received_stock')
+                                                ->whereColumn('received_stock.reference_id', 'received_lines.id')
+                                                ->whereColumn('received_stock.store_id', 'enterprise_goods_receipts.store_id')
+                                                ->where('received_stock.reference_type', 'enterprise_goods_receipt_line')
+                                                ->where('received_stock.type', 'purchase_receipt');
+                                        });
+                                });
+                        });
+                })
+                ->exists()) {
+                throw ValidationException::withMessages([
+                    'status' => ['A purchase order with posted receipts cannot be cancelled; use the authorized return or correction workflow.'],
+                ]);
+            }
+
             $before = $order->toArray();
 
             if ($order->status === 'issued' && $order->procurement_contract_id !== null) {
@@ -301,22 +421,33 @@ final class PurchaseOrderManager
                     ->lockForUpdate()
                     ->first();
 
-                if ($contract !== null) {
-                    $lines = $order->lines()->get();
-                    $orderValue = round((float) $lines->sum(
-                        fn ($line): float => (float) ($line->unit_price ?? 0) * (float) $line->quantity,
-                    ), 3);
-                    $orderQuantity = round((float) $lines->sum('quantity'), 3);
-                    DB::table('enterprise_procurement_contracts')
-                        ->where('id', $contract->id)
-                        ->update([
-                            'committed_value' => max(0, round((float) $contract->committed_value - $orderValue, 3)),
-                            'committed_quantity' => max(0, round((float) $contract->committed_quantity - $orderQuantity, 3)),
-                            'updated_by' => $actor->id,
-                            'updated_at' => now(),
-                        ]);
-                }
+                // An issued order already reserved contract value/quantity.
+                // A transferred or missing contract cannot be silently skipped:
+                // cancellation would orphan that reserved financial balance.
+                abort_if($contract === null, 409, 'Assigned procurement contract is unavailable for commitment release.');
+
+                $lines = $order->lines()->get();
+                $orderValue = round((float) $lines->sum(
+                    fn ($line): float => (float) ($line->unit_price ?? 0) * (float) $line->quantity,
+                ), 3);
+                $orderQuantity = round((float) $lines->sum('quantity'), 3);
+                // Releasing an issued contract commitment also requires
+                // the caller's current persisted manage permission.
+                $this->authorizedScope($actor, $context, self::MANAGE_PERMISSION);
+
+                DB::table('enterprise_procurement_contracts')
+                    ->where('id', $contract->id)
+                    ->update([
+                        'committed_value' => max(0, round((float) $contract->committed_value - $orderValue, 3)),
+                        'committed_quantity' => max(0, round((float) $contract->committed_quantity - $orderQuantity, 3)),
+                        'updated_by' => $actor->id,
+                        'updated_at' => now(),
+                    ]);
             }
+
+            // Protect the non-contract path and roll back any earlier
+            // commitment release if a permission was revoked during reads.
+            $this->authorizedScope($actor, $context, self::MANAGE_PERMISSION);
 
             $order->forceFill([
                 'status' => 'cancelled',
@@ -342,11 +473,32 @@ final class PurchaseOrderManager
         ResolvedTenantContext $context,
         string $permission,
     ): EnterpriseDataScope {
+        // Direct-service Eloquent actors must be tied to the originally loaded
+        // persisted account, not an unsaved replacement of the primary key.
+        // Otherwise order issuance/cancellation could be attributed to a
+        // different authorized user without authenticating that user.
+        $persistedActorId = $actor->getRawOriginal($actor->getKeyName());
+        abort_unless(
+            $actor->exists
+                && $persistedActorId !== null
+                && (string) $actor->getKey() === (string) $persistedActorId,
+            403,
+        );
+
         abort_if($context->enterpriseScope === null, 409, 'Enterprise data scope is required.');
+
+        // The supplied Eloquent User may predate a committed permission DENY.
+        // Authorize the same immutable persisted principal, but with today's
+        // active status and effective override flag, never a stale snapshot.
+        $currentActor = User::query()
+            ->whereKey($persistedActorId)
+            ->where('is_active', true)
+            ->first();
+        abort_unless($currentActor instanceof User, 403);
 
         $scope = $context->enterpriseScope;
         $this->authorizer->authorize(
-            $actor,
+            $currentActor,
             $context,
             $permission,
             'company',
@@ -365,6 +517,30 @@ final class PurchaseOrderManager
             ->where('store_id', $scope->storeId);
     }
 
+    /**
+     * A retained Purchase Order can reference a supplier that has since been
+     * reassigned to another store. Read-side authorization must verify both
+     * objects against CURRENT org/company and the supplier's company/store
+     * scope; validating the PO alone leaks supplier names and priced lines.
+     *
+     * @return Builder<EnterprisePurchaseOrder>
+     */
+    private function visibleWithSupplier(EnterpriseDataScope $scope): Builder
+    {
+        return $this->visibleQuery($scope)
+            ->whereHas('supplier', function (Builder $supplier) use ($scope): void {
+                $supplier->where('organization_id', $scope->organizationId)
+                    ->where('company_id', $scope->companyId)
+                    ->where(function (Builder $query) use ($scope): void {
+                        $query->where('scope_type', 'company')
+                            ->orWhere(function (Builder $store) use ($scope): void {
+                                $store->where('scope_type', 'store')
+                                    ->where('store_id', $scope->storeId);
+                            });
+                    });
+            });
+    }
+
     /** @return Builder<EnterprisePurchaseRequest> */
     private function visibleRequestQuery(EnterpriseDataScope $scope): Builder
     {
@@ -372,13 +548,6 @@ final class PurchaseOrderManager
             ->where('organization_id', $scope->organizationId)
             ->where('company_id', $scope->companyId)
             ->where('store_id', $scope->storeId);
-    }
-
-    private function findVisible(
-        EnterpriseDataScope $scope,
-        int $orderId,
-    ): EnterprisePurchaseOrder {
-        return $this->visibleQuery($scope)->whereKey($orderId)->firstOrFail();
     }
 
     private function lockVisible(
@@ -410,6 +579,7 @@ final class PurchaseOrderManager
                             ->where('store_id', $scope->storeId);
                     });
             })
+            ->lockForUpdate()
             ->firstOrFail();
     }
 

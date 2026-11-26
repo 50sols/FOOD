@@ -7,13 +7,17 @@ use App\Enterprise\Entitlements\ModuleEntitlementManager;
 use App\Enterprise\Entitlements\ModuleEntitlementResolver;
 use App\Enterprise\Modules\ModuleOperationalReadiness;
 use App\Enterprise\Modules\ModuleRegistry;
+use App\Enterprise\Organization\OrganizationHierarchyService;
 use App\Models\Role;
+use App\Models\Store;
 use App\Models\User;
 use App\Services\EnterpriseModuleAdministration;
+use App\Services\WholesalePrincipal;
 use App\Support\AdminNavigation;
 use Database\Seeders\CoreReferenceSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
+use Tests\Support\SyntheticErpWorkflowEvidence;
 use Tests\TestCase;
 
 /**
@@ -27,6 +31,7 @@ final class V2ErpModuleAuthorityReconciliationTest extends TestCase
     protected function setUp(): void
     {
         parent::setUp();
+        SyntheticErpWorkflowEvidence::install();
         config()->set('security.mfa.enforce_privileged', false);
         config()->set('enterprise_module_readiness.certified_versions', []);
         $this->seed(CoreReferenceSeeder::class);
@@ -34,6 +39,10 @@ final class V2ErpModuleAuthorityReconciliationTest extends TestCase
 
     public function test_enabled_and_entitled_procurement_requires_exact_version_readiness_and_revocation_removes_navigation(): void
     {
+        // Signed readiness never grants a phantom store. Provision the actual
+        // Wholesale organizational scope required by the HTTP/Sidebar contract.
+        $store = Store::query()->findOrFail(app(WholesalePrincipal::class)->storeId());
+        app(OrganizationHierarchyService::class)->ensureDefaultScopeForStore($store);
         $actor = $this->superAdmin();
         app(EnterpriseModuleAdministration::class)->perform('procurement', 'enable', $actor);
 
@@ -132,6 +141,10 @@ final class V2ErpModuleAuthorityReconciliationTest extends TestCase
     /** @return array<string, mixed>|null */
     private function navigationItem(User $user, string $key): ?array
     {
+        // Navigation memoizes module readiness/entitlement for one request.
+        // Each test projection represents a separate request after explicit
+        // certification or entitlement change; never reuse a stale snapshot.
+        app()->forgetInstance(AdminNavigation::class);
         foreach (app(AdminNavigation::class)->groupsFor($user) as $group) {
             foreach ((array) ($group['children'] ?? []) as $item) {
                 if (($item['key'] ?? null) === $key) {

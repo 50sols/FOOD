@@ -6,15 +6,19 @@ use App\Enterprise\Entitlements\EntitlementScope;
 use App\Enterprise\Entitlements\ModuleEntitlementManager;
 use App\Enterprise\Modules\ModuleOperationalReadiness;
 use App\Enterprise\Modules\ModuleRegistry;
+use App\Enterprise\Organization\OrganizationHierarchyService;
 use App\Enums\StoreBusinessProfile;
 use App\Models\Role;
+use App\Models\Store;
 use App\Models\User;
 use App\Services\EnterpriseModuleAdministration;
+use App\Services\WholesalePrincipal;
 use App\Support\AdminNavigation;
 use Database\Seeders\CoreReferenceSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Route;
+use Tests\Support\SyntheticErpWorkflowEvidence;
 use Tests\TestCase;
 
 /**
@@ -46,6 +50,7 @@ final class V2ErpFinanceProcurementReadinessGateTest extends TestCase
     protected function setUp(): void
     {
         parent::setUp();
+        SyntheticErpWorkflowEvidence::install();
         config()->set('security.mfa.enforce_privileged', false);
         config()->set('enterprise_module_readiness.certified_versions', []);
         $this->seed(CoreReferenceSeeder::class);
@@ -92,6 +97,10 @@ final class V2ErpFinanceProcurementReadinessGateTest extends TestCase
     public function test_only_approved_versions_project_real_routes_without_bypassing_entitlements_or_tenant_roles(): void
     {
         $actor = $this->superAdmin();
+        // The Procurement link mirrors a genuinely accessible B2B store,
+        // not a synthetic Super Admin navigation-only scope.
+        $store = Store::query()->findOrFail(app(WholesalePrincipal::class)->storeId());
+        app(OrganizationHierarchyService::class)->ensureDefaultScopeForStore($store);
         $this->enableAndEntitle($actor);
 
         foreach (array_keys(self::MODULES) as $code) {

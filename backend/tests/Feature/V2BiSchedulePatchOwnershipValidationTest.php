@@ -15,6 +15,7 @@ use App\Support\AdminNavigation;
 use Database\Seeders\CoreReferenceSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
+use Tests\Support\SyntheticErpWorkflowEvidence;
 use Tests\TestCase;
 
 /** V2 #4094: schedule ownership must be enforced before PATCH validation. */
@@ -25,6 +26,8 @@ final class V2BiSchedulePatchOwnershipValidationTest extends TestCase
     protected function setUp(): void
     {
         parent::setUp();
+        // Test-only signed workflow fixture: production ERP readiness remains fail-closed.
+        SyntheticErpWorkflowEvidence::install();
 
         config()->set('security.mfa.enforce_privileged', false);
         $this->seed(CoreReferenceSeeder::class);

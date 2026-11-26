@@ -80,6 +80,23 @@ final class SupplierDirectory
             ->withQueryString();
     }
 
+    /**
+     * Use exactly the Create validator, authorization and company-scoped
+     * uniqueness check without persisting a supplier or writing an audit log.
+     * This preflight never certifies an external registration/tax number.
+     *
+     * @param  array<string, mixed>  $attributes
+     */
+    public function validateCandidate(
+        User $actor,
+        ResolvedTenantContext $context,
+        array $attributes,
+    ): void {
+        $scope = $this->authorizedScope($actor, $context, self::MANAGE_PERMISSION);
+        $data = $this->validatedSupplier($attributes);
+        $this->assertCodeAvailable($scope, (string) $data['code']);
+    }
+
     /** @param array<string, mixed> $attributes */
     public function create(
         User $actor,
@@ -90,7 +107,10 @@ final class SupplierDirectory
         $data = $this->validatedSupplier($attributes);
         $this->assertCodeAvailable($scope, (string) $data['code']);
 
-        return DB::transaction(function () use ($actor, $scope, $data): EnterpriseSupplier {
+        return DB::transaction(function () use ($actor, $context, $scope, $data): EnterpriseSupplier {
+            // Code uniqueness is only a preflight. The live actor may be
+            // disabled or lose MANAGE before the supplier and audit are written.
+            $this->authorizePersistedManage($actor, $context);
             $supplier = EnterpriseSupplier::query()->create([
                 ...$data,
                 'organization_id' => $scope->organizationId,
@@ -127,16 +147,28 @@ final class SupplierDirectory
             $this->assertCodeAvailable($scope, (string) $data['code'], $supplier->id);
         }
 
-        return DB::transaction(function () use ($actor, $scope, $supplier, $data): EnterpriseSupplier {
+        return DB::transaction(function () use ($actor, $context, $scope, $supplier, $data): EnterpriseSupplier {
             /** @var EnterpriseSupplier $locked */
             $locked = EnterpriseSupplier::query()->whereKey($supplier->id)->lockForUpdate()->firstOrFail();
             abort_unless($this->isVisible($locked, $scope), 404);
+            // Do not allow a revoked writer to update, archive, or replay a
+            // no-op after the supplier's current row was locked.
+            $this->authorizePersistedManage($actor, $context);
 
             $before = $locked->toArray();
             if (isset($data['scope_type'])) {
                 $data['store_id'] = $data['scope_type'] === 'company' ? null : $scope->storeId;
             }
-            $locked->fill([...$data, 'updated_by' => $actor->id]);
+            $locked->fill($data);
+            // Retrying an already applied edit/archive must not mutate the
+            // record or append another success audit. In particular, a
+            // different replaying actor must not rewrite updated_by when
+            // no business field changed. The row remains scope-locked.
+            if (! $locked->isDirty()) {
+                return $locked->refresh();
+            }
+
+            $locked->updated_by = $actor->id;
             $locked->save();
 
             $this->audit->record(
@@ -175,8 +207,20 @@ final class SupplierDirectory
             'expires_at' => ['nullable', 'date'],
         ])->validate();
 
-        return DB::transaction(function () use ($actor, $supplier, $data): EnterpriseSupplierDocument {
-            $document = $supplier->documents()->create([
+        return DB::transaction(function () use ($actor, $context, $scope, $supplierId, $data): EnterpriseSupplierDocument {
+            // The preflight visibility check is not an authorization lease.
+            // Lock the current persisted supplier and recheck store ownership
+            // before attaching a document or recording a success audit.
+            $lockedSupplier = EnterpriseSupplier::query()
+                ->whereKey($supplierId)
+                ->lockForUpdate()
+                ->firstOrFail();
+            abort_unless($this->isVisible($lockedSupplier, $scope), 404);
+
+            // Live persisted manage authority also protects create/edit/archive.
+            $this->authorizePersistedManage($actor, $context);
+
+            $document = $lockedSupplier->documents()->create([
                 ...$data,
                 'created_by' => $actor->id,
             ]);
@@ -184,10 +228,10 @@ final class SupplierDirectory
             $this->audit->record(
                 'enterprise.supplier.document_registered',
                 $actor,
-                $supplier,
+                $lockedSupplier,
                 null,
                 [
-                    'supplier_id' => $supplier->id,
+                    'supplier_id' => $lockedSupplier->id,
                     'document_id' => $document->id,
                     'category' => $document->category,
                     'title' => $document->title,
@@ -290,11 +334,34 @@ final class SupplierDirectory
         ];
     }
 
+    private function authorizePersistedManage(User $actor, ResolvedTenantContext $context): void
+    {
+        // First validate the caller's ORIGINAL persisted identity. Fresh()
+        // alone must never turn a dirty/forged in-memory key into a new actor.
+        $this->authorizedScope($actor, $context, self::MANAGE_PERMISSION);
+
+        // RBAC grants and the has_permission_overrides flag can change after
+        // the first preflight. Only current DB state can authorize a write.
+        $persistedActor = $actor->fresh();
+        abort_unless($persistedActor !== null, 403);
+        $this->authorizedScope($persistedActor, $context, self::MANAGE_PERMISSION);
+    }
+
     private function authorizedScope(
         User $actor,
         ResolvedTenantContext $context,
         string $permission,
     ): EnterpriseDataScope {
+        // A direct service call must not authenticate as a different account
+        // through a dirty, unsaved Eloquent primary key.
+        $persistedActorId = $actor->getRawOriginal($actor->getKeyName());
+        abort_unless(
+            $actor->exists
+                && $persistedActorId !== null
+                && (string) $actor->getKey() === (string) $persistedActorId,
+            403,
+        );
+
         abort_if($context->enterpriseScope === null, 409, 'Enterprise data scope is required.');
 
         $scope = $context->enterpriseScope;

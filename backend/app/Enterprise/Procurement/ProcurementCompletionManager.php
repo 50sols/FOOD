@@ -3,6 +3,8 @@
 namespace App\Enterprise\Procurement;
 
 use App\Enterprise\Modules\ModuleRegistry;
+use App\Enterprise\Modules\ModuleState;
+use App\Enterprise\Organization\OrganizationHierarchyService;
 use App\Models\EnterpriseSupplier;
 use App\Models\User;
 use App\Services\AuditLogger;
@@ -10,6 +12,7 @@ use App\Support\EnterpriseDataScope;
 use App\Support\EnterpriseScopeAuthorizer;
 use App\Support\ResolvedTenantContext;
 use Carbon\CarbonImmutable;
+use Illuminate\Database\Query\Builder as QueryBuilder;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Pagination\LengthAwarePaginator;
 use Illuminate\Support\Facades\DB;
@@ -28,6 +31,9 @@ final class ProcurementCompletionManager
     private const QUALIFICATION_STATUSES = ['pending', 'qualified', 'conditional', 'unqualified'];
 
     private const MATCH_STATUSES = ['auto_approved', 'pending', 'approved', 'rejected'];
+
+    // Maximum 15 integral digits + 3 fractional digits in DECIMAL(18,3).
+    private const MAX_QUOTE_AMOUNT_MILLS = 999_999_999_999_999_999;
 
     public function __construct(
         private readonly EnterpriseScopeAuthorizer $authorizer,
@@ -56,31 +62,39 @@ final class ProcurementCompletionManager
 
         $openRequests = $canRequests
             ? DB::table('enterprise_purchase_requests')
+                ->where('organization_id', $scope->organizationId)
+                ->where('company_id', $scope->companyId)
                 ->where('store_id', $storeId)
                 ->whereIn('status', ['draft', 'submitted', 'approved'])
                 ->count()
             : null;
         $pendingApprovals = $canRequests
             ? DB::table('enterprise_purchase_requests')
+                ->where('organization_id', $scope->organizationId)
+                ->where('company_id', $scope->companyId)
                 ->where('store_id', $storeId)
                 ->where('status', 'submitted')
                 ->count()
             : null;
         $openOrders = $canOrders
             ? DB::table('enterprise_purchase_orders')
+                ->where('organization_id', $scope->organizationId)
+                ->where('company_id', $scope->companyId)
                 ->where('store_id', $storeId)
                 ->whereIn('status', ['draft', 'issued'])
                 ->count()
             : null;
         $overdueOrders = $canOrders
             ? DB::table('enterprise_purchase_orders')
+                ->where('organization_id', $scope->organizationId)
+                ->where('company_id', $scope->companyId)
                 ->where('store_id', $storeId)
                 ->where('status', 'issued')
                 ->whereNotNull('needed_by')
                 ->whereDate('needed_by', '<', now()->toDateString())
                 ->count()
             : null;
-        $orderedNotReceived = $canOrders ? $this->orderedNotReceivedCount($storeId) : null;
+        $orderedNotReceived = $canOrders ? $this->orderedNotReceivedCount($storeId, $scope->organizationId, $scope->companyId) : null;
         $unmatchedInvoices = $canInvoices
             ? DB::table('enterprise_purchase_invoices as invoices')
                 ->leftJoin(
@@ -89,6 +103,8 @@ final class ProcurementCompletionManager
                     '=',
                     'invoices.id',
                 )
+                ->where('invoices.organization_id', $scope->organizationId)
+                ->where('invoices.company_id', $scope->companyId)
                 ->where('invoices.store_id', $storeId)
                 ->whereNotIn('invoices.status', ['cancelled'])
                 ->where(function ($query): void {
@@ -99,27 +115,29 @@ final class ProcurementCompletionManager
             : null;
         $supplierAging = $canStatements
             ? (float) DB::table('enterprise_purchase_invoices')
+                ->where('organization_id', $scope->organizationId)
+                ->where('company_id', $scope->companyId)
                 ->where('store_id', $storeId)
                 ->where('status', 'handed_off')
                 ->sum('total_amount')
             : null;
         $activeContracts = $canOrders
-            ? DB::table('enterprise_procurement_contracts')
-                ->where('store_id', $storeId)
-                ->where('status', 'active')
-                ->whereDate('starts_on', '<=', now()->toDateString())
-                ->whereDate('ends_on', '>=', now()->toDateString())
+            ? $this->scopedContractDashboardQuery($storeId, $scope->organizationId, $scope->companyId)
+                ->where('contracts.status', 'active')
+                ->whereDate('contracts.starts_on', '<=', now()->toDateString())
+                ->whereDate('contracts.ends_on', '>=', now()->toDateString())
                 ->count()
             : null;
         $expiringContracts = $canOrders
-            ? DB::table('enterprise_procurement_contracts')
-                ->where('store_id', $storeId)
-                ->where('status', 'active')
-                ->whereBetween('ends_on', [now()->toDateString(), now()->addDays($contractWarningDays)->toDateString()])
+            ? $this->scopedContractDashboardQuery($storeId, $scope->organizationId, $scope->companyId)
+                ->where('contracts.status', 'active')
+                ->whereBetween('contracts.ends_on', [now()->toDateString(), now()->addDays($contractWarningDays)->toDateString()])
                 ->count()
             : null;
         $activeRfqs = $canRequests
             ? DB::table('enterprise_procurement_rfqs')
+                ->where('organization_id', $scope->organizationId)
+                ->where('company_id', $scope->companyId)
                 ->where('store_id', $storeId)
                 ->whereIn('status', ['draft', 'published'])
                 ->count()
@@ -139,14 +157,41 @@ final class ProcurementCompletionManager
             $this->metric('active_rfqs', $activeRfqs, 'rfqs', ['status' => 'draft,published'], $lastRefresh),
         ];
 
-        $spendTrend = $canInvoices ? $this->spendTrend($storeId, $from, $to) : [];
-        $spendBySupplier = $canInvoices ? $this->spendBySupplier($storeId, $from, $to) : [];
-        $spendByCategory = $canInvoices ? $this->spendByCategory($storeId, $from, $to) : [];
-        $poStatuses = $canOrders ? $this->purchaseOrderStatusChart($storeId) : [];
-        $poAging = $canOrders ? $this->purchaseOrderAgingChart($storeId) : [];
-        $supplierPerformance = $canOrders ? $this->supplierPerformance($storeId, $from, $to) : [];
-        $savings = $canRequests ? $this->savingsChart($storeId, $from, $to) : [];
-        $contractHorizon = $canOrders ? $this->contractExpiryHorizon($storeId) : [];
+        $spendTrend = $canInvoices ? $this->spendTrend($storeId, $from, $to, $scope->organizationId, $scope->companyId) : [];
+        $spendBySupplier = $canInvoices ? $this->spendBySupplier($storeId, $from, $to, $scope->organizationId, $scope->companyId) : [];
+        $spendByCategory = $canInvoices ? $this->spendByCategory($storeId, $from, $to, $scope->organizationId, $scope->companyId) : [];
+        $poStatuses = $canOrders ? $this->purchaseOrderStatusChart($storeId, $scope->organizationId, $scope->companyId) : [];
+        $poAging = $canOrders ? $this->purchaseOrderAgingChart($storeId, $scope->organizationId, $scope->companyId) : [];
+        $supplierPerformance = $canOrders ? $this->supplierPerformance($storeId, $from, $to, $scope->organizationId, $scope->companyId) : [];
+        $savings = $canRequests ? $this->savingsChart($storeId, $from, $to, $scope->organizationId, $scope->companyId) : [];
+        $contractHorizon = $canOrders ? $this->contractExpiryHorizon($storeId, $scope->organizationId, $scope->companyId) : [];
+        // Exceptions include supplier and invoice data and must be fetched
+        // BEFORE the final permission check, not inside the return value.
+        $exceptions = $this->exceptions(
+            $storeId,
+            $scope->organizationId,
+            $scope->companyId,
+            $canOrders,
+            $canInvoices,
+            $canSuppliers,
+        );
+
+        // The KPI/chart grants were captured before multiple finance, supplier
+        // and RFQ SELECTs. A persisted view DENY or offboarding issued during
+        // those reads must not release already-hydrated monetary information.
+        // Check ONLY permissions that contributed real data to this response.
+        $this->baseScope($actor, $context);
+        foreach ([
+            'procurement.purchase_requests.view' => $canRequests,
+            'procurement.purchase_orders.view' => $canOrders,
+            'procurement.purchase_invoices.view' => $canInvoices,
+            'procurement.suppliers.view' => $canSuppliers,
+            'procurement.supplier_statements.view' => $canStatements,
+        ] as $viewPermission => $wasAuthorized) {
+            if ($wasAuthorized) {
+                $this->scope($actor, $context, $viewPermission);
+            }
+        }
 
         return [
             'selected_from' => $from,
@@ -163,13 +208,7 @@ final class ProcurementCompletionManager
                 'savings' => $savings,
                 'contract_expiry' => $contractHorizon,
             ],
-            'exceptions' => $this->exceptions(
-                $storeId,
-                $scope->companyId,
-                $canOrders,
-                $canInvoices,
-                $canSuppliers,
-            ),
+            'exceptions' => $exceptions,
             'state' => collect($kpis)->contains(fn (array $metric): bool => $metric['value'] !== null)
                 ? 'current'
                 : 'permission',
@@ -199,11 +238,14 @@ final class ProcurementCompletionManager
         $prefix = $literal.'%';
         $contains = '%'.$literal.'%';
 
-        return DB::table('enterprise_procurement_rfqs as rfqs')
+        $page = DB::table('enterprise_procurement_rfqs as rfqs')
             ->join('enterprise_purchase_requests as requests', 'requests.id', '=', 'rfqs.purchase_request_id')
             ->where('rfqs.organization_id', $scope->organizationId)
             ->where('rfqs.company_id', $scope->companyId)
             ->where('rfqs.store_id', $scope->storeId)
+            ->where('requests.organization_id', $scope->organizationId)
+            ->where('requests.company_id', $scope->companyId)
+            ->where('requests.store_id', $scope->storeId)
             ->when(
                 $validated['status'] ?? null,
                 fn ($query, string $status) => $query->where('rfqs.status', $status),
@@ -223,6 +265,49 @@ final class ProcurementCompletionManager
             ->orderByDesc('rfqs.id')
             ->paginate(max(10, min(100, $perPage)))
             ->withQueryString();
+
+        // An RFQ or its joined request can be transferred OR edited after
+        // pagination hydrated the row. Count-only ownership checks allow a
+        // former status, title, currency or source request number to escape
+        // even when all selected IDs still belong to the same store.
+        // Reconcile the entire bounded joined projection before returning.
+        $selectedRows = $page->getCollection();
+        $rfqIds = $selectedRows->pluck('id')->all();
+        if ($rfqIds !== []) {
+            $expected = $selectedRows->mapWithKeys(static fn ($row): array => [
+                (int) $row->id => (array) $row,
+            ])->sortKeys()->all();
+            $currentRows = DB::table('enterprise_procurement_rfqs as rfqs')
+                ->join('enterprise_purchase_requests as requests', 'requests.id', '=', 'rfqs.purchase_request_id')
+                ->whereIn('rfqs.id', $rfqIds)
+                ->where('rfqs.organization_id', $scope->organizationId)
+                ->where('rfqs.company_id', $scope->companyId)
+                ->where('rfqs.store_id', $scope->storeId)
+                ->where('requests.organization_id', $scope->organizationId)
+                ->where('requests.company_id', $scope->companyId)
+                ->where('requests.store_id', $scope->storeId)
+                ->get([
+                    'rfqs.*',
+                    'requests.request_number as source_request_number',
+                ]);
+            $current = $currentRows->mapWithKeys(static fn ($row): array => [
+                (int) $row->id => (array) $row,
+            ])->sortKeys()->all();
+            abort_unless(
+                count($expected) === $selectedRows->count()
+                    && count($current) === $currentRows->count()
+                    && $current === $expected,
+                404,
+                'RFQ or source purchase request data changed during pagination.',
+            );
+        }
+
+        // The scoped COUNT/row SELECTs may complete after permission has
+        // been persistently revoked. Never return RFQ or request metadata
+        // using only the earlier authorization decision.
+        $this->scope($actor, $context, 'procurement.purchase_requests.view');
+
+        return $page;
     }
 
     /** @return array<string,mixed> */
@@ -234,13 +319,45 @@ final class ProcurementCompletionManager
         $scope = $this->scope($actor, $context, 'procurement.purchase_requests.view');
         $rfq = $this->visibleRfq($scope, $rfqId);
 
-        $lines = DB::table('enterprise_procurement_rfq_lines')
-            ->where('rfq_id', $rfq->id)
-            ->orderBy('line_no')
+        // The purchase request is an independent persisted ownership boundary.
+        // The RFQ list already requires both records to belong to this store;
+        // detail and download must not expose a former-store request's quotes.
+        $assertCurrentSourceRequest = static function () use ($scope, $rfqId): void {
+            DB::table('enterprise_procurement_rfqs as rfqs')
+                ->join('enterprise_purchase_requests as requests', 'requests.id', '=', 'rfqs.purchase_request_id')
+                ->where('rfqs.id', $rfqId)
+                ->where('rfqs.organization_id', $scope->organizationId)
+                ->where('rfqs.company_id', $scope->companyId)
+                ->where('rfqs.store_id', $scope->storeId)
+                ->where('requests.organization_id', $scope->organizationId)
+                ->where('requests.company_id', $scope->companyId)
+                ->where('requests.store_id', $scope->storeId)
+                ->firstOrFail(['rfqs.id']);
+        };
+        $assertCurrentSourceRequest();
+
+        // A previously visible RFQ can be transferred to another store between
+        // the first authorization read and subsequent detail queries. Every
+        // child collection, particularly quote attachment storage paths, must
+        // join the RFQ's CURRENT organization/company/store authorization.
+        $visibleRfq = static function ($query) use ($scope, $rfqId): void {
+            $query->where('rfqs.id', $rfqId)
+                ->where('rfqs.organization_id', $scope->organizationId)
+                ->where('rfqs.company_id', $scope->companyId)
+                ->where('rfqs.store_id', $scope->storeId);
+        };
+
+        $lines = DB::table('enterprise_procurement_rfq_lines as lines')
+            ->join('enterprise_procurement_rfqs as rfqs', 'rfqs.id', '=', 'lines.rfq_id')
+            ->where($visibleRfq)
+            ->orderBy('lines.line_no')
+            ->select('lines.*')
             ->get();
         $invitations = DB::table('enterprise_procurement_rfq_invitations as invitations')
+            ->join('enterprise_procurement_rfqs as rfqs', 'rfqs.id', '=', 'invitations.rfq_id')
             ->join('enterprise_suppliers as suppliers', 'suppliers.id', '=', 'invitations.supplier_id')
-            ->where('invitations.rfq_id', $rfq->id)
+            ->where($visibleRfq)
+            ->where(fn (QueryBuilder $query) => $this->scopeJoinedSupplier($query, $scope))
             ->orderBy('suppliers.code')
             ->get([
                 'invitations.id',
@@ -254,8 +371,10 @@ final class ProcurementCompletionManager
                 'suppliers.name_ar as supplier_name_ar',
             ]);
         $quotes = DB::table('enterprise_procurement_quotes as quotes')
+            ->join('enterprise_procurement_rfqs as rfqs', 'rfqs.id', '=', 'quotes.rfq_id')
             ->join('enterprise_suppliers as suppliers', 'suppliers.id', '=', 'quotes.supplier_id')
-            ->where('quotes.rfq_id', $rfq->id)
+            ->where($visibleRfq)
+            ->where(fn (QueryBuilder $query) => $this->scopeJoinedSupplier($query, $scope))
             ->orderBy('quotes.total_amount')
             ->orderBy('quotes.id')
             ->get([
@@ -267,11 +386,129 @@ final class ProcurementCompletionManager
 
         $quoteDocuments = $quotes->isEmpty()
             ? collect()
-            : DB::table('enterprise_procurement_quote_documents')
-                ->whereIn('quote_id', $quotes->pluck('id')->all())
-                ->orderByDesc('id')
+            : DB::table('enterprise_procurement_quote_documents as documents')
+                ->join('enterprise_procurement_quotes as quotes', 'quotes.id', '=', 'documents.quote_id')
+                ->join('enterprise_procurement_rfqs as rfqs', 'rfqs.id', '=', 'quotes.rfq_id')
+                ->join('enterprise_suppliers as suppliers', 'suppliers.id', '=', 'quotes.supplier_id')
+                ->where($visibleRfq)
+                ->where(fn (QueryBuilder $query) => $this->scopeJoinedSupplier($query, $scope))
+                ->whereIn('documents.quote_id', $quotes->pluck('id')->all())
+                ->orderByDesc('documents.id')
+                ->select('documents.*')
                 ->get()
                 ->groupBy('quote_id');
+
+        // Do not return a stale RFQ header when its owner changed during the
+        // detail read. A newly transferred RFQ belongs only to its new store.
+        $this->visibleRfq($scope, $rfqId);
+        $assertCurrentSourceRequest();
+
+        // Historical quote money, invitation status and vendor identity
+        // are hydrated before the final view permission recheck. Supplier
+        // eligibility counts alone cannot detect a late same-store quote
+        // amendment or invitation revocation. Compare the exact bounded
+        // projected child rows under the current supplier scope.
+        foreach ([
+            [
+                $invitations,
+                'enterprise_procurement_rfq_invitations',
+                'invitations',
+                [
+                    'invitations.id',
+                    'invitations.supplier_id',
+                    'invitations.status',
+                    'invitations.expires_at',
+                    'invitations.last_accessed_at',
+                    'invitations.submitted_at',
+                    'suppliers.code as supplier_code',
+                    'suppliers.name_en as supplier_name_en',
+                    'suppliers.name_ar as supplier_name_ar',
+                ],
+            ],
+            [
+                $quotes,
+                'enterprise_procurement_quotes',
+                'quotes',
+                [
+                    'quotes.*',
+                    'suppliers.code as supplier_code',
+                    'suppliers.name_en as supplier_name_en',
+                    'suppliers.name_ar as supplier_name_ar',
+                ],
+            ],
+        ] as [$rows, $table, $alias, $projection]) {
+            $ids = $rows->pluck('id')->all();
+            if ($ids === []) {
+                continue;
+            }
+
+            $expected = $rows->mapWithKeys(static fn ($row): array => [
+                (int) $row->id => (array) $row,
+            ])->sortKeys()->all();
+            $currentRows = DB::table($table.' as '.$alias)
+                ->join('enterprise_suppliers as suppliers', 'suppliers.id', '=', $alias.'.supplier_id')
+                ->where($alias.'.rfq_id', $rfqId)
+                ->whereIn($alias.'.id', $ids)
+                ->where(fn (QueryBuilder $query) => $this->scopeJoinedSupplier($query, $scope))
+                ->get($projection);
+            $current = $currentRows->mapWithKeys(static fn ($row): array => [
+                (int) $row->id => (array) $row,
+            ])->sortKeys()->all();
+            abort_unless(
+                count($expected) === $rows->count()
+                    && count($current) === $currentRows->count()
+                    && $current === $expected,
+                404,
+                'RFQ supplier, invitation or quote financial data changed during detail retrieval.',
+            );
+        }
+
+        // Quote documents can be reassigned or their private storage path
+        // replaced independently of the still-local RFQ/quote/supplier. Do
+        // not return the original path unless the SAME document identity,
+        // quote and path remain authorized after the initial document SELECT.
+        $documentSnapshot = $quoteDocuments->flatten(1)
+            ->mapWithKeys(static fn ($document): array => [
+                (int) $document->id => [
+                    'quote_id' => (int) $document->quote_id,
+                    'storage_path' => (string) $document->storage_path,
+                ],
+            ])
+            ->sortKeys()
+            ->all();
+        if ($documentSnapshot !== []) {
+            $currentDocuments = DB::table('enterprise_procurement_quote_documents as documents')
+                ->join('enterprise_procurement_quotes as quotes', 'quotes.id', '=', 'documents.quote_id')
+                ->join('enterprise_procurement_rfqs as rfqs', 'rfqs.id', '=', 'quotes.rfq_id')
+                ->join('enterprise_purchase_requests as requests', 'requests.id', '=', 'rfqs.purchase_request_id')
+                ->join('enterprise_suppliers as suppliers', 'suppliers.id', '=', 'quotes.supplier_id')
+                ->where($visibleRfq)
+                ->where('requests.organization_id', $scope->organizationId)
+                ->where('requests.company_id', $scope->companyId)
+                ->where('requests.store_id', $scope->storeId)
+                ->where(fn (QueryBuilder $query) => $this->scopeJoinedSupplier($query, $scope))
+                ->whereIn('documents.id', array_keys($documentSnapshot))
+                ->get(['documents.id', 'documents.quote_id', 'documents.storage_path'])
+                ->mapWithKeys(static fn ($document): array => [
+                    (int) $document->id => [
+                        'quote_id' => (int) $document->quote_id,
+                        'storage_path' => (string) $document->storage_path,
+                    ],
+                ])
+                ->sortKeys()
+                ->all();
+
+            abort_unless(
+                $currentDocuments === $documentSnapshot,
+                404,
+                'RFQ quote attachment ownership or private path changed during detail retrieval.',
+            );
+        }
+
+        // Relations and attachment paths were fetched under an earlier read
+        // grant. Recheck the same persisted principal's live permission
+        // before returning supplier/quote/financial details.
+        $this->scope($actor, $context, 'procurement.purchase_requests.view');
 
         return compact('rfq', 'lines', 'invitations', 'quotes', 'quoteDocuments');
     }
@@ -283,14 +520,56 @@ final class ProcurementCompletionManager
         int $documentId,
     ): object {
         $scope = $this->scope($actor, $context, 'procurement.purchase_requests.view');
-        $rfq = $this->visibleRfq($scope, $rfqId);
 
-        return DB::table('enterprise_procurement_quote_documents as documents')
+        // Resolve attachment identity and the RFQ's CURRENT tenant/store
+        // ownership in the same SELECT. A visibleRfq() preflight followed by
+        // an unscoped document lookup could disclose a stored file path if
+        // the RFQ is reassigned between the two statements.
+        $document = DB::table('enterprise_procurement_quote_documents as documents')
             ->join('enterprise_procurement_quotes as quotes', 'quotes.id', '=', 'documents.quote_id')
-            ->where('quotes.rfq_id', $rfq->id)
+            ->join('enterprise_procurement_rfqs as rfqs', 'rfqs.id', '=', 'quotes.rfq_id')
+            ->join('enterprise_purchase_requests as requests', 'requests.id', '=', 'rfqs.purchase_request_id')
+            ->join('enterprise_suppliers as suppliers', 'suppliers.id', '=', 'quotes.supplier_id')
+            ->where(fn (QueryBuilder $query) => $this->scopeJoinedSupplier($query, $scope))
+            ->where('rfqs.organization_id', $scope->organizationId)
+            ->where('rfqs.company_id', $scope->companyId)
+            ->where('rfqs.store_id', $scope->storeId)
+            ->where('requests.organization_id', $scope->organizationId)
+            ->where('requests.company_id', $scope->companyId)
+            ->where('requests.store_id', $scope->storeId)
+            ->where('rfqs.id', $rfqId)
             ->where('documents.id', $documentId)
             ->select('documents.*')
             ->firstOrFail();
+
+        // The first scoped SELECT can finish just before the RFQ or quote is
+        // reassigned to another store. Re-read the exact document/quote/RFQ
+        // ownership and ORIGINAL document identity without selecting its
+        // private storage_path: a moved quote or replaced path must not let
+        // the caller receive a stale attachment no longer in the live record.
+        DB::table('enterprise_procurement_quote_documents as documents')
+            ->join('enterprise_procurement_quotes as quotes', 'quotes.id', '=', 'documents.quote_id')
+            ->join('enterprise_procurement_rfqs as rfqs', 'rfqs.id', '=', 'quotes.rfq_id')
+            ->join('enterprise_purchase_requests as requests', 'requests.id', '=', 'rfqs.purchase_request_id')
+            ->join('enterprise_suppliers as suppliers', 'suppliers.id', '=', 'quotes.supplier_id')
+            ->where(fn (QueryBuilder $query) => $this->scopeJoinedSupplier($query, $scope))
+            ->where('rfqs.organization_id', $scope->organizationId)
+            ->where('rfqs.company_id', $scope->companyId)
+            ->where('rfqs.store_id', $scope->storeId)
+            ->where('requests.organization_id', $scope->organizationId)
+            ->where('requests.company_id', $scope->companyId)
+            ->where('requests.store_id', $scope->storeId)
+            ->where('rfqs.id', $rfqId)
+            ->where('documents.id', $documentId)
+            ->where('documents.quote_id', $document->quote_id)
+            ->where('documents.storage_path', $document->storage_path)
+            ->firstOrFail(['documents.id']);
+
+        // A view grant can also be revoked during either SELECT. Reauthorize
+        // the original persisted actor after the current ownership check.
+        $this->scope($actor, $context, 'procurement.purchase_requests.view');
+
+        return $document;
     }
 
     /** @param array<string,mixed> $attributes */
@@ -307,7 +586,26 @@ final class ProcurementCompletionManager
             'contract_id' => ['nullable', 'integer', 'min:1'],
         ])->validate();
 
-        return DB::transaction(function () use ($actor, $scope, $purchaseRequestId, $data): object {
+        return DB::transaction(function () use ($actor, $context, $scope, $purchaseRequestId, $data): object {
+            // The module-enabled preflight may become stale before the draft
+            // RFQ/lines/audit are written. Share lifecycle's row lock before
+            // locking the scoped purchase request and creating an RFQ.
+            $module = DB::table('enterprise_modules')
+                ->where('code', 'procurement')
+                ->lockForUpdate()
+                ->first();
+            abort_unless(
+                $module !== null && $module->state === ModuleState::ENABLED->value,
+                404,
+                'Procurement module is disabled.',
+            );
+
+            // The unlocked preflight grant must not survive a persisted
+            // permission DENY or offboarding while this request is pending.
+            // Reauthorize the original principal after the module lock, before
+            // even returning an idempotent existing RFQ.
+            $this->scope($actor, $context, 'procurement.purchase_requests.manage');
+
             $request = DB::table('enterprise_purchase_requests')
                 ->where('organization_id', $scope->organizationId)
                 ->where('company_id', $scope->companyId)
@@ -331,7 +629,10 @@ final class ProcurementCompletionManager
             }
 
             if (($data['contract_id'] ?? null) !== null) {
-                $contract = $this->visibleContract($scope, (int) $data['contract_id']);
+                // Hold the scoped agreement across validity validation and draft
+                // creation. Concurrent termination must commit entirely
+                // before this check or after the new RFQ is persisted.
+                $contract = $this->visibleContract($scope, (int) $data['contract_id'], true);
                 if (
                     $contract->status !== 'active'
                     || now()->toDateString() < (string) $contract->starts_on
@@ -412,7 +713,25 @@ final class ProcurementCompletionManager
             throw ValidationException::withMessages(['supplier_ids' => ['Select at least one supplier.']]);
         }
 
-        return DB::transaction(function () use ($actor, $scope, $rfqId, $supplierIds): array {
+        return DB::transaction(function () use ($actor, $context, $scope, $rfqId, $supplierIds): array {
+            // Scope authorization is a preflight, not a durable grant. Serialize
+            // the final RFQ publication with ModuleLifecycleManager shutdown
+            // before taking RFQ and supplier locks or issuing bearer tokens.
+            $module = DB::table('enterprise_modules')
+                ->where('code', 'procurement')
+                ->lockForUpdate()
+                ->first();
+            abort_unless(
+                $module !== null && $module->state === ModuleState::ENABLED->value,
+                404,
+                'Procurement module is disabled.',
+            );
+
+            // Publishing creates bearer invitations. Revocation or offboarding
+            // after preflight must never leave the original actor authorized to
+            // issue tokens, write audit or receive an idempotent success.
+            $this->scope($actor, $context, 'procurement.purchase_requests.manage');
+
             $rfq = $this->visibleRfq($scope, $rfqId, true);
             if ($rfq->status === 'published') {
                 return [];
@@ -433,6 +752,12 @@ final class ProcurementCompletionManager
                             $store->where('scope_type', 'store')->where('store_id', $scope->storeId);
                         });
                 })
+                // Lock actual eligible rows through invitation insert + RFQ
+                // publication. A supplier hold, qualification or scope move
+                // must commit either before this check or after publication.
+                // Stable ID order avoids inconsistent multiple-supplier locks.
+                ->orderBy('id')
+                ->lockForUpdate()
                 ->get(['id']);
 
             if ($suppliers->count() !== count($supplierIds)) {
@@ -490,7 +815,24 @@ final class ProcurementCompletionManager
     ): void {
         $scope = $this->scope($actor, $context, 'procurement.purchase_requests.manage');
 
-        DB::transaction(function () use ($actor, $scope, $rfqId): void {
+        DB::transaction(function () use ($actor, $context, $scope, $rfqId): void {
+            // Cancellation and invitation revocation must be serialized with
+            // operator module suspension, just like publish/award and public
+            // supplier GET/POST. Preflight permission is not a durable grant.
+            $module = DB::table('enterprise_modules')
+                ->where('code', 'procurement')
+                ->lockForUpdate()
+                ->first();
+            abort_unless(
+                $module !== null && $module->state === ModuleState::ENABLED->value,
+                404,
+                'Procurement module is disabled.',
+            );
+
+            // Revoked managers may not cancel a published RFQ or invalidate
+            // supplier invitations after their original preflight grant.
+            $this->scope($actor, $context, 'procurement.purchase_requests.manage');
+
             $rfq = $this->visibleRfq($scope, $rfqId, true);
             if ($rfq->status === 'cancelled') {
                 return;
@@ -526,7 +868,7 @@ final class ProcurementCompletionManager
     ): object {
         $scope = $this->scope($actor, $context, 'procurement.purchase_requests.approve');
         $this->authorizer->authorize(
-            $actor,
+            $this->persistedActor($actor),
             $context,
             'procurement.purchase_orders.manage',
             'company',
@@ -534,6 +876,32 @@ final class ProcurementCompletionManager
         );
 
         return DB::transaction(function () use ($actor, $context, $scope, $rfqId, $quoteId): object {
+            // A successful preflight does not authorize awarding after an
+            // operator has committed Procurement SUSPENDED. Lock the exact
+            // lifecycle row BEFORE RFQ/quote, matching supplier GET/POST and
+            // ModuleLifecycleManager shutdown serialization order.
+            $module = DB::table('enterprise_modules')
+                ->where('code', 'procurement')
+                ->lockForUpdate()
+                ->first();
+            abort_unless(
+                $module !== null && $module->state === ModuleState::ENABLED->value,
+                404,
+                'Procurement module is disabled.',
+            );
+
+            // Both permissions are mandatory at the final write boundary.
+            // Re-read the persisted principal under the module lock so a
+            // revoked checker cannot create or replay an awarded purchase order.
+            $this->scope($actor, $context, 'procurement.purchase_requests.approve');
+            $this->authorizer->authorize(
+                $this->persistedActor($actor),
+                $context,
+                'procurement.purchase_orders.manage',
+                'company',
+                $scope->companyId,
+            );
+
             $rfq = $this->visibleRfq($scope, $rfqId, true);
             if ((int) $rfq->created_by === (int) $actor->id) {
                 throw ValidationException::withMessages([
@@ -542,11 +910,28 @@ final class ProcurementCompletionManager
             }
 
             if ($rfq->status === 'awarded') {
+                // An idempotent retry must reference the original winning quote.
+                // A different quote ID is not an authorized re-award.
+                if ((int) $rfq->awarded_quote_id !== $quoteId) {
+                    throw ValidationException::withMessages([
+                        'quote_id' => [__('enterprise_procurement.errors.quote_source_invalid')],
+                    ]);
+                }
+
+                // Awarded state alone is not proof of a valid scoped purchase
+                // order. Never report a synthetic order ID or cross-scope PO.
                 $existingOrder = DB::table('enterprise_purchase_orders')
                     ->where('procurement_rfq_id', $rfq->id)
+                    ->where('organization_id', $scope->organizationId)
+                    ->where('company_id', $scope->companyId)
+                    ->where('store_id', $scope->storeId)
+                    ->where('purchase_request_id', $rfq->purchase_request_id)
+                    ->where('awarded_quote_id', $quoteId)
                     ->first();
 
-                return $existingOrder ?? (object) ['id' => 0, 'order_number' => ''];
+                abort_if($existingOrder === null, 409);
+
+                return $existingOrder;
             }
             if ($rfq->status !== 'published') {
                 throw ValidationException::withMessages(['status' => ['Only published RFQs can be awarded.']]);
@@ -559,6 +944,69 @@ final class ProcurementCompletionManager
                 ->lockForUpdate()
                 ->first();
             abort_if($quote === null, 404);
+
+            // A published invitation is not permanent authority to procure.
+            // Revalidate its supplier, quoted amount and expiry under the
+            // locked RFQ before changing the approved request or creating a PO.
+            $invitation = DB::table('enterprise_procurement_rfq_invitations')
+                ->where('id', $quote->invitation_id)
+                ->where('rfq_id', $rfq->id)
+                ->where('supplier_id', $quote->supplier_id)
+                ->lockForUpdate()
+                ->first();
+            // An authentic submitted quote is not independent approval after
+            // its invitation was revoked, expired or otherwise invalidated.
+            // Lock the invitation until award commits, so operator changes
+            // cannot race a stale provenance check into a purchase order.
+            if ($invitation === null || $invitation->status !== 'submitted') {
+                throw ValidationException::withMessages([
+                    'quote_id' => [__('enterprise_procurement.errors.quote_source_invalid')],
+                ]);
+            }
+            if ($quote->valid_until !== null
+                && CarbonImmutable::parse((string) $quote->valid_until)->startOfDay()->isBefore(CarbonImmutable::today())) {
+                throw ValidationException::withMessages([
+                    'quote_id' => [__('enterprise_procurement.errors.quote_expired')],
+                ]);
+            }
+            // An operator supplier hold, disqualification or scope move must not
+            // commit between eligibility validation and the awarded PO write.
+            // Preserve the canonical company/store scope while holding the row
+            // until the award transaction either commits or rolls back.
+            $supplier = $this->visibleSupplier($scope, (int) $quote->supplier_id, true);
+            if ($supplier->status !== 'active' || $supplier->qualification_status === 'unqualified') {
+                throw ValidationException::withMessages([
+                    'supplier_id' => [__('enterprise_procurement.errors.quote_supplier_ineligible')],
+                ]);
+            }
+
+            $rfqLines = DB::table('enterprise_procurement_rfq_lines')
+                ->where('rfq_id', $rfq->id)
+                ->get(['id', 'quantity'])
+                ->keyBy('id');
+            $submittedLines = DB::table('enterprise_procurement_quote_lines')
+                ->where('quote_id', $quote->id)
+                ->get(['rfq_line_id', 'quantity', 'unit_price', 'line_total']);
+            $totalMills = 0;
+            $validLines = $rfqLines->isNotEmpty() && $submittedLines->count() === $rfqLines->count();
+            foreach ($submittedLines as $line) {
+                $sourceLine = $rfqLines->get((int) $line->rfq_line_id);
+                if ($sourceLine === null
+                    || (float) $line->unit_price < 0
+                    || (int) round((float) $line->quantity * 1000) !== (int) round((float) $sourceLine->quantity * 1000)
+                    || (int) round((float) $line->line_total * 1000) !== (int) round((float) $line->quantity * (float) $line->unit_price * 1000)) {
+                    $validLines = false;
+
+                    break;
+                }
+                $totalMills += (int) round((float) $line->line_total * 1000);
+            }
+            if (! $validLines || $quote->currency_code !== $rfq->currency_code
+                || (int) round((float) $quote->total_amount * 1000) !== $totalMills) {
+                throw ValidationException::withMessages([
+                    'quote_id' => [__('enterprise_procurement.errors.quote_source_invalid')],
+                ]);
+            }
 
             if ($rfq->contract_id !== null) {
                 $contract = $this->visibleContract($scope, (int) $rfq->contract_id, true);
@@ -597,6 +1045,17 @@ final class ProcurementCompletionManager
                     'purchase_request_id' => ['Purchase request must be approved before RFQ award creates a purchase order.'],
                 ]);
             }
+
+            // The locked request may already have a purchase order created
+            // through the direct procurement workflow. Never reassign its
+            // supplier, RFQ, contract or priced lines during a later award,
+            // especially after an order was issued or received.
+            abort_if(
+                DB::table('enterprise_purchase_orders')
+                    ->where('purchase_request_id', $request->id)
+                    ->exists(),
+                409,
+            );
 
             DB::table('enterprise_purchase_requests')->where('id', $request->id)->update([
                 'supplier_id' => $quote->supplier_id,
@@ -676,43 +1135,115 @@ final class ProcurementCompletionManager
     /** @return array<string,mixed> */
     public function portal(string $token): array
     {
-        $invitation = $this->portalInvitation($token, true);
-        $rfq = DB::table('enterprise_procurement_rfqs')->where('id', $invitation->rfq_id)->firstOrFail();
-        if ($rfq->status !== 'published') {
-            abort(410);
-        }
+        // Deny anonymous bearer-token reads before touching state when the
+        // module is already disabled. A later transactional lock is still
+        // mandatory because this preflight can become stale.
+        abort_unless($this->modules->isEnabled('procurement'), 404, 'Procurement module is disabled.');
 
-        $lines = DB::table('enterprise_procurement_rfq_lines')
-            ->where('rfq_id', $rfq->id)
-            ->orderBy('line_no')
-            ->get();
-        $supplier = DB::table('enterprise_suppliers')->where('id', $invitation->supplier_id)->firstOrFail();
-        $existingQuote = DB::table('enterprise_procurement_quotes')
-            ->where('invitation_id', $invitation->id)
-            ->first();
-        $existingLines = $existingQuote === null
-            ? collect()
-            : DB::table('enterprise_procurement_quote_lines')
-                ->where('quote_id', $existingQuote->id)
-                ->get()
-                ->keyBy('rfq_line_id');
-        $quoteDocuments = $existingQuote === null
-            ? collect()
-            : DB::table('enterprise_procurement_quote_documents')
-                ->where('quote_id', $existingQuote->id)
-                ->orderByDesc('id')
-                ->limit(25)
+        $invitation = $this->portalInvitation($token);
+        $rfq = DB::table('enterprise_procurement_rfqs')
+            ->where('id', $invitation->rfq_id)
+            ->firstOrFail();
+        abort_if($rfq->status !== 'published', 410);
+
+        // Keep the existing anonymous public GET preflight, including the
+        // second token-hash read exercised by HTTP stale-snapshot regressions.
+        // None of these unaudited reads grants final authority.
+        $this->eligibleInvitedSupplier($rfq, $invitation);
+        $invitation = $this->portalInvitation($token);
+
+        // Serialize public GET authorization, its "opened" side effect and
+        // the quote/document snapshot against supplier POST, RFQ cancellation,
+        // invitation revocation and module shutdown. Match POST's exact lock
+        // order: module -> RFQ -> invitation -> supplier -> quote. Committed
+        // governance changes win before a blocked GET; GET-first snapshots
+        // complete before the competing governance transaction can commit.
+        return DB::transaction(function () use ($token, $rfq, $invitation): array {
+            $module = DB::table('enterprise_modules')
+                ->where('code', 'procurement')
+                ->lockForUpdate()
+                ->first();
+            abort_unless(
+                $module !== null && $module->state === ModuleState::ENABLED->value,
+                404,
+                'Procurement module is disabled.',
+            );
+
+            $rfq = DB::table('enterprise_procurement_rfqs')
+                ->where('id', $rfq->id)
+                ->lockForUpdate()
+                ->first();
+            abort_if($rfq === null || $rfq->status !== 'published', 410);
+
+            // The second preflight token SELECT may have gone stale. Recheck
+            // status, expiry and token ownership under the invitation row lock,
+            // without creating a third preflight token-hash SELECT.
+            $invitation = DB::table('enterprise_procurement_rfq_invitations')
+                ->where('id', $invitation->id)
+                ->where('rfq_id', $rfq->id)
+                ->lockForUpdate()
+                ->first();
+            abort_if(
+                $invitation === null
+                    || ! hash_equals((string) $invitation->token_hash, hash('sha256', $token)),
+                404,
+            );
+            abort_if(
+                in_array($invitation->status, ['revoked', 'expired'], true)
+                    || CarbonImmutable::parse((string) $invitation->expires_at)->isPast(),
+                410,
+            );
+
+            $supplier = $this->eligibleInvitedSupplier($rfq, $invitation, true);
+
+            $lines = DB::table('enterprise_procurement_rfq_lines')
+                ->where('rfq_id', $rfq->id)
+                ->orderBy('line_no')
                 ->get();
+            $existingQuote = DB::table('enterprise_procurement_quotes')
+                ->where('invitation_id', $invitation->id)
+                ->lockForUpdate()
+                ->first();
+            $existingLines = $existingQuote === null
+                ? collect()
+                : DB::table('enterprise_procurement_quote_lines')
+                    ->where('quote_id', $existingQuote->id)
+                    ->get()
+                    ->keyBy('rfq_line_id');
+            $quoteDocuments = $existingQuote === null
+                ? collect()
+                : DB::table('enterprise_procurement_quote_documents')
+                    ->where('quote_id', $existingQuote->id)
+                    ->orderByDesc('id')
+                    ->limit(25)
+                    ->get();
 
-        return compact(
-            'invitation',
-            'rfq',
-            'lines',
-            'supplier',
-            'existingQuote',
-            'existingLines',
-            'quoteDocuments',
-        );
+            // Only a fully authorized, completely read public GET may record
+            // an invitation opening. The locked invitation cannot be revoked
+            // or resurrected by another database session while this runs.
+            if (in_array($invitation->status, ['invited', 'opened'], true)) {
+                DB::table('enterprise_procurement_rfq_invitations')
+                    ->where('id', $invitation->id)
+                    ->update([
+                        'status' => 'opened',
+                        'last_accessed_at' => now(),
+                        'updated_at' => now(),
+                    ]);
+                $invitation = DB::table('enterprise_procurement_rfq_invitations')
+                    ->where('id', $invitation->id)
+                    ->firstOrFail();
+            }
+
+            return compact(
+                'invitation',
+                'rfq',
+                'lines',
+                'supplier',
+                'existingQuote',
+                'existingLines',
+                'quoteDocuments',
+            );
+        }, 3);
     }
 
     /** @param array<string,mixed> $attributes */
@@ -721,7 +1252,11 @@ final class ProcurementCompletionManager
         array $attributes,
         ?UploadedFile $attachment = null,
     ): object {
-        $invitation = $this->portalInvitation($token, false);
+        // Reject public mutations before any invitation expiry touch, quote,
+        // document upload or audit write if Procurement is no longer enabled.
+        abort_unless($this->modules->isEnabled('procurement'), 404, 'Procurement module is disabled.');
+
+        $invitation = $this->portalInvitation($token);
         $rfq = DB::table('enterprise_procurement_rfqs')->where('id', $invitation->rfq_id)->firstOrFail();
         if ($rfq->status !== 'published') {
             abort(410);
@@ -733,92 +1268,163 @@ final class ProcurementCompletionManager
             'notes' => ['nullable', 'string', 'max:4000'],
             'lines' => ['required', 'array', 'min:1', 'max:100'],
             'lines.*.rfq_line_id' => ['required', 'integer', 'min:1', 'distinct'],
-            'lines.*.unit_price' => ['required', 'numeric', 'min:0', 'max:999999999'],
+            // KWD and ERP amounts are persisted at 3dp; reject silent price rounding.
+            'lines.*.unit_price' => ['required', 'numeric', 'decimal:0,3', 'min:0', 'max:999999999'],
             'lines.*.lead_time_days' => ['nullable', 'integer', 'min:0', 'max:3650'],
         ])->validate();
 
-        return DB::transaction(function () use ($invitation, $rfq, $data, $attachment): object {
-            $rfqLines = DB::table('enterprise_procurement_rfq_lines')
-                ->where('rfq_id', $rfq->id)
-                ->orderBy('line_no')
-                ->get()
-                ->keyBy('id');
-            $submittedIds = collect($data['lines'])->pluck('rfq_line_id')->map(fn ($id): int => (int) $id);
-            if ($rfqLines->count() !== $submittedIds->unique()->count() || $submittedIds->diff($rfqLines->keys())->isNotEmpty()) {
-                throw ValidationException::withMessages([
-                    'lines' => ['Quote must provide exactly one price for every RFQ line.'],
-                ]);
-            }
+        // Database rollback does not roll back local filesystem writes.
+        // Track ALL files written across transaction retries, so a later audit
+        // failure or commit error cannot leave an orphaned supplier attachment.
+        $writtenPaths = [];
+        try {
+            $quote = DB::transaction(function () use ($token, $invitation, $rfq, $data, $attachment, &$writtenPaths): object {
+                // The public preflight check can become stale between HTTP
+                // validation and this transaction. Serialize the final write
+                // against ModuleLifecycleManager::transition, which locks the
+                // same enterprise_modules row. Never create a supplier quote
+                // after a completed module suspension or shutdown.
+                $module = DB::table('enterprise_modules')
+                    ->where('code', 'procurement')
+                    ->lockForUpdate()
+                    ->first();
+                abort_unless(
+                    $module !== null && $module->state === ModuleState::ENABLED->value,
+                    404,
+                    'Procurement module is disabled.',
+                );
 
-            $existing = DB::table('enterprise_procurement_quotes')
-                ->where('invitation_id', $invitation->id)
-                ->lockForUpdate()
-                ->first();
-            if ($existing !== null && $existing->status !== 'submitted') {
-                throw ValidationException::withMessages(['status' => ['This quote can no longer be edited.']]);
-            }
+                // Lock the RFQ BEFORE its invitation and quote, matching the award
+                // and cancellation lock order. A pre-transaction read cannot
+                // authorize a supplier write after an RFQ was cancelled/awarded.
+                $rfq = DB::table('enterprise_procurement_rfqs')
+                    ->where('id', $rfq->id)
+                    ->lockForUpdate()
+                    ->firstOrFail();
+                abort_if($rfq->status !== 'published', 410);
 
-            $publicId = $existing !== null ? (string) $existing->public_id : (string) Str::uuid();
-            $quoteId = $existing !== null ? (int) $existing->id : DB::table('enterprise_procurement_quotes')->insertGetId([
-                'public_id' => $publicId,
-                'quote_number' => 'QT-'.strtoupper(substr(str_replace('-', '', $publicId), 0, 12)),
-                'rfq_id' => $rfq->id,
-                'invitation_id' => $invitation->id,
-                'supplier_id' => $invitation->supplier_id,
-                'status' => 'submitted',
-                'currency_code' => $rfq->currency_code,
-                'submitted_at' => now(),
-                'created_at' => now(),
-                'updated_at' => now(),
-            ]);
+                // The public invitation may have been revoked or expired after
+                // the initial token check. Revalidate its original token/scope
+                // under the same transaction, before deleting any old quote lines.
+                $invitation = DB::table('enterprise_procurement_rfq_invitations')
+                    ->where('id', $invitation->id)
+                    ->where('rfq_id', $rfq->id)
+                    ->where('token_hash', hash('sha256', $token))
+                    ->lockForUpdate()
+                    ->firstOrFail();
+                abort_if(
+                    in_array($invitation->status, ['revoked', 'expired'], true)
+                        || CarbonImmutable::parse((string) $invitation->expires_at)->isPast(),
+                    410,
+                );
 
-            if ($existing !== null) {
-                DB::table('enterprise_procurement_quote_lines')->where('quote_id', $quoteId)->delete();
-            }
+                // Revalidate current supplier governance and original tenant
+                // scope under lock before quote/documents/audit mutations.
+                $this->eligibleInvitedSupplier($rfq, $invitation, true);
 
-            $total = 0.0;
-            foreach ($data['lines'] as $line) {
-                $rfqLine = $rfqLines->get((int) $line['rfq_line_id']);
-                $lineTotal = round((float) $rfqLine->quantity * (float) $line['unit_price'], 3);
-                $total += $lineTotal;
-                DB::table('enterprise_procurement_quote_lines')->insert([
-                    'quote_id' => $quoteId,
-                    'rfq_line_id' => $rfqLine->id,
-                    'quantity' => $rfqLine->quantity,
-                    'unit_price' => $line['unit_price'],
-                    'lead_time_days' => $line['lead_time_days'] ?? $data['lead_time_days'] ?? null,
-                    'line_total' => $lineTotal,
-                    'created_at' => now(),
-                    'updated_at' => now(),
-                ]);
-            }
-
-            DB::table('enterprise_procurement_quotes')->where('id', $quoteId)->update([
-                'valid_until' => $data['valid_until'] ?? null,
-                'lead_time_days' => $data['lead_time_days'] ?? null,
-                'total_amount' => round($total, 3),
-                'notes' => $data['notes'] ?? null,
-                'submitted_at' => now(),
-                'updated_at' => now(),
-            ]);
-            DB::table('enterprise_procurement_rfq_invitations')->where('id', $invitation->id)->update([
-                'status' => 'submitted',
-                'submitted_at' => now(),
-                'updated_at' => now(),
-            ]);
-
-            if ($attachment instanceof UploadedFile) {
-                $extension = strtolower((string) ($attachment->guessExtension() ?: $attachment->getClientOriginalExtension()));
-                $filename = Str::uuid()->toString().($extension !== '' ? '.'.$extension : '');
-                $directory = 'procurement/quotes/'.$publicId;
-                $stored = Storage::disk('local')->putFileAs($directory, $attachment, $filename);
-                if (! is_string($stored) || $stored === '' || ! Storage::disk('local')->exists($stored)) {
+                $rfqLines = DB::table('enterprise_procurement_rfq_lines')
+                    ->where('rfq_id', $rfq->id)
+                    ->orderBy('line_no')
+                    ->get()
+                    ->keyBy('id');
+                $submittedIds = collect($data['lines'])->pluck('rfq_line_id')->map(fn ($id): int => (int) $id);
+                if ($rfqLines->count() !== $submittedIds->unique()->count() || $submittedIds->diff($rfqLines->keys())->isNotEmpty()) {
                     throw ValidationException::withMessages([
-                        'attachment' => ['The quote attachment could not be stored safely.'],
+                        'lines' => ['Quote must provide exactly one price for every RFQ line.'],
                     ]);
                 }
 
-                try {
+                $existing = DB::table('enterprise_procurement_quotes')
+                    ->where('invitation_id', $invitation->id)
+                    ->lockForUpdate()
+                    ->first();
+                if ($existing !== null && $existing->status !== 'submitted') {
+                    throw ValidationException::withMessages(['status' => ['This quote can no longer be edited.']]);
+                }
+
+                $publicId = $existing !== null ? (string) $existing->public_id : (string) Str::uuid();
+                $quoteId = $existing !== null ? (int) $existing->id : DB::table('enterprise_procurement_quotes')->insertGetId([
+                    'public_id' => $publicId,
+                    'quote_number' => 'QT-'.strtoupper(substr(str_replace('-', '', $publicId), 0, 12)),
+                    'rfq_id' => $rfq->id,
+                    'invitation_id' => $invitation->id,
+                    'supplier_id' => $invitation->supplier_id,
+                    'status' => 'submitted',
+                    'currency_code' => $rfq->currency_code,
+                    'submitted_at' => now(),
+                    'created_at' => now(),
+                    'updated_at' => now(),
+                ]);
+
+                if ($existing !== null) {
+                    DB::table('enterprise_procurement_quote_lines')->where('quote_id', $quoteId)->delete();
+                }
+
+                $totalMills = 0;
+                foreach ($data['lines'] as $line) {
+                    $rfqLine = $rfqLines->get((int) $line['rfq_line_id']);
+
+                    // Both operands are validated or stored at <= 3dp. Scaling
+                    // independently fits 64-bit integers; splitting quantity
+                    // prevents overflowing multiplication or lossy float totals.
+                    $quantityMills = (int) round((float) $rfqLine->quantity * 1000);
+                    $priceMills = (int) round((float) $line['unit_price'] * 1000);
+                    $wholeQuantity = intdiv($quantityMills, 1000);
+                    if ($wholeQuantity > 0
+                        && $priceMills > intdiv(self::MAX_QUOTE_AMOUNT_MILLS, $wholeQuantity)) {
+                        throw ValidationException::withMessages([
+                            'lines' => ['Quoted amount exceeds the supported 18,3 monetary range.'],
+                        ]);
+                    }
+                    $wholeMills = $wholeQuantity * $priceMills;
+                    $fractionMills = intdiv(($quantityMills % 1000) * $priceMills + 500, 1000);
+                    $lineMills = $wholeMills + $fractionMills;
+                    if ($lineMills > self::MAX_QUOTE_AMOUNT_MILLS - $totalMills) {
+                        throw ValidationException::withMessages([
+                            'lines' => ['Quoted amount exceeds the supported 18,3 monetary range.'],
+                        ]);
+                    }
+                    $totalMills += $lineMills;
+                    $lineTotal = intdiv($lineMills, 1000).'.'.str_pad((string) ($lineMills % 1000), 3, '0', STR_PAD_LEFT);
+
+                    DB::table('enterprise_procurement_quote_lines')->insert([
+                        'quote_id' => $quoteId,
+                        'rfq_line_id' => $rfqLine->id,
+                        'quantity' => $rfqLine->quantity,
+                        'unit_price' => $line['unit_price'],
+                        'lead_time_days' => $line['lead_time_days'] ?? $data['lead_time_days'] ?? null,
+                        'line_total' => $lineTotal,
+                        'created_at' => now(),
+                        'updated_at' => now(),
+                    ]);
+                }
+
+                DB::table('enterprise_procurement_quotes')->where('id', $quoteId)->update([
+                    'valid_until' => $data['valid_until'] ?? null,
+                    'lead_time_days' => $data['lead_time_days'] ?? null,
+                    'total_amount' => intdiv($totalMills, 1000).'.'.str_pad((string) ($totalMills % 1000), 3, '0', STR_PAD_LEFT),
+                    'notes' => $data['notes'] ?? null,
+                    'submitted_at' => now(),
+                    'updated_at' => now(),
+                ]);
+                DB::table('enterprise_procurement_rfq_invitations')->where('id', $invitation->id)->update([
+                    'status' => 'submitted',
+                    'submitted_at' => now(),
+                    'updated_at' => now(),
+                ]);
+
+                if ($attachment instanceof UploadedFile) {
+                    $extension = strtolower((string) ($attachment->guessExtension() ?: $attachment->getClientOriginalExtension()));
+                    $filename = Str::uuid()->toString().($extension !== '' ? '.'.$extension : '');
+                    $directory = 'procurement/quotes/'.$publicId;
+                    $stored = Storage::disk('local')->putFileAs($directory, $attachment, $filename);
+                    if (! is_string($stored) || $stored === '' || ! Storage::disk('local')->exists($stored)) {
+                        throw ValidationException::withMessages([
+                            'attachment' => ['The quote attachment could not be stored safely.'],
+                        ]);
+                    }
+
+                    $writtenPaths[] = $stored;
                     DB::table('enterprise_procurement_quote_documents')->insert([
                         'quote_id' => $quoteId,
                         'title' => Str::limit($attachment->getClientOriginalName(), 190, ''),
@@ -829,23 +1435,36 @@ final class ProcurementCompletionManager
                         'created_at' => now(),
                         'updated_at' => now(),
                     ]);
-                } catch (\Throwable $exception) {
-                    Storage::disk('local')->delete($stored);
-                    throw $exception;
                 }
+
+                $quote = DB::table('enterprise_procurement_quotes')->where('id', $quoteId)->firstOrFail();
+                $this->audit->record('enterprise.procurement.quote.submitted', null, null, null, [
+                    'store_id' => $rfq->store_id,
+                    'rfq_id' => $rfq->id,
+                    'quote_id' => $quoteId,
+                    'supplier_id' => $invitation->supplier_id,
+                    'total_amount' => $quote->total_amount,
+                ]);
+
+                return $quote;
+            }, 3);
+        } catch (\Throwable $exception) {
+            // Includes failures after document INSERT (audit, transaction
+            // commit, retries); only compensate files written by this call.
+            if ($writtenPaths !== []) {
+                Storage::disk('local')->delete($writtenPaths);
             }
 
-            $quote = DB::table('enterprise_procurement_quotes')->where('id', $quoteId)->firstOrFail();
-            $this->audit->record('enterprise.procurement.quote.submitted', null, null, null, [
-                'store_id' => $rfq->store_id,
-                'rfq_id' => $rfq->id,
-                'quote_id' => $quoteId,
-                'supplier_id' => $invitation->supplier_id,
-                'total_amount' => $quote->total_amount,
-            ]);
+            throw $exception;
+        }
 
-            return $quote;
-        }, 3);
+        // A deadlock retry may have written an attachment on an earlier
+        // rolled-back attempt. Only the final successful path is referenced.
+        if (count($writtenPaths) > 1) {
+            Storage::disk('local')->delete(array_slice($writtenPaths, 0, -1));
+        }
+
+        return $quote;
     }
 
     /**
@@ -870,11 +1489,20 @@ final class ProcurementCompletionManager
         $prefix = $literal.'%';
         $contains = '%'.$literal.'%';
 
-        return DB::table('enterprise_procurement_contracts as contracts')
+        $page = DB::table('enterprise_procurement_contracts as contracts')
             ->join('enterprise_suppliers as suppliers', 'suppliers.id', '=', 'contracts.supplier_id')
             ->where('contracts.organization_id', $scope->organizationId)
             ->where('contracts.company_id', $scope->companyId)
             ->where('contracts.store_id', $scope->storeId)
+            ->where('suppliers.organization_id', $scope->organizationId)
+            ->where('suppliers.company_id', $scope->companyId)
+            ->where(function ($query) use ($scope): void {
+                $query->where('suppliers.scope_type', 'company')
+                    ->orWhere(function ($store) use ($scope): void {
+                        $store->where('suppliers.scope_type', 'store')
+                            ->where('suppliers.store_id', $scope->storeId);
+                    });
+            })
             ->when(
                 $validated['status'] ?? null,
                 function ($query, string $status) {
@@ -909,6 +1537,56 @@ final class ProcurementCompletionManager
             ->orderByDesc('contracts.id')
             ->paginate(max(10, min(100, $perPage)))
             ->withQueryString();
+
+        // The page contains all contract fields (ceilings, lifecycle,
+        // dates and currency) plus supplier identity. A count-only owner
+        // recheck can return stale financial terms or a replaced supplier
+        // name/code after a valid joined page SELECT. Compare the entire
+        // selected, bounded projection under current ownership instead.
+        $selectedRows = $page->getCollection();
+        $pageIds = $selectedRows->pluck('id')->all();
+        if ($pageIds !== []) {
+            $expected = $selectedRows->mapWithKeys(static fn ($row): array => [
+                (int) $row->id => (array) $row,
+            ])->sortKeys()->all();
+            $currentRows = DB::table('enterprise_procurement_contracts as contracts')
+                ->join('enterprise_suppliers as suppliers', 'suppliers.id', '=', 'contracts.supplier_id')
+                ->where('contracts.organization_id', $scope->organizationId)
+                ->where('contracts.company_id', $scope->companyId)
+                ->where('contracts.store_id', $scope->storeId)
+                ->where('suppliers.organization_id', $scope->organizationId)
+                ->where('suppliers.company_id', $scope->companyId)
+                ->where(function ($query) use ($scope): void {
+                    $query->where('suppliers.scope_type', 'company')
+                        ->orWhere(function ($store) use ($scope): void {
+                            $store->where('suppliers.scope_type', 'store')
+                                ->where('suppliers.store_id', $scope->storeId);
+                        });
+                })
+                ->whereIn('contracts.id', $pageIds)
+                ->get([
+                    'contracts.*',
+                    'suppliers.code as supplier_code',
+                    'suppliers.name_en as supplier_name_en',
+                    'suppliers.name_ar as supplier_name_ar',
+                ]);
+            $current = $currentRows->mapWithKeys(static fn ($row): array => [
+                (int) $row->id => (array) $row,
+            ])->sortKeys()->all();
+            abort_unless(
+                count($expected) === $selectedRows->count()
+                    && count($current) === $currentRows->count()
+                    && $current === $expected,
+                404,
+                'Procurement contract or supplier financial snapshot changed during pagination.',
+            );
+        }
+
+        // Original actor's effective VIEW may be persistently revoked during
+        // COUNT/SELECT; a previously authorized request is not a durable grant.
+        $this->scope($actor, $context, 'procurement.purchase_orders.view');
+
+        return $page;
     }
 
     /** @return list<object> */
@@ -919,7 +1597,7 @@ final class ProcurementCompletionManager
     ): array {
         $scope = $this->scope($actor, $context, 'procurement.purchase_requests.view');
 
-        return DB::table('enterprise_purchase_requests as requests')
+        $requests = DB::table('enterprise_purchase_requests as requests')
             ->leftJoin('enterprise_procurement_rfqs as rfqs', 'rfqs.purchase_request_id', '=', 'requests.id')
             ->where('requests.organization_id', $scope->organizationId)
             ->where('requests.company_id', $scope->companyId)
@@ -936,6 +1614,55 @@ final class ProcurementCompletionManager
                 'requests.needed_by',
             ])
             ->all();
+
+        // Selection eligibility is mutable independently of tenant ownership:
+        // an RFQ may be attached, status withdrawn or displayed number/currency
+        // changed AFTER the first scoped SELECT. Count-only scope checks would
+        // return a stale, no-longer-selectable commercial source request.
+        $snapshot = collect($requests)->mapWithKeys(static fn ($request): array => [
+            (int) $request->id => [
+                'request_number' => (string) $request->request_number,
+                'status' => (string) $request->status,
+                'currency_code' => (string) $request->currency_code,
+                'needed_by' => $request->needed_by === null ? null : (string) $request->needed_by,
+            ],
+        ])->sortKeys()->all();
+        if ($snapshot !== []) {
+            $current = DB::table('enterprise_purchase_requests as requests')
+                ->leftJoin('enterprise_procurement_rfqs as rfqs', 'rfqs.purchase_request_id', '=', 'requests.id')
+                ->where('requests.organization_id', $scope->organizationId)
+                ->where('requests.company_id', $scope->companyId)
+                ->where('requests.store_id', $scope->storeId)
+                ->whereIn('requests.status', ['submitted', 'approved'])
+                ->whereNull('rfqs.id')
+                ->whereIn('requests.id', array_keys($snapshot))
+                ->get([
+                    'requests.id',
+                    'requests.request_number',
+                    'requests.status',
+                    'requests.currency_code',
+                    'requests.needed_by',
+                ])
+                ->mapWithKeys(static fn ($request): array => [
+                    (int) $request->id => [
+                        'request_number' => (string) $request->request_number,
+                        'status' => (string) $request->status,
+                        'currency_code' => (string) $request->currency_code,
+                        'needed_by' => $request->needed_by === null ? null : (string) $request->needed_by,
+                    ],
+                ])->sortKeys()->all();
+            abort_unless(
+                $current === $snapshot,
+                404,
+                'Purchase-request eligibility or selection details changed during option lookup.',
+            );
+        }
+
+        // Avoid disclosing request identities/currency when an original
+        // operator's effective VIEW permission is revoked during SQL.
+        $this->scope($actor, $context, 'procurement.purchase_requests.view');
+
+        return $requests;
     }
 
     /** @return list<object> */
@@ -947,11 +1674,20 @@ final class ProcurementCompletionManager
     ): array {
         $scope = $this->scope($actor, $context, 'procurement.purchase_orders.view');
 
-        return DB::table('enterprise_procurement_contracts as contracts')
+        $contracts = DB::table('enterprise_procurement_contracts as contracts')
             ->join('enterprise_suppliers as suppliers', 'suppliers.id', '=', 'contracts.supplier_id')
             ->where('contracts.organization_id', $scope->organizationId)
             ->where('contracts.company_id', $scope->companyId)
             ->where('contracts.store_id', $scope->storeId)
+            ->where('suppliers.organization_id', $scope->organizationId)
+            ->where('suppliers.company_id', $scope->companyId)
+            ->where(function ($query) use ($scope): void {
+                $query->where('suppliers.scope_type', 'company')
+                    ->orWhere(function ($store) use ($scope): void {
+                        $store->where('suppliers.scope_type', 'store')
+                            ->where('suppliers.store_id', $scope->storeId);
+                    });
+            })
             ->where('contracts.status', 'active')
             ->whereDate('contracts.starts_on', '<=', now()->toDateString())
             ->whereDate('contracts.ends_on', '>=', now()->toDateString())
@@ -968,6 +1704,64 @@ final class ProcurementCompletionManager
                 'suppliers.code as supplier_code',
             ])
             ->all();
+
+        // The initial scoped query can be made stale by status, eligibility,
+        // financial term or supplier identity changes without changing the
+        // scoped row count. Recheck the exact <=100 selected option snapshots.
+        $contractIds = array_map(static fn ($contract): int => (int) $contract->id, $contracts);
+        if ($contractIds !== []) {
+            $currentOptions = DB::table('enterprise_procurement_contracts as contracts')
+                ->join('enterprise_suppliers as suppliers', 'suppliers.id', '=', 'contracts.supplier_id')
+                ->where('contracts.organization_id', $scope->organizationId)
+                ->where('contracts.company_id', $scope->companyId)
+                ->where('contracts.store_id', $scope->storeId)
+                ->where('suppliers.organization_id', $scope->organizationId)
+                ->where('suppliers.company_id', $scope->companyId)
+                ->where(function ($query) use ($scope): void {
+                    $query->where('suppliers.scope_type', 'company')
+                        ->orWhere(function ($store) use ($scope): void {
+                            $store->where('suppliers.scope_type', 'store')
+                                ->where('suppliers.store_id', $scope->storeId);
+                        });
+                })
+                ->whereIn('contracts.id', $contractIds)
+                ->where('contracts.status', 'active')
+                ->whereDate('contracts.starts_on', '<=', now()->toDateString())
+                ->whereDate('contracts.ends_on', '>=', now()->toDateString())
+                ->get([
+                    'contracts.id',
+                    'contracts.contract_number',
+                    'contracts.title',
+                    'contracts.supplier_id',
+                    'contracts.currency_code',
+                    'contracts.ends_on',
+                    'suppliers.code as supplier_code',
+                ])
+                ->keyBy('id');
+
+            abort_unless(
+                $currentOptions->count() === count($contracts),
+                404,
+                'Procurement contract eligibility or ownership changed during option lookup.',
+            );
+            foreach ($contracts as $contract) {
+                $current = $currentOptions->get($contract->id);
+                abort_unless($current !== null, 404, 'Procurement contract changed during option lookup.');
+                foreach (['contract_number', 'title', 'supplier_id', 'currency_code', 'ends_on', 'supplier_code'] as $field) {
+                    abort_unless(
+                        (string) $current->{$field} === (string) $contract->{$field},
+                        404,
+                        'Procurement contract financial terms changed during option lookup.',
+                    );
+                }
+            }
+        }
+
+        // Agreement dates, supplier identity and currency are sensitive even
+        // when authorization is revoked after the initial current-user check.
+        $this->scope($actor, $context, 'procurement.purchase_orders.view');
+
+        return $contracts;
     }
 
     /** @return array{contract:object,documents:list<object>} */
@@ -978,12 +1772,82 @@ final class ProcurementCompletionManager
     ): array {
         $scope = $this->scope($actor, $context, 'procurement.purchase_orders.view');
         $contract = $this->visibleContract($scope, $contractId);
-        $documents = DB::table('enterprise_procurement_contract_documents')
-            ->where('contract_id', $contract->id)
-            ->orderByDesc('id')
+        // Supplier ownership can change independently of the contract's store.
+        $this->visibleSupplier($scope, (int) $contract->supplier_id);
+
+        // Attachment paths must be scoped against the contract's CURRENT
+        // owner in the same SELECT, not against a stale visibleContract()
+        // preflight. A transfer between the two reads must not leak files.
+        $documents = DB::table('enterprise_procurement_contract_documents as documents')
+            ->join('enterprise_procurement_contracts as contracts', 'contracts.id', '=', 'documents.contract_id')
+            ->where('contracts.organization_id', $scope->organizationId)
+            ->where('contracts.company_id', $scope->companyId)
+            ->where('contracts.store_id', $scope->storeId)
+            ->where('contracts.id', $contractId)
+            ->orderByDesc('documents.id')
             ->limit(50)
-            ->get()
+            ->get(['documents.*'])
             ->all();
+
+        // The attachment query is scoped, but the contract header above was
+        // captured before it. A concurrent store transfer can leave a former
+        // owner with stale supplier/title/currency details even when document
+        // paths are correctly withheld. Fail closed for the entire response.
+        $liveContract = $this->visibleContract($scope, $contractId);
+        abort_unless(
+            // Rechecking only supplier_id lets a late title, ceiling, currency
+            // or lifecycle mutation return stale financial contract terms.
+            // Both scoped reads use the same complete contract projection.
+            (array) $liveContract === (array) $contract,
+            404,
+            'Procurement contract financial snapshot changed during detail read.',
+        );
+        // Recheck the originally authorized supplier after reading private
+        // attachment paths, not only at the beginning of this request.
+        $this->visibleSupplier($scope, (int) $contract->supplier_id);
+        // The document SELECT may finish before its contract_id or private
+        // storage_path changes. The contract and supplier remaining local
+        // does not authorize a stale document path or reassigned attachment.
+        // Verify the bounded (max 50) snapshot against CURRENT legal/store
+        // ownership immediately before returning the private metadata.
+        if ($documents !== []) {
+            $documentSnapshot = collect($documents)
+                ->mapWithKeys(static fn ($document): array => [
+                    (int) $document->id => [
+                        'contract_id' => (int) $document->contract_id,
+                        'storage_path' => $document->storage_path,
+                    ],
+                ])
+                ->sortKeys()
+                ->all();
+            $liveDocuments = DB::table('enterprise_procurement_contract_documents as documents')
+                ->join('enterprise_procurement_contracts as contracts', 'contracts.id', '=', 'documents.contract_id')
+                ->join('enterprise_suppliers as suppliers', 'suppliers.id', '=', 'contracts.supplier_id')
+                ->where('contracts.organization_id', $scope->organizationId)
+                ->where('contracts.company_id', $scope->companyId)
+                ->where('contracts.store_id', $scope->storeId)
+                ->where('contracts.id', $contractId)
+                ->where('contracts.supplier_id', $contract->supplier_id)
+                ->where(fn (QueryBuilder $query) => $this->scopeJoinedSupplier($query, $scope))
+                ->whereIn('documents.id', array_keys($documentSnapshot))
+                ->get(['documents.id', 'documents.contract_id', 'documents.storage_path'])
+                ->mapWithKeys(static fn ($document): array => [
+                    (int) $document->id => [
+                        'contract_id' => (int) $document->contract_id,
+                        'storage_path' => $document->storage_path,
+                    ],
+                ])
+                ->sortKeys()
+                ->all();
+            abort_unless(
+                $liveDocuments === $documentSnapshot,
+                404,
+                'Procurement contract private attachment changed during detail retrieval.',
+            );
+        }
+        // A separately persisted actor offboarding or VIEW DENY during any
+        // attachment SQL must also block this response and its private paths.
+        $this->scope($actor, $context, 'procurement.purchase_orders.view');
 
         return compact('contract', 'documents');
     }
@@ -1026,35 +1890,61 @@ final class ProcurementCompletionManager
         }
 
         try {
-            $id = DB::table('enterprise_procurement_contract_documents')->insertGetId([
-                'contract_id' => $contract->id,
-                'title' => $data['title'],
-                'reference' => $data['reference'] ?? null,
-                'storage_path' => $storagePath,
-                'original_name' => $originalName,
-                'mime_type' => $mimeType,
-                'size_bytes' => $sizeBytes,
-                'created_by' => $actor->id,
-                'created_at' => now(),
-                'updated_at' => now(),
-            ]);
+            return DB::transaction(function () use ($actor, $context, $scope, $contractId, $data, $storagePath, $originalName, $mimeType, $sizeBytes): object {
+                // Serialize document registration with module shutdown and
+                // contract reassignment. Preflight visibility is insufficient
+                // after an upload or any other operation between the two.
+                $module = DB::table('enterprise_modules')
+                    ->where('code', 'procurement')
+                    ->lockForUpdate()
+                    ->first();
+                abort_unless(
+                    $module !== null && $module->state === ModuleState::ENABLED->value,
+                    404,
+                    'Procurement module is disabled.',
+                );
+                // An uploaded file is not durable authority. Re-read the
+                // original actor's persisted manage grant inside the write
+                // transaction: a DENY or offboarding during upload must not
+                // authorize private document registration or audit.
+                $this->scope($actor, $context, 'procurement.purchase_orders.manage');
+                $currentContract = $this->visibleContract($scope, $contractId, true);
+                // The contract may still belong to this store after its supplier
+                // is transferred to another legal company or store. Pin the
+                // supplier's CURRENT ownership in the same write transaction
+                // before registering a private document or creating an audit.
+                $this->visibleSupplier($scope, (int) $currentContract->supplier_id, true);
+                $id = DB::table('enterprise_procurement_contract_documents')->insertGetId([
+                    'contract_id' => $currentContract->id,
+                    'title' => $data['title'],
+                    'reference' => $data['reference'] ?? null,
+                    'storage_path' => $storagePath,
+                    'original_name' => $originalName,
+                    'mime_type' => $mimeType,
+                    'size_bytes' => $sizeBytes,
+                    'created_by' => $actor->id,
+                    'created_at' => now(),
+                    'updated_at' => now(),
+                ]);
+
+                $document = DB::table('enterprise_procurement_contract_documents')
+                    ->where('id', $id)->firstOrFail();
+                $this->audit->record('enterprise.procurement.contract.document_registered', $actor, null, null, [
+                    'store_id' => $scope->storeId,
+                    'contract_id' => $currentContract->id,
+                    'document_id' => $id,
+                    'title' => $document->title,
+                    'has_attachment' => $storagePath !== null,
+                ]);
+
+                return $document;
+            });
         } catch (\Throwable $exception) {
             if ($storagePath !== null) {
                 Storage::disk('local')->delete($storagePath);
             }
             throw $exception;
         }
-
-        $document = DB::table('enterprise_procurement_contract_documents')->where('id', $id)->firstOrFail();
-        $this->audit->record('enterprise.procurement.contract.document_registered', $actor, null, null, [
-            'store_id' => $scope->storeId,
-            'contract_id' => $contract->id,
-            'document_id' => $id,
-            'title' => $document->title,
-            'has_attachment' => $storagePath !== null,
-        ]);
-
-        return $document;
     }
 
     public function contractDocument(
@@ -1064,12 +1954,61 @@ final class ProcurementCompletionManager
         int $documentId,
     ): object {
         $scope = $this->scope($actor, $context, 'procurement.purchase_orders.view');
-        $contract = $this->visibleContract($scope, $contractId);
 
-        return DB::table('enterprise_procurement_contract_documents')
-            ->where('contract_id', $contract->id)
-            ->where('id', $documentId)
+        // A separate visibleContract() preflight would leave a read-time
+        // ownership gap before fetching the attachment's storage path.
+        // Resolve both identities and the live tenant/store scope in one
+        // database statement so a transferred contract cannot expose a file.
+        $document = DB::table('enterprise_procurement_contract_documents as documents')
+            ->join('enterprise_procurement_contracts as contracts', 'contracts.id', '=', 'documents.contract_id')
+            ->join('enterprise_suppliers as suppliers', 'suppliers.id', '=', 'contracts.supplier_id')
+            ->where('contracts.organization_id', $scope->organizationId)
+            ->where('contracts.company_id', $scope->companyId)
+            ->where('contracts.store_id', $scope->storeId)
+            ->where('suppliers.organization_id', $scope->organizationId)
+            ->where('suppliers.company_id', $scope->companyId)
+            ->where(function ($query) use ($scope): void {
+                $query->where('suppliers.scope_type', 'company')
+                    ->orWhere(function ($store) use ($scope): void {
+                        $store->where('suppliers.scope_type', 'store')
+                            ->where('suppliers.store_id', $scope->storeId);
+                    });
+            })
+            ->where('contracts.id', $contractId)
+            ->where('documents.id', $documentId)
+            ->select('documents.*')
             ->firstOrFail();
+
+        // The scoped SELECT can finish before a contract transfer or a
+        // document path/reparenting update commits. Recheck current ownership
+        // AND the original private attachment identity before returning the
+        // cached path: a pre-query store grant is not a post-query grant.
+        DB::table('enterprise_procurement_contract_documents as documents')
+            ->join('enterprise_procurement_contracts as contracts', 'contracts.id', '=', 'documents.contract_id')
+            ->join('enterprise_suppliers as suppliers', 'suppliers.id', '=', 'contracts.supplier_id')
+            ->where('contracts.organization_id', $scope->organizationId)
+            ->where('contracts.company_id', $scope->companyId)
+            ->where('contracts.store_id', $scope->storeId)
+            ->where('suppliers.organization_id', $scope->organizationId)
+            ->where('suppliers.company_id', $scope->companyId)
+            ->where(function ($query) use ($scope): void {
+                $query->where('suppliers.scope_type', 'company')
+                    ->orWhere(function ($store) use ($scope): void {
+                        $store->where('suppliers.scope_type', 'store')
+                            ->where('suppliers.store_id', $scope->storeId);
+                    });
+            })
+            ->where('contracts.id', $contractId)
+            ->where('documents.id', $documentId)
+            ->where('documents.contract_id', $document->contract_id)
+            ->where('documents.storage_path', $document->storage_path)
+            ->firstOrFail(['documents.id']);
+
+        // The original actor's persisted view grant may also have been
+        // revoked during either SELECT. Reauthorize it at the final boundary.
+        $this->scope($actor, $context, 'procurement.purchase_orders.view');
+
+        return $document;
     }
 
     /** @param array<string,mixed> $attributes */
@@ -1091,50 +2030,73 @@ final class ProcurementCompletionManager
             'renewal_of_id' => ['nullable', 'integer', 'min:1'],
         ])->validate();
 
-        $supplier = $this->visibleSupplier($scope, (int) $data['supplier_id']);
-        if ($supplier->status !== 'active' || $supplier->qualification_status === 'unqualified') {
-            throw ValidationException::withMessages(['supplier_id' => ['Contract supplier must be active and qualified or conditional.']]);
-        }
+        return DB::transaction(function () use ($actor, $context, $scope, $data): object {
+            // Serialize new agreements with module shutdown. The earlier
+            // permission/preflight alone cannot protect the write transaction.
+            $module = DB::table('enterprise_modules')
+                ->where('code', 'procurement')
+                ->lockForUpdate()
+                ->first();
+            abort_unless(
+                $module !== null && $module->state === ModuleState::ENABLED->value,
+                404,
+                'Procurement module is disabled.',
+            );
 
-        if (($data['renewal_of_id'] ?? null) !== null) {
-            $previous = $this->visibleContract($scope, (int) $data['renewal_of_id']);
-            if ((int) $previous->supplier_id !== (int) $supplier->id) {
-                throw ValidationException::withMessages(['renewal_of_id' => ['Renewal must keep the same supplier.']]);
+            // The caller's manage grant is a preflight only. Reauthorize the
+            // persisted actor inside the module-locked write transaction so
+            // offboarding or a DENY before this boundary cannot mutate data
+            // or produce an audit entry (including idempotent replays).
+            $this->scope($actor, $context, 'procurement.purchase_orders.manage');
+
+            // Supplier qualification and legal scope are mutable after a
+            // preflight. Lock the current row through creation and audit so
+            // stale supplier references cannot produce an invalid agreement.
+            $supplier = $this->visibleSupplier($scope, (int) $data['supplier_id'], true);
+            if ($supplier->status !== 'active' || $supplier->qualification_status === 'unqualified') {
+                throw ValidationException::withMessages(['supplier_id' => ['Contract supplier must be active and qualified or conditional.']]);
             }
-        }
 
-        $publicId = (string) Str::uuid();
-        $contractId = DB::table('enterprise_procurement_contracts')->insertGetId([
-            'public_id' => $publicId,
-            'contract_number' => 'CTR-'.strtoupper(substr(str_replace('-', '', $publicId), 0, 11)),
-            'organization_id' => $scope->organizationId,
-            'company_id' => $scope->companyId,
-            'store_id' => $scope->storeId,
-            'supplier_id' => $supplier->id,
-            'status' => 'draft',
-            'title' => $data['title'],
-            'currency_code' => strtoupper($data['currency_code']),
-            'starts_on' => $data['starts_on'],
-            'ends_on' => $data['ends_on'],
-            'value_ceiling' => $data['value_ceiling'] ?? null,
-            'quantity_ceiling' => $data['quantity_ceiling'] ?? null,
-            'renewal_of_id' => $data['renewal_of_id'] ?? null,
-            'notes' => $data['notes'] ?? null,
-            'created_by' => $actor->id,
-            'updated_by' => $actor->id,
-            'created_at' => now(),
-            'updated_at' => now(),
-        ]);
+            if (($data['renewal_of_id'] ?? null) !== null) {
+                $previous = $this->visibleContract($scope, (int) $data['renewal_of_id'], true);
+                if ((int) $previous->supplier_id !== (int) $supplier->id) {
+                    throw ValidationException::withMessages(['renewal_of_id' => ['Renewal must keep the same supplier.']]);
+                }
+            }
 
-        $contract = DB::table('enterprise_procurement_contracts')->where('id', $contractId)->firstOrFail();
-        $this->audit->record('enterprise.procurement.contract.created', $actor, null, null, [
-            'store_id' => $scope->storeId,
-            'contract_id' => $contractId,
-            'contract_number' => $contract->contract_number,
-            'supplier_id' => $supplier->id,
-        ]);
+            $publicId = (string) Str::uuid();
+            $contractId = DB::table('enterprise_procurement_contracts')->insertGetId([
+                'public_id' => $publicId,
+                'contract_number' => 'CTR-'.strtoupper(substr(str_replace('-', '', $publicId), 0, 11)),
+                'organization_id' => $scope->organizationId,
+                'company_id' => $scope->companyId,
+                'store_id' => $scope->storeId,
+                'supplier_id' => $supplier->id,
+                'status' => 'draft',
+                'title' => $data['title'],
+                'currency_code' => strtoupper($data['currency_code']),
+                'starts_on' => $data['starts_on'],
+                'ends_on' => $data['ends_on'],
+                'value_ceiling' => $data['value_ceiling'] ?? null,
+                'quantity_ceiling' => $data['quantity_ceiling'] ?? null,
+                'renewal_of_id' => $data['renewal_of_id'] ?? null,
+                'notes' => $data['notes'] ?? null,
+                'created_by' => $actor->id,
+                'updated_by' => $actor->id,
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
 
-        return $contract;
+            $contract = DB::table('enterprise_procurement_contracts')->where('id', $contractId)->firstOrFail();
+            $this->audit->record('enterprise.procurement.contract.created', $actor, null, null, [
+                'store_id' => $scope->storeId,
+                'contract_id' => $contractId,
+                'contract_number' => $contract->contract_number,
+                'supplier_id' => $supplier->id,
+            ]);
+
+            return $contract;
+        });
     }
 
     public function activateContract(
@@ -1145,10 +2107,35 @@ final class ProcurementCompletionManager
         $scope = $this->scope($actor, $context, 'procurement.purchase_orders.manage');
 
         // The same record-level SoD used by AP posting and Treasury payment
-        // release applies to the supplier agreement itself. Lock across the
-        // state transition so concurrent activation cannot bypass the checker.
-        DB::transaction(function () use ($actor, $scope, $contractId): void {
+        // release applies to the supplier agreement itself. Serialize module
+        // lifecycle before locking the agreement, matching RFQ transitions.
+        DB::transaction(function () use ($actor, $context, $scope, $contractId): void {
+            $module = DB::table('enterprise_modules')
+                ->where('code', 'procurement')
+                ->lockForUpdate()
+                ->first();
+            abort_unless(
+                $module !== null && $module->state === ModuleState::ENABLED->value,
+                404,
+                'Procurement module is disabled.',
+            );
+
+            // The caller's manage grant is a preflight only. Reauthorize the
+            // persisted actor inside the module-locked write transaction so
+            // offboarding or a DENY before this boundary cannot mutate data
+            // or produce an audit entry (including idempotent replays).
+            $this->scope($actor, $context, 'procurement.purchase_orders.manage');
+
             $contract = $this->visibleContract($scope, $contractId, true);
+            // Contracts remain local when a supplier's legal/store ownership
+            // moves elsewhere. Check CURRENT supplier scope before replay or
+            // mutating the formerly local agreement.
+            $supplier = $this->visibleSupplier($scope, (int) $contract->supplier_id, true);
+            if ($supplier->status !== 'active' || $supplier->qualification_status === 'unqualified') {
+                throw ValidationException::withMessages([
+                    'supplier_id' => ['Contract supplier must remain active and qualified or conditional.'],
+                ]);
+            }
             if ($contract->status === 'active') {
                 return;
             }
@@ -1181,25 +2168,50 @@ final class ProcurementCompletionManager
         int $contractId,
     ): void {
         $scope = $this->scope($actor, $context, 'procurement.purchase_orders.manage');
-        $contract = $this->visibleContract($scope, $contractId, true);
-        if ($contract->status === 'terminated') {
-            return;
-        }
-        if (! in_array($contract->status, ['draft', 'active'], true)) {
-            throw ValidationException::withMessages(['status' => ['Contract cannot be terminated from its current state.']]);
-        }
 
-        DB::table('enterprise_procurement_contracts')->where('id', $contract->id)->update([
-            'status' => 'terminated',
-            'terminated_by' => $actor->id,
-            'terminated_at' => now(),
-            'updated_by' => $actor->id,
-            'updated_at' => now(),
-        ]);
-        $this->audit->record('enterprise.procurement.contract.terminated', $actor, null, null, [
-            'store_id' => $scope->storeId,
-            'contract_id' => $contract->id,
-        ]);
+        // A locking SELECT outside a transaction releases its row lock before
+        // the subsequent UPDATE in MySQL autocommit mode. Hold module and
+        // contract locks through termination + audit in one real transaction.
+        DB::transaction(function () use ($actor, $context, $scope, $contractId): void {
+            $module = DB::table('enterprise_modules')
+                ->where('code', 'procurement')
+                ->lockForUpdate()
+                ->first();
+            abort_unless(
+                $module !== null && $module->state === ModuleState::ENABLED->value,
+                404,
+                'Procurement module is disabled.',
+            );
+
+            // The caller's manage grant is a preflight only. Reauthorize the
+            // persisted actor inside the module-locked write transaction so
+            // offboarding or a DENY before this boundary cannot mutate data
+            // or produce an audit entry (including idempotent replays).
+            $this->scope($actor, $context, 'procurement.purchase_orders.manage');
+
+            $contract = $this->visibleContract($scope, $contractId, true);
+            // A moved supplier is no longer in the actor's legal/store scope,
+            // even for an idempotent termination replay.
+            $this->visibleSupplier($scope, (int) $contract->supplier_id, true);
+            if ($contract->status === 'terminated') {
+                return;
+            }
+            if (! in_array($contract->status, ['draft', 'active'], true)) {
+                throw ValidationException::withMessages(['status' => ['Contract cannot be terminated from its current state.']]);
+            }
+
+            DB::table('enterprise_procurement_contracts')->where('id', $contract->id)->update([
+                'status' => 'terminated',
+                'terminated_by' => $actor->id,
+                'terminated_at' => now(),
+                'updated_by' => $actor->id,
+                'updated_at' => now(),
+            ]);
+            $this->audit->record('enterprise.procurement.contract.terminated', $actor, null, null, [
+                'store_id' => $scope->storeId,
+                'contract_id' => $contract->id,
+            ]);
+        }, 3);
     }
 
     public function assignContractToOrder(
@@ -1209,7 +2221,26 @@ final class ProcurementCompletionManager
         int $contractId,
     ): void {
         $scope = $this->scope($actor, $context, 'procurement.purchase_orders.manage');
-        DB::transaction(function () use ($actor, $scope, $orderId, $contractId): void {
+        DB::transaction(function () use ($actor, $context, $scope, $orderId, $contractId): void {
+            // Scope authorization is an unlocked preflight. Serialize this
+            // association with procurement shutdown before taking the order
+            // and contract locks or mutating the canonical PO and audit.
+            $module = DB::table('enterprise_modules')
+                ->where('code', 'procurement')
+                ->lockForUpdate()
+                ->first();
+            abort_unless(
+                $module !== null && $module->state === ModuleState::ENABLED->value,
+                404,
+                'Procurement module is disabled.',
+            );
+
+            // The caller's manage grant is a preflight only. Reauthorize the
+            // persisted actor inside the module-locked write transaction so
+            // offboarding or a DENY before this boundary cannot mutate data
+            // or produce an audit entry (including idempotent replays).
+            $this->scope($actor, $context, 'procurement.purchase_orders.manage');
+
             $order = DB::table('enterprise_purchase_orders')
                 ->where('organization_id', $scope->organizationId)
                 ->where('company_id', $scope->companyId)
@@ -1223,6 +2254,14 @@ final class ProcurementCompletionManager
             }
 
             $contract = $this->visibleContract($scope, $contractId, true);
+            // A previously active local contract must not be linked to a PO
+            // after its supplier was moved to a different store/company.
+            $supplier = $this->visibleSupplier($scope, (int) $contract->supplier_id, true);
+            if ($supplier->status !== 'active' || $supplier->qualification_status === 'unqualified') {
+                throw ValidationException::withMessages([
+                    'contract_id' => ['Contract supplier is no longer active and qualified.'],
+                ]);
+            }
             if ($contract->status !== 'active') {
                 throw ValidationException::withMessages(['contract_id' => ['Only active contracts can be assigned.']]);
             }
@@ -1265,7 +2304,26 @@ final class ProcurementCompletionManager
             'blocked_reason' => ['nullable', 'string', 'max:2000', 'required_if:blocked,1'],
         ])->validate();
 
-        return DB::transaction(function () use ($actor, $scope, $supplierId, $data): EnterpriseSupplier {
+        return DB::transaction(function () use ($actor, $context, $scope, $supplierId, $data): EnterpriseSupplier {
+            // The scoped module check is only a preflight. Serialize the
+            // supplier governance mutation with procurement shutdown before
+            // locking supplier state or writing any audit record.
+            $module = DB::table('enterprise_modules')
+                ->where('code', 'procurement')
+                ->lockForUpdate()
+                ->first();
+            abort_unless(
+                $module !== null && $module->state === ModuleState::ENABLED->value,
+                404,
+                'Procurement module is disabled.',
+            );
+
+            // The caller's manage grant is a preflight only. Reauthorize the
+            // persisted actor inside the module-locked write transaction so
+            // offboarding or a DENY before this boundary cannot mutate data
+            // or produce an audit entry (including idempotent replays).
+            $this->scope($actor, $context, 'procurement.suppliers.manage');
+
             $supplier = EnterpriseSupplier::query()
                 ->where('id', $supplierId)
                 ->where('organization_id', $scope->organizationId)
@@ -1339,7 +2397,18 @@ final class ProcurementCompletionManager
                 ->lockForUpdate()
                 ->first();
             $status = $existing?->status;
-            if ($status === null || in_array($status, ['auto_approved', 'pending'], true)) {
+            // A previous human approval applies only to the reviewed
+            // variance/tolerance snapshot. Imports or corrections to a draft
+            // invoice must never reuse that approval against changed figures.
+            $reviewChanged = $status === 'approved' && (
+                (float) $existing->quantity_variance !== $quantityVariance
+                || (float) $existing->value_variance !== $valueVariance
+                || (float) $existing->quantity_tolerance !== $quantityTolerance
+                || (float) $existing->value_tolerance !== $valueTolerance
+            );
+            if ($reviewChanged) {
+                $status = 'pending';
+            } elseif ($status === null || in_array($status, ['auto_approved', 'pending'], true)) {
                 $status = $autoApproved ? 'auto_approved' : 'pending';
             }
 
@@ -1354,6 +2423,9 @@ final class ProcurementCompletionManager
                     'exception_reason' => $autoApproved
                         ? null
                         : 'PO / GRN / invoice quantity or value is outside configured tolerance.',
+                    'review_note' => $reviewChanged ? null : $existing?->review_note,
+                    'reviewed_by' => $reviewChanged ? null : $existing?->reviewed_by,
+                    'reviewed_at' => $reviewChanged ? null : $existing?->reviewed_at,
                     'updated_at' => now(),
                     'created_at' => $existing !== null ? $existing->created_at : now(),
                 ],
@@ -1367,6 +2439,91 @@ final class ProcurementCompletionManager
 
     public function assertMatchAllowsHandoff(int $invoiceId): void
     {
+        // Procurement does not own Finance/AP posting. Before it publishes the
+        // immutable handoff event, the invoice must still match its posted
+        // receipt and its own persisted line-level monetary snapshot.
+        $source = DB::table('enterprise_purchase_invoices as invoices')
+            ->join('enterprise_goods_receipts as receipts', 'receipts.id', '=', 'invoices.goods_receipt_id')
+            ->where('invoices.id', $invoiceId)
+            ->first([
+                'invoices.total_amount',
+                'invoices.goods_receipt_id',
+                'invoices.source_receipt_number',
+                'invoices.source_order_number',
+                'invoices.supplier_id',
+                'invoices.currency_code',
+                'invoices.organization_id',
+                'invoices.company_id',
+                'invoices.store_id',
+                'receipts.receipt_number',
+                'receipts.source_order_number as receipt_order_number',
+                'receipts.supplier_id as receipt_supplier_id',
+                'receipts.currency_code as receipt_currency_code',
+                'receipts.organization_id as receipt_organization_id',
+                'receipts.company_id as receipt_company_id',
+                'receipts.store_id as receipt_store_id',
+                'receipts.status as receipt_status',
+            ]);
+
+        $invalid = $source === null
+            || $source->receipt_status !== 'posted'
+            || (string) $source->source_receipt_number !== (string) $source->receipt_number
+            || (string) $source->source_order_number !== (string) $source->receipt_order_number
+            || (int) $source->supplier_id !== (int) $source->receipt_supplier_id
+            || (string) $source->currency_code !== (string) $source->receipt_currency_code
+            || (int) $source->organization_id !== (int) $source->receipt_organization_id
+            || (int) $source->company_id !== (int) $source->receipt_company_id
+            || (int) $source->store_id !== (int) $source->receipt_store_id;
+
+        if (! $invalid) {
+            $lines = DB::table('enterprise_purchase_invoice_lines as invoice_lines')
+                ->leftJoin('enterprise_goods_receipt_lines as receipt_lines', 'receipt_lines.id', '=', 'invoice_lines.goods_receipt_line_id')
+                ->where('invoice_lines.purchase_invoice_id', $invoiceId)
+                ->get([
+                    'invoice_lines.invoice_quantity',
+                    'invoice_lines.unit_price',
+                    'invoice_lines.line_total',
+                    'invoice_lines.purchase_order_line_id',
+                    'receipt_lines.goods_receipt_id as source_receipt_id',
+                    'receipt_lines.purchase_order_line_id as source_po_line_id',
+                ]);
+
+            $invalid = $lines->isEmpty();
+            $lineTotal = 0;
+            foreach ($lines as $line) {
+                $quantity = (float) $line->invoice_quantity;
+                $price = (float) $line->unit_price;
+                $amount = (float) $line->line_total;
+                if (
+                    $line->source_receipt_id === null
+                    || (int) $line->source_receipt_id !== (int) $source->goods_receipt_id
+                    || (int) $line->purchase_order_line_id !== (int) $line->source_po_line_id
+                    || ! is_finite($quantity)
+                    || ! is_finite($price)
+                    || ! is_finite($amount)
+                    || $quantity <= 0
+                    || $price < 0
+                    || (int) round($quantity * $price * 1000) !== (int) round($amount * 1000)
+                ) {
+                    $invalid = true;
+                    break;
+                }
+
+                $lineTotal += (int) round($amount * 1000);
+            }
+
+            if (! is_finite((float) $source->total_amount)
+                || (int) round((float) $source->total_amount * 1000) !== $lineTotal) {
+                $invalid = true;
+            }
+        }
+
+        if ($invalid) {
+            throw ValidationException::withMessages([
+                'three_way_match' => [__('enterprise_procurement.errors.invoice_line_source_changed')],
+            ]);
+        }
+
         $match = $this->syncMatchForInvoice($invoiceId);
         if (! in_array($match->status, ['auto_approved', 'approved'], true)) {
             throw ValidationException::withMessages([
@@ -1390,33 +2547,51 @@ final class ProcurementCompletionManager
             'note' => ['nullable', 'string', 'max:2000'],
         ])->validate();
 
-        $invoice = DB::table('enterprise_purchase_invoices')
-            ->where('id', $invoiceId)
-            ->where('organization_id', $scope->organizationId)
-            ->where('company_id', $scope->companyId)
-            ->where('store_id', $scope->storeId)
-            ->first();
-        abort_if($invoice === null, 404);
+        return DB::transaction(function () use ($actor, $context, $scope, $invoiceId, $data): object {
+            // Match review and handoff lock the same invoice before the review
+            // row. Never allow post-handoff edits to approval metadata or
+            // race a concurrent immutable Finance outbox publication.
+            $invoice = DB::table('enterprise_purchase_invoices')
+                ->where('id', $invoiceId)
+                ->where('organization_id', $scope->organizationId)
+                ->where('company_id', $scope->companyId)
+                ->where('store_id', $scope->storeId)
+                ->lockForUpdate()
+                ->first();
+            abort_if($invoice === null, 404);
 
-        $match = $this->syncMatchForInvoice($invoiceId);
-        DB::table('enterprise_procurement_match_reviews')->where('id', $match->id)->update([
-            'status' => $data['decision'] === 'approve' ? 'approved' : 'rejected',
-            'review_note' => $data['note'] ?? null,
-            'reviewed_by' => $actor->id,
-            'reviewed_at' => now(),
-            'updated_at' => now(),
-        ]);
+            // The initial handoff grant was only an unlocked preflight.
+            // Reauthorize the persisted actor AFTER the invoice row lock and
+            // BEFORE any match decision or audit can be written. A user whose
+            // access was revoked mid-request must not approve an invoice.
+            $this->scope($actor, $context, 'procurement.purchase_invoices.handoff');
 
-        $updated = DB::table('enterprise_procurement_match_reviews')->where('id', $match->id)->firstOrFail();
-        $this->audit->record('enterprise.procurement.three_way_match.reviewed', $actor, null, null, [
-            'store_id' => $scope->storeId,
-            'purchase_invoice_id' => $invoiceId,
-            'status' => $updated->status,
-            'quantity_variance' => $updated->quantity_variance,
-            'value_variance' => $updated->value_variance,
-        ]);
+            if ($invoice->status !== 'draft') {
+                throw ValidationException::withMessages([
+                    'status' => [__('enterprise_procurement.errors.invoice_handed_off_immutable')],
+                ]);
+            }
 
-        return $updated;
+            $match = $this->syncMatchForInvoice($invoiceId);
+            DB::table('enterprise_procurement_match_reviews')->where('id', $match->id)->update([
+                'status' => $data['decision'] === 'approve' ? 'approved' : 'rejected',
+                'review_note' => $data['note'] ?? null,
+                'reviewed_by' => $actor->id,
+                'reviewed_at' => now(),
+                'updated_at' => now(),
+            ]);
+
+            $updated = DB::table('enterprise_procurement_match_reviews')->where('id', $match->id)->firstOrFail();
+            $this->audit->record('enterprise.procurement.three_way_match.reviewed', $actor, null, null, [
+                'store_id' => $scope->storeId,
+                'purchase_invoice_id' => $invoiceId,
+                'status' => $updated->status,
+                'quantity_variance' => $updated->quantity_variance,
+                'value_variance' => $updated->value_variance,
+            ]);
+
+            return $updated;
+        }, 3);
     }
 
     /**
@@ -1439,7 +2614,23 @@ final class ProcurementCompletionManager
         // anchors a prefix search against fixed, parameter-bound columns.
         $prefix = str_replace(['!', '%', '_'], ['!!', '!%', '!_'], $term).'%';
 
-        return DB::table('enterprise_purchase_invoices as invoices')
+        $projection = [
+            'invoices.id as purchase_invoice_id',
+            'invoices.invoice_number',
+            'invoices.supplier_invoice_number',
+            'invoices.supplier_code',
+            'invoices.total_amount',
+            'invoices.currency_code',
+            'invoices.status as invoice_status',
+            'match_reviews.id as match_review_id',
+            'match_reviews.status as match_status',
+            'match_reviews.quantity_variance',
+            'match_reviews.value_variance',
+            'match_reviews.exception_reason',
+            'match_reviews.review_note',
+        ];
+
+        $page = DB::table('enterprise_purchase_invoices as invoices')
             ->leftJoin('enterprise_procurement_match_reviews as match_reviews', 'match_reviews.purchase_invoice_id', '=', 'invoices.id')
             ->where('invoices.organization_id', $scope->organizationId)
             ->where('invoices.company_id', $scope->companyId)
@@ -1456,24 +2647,49 @@ final class ProcurementCompletionManager
                         ->orWhereRaw("invoices.supplier_code LIKE ? ESCAPE '!'", [$prefix]);
                 }),
             )
-            ->select([
-                'invoices.id as purchase_invoice_id',
-                'invoices.invoice_number',
-                'invoices.supplier_invoice_number',
-                'invoices.supplier_code',
-                'invoices.total_amount',
-                'invoices.currency_code',
-                'invoices.status as invoice_status',
-                'match_reviews.id as match_review_id',
-                'match_reviews.status as match_status',
-                'match_reviews.quantity_variance',
-                'match_reviews.value_variance',
-                'match_reviews.exception_reason',
-                'match_reviews.review_note',
-            ])
+            ->select($projection)
             ->orderByDesc('invoices.id')
             ->paginate(max(10, min(100, $perPage)))
             ->withQueryString();
+
+        // Finance amounts and maker/checker match status are as sensitive as
+        // invoice ownership. A count-only recheck would disclose superseded
+        // supplier references, amounts or approval decisions from a page
+        // selected just before another transaction amended the invoice/review.
+        // Reconcile exactly the selected bounded projection, not only IDs.
+        $selectedRows = $page->getCollection();
+        $invoiceIds = $selectedRows->pluck('purchase_invoice_id')->all();
+        if ($invoiceIds !== []) {
+            $snapshot = $selectedRows->mapWithKeys(static fn ($row): array => [
+                (int) $row->purchase_invoice_id => (array) $row,
+            ])->sortKeys()->all();
+            $currentRows = DB::table('enterprise_purchase_invoices as invoices')
+                ->leftJoin(
+                    'enterprise_procurement_match_reviews as match_reviews',
+                    'match_reviews.purchase_invoice_id', '=', 'invoices.id',
+                )
+                ->where('invoices.organization_id', $scope->organizationId)
+                ->where('invoices.company_id', $scope->companyId)
+                ->where('invoices.store_id', $scope->storeId)
+                ->whereIn('invoices.id', $invoiceIds)
+                ->get($projection);
+            $current = $currentRows->mapWithKeys(static fn ($row): array => [
+                (int) $row->purchase_invoice_id => (array) $row,
+            ])->sortKeys()->all();
+            abort_unless(
+                count($snapshot) === $selectedRows->count()
+                    && count($current) === $currentRows->count()
+                    && $current === $snapshot,
+                404,
+                'Purchase invoice financial or match-review snapshot changed during pagination.',
+            );
+        }
+
+        // A persisted finance VIEW revocation during COUNT or SELECT must
+        // invalidate the original actor, not leave cached approval intact.
+        $this->scope($actor, $context, 'procurement.purchase_invoices.view');
+
+        return $page;
     }
 
     /**
@@ -1487,9 +2703,36 @@ final class ProcurementCompletionManager
         array $filters = [],
         int $limit = 500,
     ): array {
+        // Reading supplier statements is necessary to enter the Reports tab,
+        // but it does not grant access to purchase orders, invoices or RFQs.
+        // Apply each report's canonical document permission at the service
+        // boundary too, so direct calls and CSV exports cannot bypass it.
         $scope = $this->scope($actor, $context, 'procurement.supplier_statements.view');
+        $documentPermission = match ($report) {
+            'open_orders', 'supplier_performance', 'contract_expiry' => 'procurement.purchase_orders.view',
+            'spend', 'match_exceptions' => 'procurement.purchase_invoices.view',
+            'savings' => 'procurement.purchase_requests.view',
+            default => throw ValidationException::withMessages([
+                'report' => ['Unknown procurement report.'],
+            ]),
+        };
+        $this->authorizer->authorize(
+            $this->persistedActor($actor),
+            $context,
+            $documentPermission,
+            'company',
+            $scope->companyId,
+        );
 
-        return $this->reportForStore($report, $scope->storeId, $filters, $limit);
+        $rows = $this->reportForStore($report, $scope->storeId, $filters, $limit, 0, $scope);
+
+        // Both permissions authorize this response: the Reports entry grant
+        // and the underlying financial/RFQ document grant. Recheck the same
+        // persisted active actor AFTER the scoped report SQL completes.
+        $this->scope($actor, $context, 'procurement.supplier_statements.view');
+        $this->scope($actor, $context, $documentPermission);
+
+        return $rows;
     }
 
     /**
@@ -1505,39 +2748,58 @@ final class ProcurementCompletionManager
         array $filters = [],
         int $limit = 500,
         int $offset = 0,
+        ?EnterpriseDataScope $scope = null,
     ): array {
+        // BI can call this bridge after its own permission gate, but store ID
+        // alone is not the legal-entity boundary of any exported document.
+        // Resolve the authoritative hierarchy before generating SQL.
+        $hierarchy = app(OrganizationHierarchyService::class)->scopeForStore($storeId);
+        abort_if($hierarchy === null, 404);
+        if ($scope !== null) {
+            abort_unless(
+                $scope->storeId === $storeId
+                && $scope->organizationId === $hierarchy['organization_id']
+                && $scope->companyId === $hierarchy['company_id'],
+                403,
+            );
+        }
+        $organizationId = $hierarchy['organization_id'];
+        $companyId = $hierarchy['company_id'];
         [$from, $to] = $this->dateWindow($filters['from'] ?? null, $filters['to'] ?? null);
         $limit = max(1, min(5000, $limit));
         $offset = max(0, $offset);
 
         return match ($report) {
-            'open_orders' => $this->openOrdersReport($storeId, $limit, $offset),
-            'spend' => $this->spendReport($storeId, $from, $to, $limit, $offset),
-            'supplier_performance' => $this->supplierPerformanceReport($storeId, $from, $to, $limit, $offset),
-            'savings' => $this->savingsReport($storeId, $from, $to, $limit, $offset),
-            'contract_expiry' => $this->contractExpiryReport($storeId, $limit, $offset),
-            'match_exceptions' => $this->matchExceptionReport($storeId, $limit, $offset),
+            'open_orders' => $this->openOrdersReport($storeId, $limit, $offset, $organizationId, $companyId),
+            'spend' => $this->spendReport($storeId, $from, $to, $limit, $offset, $organizationId, $companyId),
+            'supplier_performance' => $this->supplierPerformanceReport($storeId, $from, $to, $limit, $offset, $organizationId, $companyId),
+            'savings' => $this->savingsReport($storeId, $from, $to, $limit, $offset, $organizationId, $companyId),
+            'contract_expiry' => $this->contractExpiryReport($storeId, $limit, $offset, $organizationId, $companyId),
+            'match_exceptions' => $this->matchExceptionReport($storeId, $limit, $offset, $organizationId, $companyId),
             default => throw ValidationException::withMessages(['report' => ['Unknown procurement report.']]),
         };
     }
 
     /** @return list<array<string,mixed>> */
-    private function exceptions(int $storeId, int $companyId, bool $canOrders, bool $canInvoices, bool $canSuppliers): array
+    private function exceptions(int $storeId, int $organizationId, int $companyId, bool $canOrders, bool $canInvoices, bool $canSuppliers): array
     {
         $exceptions = [];
 
         if ($canOrders) {
             $overdue = DB::table('enterprise_purchase_orders')
+                ->where('organization_id', $organizationId)
+                ->where('company_id', $companyId)
                 ->where('store_id', $storeId)
                 ->where('status', 'issued')
                 ->whereNotNull('needed_by')
                 ->whereDate('needed_by', '<', now()->toDateString())
                 ->count();
-            $receiptVariance = $this->orderedNotReceivedCount($storeId);
-            $expiring = DB::table('enterprise_procurement_contracts')
-                ->where('store_id', $storeId)
-                ->where('status', 'active')
-                ->whereBetween('ends_on', [now()->toDateString(), now()->addDays(30)->toDateString()])
+            $receiptVariance = $this->orderedNotReceivedCount($storeId, $organizationId, $companyId);
+            // Exception summaries are financial disclosures too: a supplier
+            // transferred to another store must not leave an orphaned count.
+            $expiring = $this->scopedContractDashboardQuery($storeId, $organizationId, $companyId)
+                ->where('contracts.status', 'active')
+                ->whereBetween('contracts.ends_on', [now()->toDateString(), now()->addDays(30)->toDateString()])
                 ->count();
 
             $exceptions[] = ['key' => 'overdue_orders', 'count' => $overdue, 'tab' => 'orders'];
@@ -1548,6 +2810,8 @@ final class ProcurementCompletionManager
         if ($canInvoices) {
             $matchVariance = DB::table('enterprise_purchase_invoices as invoices')
                 ->join('enterprise_procurement_match_reviews as matches', 'matches.purchase_invoice_id', '=', 'invoices.id')
+                ->where('invoices.organization_id', $organizationId)
+                ->where('invoices.company_id', $companyId)
                 ->where('invoices.store_id', $storeId)
                 ->whereIn('matches.status', ['pending', 'rejected'])
                 ->count();
@@ -1558,6 +2822,8 @@ final class ProcurementCompletionManager
                     '=',
                     'invoices.outbox_event_id',
                 )
+                ->where('invoices.organization_id', $organizationId)
+                ->where('invoices.company_id', $companyId)
                 ->where('invoices.store_id', $storeId)
                 ->where('outbox.event_type', 'ProcurementPurchaseInvoiceHandedOff')
                 ->where('outbox.status', 'failed')
@@ -1569,12 +2835,15 @@ final class ProcurementCompletionManager
 
         if ($canSuppliers) {
             $blocked = DB::table('enterprise_suppliers')
+                ->where('organization_id', $organizationId)
                 ->where('company_id', $companyId)
                 ->where('status', 'on_hold')
-                ->where(function ($query) use ($storeId): void {
+                ->where(function ($query) use ($storeId, $organizationId, $companyId): void {
                     $query->where('scope_type', 'company')
-                        ->orWhere(function ($store) use ($storeId): void {
-                            $store->where('scope_type', 'store')->where('store_id', $storeId);
+                        ->orWhere(function ($store) use ($storeId, $organizationId, $companyId): void {
+                            $store->where('scope_type', 'store')->where('organization_id', $organizationId)
+                                ->where('company_id', $companyId)
+                                ->where('store_id', $storeId);
                         });
                 })
                 ->count();
@@ -1584,28 +2853,45 @@ final class ProcurementCompletionManager
         return $exceptions;
     }
 
-    private function orderedNotReceivedCount(int $storeId): int
+    private function orderedNotReceivedCount(int $storeId, int $organizationId, int $companyId): int
     {
-        $orders = DB::table('enterprise_purchase_orders as orders')
-            ->join('enterprise_purchase_order_lines as order_lines', 'order_lines.purchase_order_id', '=', 'orders.id')
+        // Count each original PO line exactly once. Joining raw receipt rows
+        // before SUM(order_lines.quantity) multiplies the ordered denominator
+        // for partial deliveries and reports completed orders as outstanding.
+        $lineBalances = DB::table('enterprise_purchase_order_lines as order_lines')
             ->leftJoin('enterprise_goods_receipt_lines as receipt_lines', 'receipt_lines.purchase_order_line_id', '=', 'order_lines.id')
-            ->leftJoin('enterprise_goods_receipts as receipts', function ($join): void {
+            ->leftJoin('enterprise_goods_receipts as receipts', function ($join) use ($storeId, $organizationId, $companyId): void {
                 $join->on('receipts.id', '=', 'receipt_lines.goods_receipt_id')
-                    ->where('receipts.status', '=', 'posted');
+                    ->where('receipts.status', '=', 'posted')
+                    ->where('receipts.organization_id', '=', $organizationId)
+                    ->where('receipts.company_id', '=', $companyId)
+                    ->where('receipts.store_id', '=', $storeId);
             })
+            ->select(['order_lines.id', 'order_lines.purchase_order_id'])
+            ->selectRaw('MAX(order_lines.quantity) as ordered_quantity')
+            ->selectRaw('COALESCE(SUM(CASE WHEN receipts.id IS NOT NULL THEN receipt_lines.received_quantity ELSE 0 END), 0) as received_quantity')
+            ->groupBy('order_lines.id', 'order_lines.purchase_order_id');
+
+        $outstanding = DB::query()
+            ->fromSub($lineBalances, 'line_balances')
+            ->join('enterprise_purchase_orders as orders', 'orders.id', '=', 'line_balances.purchase_order_id')
+            ->where('orders.organization_id', $organizationId)
+            ->where('orders.company_id', $companyId)
             ->where('orders.store_id', $storeId)
             ->where('orders.status', 'issued')
             ->select('orders.id')
             ->groupBy('orders.id')
-            ->havingRaw('SUM(order_lines.quantity) > COALESCE(SUM(CASE WHEN receipts.id IS NOT NULL THEN receipt_lines.received_quantity ELSE 0 END), 0)');
+            ->havingRaw('SUM(line_balances.ordered_quantity) > SUM(line_balances.received_quantity)');
 
-        return DB::query()->fromSub($orders, 'ordered_not_received')->count();
+        return DB::query()->fromSub($outstanding, 'ordered_not_received')->count();
     }
 
     /** @return list<array<string,mixed>> */
-    private function spendTrend(int $storeId, string $from, string $to): array
+    private function spendTrend(int $storeId, string $from, string $to, int $organizationId, int $companyId): array
     {
         return DB::table('enterprise_purchase_invoices')
+            ->where('organization_id', $organizationId)
+            ->where('company_id', $companyId)
             ->where('store_id', $storeId)
             ->where('status', 'handed_off')
             ->whereBetween('invoice_date', [$from, $to])
@@ -1618,9 +2904,11 @@ final class ProcurementCompletionManager
     }
 
     /** @return list<array<string,mixed>> */
-    private function spendBySupplier(int $storeId, string $from, string $to): array
+    private function spendBySupplier(int $storeId, string $from, string $to, int $organizationId, int $companyId): array
     {
         return DB::table('enterprise_purchase_invoices')
+            ->where('organization_id', $organizationId)
+            ->where('company_id', $companyId)
             ->where('store_id', $storeId)
             ->where('status', 'handed_off')
             ->whereBetween('invoice_date', [$from, $to])
@@ -1634,12 +2922,22 @@ final class ProcurementCompletionManager
     }
 
     /** @return list<array<string,mixed>> */
-    private function spendByCategory(int $storeId, string $from, string $to): array
+    private function spendByCategory(int $storeId, string $from, string $to, int $organizationId, int $companyId): array
     {
         return DB::table('enterprise_purchase_invoices as invoices')
             ->join('enterprise_purchase_invoice_lines as invoice_lines', 'invoice_lines.purchase_invoice_id', '=', 'invoices.id')
-            ->leftJoin('products', 'products.sku', '=', 'invoice_lines.item_code')
+            ->leftJoin('products', function ($join) use ($storeId): void {
+                $join->on('products.sku', '=', 'invoice_lines.item_code')
+                    ->whereIn('products.catalog_id', function ($catalogs) use ($storeId): void {
+                        $catalogs->select('id')->from('catalogs')
+                            ->where('store_id', $storeId)
+                            ->where('is_active', true)
+                            ->where('is_migration_quarantine', false);
+                    });
+            })
             ->leftJoin('categories', 'categories.id', '=', 'products.category_id')
+            ->where('invoices.organization_id', $organizationId)
+            ->where('invoices.company_id', $companyId)
             ->where('invoices.store_id', $storeId)
             ->where('invoices.status', 'handed_off')
             ->whereBetween('invoices.invoice_date', [$from, $to])
@@ -1655,9 +2953,11 @@ final class ProcurementCompletionManager
     }
 
     /** @return list<array<string,mixed>> */
-    private function purchaseOrderStatusChart(int $storeId): array
+    private function purchaseOrderStatusChart(int $storeId, int $organizationId, int $companyId): array
     {
         return DB::table('enterprise_purchase_orders')
+            ->where('organization_id', $organizationId)
+            ->where('company_id', $companyId)
             ->where('store_id', $storeId)
             ->groupBy('status')
             ->selectRaw('status as label, COUNT(*) as value')
@@ -1668,12 +2968,14 @@ final class ProcurementCompletionManager
     }
 
     /** @return list<array<string,mixed>> */
-    private function purchaseOrderAgingChart(int $storeId): array
+    private function purchaseOrderAgingChart(int $storeId, int $organizationId, int $companyId): array
     {
         $today = CarbonImmutable::today();
         $buckets = ['current' => 0, '1_7' => 0, '8_30' => 0, '31_60' => 0, '61_plus' => 0];
 
         DB::table('enterprise_purchase_orders')
+            ->where('organization_id', $organizationId)
+            ->where('company_id', $companyId)
             ->where('store_id', $storeId)
             ->where('status', 'issued')
             ->orderBy('id')
@@ -1708,10 +3010,17 @@ final class ProcurementCompletionManager
     }
 
     /** @return list<array<string,mixed>> */
-    private function supplierPerformance(int $storeId, string $from, string $to): array
+    private function supplierPerformance(int $storeId, string $from, string $to, int $organizationId, int $companyId): array
     {
         return DB::table('enterprise_purchase_orders as orders')
-            ->join('enterprise_goods_receipts as receipts', 'receipts.purchase_order_id', '=', 'orders.id')
+            ->join('enterprise_goods_receipts as receipts', function ($join) use ($storeId, $organizationId, $companyId): void {
+                $join->on('receipts.purchase_order_id', '=', 'orders.id')
+                    ->where('receipts.organization_id', '=', $organizationId)
+                    ->where('receipts.company_id', '=', $companyId)
+                    ->where('receipts.store_id', '=', $storeId);
+            })
+            ->where('orders.organization_id', $organizationId)
+            ->where('orders.company_id', $companyId)
             ->where('orders.store_id', $storeId)
             ->where('orders.status', 'issued')
             ->where('receipts.status', 'posted')
@@ -1742,13 +3051,27 @@ final class ProcurementCompletionManager
     }
 
     /** @return list<array<string,mixed>> */
-    private function savingsChart(int $storeId, string $from, string $to): array
+    private function savingsChart(int $storeId, string $from, string $to, int $organizationId, int $companyId): array
     {
         return DB::table('enterprise_procurement_quotes as quotes')
             ->join('enterprise_procurement_rfqs as rfqs', 'rfqs.id', '=', 'quotes.rfq_id')
+            ->join('enterprise_suppliers as suppliers', 'suppliers.id', '=', 'quotes.supplier_id')
             ->join('enterprise_procurement_quote_lines as quote_lines', 'quote_lines.quote_id', '=', 'quotes.id')
             ->join('enterprise_procurement_rfq_lines as rfq_lines', 'rfq_lines.id', '=', 'quote_lines.rfq_line_id')
+            ->where('rfqs.organization_id', $organizationId)
+            ->where('rfqs.company_id', $companyId)
             ->where('rfqs.store_id', $storeId)
+            // Match the detailed savings report: a previously awarded RFQ
+            // cannot disclose a supplier's financials after a store transfer.
+            ->where('suppliers.organization_id', $organizationId)
+            ->where('suppliers.company_id', $companyId)
+            ->where(function (QueryBuilder $query) use ($storeId): void {
+                $query->where('suppliers.scope_type', 'company')
+                    ->orWhere(function (QueryBuilder $store) use ($storeId): void {
+                        $store->where('suppliers.scope_type', 'store')
+                            ->where('suppliers.store_id', $storeId);
+                    });
+            })
             ->where('quotes.status', 'awarded')
             ->whereBetween('quotes.awarded_at', [$from.' 00:00:00', $to.' 23:59:59'])
             ->selectRaw(
@@ -1764,36 +3087,56 @@ final class ProcurementCompletionManager
     }
 
     /** @return list<array<string,mixed>> */
-    private function contractExpiryHorizon(int $storeId): array
+    private function contractExpiryHorizon(int $storeId, int $organizationId, int $companyId): array
     {
         $today = CarbonImmutable::today();
 
         return [
-            ['label' => '0-30', 'value' => $this->contractCountBetween($storeId, $today, $today->addDays(30))],
-            ['label' => '31-60', 'value' => $this->contractCountBetween($storeId, $today->addDays(31), $today->addDays(60))],
-            ['label' => '61-90', 'value' => $this->contractCountBetween($storeId, $today->addDays(61), $today->addDays(90))],
-            ['label' => '90+', 'value' => DB::table('enterprise_procurement_contracts')
-                ->where('store_id', $storeId)
-                ->where('status', 'active')
-                ->whereDate('ends_on', '>', $today->addDays(90)->toDateString())
+            ['label' => '0-30', 'value' => $this->contractCountBetween($storeId, $today, $today->addDays(30), $organizationId, $companyId)],
+            ['label' => '31-60', 'value' => $this->contractCountBetween($storeId, $today->addDays(31), $today->addDays(60), $organizationId, $companyId)],
+            ['label' => '61-90', 'value' => $this->contractCountBetween($storeId, $today->addDays(61), $today->addDays(90), $organizationId, $companyId)],
+            ['label' => '90+', 'value' => $this->scopedContractDashboardQuery($storeId, $organizationId, $companyId)
+                ->where('contracts.status', 'active')
+                ->whereDate('contracts.ends_on', '>', $today->addDays(90)->toDateString())
                 ->count()],
         ];
     }
 
-    private function contractCountBetween(int $storeId, CarbonImmutable $from, CarbonImmutable $to): int
+    private function contractCountBetween(int $storeId, CarbonImmutable $from, CarbonImmutable $to, int $organizationId, int $companyId): int
     {
-        return DB::table('enterprise_procurement_contracts')
-            ->where('store_id', $storeId)
-            ->where('status', 'active')
-            ->whereBetween('ends_on', [$from->toDateString(), $to->toDateString()])
+        return $this->scopedContractDashboardQuery($storeId, $organizationId, $companyId)
+            ->where('contracts.status', 'active')
+            ->whereBetween('contracts.ends_on', [$from->toDateString(), $to->toDateString()])
             ->count();
     }
 
+    private function scopedContractDashboardQuery(int $storeId, int $organizationId, int $companyId): QueryBuilder
+    {
+        // Aggregate the same live supplier entitlement as the contract detail
+        // and report. A moved supplier must not reveal former-store money.
+        return DB::table('enterprise_procurement_contracts as contracts')
+            ->join('enterprise_suppliers as suppliers', 'suppliers.id', '=', 'contracts.supplier_id')
+            ->where('contracts.organization_id', $organizationId)
+            ->where('contracts.company_id', $companyId)
+            ->where('contracts.store_id', $storeId)
+            ->where('suppliers.organization_id', $organizationId)
+            ->where('suppliers.company_id', $companyId)
+            ->where(function (QueryBuilder $query) use ($storeId): void {
+                $query->where('suppliers.scope_type', 'company')
+                    ->orWhere(function (QueryBuilder $store) use ($storeId): void {
+                        $store->where('suppliers.scope_type', 'store')
+                            ->where('suppliers.store_id', $storeId);
+                    });
+            });
+    }
+
     /** @return array{columns:list<string>,rows:list<array<string,mixed>>} */
-    private function openOrdersReport(int $storeId, int $limit, int $offset = 0): array
+    private function openOrdersReport(int $storeId, int $limit, int $offset, int $organizationId, int $companyId): array
     {
         $rows = DB::table('enterprise_purchase_orders as orders')
             ->leftJoin('enterprise_purchase_order_lines as lines', 'lines.purchase_order_id', '=', 'orders.id')
+            ->where('orders.organization_id', $organizationId)
+            ->where('orders.company_id', $companyId)
             ->where('orders.store_id', $storeId)
             ->whereIn('orders.status', ['draft', 'issued'])
             ->groupBy(
@@ -1841,9 +3184,11 @@ final class ProcurementCompletionManager
     }
 
     /** @return array{columns:list<string>,rows:list<array<string,mixed>>} */
-    private function spendReport(int $storeId, string $from, string $to, int $limit, int $offset = 0): array
+    private function spendReport(int $storeId, string $from, string $to, int $limit, int $offset, int $organizationId, int $companyId): array
     {
         $rows = DB::table('enterprise_purchase_invoices')
+            ->where('organization_id', $organizationId)
+            ->where('company_id', $companyId)
             ->where('store_id', $storeId)
             ->where('status', 'handed_off')
             ->whereBetween('invoice_date', [$from, $to])
@@ -1860,13 +3205,18 @@ final class ProcurementCompletionManager
     }
 
     /** @return array{columns:list<string>,rows:list<array<string,mixed>>} */
-    private function supplierPerformanceReport(int $storeId, string $from, string $to, int $limit, int $offset = 0): array
+    private function supplierPerformanceReport(int $storeId, string $from, string $to, int $limit, int $offset, int $organizationId, int $companyId): array
     {
         $source = DB::table('enterprise_purchase_orders as orders')
-            ->leftJoin('enterprise_goods_receipts as receipts', function ($join): void {
+            ->leftJoin('enterprise_goods_receipts as receipts', function ($join) use ($organizationId, $companyId, $storeId): void {
                 $join->on('receipts.purchase_order_id', '=', 'orders.id')
-                    ->where('receipts.status', '=', 'posted');
+                    ->where('receipts.status', '=', 'posted')
+                    ->where('receipts.organization_id', '=', $organizationId)
+                    ->where('receipts.company_id', '=', $companyId)
+                    ->where('receipts.store_id', '=', $storeId);
             })
+            ->where('orders.organization_id', $organizationId)
+            ->where('orders.company_id', $companyId)
             ->where('orders.store_id', $storeId)
             ->whereBetween('orders.created_at', [$from.' 00:00:00', $to.' 23:59:59'])
             ->get([
@@ -1903,13 +3253,27 @@ final class ProcurementCompletionManager
     }
 
     /** @return array{columns:list<string>,rows:list<array<string,mixed>>} */
-    private function savingsReport(int $storeId, string $from, string $to, int $limit, int $offset = 0): array
+    private function savingsReport(int $storeId, string $from, string $to, int $limit, int $offset, int $organizationId, int $companyId): array
     {
         $rows = DB::table('enterprise_procurement_quotes as quotes')
             ->join('enterprise_procurement_rfqs as rfqs', 'rfqs.id', '=', 'quotes.rfq_id')
             ->join('enterprise_suppliers as suppliers', 'suppliers.id', '=', 'quotes.supplier_id')
             ->join('enterprise_procurement_quote_lines as quote_lines', 'quote_lines.quote_id', '=', 'quotes.id')
             ->join('enterprise_procurement_rfq_lines as rfq_lines', 'rfq_lines.id', '=', 'quote_lines.rfq_line_id')
+            ->where('rfqs.organization_id', $organizationId)
+            ->where('rfqs.company_id', $companyId)
+            ->where('suppliers.organization_id', $organizationId)
+            ->where('suppliers.company_id', $companyId)
+            // A historical quote does not preserve access to a supplier
+            // transferred out of this store. Match the live legal scope as
+            // contract reports do before exposing award/baseline amounts.
+            ->where(function (QueryBuilder $query) use ($storeId): void {
+                $query->where('suppliers.scope_type', 'company')
+                    ->orWhere(function (QueryBuilder $store) use ($storeId): void {
+                        $store->where('suppliers.scope_type', 'store')
+                            ->where('suppliers.store_id', $storeId);
+                    });
+            })
             ->where('rfqs.store_id', $storeId)
             ->where('quotes.status', 'awarded')
             ->whereBetween('quotes.awarded_at', [$from.' 00:00:00', $to.' 23:59:59'])
@@ -1931,11 +3295,26 @@ final class ProcurementCompletionManager
     }
 
     /** @return array{columns:list<string>,rows:list<array<string,mixed>>} */
-    private function contractExpiryReport(int $storeId, int $limit, int $offset = 0): array
+    private function contractExpiryReport(int $storeId, int $limit, int $offset, int $organizationId, int $companyId): array
     {
         $rows = DB::table('enterprise_procurement_contracts as contracts')
             ->join('enterprise_suppliers as suppliers', 'suppliers.id', '=', 'contracts.supplier_id')
+            ->where('contracts.organization_id', $organizationId)
+            ->where('contracts.company_id', $companyId)
+            ->where('suppliers.organization_id', $organizationId)
+            ->where('suppliers.company_id', $companyId)
             ->where('contracts.store_id', $storeId)
+            // Contract and its supplier are independent scope boundaries.
+            // A store-scoped supplier moved to another store must disappear
+            // from both the Admin report and the BI bridge before its contract
+            // ceilings, commitments and supplier reference are disclosed.
+            ->where(function (QueryBuilder $query) use ($storeId): void {
+                $query->where('suppliers.scope_type', 'company')
+                    ->orWhere(function (QueryBuilder $store) use ($storeId): void {
+                        $store->where('suppliers.scope_type', 'store')
+                            ->where('suppliers.store_id', $storeId);
+                    });
+            })
             ->whereIn('contracts.status', ['active', 'draft'])
             ->orderBy('contracts.ends_on')
             ->offset($offset)
@@ -1983,10 +3362,12 @@ final class ProcurementCompletionManager
     }
 
     /** @return array{columns:list<string>,rows:list<array<string,mixed>>} */
-    private function matchExceptionReport(int $storeId, int $limit, int $offset = 0): array
+    private function matchExceptionReport(int $storeId, int $limit, int $offset, int $organizationId, int $companyId): array
     {
         $rows = DB::table('enterprise_purchase_invoices as invoices')
             ->join('enterprise_procurement_match_reviews as matches', 'matches.purchase_invoice_id', '=', 'invoices.id')
+            ->where('invoices.organization_id', $organizationId)
+            ->where('invoices.company_id', $companyId)
             ->where('invoices.store_id', $storeId)
             ->whereIn('matches.status', ['pending', 'rejected'])
             ->orderByDesc('invoices.id')
@@ -2050,7 +3431,7 @@ final class ProcurementCompletionManager
         return [$start->toDateString(), $end->toDateString()];
     }
 
-    private function portalInvitation(string $token, bool $touch): object
+    private function portalInvitation(string $token): object
     {
         if (! preg_match('/^[A-Za-z0-9]{64}$/', $token)) {
             abort(404);
@@ -2064,22 +3445,47 @@ final class ProcurementCompletionManager
             abort(410);
         }
         if (CarbonImmutable::parse((string) $invitation->expires_at)->isPast()) {
+            // An expired-token read must not overwrite a concurrent admin
+            // revocation with an "expired" status.
             DB::table('enterprise_procurement_rfq_invitations')
                 ->where('id', $invitation->id)
+                ->whereNotIn('status', ['revoked', 'expired'])
+                ->where('expires_at', '<=', now())
                 ->update(['status' => 'expired', 'updated_at' => now()]);
             abort(410);
         }
 
-        if ($touch && in_array($invitation->status, ['invited', 'opened'], true)) {
-            DB::table('enterprise_procurement_rfq_invitations')->where('id', $invitation->id)->update([
-                'status' => 'opened',
-                'last_accessed_at' => now(),
-                'updated_at' => now(),
-            ]);
-            $invitation = DB::table('enterprise_procurement_rfq_invitations')->where('id', $invitation->id)->firstOrFail();
+        return $invitation;
+    }
+
+    /**
+     * A supplier invitation is not independent authority to access an RFQ
+     * after the supplier is blocked, disqualified or removed from its scope.
+     */
+    private function eligibleInvitedSupplier(object $rfq, object $invitation, bool $lock = false): object
+    {
+        $query = DB::table('enterprise_suppliers')
+            ->where('id', $invitation->supplier_id)
+            ->where('organization_id', $rfq->organization_id)
+            ->where('company_id', $rfq->company_id)
+            ->where('status', 'active')
+            ->where('qualification_status', '!=', 'unqualified')
+            ->where(function ($query) use ($rfq): void {
+                $query->where('scope_type', 'company')
+                    ->orWhere(function ($store) use ($rfq): void {
+                        $store->where('scope_type', 'store')
+                            ->where('store_id', $rfq->store_id);
+                    });
+            });
+
+        if ($lock) {
+            $query->lockForUpdate();
         }
 
-        return $invitation;
+        $supplier = $query->first();
+        abort_if($supplier === null, 410);
+
+        return $supplier;
     }
 
     private function visibleRfq(EnterpriseDataScope $scope, int $rfqId, bool $lock = false): object
@@ -2110,9 +3516,26 @@ final class ProcurementCompletionManager
         return $query->firstOrFail();
     }
 
-    private function visibleSupplier(EnterpriseDataScope $scope, int $supplierId): EnterpriseSupplier
+    /**
+     * Every RFQ quote/invitation and private attachment read must check the
+     * supplier's CURRENT legal company and store scope, not its historical RFQ.
+     */
+    private function scopeJoinedSupplier(QueryBuilder $query, EnterpriseDataScope $scope): void
     {
-        return EnterpriseSupplier::query()
+        $query->where('suppliers.organization_id', $scope->organizationId)
+            ->where('suppliers.company_id', $scope->companyId)
+            ->where(function (QueryBuilder $eligible) use ($scope): void {
+                $eligible->where('suppliers.scope_type', 'company')
+                    ->orWhere(function (QueryBuilder $store) use ($scope): void {
+                        $store->where('suppliers.scope_type', 'store')
+                            ->where('suppliers.store_id', $scope->storeId);
+                    });
+            });
+    }
+
+    private function visibleSupplier(EnterpriseDataScope $scope, int $supplierId, bool $lock = false): EnterpriseSupplier
+    {
+        $query = EnterpriseSupplier::query()
             ->where('id', $supplierId)
             ->where('organization_id', $scope->organizationId)
             ->where('company_id', $scope->companyId)
@@ -2121,8 +3544,13 @@ final class ProcurementCompletionManager
                     ->orWhere(function ($store) use ($scope): void {
                         $store->where('scope_type', 'store')->where('store_id', $scope->storeId);
                     });
-            })
-            ->firstOrFail();
+            });
+
+        if ($lock) {
+            $query->lockForUpdate();
+        }
+
+        return $query->firstOrFail();
     }
 
     private function baseScope(User $actor, ResolvedTenantContext $context): EnterpriseDataScope
@@ -2130,16 +3558,40 @@ final class ProcurementCompletionManager
         return $this->scope($actor, $context, 'procurement.suppliers.view');
     }
 
+    /**
+     * Existing controller and direct-service callers can retain an Eloquent
+     * User loaded before a global DENY or account deactivation was committed.
+     * Bind authorization to the immutable original identity AND the current
+     * persisted override flag rather than trusting the old model snapshot.
+     */
+    private function persistedActor(User $actor): User
+    {
+        $originalActorId = $actor->getRawOriginal($actor->getKeyName());
+        abort_unless(
+            $actor->exists
+                && $originalActorId !== null
+                && (string) $actor->getKey() === (string) $originalActorId,
+            403,
+        );
+
+        $current = User::query()->whereKey($originalActorId)->where('is_active', true)->first();
+        abort_unless($current instanceof User, 403);
+
+        return $current;
+    }
+
     private function scope(
         User $actor,
         ResolvedTenantContext $context,
         string $permission,
     ): EnterpriseDataScope {
+        $currentActor = $this->persistedActor($actor);
+
         abort_unless($this->modules->isEnabled('procurement'), 404, 'Procurement module is disabled.');
         abort_if($context->enterpriseScope === null, 409, 'Enterprise data scope is required.');
 
         $scope = $context->enterpriseScope;
-        $this->authorizer->authorize($actor, $context, $permission, 'company', $scope->companyId);
+        $this->authorizer->authorize($currentActor, $context, $permission, 'company', $scope->companyId);
 
         return $scope;
     }
@@ -2150,6 +3602,8 @@ final class ProcurementCompletionManager
         string $permission,
         EnterpriseDataScope $scope,
     ): bool {
-        return $this->authorizer->allows($actor, $context, $permission, 'company', $scope->companyId);
+        return $this->authorizer->allows(
+            $this->persistedActor($actor), $context, $permission, 'company', $scope->companyId,
+        );
     }
 }

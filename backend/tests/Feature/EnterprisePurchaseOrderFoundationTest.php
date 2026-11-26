@@ -2,22 +2,33 @@
 
 namespace Tests\Feature;
 
+use App\Enterprise\Entitlements\EntitlementScope;
+use App\Enterprise\Entitlements\ModuleEntitlementManager;
+use App\Enterprise\Modules\ModuleLifecycleManager;
+use App\Enterprise\Modules\ModuleState;
 use App\Enterprise\Organization\OrganizationHierarchyService;
+use App\Enterprise\Procurement\GoodsReceiptManager;
+use App\Enterprise\Procurement\ProcurementCompletionManager;
 use App\Enterprise\Procurement\PurchaseOrderManager;
 use App\Enterprise\Procurement\PurchaseRequestManager;
 use App\Enterprise\Procurement\SupplierDirectory;
+use App\Models\Catalog;
 use App\Models\Permission;
+use App\Models\Product;
 use App\Models\Role;
 use App\Models\Store;
 use App\Models\User;
+use App\Models\Warehouse;
 use App\Support\ResolvedTenantContext;
 use App\Support\TenantContextResolver;
 use Illuminate\Database\Eloquent\ModelNotFoundException;
+use Illuminate\Database\QueryException;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
 use Symfony\Component\HttpKernel\Exception\HttpException;
 use Tests\Support\ProcurementSecondApprover;
+use Tests\Support\SyntheticErpWorkflowEvidence;
 use Tests\TestCase;
 
 final class EnterprisePurchaseOrderFoundationTest extends TestCase
@@ -116,6 +127,55 @@ final class EnterprisePurchaseOrderFoundationTest extends TestCase
         app(PurchaseOrderManager::class)->createFromApprovedRequest($actor, $context, $request->id);
     }
 
+    public function test_direct_purchase_order_issue_and_cancel_reject_forged_actor_id_in_both_locales(): void
+    {
+        [$actor, , $context] = $this->scopedUser($this->allPermissions(), 'PO-ACTOR-KEY');
+        $other = User::factory()->create(['is_active' => true]);
+        $orders = app(PurchaseOrderManager::class);
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            $order = $this->approvedOrder($actor, $context, 'PO-KEY-SUP-'.$locale);
+
+            $forged = $other->fresh();
+            $this->assertNotNull($forged);
+            $forged->forceFill(['id' => $actor->id]);
+            $this->assertNotSame($forged->getRawOriginal('id'), $forged->getKey());
+
+            $auditBefore = DB::table('audit_logs')->count();
+            try {
+                $orders->issue($forged, $context, $order->id);
+                $this->fail('Dirty actor key must never issue a purchase order as a second user.');
+            } catch (HttpException $exception) {
+                $this->assertSame(403, $exception->getStatusCode());
+            }
+            $this->assertDatabaseHas('enterprise_purchase_orders', [
+                'id' => $order->id, 'status' => 'draft', 'issued_by' => null,
+            ]);
+            $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+
+            $this->assertSame('issued', $orders->issue($actor, $context, $order->id)->status);
+            $auditAfterIssue = DB::table('audit_logs')->count();
+            try {
+                $orders->cancel($forged, $context, $order->id);
+                $this->fail('Dirty actor key must never cancel an issued purchase order.');
+            } catch (HttpException $exception) {
+                $this->assertSame(403, $exception->getStatusCode());
+            }
+            $this->assertDatabaseHas('enterprise_purchase_orders', [
+                'id' => $order->id, 'status' => 'issued', 'issued_by' => $actor->id,
+                'cancelled_by' => null,
+            ]);
+            $this->assertSame($auditAfterIssue, DB::table('audit_logs')->count());
+
+            $this->assertSame('cancelled', $orders->cancel($actor, $context, $order->id)->status);
+            $this->assertDatabaseHas('enterprise_purchase_orders', [
+                'id' => $order->id, 'status' => 'cancelled',
+                'cancelled_by' => $actor->id,
+            ]);
+        }
+    }
+
     public function test_issue_and_cancel_are_retry_safe_and_audited(): void
     {
         [$actor, , $context] = $this->scopedUser($this->allPermissions(), 'PO-C');
@@ -150,6 +210,330 @@ final class EnterprisePurchaseOrderFoundationTest extends TestCase
                 ->where('auditable_id', $order->id)
                 ->count(),
         );
+    }
+
+    public function test_idempotent_purchase_order_retries_deny_transferred_supplier_in_ar_and_en(): void
+    {
+        [$actor, $ownStore, $context] = $this->scopedUser($this->allPermissions(), 'PO-IDEMP-SCOPE');
+        $foreignStore = $this->createRetailStore('PO-IDEMP-FOREIGN');
+        $orders = app(PurchaseOrderManager::class);
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            $order = $this->approvedOrder($actor, $context, 'PO-IDEMP-SUP-'.strtoupper($locale));
+            $auditAfterCreate = DB::table('audit_logs')->count();
+
+            DB::table('enterprise_suppliers')->where('id', $order->supplier_id)
+                ->update(['store_id' => $foreignStore->id]);
+
+            try {
+                $orders->createFromApprovedRequest($actor, $context, $order->purchase_request_id);
+                $this->fail('Idempotent PO creation must not disclose a transferred supplier or priced lines.');
+            } catch (ModelNotFoundException) {
+                $this->assertTrue(true);
+            }
+
+            $this->assertDatabaseHas('enterprise_purchase_orders', [
+                'id' => $order->id, 'status' => 'draft', 'issued_by' => null,
+            ]);
+            $this->assertSame($auditAfterCreate, DB::table('audit_logs')->count());
+
+            DB::table('enterprise_suppliers')->where('id', $order->supplier_id)
+                ->update(['store_id' => $ownStore->id]);
+            $this->assertSame(
+                $order->id,
+                $orders->createFromApprovedRequest($actor, $context, $order->purchase_request_id)->id,
+            );
+            $this->assertSame('issued', $orders->issue($actor, $context, $order->id)->status);
+            $auditAfterIssue = DB::table('audit_logs')->count();
+
+            DB::table('enterprise_suppliers')->where('id', $order->supplier_id)
+                ->update(['store_id' => $foreignStore->id]);
+
+            try {
+                $orders->issue($actor, $context, $order->id);
+                $this->fail('An already issued PO cannot bypass current supplier store scope on retry.');
+            } catch (ModelNotFoundException) {
+                $this->assertTrue(true);
+            }
+
+            $this->assertDatabaseHas('enterprise_purchase_orders', [
+                'id' => $order->id, 'status' => 'issued', 'issued_by' => $actor->id,
+            ]);
+            $this->assertSame($auditAfterIssue, DB::table('audit_logs')->count());
+
+            DB::table('enterprise_suppliers')->where('id', $order->supplier_id)
+                ->update(['store_id' => $ownStore->id]);
+            $this->assertSame('issued', $orders->issue($actor, $context, $order->id)->status);
+            $this->assertSame($auditAfterIssue, DB::table('audit_logs')->count());
+        }
+    }
+
+    public function test_issue_revalidates_active_qualified_supplier_after_draft(): void
+    {
+        [$actor, , $context] = $this->scopedUser($this->allPermissions(), 'PO-ELIG');
+        $order = $this->approvedOrder($actor, $context, 'PO-ELIG-SUP');
+        $orders = app(PurchaseOrderManager::class);
+
+        foreach ([
+            ['status' => 'inactive'],
+            ['status' => 'active', 'qualification_status' => 'unqualified'],
+        ] as $supplierState) {
+            DB::table('enterprise_suppliers')
+                ->where('id', $order->supplier_id)
+                ->update($supplierState);
+
+            try {
+                $orders->issue($actor, $context, $order->id);
+                $this->fail('An ineligible supplier must not be used to issue a draft PO.');
+            } catch (ModelNotFoundException $exception) {
+                $this->assertNotNull($exception);
+            }
+
+            $this->assertDatabaseHas('enterprise_purchase_orders', [
+                'id' => $order->id,
+                'status' => 'draft',
+                'issued_by' => null,
+            ]);
+            $this->assertSame(0, DB::table('audit_logs')
+                ->where('event', 'enterprise.purchase_order.issued')
+                ->where('auditable_id', $order->id)
+                ->count());
+        }
+    }
+
+    public function test_issue_rejects_invalid_persisted_order_lines_before_any_issue_audit(): void
+    {
+        [$actor, , $context] = $this->scopedUser($this->allPermissions(), 'PO-NEG');
+        $order = $this->approvedOrder($actor, $context, 'PO-NEG-SUP');
+        $orders = app(PurchaseOrderManager::class);
+        $lineId = $order->lines()->firstOrFail()->id;
+
+        foreach ([
+            ['quantity' => '-1.000'],
+            ['quantity' => '0.000'],
+            ['unit_price' => '-0.250'],
+        ] as $invalidLine) {
+            DB::table('enterprise_purchase_order_lines')->where('id', $lineId)->update([
+                'quantity' => '1.000',
+                'unit_price' => '1.250',
+                ...$invalidLine,
+            ]);
+
+            try {
+                $orders->issue($actor, $context, $order->id);
+                $this->fail('A forged negative/zero PO line must not be issued.');
+            } catch (ValidationException $exception) {
+                $this->assertArrayHasKey('lines', $exception->errors());
+            }
+
+            $this->assertDatabaseHas('enterprise_purchase_orders', [
+                'id' => $order->id,
+                'status' => 'draft',
+                'issued_by' => null,
+            ]);
+            $this->assertSame(0, DB::table('audit_logs')
+                ->where('event', 'enterprise.purchase_order.issued')
+                ->where('auditable_id', $order->id)
+                ->count());
+        }
+
+        DB::table('enterprise_purchase_order_lines')->where('id', $lineId)->update([
+            'quantity' => '1.000',
+            'unit_price' => '1.250',
+        ]);
+        $this->assertSame('issued', $orders->issue($actor, $context, $order->id)->status);
+        $this->assertSame('issued', $orders->issue($actor, $context, $order->id)->status);
+        $this->assertSame(1, DB::table('audit_logs')
+            ->where('event', 'enterprise.purchase_order.issued')
+            ->where('auditable_id', $order->id)
+            ->count());
+    }
+
+    public function test_posted_receipt_blocks_po_cancellation_without_reversing_stock(): void
+    {
+        SyntheticErpWorkflowEvidence::install();
+        $lifecycle = app(ModuleLifecycleManager::class);
+        $lifecycle->transition('procurement', ModuleState::ENABLING);
+        $lifecycle->transition('procurement', ModuleState::ENABLED);
+
+        [$actor, $store, $context] = $this->scopedUser([
+            ...$this->allPermissions(),
+            'procurement.goods_receipts.view',
+            'procurement.goods_receipts.manage',
+            'procurement.goods_receipts.post',
+        ], 'PO-POSTED');
+        app(ModuleEntitlementManager::class)->set(
+            'procurement',
+            new EntitlementScope(EntitlementScope::STORE, (int) $store->id),
+            true,
+            actor: $actor,
+        );
+        $sku = 'PO-POSTED-SKU';
+        $catalog = Catalog::query()->create([
+            'store_id' => $store->id,
+            'channel' => 'b2c',
+            'code' => 'po-posted-catalog',
+            'name' => 'PO Receiving Catalog',
+            'is_active' => true,
+            'is_migration_quarantine' => false,
+        ]);
+        $unitId = (int) DB::table('units')->insertGetId([
+            'store_id' => null,
+            'scope' => 'global',
+            'scope_key' => 'global',
+            'code' => 'PO-POSTED-EA',
+            'name' => 'Each',
+            'name_ar' => 'قطعة',
+            'name_en' => 'Each',
+            'decimal_places' => 3,
+            'is_active' => true,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        $product = Product::query()->create([
+            'catalog_id' => $catalog->id,
+            'unit_id' => $unitId,
+            'sku' => $sku,
+            'name' => $sku,
+            'is_active' => true,
+        ]);
+        $warehouse = Warehouse::query()->create([
+            'store_id' => $store->id,
+            'code' => 'PO-POSTED-WH',
+            'name' => 'PO Receiving Warehouse',
+            'is_active' => true,
+        ]);
+
+        $order = $this->approvedOrder($actor, $context, 'PO-POSTED-SUP', $sku);
+        $orders = app(PurchaseOrderManager::class);
+        $orders->issue($actor, $context, $order->id);
+        $receipts = app(GoodsReceiptManager::class);
+        $receipt = $receipts->createFromIssuedOrder($actor, $context, $order->id, [
+            'lines' => [[
+                'purchase_order_line_id' => $order->lines()->firstOrFail()->id,
+                'warehouse_id' => $warehouse->id,
+                'quantity' => 1,
+            ]],
+        ]);
+        $this->assertSame('posted', $receipts->post($actor, $context, $receipt->id)->status);
+
+        try {
+            $orders->cancel($actor, $context, $order->id);
+            $this->fail('A PO with posted inventory receipt must not be cancelled silently.');
+        } catch (ValidationException $exception) {
+            $this->assertArrayHasKey('status', $exception->errors());
+        }
+
+        $this->assertDatabaseHas('enterprise_purchase_orders', ['id' => $order->id, 'status' => 'issued']);
+        $this->assertDatabaseHas('enterprise_goods_receipts', ['id' => $receipt->id, 'status' => 'posted']);
+        $this->assertSame(1.0, (float) DB::table('inventories')
+            ->where('warehouse_id', $warehouse->id)
+            ->where('product_id', $product->id)
+            ->value('quantity'));
+        $this->assertSame(1, DB::table('stock_movements')
+            ->where('type', 'purchase_receipt')
+            ->where('store_id', $store->id)
+            ->count());
+        $this->assertSame(0, DB::table('audit_logs')
+            ->where('event', 'enterprise.purchase_order.cancelled')
+            ->where('auditable_id', $order->id)
+            ->count());
+
+        // Simulate a legacy importer/retry that changed only the GRN header
+        // back to draft after the canonical stock movement was committed.
+        // Actual inventory provenance must still block PO cancellation.
+        DB::table('enterprise_goods_receipts')->where('id', $receipt->id)
+            ->update(['status' => 'draft']);
+        $this->assertDatabaseHas('enterprise_goods_receipts', [
+            'id' => $receipt->id, 'status' => 'draft',
+        ]);
+        $this->assertNotNull($receipt->lines()->firstOrFail()->stock_movement_id);
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            try {
+                $orders->cancel($actor, $context, $order->id);
+                $this->fail('Committed GRN stock cannot be bypassed by a stale draft receipt header.');
+            } catch (ValidationException $exception) {
+                $this->assertArrayHasKey('status', $exception->errors());
+            }
+            $this->assertDatabaseHas('enterprise_purchase_orders', [
+                'id' => $order->id, 'status' => 'issued',
+            ]);
+            $this->assertSame(1.0, (float) DB::table('inventories')
+                ->where('warehouse_id', $warehouse->id)
+                ->where('product_id', $product->id)
+                ->value('quantity'));
+            $this->assertSame(1, DB::table('stock_movements')
+                ->where('type', 'purchase_receipt')
+                ->where('store_id', $store->id)
+                ->count());
+            $this->assertSame(0, DB::table('audit_logs')
+                ->where('event', 'enterprise.purchase_order.cancelled')
+                ->where('auditable_id', $order->id)
+                ->count());
+        }
+
+        // A migrated GRN may also have lost its line's cached movement FK.
+        // The stock movement itself is the durable evidence of receipt and
+        // must remain sufficient to forbid PO cancellation independently.
+        $receivedLine = $receipt->lines()->firstOrFail();
+        DB::table('enterprise_goods_receipt_lines')->where('id', $receivedLine->id)
+            ->update(['stock_movement_id' => null]);
+        $this->assertNull($receivedLine->fresh()->stock_movement_id);
+        $this->assertDatabaseHas('stock_movements', [
+            'reference_type' => 'enterprise_goods_receipt_line',
+            'reference_id' => $receivedLine->id,
+            'type' => 'purchase_receipt',
+            'store_id' => $store->id,
+        ]);
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            try {
+                $orders->cancel($actor, $context, $order->id);
+                $this->fail('Existing purchase receipt movement must block PO cancellation even with missing GRN pointer.');
+            } catch (ValidationException $exception) {
+                $this->assertArrayHasKey('status', $exception->errors());
+            }
+            $this->assertDatabaseHas('enterprise_purchase_orders', [
+                'id' => $order->id, 'status' => 'issued',
+            ]);
+            $this->assertSame(1.0, (float) DB::table('inventories')
+                ->where('warehouse_id', $warehouse->id)
+                ->where('product_id', $product->id)
+                ->value('quantity'));
+            $this->assertSame(1, DB::table('stock_movements')
+                ->where('type', 'purchase_receipt')
+                ->where('store_id', $store->id)
+                ->count());
+            $this->assertSame(0, DB::table('audit_logs')
+                ->where('event', 'enterprise.purchase_order.cancelled')
+                ->where('auditable_id', $order->id)
+                ->count());
+        }
+    }
+
+    public function test_po_number_is_unique_per_company_even_for_imported_duplicate(): void
+    {
+        [$actor, , $context] = $this->scopedUser($this->allPermissions(), 'PO-DUP');
+        $first = $this->approvedOrder($actor, $context, 'PO-DUP-SUP-1');
+        $second = $this->approvedOrder($actor, $context, 'PO-DUP-SUP-2');
+
+        try {
+            DB::table('enterprise_purchase_orders')->where('id', $second->id)
+                ->update(['order_number' => $first->order_number]);
+            $this->fail('An imported PO number must not duplicate another PO in the company.');
+        } catch (QueryException $exception) {
+            $this->assertNotNull($exception);
+        }
+
+        $this->assertDatabaseHas('enterprise_purchase_orders', [
+            'id' => $second->id,
+            'order_number' => $second->order_number,
+            'status' => 'draft',
+        ]);
     }
 
     public function test_purchase_order_number_search_preserves_literal_symbols_and_store_scope(): void
@@ -238,10 +622,719 @@ final class EnterprisePurchaseOrderFoundationTest extends TestCase
         $orders->detail($actorB, $contextB, $order->id);
     }
 
+    public function test_purchase_order_service_refuses_persisted_permission_denies_on_stale_user_in_ar_and_en(): void
+    {
+        [$actor, , $context] = $this->scopedUser($this->allPermissions(), 'PO-STALE-DENY');
+        $orders = app(PurchaseOrderManager::class);
+        $this->assertFalse((bool) $actor->has_permission_overrides);
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            $order = $this->approvedOrder($actor, $context, 'PO-DENY-SUP-'.strtoupper($locale));
+            $this->assertSame($order->id, $orders->detail($actor, $context, $order->id)->id);
+
+            foreach (['procurement.purchase_orders.view', 'procurement.purchase_orders.issue'] as $permissionCode) {
+                $permissionId = (int) Permission::query()->where('code', $permissionCode)->value('id');
+                $this->assertGreaterThan(0, $permissionId);
+                DB::table('user_permission_overrides')->insert([
+                    'user_id' => $actor->id,
+                    'permission_id' => $permissionId,
+                    'scope_key' => 'global',
+                    'store_id' => null,
+                    'effect' => 'deny',
+                    'created_at' => now(),
+                    'updated_at' => now(),
+                ]);
+                DB::table('users')->where('id', $actor->id)
+                    ->update(['has_permission_overrides' => true]);
+                // The caller deliberately retains the pre-DENY user object.
+                $this->assertFalse((bool) $actor->has_permission_overrides);
+                $this->assertTrue((bool) $actor->fresh()->has_permission_overrides);
+                $auditBefore = DB::table('audit_logs')->count();
+                $linesBefore = DB::table('enterprise_purchase_order_lines')->count();
+
+                $actions = $permissionCode === 'procurement.purchase_orders.view'
+                    ? [
+                        fn () => $orders->detail($actor, $context, $order->id),
+                        fn () => $orders->paginate($actor, $context),
+                    ]
+                    : [fn () => $orders->issue($actor, $context, $order->id)];
+
+                foreach ($actions as $action) {
+                    try {
+                        $action();
+                        $this->fail('Persisted purchase-order DENY must block stale direct-service access.');
+                    } catch (HttpException $exception) {
+                        $this->assertSame(403, $exception->getStatusCode());
+                    }
+                }
+
+                $this->assertDatabaseHas('enterprise_purchase_orders', [
+                    'id' => $order->id,
+                    'status' => 'draft',
+                ]);
+                $this->assertSame($linesBefore, DB::table('enterprise_purchase_order_lines')->count());
+                $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+
+                DB::table('user_permission_overrides')
+                    ->where('user_id', $actor->id)
+                    ->where('permission_id', $permissionId)
+                    ->delete();
+                DB::table('users')->where('id', $actor->id)
+                    ->update(['has_permission_overrides' => false]);
+                $this->assertFalse((bool) $actor->fresh()->has_permission_overrides);
+                $this->assertSame($order->id, $orders->detail($actor, $context, $order->id)->id);
+            }
+
+            // Restored permissions allow the real authorized draft transition.
+            $this->assertSame('issued', $orders->issue($actor, $context, $order->id)->status);
+        }
+    }
+
+    public function test_purchase_order_read_paths_recheck_linked_supplier_store_scope_in_ar_and_en(): void
+    {
+        [$actor, $ownStore, $context] = $this->scopedUser($this->allPermissions(), 'PO-LIVE-SUPPLIER');
+        $foreignStore = $this->createRetailStore('PO-LIVE-SUPPLIER-FOREIGN');
+        $orders = app(PurchaseOrderManager::class);
+
+        $armed = false;
+        $moved = false;
+        $targetSupplierId = null;
+        $read = '';
+        DB::listen(static function ($query) use (
+            &$armed, &$moved, &$targetSupplierId, &$read, $foreignStore
+        ): void {
+            $sql = strtolower((string) $query->sql);
+            if (! $armed || $moved || $targetSupplierId === null
+                || ! str_starts_with(ltrim($sql), 'select')) {
+                return;
+            }
+
+            $isPage = $read === 'page'
+                && str_contains($sql, 'enterprise_purchase_orders')
+                && str_contains($sql, 'order by');
+            $isDetail = $read === 'detail'
+                && str_contains($sql, 'enterprise_purchase_order_lines');
+            if (! $isPage && ! $isDetail) {
+                return;
+            }
+
+            // Deterministic same-connection transfer AFTER the real SELECT.
+            // This is not a proven independent two-session MySQL race.
+            $armed = false;
+            $moved = true;
+            DB::table('enterprise_suppliers')->where('id', $targetSupplierId)
+                ->update(['store_id' => $foreignStore->id]);
+        });
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            $order = $this->approvedOrder(
+                $actor, $context, 'PO-LIVE-SUP-'.strtoupper($locale),
+            );
+            $targetSupplierId = (int) $order->supplier_id;
+            $filter = ['q' => $order->order_number];
+            $this->assertSame(1, $orders->paginate($actor, $context, $filter)->total());
+            $this->assertSame($order->id, $orders->detail($actor, $context, $order->id)->id);
+            $auditBefore = DB::table('audit_logs')->count();
+            $linesBefore = DB::table('enterprise_purchase_order_lines')->count();
+
+            foreach (['page', 'detail'] as $read) {
+                $armed = true;
+                $moved = false;
+                try {
+                    if ($read === 'page') {
+                        $orders->paginate($actor, $context, $filter);
+                    } else {
+                        $orders->detail($actor, $context, $order->id);
+                    }
+                    $this->fail('Transferred supplier must not expose old-store PO financials.');
+                } catch (HttpException $exception) {
+                    $this->assertSame('page', $read);
+                    $this->assertSame(404, $exception->getStatusCode());
+                } catch (ModelNotFoundException) {
+                    $this->assertSame('detail', $read);
+                } finally {
+                    $armed = false;
+                }
+
+                $this->assertTrue($moved, 'Supplier move must occur after a real selected PO row.');
+                $this->assertDatabaseHas('enterprise_suppliers', [
+                    'id' => $targetSupplierId,
+                    'store_id' => $foreignStore->id,
+                ]);
+                $this->assertSame(0, $orders->paginate($actor, $context, $filter)->total());
+                try {
+                    $orders->detail($actor, $context, $order->id);
+                    $this->fail('A formerly scoped PO detail must stay inaccessible.');
+                } catch (ModelNotFoundException) {
+                    $this->assertTrue(true);
+                }
+                $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+                $this->assertSame($linesBefore, DB::table('enterprise_purchase_order_lines')->count());
+
+                DB::table('enterprise_suppliers')->where('id', $targetSupplierId)
+                    ->update(['store_id' => $ownStore->id]);
+                $this->assertSame(1, $orders->paginate($actor, $context, $filter)->total());
+                $this->assertSame($order->id, $orders->detail($actor, $context, $order->id)->id);
+            }
+
+            // An earlier locale fixture must not affect the next scoped read.
+            DB::table('enterprise_suppliers')->where('id', $targetSupplierId)
+                ->update(['store_id' => $foreignStore->id]);
+            $targetSupplierId = null;
+        }
+    }
+
+    public function test_purchase_order_detail_denies_stale_supplier_and_financial_lines_after_store_transfer_in_ar_and_en(): void
+    {
+        [$actor, , $context] = $this->scopedUser($this->allPermissions(), 'PO-DETAIL-LIVE');
+        $foreignStore = $this->createRetailStore('PO-DETAIL-FOREIGN');
+        $orders = app(PurchaseOrderManager::class);
+
+        $armed = false;
+        $moved = false;
+        $targetOrderId = null;
+        DB::listen(static function ($query) use (&$armed, &$moved, &$targetOrderId, $foreignStore): void {
+            $sql = strtolower((string) $query->sql);
+            if (! $armed || $moved || $targetOrderId === null
+                || ! str_contains($sql, 'enterprise_purchase_orders')
+                || ! str_contains($sql, 'select')
+                || str_contains($sql, 'join')) {
+                return;
+            }
+
+            // Transfer just after the authorized header SELECT, before
+            // Eloquent loads supplier, request and priced order lines.
+            $armed = false;
+            $moved = true;
+            DB::table('enterprise_purchase_orders')
+                ->where('id', $targetOrderId)
+                ->update(['store_id' => $foreignStore->id]);
+        });
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            $order = $this->approvedOrder($actor, $context, 'PO-DETAIL-SUP-'.strtoupper($locale));
+            $visible = $orders->detail($actor, $context, $order->id);
+            $this->assertSame($order->id, $visible->id);
+            $this->assertCount(1, $visible->lines);
+
+            $targetOrderId = (int) $order->id;
+            $auditBefore = DB::table('audit_logs')->count();
+            $linesBefore = DB::table('enterprise_purchase_order_lines')->count();
+            $armed = true;
+            $moved = false;
+            try {
+                $orders->detail($actor, $context, $order->id);
+                $this->fail('Former store must not read a transferred order header, supplier, or prices.');
+            } catch (ModelNotFoundException) {
+                $this->assertTrue($moved, 'Transfer must occur after the scoped first SELECT.');
+            }
+
+            $this->assertSame((int) $foreignStore->id, (int) DB::table('enterprise_purchase_orders')
+                ->where('id', $order->id)->value('store_id'));
+            $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+            $this->assertSame($linesBefore, DB::table('enterprise_purchase_order_lines')->count());
+
+            try {
+                $orders->detail($actor, $context, $order->id);
+                $this->fail('Repeated former-store detail must be denied.');
+            } catch (ModelNotFoundException) {
+                $this->assertTrue(true);
+            }
+        }
+    }
+
+    public function test_purchase_order_page_rejects_postquery_store_transfer_in_ar_and_en(): void
+    {
+        [$actor, $originalStore, $context] = $this->scopedUser(
+            $this->allPermissions(), 'PO-PAGE-XFER',
+        );
+        $foreignStore = $this->createRetailStore('PO-PAGE-FOREIGN');
+        $orders = app(PurchaseOrderManager::class);
+
+        $armed = false;
+        $moved = false;
+        $targetOrderId = null;
+        DB::listen(static function ($query) use ($foreignStore, &$armed, &$moved, &$targetOrderId): void {
+            $sql = strtolower((string) $query->sql);
+            if (! $armed || $moved || $targetOrderId === null
+                || ! str_contains($sql, 'select')
+                || ! str_contains($sql, 'enterprise_purchase_orders')
+                || ! str_contains($sql, 'order by')) {
+                return;
+            }
+
+            // The scoped paginator has already selected this financial PO.
+            // Move it out of the authorized store before its caller receives
+            // hydrated rows, without involving another user or changing roles.
+            $armed = false;
+            $moved = true;
+            DB::table('enterprise_purchase_orders')
+                ->where('id', $targetOrderId)
+                ->update(['store_id' => $foreignStore->id]);
+        });
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            $order = $this->approvedOrder(
+                $actor, $context, 'PO-PAGE-SUP-'.strtoupper($locale),
+            );
+            $filter = ['q' => $order->order_number];
+            $this->assertSame(1, $orders->paginate($actor, $context, $filter)->total());
+            $auditBefore = DB::table('audit_logs')->count();
+            $lineCountBefore = DB::table('enterprise_purchase_order_lines')->count();
+            $targetOrderId = $order->id;
+            $moved = false;
+            $armed = true;
+
+            try {
+                $orders->paginate($actor, $context, $filter);
+                $this->fail('PO transferred after the page SELECT must not expose its cached supplier/price.');
+            } catch (HttpException $exception) {
+                $this->assertTrue($moved, 'The store transfer must occur after the actual ordered PO page query.');
+                $this->assertSame(404, $exception->getStatusCode());
+            }
+
+            $this->assertDatabaseHas('enterprise_purchase_orders', [
+                'id' => $order->id,
+                'store_id' => $foreignStore->id,
+                'status' => 'draft',
+            ]);
+            $this->assertSame(0, $orders->paginate($actor, $context, $filter)->total());
+            $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+            $this->assertSame($lineCountBefore, DB::table('enterprise_purchase_order_lines')->count());
+
+            DB::table('enterprise_purchase_orders')->where('id', $order->id)
+                ->update(['store_id' => $originalStore->id]);
+            $this->assertSame(1, $orders->paginate($actor, $context, $filter)->total());
+            // Keep the next locale fixture isolated from this historical PO.
+            DB::table('enterprise_purchase_orders')->where('id', $order->id)
+                ->update(['store_id' => $foreignStore->id]);
+        }
+    }
+
+    public function test_purchase_order_pagination_rechecks_permission_after_rows_when_revoked_midquery_in_ar_and_en(): void
+    {
+        [$actor, , $context] = $this->scopedUser($this->allPermissions(), 'PO-MIDQUERY-DENY');
+        $orders = app(PurchaseOrderManager::class);
+        $permissionId = Permission::query()
+            ->where('code', 'procurement.purchase_orders.view')
+            ->firstOrFail()->id;
+
+        $armed = false;
+        $injected = false;
+        DB::listen(static function ($query) use ($actor, $permissionId, &$armed, &$injected): void {
+            $sql = strtolower((string) $query->sql);
+            if (! $armed || $injected
+                || ! str_contains($sql, 'select')
+                || ! str_contains($sql, 'enterprise_purchase_orders')
+                || str_contains($sql, 'count(')) {
+                return;
+            }
+
+            // Simulate a committed revoke after the scoped page SELECT, before
+            // the eager supplier read and the service response. This is a
+            // deterministic same-connection interleaving, not a two-DB race.
+            $armed = false;
+            $injected = true;
+            DB::table('user_permission_overrides')->insert([
+                'user_id' => $actor->id,
+                'permission_id' => $permissionId,
+                'scope_key' => 'global',
+                'store_id' => null,
+                'effect' => 'deny',
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+            DB::table('users')->where('id', $actor->id)
+                ->update(['has_permission_overrides' => true]);
+        });
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            $order = $this->approvedOrder($actor, $context, 'PO-MIDQUERY-'.strtoupper($locale));
+            $this->assertFalse((bool) $actor->has_permission_overrides);
+            $this->assertContains(
+                $order->id,
+                array_map(static fn ($item): int => (int) $item->id, $orders->paginate($actor, $context)->items()),
+            );
+
+            $ordersBefore = DB::table('enterprise_purchase_orders')->count();
+            $linesBefore = DB::table('enterprise_purchase_order_lines')->count();
+            $auditBefore = DB::table('audit_logs')->count();
+            $injected = false;
+            $armed = true;
+
+            try {
+                $orders->paginate($actor, $context);
+                $this->fail('A mid-query persisted DENY must block the already-selected supplier and PO rows.');
+            } catch (HttpException $exception) {
+                $this->assertTrue($injected, 'Revoke must happen after the scoped purchase-order page SELECT.');
+                $this->assertSame(403, $exception->getStatusCode());
+            }
+
+            $this->assertFalse((bool) $actor->has_permission_overrides);
+            $this->assertTrue((bool) $actor->fresh()->has_permission_overrides);
+            try {
+                $orders->paginate($actor, $context);
+                $this->fail('A second request with a revoked view permission must also be denied.');
+            } catch (HttpException $exception) {
+                $this->assertSame(403, $exception->getStatusCode());
+            }
+
+            $this->assertSame($ordersBefore, DB::table('enterprise_purchase_orders')->count());
+            $this->assertSame($linesBefore, DB::table('enterprise_purchase_order_lines')->count());
+            $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+
+            DB::table('user_permission_overrides')
+                ->where('user_id', $actor->id)
+                ->where('permission_id', $permissionId)
+                ->delete();
+            DB::table('users')->where('id', $actor->id)
+                ->update(['has_permission_overrides' => false]);
+            $this->assertContains(
+                $order->id,
+                array_map(static fn ($item): int => (int) $item->id, $orders->paginate($actor, $context)->items()),
+            );
+        }
+    }
+
+    public function test_purchase_order_detail_rechecks_view_permission_after_priced_lines_when_revoked_midquery_in_ar_and_en(): void
+    {
+        [$actor, , $context] = $this->scopedUser($this->allPermissions(), 'PO-DETAIL-MIDQUERY-DENY');
+        $orders = app(PurchaseOrderManager::class);
+        $permissionId = Permission::query()
+            ->where('code', 'procurement.purchase_orders.view')
+            ->firstOrFail()->id;
+
+        $armed = false;
+        $injected = false;
+        DB::listen(static function ($query) use ($actor, $permissionId, &$armed, &$injected): void {
+            $sql = strtolower((string) $query->sql);
+            if (! $armed || $injected
+                || ! str_contains($sql, 'select')
+                || ! str_contains($sql, 'enterprise_purchase_order_lines')) {
+                return;
+            }
+
+            // Revoke after the authorized order header and priced-line SELECT.
+            // This is a deterministic same-connection interleaving, not proof
+            // of a separate committed MySQL transaction or serializability.
+            $armed = false;
+            $injected = true;
+            DB::table('user_permission_overrides')->insert([
+                'user_id' => $actor->id,
+                'permission_id' => $permissionId,
+                'scope_key' => 'global',
+                'store_id' => null,
+                'effect' => 'deny',
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+            DB::table('users')->where('id', $actor->id)
+                ->update(['has_permission_overrides' => true]);
+        });
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            $order = $this->approvedOrder($actor, $context, 'PO-DETAIL-DENY-'.strtoupper($locale));
+            $visible = $orders->detail($actor, $context, $order->id);
+            $this->assertSame($order->id, $visible->id);
+            $this->assertCount(1, $visible->lines);
+            $this->assertFalse((bool) $actor->has_permission_overrides);
+
+            $orderCount = DB::table('enterprise_purchase_orders')->count();
+            $linesCount = DB::table('enterprise_purchase_order_lines')->count();
+            $auditCount = DB::table('audit_logs')->count();
+            $armed = true;
+            $injected = false;
+
+            try {
+                $orders->detail($actor, $context, $order->id);
+                $this->fail('Revocation during priced-line hydration must block the PO detail response.');
+            } catch (HttpException $exception) {
+                $this->assertTrue($injected, 'Persisted DENY must be injected after loading priced PO lines.');
+                $this->assertSame(403, $exception->getStatusCode());
+            }
+
+            $this->assertFalse((bool) $actor->has_permission_overrides);
+            $this->assertTrue((bool) $actor->fresh()->has_permission_overrides);
+            try {
+                $orders->detail($actor, $context, $order->id);
+                $this->fail('A repeated PO detail read after effective DENY must also fail.');
+            } catch (HttpException $exception) {
+                $this->assertSame(403, $exception->getStatusCode());
+            }
+
+            $this->assertSame($orderCount, DB::table('enterprise_purchase_orders')->count());
+            $this->assertSame($linesCount, DB::table('enterprise_purchase_order_lines')->count());
+            $this->assertSame($auditCount, DB::table('audit_logs')->count());
+
+            DB::table('user_permission_overrides')
+                ->where('user_id', $actor->id)
+                ->where('permission_id', $permissionId)
+                ->delete();
+            DB::table('users')->where('id', $actor->id)
+                ->update(['has_permission_overrides' => false]);
+            $restored = $orders->detail($actor, $context, $order->id);
+            $this->assertSame($order->id, $restored->id);
+            $this->assertCount(1, $restored->lines);
+        }
+    }
+
+    public function test_purchase_order_mutations_reauthorize_after_transactional_reads_in_ar_and_en(): void
+    {
+        [$actor, , $context] = $this->scopedUser($this->allPermissions(), 'PO-WRITE-MIDQUERY');
+        $orders = app(PurchaseOrderManager::class);
+        $requests = app(PurchaseRequestManager::class);
+        $permissionIds = [
+            'manage' => (int) Permission::query()->where('code', 'procurement.purchase_orders.manage')->value('id'),
+            'issue' => (int) Permission::query()->where('code', 'procurement.purchase_orders.issue')->value('id'),
+        ];
+        $this->assertGreaterThan(0, $permissionIds['manage']);
+        $this->assertGreaterThan(0, $permissionIds['issue']);
+
+        $armed = false;
+        $injected = false;
+        $table = '';
+        $permissionId = 0;
+        DB::listen(static function ($query) use ($actor, &$armed, &$injected, &$table, &$permissionId): void {
+            $sql = strtolower((string) $query->sql);
+            if (! $armed || $injected || ! str_contains($sql, 'select')
+                || ! str_contains($sql, $table)) {
+                return;
+            }
+
+            // Interleave a same-connection persisted DENY after an actual
+            // transactional prewrite SELECT. The rejected transaction must
+            // roll back the injected DENY along with every business change.
+            $armed = false;
+            $injected = true;
+            DB::table('user_permission_overrides')->insert([
+                'user_id' => $actor->id,
+                'permission_id' => $permissionId,
+                'scope_key' => 'global',
+                'store_id' => null,
+                'effect' => 'deny',
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+            DB::table('users')->where('id', $actor->id)
+                ->update(['has_permission_overrides' => true]);
+        });
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            $supplier = app(SupplierDirectory::class)->create($actor, $context, [
+                'scope_type' => 'store',
+                'code' => 'PO-WRITE-'.strtoupper($locale),
+                'name_en' => 'PO transaction authorization '.$locale,
+            ]);
+            $request = $requests->create($actor, $context, [
+                'supplier_id' => $supplier->id,
+                'currency_code' => 'KWD',
+                'reason' => 'Transaction authorization regression',
+                'lines' => [[
+                    'description' => 'Bounded transactional item',
+                    'quantity' => 1,
+                    'unit' => 'each',
+                    'estimated_unit_cost' => 1.250,
+                ]],
+            ]);
+            $requests->submit($actor, $context, $request->id);
+            [$checker, $checkerContext] = ProcurementSecondApprover::forSameStore($actor, $context);
+            $requests->approve($checker, $checkerContext, $request->id);
+            $order = null;
+
+            foreach ([
+                ['create', 'manage', 'enterprise_purchase_request_lines', null, 'draft'],
+                ['issue', 'issue', 'enterprise_purchase_order_lines', 'draft', 'issued'],
+                ['cancel', 'manage', 'enterprise_goods_receipts', 'issued', 'cancelled'],
+            ] as [$operation, $permission, $readTable, $beforeStatus, $afterStatus]) {
+                $permissionId = $permissionIds[$permission];
+                $table = $readTable;
+                // Do not arm before baseline counts: the line-count SELECT
+                // itself matches the issued-PO race trigger, outside the
+                // transaction that is supposed to roll back the injected DENY.
+                $armed = false;
+                $injected = false;
+                $run = static function () use ($orders, $actor, $context, $request, &$order, $operation) {
+                    return match ($operation) {
+                        'create' => $orders->createFromApprovedRequest($actor, $context, $request->id),
+                        'issue' => $orders->issue($actor, $context, $order->id),
+                        'cancel' => $orders->cancel($actor, $context, $order->id),
+                    };
+                };
+                $countBefore = DB::table('enterprise_purchase_orders')->count();
+                $auditBefore = DB::table('audit_logs')->count();
+                $linesBefore = DB::table('enterprise_purchase_order_lines')->count();
+
+                // The injected permission revoke must occur during the real
+                // create/issue/cancel transaction, never during test setup.
+                $armed = true;
+                try {
+                    $run();
+                    $this->fail('A mid-transaction permission revoke must stop '.$operation.' before mutation.');
+                } catch (HttpException $exception) {
+                    $this->assertTrue($injected, $operation.' must execute its prewrite query before DENY.');
+                    $this->assertSame(403, $exception->getStatusCode());
+                }
+
+                $this->assertSame($countBefore, DB::table('enterprise_purchase_orders')->count());
+                $this->assertSame($linesBefore, DB::table('enterprise_purchase_order_lines')->count());
+                $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+                if ($order !== null) {
+                    $this->assertDatabaseHas('enterprise_purchase_orders', [
+                        'id' => $order->id,
+                        'status' => $beforeStatus,
+                    ]);
+                } else {
+                    $this->assertDatabaseMissing('enterprise_purchase_orders', [
+                        'purchase_request_id' => $request->id,
+                    ]);
+                }
+                $this->assertDatabaseMissing('user_permission_overrides', [
+                    'user_id' => $actor->id,
+                    'permission_id' => $permissionId,
+                    'scope_key' => 'global',
+                ]);
+                $this->assertFalse((bool) $actor->fresh()->has_permission_overrides);
+
+                // Persist the DENY outside the refused transaction: a repeated
+                // direct-service operation must reject even with stale actor.
+                DB::table('user_permission_overrides')->insert([
+                    'user_id' => $actor->id,
+                    'permission_id' => $permissionId,
+                    'scope_key' => 'global',
+                    'store_id' => null,
+                    'effect' => 'deny',
+                    'created_at' => now(),
+                    'updated_at' => now(),
+                ]);
+                DB::table('users')->where('id', $actor->id)
+                    ->update(['has_permission_overrides' => true]);
+                try {
+                    $run();
+                    $this->fail('Repeated '.$operation.' with committed DENY must be forbidden.');
+                } catch (HttpException $exception) {
+                    $this->assertSame(403, $exception->getStatusCode());
+                }
+
+                DB::table('user_permission_overrides')
+                    ->where('user_id', $actor->id)
+                    ->where('permission_id', $permissionId)
+                    ->delete();
+                DB::table('users')->where('id', $actor->id)
+                    ->update(['has_permission_overrides' => false]);
+                $result = $run();
+                $this->assertSame($afterStatus, $result->status);
+                if ($operation === 'create') {
+                    $order = $result;
+                    $this->assertSame($request->id, $order->purchase_request_id);
+                }
+            }
+        }
+    }
+
+    public function test_issued_contract_order_cancellation_fails_closed_on_foreign_contract_scope_in_ar_and_en(): void
+    {
+        SyntheticErpWorkflowEvidence::install();
+        $lifecycle = app(ModuleLifecycleManager::class);
+        $lifecycle->transition('procurement', ModuleState::ENABLING);
+        $lifecycle->transition('procurement', ModuleState::ENABLED);
+
+        $completion = app(ProcurementCompletionManager::class);
+        $orders = app(PurchaseOrderManager::class);
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            [$actor, $store, $context] = $this->scopedUser(
+                $this->allPermissions(),
+                'PO-CTR-DRIFT-'.strtoupper($locale),
+            );
+            $order = $this->approvedOrder(
+                $actor,
+                $context,
+                'PO-CTR-DRIFT-SUP-'.strtoupper($locale),
+            );
+            $contract = $completion->createContract($actor, $context, [
+                'supplier_id' => $order->supplier_id,
+                'title' => 'Scoped commitment release '.$locale,
+                'currency_code' => 'KWD',
+                'starts_on' => now()->subDay()->toDateString(),
+                'ends_on' => now()->addDays(30)->toDateString(),
+                'value_ceiling' => 10,
+                'quantity_ceiling' => 5,
+            ]);
+            [$checker, $checkerContext] = ProcurementSecondApprover::forSameStore($actor, $context);
+            $completion->activateContract($checker, $checkerContext, $contract->id);
+            $completion->assignContractToOrder($actor, $context, $order->id, $contract->id);
+
+            $this->assertSame('issued', $orders->issue($actor, $context, $order->id)->status);
+            $this->assertDatabaseHas('enterprise_procurement_contracts', [
+                'id' => $contract->id,
+                'store_id' => $store->id,
+                'committed_value' => '1.250',
+                'committed_quantity' => '1.000',
+            ]);
+
+            $foreignStore = $this->createRetailStore('PO-CTR-FOREIGN-'.strtoupper($locale));
+            // Simulate a legacy/import/store-transfer writer that changes only
+            // the linked contract's scope after the PO reserved its balance.
+            DB::table('enterprise_procurement_contracts')
+                ->where('id', $contract->id)
+                ->update(['store_id' => $foreignStore->id]);
+            $auditBefore = DB::table('audit_logs')->count();
+
+            try {
+                $orders->cancel($actor, $context, $order->id);
+                $this->fail('Cancellation must not orphan a reservation on an out-of-scope contract.');
+            } catch (HttpException $exception) {
+                $this->assertSame(409, $exception->getStatusCode());
+            }
+
+            $this->assertDatabaseHas('enterprise_purchase_orders', [
+                'id' => $order->id,
+                'status' => 'issued',
+                'cancelled_by' => null,
+            ]);
+            $this->assertDatabaseHas('enterprise_procurement_contracts', [
+                'id' => $contract->id,
+                'store_id' => $foreignStore->id,
+                'committed_value' => '1.250',
+                'committed_quantity' => '1.000',
+            ]);
+            $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+
+            // Restore the original authorized scope; the real cancellation
+            // must release exactly the reserved balance, once and only once.
+            DB::table('enterprise_procurement_contracts')
+                ->where('id', $contract->id)
+                ->update(['store_id' => $store->id]);
+            $this->assertSame('cancelled', $orders->cancel($actor, $context, $order->id)->status);
+            $this->assertDatabaseHas('enterprise_procurement_contracts', [
+                'id' => $contract->id,
+                'committed_value' => '0.000',
+                'committed_quantity' => '0.000',
+            ]);
+            $auditAfter = DB::table('audit_logs')->count();
+            $this->assertSame('cancelled', $orders->cancel($actor, $context, $order->id)->status);
+            $this->assertSame($auditAfter, DB::table('audit_logs')->count());
+            $this->assertDatabaseHas('enterprise_procurement_contracts', [
+                'id' => $contract->id,
+                'committed_value' => '0.000',
+                'committed_quantity' => '0.000',
+            ]);
+        }
+    }
+
     private function approvedOrder(
         User $actor,
         ResolvedTenantContext $context,
         string $supplierCode,
+        ?string $itemCode = null,
     ) {
         $supplier = app(SupplierDirectory::class)->create($actor, $context, [
             'scope_type' => 'store',
@@ -254,6 +1347,7 @@ final class EnterprisePurchaseOrderFoundationTest extends TestCase
             'currency_code' => 'KWD',
             'reason' => 'PO lifecycle',
             'lines' => [[
+                'item_code' => $itemCode,
                 'description' => 'Operational item',
                 'quantity' => 1,
                 'unit' => 'each',

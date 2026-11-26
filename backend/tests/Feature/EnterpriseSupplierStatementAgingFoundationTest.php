@@ -14,6 +14,8 @@ use App\Enterprise\Procurement\SupplierDirectory;
 use App\Enterprise\Procurement\SupplierStatementAgingManager;
 use App\Models\Catalog;
 use App\Models\EnterpriseGoodsReceipt;
+use App\Models\EnterprisePurchaseInvoice;
+use App\Models\EnterpriseSupplier;
 use App\Models\Permission;
 use App\Models\Product;
 use App\Models\Role;
@@ -28,11 +30,560 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
 use Symfony\Component\HttpKernel\Exception\HttpExceptionInterface;
 use Tests\Support\ProcurementSecondApprover;
+use Tests\Support\SyntheticErpWorkflowEvidence;
 use Tests\TestCase;
 
 final class EnterpriseSupplierStatementAgingFoundationTest extends TestCase
 {
     use RefreshDatabase;
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+        // Positive ERP simulation only, never real operational approval.
+        SyntheticErpWorkflowEvidence::install();
+    }
+
+    public function test_supplier_directory_rejects_forged_original_actor_key_without_writes_in_ar_and_en(): void
+    {
+        $this->enableProcurement();
+        [$maker, , $context] = $this->scopedUser($this->allPermissions(), 'SAGE-ACTOR-KEY');
+        $other = User::factory()->create(['is_active' => true]);
+        $directory = app(SupplierDirectory::class);
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            $code = 'SAGE-ACTOR-'.strtoupper($locale);
+            $forged = $other->fresh();
+            $this->assertNotNull($forged);
+            $forged->forceFill(['id' => $maker->id]);
+            $this->assertNotSame($forged->getRawOriginal('id'), $forged->getKey());
+            $auditBefore = DB::table('audit_logs')->count();
+
+            try {
+                $directory->create($forged, $context, [
+                    'scope_type' => 'store', 'code' => $code, 'name_en' => $code,
+                ]);
+                $this->fail('Dirty actor identity must not register a supplier.');
+            } catch (HttpExceptionInterface $exception) {
+                $this->assertSame(403, $exception->getStatusCode());
+            }
+
+            $this->assertDatabaseMissing('enterprise_suppliers', ['code' => $code]);
+            $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+
+            $supplier = $directory->create($maker, $context, [
+                'scope_type' => 'store', 'code' => $code, 'name_en' => $code,
+            ]);
+            $auditAfterCreate = DB::table('audit_logs')->count();
+
+            try {
+                $directory->update($forged, $context, $supplier->id, ['name_en' => 'FORGED']);
+                $this->fail('Dirty actor identity must not modify supplier data.');
+            } catch (HttpExceptionInterface $exception) {
+                $this->assertSame(403, $exception->getStatusCode());
+            }
+
+            try {
+                $directory->registerDocument($forged, $context, $supplier->id, [
+                    'category' => 'registration', 'title' => 'FORGED',
+                ]);
+                $this->fail('Dirty actor identity must not create supplier documents.');
+            } catch (HttpExceptionInterface $exception) {
+                $this->assertSame(403, $exception->getStatusCode());
+            }
+
+            $this->assertDatabaseHas('enterprise_suppliers', [
+                'id' => $supplier->id, 'name_en' => $code, 'created_by' => $maker->id,
+            ]);
+            $this->assertDatabaseMissing('enterprise_supplier_documents', [
+                'supplier_id' => $supplier->id, 'title' => 'FORGED',
+            ]);
+            $this->assertSame($auditAfterCreate, DB::table('audit_logs')->count());
+            $this->assertSame('ACTIVE '.strtoupper($locale), $directory->update(
+                $maker, $context, $supplier->id, ['name_en' => 'ACTIVE '.strtoupper($locale)],
+            )->name_en);
+        }
+    }
+
+    public function test_supplier_document_registration_rechecks_locked_scope_after_preflight_in_both_locales(): void
+    {
+        $this->enableProcurement();
+        [$actor, , $context] = $this->scopedUser($this->allPermissions(), 'SAGE-DOC-RACE');
+        $foreignStore = $this->createRetailStore('SAGE-DOC-OTHER');
+        $directory = app(SupplierDirectory::class);
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            $supplier = $directory->create($actor, $context, [
+                'scope_type' => 'store',
+                'code' => 'SAGE-DOC-'.strtoupper($locale),
+                'name_en' => 'Supplier document scope '.$locale,
+            ]);
+            $auditBefore = DB::table('audit_logs')->count();
+            $switched = false;
+
+            // Eloquent's retrieved callback runs after the preflight SQL
+            // result is fetched but before findVisible() returns its original
+            // scoped Supplier. This precise seam is safer than a broad SQL
+            // listener which may match an unrelated supplier SELECT first.
+            // The final locked query MUST see the reassigned persisted store.
+            EnterpriseSupplier::retrieved(static function (EnterpriseSupplier $loaded) use (&$switched, $supplier, $foreignStore): void {
+                if ($switched || (int) $loaded->id !== (int) $supplier->id) {
+                    return;
+                }
+
+                $switched = true;
+                DB::table('enterprise_suppliers')
+                    ->where('id', $supplier->id)
+                    ->update(['store_id' => $foreignStore->id]);
+            });
+
+            try {
+                $directory->registerDocument($actor, $context, $supplier->id, [
+                    'category' => 'registration',
+                    'title' => 'Must not escape store scope',
+                ]);
+                $this->fail('Supplier reassignment after preflight must reject document registration.');
+            } catch (HttpExceptionInterface $exception) {
+                $this->assertSame(404, $exception->getStatusCode());
+            }
+
+            $this->assertTrue($switched, 'Preflight race injection must actually execute.');
+            $this->assertDatabaseMissing('enterprise_supplier_documents', [
+                'supplier_id' => $supplier->id,
+                'title' => 'Must not escape store scope',
+            ]);
+            $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+            $this->assertDatabaseHas('enterprise_suppliers', [
+                'id' => $supplier->id,
+                'store_id' => $foreignStore->id,
+            ]);
+        }
+    }
+
+    public function test_supplier_statement_reads_deny_forged_persisted_actor_identity_in_both_locales(): void
+    {
+        $this->enableProcurement();
+        [$maker, $store, $context] = $this->scopedUser($this->allPermissions(), 'SAGE-READ-ID');
+        [, $warehouse] = $this->stockTarget($store, 'SAGE-READ-SKU');
+        $receipt = $this->postedReceipt(
+            $maker, $context, $warehouse, 'SAGE-READ-SUP', 'SAGE-READ-SKU', 2,
+        );
+        $invoices = app(PurchaseInvoiceHandoffManager::class);
+        $invoice = $invoices->createFromPostedReceipt($maker, $context, $receipt->id, [
+            'supplier_invoice_number' => 'SAGE-READ-INVOICE',
+            'invoice_date' => '2026-10-10',
+            'due_date' => '2026-10-20',
+            'lines' => [[
+                'goods_receipt_line_id' => $receipt->lines()->firstOrFail()->id,
+                'quantity' => 1,
+            ]],
+        ]);
+        $invoices->handoff($maker, $context, $invoice->id);
+
+        $other = User::factory()->create(['is_active' => true]);
+        $manager = app(SupplierStatementAgingManager::class);
+        $supplierId = (int) $receipt->supplier_id;
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            $forged = $other->fresh();
+            $this->assertNotNull($forged);
+            $forged->forceFill(['id' => $maker->id]);
+            $this->assertNotSame($forged->getRawOriginal('id'), $forged->getKey());
+            $auditBefore = DB::table('audit_logs')->count();
+
+            try {
+                $manager->statement($forged, $context, $supplierId, [
+                    'from' => '2026-10-01',
+                    'to' => '2026-10-31',
+                ]);
+                $this->fail('Dirty actor primary key must not expose supplier invoices.');
+            } catch (HttpExceptionInterface $exception) {
+                $this->assertSame(403, $exception->getStatusCode());
+            }
+
+            try {
+                $manager->aging($forged, $context, $supplierId, [
+                    'as_of' => '2026-10-31', 'currency_code' => 'KWD',
+                ]);
+                $this->fail('Dirty actor primary key must not expose aging balances.');
+            } catch (HttpExceptionInterface $exception) {
+                $this->assertSame(403, $exception->getStatusCode());
+            }
+
+            $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+            $this->assertSame(1, $manager->statement($maker, $context, $supplierId, [
+                'from' => '2026-10-01',
+                'to' => '2026-10-31',
+            ])->total());
+            $this->assertSame(1, $manager->aging($maker, $context, $supplierId, [
+                'as_of' => '2026-10-31', 'currency_code' => 'KWD',
+            ])['invoice_count']);
+        }
+    }
+
+    public function test_supplier_statement_rejects_late_invoice_store_transfer_in_ar_and_en(): void
+    {
+        $this->enableProcurement();
+        [$actor, $store, $context] = $this->scopedUser($this->allPermissions(), 'SAGE-LATE-STORE');
+        $foreignStore = $this->createRetailStore('SAGE-LATE-OTHER');
+        [, $warehouse] = $this->stockTarget($store, 'SAGE-LATE-SKU');
+        $receipt = $this->postedReceipt(
+            $actor, $context, $warehouse, 'SAGE-LATE-SUP', 'SAGE-LATE-SKU', 2,
+        );
+        $invoices = app(PurchaseInvoiceHandoffManager::class);
+        $invoice = $invoices->createFromPostedReceipt($actor, $context, $receipt->id, [
+            'supplier_invoice_number' => 'SAGE-LATE-INV',
+            'invoice_date' => '2026-10-10',
+            'due_date' => '2026-10-20',
+            'lines' => [[
+                'goods_receipt_line_id' => $receipt->lines()->firstOrFail()->id,
+                'quantity' => 1,
+            ]],
+        ]);
+        $invoices->handoff($actor, $context, $invoice->id);
+
+        $manager = app(SupplierStatementAgingManager::class);
+        $supplierId = (int) $receipt->supplier_id;
+        $filters = ['from' => '2026-10-01', 'to' => '2026-10-31'];
+        $armed = false;
+        $moved = false;
+
+        // Eloquent hydrates the in-scope invoice, but a concurrent store
+        // reassignment can persist before the statement returns the page.
+        EnterprisePurchaseInvoice::retrieved(static function (EnterprisePurchaseInvoice $loaded) use (
+            &$armed, &$moved, $invoice, $foreignStore
+        ): void {
+            if (! $armed || $moved || (int) $loaded->id !== (int) $invoice->id) {
+                return;
+            }
+
+            $armed = false;
+            $moved = true;
+            DB::table('enterprise_purchase_invoices')
+                ->where('id', $invoice->id)
+                ->update(['store_id' => $foreignStore->id]);
+        });
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            $this->assertSame(1, $manager->statement($actor, $context, $supplierId, $filters)->total());
+            $auditBefore = DB::table('audit_logs')->count();
+            $lineCount = DB::table('enterprise_purchase_invoice_lines')->count();
+            $moved = false;
+            $armed = true;
+
+            try {
+                $manager->statement($actor, $context, $supplierId, $filters);
+                $this->fail('A late foreign-store transfer must not expose a cached invoice.');
+            } catch (HttpExceptionInterface $exception) {
+                $this->assertSame(404, $exception->getStatusCode());
+            }
+
+            $this->assertTrue($moved, 'The invoice must have transferred after hydration.');
+            $this->assertDatabaseHas('enterprise_purchase_invoices', [
+                'id' => $invoice->id,
+                'store_id' => $foreignStore->id,
+            ]);
+            $this->assertSame(0, $manager->statement($actor, $context, $supplierId, $filters)->total());
+            $this->assertSame($lineCount, DB::table('enterprise_purchase_invoice_lines')->count());
+            $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+
+            DB::table('enterprise_purchase_invoices')
+                ->where('id', $invoice->id)
+                ->update(['store_id' => $store->id]);
+            $restored = $manager->statement($actor, $context, $supplierId, $filters);
+            $this->assertSame(1, $restored->total());
+            $this->assertSame($invoice->id, $restored->items()[0]->id);
+        }
+    }
+
+    public function test_supplier_statement_and_aging_honor_persisted_deny_after_actor_was_loaded_in_ar_and_en(): void
+    {
+        $this->enableProcurement();
+        [$actor, $store, $context] = $this->scopedUser($this->allPermissions(), 'SAGE-STALE-DENY');
+        [, $warehouse] = $this->stockTarget($store, 'SAGE-STALE-SKU');
+        $receipt = $this->postedReceipt(
+            $actor, $context, $warehouse, 'SAGE-STALE-SUP', 'SAGE-STALE-SKU', 2,
+        );
+        $invoices = app(PurchaseInvoiceHandoffManager::class);
+        $invoice = $invoices->createFromPostedReceipt($actor, $context, $receipt->id, [
+            'supplier_invoice_number' => 'SAGE-STALE-INVOICE',
+            'invoice_date' => '2026-10-10',
+            'due_date' => '2026-10-20',
+            'lines' => [[
+                'goods_receipt_line_id' => $receipt->lines()->firstOrFail()->id,
+                'quantity' => 1,
+            ]],
+        ]);
+        $invoices->handoff($actor, $context, $invoice->id);
+
+        $manager = app(SupplierStatementAgingManager::class);
+        $supplierId = (int) $receipt->supplier_id;
+        $permissionId = Permission::query()
+            ->where('code', 'procurement.supplier_statements.view')
+            ->firstOrFail()->id;
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            $this->assertSame(1, $manager->statement($actor, $context, $supplierId, [
+                'from' => '2026-10-01', 'to' => '2026-10-31',
+            ])->total());
+            $this->assertSame(1, $manager->aging($actor, $context, $supplierId, [
+                'as_of' => '2026-10-31', 'currency_code' => 'KWD',
+            ])['invoice_count']);
+
+            // The supplied actor was loaded before the DENY flag was stored.
+            $this->assertFalse((bool) $actor->has_permission_overrides);
+            DB::table('user_permission_overrides')->insert([
+                'user_id' => $actor->id,
+                'permission_id' => $permissionId,
+                'scope_key' => 'global',
+                'store_id' => null,
+                'effect' => 'deny',
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+            DB::table('users')->where('id', $actor->id)
+                ->update(['has_permission_overrides' => true]);
+            $this->assertTrue((bool) $actor->fresh()->has_permission_overrides);
+            $this->assertFalse((bool) $actor->has_permission_overrides);
+            $auditBefore = DB::table('audit_logs')->count();
+
+            try {
+                $manager->statement($actor, $context, $supplierId, [
+                    'from' => '2026-10-01', 'to' => '2026-10-31',
+                ]);
+                $this->fail('Persisted permission DENY must immediately block supplier statements.');
+            } catch (HttpExceptionInterface $exception) {
+                $this->assertSame(403, $exception->getStatusCode());
+            }
+
+            try {
+                $manager->aging($actor, $context, $supplierId, [
+                    'as_of' => '2026-10-31', 'currency_code' => 'KWD',
+                ]);
+                $this->fail('Persisted permission DENY must immediately block supplier aging.');
+            } catch (HttpExceptionInterface $exception) {
+                $this->assertSame(403, $exception->getStatusCode());
+            }
+
+            $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+            $this->assertDatabaseHas('enterprise_purchase_invoices', [
+                'id' => $invoice->id, 'status' => 'handed_off',
+            ]);
+
+            // Revocation is reversible; reauthorize using the same stale User
+            // only after the persisted DENY and its cache flag are removed.
+            DB::table('user_permission_overrides')
+                ->where('user_id', $actor->id)
+                ->where('permission_id', $permissionId)
+                ->delete();
+            DB::table('users')->where('id', $actor->id)
+                ->update(['has_permission_overrides' => false]);
+            $this->assertSame(1, $manager->statement($actor, $context, $supplierId, [
+                'from' => '2026-10-01', 'to' => '2026-10-31',
+            ])->total());
+            $this->assertSame(1, $manager->aging($actor, $context, $supplierId, [
+                'as_of' => '2026-10-31', 'currency_code' => 'KWD',
+            ])['invoice_count']);
+        }
+    }
+
+    public function test_supplier_reports_deny_permission_revoked_during_invoice_reads_in_both_locales(): void
+    {
+        $this->enableProcurement();
+        [$actor, $store, $context] = $this->scopedUser($this->allPermissions(), 'SAGE-MID-REVOKE');
+        [, $warehouse] = $this->stockTarget($store, 'SAGE-MID-REVOKE-SKU');
+        $receipt = $this->postedReceipt(
+            $actor, $context, $warehouse, 'SAGE-MID-REVOKE-SUP', 'SAGE-MID-REVOKE-SKU', 2,
+        );
+        $invoiceService = app(PurchaseInvoiceHandoffManager::class);
+        $invoice = $invoiceService->createFromPostedReceipt($actor, $context, $receipt->id, [
+            'supplier_invoice_number' => 'SAGE-MID-REVOKE-INV',
+            'invoice_date' => '2026-10-10',
+            'due_date' => '2026-10-20',
+            'lines' => [[
+                'goods_receipt_line_id' => $receipt->lines()->firstOrFail()->id,
+                'quantity' => 1,
+            ]],
+        ]);
+        $invoiceService->handoff($actor, $context, $invoice->id);
+
+        $manager = app(SupplierStatementAgingManager::class);
+        $supplierId = (int) $receipt->supplier_id;
+        $permissionId = Permission::query()
+            ->where('code', 'procurement.supplier_statements.view')
+            ->firstOrFail()->id;
+        $armed = false;
+        $revoked = false;
+
+        // Execute the permission mutation AFTER the invoice/aggregate SELECT,
+        // between the initial authorization and the final response guard.
+        DB::listen(static function ($query) use (&$armed, &$revoked, $actor, $permissionId): void {
+            $sql = strtolower((string) $query->sql);
+            if (! $armed || $revoked || ! str_contains($sql, 'enterprise_purchase_invoices')
+                || ! str_contains($sql, 'select')) {
+                return;
+            }
+
+            $armed = false;
+            $revoked = true;
+            DB::table('user_permission_overrides')->insert([
+                'user_id' => $actor->id,
+                'permission_id' => $permissionId,
+                'scope_key' => 'global',
+                'store_id' => null,
+                'effect' => 'deny',
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+            DB::table('users')->where('id', $actor->id)
+                ->update(['has_permission_overrides' => true]);
+        });
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            foreach (['statement', 'aging'] as $report) {
+                $read = static fn () => $report === 'statement'
+                    ? $manager->statement($actor, $context, $supplierId, [
+                        'from' => '2026-10-01', 'to' => '2026-10-31',
+                    ])
+                    : $manager->aging($actor, $context, $supplierId, [
+                        'as_of' => '2026-10-31', 'currency_code' => 'KWD',
+                    ]);
+
+                $positive = $read();
+                if ($report === 'statement') {
+                    $this->assertSame(1, $positive->total());
+                } else {
+                    $this->assertSame(1, $positive['invoice_count']);
+                    $this->assertSame('1.250', $positive['gross_exposure']);
+                }
+
+                $auditBefore = DB::table('audit_logs')->count();
+                $lineCount = DB::table('enterprise_purchase_invoice_lines')->count();
+                $armed = true;
+                $revoked = false;
+
+                try {
+                    $read();
+                    $this->fail('Permission revoked after invoice SELECT must deny supplier financial response.');
+                } catch (HttpExceptionInterface $exception) {
+                    $this->assertSame(403, $exception->getStatusCode());
+                }
+
+                $this->assertTrue($revoked, 'The DENY must be persisted during the invoice read.');
+                $this->assertTrue((bool) $actor->fresh()->has_permission_overrides);
+                $this->assertFalse((bool) $actor->has_permission_overrides);
+                try {
+                    $read();
+                    $this->fail('Repeated reads under persisted DENY must still fail.');
+                } catch (HttpExceptionInterface $exception) {
+                    $this->assertSame(403, $exception->getStatusCode());
+                }
+
+                $this->assertDatabaseHas('enterprise_purchase_invoices', [
+                    'id' => $invoice->id, 'status' => 'handed_off',
+                ]);
+                $this->assertSame($lineCount, DB::table('enterprise_purchase_invoice_lines')->count());
+                $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+
+                DB::table('user_permission_overrides')
+                    ->where('user_id', $actor->id)
+                    ->where('permission_id', $permissionId)
+                    ->delete();
+                DB::table('users')->where('id', $actor->id)
+                    ->update(['has_permission_overrides' => false]);
+                $this->assertFalse((bool) $actor->fresh()->has_permission_overrides);
+                $this->assertNotNull($read());
+            }
+        }
+    }
+
+    public function test_supplier_aging_uses_one_atomic_invoice_snapshot_even_if_amount_changes_after_select_ar_en(): void
+    {
+        $this->enableProcurement();
+        [$actor, $store, $context] = $this->scopedUser($this->allPermissions(), 'SAGE-ATOMIC-SQL');
+        [, $warehouse] = $this->stockTarget($store, 'SAGE-ATOMIC-SKU');
+        $receipt = $this->postedReceipt(
+            $actor, $context, $warehouse, 'SAGE-ATOMIC-SUP', 'SAGE-ATOMIC-SKU', 2,
+        );
+        $invoices = app(PurchaseInvoiceHandoffManager::class);
+        $invoice = $invoices->createFromPostedReceipt($actor, $context, $receipt->id, [
+            'supplier_invoice_number' => 'SAGE-ATOMIC-INVOICE',
+            'invoice_date' => '2026-10-10',
+            'due_date' => '2026-10-20',
+            'lines' => [[
+                'goods_receipt_line_id' => $receipt->lines()->firstOrFail()->id,
+                'quantity' => 1,
+            ]],
+        ]);
+        $invoices->handoff($actor, $context, $invoice->id);
+        $supplierId = (int) $receipt->supplier_id;
+        $aging = app(SupplierStatementAgingManager::class);
+        $armed = false;
+        $changed = false;
+        $invoiceSelects = 0;
+
+        // Simulate an external post-query change immediately after the
+        // aggregate SELECT completes. The response must describe the
+        // pre-change snapshot, not blend old COUNT and new SUM queries.
+        DB::listen(static function ($query) use ($invoice, &$armed, &$changed, &$invoiceSelects): void {
+            $sql = strtolower(ltrim((string) $query->sql));
+            if (! $armed || ! str_starts_with($sql, 'select')
+                || ! str_contains($sql, 'enterprise_purchase_invoices')) {
+                return;
+            }
+            $invoiceSelects++;
+            if ($changed) {
+                return;
+            }
+
+            $changed = true;
+            DB::table('enterprise_purchase_invoices')
+                ->where('id', $invoice->id)
+                ->update(['total_amount' => '9.750']);
+        });
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            DB::table('enterprise_purchase_invoices')
+                ->where('id', $invoice->id)
+                ->update(['total_amount' => '1.250']);
+            $auditBefore = DB::table('audit_logs')->count();
+            $linesBefore = DB::table('enterprise_purchase_invoice_lines')->count();
+            $invoiceSelects = 0;
+            $changed = false;
+            $armed = true;
+
+            try {
+                $result = $aging->aging($actor, $context, $supplierId, [
+                    'as_of' => '2026-10-31',
+                    'currency_code' => 'KWD',
+                ]);
+            } finally {
+                $armed = false;
+            }
+
+            $this->assertTrue($changed, 'The SQL listener must mutate after the invoice aggregate SELECT.');
+            $this->assertSame(1, $invoiceSelects, 'All aging totals must share one SQL invoice snapshot.');
+            $this->assertSame(1, $result['invoice_count']);
+            $this->assertSame('1.250', $result['gross_exposure']);
+            $this->assertSame('1.250', $result['buckets']['due_0_30']);
+            foreach (['not_due', 'due_31_60', 'due_61_90', 'due_over_90', 'no_due_date'] as $bucket) {
+                $this->assertSame('0.000', $result['buckets'][$bucket]);
+            }
+            $this->assertDatabaseHas('enterprise_purchase_invoices', [
+                'id' => $invoice->id,
+                'total_amount' => '9.750',
+            ]);
+            $this->assertSame($linesBefore, DB::table('enterprise_purchase_invoice_lines')->count());
+            $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+        }
+    }
 
     public function test_disabled_procurement_performs_no_supplier_statement_query_work(): void
     {
@@ -55,6 +606,47 @@ final class EnterpriseSupplierStatementAgingFoundationTest extends TestCase
                 static fn (string $sql): bool => str_contains($sql, 'enterprise_purchase_invoice'),
             ),
         );
+    }
+
+    public function test_supplier_aging_decimal_aggregates_preserve_exact_mills_without_float_rounding_in_both_locales(): void
+    {
+        $manager = app(SupplierStatementAgingManager::class);
+        $formatter = new \ReflectionMethod(SupplierStatementAgingManager::class, 'amount');
+
+        // All are exact SQL DECIMAL values or ordinary SQLite aggregate
+        // representations. In particular, DECIMAL(18,3) can hold the first
+        // amount even though a PHP float cannot represent its mills.
+        $cases = [
+            ['999999999999999.999', '999999999999999.999'],
+            ['900719925474099.125', '900719925474099.125'],
+            ['999999999999999.9995', '1000000000000000.000'],
+            ['1.9995', '2.000'],
+            ['1.250', '1.250'],
+            ['7.5', '7.500'],
+            [7.5, '7.500'],
+            ['-1.250', '-1.250'],
+            ['-0.0004', '0.000'],
+            ['-0.0005', '-0.001'],
+            [null, '0.000'],
+        ];
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            foreach ($cases as [$input, $expected]) {
+                $this->assertSame(
+                    $expected,
+                    $formatter->invoke($manager, $input),
+                    'Supplier aging must retain exact mills in '.$locale.' for '.(string) $input,
+                );
+            }
+        }
+    }
+
+    public function test_supplier_aging_rejects_non_decimal_aggregate_instead_of_reporting_fake_zero(): void
+    {
+        $formatter = new \ReflectionMethod(SupplierStatementAgingManager::class, 'amount');
+        $this->expectException(\UnexpectedValueException::class);
+        $formatter->invoke(app(SupplierStatementAgingManager::class), 'not-a-decimal');
     }
 
     public function test_aging_is_deterministic_by_currency_and_due_date_bucket(): void
@@ -203,6 +795,105 @@ final class EnterpriseSupplierStatementAgingFoundationTest extends TestCase
             $this->fail('Cross-store supplier statement must be invisible.');
         } catch (ModelNotFoundException) {
             $this->assertTrue(true);
+        }
+    }
+
+    public function test_statement_and_aging_reject_supplier_store_transfer_after_financial_preflight_in_ar_and_en(): void
+    {
+        $this->enableProcurement();
+        [$actor, $store, $context] = $this->scopedUser($this->allPermissions(), 'SAGE-LIVE-OWN');
+        $foreignStore = $this->createRetailStore('SAGE-LIVE-FOREIGN');
+        [, $warehouse] = $this->stockTarget($store, 'SAGE-LIVE-STOCK');
+        $manager = app(SupplierStatementAgingManager::class);
+        $invoices = app(PurchaseInvoiceHandoffManager::class);
+
+        $armed = false;
+        $moved = false;
+        $targetSupplierId = null;
+        DB::listen(static function ($query) use (&$armed, &$moved, &$targetSupplierId, $foreignStore): void {
+            $sql = strtolower((string) $query->sql);
+            if (! $armed || $moved || $targetSupplierId === null
+                || ! str_contains($sql, 'enterprise_purchase_invoices')
+                || ! str_contains($sql, 'select')) {
+                return;
+            }
+
+            // The supplier was authorized at the initial SELECT. Transfer it
+            // after the first invoice/aggregate read, before returning money.
+            $armed = false;
+            $moved = true;
+            DB::table('enterprise_suppliers')
+                ->where('id', $targetSupplierId)
+                ->update(['store_id' => $foreignStore->id]);
+        });
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            foreach (['statement', 'aging'] as $report) {
+                $suffix = strtoupper($locale.'-'.$report);
+                $receipt = $this->postedReceipt(
+                    $actor, $context, $warehouse, 'SAGE-LIVE-SUP-'.$suffix,
+                    'SAGE-LIVE-STOCK', 2,
+                );
+                $invoice = $invoices->createFromPostedReceipt($actor, $context, $receipt->id, [
+                    'supplier_invoice_number' => 'SAGE-LIVE-INV-'.$suffix,
+                    'invoice_date' => '2026-10-01',
+                    'due_date' => '2026-10-15',
+                    'lines' => [[
+                        'goods_receipt_line_id' => $receipt->lines()->firstOrFail()->id,
+                        'quantity' => 1,
+                    ]],
+                ]);
+                $invoices->handoff($actor, $context, $invoice->id);
+                $supplierId = (int) $receipt->supplier_id;
+
+                $read = static fn () => $report === 'statement'
+                    ? $manager->statement($actor, $context, $supplierId, [
+                        'from' => '2026-10-01', 'to' => '2026-10-31',
+                    ])
+                    : $manager->aging($actor, $context, $supplierId, [
+                        'as_of' => '2026-10-16', 'currency_code' => 'KWD',
+                    ]);
+
+                $positive = $read();
+                if ($report === 'statement') {
+                    $this->assertSame(1, $positive->total());
+                    $this->assertSame($invoice->id, $positive->items()[0]->id);
+                } else {
+                    $this->assertSame(1, $positive['invoice_count']);
+                    $this->assertSame('1.250', $positive['gross_exposure']);
+                }
+
+                $auditBefore = DB::table('audit_logs')->count();
+                $invoiceBefore = DB::table('enterprise_purchase_invoices')->count();
+                $linesBefore = DB::table('enterprise_purchase_invoice_lines')->count();
+                $stockBefore = DB::table('stock_movements')->count();
+                $targetSupplierId = $supplierId;
+                $moved = false;
+                $armed = true;
+
+                try {
+                    $read();
+                    $this->fail('Former-store supplier reports must not expose invoice amounts after transfer.');
+                } catch (ModelNotFoundException) {
+                    $this->assertTrue($moved, 'The supplier must transfer after an authorized preflight.');
+                }
+
+                $this->assertDatabaseHas('enterprise_suppliers', [
+                    'id' => $supplierId, 'store_id' => $foreignStore->id,
+                ]);
+                $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+                $this->assertSame($invoiceBefore, DB::table('enterprise_purchase_invoices')->count());
+                $this->assertSame($linesBefore, DB::table('enterprise_purchase_invoice_lines')->count());
+                $this->assertSame($stockBefore, DB::table('stock_movements')->count());
+
+                try {
+                    $read();
+                    $this->fail('Repeated former-store statement access must be denied.');
+                } catch (ModelNotFoundException) {
+                    $this->assertTrue(true);
+                }
+            }
         }
     }
 

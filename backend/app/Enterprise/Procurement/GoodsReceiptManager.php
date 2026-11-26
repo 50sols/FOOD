@@ -60,7 +60,7 @@ final class GoodsReceiptManager
         // Keep operator-entered receipt-number symbols literal across SQL drivers.
         $pattern = str_replace(['!', '%', '_'], ['!!', '!%', '!_'], $term).'%';
 
-        return $this->visibleQuery($scope)
+        $page = $this->visibleQuery($scope)
             ->when(
                 $validated['status'] ?? null,
                 fn (Builder $query, string $status): Builder => $query->where('status', $status),
@@ -76,6 +76,26 @@ final class GoodsReceiptManager
             ->orderByDesc('id')
             ->paginate($perPage)
             ->withQueryString();
+
+        // A receipt may transfer out of the selected store AFTER the page
+        // SELECT. Before returning cached headers, verify every bounded page
+        // row still belongs to this original organization's store scope.
+        // A single scoped count avoids per-row queries or stale-model checks.
+        $pageIds = $page->getCollection()->pluck('id')->all();
+        if ($pageIds !== []) {
+            abort_unless(
+                $this->visibleQuery($scope)->whereKey($pageIds)->count() === count($pageIds),
+                404,
+                'Goods receipt ownership changed during pagination.',
+            );
+        }
+
+        // COUNT and page SELECT may outlive the initial authorization. A
+        // committed DENY or offboarding during those queries must prevent
+        // returning supplier/receipt data to the original caller.
+        $this->authorizedScope($actor, $context, self::VIEW_PERMISSION);
+
+        return $page;
     }
 
     public function detail(
@@ -85,11 +105,23 @@ final class GoodsReceiptManager
     ): EnterpriseGoodsReceipt {
         $scope = $this->authorizedScope($actor, $context, self::VIEW_PERMISSION);
 
-        return $this->findVisible($scope, $receiptId)->load([
+        $receipt = $this->findVisible($scope, $receiptId)->load([
             'purchaseOrder:id,order_number,status',
             'supplier:id,code,name_en,name_ar,status',
             'lines' => fn ($query) => $query->orderBy('line_no'),
         ]);
+
+        // A store/organization transfer can occur between the scoped initial
+        // SELECT and the supplier, PO and financial line queries. Do not return
+        // the old store's receipt header or costs after ownership has moved.
+        $this->findVisible($scope, $receiptId);
+
+        // Permission or account state can also change while loading supplier
+        // and financial lines. Reauthorize the persisted original principal
+        // after those queries and before releasing the hydrated detail.
+        $this->authorizedScope($actor, $context, self::VIEW_PERMISSION);
+
+        return $receipt;
     }
 
     /** @param array<string, mixed> $attributes */
@@ -102,7 +134,7 @@ final class GoodsReceiptManager
         $scope = $this->authorizedScope($actor, $context, self::MANAGE_PERMISSION);
         $data = $this->validatedReceipt($attributes);
 
-        return DB::transaction(function () use ($actor, $scope, $orderId, $data): EnterpriseGoodsReceipt {
+        return DB::transaction(function () use ($actor, $context, $scope, $orderId, $data): EnterpriseGoodsReceipt {
             $order = $this->visibleOrderQuery($scope)
                 ->whereKey($orderId)
                 ->lockForUpdate()
@@ -174,6 +206,13 @@ final class GoodsReceiptManager
                 }
             }
 
+            // Source PO, warehouse and cumulative-quantity reads may outlive
+            // the original manage permission. Reauthorize before any write.
+            $this->authorizedScope($actor, $context, self::MANAGE_PERMISSION);
+            // Supplier reassignment is independent of PO ownership. Recheck
+            // live supplier eligibility after quantity and warehouse reads.
+            $this->visibleOrderQuery($scope)->whereKey($orderId)->firstOrFail();
+
             $publicId = (string) Str::uuid();
             $receipt = EnterpriseGoodsReceipt::query()->create([
                 'public_id' => $publicId,
@@ -238,20 +277,21 @@ final class GoodsReceiptManager
     ): EnterpriseGoodsReceipt {
         $scope = $this->authorizedScope($actor, $context, self::POST_PERMISSION);
 
-        return DB::transaction(function () use ($actor, $scope, $receiptId): EnterpriseGoodsReceipt {
+        return DB::transaction(function () use ($actor, $context, $scope, $receiptId): EnterpriseGoodsReceipt {
             $receipt = $this->lockVisible($scope, $receiptId);
-            if ($receipt->status === 'posted') {
-                return $receipt->refresh()->load('lines');
+            $alreadyPosted = $receipt->status === 'posted';
+            if (! $alreadyPosted) {
+                $this->requireStatus($receipt, ['draft'], 'posted');
             }
 
-            $this->requireStatus($receipt, ['draft'], 'posted');
-
+            // Even an idempotent retry must verify the locked PO snapshot
+            // before claiming a historically posted receipt is still valid.
             $order = $this->visibleOrderQuery($scope)
                 ->whereKey($receipt->purchase_order_id)
                 ->lockForUpdate()
                 ->firstOrFail();
 
-            if ($order->status !== 'issued') {
+            if (! $alreadyPosted && $order->status !== 'issued') {
                 throw ValidationException::withMessages([
                     'purchase_order_id' => [
                         sprintf(
@@ -260,6 +300,32 @@ final class GoodsReceiptManager
                         ),
                     ],
                 ]);
+            }
+
+            // The draft GRN originally snapshots the issued PO supplier and
+            // currency. Imported or modified data cannot silently substitute
+            // a different supplier/order or currency at inventory posting.
+            // Both records are locked and store/company-scoped before this
+            // comparison; reject before any inventory or audit writes.
+            if ((int) $receipt->supplier_id !== (int) $order->supplier_id
+                || (string) $receipt->supplier_code !== (string) $order->supplier_code
+                || (string) $receipt->currency_code !== (string) $order->currency_code
+                || (string) $receipt->source_order_number !== (string) $order->order_number) {
+                throw ValidationException::withMessages([
+                    'purchase_order_id' => [
+                        __('enterprise_procurement.errors.receipt_source_invalid'),
+                    ],
+                ]);
+            }
+
+            // Deny a revoked principal even on an idempotent posted retry.
+            $this->authorizedScope($actor, $context, self::POST_PERMISSION);
+            // Do not return historical supplier/price lines on posted retries
+            // after the supplier moves out of this authorized store.
+            $this->findVisible($scope, $receiptId);
+            $this->visibleOrderQuery($scope)->whereKey($receipt->purchase_order_id)->firstOrFail();
+            if ($alreadyPosted) {
+                return $receipt->refresh()->load('lines');
             }
 
             $lines = $receipt->lines()
@@ -285,6 +351,23 @@ final class GoodsReceiptManager
                     ]);
                 }
 
+                // Imported or altered draft lines must remain an exact
+                // snapshot of the issued PO at posting time. A valid PO-line
+                // foreign key alone does not authenticate its item, unit or
+                // immutable source price, and negative/zero receipts must
+                // never reach inventory or the finance/audit handoff.
+                $received = trim((string) $line->received_quantity);
+                if (preg_match('/\A(?:0|[1-9][0-9]{0,10})(?:\.[0-9]{1,3})?\z/D', $received) !== 1
+                    || $this->quantityUnits($received) <= 0
+                    || (string) $line->item_code !== (string) $orderLine->item_code
+                    || (string) $line->unit !== (string) $orderLine->unit
+                    || $this->quantityUnits($line->ordered_quantity) !== $this->quantityUnits($orderLine->quantity)
+                    || $this->quantityUnits($line->unit_price) !== $this->quantityUnits($orderLine->unit_price)) {
+                    throw ValidationException::withMessages([
+                        'lines' => [__('enterprise_procurement.errors.receipt_source_invalid')],
+                    ]);
+                }
+
                 $alreadyReceived = $postedTotals->get($orderLine->id, 0);
                 $nextReceived = $this->quantityUnits($alreadyReceived)
                     + $this->quantityUnits($line->received_quantity);
@@ -303,6 +386,14 @@ final class GoodsReceiptManager
                     ]);
                 }
             }
+
+            // Never post stock or write success audit on permissions revoked
+            // while the GRN and PO line/quantity queries were executing.
+            $this->authorizedScope($actor, $context, self::POST_PERMISSION);
+            // Initial PO/GRN row locks do not protect a separately updated
+            // supplier. Abort before inventory and audit side effects.
+            $this->findVisible($scope, $receiptId);
+            $this->visibleOrderQuery($scope)->whereKey($receipt->purchase_order_id)->firstOrFail();
 
             foreach ($lines as $line) {
                 $this->inventory->receive($actor, $scope->storeId, $receipt, $line);
@@ -338,8 +429,11 @@ final class GoodsReceiptManager
     ): EnterpriseGoodsReceipt {
         $scope = $this->authorizedScope($actor, $context, self::MANAGE_PERMISSION);
 
-        return DB::transaction(function () use ($actor, $scope, $receiptId): EnterpriseGoodsReceipt {
+        return DB::transaction(function () use ($actor, $context, $scope, $receiptId): EnterpriseGoodsReceipt {
             $receipt = $this->lockVisible($scope, $receiptId);
+            // Locking the row is not a lease on the previous manage grant.
+            $this->authorizedScope($actor, $context, self::MANAGE_PERMISSION);
+            $this->findVisible($scope, $receiptId);
             if ($receipt->status === 'cancelled') {
                 return $receipt->refresh();
             }
@@ -378,12 +472,32 @@ final class GoodsReceiptManager
         ResolvedTenantContext $context,
         string $permission,
     ): EnterpriseDataScope {
+        // Bind direct-service actors to the persisted account originally loaded
+        // from the database. A dirty Eloquent primary key is not authentication.
+        $persistedActorId = $actor->getRawOriginal($actor->getKeyName());
+        abort_unless(
+            $actor->exists
+                && $persistedActorId !== null
+                && (string) $actor->getKey() === (string) $persistedActorId,
+            403,
+        );
+
         $this->assertProcurementEnabled();
         abort_if($context->enterpriseScope === null, 409, 'Enterprise data scope is required.');
 
+        // The direct caller may retain an old has_permission_overrides flag
+        // after an administrator has persisted a new global/store DENY.
+        // Authorize the current active instance of the *original* principal,
+        // not either a stale model or an unsaved replacement primary key.
+        $currentActor = User::query()
+            ->whereKey($persistedActorId)
+            ->where('is_active', true)
+            ->first();
+        abort_unless($currentActor instanceof User, 403);
+
         $scope = $context->enterpriseScope;
         $this->authorizer->authorize(
-            $actor,
+            $currentActor,
             $context,
             $permission,
             'company',
@@ -408,7 +522,18 @@ final class GoodsReceiptManager
         return EnterpriseGoodsReceipt::query()
             ->where('organization_id', $scope->organizationId)
             ->where('company_id', $scope->companyId)
-            ->where('store_id', $scope->storeId);
+            ->where('store_id', $scope->storeId)
+            ->whereHas('supplier', function (Builder $supplier) use ($scope): void {
+                $supplier->where('organization_id', $scope->organizationId)
+                    ->where('company_id', $scope->companyId)
+                    ->where(function (Builder $query) use ($scope): void {
+                        $query->where('scope_type', 'company')
+                            ->orWhere(function (Builder $store) use ($scope): void {
+                                $store->where('scope_type', 'store')
+                                    ->where('store_id', $scope->storeId);
+                            });
+                    });
+            });
     }
 
     /** @return Builder<EnterprisePurchaseOrder> */
@@ -417,7 +542,18 @@ final class GoodsReceiptManager
         return EnterprisePurchaseOrder::query()
             ->where('organization_id', $scope->organizationId)
             ->where('company_id', $scope->companyId)
-            ->where('store_id', $scope->storeId);
+            ->where('store_id', $scope->storeId)
+            ->whereHas('supplier', function (Builder $supplier) use ($scope): void {
+                $supplier->where('organization_id', $scope->organizationId)
+                    ->where('company_id', $scope->companyId)
+                    ->where(function (Builder $query) use ($scope): void {
+                        $query->where('scope_type', 'company')
+                            ->orWhere(function (Builder $store) use ($scope): void {
+                                $store->where('scope_type', 'store')
+                                    ->where('store_id', $scope->storeId);
+                            });
+                    });
+            });
     }
 
     private function findVisible(
@@ -475,7 +611,9 @@ final class GoodsReceiptManager
             'lines' => ['required', 'array', 'min:1', 'max:100'],
             'lines.*.purchase_order_line_id' => ['required', 'integer', 'min:1', 'distinct'],
             'lines.*.warehouse_id' => ['required', 'integer', 'min:1'],
-            'lines.*.quantity' => ['required', 'numeric', 'gt:0', 'max:999999999'],
+            // The receipt schema and canonical stock ledger use three decimal places.
+            // Reject extra precision before it could silently round into stock.
+            'lines.*.quantity' => ['required', 'numeric', 'gt:0', 'decimal:0,3', 'max:999999999'],
         ])->validate();
     }
 

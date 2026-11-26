@@ -53,7 +53,7 @@ final class SupplierStatementAgingManager
             ? strtoupper((string) $validated['currency_code'])
             : null;
 
-        return $this->visibleInvoiceQuery($scope)
+        $visibleInvoices = $this->visibleInvoiceQuery($scope)
             ->where('supplier_id', $supplierId)
             ->where('status', 'handed_off')
             ->where('invoice_date', '>=', $window['from'])
@@ -65,11 +65,34 @@ final class SupplierStatementAgingManager
             ->when(
                 $currency,
                 fn (Builder $query, string $code): Builder => $query->where('currency_code', $code),
-            )
+            );
+
+        $page = (clone $visibleInvoices)
             ->orderByDesc('invoice_date')
             ->orderByDesc('id')
             ->paginate($perPage)
             ->withQueryString();
+
+        // The hydrated page may outlive the scoped SELECT. Recheck the
+        // complete supplier, store, status, date and currency predicates for
+        // its bounded (<=100) row IDs before exposing invoice financials.
+        // Never return a cached row transferred to another store mid-read.
+        $pageIds = $page->getCollection()->pluck('id')->all();
+        if ($pageIds !== []) {
+            abort_unless(
+                (clone $visibleInvoices)->whereIn('id', $pageIds)->count() === count($pageIds),
+                404,
+            );
+        }
+
+        // The supplier could transfer to a different store after the first
+        // visible-supplier SELECT and before its invoices are fetched.
+        $this->findVisibleSupplier($scope, $supplierId);
+        // A user's report permission can also be revoked during pagination.
+        // Rehydrate the original actor and reject late DENY/offboarding.
+        $this->authorizedScope($actor, $context);
+
+        return $page;
     }
 
     /**
@@ -117,59 +140,71 @@ final class SupplierStatementAgingManager
         $due60 = $asOf->subDays(60)->toDateString();
         $due90 = $asOf->subDays(90)->toDateString();
 
-        return [
+        // A financial exposure report must be ONE database statement snapshot.
+        // Eight independent COUNT/SUM calls can observe different invoice
+        // versions between buckets and report inconsistent gross exposure.
+        // Binding date thresholds retains the same due-date semantics without
+        // interpolating request values into SQL.
+        $aggregate = $base->selectRaw(<<<'SQL'
+COUNT(*) AS invoice_count,
+SUM(total_amount) AS gross_exposure,
+SUM(CASE WHEN due_date >= ? THEN total_amount ELSE 0 END) AS not_due,
+SUM(CASE WHEN due_date >= ? AND due_date < ? THEN total_amount ELSE 0 END) AS due_0_30,
+SUM(CASE WHEN due_date >= ? AND due_date < ? THEN total_amount ELSE 0 END) AS due_31_60,
+SUM(CASE WHEN due_date >= ? AND due_date < ? THEN total_amount ELSE 0 END) AS due_61_90,
+SUM(CASE WHEN due_date < ? THEN total_amount ELSE 0 END) AS due_over_90,
+SUM(CASE WHEN due_date IS NULL THEN total_amount ELSE 0 END) AS no_due_date
+SQL, [
+            $nextDay,
+            $due30, $nextDay,
+            $due60, $due30,
+            $due90, $due60,
+            $due90,
+        ])->firstOrFail();
+
+        // Model properties are limited to declared schema columns; SQL aggregate
+        // aliases belong to this single query result. Read raw attributes so
+        // PHPStan can type-check them without losing exact DECIMAL strings.
+        $result = [
             'supplier' => $supplier,
             'as_of' => $asOf->toDateString(),
             'currency_code' => $currency,
-            'invoice_count' => (clone $base)->count(),
-            'gross_exposure' => $this->amount((clone $base)->sum('total_amount')),
+            'invoice_count' => (int) $aggregate->getRawOriginal('invoice_count'),
+            'gross_exposure' => $this->amount($aggregate->getRawOriginal('gross_exposure')),
             'buckets' => [
-                'not_due' => $this->amount(
-                    (clone $base)
-                        ->whereNotNull('due_date')
-                        ->where('due_date', '>=', $nextDay)
-                        ->sum('total_amount'),
-                ),
-                'due_0_30' => $this->amount(
-                    (clone $base)
-                        ->whereNotNull('due_date')
-                        ->where('due_date', '>=', $due30)
-                        ->where('due_date', '<', $nextDay)
-                        ->sum('total_amount'),
-                ),
-                'due_31_60' => $this->amount(
-                    (clone $base)
-                        ->whereNotNull('due_date')
-                        ->where('due_date', '>=', $due60)
-                        ->where('due_date', '<', $due30)
-                        ->sum('total_amount'),
-                ),
-                'due_61_90' => $this->amount(
-                    (clone $base)
-                        ->whereNotNull('due_date')
-                        ->where('due_date', '>=', $due90)
-                        ->where('due_date', '<', $due60)
-                        ->sum('total_amount'),
-                ),
-                'due_over_90' => $this->amount(
-                    (clone $base)
-                        ->whereNotNull('due_date')
-                        ->where('due_date', '<', $due90)
-                        ->sum('total_amount'),
-                ),
-                'no_due_date' => $this->amount(
-                    (clone $base)
-                        ->whereNull('due_date')
-                        ->sum('total_amount'),
-                ),
+                'not_due' => $this->amount($aggregate->getRawOriginal('not_due')),
+                'due_0_30' => $this->amount($aggregate->getRawOriginal('due_0_30')),
+                'due_31_60' => $this->amount($aggregate->getRawOriginal('due_31_60')),
+                'due_61_90' => $this->amount($aggregate->getRawOriginal('due_61_90')),
+                'due_over_90' => $this->amount($aggregate->getRawOriginal('due_over_90')),
+                'no_due_date' => $this->amount($aggregate->getRawOriginal('no_due_date')),
             ],
         ];
+
+        // Never return financial exposure for a supplier that left the
+        // authorized store while the atomic aggregate was being fetched.
+        $this->findVisibleSupplier($scope, $supplierId);
+        // Reauthorize the current persisted actor after the aggregate query.
+        // A permission revoked during the report must not return stale money.
+        $this->authorizedScope($actor, $context);
+
+        return $result;
     }
 
     private function authorizedScope(
         User $actor,
         ResolvedTenantContext $context,
     ): EnterpriseDataScope {
+        // A mutated, unsaved Eloquent user ID must never grant access to
+        // another principal's supplier invoices or aging balances.
+        $persistedActorId = $actor->getRawOriginal($actor->getKeyName());
+        abort_unless(
+            $actor->exists
+                && $persistedActorId !== null
+                && (string) $actor->getKey() === (string) $persistedActorId,
+            403,
+        );
+
         abort_unless(
             $this->modules->isEnabled('procurement'),
             404,
@@ -178,8 +213,15 @@ final class SupplierStatementAgingManager
         abort_if($context->enterpriseScope === null, 409, 'Enterprise data scope is required.');
 
         $scope = $context->enterpriseScope;
+        // A stale in-memory User may predate a persisted explicit DENY.
+        // Authorize current database state, not its old permission flag.
+        $currentActor = User::query()
+            ->whereKey($persistedActorId)
+            ->where('is_active', true)
+            ->first();
+        abort_unless($currentActor !== null, 403);
         $this->authorizer->authorize(
-            $actor,
+            $currentActor,
             $context,
             self::VIEW_PERMISSION,
             'company',
@@ -255,6 +297,44 @@ final class SupplierStatementAgingManager
 
     private function amount(mixed $value): string
     {
-        return number_format((float) $value, 3, '.', '');
+        // MySQL/MariaDB DECIMAL SUM returns an exact decimal string. Casting
+        // that string to float rounds away the mills at large, valid values.
+        // SQLite test aggregates can be float; normalize their small
+        // aggregates without ever float-coercing the exact SQL string.
+        $raw = is_float($value)
+            ? sprintf('%.9F', $value)
+            : (string) ($value ?? 0);
+        if (! preg_match('/\A([+-]?)(\d+)(?:\.(\d+))?\z/D', $raw, $match)) {
+            throw new \UnexpectedValueException('Invalid supplier-aging decimal aggregate.');
+        }
+
+        $integer = ltrim($match[2], '0');
+        $integer = $integer === '' ? '0' : $integer;
+        $fraction = str_pad($match[3] ?? '', 4, '0');
+        $mills = (int) substr($fraction, 0, 3);
+        if ((int) $fraction[3] >= 5) {
+            $mills++;
+        }
+
+        if ($mills === 1000) {
+            $mills = 0;
+            // Propagate a carry in decimal-string arithmetic: an aggregate
+            // may be too large for a native PHP integer as well as a float.
+            for ($index = strlen($integer) - 1; $index >= 0; $index--) {
+                if ($integer[$index] !== '9') {
+                    $integer[$index] = (string) ((int) $integer[$index] + 1);
+                    break;
+                }
+                $integer[$index] = '0';
+            }
+            if ($index < 0) {
+                $integer = '1'.$integer;
+            }
+        }
+
+        $fractional = str_pad((string) $mills, 3, '0', STR_PAD_LEFT);
+        $negative = $match[1] === '-' && ($integer !== '0' || $mills !== 0);
+
+        return ($negative ? '-' : '').$integer.'.'.$fractional;
     }
 }

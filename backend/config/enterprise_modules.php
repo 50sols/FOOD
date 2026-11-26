@@ -95,7 +95,7 @@ return [
                 'finance.post',
                 'finance.approve',
             ],
-            'health_checks' => [],
+            'health_checks' => ['database'],
             'navigation' => [],
         ],
         'inventory_wms' => [
@@ -124,7 +124,7 @@ return [
                 'inventory.view',
                 'inventory.manage',
             ],
-            'health_checks' => [],
+            'health_checks' => ['database'],
             'navigation' => [],
         ],
         'sample_optional' => [
@@ -236,7 +236,7 @@ return [
                 'finance.view',
                 'finance.manage',
             ],
-            'health_checks' => [],
+            'health_checks' => ['database'],
             'navigation' => [],
         ],
         'enterprise_bi' => [
@@ -267,7 +267,7 @@ return [
                 'reports.view',
                 'reports.export',
             ],
-            'health_checks' => [],
+            'health_checks' => ['database'],
             'navigation' => [],
         ],
     ],

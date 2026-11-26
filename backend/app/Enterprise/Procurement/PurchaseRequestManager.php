@@ -10,7 +10,9 @@ use App\Support\EnterpriseDataScope;
 use App\Support\EnterpriseScopeAuthorizer;
 use App\Support\ResolvedTenantContext;
 use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Database\QueryException;
 use Illuminate\Pagination\LengthAwarePaginator;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Validator;
 use Illuminate\Support\Str;
@@ -87,6 +89,104 @@ final class PurchaseRequestManager
         User $actor,
         ResolvedTenantContext $context,
         array $attributes,
+        ?string $idempotencyKey = null,
+    ): EnterprisePurchaseRequest {
+        $scope = $this->authorizedScope($actor, $context, self::MANAGE_PERMISSION);
+        $idempotencyKey ??= $attributes['idempotency_key'] ?? null;
+        unset($attributes['idempotency_key']);
+        if ($idempotencyKey !== null) {
+            Validator::make(['idempotency_key' => $idempotencyKey], [
+                'idempotency_key' => ['required', 'uuid'],
+            ])->validate();
+        }
+
+        $data = $this->validatedRequest($attributes);
+        $payloadHash = $idempotencyKey === null ? null : $this->requestPayloadHash($data);
+
+        if (($data['supplier_id'] ?? null) !== null) {
+            $this->activeVisibleSupplier($scope, (int) $data['supplier_id']);
+        }
+
+        try {
+            return DB::transaction(function () use ($actor, $scope, $data, $idempotencyKey, $payloadHash): EnterprisePurchaseRequest {
+                if ($idempotencyKey !== null) {
+                    $existing = $this->idempotentRequest($scope, $actor, $idempotencyKey, true);
+                    if ($existing !== null) {
+                        return $this->resolveCreateReplay($existing, (string) $payloadHash);
+                    }
+                }
+
+                // The preflight supplier read is only UX. A concurrent hold or
+                // scope revocation must be caught under this transaction lock.
+                if (($data['supplier_id'] ?? null) !== null) {
+                    $this->activeVisibleSupplier($scope, (int) $data['supplier_id'], true);
+                }
+
+                $publicId = (string) Str::uuid();
+                $request = EnterprisePurchaseRequest::query()->create([
+                    'public_id' => $publicId,
+                    'request_number' => 'PR-'.strtoupper(substr(str_replace('-', '', $publicId), 0, 12)),
+                    'organization_id' => $scope->organizationId,
+                    'company_id' => $scope->companyId,
+                    'store_id' => $scope->storeId,
+                    'supplier_id' => $data['supplier_id'] ?? null,
+                    'status' => 'draft',
+                    'currency_code' => strtoupper((string) $data['currency_code']),
+                    'needed_by' => $data['needed_by'] ?? null,
+                    'reason' => $data['reason'] ?? null,
+                    'notes' => $data['notes'] ?? null,
+                    'idempotency_key' => $idempotencyKey,
+                    'idempotency_payload_hash' => $payloadHash,
+                    'created_by' => $actor->id,
+                    'updated_by' => $actor->id,
+                ]);
+
+                $this->replaceLines($request, $data['lines']);
+
+                $this->audit->record(
+                    'enterprise.purchase_request.created',
+                    $actor,
+                    $request,
+                    null,
+                    [
+                        'request_number' => $request->request_number,
+                        'status' => $request->status,
+                        'organization_id' => $request->organization_id,
+                        'company_id' => $request->company_id,
+                        'store_id' => $request->store_id,
+                        'supplier_id' => $request->supplier_id,
+                        'line_count' => count($data['lines']),
+                    ],
+                );
+
+                return $request->load('lines');
+            }, 3);
+        } catch (QueryException $exception) {
+            if ($idempotencyKey === null) {
+                throw $exception;
+            }
+
+            $existing = $this->idempotentRequest($scope, $actor, $idempotencyKey);
+            if ($existing === null) {
+                throw $exception;
+            }
+
+            return $this->resolveCreateReplay($existing, (string) $payloadHash);
+        }
+    }
+
+    /**
+     * Update the creating maker's still-draft request through the existing
+     * authorized POST collection action. A missing or foreign ID is never an
+     * upsert; status and creator checks are repeated under the row lock.
+     *
+     * @param  array<string, mixed>  $attributes
+     */
+    public function updateDraft(
+        User $actor,
+        ResolvedTenantContext $context,
+        int $requestId,
+        array $attributes,
     ): EnterprisePurchaseRequest {
         $scope = $this->authorizedScope($actor, $context, self::MANAGE_PERMISSION);
         $data = $this->validatedRequest($attributes);
@@ -95,52 +195,43 @@ final class PurchaseRequestManager
             $this->activeVisibleSupplier($scope, (int) $data['supplier_id']);
         }
 
-        return DB::transaction(function () use ($actor, $scope, $data): EnterprisePurchaseRequest {
-            $publicId = (string) Str::uuid();
-            $request = EnterprisePurchaseRequest::query()->create([
-                'public_id' => $publicId,
-                'request_number' => 'PR-'.strtoupper(substr(str_replace('-', '', $publicId), 0, 12)),
-                'organization_id' => $scope->organizationId,
-                'company_id' => $scope->companyId,
-                'store_id' => $scope->storeId,
+        return DB::transaction(function () use ($actor, $scope, $requestId, $data): EnterprisePurchaseRequest {
+            $request = $this->lockVisible($scope, $requestId);
+            abort_if($request->status !== 'draft', 403, 'Only a draft purchase request can be edited.');
+            abort_if((int) $request->created_by !== (int) $actor->id, 403, 'Only the creating maker can edit this draft.');
+
+            // Do not trust supplier eligibility checked before entering the
+            // transaction: the vendor may have been suspended in between.
+            if (($data['supplier_id'] ?? null) !== null) {
+                $this->activeVisibleSupplier($scope, (int) $data['supplier_id'], true);
+            }
+
+            $request->load(['lines' => fn ($query) => $query->orderBy('line_no')]);
+            if ($this->requestMatchesPayload($request, $data)) {
+                return $request;
+            }
+
+            $before = $this->requestAuditSnapshot($request);
+            $request->forceFill([
                 'supplier_id' => $data['supplier_id'] ?? null,
-                'status' => 'draft',
                 'currency_code' => strtoupper((string) $data['currency_code']),
                 'needed_by' => $data['needed_by'] ?? null,
                 'reason' => $data['reason'] ?? null,
                 'notes' => $data['notes'] ?? null,
-                'created_by' => $actor->id,
                 'updated_by' => $actor->id,
-            ]);
-
-            foreach ($data['lines'] as $index => $line) {
-                $request->lines()->create([
-                    'line_no' => $index + 1,
-                    'item_code' => $line['item_code'] ?? null,
-                    'description' => $line['description'],
-                    'quantity' => $line['quantity'],
-                    'unit' => $line['unit'],
-                    'estimated_unit_cost' => $line['estimated_unit_cost'] ?? null,
-                ]);
-            }
+            ])->save();
+            $this->replaceLines($request, $data['lines']);
+            $request->load(['lines' => fn ($query) => $query->orderBy('line_no')]);
 
             $this->audit->record(
-                'enterprise.purchase_request.created',
+                'enterprise.purchase_request.updated',
                 $actor,
                 $request,
-                null,
-                [
-                    'request_number' => $request->request_number,
-                    'status' => $request->status,
-                    'organization_id' => $request->organization_id,
-                    'company_id' => $request->company_id,
-                    'store_id' => $request->store_id,
-                    'supplier_id' => $request->supplier_id,
-                    'line_count' => count($data['lines']),
-                ],
+                $before,
+                $this->requestAuditSnapshot($request),
             );
 
-            return $request->load('lines');
+            return $request;
         }, 3);
     }
 
@@ -153,12 +244,24 @@ final class PurchaseRequestManager
 
         return DB::transaction(function () use ($actor, $scope, $requestId): EnterprisePurchaseRequest {
             $request = $this->lockVisible($scope, $requestId);
+            // Only the original maker may advance a draft to submitted.
+            // Check before replay handling: a second manager must not be able
+            // to impersonate the originating maker on an already-submitted PR.
+            abort_if((int) $request->created_by !== (int) $actor->id, 403, 'Only the creating maker can submit this purchase request.');
             if ($request->status === 'submitted') {
                 return $request->refresh();
             }
 
             $this->requireStatus($request, ['draft'], 'submit');
             abort_if($request->lines()->count() < 1, 409, 'A purchase request must contain at least one line.');
+
+            // A vendor can be suspended after draft creation. Revalidate
+            // persisted supplier eligibility while the request is locked,
+            // before advancing it to the review/approval workflow. Requests
+            // without a supplier remain valid for the RFQ selection flow.
+            if ($request->supplier_id !== null) {
+                $this->activeVisibleSupplier($scope, (int) $request->supplier_id, true);
+            }
 
             $before = $request->toArray();
             $request->forceFill([
@@ -212,6 +315,13 @@ final class PurchaseRequestManager
             }
 
             $this->requireStatus($request, ['draft', 'submitted'], 'cancel');
+            // A draft belongs to its originating maker until submission.
+            // Another manager in the same store must not discard that maker's
+            // work, even though supervisors may cancel submitted requests.
+            if ($request->status === 'draft') {
+                abort_if((int) $request->created_by !== (int) $actor->id, 403, 'Only the creating maker can cancel this draft.');
+            }
+
             $before = $request->toArray();
             $request->forceFill([
                 'status' => 'cancelled',
@@ -273,6 +383,18 @@ final class PurchaseRequestManager
             }
 
             $this->requireStatus($request, ['submitted'], $decision);
+            // The supplier may have been suspended between the maker's
+            // submission and the independent checker approval. Hold the
+            // supplier row and re-check its live tenant/store eligibility
+            // before approving; rejection and RFQ-only requests stay valid.
+            if ($decision === 'approved' && $request->supplier_id !== null) {
+                $supplier = $this->activeVisibleSupplier($scope, (int) $request->supplier_id, true);
+                // PO issuance already rejects an unqualified supplier. Do not
+                // let an independent checker approve a PR that cannot be
+                // converted into an eligible purchase order.
+                abort_if($supplier->qualification_status === 'unqualified', 403, 'An unqualified supplier cannot be approved for procurement.');
+            }
+
             $before = $request->toArray();
             $request->forceFill([
                 'status' => $decision,
@@ -299,6 +421,17 @@ final class PurchaseRequestManager
         ResolvedTenantContext $context,
         string $permission,
     ): EnterpriseDataScope {
+        // This public ERP manager accepts Eloquent actors from internal callers.
+        // Never resolve permissions or maker/checker attribution through an
+        // unsaved primary-key substitution on another persisted User object.
+        $persistedActorId = $actor->getRawOriginal($actor->getKeyName());
+        abort_unless(
+            $actor->exists
+                && $persistedActorId !== null
+                && (string) $actor->getKey() === (string) $persistedActorId,
+            403,
+        );
+
         abort_if($context->enterpriseScope === null, 409, 'Enterprise data scope is required.');
 
         $scope = $context->enterpriseScope;
@@ -342,8 +475,9 @@ final class PurchaseRequestManager
     private function activeVisibleSupplier(
         EnterpriseDataScope $scope,
         int $supplierId,
+        bool $lock = false,
     ): EnterpriseSupplier {
-        return EnterpriseSupplier::query()
+        $query = EnterpriseSupplier::query()
             ->whereKey($supplierId)
             ->where('organization_id', $scope->organizationId)
             ->where('company_id', $scope->companyId)
@@ -356,8 +490,133 @@ final class PurchaseRequestManager
                             ->where('scope_type', 'store')
                             ->where('store_id', $scope->storeId);
                     });
-            })
-            ->firstOrFail();
+            });
+
+        if ($lock) {
+            $query->lockForUpdate();
+        }
+
+        return $query->firstOrFail();
+    }
+
+    private function idempotentRequest(
+        EnterpriseDataScope $scope,
+        User $actor,
+        string $idempotencyKey,
+        bool $lock = false,
+    ): ?EnterprisePurchaseRequest {
+        $query = $this->visibleQuery($scope)
+            ->where('created_by', $actor->id)
+            ->where('idempotency_key', $idempotencyKey);
+
+        if ($lock) {
+            $query->lockForUpdate();
+        }
+
+        return $query->first();
+    }
+
+    private function resolveCreateReplay(
+        EnterprisePurchaseRequest $existing,
+        string $payloadHash,
+    ): EnterprisePurchaseRequest {
+        $storedHash = (string) ($existing->idempotency_payload_hash ?? '');
+        if ($storedHash !== '' && hash_equals($storedHash, $payloadHash)) {
+            return $existing->load('lines');
+        }
+
+        throw ValidationException::withMessages([
+            'idempotency_key' => [__('purchase_requests.idempotency_conflict')],
+        ]);
+    }
+
+    /** @param list<array<string, mixed>> $lines */
+    private function replaceLines(EnterprisePurchaseRequest $request, array $lines): void
+    {
+        $request->lines()->delete();
+        foreach ($lines as $index => $line) {
+            $request->lines()->create([
+                'line_no' => $index + 1,
+                'item_code' => $line['item_code'] ?? null,
+                'description' => $line['description'],
+                'quantity' => $line['quantity'],
+                'unit' => $line['unit'],
+                'estimated_unit_cost' => $line['estimated_unit_cost'] ?? null,
+            ]);
+        }
+    }
+
+    /** @param array<string, mixed> $data */
+    private function requestPayloadHash(array $data): string
+    {
+        $normalized = [
+            'supplier_id' => isset($data['supplier_id']) ? (int) $data['supplier_id'] : null,
+            'currency_code' => strtoupper((string) $data['currency_code']),
+            'needed_by' => empty($data['needed_by']) ? null : Carbon::parse($data['needed_by'])->toDateString(),
+            'reason' => $data['reason'] ?? null,
+            'notes' => $data['notes'] ?? null,
+            'lines' => array_map(static fn (array $line): array => [
+                'item_code' => $line['item_code'] ?? null,
+                'description' => $line['description'],
+                'quantity' => self::decimalIdentity($line['quantity']),
+                'unit' => $line['unit'],
+                'estimated_unit_cost' => self::decimalIdentity($line['estimated_unit_cost'] ?? null),
+            ], array_values($data['lines'])),
+        ];
+
+        return hash('sha256', json_encode($normalized, JSON_THROW_ON_ERROR));
+    }
+
+    private static function decimalIdentity(mixed $value): ?string
+    {
+        return $value === null ? null : number_format((float) $value, 3, '.', '');
+    }
+
+    /** @param array<string, mixed> $data */
+    private function requestMatchesPayload(EnterprisePurchaseRequest $request, array $data): bool
+    {
+        $storedNeededBy = $request->getRawOriginal('needed_by');
+        $storedNeededBy = $storedNeededBy === null
+            ? null
+            : Carbon::parse((string) $storedNeededBy)->toDateString();
+
+        if (
+            ($request->supplier_id === null ? null : (int) $request->supplier_id)
+                !== (isset($data['supplier_id']) ? (int) $data['supplier_id'] : null)
+            || strtoupper((string) $request->currency_code) !== strtoupper((string) $data['currency_code'])
+            || $storedNeededBy !== (empty($data['needed_by']) ? null : Carbon::parse($data['needed_by'])->toDateString())
+            || $request->reason !== ($data['reason'] ?? null)
+            || $request->notes !== ($data['notes'] ?? null)
+            || $request->lines->count() !== count($data['lines'])
+        ) {
+            return false;
+        }
+
+        foreach (array_values($data['lines']) as $index => $line) {
+            $existing = $request->lines->get($index);
+            if (
+                $existing === null
+                || $existing->item_code !== ($line['item_code'] ?? null)
+                || $existing->description !== $line['description']
+                || self::decimalIdentity($existing->quantity) !== self::decimalIdentity($line['quantity'])
+                || $existing->unit !== $line['unit']
+                || self::decimalIdentity($existing->estimated_unit_cost)
+                    !== self::decimalIdentity($line['estimated_unit_cost'] ?? null)
+            ) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /** @return array<string, mixed> */
+    private function requestAuditSnapshot(EnterprisePurchaseRequest $request): array
+    {
+        $snapshot = $request->toArray();
+        $snapshot['lines'] = $request->lines->map(static fn ($line): array => $line->toArray())->all();
+
+        return $snapshot;
     }
 
     /** @param list<string> $allowed */
@@ -405,7 +664,7 @@ final class PurchaseRequestManager
             $attributes['currency_code'] = strtoupper(trim((string) $attributes['currency_code']));
         }
 
-        return Validator::make($attributes, [
+        $data = Validator::make($attributes, [
             'supplier_id' => ['nullable', 'integer', 'min:1'],
             'currency_code' => ['required', 'string', 'size:3', 'regex:/^[A-Z]{3}$/'],
             'needed_by' => ['nullable', 'date'],
@@ -414,9 +673,12 @@ final class PurchaseRequestManager
             'lines' => ['required', 'array', 'min:1', 'max:100'],
             'lines.*.item_code' => ['nullable', 'string', 'max:96'],
             'lines.*.description' => ['required', 'string', 'max:255'],
-            'lines.*.quantity' => ['required', 'numeric', 'gt:0', 'max:999999999'],
+            'lines.*.quantity' => ['required', 'numeric', 'decimal:0,3', 'min:0.001', 'max:999999999'],
             'lines.*.unit' => ['required', 'string', 'max:32'],
-            'lines.*.estimated_unit_cost' => ['nullable', 'numeric', 'min:0', 'max:999999999'],
+            'lines.*.estimated_unit_cost' => ['nullable', 'numeric', 'decimal:0,3', 'min:0', 'max:999999999'],
         ])->validate();
+        $data['lines'] = array_values($data['lines']);
+
+        return $data;
     }
 }

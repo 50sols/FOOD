@@ -23,6 +23,7 @@ use App\Models\Warehouse;
 use App\Support\ResolvedTenantContext;
 use App\Support\TenantContextResolver;
 use Illuminate\Database\Eloquent\ModelNotFoundException;
+use Illuminate\Database\QueryException;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
@@ -34,6 +35,184 @@ use Tests\TestCase;
 final class EnterprisePurchaseInvoiceHandoffFoundationTest extends TestCase
 {
     use RefreshDatabase;
+
+    public function test_purchase_invoice_late_supplier_store_transfer_denies_financial_reads_and_writes_in_ar_and_en(): void
+    {
+        $this->enableProcurement();
+        [$actor, $store, $context] = $this->scopedUser($this->allPermissions(), 'PINV-LIVE-SUP');
+        $foreignStore = $this->createRetailStore('PINV-SUP-FOREIGN');
+        [, $warehouse] = $this->stockTarget($store, 'PINV-SUP-SKU');
+        $manager = app(PurchaseInvoiceHandoffManager::class);
+        $armed = false;
+        $transferred = false;
+        $targetSupplier = null;
+
+        DB::listen(static function ($query) use (&$armed, &$transferred, &$targetSupplier, $foreignStore): void {
+            $sql = strtolower((string) $query->sql);
+            if (! $armed || $transferred || $targetSupplier === null
+                || ! str_contains($sql, 'select')
+                || ! str_contains($sql, 'enterprise_purchase_invoices')) {
+                return;
+            }
+
+            // Deterministic same-connection injection immediately after the
+            // first live invoice SELECT; this is not a two-session race proof.
+            $armed = false;
+            $transferred = true;
+            DB::table('enterprise_suppliers')->where('id', $targetSupplier)
+                ->update(['store_id' => $foreignStore->id]);
+        });
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            $receipt = $this->postedReceipt(
+                $actor, $context, $warehouse, 'PINV-LIVE-SUP-'.strtoupper($locale), 'PINV-SUP-SKU', 2,
+            );
+            $invoice = $manager->createFromPostedReceipt($actor, $context, $receipt->id, [
+                'supplier_invoice_number' => 'PINV-SUP-XFER-'.strtoupper($locale),
+                'invoice_date' => '2026-10-16',
+                'lines' => [[
+                    'goods_receipt_line_id' => $receipt->lines()->firstOrFail()->id,
+                    'quantity' => 1,
+                ]],
+            ]);
+            $targetSupplier = (int) $receipt->supplier_id;
+            $this->assertSame($invoice->id, $manager->detail($actor, $context, $invoice->id)->id);
+            $this->assertSame(1, $manager->paginate($actor, $context, ['supplier_id' => $targetSupplier])->total());
+
+            $auditBefore = DB::table('audit_logs')->count();
+            $lineCountBefore = DB::table('enterprise_purchase_invoice_lines')->count();
+            $outboxBefore = DB::table('enterprise_outbox_messages')->count();
+            $transferred = false;
+            $armed = true;
+            try {
+                $manager->detail($actor, $context, $invoice->id);
+                $this->fail('A supplier moved after the invoice SELECT must deny cached priced lines.');
+            } catch (ModelNotFoundException) {
+                $this->assertTrue($transferred);
+            }
+
+            $this->assertSame(0, $manager->paginate($actor, $context, ['supplier_id' => $targetSupplier])->total());
+            foreach ([
+                fn () => $manager->detail($actor, $context, $invoice->id),
+                fn () => $manager->handoff($actor, $context, $invoice->id),
+                fn () => $manager->cancel($actor, $context, $invoice->id),
+                fn () => $manager->createFromPostedReceipt($actor, $context, $receipt->id, [
+                    'supplier_invoice_number' => 'PINV-BLOCKED-'.strtoupper($locale),
+                    'invoice_date' => '2026-10-16',
+                    'lines' => [[
+                        'goods_receipt_line_id' => $receipt->lines()->firstOrFail()->id,
+                        'quantity' => 1,
+                    ]],
+                ]),
+            ] as $operation) {
+                try {
+                    $operation();
+                    $this->fail('Foreign-store supplier linkage must deny invoice reads and writes.');
+                } catch (ModelNotFoundException) {
+                    $this->assertTrue(true);
+                }
+            }
+
+            $this->assertDatabaseHas('enterprise_purchase_invoices', [
+                'id' => $invoice->id, 'status' => 'draft', 'outbox_event_id' => null,
+            ]);
+            $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+            $this->assertSame($lineCountBefore, DB::table('enterprise_purchase_invoice_lines')->count());
+            $this->assertSame($outboxBefore, DB::table('enterprise_outbox_messages')->count());
+
+            DB::table('enterprise_suppliers')->where('id', $targetSupplier)
+                ->update(['store_id' => $store->id]);
+            $this->assertSame($invoice->id, $manager->detail($actor, $context, $invoice->id)->id);
+        }
+    }
+
+    public function test_grn_late_supplier_store_transfer_denies_priced_reads_post_retry_and_new_receipts_in_ar_and_en(): void
+    {
+        $this->enableProcurement();
+        [$actor, $store, $context] = $this->scopedUser($this->allPermissions(), 'GRN-LIVE-SUP');
+        $foreignStore = $this->createRetailStore('GRN-SUP-FOREIGN');
+        [, $warehouse] = $this->stockTarget($store, 'GRN-SUP-SKU');
+        $manager = app(GoodsReceiptManager::class);
+        $armed = false;
+        $transferred = false;
+        $targetSupplier = null;
+
+        DB::listen(static function ($query) use (&$armed, &$transferred, &$targetSupplier, $foreignStore): void {
+            $sql = strtolower((string) $query->sql);
+            if (! $armed || $transferred || $targetSupplier === null
+                || ! str_contains($sql, 'select')
+                || ! str_contains($sql, 'enterprise_goods_receipts')) {
+                return;
+            }
+
+            // Exercise the gap after the first authorized GRN SELECT,
+            // not an independent multi-session MySQL race certification.
+            $armed = false;
+            $transferred = true;
+            DB::table('enterprise_suppliers')->where('id', $targetSupplier)
+                ->update(['store_id' => $foreignStore->id]);
+        });
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            $receipt = $this->postedReceipt(
+                $actor, $context, $warehouse, 'GRN-SUP-XFER-'.strtoupper($locale), 'GRN-SUP-SKU', 2,
+            );
+            $targetSupplier = (int) $receipt->supplier_id;
+            $this->assertSame($receipt->id, $manager->detail($actor, $context, $receipt->id)->id);
+            $this->assertSame(1, $manager->paginate($actor, $context, [
+                'purchase_order_id' => $receipt->purchase_order_id,
+            ])->total());
+
+            $auditBefore = DB::table('audit_logs')->count();
+            $linesBefore = DB::table('enterprise_goods_receipt_lines')->count();
+            $outboxBefore = DB::table('enterprise_outbox_messages')->count();
+            $transferred = false;
+            $armed = true;
+            try {
+                $manager->detail($actor, $context, $receipt->id);
+                $this->fail('Late supplier transfer must not reveal old-store GRN prices.');
+            } catch (ModelNotFoundException) {
+                $this->assertTrue($transferred);
+            }
+
+            $this->assertSame(0, $manager->paginate($actor, $context, [
+                'purchase_order_id' => $receipt->purchase_order_id,
+            ])->total());
+            foreach ([
+                fn () => $manager->detail($actor, $context, $receipt->id),
+                fn () => $manager->post($actor, $context, $receipt->id),
+                fn () => $manager->cancel($actor, $context, $receipt->id),
+                fn () => $manager->createFromIssuedOrder($actor, $context, $receipt->purchase_order_id, [
+                    'lines' => [[
+                        'purchase_order_line_id' => $receipt->lines()->firstOrFail()->purchase_order_line_id,
+                        'warehouse_id' => $warehouse->id,
+                        'quantity' => 1,
+                    ]],
+                ]),
+            ] as $operation) {
+                try {
+                    $operation();
+                    $this->fail('Foreign-store supplier must deny GRN financial reads and writes.');
+                } catch (ModelNotFoundException) {
+                    $this->assertTrue(true);
+                }
+            }
+
+            $this->assertDatabaseHas('enterprise_goods_receipts', [
+                'id' => $receipt->id, 'status' => 'posted',
+            ]);
+            $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+            $this->assertSame($linesBefore, DB::table('enterprise_goods_receipt_lines')->count());
+            $this->assertSame($outboxBefore, DB::table('enterprise_outbox_messages')->count());
+
+            DB::table('enterprise_suppliers')->where('id', $targetSupplier)
+                ->update(['store_id' => $store->id]);
+            $this->assertSame($receipt->id, $manager->detail($actor, $context, $receipt->id)->id);
+            $this->assertSame('posted', $manager->post($actor, $context, $receipt->id)->status);
+        }
+    }
 
     public function test_disabled_procurement_performs_no_purchase_invoice_query_work(): void
     {
@@ -56,6 +235,617 @@ final class EnterprisePurchaseInvoiceHandoffFoundationTest extends TestCase
                 static fn (string $sql): bool => str_contains($sql, 'enterprise_purchase_invoice'),
             ),
         );
+    }
+
+    public function test_purchase_invoice_late_view_deny_blocks_scoped_list_and_detail_in_both_locales(): void
+    {
+        $this->enableProcurement();
+        [$actor, $store, $context] = $this->scopedUser($this->allPermissions(), 'PINV-READ-RACE');
+        [, $warehouse] = $this->stockTarget($store, 'PINV-READ-RACE-SKU');
+        $receipt = $this->postedReceipt(
+            $actor, $context, $warehouse, 'PINV-READ-RACE-SUP', 'PINV-READ-RACE-SKU', 2,
+        );
+        $manager = app(PurchaseInvoiceHandoffManager::class);
+        $invoice = $manager->createFromPostedReceipt($actor, $context, $receipt->id, [
+            'supplier_invoice_number' => 'PINV-READ-RACE-001',
+            'invoice_date' => '2026-10-16',
+            'lines' => [[
+                'goods_receipt_line_id' => $receipt->lines()->firstOrFail()->id,
+                'quantity' => 1,
+            ]],
+        ]);
+        $permissionId = (int) Permission::query()
+            ->where('code', 'procurement.purchase_invoices.view')->value('id');
+        $this->assertGreaterThan(0, $permissionId);
+        $this->assertFalse((bool) $actor->has_permission_overrides);
+
+        $armed = false;
+        $injected = false;
+        DB::listen(static function ($query) use (&$armed, &$injected, $actor, $permissionId): void {
+            $sql = strtolower((string) $query->sql);
+            if (! $armed || $injected
+                || ! str_contains($sql, 'enterprise_purchase_invoices')
+                || ! str_contains($sql, 'select')
+                || str_contains($sql, 'join')) {
+                return;
+            }
+
+            // After the authorized invoice SQL: deterministic same-connection
+            // race injection, not independent two-session MySQL certification.
+            $armed = false;
+            $injected = true;
+            DB::table('user_permission_overrides')->insert([
+                'user_id' => $actor->id,
+                'permission_id' => $permissionId,
+                'scope_key' => 'global',
+                'store_id' => null,
+                'effect' => 'deny',
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+            DB::table('users')->where('id', $actor->id)
+                ->update(['has_permission_overrides' => true]);
+        });
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            foreach (['list', 'detail'] as $read) {
+                $readInvoice = $read === 'list'
+                    ? fn () => $manager->paginate($actor, $context, ['status' => 'draft'])
+                    : fn () => $manager->detail($actor, $context, $invoice->id);
+                $this->assertNotNull($readInvoice());
+
+                $auditBefore = DB::table('audit_logs')->count();
+                $linesBefore = DB::table('enterprise_purchase_invoice_lines')->count();
+                $outboxBefore = DB::table('enterprise_outbox_messages')->count();
+                $injected = false;
+                $armed = true;
+                foreach ([1, 2] as $attempt) {
+                    try {
+                        $readInvoice();
+                        $this->fail('An invoice read after persisted view DENY must fail closed.');
+                    } catch (HttpExceptionInterface $exception) {
+                        $this->assertSame(403, $exception->getStatusCode());
+                    }
+                    if ($attempt === 1) {
+                        $this->assertTrue($injected, 'The DENY must occur during a scoped invoice SELECT.');
+                        $this->assertFalse((bool) $actor->has_permission_overrides);
+                        $this->assertTrue((bool) $actor->fresh()->has_permission_overrides);
+                    }
+                }
+                $this->assertDatabaseHas('enterprise_purchase_invoices', [
+                    'id' => $invoice->id, 'status' => 'draft', 'outbox_event_id' => null,
+                ]);
+                $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+                $this->assertSame($linesBefore, DB::table('enterprise_purchase_invoice_lines')->count());
+                $this->assertSame($outboxBefore, DB::table('enterprise_outbox_messages')->count());
+
+                DB::table('user_permission_overrides')
+                    ->where('user_id', $actor->id)
+                    ->where('permission_id', $permissionId)
+                    ->delete();
+                DB::table('users')->where('id', $actor->id)
+                    ->update(['has_permission_overrides' => false]);
+                $this->assertSame($invoice->id, $manager->detail($actor, $context, $invoice->id)->id);
+            }
+        }
+    }
+
+    public function test_invoice_direct_service_denies_forged_actor_before_finance_writes_in_ar_and_en(): void
+    {
+        $this->enableProcurement();
+        [$maker, $store, $context] = $this->scopedUser($this->allPermissions(), 'PINV-ACTOR');
+        [, $warehouse] = $this->stockTarget($store, 'PINV-ACTOR-SKU');
+        $receipt = $this->postedReceipt(
+            $maker, $context, $warehouse, 'PINV-ACTOR-SUP', 'PINV-ACTOR-SKU', 5,
+        );
+        $other = User::factory()->create(['is_active' => true]);
+        $manager = app(PurchaseInvoiceHandoffManager::class);
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            $forged = $other->fresh();
+            $this->assertNotNull($forged);
+            $forged->forceFill(['id' => $maker->id]);
+            $this->assertNotSame($forged->getRawOriginal('id'), $forged->getKey());
+            $reference = 'PINV-FORGED-'.strtoupper($locale);
+            $data = [
+                'supplier_invoice_number' => $reference,
+                'invoice_date' => '2026-10-16',
+                'lines' => [[
+                    'goods_receipt_line_id' => $receipt->lines()->firstOrFail()->id,
+                    'quantity' => 1,
+                ]],
+            ];
+            $auditBefore = DB::table('audit_logs')->count();
+
+            try {
+                $manager->createFromPostedReceipt($forged, $context, $receipt->id, $data);
+                $this->fail('Dirty actor ID must not create a purchase invoice.');
+            } catch (HttpExceptionInterface $exception) {
+                $this->assertSame(403, $exception->getStatusCode());
+            }
+            $this->assertDatabaseMissing('enterprise_purchase_invoices', [
+                'supplier_invoice_number' => $reference,
+            ]);
+            $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+
+            $invoice = $manager->createFromPostedReceipt($maker, $context, $receipt->id, $data);
+            $auditAfterCreate = DB::table('audit_logs')->count();
+
+            try {
+                $manager->handoff($forged, $context, $invoice->id);
+                $this->fail('Dirty actor ID must not hand off a purchase invoice.');
+            } catch (HttpExceptionInterface $exception) {
+                $this->assertSame(403, $exception->getStatusCode());
+            }
+            $this->assertDatabaseHas('enterprise_purchase_invoices', [
+                'id' => $invoice->id, 'status' => 'draft',
+            ]);
+            $this->assertSame($auditAfterCreate, DB::table('audit_logs')->count());
+
+            $posted = $manager->handoff($maker, $context, $invoice->id);
+            $this->assertSame('handed_off', $posted->status);
+            $this->assertNotNull($posted->outbox_event_id);
+        }
+    }
+
+    public function test_invoice_direct_service_honors_persisted_denies_with_stale_actor_in_ar_and_en(): void
+    {
+        $this->enableProcurement();
+        [$actor, $store, $context] = $this->scopedUser($this->allPermissions(), 'PINV-STALE-DENY');
+        [, $warehouse] = $this->stockTarget($store, 'PINV-STALE-SKU');
+        $receipt = $this->postedReceipt(
+            $actor, $context, $warehouse, 'PINV-STALE-SUP', 'PINV-STALE-SKU', 5,
+        );
+        $manager = app(PurchaseInvoiceHandoffManager::class);
+        $this->assertFalse((bool) $actor->has_permission_overrides);
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            $invoice = $manager->createFromPostedReceipt($actor, $context, $receipt->id, [
+                'supplier_invoice_number' => 'PINV-STALE-'.strtoupper($locale),
+                'invoice_date' => '2026-10-16',
+                'lines' => [[
+                    'goods_receipt_line_id' => $receipt->lines()->firstOrFail()->id,
+                    'quantity' => 1,
+                ]],
+            ]);
+            $this->assertSame($invoice->id, $manager->detail($actor, $context, $invoice->id)->id);
+
+            foreach ([
+                'procurement.purchase_invoices.view',
+                'procurement.purchase_invoices.manage',
+                'procurement.purchase_invoices.handoff',
+            ] as $permissionCode) {
+                $permissionId = (int) Permission::query()->where('code', $permissionCode)->value('id');
+                $this->assertGreaterThan(0, $permissionId);
+                DB::table('user_permission_overrides')->insert([
+                    'user_id' => $actor->id,
+                    'permission_id' => $permissionId,
+                    'scope_key' => 'global',
+                    'store_id' => null,
+                    'effect' => 'deny',
+                    'created_at' => now(),
+                    'updated_at' => now(),
+                ]);
+                DB::table('users')->where('id', $actor->id)
+                    ->update(['has_permission_overrides' => true]);
+
+                // Simulate a legitimate long-lived direct service caller
+                // loaded before an independent admin revoked this permission.
+                $this->assertFalse((bool) $actor->has_permission_overrides);
+                $this->assertTrue((bool) $actor->fresh()->has_permission_overrides);
+                $auditBefore = DB::table('audit_logs')->count();
+                $lineCount = DB::table('enterprise_purchase_invoice_lines')->count();
+
+                $operations = match ($permissionCode) {
+                    'procurement.purchase_invoices.view' => [
+                        fn () => $manager->detail($actor, $context, $invoice->id),
+                        fn () => $manager->paginate($actor, $context),
+                    ],
+                    'procurement.purchase_invoices.manage' => [
+                        fn () => $manager->cancel($actor, $context, $invoice->id),
+                    ],
+                    default => [
+                        fn () => $manager->handoff($actor, $context, $invoice->id),
+                    ],
+                };
+                foreach ($operations as $operation) {
+                    try {
+                        $operation();
+                        $this->fail('A persisted invoice permission DENY must block stale service actors.');
+                    } catch (HttpExceptionInterface $exception) {
+                        $this->assertSame(403, $exception->getStatusCode());
+                    }
+                }
+
+                $this->assertDatabaseHas('enterprise_purchase_invoices', [
+                    'id' => $invoice->id, 'status' => 'draft', 'outbox_event_id' => null,
+                ]);
+                $this->assertSame($lineCount, DB::table('enterprise_purchase_invoice_lines')->count());
+                $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+
+                DB::table('user_permission_overrides')
+                    ->where('user_id', $actor->id)
+                    ->where('permission_id', $permissionId)
+                    ->delete();
+                DB::table('users')->where('id', $actor->id)
+                    ->update(['has_permission_overrides' => false]);
+                $this->assertFalse((bool) $actor->fresh()->has_permission_overrides);
+                $this->assertSame($invoice->id, $manager->detail($actor, $context, $invoice->id)->id);
+            }
+
+            $this->assertSame('handed_off', $manager->handoff($actor, $context, $invoice->id)->status);
+        }
+    }
+
+    public function test_invoice_mutations_recheck_persisted_permission_revoked_mid_transaction_in_both_locales(): void
+    {
+        $this->enableProcurement();
+        [$actor, $store, $context] = $this->scopedUser($this->allPermissions(), 'PINV-MID-TX-DENY');
+        [, $warehouse] = $this->stockTarget($store, 'PINV-MID-TX-SKU');
+        $receipt = $this->postedReceipt(
+            $actor, $context, $warehouse, 'PINV-MID-TX-SUP', 'PINV-MID-TX-SKU', 8,
+        );
+        $manager = app(PurchaseInvoiceHandoffManager::class);
+        $receiptLineId = $receipt->lines()->firstOrFail()->id;
+        $armed = false;
+        $injected = false;
+        $targetTable = '';
+        $permissionId = 0;
+
+        // Persist DENY immediately after an actual finance SQL read inside
+        // the write transaction. Same-connection injection rolls back along
+        // with the refused write; this is not two independent MySQL sessions.
+        DB::listen(static function ($query) use ($actor, &$armed, &$injected, &$targetTable, &$permissionId): void {
+            $sql = strtolower((string) $query->sql);
+            if (! $armed || $injected || ! str_contains($sql, 'select')
+                || ! str_contains($sql, $targetTable)) {
+                return;
+            }
+
+            $armed = false;
+            $injected = true;
+            DB::table('user_permission_overrides')->insert([
+                'user_id' => $actor->id,
+                'permission_id' => $permissionId,
+                'scope_key' => 'global',
+                'store_id' => null,
+                'effect' => 'deny',
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+            DB::table('users')->where('id', $actor->id)
+                ->update(['has_permission_overrides' => true]);
+        });
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            $payload = static fn (string $reference): array => [
+                'supplier_invoice_number' => $reference,
+                'invoice_date' => '2026-10-16',
+                'lines' => [[
+                    'goods_receipt_line_id' => $receiptLineId,
+                    'quantity' => 1,
+                ]],
+            ];
+
+            $permissionId = (int) Permission::query()
+                ->where('code', 'procurement.purchase_invoices.manage')
+                ->value('id');
+            $this->assertGreaterThan(0, $permissionId);
+            $targetTable = 'enterprise_purchase_invoices';
+            $armed = true;
+            $injected = false;
+            $auditBefore = DB::table('audit_logs')->count();
+            $outboxBefore = DB::table('enterprise_outbox_messages')->count();
+            try {
+                $manager->createFromPostedReceipt($actor, $context, $receipt->id, $payload('MID-TX-DENIED-'.strtoupper($locale)));
+                $this->fail('A revoked actor must not create an invoice after preflight.');
+            } catch (HttpExceptionInterface $exception) {
+                $this->assertSame(403, $exception->getStatusCode());
+            }
+            $this->assertTrue($injected, 'Invoice duplicate-check SQL must execute the DENY.');
+            $this->assertDatabaseMissing('enterprise_purchase_invoices', [
+                'supplier_invoice_number' => 'MID-TX-DENIED-'.strtoupper($locale),
+            ]);
+            $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+            $this->assertSame($outboxBefore, DB::table('enterprise_outbox_messages')->count());
+            $this->assertDatabaseMissing('user_permission_overrides', [
+                'user_id' => $actor->id, 'permission_id' => $permissionId, 'effect' => 'deny',
+            ]);
+            $this->assertFalse((bool) $actor->fresh()->has_permission_overrides);
+
+            $invoice = $manager->createFromPostedReceipt(
+                $actor, $context, $receipt->id, $payload('MID-TX-VALID-'.strtoupper($locale)),
+            );
+            $this->assertSame('draft', $invoice->status);
+            $permissionId = (int) Permission::query()
+                ->where('code', 'procurement.purchase_invoices.handoff')
+                ->value('id');
+            $this->assertGreaterThan(0, $permissionId);
+            $targetTable = 'enterprise_purchase_invoice_lines';
+            $armed = true;
+            $injected = false;
+            $auditBefore = DB::table('audit_logs')->count();
+            $outboxBefore = DB::table('enterprise_outbox_messages')->count();
+            try {
+                $manager->handoff($actor, $context, $invoice->id);
+                $this->fail('A revoked actor must not publish a Finance invoice event.');
+            } catch (HttpExceptionInterface $exception) {
+                $this->assertSame(403, $exception->getStatusCode());
+            }
+            $this->assertTrue($injected, 'Handoff invoice-line SQL must execute the DENY.');
+            $this->assertDatabaseHas('enterprise_purchase_invoices', [
+                'id' => $invoice->id, 'status' => 'draft', 'outbox_event_id' => null,
+            ]);
+            $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+            $this->assertSame($outboxBefore, DB::table('enterprise_outbox_messages')->count());
+            $this->assertFalse((bool) $actor->fresh()->has_permission_overrides);
+            $this->assertSame('handed_off', $manager->handoff($actor, $context, $invoice->id)->status);
+
+            $cancelDraft = $manager->createFromPostedReceipt(
+                $actor, $context, $receipt->id, $payload('MID-TX-CANCEL-'.strtoupper($locale)),
+            );
+            $permissionId = (int) Permission::query()
+                ->where('code', 'procurement.purchase_invoices.manage')
+                ->value('id');
+            $targetTable = 'enterprise_purchase_invoices';
+            $armed = true;
+            $injected = false;
+            $auditBefore = DB::table('audit_logs')->count();
+            $outboxBefore = DB::table('enterprise_outbox_messages')->count();
+            try {
+                $manager->cancel($actor, $context, $cancelDraft->id);
+                $this->fail('A revoked actor must not cancel a locked invoice.');
+            } catch (HttpExceptionInterface $exception) {
+                $this->assertSame(403, $exception->getStatusCode());
+            }
+            $this->assertTrue($injected, 'Cancellation row-lock SQL must execute the DENY.');
+            $this->assertDatabaseHas('enterprise_purchase_invoices', [
+                'id' => $cancelDraft->id, 'status' => 'draft',
+            ]);
+            $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+            $this->assertSame($outboxBefore, DB::table('enterprise_outbox_messages')->count());
+            $this->assertFalse((bool) $actor->fresh()->has_permission_overrides);
+            $this->assertSame('cancelled', $manager->cancel($actor, $context, $cancelDraft->id)->status);
+        }
+    }
+
+    public function test_grn_mutations_reauthorize_after_transactional_reads_in_both_locales(): void
+    {
+        $this->enableProcurement();
+        [$actor, $store, $context] = $this->scopedUser($this->allPermissions(), 'GRN-TX-RBAC');
+        $manager = app(GoodsReceiptManager::class);
+        $armed = false;
+        $injected = false;
+        $table = '';
+        $permissionId = 0;
+
+        // The same-connection injected DENY rolls back with the refused
+        // nested transaction. It is not a two-session/MySQL HTTP race proof.
+        DB::listen(static function ($query) use ($actor, &$armed, &$injected, &$table, &$permissionId): void {
+            $sql = strtolower((string) $query->sql);
+            if (! $armed || $injected || ! str_contains($sql, 'select')
+                || ! str_contains($sql, $table)) {
+                return;
+            }
+
+            $armed = false;
+            $injected = true;
+            DB::table('user_permission_overrides')->insert([
+                'user_id' => $actor->id,
+                'permission_id' => $permissionId,
+                'scope_key' => 'global',
+                'store_id' => null,
+                'effect' => 'deny',
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+            DB::table('users')->where('id', $actor->id)
+                ->update(['has_permission_overrides' => true]);
+        });
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            $sku = 'GRN-TX-'.strtoupper($locale);
+            [, $warehouse] = $this->stockTarget($store, $sku);
+            $supplier = app(SupplierDirectory::class)->create($actor, $context, [
+                'scope_type' => 'store',
+                'code' => 'GRN-TX-SUP-'.strtoupper($locale),
+                'name_en' => 'GRN supplier '.$locale,
+            ]);
+            $requests = app(PurchaseRequestManager::class);
+            $request = $requests->create($actor, $context, [
+                'supplier_id' => $supplier->id,
+                'currency_code' => 'KWD',
+                'reason' => 'GRN late revoke',
+                'lines' => [[
+                    'item_code' => $sku,
+                    'description' => $sku,
+                    'quantity' => 4,
+                    'unit' => 'each',
+                    'estimated_unit_cost' => 1.250,
+                ]],
+            ]);
+            $requests->submit($actor, $context, $request->id);
+            [$checker, $checkerContext] = ProcurementSecondApprover::forSameStore($actor, $context);
+            $requests->approve($checker, $checkerContext, $request->id);
+            $orders = app(PurchaseOrderManager::class);
+            $order = $orders->createFromApprovedRequest($actor, $context, $request->id);
+            $order = $orders->issue($actor, $context, $order->id);
+            $data = ['lines' => [[
+                'purchase_order_line_id' => $order->lines()->firstOrFail()->id,
+                'warehouse_id' => $warehouse->id,
+                'quantity' => 1,
+            ]]];
+            $manageId = (int) Permission::query()->where('code', 'procurement.goods_receipts.manage')->value('id');
+            $postId = (int) Permission::query()->where('code', 'procurement.goods_receipts.post')->value('id');
+            $this->assertGreaterThan(0, $manageId);
+            $this->assertGreaterThan(0, $postId);
+
+            $permissionId = $manageId;
+            $table = 'enterprise_purchase_orders';
+            $armed = true;
+            $injected = false;
+            $auditBefore = DB::table('audit_logs')->count();
+            try {
+                $manager->createFromIssuedOrder($actor, $context, $order->id, $data);
+                $this->fail('Late manage DENY must prevent GRN creation.');
+            } catch (HttpExceptionInterface $exception) {
+                $this->assertSame(403, $exception->getStatusCode());
+            }
+            $this->assertTrue($injected, 'PO SELECT must inject DENY.');
+            $this->assertDatabaseMissing('enterprise_goods_receipts', ['purchase_order_id' => $order->id]);
+            $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+            $this->assertFalse((bool) $actor->fresh()->has_permission_overrides);
+
+            $receipt = $manager->createFromIssuedOrder($actor, $context, $order->id, $data);
+            $permissionId = $postId;
+            $table = 'enterprise_goods_receipt_lines';
+            $armed = true;
+            $injected = false;
+            $auditBefore = DB::table('audit_logs')->count();
+            $stockBefore = DB::table('stock_movements')->count();
+            try {
+                $manager->post($actor, $context, $receipt->id);
+                $this->fail('Late post DENY must prevent receipt posting.');
+            } catch (HttpExceptionInterface $exception) {
+                $this->assertSame(403, $exception->getStatusCode());
+            }
+            $this->assertTrue($injected, 'Receipt-lines SELECT must inject DENY.');
+            $this->assertDatabaseHas('enterprise_goods_receipts', ['id' => $receipt->id, 'status' => 'draft']);
+            $this->assertSame($stockBefore, DB::table('stock_movements')->count());
+            $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+            $this->assertFalse((bool) $actor->fresh()->has_permission_overrides);
+            $this->assertSame('posted', $manager->post($actor, $context, $receipt->id)->status);
+
+            $draft = $manager->createFromIssuedOrder($actor, $context, $order->id, $data);
+            $permissionId = $manageId;
+            $table = 'enterprise_goods_receipts';
+            $armed = true;
+            $injected = false;
+            $auditBefore = DB::table('audit_logs')->count();
+            try {
+                $manager->cancel($actor, $context, $draft->id);
+                $this->fail('Late manage DENY must prevent GRN cancellation.');
+            } catch (HttpExceptionInterface $exception) {
+                $this->assertSame(403, $exception->getStatusCode());
+            }
+            $this->assertTrue($injected, 'GRN row SELECT must inject DENY.');
+            $this->assertDatabaseHas('enterprise_goods_receipts', ['id' => $draft->id, 'status' => 'draft']);
+            $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+            $this->assertFalse((bool) $actor->fresh()->has_permission_overrides);
+            $this->assertSame('cancelled', $manager->cancel($actor, $context, $draft->id)->status);
+        }
+    }
+
+    public function test_invoice_mutations_recheck_procurement_shutdown_before_writes_in_both_locales(): void
+    {
+        $this->enableProcurement();
+        [$maker, $store, $context] = $this->scopedUser($this->allPermissions(), 'PINV-SHUTDOWN');
+        [, $warehouse] = $this->stockTarget($store, 'PINV-SHUTDOWN-SKU');
+        $receipt = $this->postedReceipt(
+            $maker, $context, $warehouse, 'PINV-SHUTDOWN-SUP', 'PINV-SHUTDOWN-SKU', 8,
+        );
+        $manager = app(PurchaseInvoiceHandoffManager::class);
+        $receiptLineId = $receipt->lines()->firstOrFail()->id;
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            $armed = false;
+            $revocations = 0;
+
+            // The preflight sees ENABLED, then an operator disables the
+            // module before the invoice transaction obtains its row lock.
+            DB::listen(static function ($query) use (&$armed, &$revocations): void {
+                $sql = strtolower((string) $query->sql);
+                if (! $armed || ! str_contains($sql, 'enterprise_modules')
+                    || ! str_contains($sql, 'select')) {
+                    return;
+                }
+
+                $armed = false;
+                $revocations++;
+                DB::table('enterprise_modules')->where('code', 'procurement')
+                    ->update(['state' => ModuleState::DISABLED->value]);
+            });
+
+            $reference = 'PINV-SHUT-'.strtoupper($locale);
+            $attributes = [
+                'supplier_invoice_number' => $reference,
+                'invoice_date' => '2026-10-16',
+                'lines' => [[
+                    'goods_receipt_line_id' => $receiptLineId,
+                    'quantity' => 1,
+                ]],
+            ];
+
+            $auditBefore = DB::table('audit_logs')->count();
+            $invoiceCountBefore = DB::table('enterprise_purchase_invoices')->count();
+            $armed = true;
+
+            try {
+                $manager->createFromPostedReceipt($maker, $context, $receipt->id, $attributes);
+                $this->fail('Disabled Procurement must not create an invoice after preflight.');
+            } catch (HttpExceptionInterface $exception) {
+                $this->assertSame(404, $exception->getStatusCode());
+            }
+
+            $this->assertSame(1, $revocations);
+            $this->assertSame($invoiceCountBefore, DB::table('enterprise_purchase_invoices')->count());
+            $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+
+            DB::table('enterprise_modules')->where('code', 'procurement')
+                ->update(['state' => ModuleState::ENABLED->value]);
+            $invoice = $manager->createFromPostedReceipt($maker, $context, $receipt->id, $attributes);
+
+            $auditBefore = DB::table('audit_logs')->count();
+            $outboxBefore = DB::table('enterprise_outbox_messages')->count();
+            $armed = true;
+
+            try {
+                $manager->handoff($maker, $context, $invoice->id);
+                $this->fail('Disabled Procurement must not hand an invoice to Finance.');
+            } catch (HttpExceptionInterface $exception) {
+                $this->assertSame(404, $exception->getStatusCode());
+            }
+
+            $this->assertSame(2, $revocations);
+            $this->assertDatabaseHas('enterprise_purchase_invoices', [
+                'id' => $invoice->id, 'status' => 'draft',
+            ]);
+            $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+            $this->assertSame($outboxBefore, DB::table('enterprise_outbox_messages')->count());
+
+            DB::table('enterprise_modules')->where('code', 'procurement')
+                ->update(['state' => ModuleState::ENABLED->value]);
+            $this->assertSame('handed_off', $manager->handoff($maker, $context, $invoice->id)->status);
+
+            $draft = $manager->createFromPostedReceipt($maker, $context, $receipt->id, [
+                ...$attributes, 'supplier_invoice_number' => $reference.'-CANCEL',
+            ]);
+            $auditBefore = DB::table('audit_logs')->count();
+            $armed = true;
+
+            try {
+                $manager->cancel($maker, $context, $draft->id);
+                $this->fail('Disabled Procurement must not cancel invoices after preflight.');
+            } catch (HttpExceptionInterface $exception) {
+                $this->assertSame(404, $exception->getStatusCode());
+            }
+
+            $this->assertSame(3, $revocations);
+            $this->assertDatabaseHas('enterprise_purchase_invoices', [
+                'id' => $draft->id, 'status' => 'draft',
+            ]);
+            $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+
+            DB::table('enterprise_modules')->where('code', 'procurement')
+                ->update(['state' => ModuleState::ENABLED->value]);
+            $this->assertSame('cancelled', $manager->cancel($maker, $context, $draft->id)->status);
+        }
     }
 
     public function test_handoff_is_transactional_retry_safe_and_emits_one_outbox_event(): void
@@ -155,6 +945,84 @@ final class EnterprisePurchaseInvoiceHandoffFoundationTest extends TestCase
         ]);
     }
 
+    public function test_finance_handoff_rechecks_locked_grn_source_after_preflight_in_ar_and_en(): void
+    {
+        $this->enableProcurement();
+        [$actor, $store, $context] = $this->scopedUser($this->allPermissions(), 'PINV-GRN-RACE');
+        [, $warehouse] = $this->stockTarget($store, 'PINV-GRN-RACE-SKU');
+        $manager = app(PurchaseInvoiceHandoffManager::class);
+
+        // Listen once: Laravel query listeners survive both locale iterations.
+        $armed = false;
+        $injected = false;
+        $targetReceiptId = 0;
+        $tamperedOrder = '';
+        DB::listen(static function ($query) use (&$armed, &$injected, &$targetReceiptId, &$tamperedOrder): void {
+            $sql = strtolower((string) $query->sql);
+            if (! $armed
+                || ! str_contains($sql, 'select')
+                || ! str_contains($sql, 'enterprise_goods_receipts')
+                || str_contains($sql, ' join ')) {
+                return;
+            }
+
+            $armed = false;
+            $injected = true;
+            // The select that obtains the GRN row lock has returned; emulate
+            // a source correction in the pre-existing time-of-check gap.
+            DB::table('enterprise_goods_receipts')->where('id', $targetReceiptId)
+                ->update(['source_order_number' => $tamperedOrder]);
+        });
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            $receipt = $this->postedReceipt(
+                $actor, $context, $warehouse, 'PINV-RACE-SUP-'.strtoupper($locale),
+                'PINV-GRN-RACE-SKU', 3,
+            );
+            $invoice = $manager->createFromPostedReceipt($actor, $context, $receipt->id, [
+                'supplier_invoice_number' => 'PINV-GRN-RACE-'.strtoupper($locale),
+                'invoice_date' => '2026-10-16',
+                'lines' => [[
+                    'goods_receipt_line_id' => $receipt->lines()->firstOrFail()->id,
+                    'quantity' => 1,
+                ]],
+            ]);
+            $sourceOrderNumber = $receipt->source_order_number;
+            $tamperedOrder = 'TAMPER-GRN-'.strtoupper($locale);
+            $targetReceiptId = (int) $receipt->id;
+            $auditBefore = DB::table('audit_logs')->count();
+            $outboxBefore = DB::table('enterprise_outbox_messages')
+                ->where('event_type', 'ProcurementPurchaseInvoiceHandedOff')->count();
+            $injected = false;
+            $armed = true;
+
+            try {
+                $manager->handoff($actor, $context, $invoice->id);
+                $this->fail('A GRN source changed before the match must never reach Finance.');
+            } catch (ValidationException $exception) {
+                $this->assertArrayHasKey('three_way_match', $exception->errors());
+            } finally {
+                $armed = false;
+            }
+
+            $this->assertTrue($injected, 'Race injection did not reach the locked GRN query.');
+            $this->assertDatabaseHas('enterprise_goods_receipts', [
+                'id' => $receipt->id,
+                'source_order_number' => $sourceOrderNumber,
+            ]);
+            $this->assertDatabaseHas('enterprise_purchase_invoices', [
+                'id' => $invoice->id,
+                'status' => 'draft',
+                'outbox_event_id' => null,
+            ]);
+            $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+            $this->assertSame($outboxBefore, DB::table('enterprise_outbox_messages')
+                ->where('event_type', 'ProcurementPurchaseInvoiceHandedOff')->count());
+            $this->assertSame('handed_off', $manager->handoff($actor, $context, $invoice->id)->status);
+        }
+    }
+
     public function test_stale_overlapping_draft_is_rechecked_at_handoff(): void
     {
         $this->enableProcurement();
@@ -203,6 +1071,65 @@ final class EnterprisePurchaseInvoiceHandoffFoundationTest extends TestCase
         );
     }
 
+    public function test_duplicate_invoice_grn_line_is_rejected_by_database_before_finance_handoff_in_ar_and_en(): void
+    {
+        $this->enableProcurement();
+        [$actor, $store, $context] = $this->scopedUser($this->allPermissions(), 'PINV-DUP-GRN');
+        [, $warehouse] = $this->stockTarget($store, 'PINV-DUP-SKU');
+        $receipt = $this->postedReceipt(
+            $actor, $context, $warehouse, 'PINV-DUP-SUP', 'PINV-DUP-SKU', 3,
+        );
+        $manager = app(PurchaseInvoiceHandoffManager::class);
+        $receiptLineId = $receipt->lines()->firstOrFail()->id;
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            $invoice = $manager->createFromPostedReceipt($actor, $context, $receipt->id, [
+                'supplier_invoice_number' => 'PINV-DUP-'.strtoupper($locale),
+                'invoice_date' => '2026-10-16',
+                'lines' => [[
+                    'goods_receipt_line_id' => $receiptLineId,
+                    'quantity' => 1,
+                ]],
+            ]);
+
+            // The unique (invoice, GRN line) index is the primary boundary.
+            // Even a direct importer bypassing the creation validator cannot
+            // persist another row with a distinct line number for this source.
+            $original = (array) DB::table('enterprise_purchase_invoice_lines')
+                ->where('purchase_invoice_id', $invoice->id)->first();
+            $this->assertNotEmpty($original);
+            $duplicate = $original;
+            unset($duplicate['id']);
+            $duplicate['line_no'] = 2;
+            $auditBefore = DB::table('audit_logs')->count();
+            $outboxBefore = DB::table('enterprise_outbox_messages')
+                ->where('event_type', 'ProcurementPurchaseInvoiceHandedOff')->count();
+
+            try {
+                DB::table('enterprise_purchase_invoice_lines')->insert($duplicate);
+                $this->fail('Database must prevent a duplicated GRN source on one invoice.');
+            } catch (QueryException $exception) {
+                $this->assertNotEmpty($exception->getMessage());
+            }
+
+            $this->assertSame(1, DB::table('enterprise_purchase_invoice_lines')
+                ->where('purchase_invoice_id', $invoice->id)->count());
+            $this->assertDatabaseHas('enterprise_purchase_invoices', [
+                'id' => $invoice->id,
+                'status' => 'draft',
+                'outbox_event_id' => null,
+            ]);
+            $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+            $this->assertSame(
+                $outboxBefore,
+                DB::table('enterprise_outbox_messages')
+                    ->where('event_type', 'ProcurementPurchaseInvoiceHandedOff')->count(),
+            );
+            $this->assertSame('handed_off', $manager->handoff($actor, $context, $invoice->id)->status);
+        }
+    }
+
     public function test_supplier_invoice_number_is_unique_and_reads_are_scope_bounded(): void
     {
         $this->enableProcurement();
@@ -246,6 +1173,445 @@ final class EnterprisePurchaseInvoiceHandoffFoundationTest extends TestCase
             $this->fail('Cross-store purchase invoice detail must be invisible.');
         } catch (ModelNotFoundException) {
             $this->assertTrue(true);
+        }
+    }
+
+    public function test_invoice_page_denies_postquery_foreign_store_transfer_in_ar_and_en(): void
+    {
+        $this->enableProcurement();
+        [$actor, $store, $context] = $this->scopedUser($this->allPermissions(), 'PINV-PAGE-LIVE');
+        $foreignStore = $this->createRetailStore('PINV-PAGE-FOREIGN');
+        [, $warehouse] = $this->stockTarget($store, 'PINV-PAGE-LIVE-SKU');
+        $manager = app(PurchaseInvoiceHandoffManager::class);
+
+        $armed = false;
+        $moved = false;
+        $targetInvoiceId = null;
+        DB::listen(static function ($query) use ($foreignStore, &$armed, &$moved, &$targetInvoiceId): void {
+            $sql = strtolower((string) $query->sql);
+            if (! $armed || $moved || $targetInvoiceId === null
+                || ! str_contains($sql, 'select')
+                || ! str_contains($sql, 'enterprise_purchase_invoices')
+                || ! str_contains($sql, 'order by')) {
+                return;
+            }
+
+            // Fire after the ordered scoped page SELECT; the hydrated row
+            // retains its old store ID, but persisted ownership has changed.
+            $armed = false;
+            $moved = true;
+            DB::table('enterprise_purchase_invoices')
+                ->where('id', $targetInvoiceId)
+                ->update(['store_id' => $foreignStore->id]);
+        });
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            $receipt = $this->postedReceipt(
+                $actor, $context, $warehouse,
+                'PINV-PAGE-SUP-'.strtoupper($locale), 'PINV-PAGE-LIVE-SKU', 2,
+            );
+            $invoice = $manager->createFromPostedReceipt($actor, $context, $receipt->id, [
+                'supplier_invoice_number' => 'PINV-PAGE-'.strtoupper($locale),
+                'invoice_date' => '2026-10-16',
+                'lines' => [[
+                    'goods_receipt_line_id' => $receipt->lines()->firstOrFail()->id,
+                    'quantity' => 1,
+                ]],
+            ]);
+            $filter = ['q' => $invoice->invoice_number];
+            $this->assertSame(1, $manager->paginate($actor, $context, $filter)->total());
+
+            $targetInvoiceId = (int) $invoice->id;
+            $auditBefore = DB::table('audit_logs')->count();
+            $linesBefore = DB::table('enterprise_purchase_invoice_lines')->count();
+            $moved = false;
+            $armed = true;
+
+            try {
+                $manager->paginate($actor, $context, $filter);
+                $this->fail('An invoice transferred after page selection must not leak financial header data.');
+            } catch (HttpExceptionInterface $exception) {
+                $this->assertTrue($moved, 'The transfer must follow the actual ordered invoice SELECT.');
+                $this->assertSame(404, $exception->getStatusCode());
+            }
+
+            $this->assertDatabaseHas('enterprise_purchase_invoices', [
+                'id' => $invoice->id,
+                'store_id' => $foreignStore->id,
+                'status' => 'draft',
+            ]);
+            $this->assertSame(0, $manager->paginate($actor, $context, $filter)->total());
+            $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+            $this->assertSame($linesBefore, DB::table('enterprise_purchase_invoice_lines')->count());
+
+            DB::table('enterprise_purchase_invoices')
+                ->where('id', $invoice->id)
+                ->update(['store_id' => $store->id]);
+            $this->assertSame(1, $manager->paginate($actor, $context, $filter)->total());
+            DB::table('enterprise_purchase_invoices')
+                ->where('id', $invoice->id)
+                ->update(['store_id' => $foreignStore->id]);
+        }
+    }
+
+    public function test_three_way_match_page_denies_late_store_transfer_and_view_revocation_in_ar_and_en(): void
+    {
+        $this->enableProcurement();
+        [$actor, $store, $context] = $this->scopedUser($this->allPermissions(), 'PINV-MATCH-PAGE-LIVE');
+        $foreignStore = $this->createRetailStore('PINV-MATCH-PAGE-FOREIGN');
+        [, $warehouse] = $this->stockTarget($store, 'PINV-MATCH-PAGE-SKU');
+        $manager = app(PurchaseInvoiceHandoffManager::class);
+        $completion = app(ProcurementCompletionManager::class);
+        $permissionId = Permission::query()
+            ->where('code', 'procurement.purchase_invoices.view')->firstOrFail()->id;
+
+        $armed = false;
+        $injected = false;
+        $mode = '';
+        $targetInvoiceId = null;
+        DB::listen(static function ($query) use (
+            $actor, $permissionId, $foreignStore, &$armed, &$injected, &$mode, &$targetInvoiceId
+        ): void {
+            $sql = strtolower((string) $query->sql);
+            if (! $armed || $injected || $targetInvoiceId === null
+                || ! str_contains($sql, 'select')
+                || ! str_contains($sql, 'enterprise_purchase_invoices')
+                || ! str_contains($sql, 'enterprise_procurement_match_reviews')
+                || ! str_contains($sql, 'order by')) {
+                return;
+            }
+
+            // Inject after actual scoped match-page SQL in the same test
+            // connection, not as a claim of independent MySQL concurrency.
+            $armed = false;
+            $injected = true;
+            if ($mode === 'transfer') {
+                DB::table('enterprise_purchase_invoices')
+                    ->where('id', $targetInvoiceId)
+                    ->update(['store_id' => $foreignStore->id]);
+            } else {
+                DB::table('user_permission_overrides')->insert([
+                    'user_id' => $actor->id,
+                    'permission_id' => $permissionId,
+                    'scope_key' => 'global',
+                    'store_id' => null,
+                    'effect' => 'deny',
+                    'created_at' => now(),
+                    'updated_at' => now(),
+                ]);
+                DB::table('users')->where('id', $actor->id)
+                    ->update(['has_permission_overrides' => true]);
+            }
+        });
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            $receipt = $this->postedReceipt(
+                $actor, $context, $warehouse,
+                'PINV-MATCH-PAGE-SUP-'.strtoupper($locale),
+                'PINV-MATCH-PAGE-SKU', 2,
+            );
+            $invoice = $manager->createFromPostedReceipt($actor, $context, $receipt->id, [
+                'supplier_invoice_number' => 'PINV-MATCH-PAGE-'.strtoupper($locale),
+                'invoice_date' => '2026-10-16',
+                'lines' => [[
+                    'goods_receipt_line_id' => $receipt->lines()->firstOrFail()->id,
+                    'quantity' => 1,
+                ]],
+            ]);
+            $filter = ['q' => $invoice->invoice_number];
+            $this->assertSame(1, $completion->paginateMatches($actor, $context, $filter)->total());
+            $targetInvoiceId = (int) $invoice->id;
+            $auditBefore = DB::table('audit_logs')->count();
+            $linesBefore = DB::table('enterprise_purchase_invoice_lines')->count();
+            $outboxBefore = DB::table('enterprise_outbox_messages')->count();
+
+            foreach (['transfer', 'revoke'] as $mode) {
+                $injected = false;
+                $armed = true;
+                try {
+                    $completion->paginateMatches($actor, $context, $filter);
+                    $this->fail('A late loss of invoice scope or VIEW cannot disclose match variance or amount.');
+                } catch (HttpExceptionInterface $exception) {
+                    $this->assertTrue($injected, 'Actual invoice matching page SELECT must trigger revocation.');
+                    $this->assertSame($mode === 'transfer' ? 404 : 403, $exception->getStatusCode());
+                } finally {
+                    $armed = false;
+                }
+
+                if ($mode === 'transfer') {
+                    $this->assertSame(0, $completion->paginateMatches($actor, $context, $filter)->total());
+                    DB::table('enterprise_purchase_invoices')
+                        ->where('id', $invoice->id)->update(['store_id' => $store->id]);
+                } else {
+                    $this->assertFalse((bool) $actor->has_permission_overrides);
+                    $this->assertTrue((bool) $actor->fresh()->has_permission_overrides);
+                    try {
+                        $completion->paginateMatches($actor, $context, $filter);
+                        $this->fail('Persisted invoice VIEW DENY must block subsequent match reads.');
+                    } catch (HttpExceptionInterface $exception) {
+                        $this->assertSame(403, $exception->getStatusCode());
+                    }
+                    DB::table('user_permission_overrides')
+                        ->where('user_id', $actor->id)->where('permission_id', $permissionId)->delete();
+                    DB::table('users')->where('id', $actor->id)
+                        ->update(['has_permission_overrides' => false]);
+                }
+
+                $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+                $this->assertSame($linesBefore, DB::table('enterprise_purchase_invoice_lines')->count());
+                $this->assertSame($outboxBefore, DB::table('enterprise_outbox_messages')->count());
+                $this->assertSame(1, $completion->paginateMatches($actor, $context, $filter)->total());
+            }
+
+            // Prevent the next locale's fixture from widening the page.
+            DB::table('enterprise_purchase_invoices')
+                ->where('id', $invoice->id)->update(['store_id' => $foreignStore->id]);
+        }
+    }
+
+    public function test_three_way_match_page_refuses_late_amount_and_review_state_drift_in_ar_and_en(): void
+    {
+        $this->enableProcurement();
+        [$actor, $store, $context] = $this->scopedUser(
+            $this->allPermissions(), 'PINV-MATCH-LIVE-FINANCE',
+        );
+        [, $warehouse] = $this->stockTarget($store, 'PINV-MATCH-LIVE-SKU');
+        $manager = app(PurchaseInvoiceHandoffManager::class);
+        $completion = app(ProcurementCompletionManager::class);
+
+        $race = (object) [
+            'armed' => false,
+            'injected' => false,
+            'table' => '',
+            'id' => 0,
+            'field' => '',
+            'replacement' => null,
+        ];
+        // Deterministic mutation AFTER the actual ordered joined SELECT, not
+        // after the final recheck. This is not two-session MySQL certification.
+        DB::listen(static function ($query) use ($race): void {
+            $sql = strtolower(ltrim((string) $query->sql));
+            if (! $race->armed || $race->injected
+                || ! str_starts_with($sql, 'select')
+                || ! str_contains($sql, 'enterprise_purchase_invoices')
+                || ! str_contains($sql, 'enterprise_procurement_match_reviews')
+                || ! str_contains($sql, 'order by')) {
+                return;
+            }
+
+            $race->armed = false;
+            $race->injected = true;
+            DB::table($race->table)->where('id', $race->id)
+                ->update([$race->field => $race->replacement]);
+        });
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            $receipt = $this->postedReceipt(
+                $actor, $context, $warehouse,
+                'PINV-MATCH-FIN-SUP-'.strtoupper($locale),
+                'PINV-MATCH-LIVE-SKU', 2,
+            );
+            $invoice = $manager->createFromPostedReceipt($actor, $context, $receipt->id, [
+                'supplier_invoice_number' => 'PINV-MATCH-FIN-'.strtoupper($locale),
+                'invoice_date' => '2026-10-16',
+                'lines' => [[
+                    'goods_receipt_line_id' => $receipt->lines()->firstOrFail()->id,
+                    'quantity' => 2,
+                    'unit_price' => 1.500,
+                ]],
+            ]);
+            $matchId = (int) DB::table('enterprise_procurement_match_reviews')
+                ->where('purchase_invoice_id', $invoice->id)->value('id');
+            $this->assertGreaterThan(0, $matchId);
+            $filter = ['q' => $invoice->invoice_number];
+            $this->assertSame(1, $completion->paginateMatches($actor, $context, $filter)->total());
+
+            $cases = [
+                ['enterprise_purchase_invoices', (int) $invoice->id, 'total_amount', '999.000'],
+                ['enterprise_purchase_invoices', (int) $invoice->id, 'currency_code', 'USD'],
+                [
+                    'enterprise_purchase_invoices', (int) $invoice->id, 'supplier_invoice_number',
+                    'CHANGED-'.strtoupper($locale),
+                ],
+                ['enterprise_procurement_match_reviews', $matchId, 'status', 'rejected'],
+                ['enterprise_procurement_match_reviews', $matchId, 'value_variance', '77.250'],
+            ];
+            foreach ($cases as [$table, $id, $field, $changed]) {
+                $previous = DB::table($table)->where('id', $id)->value($field);
+                $this->assertNotEquals($previous, $changed);
+                $auditBefore = DB::table('audit_logs')->count();
+                $outboxBefore = DB::table('enterprise_outbox_messages')->count();
+
+                $race->table = $table;
+                $race->id = $id;
+                $race->field = $field;
+                $race->replacement = $changed;
+                $race->injected = false;
+                $race->armed = true;
+                try {
+                    $completion->paginateMatches($actor, $context, $filter);
+                    $this->fail('Late finance/match '.$field.' must not return a stale page in '.$locale);
+                } catch (HttpExceptionInterface $exception) {
+                    $this->assertSame(404, $exception->getStatusCode());
+                } finally {
+                    $race->armed = false;
+                }
+
+                $this->assertTrue($race->injected, 'The actual ordered match-page SELECT must trigger.');
+                $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+                $this->assertSame($outboxBefore, DB::table('enterprise_outbox_messages')->count());
+                DB::table($table)->where('id', $id)->update([$field => $previous]);
+                $page = $completion->paginateMatches($actor, $context, $filter);
+                $this->assertSame(1, $page->total());
+                $this->assertSame((int) $invoice->id, (int) $page->items()[0]->purchase_invoice_id);
+            }
+        }
+    }
+
+    public function test_invoice_detail_denies_stale_header_and_financial_lines_after_store_transfer_in_ar_and_en(): void
+    {
+        $this->enableProcurement();
+        [$actor, $store, $context] = $this->scopedUser($this->allPermissions(), 'PINV-DETAIL-LIVE');
+        $foreignStore = $this->createRetailStore('PINV-DETAIL-FOREIGN');
+        [, $warehouse] = $this->stockTarget($store, 'PINV-DETAIL-LIVE-SKU');
+        $manager = app(PurchaseInvoiceHandoffManager::class);
+
+        $armed = false;
+        $moved = false;
+        $targetInvoiceId = null;
+        DB::listen(static function ($query) use (&$armed, &$moved, &$targetInvoiceId, $foreignStore): void {
+            $sql = strtolower((string) $query->sql);
+            if (! $armed || $moved || $targetInvoiceId === null
+                || ! str_contains($sql, 'enterprise_purchase_invoices')
+                || ! str_contains($sql, 'select')
+                || str_contains($sql, 'join')) {
+                return;
+            }
+
+            // Simulate a transfer immediately after the authorized invoice
+            // query, before Eloquent loads its supplier/receipt/line relations.
+            $armed = false;
+            $moved = true;
+            DB::table('enterprise_purchase_invoices')
+                ->where('id', $targetInvoiceId)
+                ->update(['store_id' => $foreignStore->id]);
+        });
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            $receipt = $this->postedReceipt(
+                $actor, $context, $warehouse, 'PINV-DETAIL-SUP-'.strtoupper($locale),
+                'PINV-DETAIL-LIVE-SKU', 2,
+            );
+            $invoice = $manager->createFromPostedReceipt($actor, $context, $receipt->id, [
+                'supplier_invoice_number' => 'PINV-DETAIL-'.strtoupper($locale),
+                'invoice_date' => '2026-10-16',
+                'lines' => [[
+                    'goods_receipt_line_id' => $receipt->lines()->firstOrFail()->id,
+                    'quantity' => 1,
+                ]],
+            ]);
+
+            $visible = $manager->detail($actor, $context, $invoice->id);
+            $this->assertSame($invoice->id, $visible->id);
+            $this->assertCount(1, $visible->lines);
+
+            $targetInvoiceId = (int) $invoice->id;
+            $auditBefore = DB::table('audit_logs')->count();
+            $linesBefore = DB::table('enterprise_purchase_invoice_lines')->count();
+            $moved = false;
+            $armed = true;
+            try {
+                $manager->detail($actor, $context, $invoice->id);
+                $this->fail('A transferred invoice cannot reveal its former store header or line amounts.');
+            } catch (ModelNotFoundException) {
+                $this->assertTrue($moved, 'Transfer must occur after the scoped preflight.');
+            }
+
+            $this->assertSame($foreignStore->id, (int) DB::table('enterprise_purchase_invoices')
+                ->where('id', $invoice->id)->value('store_id'));
+            $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+            $this->assertSame($linesBefore, DB::table('enterprise_purchase_invoice_lines')->count());
+
+            try {
+                $manager->detail($actor, $context, $invoice->id);
+                $this->fail('A second read must also deny the former store.');
+            } catch (ModelNotFoundException) {
+                $this->assertTrue(true);
+            }
+        }
+    }
+
+    public function test_goods_receipt_detail_denies_stale_header_and_received_line_costs_after_store_transfer_in_ar_and_en(): void
+    {
+        $this->enableProcurement();
+        [$actor, $store, $context] = $this->scopedUser($this->allPermissions(), 'GRN-DETAIL-LIVE');
+        $foreignStore = $this->createRetailStore('GRN-DETAIL-FOREIGN');
+        [, $warehouse] = $this->stockTarget($store, 'GRN-DETAIL-LIVE-SKU');
+        $manager = app(GoodsReceiptManager::class);
+
+        $armed = false;
+        $moved = false;
+        $targetReceiptId = null;
+        DB::listen(static function ($query) use (&$armed, &$moved, &$targetReceiptId, $foreignStore): void {
+            $sql = strtolower((string) $query->sql);
+            if (! $armed || $moved || $targetReceiptId === null
+                || ! str_contains($sql, 'enterprise_goods_receipts')
+                || ! str_contains($sql, 'select')
+                || str_contains($sql, 'join')) {
+                return;
+            }
+
+            // Change store ownership immediately after the scoped receipt
+            // preflight, before the supplier, order and line SELECTs execute.
+            $armed = false;
+            $moved = true;
+            DB::table('enterprise_goods_receipts')
+                ->where('id', $targetReceiptId)
+                ->update(['store_id' => $foreignStore->id]);
+        });
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            $receipt = $this->postedReceipt(
+                $actor, $context, $warehouse, 'GRN-DETAIL-SUP-'.strtoupper($locale),
+                'GRN-DETAIL-LIVE-SKU', 2,
+            );
+
+            $visible = $manager->detail($actor, $context, $receipt->id);
+            $this->assertSame($receipt->id, $visible->id);
+            $this->assertCount(1, $visible->lines);
+            $this->assertSame('posted', $visible->status);
+
+            $targetReceiptId = (int) $receipt->id;
+            $auditBefore = DB::table('audit_logs')->count();
+            $linesBefore = DB::table('enterprise_goods_receipt_lines')->count();
+            $movementsBefore = DB::table('stock_movements')->count();
+            $moved = false;
+            $armed = true;
+            try {
+                $manager->detail($actor, $context, $receipt->id);
+                $this->fail('Transferred goods receipt must not reveal stale supplier, stock or unit prices.');
+            } catch (ModelNotFoundException) {
+                $this->assertTrue($moved, 'Ownership must change after the original authorized SELECT.');
+            }
+
+            $this->assertDatabaseHas('enterprise_goods_receipts', [
+                'id' => $receipt->id, 'store_id' => $foreignStore->id, 'status' => 'posted',
+            ]);
+            $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+            $this->assertSame($linesBefore, DB::table('enterprise_goods_receipt_lines')->count());
+            $this->assertSame($movementsBefore, DB::table('stock_movements')->count());
+
+            try {
+                $manager->detail($actor, $context, $receipt->id);
+                $this->fail('Repeated former-store access must remain denied.');
+            } catch (ModelNotFoundException) {
+                $this->assertTrue(true);
+            }
         }
     }
 
@@ -631,6 +1997,107 @@ final class EnterprisePurchaseInvoiceHandoffFoundationTest extends TestCase
         $this->assertDatabaseHas('audit_logs', [
             'event' => 'enterprise.procurement.three_way_match.reviewed',
         ]);
+    }
+
+    public function test_three_way_match_review_rechecks_persisted_handoff_deny_inside_invoice_transaction_in_ar_and_en(): void
+    {
+        $this->enableProcurement();
+        $completion = app(ProcurementCompletionManager::class);
+        $invoiceManager = app(PurchaseInvoiceHandoffManager::class);
+        $permissionId = Permission::query()
+            ->where('code', 'procurement.purchase_invoices.handoff')->firstOrFail()->id;
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            [$actor, $store, $context] = $this->scopedUser(
+                $this->allPermissions(), 'PINV-LATE-MATCH-'.strtoupper($locale),
+            );
+            [, $warehouse] = $this->stockTarget($store, 'PINV-LATE-MATCH-SKU-'.strtoupper($locale));
+            $receipt = $this->postedReceipt(
+                $actor, $context, $warehouse,
+                'PINV-LATE-MATCH-SUP-'.strtoupper($locale),
+                'PINV-LATE-MATCH-SKU-'.strtoupper($locale), 2,
+            );
+            $invoice = $invoiceManager->createFromPostedReceipt($actor, $context, $receipt->id, [
+                'supplier_invoice_number' => 'PINV-LATE-MATCH-'.strtoupper($locale),
+                'invoice_date' => '2026-10-16',
+                'lines' => [[
+                    'goods_receipt_line_id' => $receipt->lines()->firstOrFail()->id,
+                    'quantity' => 2,
+                    'unit_price' => 1.500,
+                ]],
+            ]);
+            $this->assertDatabaseHas('enterprise_procurement_match_reviews', [
+                'purchase_invoice_id' => $invoice->id,
+                'status' => 'pending',
+            ]);
+
+            $auditBefore = DB::table('audit_logs')->count();
+            $baseTransactionLevel = DB::transactionLevel();
+            $race = (object) ['armed' => true, 'injected' => false];
+
+            // Interleave a persisted DENY just after the real invoice SELECT
+            // inside the locked review transaction. Each locale owns a distinct
+            // state object; this is not a two-session concurrency claim.
+            DB::listen(static function ($query) use (
+                $race, $actor, $permissionId, $baseTransactionLevel
+            ): void {
+                $sql = strtolower(ltrim((string) $query->sql));
+                if (! $race->armed || $race->injected
+                    || DB::transactionLevel() <= $baseTransactionLevel
+                    || ! str_starts_with($sql, 'select')
+                    || ! str_contains($sql, 'enterprise_purchase_invoices')) {
+                    return;
+                }
+
+                $race->armed = false;
+                $race->injected = true;
+                DB::table('user_permission_overrides')->insert([
+                    'user_id' => $actor->id,
+                    'permission_id' => $permissionId,
+                    'scope_key' => 'global',
+                    'store_id' => null,
+                    'effect' => 'deny',
+                    'created_at' => now(),
+                    'updated_at' => now(),
+                ]);
+                DB::table('users')->where('id', $actor->id)
+                    ->update(['has_permission_overrides' => true]);
+            });
+
+            try {
+                $completion->reviewMatch($actor, $context, $invoice->id, [
+                    'decision' => 'approve',
+                    'note' => 'Must not be approved on a revoked grant.',
+                ]);
+                $this->fail('A persisted mid-transaction HANDOFF DENY must refuse three-way match approval.');
+            } catch (HttpExceptionInterface $exception) {
+                $this->assertSame(403, $exception->getStatusCode());
+            }
+
+            $this->assertTrue($race->injected, 'The invoice-locked SELECT must trigger the DENY.');
+            $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+            $this->assertDatabaseHas('enterprise_procurement_match_reviews', [
+                'purchase_invoice_id' => $invoice->id,
+                'status' => 'pending',
+                'reviewed_by' => null,
+            ]);
+            $this->assertSame(0, DB::table('user_permission_overrides')
+                ->where('user_id', $actor->id)
+                ->where('permission_id', $permissionId)->count());
+            $this->assertFalse((bool) $actor->fresh()->has_permission_overrides);
+
+            // A restored, genuinely authorized actor may still approve the
+            // same pending invoice through the normal production path.
+            $approved = $completion->reviewMatch($actor, $context, $invoice->id, [
+                'decision' => 'approve',
+                'note' => 'Authorized reviewer after rolled-back DENY.',
+            ]);
+            $this->assertSame('approved', $approved->status);
+            $this->assertDatabaseHas('audit_logs', [
+                'event' => 'enterprise.procurement.three_way_match.reviewed',
+            ]);
+        }
     }
 
     public function test_purchase_invoice_migration_is_reversible(): void

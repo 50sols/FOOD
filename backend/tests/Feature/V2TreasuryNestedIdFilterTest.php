@@ -16,6 +16,7 @@ use App\Support\TenantContextResolver;
 use Database\Seeders\CoreReferenceSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
+use Tests\Support\SyntheticErpWorkflowEvidence;
 use Tests\TestCase;
 
 final class V2TreasuryNestedIdFilterTest extends TestCase
@@ -25,6 +26,8 @@ final class V2TreasuryNestedIdFilterTest extends TestCase
     protected function setUp(): void
     {
         parent::setUp();
+        // Test-only signed workflow fixture; production certification remains fail-closed.
+        SyntheticErpWorkflowEvidence::install();
         $this->seed(CoreReferenceSeeder::class);
         config()->set(
             'enterprise_module_readiness.certified_versions.treasury',

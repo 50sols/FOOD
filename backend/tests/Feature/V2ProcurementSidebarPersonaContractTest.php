@@ -16,6 +16,7 @@ use App\Support\AdminNavigation;
 use Database\Seeders\CoreReferenceSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
+use Tests\Support\SyntheticErpWorkflowEvidence;
 use Tests\TestCase;
 
 /**
@@ -94,6 +95,9 @@ final class V2ProcurementSidebarPersonaContractTest extends TestCase
         $this->assertArrayNotHasKey('erp_procurement', $this->navigationItems($actor->fresh()));
 
         config()->set('enterprise_module_readiness.certified_versions.procurement', $version);
+        // Exact manifest version alone is still insufficient after P135.
+        $this->assertArrayNotHasKey('erp_procurement', $this->navigationItems($actor->fresh()));
+        SyntheticErpWorkflowEvidence::install();
         $this->assertTrue($actor->hasPermission('procurement.suppliers.view', $store));
         $this->assertTrue($actor->hasPermission('reports.view', $store));
         $this->assertFalse($actor->hasPermission('inventory.view', $store));
@@ -107,7 +111,9 @@ final class V2ProcurementSidebarPersonaContractTest extends TestCase
             $item = $this->navigationItems($actor->fresh())['erp_procurement'] ?? null;
             $this->assertNotNull($item);
             $this->assertSame('admin.erp.procurement.index', $item['route']);
-            $this->assertSame([], $item['params']);
+            // The linked workbench must carry the concrete authorized B2B
+            // store; a bare route can resolve to an unrelated tenant.
+            $this->assertSame(['store_id' => (string) $store], $item['params']);
             $this->assertArrayNotHasKey('erp_procurement', $this->navigationItems($denied->fresh()));
             $this->assertArrayHasKey('reports_center', $this->navigationItems($actor->fresh()));
 
@@ -137,6 +143,8 @@ final class V2ProcurementSidebarPersonaContractTest extends TestCase
             app(ModuleRegistry::class)->manifest('procurement')->version,
         );
 
+        // Positive navigation scenarios need explicit synthetic workflow proof.
+        SyntheticErpWorkflowEvidence::install();
         $this->assertTrue($buyer->hasPermission('procurement.suppliers.view', $store));
         $this->assertTrue($buyer->hasPermission('procurement.purchase_requests.manage', $store));
         $this->assertFalse($buyer->hasPermission('procurement.purchase_requests.approve', $store));
@@ -171,6 +179,9 @@ final class V2ProcurementSidebarPersonaContractTest extends TestCase
         [$retail, $ownStore] = $this->retailUser();
         $foreignStore = $this->retailStore('V2-2712-FOREIGN');
         $manager = $this->userWithRoles(['PROCUREMENT_MANAGER']);
+        // A valid Procurement workbench needs a real Wholesale store; the
+        // Retail-only user must still remain isolated from that store.
+        $this->wholesaleStore();
 
         foreach ([$retail, $manager] as $actor) {
             $this->assertArrayNotHasKey('erp_procurement', $this->navigationItems($actor->fresh()));
@@ -191,6 +202,8 @@ final class V2ProcurementSidebarPersonaContractTest extends TestCase
             app(ModuleRegistry::class)->manifest('procurement')->version,
         );
 
+        // Keep this evidence test-only; Retail still must not inherit B2B routes.
+        SyntheticErpWorkflowEvidence::install();
         $this->assertArrayHasKey('erp_procurement', $this->navigationItems($manager->fresh()));
         $this->assertArrayNotHasKey('erp_procurement', $this->navigationItems($retail->fresh()));
 
@@ -212,6 +225,10 @@ final class V2ProcurementSidebarPersonaContractTest extends TestCase
     /** @return array<string, array<string, mixed>> */
     private function navigationItems(User $user): array
     {
+        // Each projection is a separate user request after certification,
+        // entitlement, or lifecycle changes; never reuse memoized decisions.
+        app()->forgetInstance(AdminNavigation::class);
+
         return collect(app(AdminNavigation::class)->groupsFor($user))
             ->flatMap(static fn (array $group): array => $group['children'])
             ->keyBy('key')

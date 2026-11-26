@@ -17,6 +17,7 @@ use App\Support\TenantContextResolver;
 use Database\Seeders\CoreReferenceSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
+use Tests\Support\SyntheticErpWorkflowEvidence;
 use Tests\TestCase;
 
 final class EnterpriseTreasuryStoreSelectorShapeTest extends TestCase
@@ -26,6 +27,10 @@ final class EnterpriseTreasuryStoreSelectorShapeTest extends TestCase
     protected function setUp(): void
     {
         parent::setUp();
+        // P135 signed certification is required even for these positive
+        // authorized Treasury HTTP fixture requests. Keep synthetic signing
+        // confined to PHPUnit; production stays fail-closed.
+        SyntheticErpWorkflowEvidence::install();
         $this->seed(CoreReferenceSeeder::class);
         // Only the test authorizes this precise module release; no runtime override.
         config()->set(

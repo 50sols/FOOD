@@ -15,6 +15,7 @@ use App\Support\AdminNavigation;
 use Database\Seeders\CoreReferenceSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
+use Tests\Support\SyntheticErpWorkflowEvidence;
 use Tests\TestCase;
 
 /** V2 #4098: deny foreign BI schedule POST scope before unrelated field validation. */
@@ -25,6 +26,8 @@ final class V2BiSchedulePostScopeValidationTest extends TestCase
     protected function setUp(): void
     {
         parent::setUp();
+        // Test-only signed workflow fixture; production certification remains fail-closed.
+        SyntheticErpWorkflowEvidence::install();
 
         config()->set('security.mfa.enforce_privileged', false);
         $this->seed(CoreReferenceSeeder::class);

@@ -4,6 +4,7 @@ namespace App\Enterprise\Procurement;
 
 use App\Enterprise\Events\VersionedDomainEvent;
 use App\Enterprise\Modules\ModuleRegistry;
+use App\Enterprise\Modules\ModuleState;
 use App\Enterprise\Outbox\TransactionalOutbox;
 use App\Models\EnterpriseGoodsReceipt;
 use App\Models\EnterpriseGoodsReceiptLine;
@@ -65,7 +66,7 @@ final class PurchaseInvoiceHandoffManager
         // Preserve typed symbols; only the appended suffix '%' is a wildcard.
         $literalPrefix = str_replace(['!', '%', '_'], ['!!', '!%', '!_'], $term).'%';
 
-        return $this->visibleQuery($scope)
+        $page = $this->visibleQuery($scope)
             ->when(
                 $validated['status'] ?? null,
                 fn (Builder $query, string $status): Builder => $query->where('status', $status),
@@ -89,6 +90,24 @@ final class PurchaseInvoiceHandoffManager
             ->orderByDesc('id')
             ->paginate($perPage)
             ->withQueryString();
+
+        // An invoice can be reassigned to a foreign store after the scoped
+        // page SELECT but before this cached financial row is returned. Check
+        // every bounded page ID against CURRENT ownership in one query.
+        $pageIds = $page->getCollection()->pluck('id')->all();
+        if ($pageIds !== []) {
+            abort_unless(
+                $this->visibleQuery($scope)->whereKey($pageIds)->count() === count($pageIds),
+                404,
+                'Purchase invoice ownership changed during pagination.',
+            );
+        }
+
+        // A permission revoked during COUNT/rows/eager loading must not
+        // disclose invoice financial data to the former authorized actor.
+        $this->authorizedScope($actor, $context, self::VIEW_PERMISSION);
+
+        return $page;
     }
 
     public function detail(
@@ -98,11 +117,20 @@ final class PurchaseInvoiceHandoffManager
     ): EnterprisePurchaseInvoice {
         $scope = $this->authorizedScope($actor, $context, self::VIEW_PERMISSION);
 
-        return $this->findVisible($scope, $invoiceId)->load([
+        $invoice = $this->findVisible($scope, $invoiceId)->load([
             'goodsReceipt:id,receipt_number,status',
             'supplier:id,code,name_en,name_ar,status',
             'lines' => fn ($query) => $query->orderBy('line_no'),
         ]);
+
+        // The invoice may change legal/store ownership after the first scoped
+        // SELECT but before its supplier, receipt and financial lines are
+        // loaded. Never return an earlier owner's stale invoice details.
+        $this->findVisible($scope, $invoiceId);
+        // Reauthorize the original persisted actor after header/lines loading.
+        $this->authorizedScope($actor, $context, self::VIEW_PERMISSION);
+
+        return $invoice;
     }
 
     /** @param array<string, mixed> $attributes */
@@ -115,7 +143,9 @@ final class PurchaseInvoiceHandoffManager
         $scope = $this->authorizedScope($actor, $context, self::MANAGE_PERMISSION);
         $data = $this->validatedInvoice($attributes);
 
-        return DB::transaction(function () use ($actor, $scope, $receiptId, $data): EnterprisePurchaseInvoice {
+        return DB::transaction(function () use ($actor, $context, $scope, $receiptId, $data): EnterprisePurchaseInvoice {
+            $this->assertProcurementEnabledForWrite();
+
             $receipt = $this->visibleReceiptQuery($scope)
                 ->whereKey($receiptId)
                 ->lockForUpdate()
@@ -189,6 +219,14 @@ final class PurchaseInvoiceHandoffManager
                     : (float) $receiptLine->unit_price;
                 $totalAmount += round($invoiceUnitPrice * (float) $line['quantity'], 3);
             }
+
+            // Supplier/receipt/quantity reads may outlive the initial grant.
+            // Reauthorize the current persisted principal before any invoice
+            // lines, audit or downstream Finance-matching writes begin.
+            $this->authorizedScope($actor, $context, self::MANAGE_PERMISSION);
+            // An independently reassigned supplier invalidates the receipt
+            // even when its original store and priced lines have not moved.
+            $this->visibleReceiptQuery($scope)->whereKey($receipt->id)->firstOrFail();
 
             $publicId = (string) Str::uuid();
             $invoice = EnterprisePurchaseInvoice::query()->create([
@@ -271,15 +309,25 @@ final class PurchaseInvoiceHandoffManager
     ): EnterprisePurchaseInvoice {
         $scope = $this->authorizedScope($actor, $context, self::HANDOFF_PERMISSION);
 
-        return DB::transaction(function () use ($actor, $scope, $invoiceId): EnterprisePurchaseInvoice {
+        return DB::transaction(function () use ($actor, $context, $scope, $invoiceId): EnterprisePurchaseInvoice {
+            $this->assertProcurementEnabledForWrite();
+
             $invoice = $this->lockVisible($scope, $invoiceId);
+            // Even an idempotent replay must not disclose a locked invoice
+            // to a user whose permission was revoked during row lookup.
+            $this->authorizedScope($actor, $context, self::HANDOFF_PERMISSION);
+            // Locking the invoice does not lock its independently mutable supplier.
+            // Revalidate its live store eligibility before either retry response.
+            $this->findVisible($scope, $invoiceId);
             if ($invoice->status === 'handed_off') {
                 return $invoice->refresh()->load('lines');
             }
 
             $this->requireStatus($invoice, ['draft'], 'handed off');
-            $this->completion->assertMatchAllowsHandoff($invoice->id);
 
+            // Lock the posted GRN before validating the three-way match.
+            // Otherwise the source can change after match approval but before
+            // Finance receives its immutable outbox event.
             $receipt = $this->visibleReceiptQuery($scope)
                 ->whereKey($invoice->goods_receipt_id)
                 ->lockForUpdate()
@@ -295,10 +343,21 @@ final class PurchaseInvoiceHandoffManager
                 ]);
             }
 
+            $this->completion->assertMatchAllowsHandoff($invoice->id);
+
             $lines = $invoice->lines()->orderBy('line_no')->get();
             if ($lines->isEmpty()) {
                 throw ValidationException::withMessages([
                     'lines' => [__('enterprise_procurement.errors.invoice_lines_required')],
+                ]);
+            }
+
+            // Imported/altered drafts can repeat a GRN source with distinct line
+            // numbers. Per-line availability is not an aggregate validation:
+            // reject duplicates before publishing any immutable Finance event.
+            if ($lines->pluck('goods_receipt_line_id')->unique()->count() !== $lines->count()) {
+                throw ValidationException::withMessages([
+                    'lines' => [__('enterprise_procurement.errors.invoice_line_source_changed')],
                 ]);
             }
 
@@ -322,6 +381,11 @@ final class PurchaseInvoiceHandoffManager
                     $invoicedTotals,
                 );
             }
+
+            // A committed permission revocation after the GRN/line/match
+            // reads must abort before an immutable Finance outbox event.
+            $this->authorizedScope($actor, $context, self::HANDOFF_PERMISSION);
+            $this->findVisible($scope, $invoiceId);
 
             $event = VersionedDomainEvent::create(
                 type: self::EVENT_TYPE,
@@ -393,8 +457,14 @@ final class PurchaseInvoiceHandoffManager
     ): EnterprisePurchaseInvoice {
         $scope = $this->authorizedScope($actor, $context, self::MANAGE_PERMISSION);
 
-        return DB::transaction(function () use ($actor, $scope, $invoiceId): EnterprisePurchaseInvoice {
+        return DB::transaction(function () use ($actor, $context, $scope, $invoiceId): EnterprisePurchaseInvoice {
+            $this->assertProcurementEnabledForWrite();
+
             $invoice = $this->lockVisible($scope, $invoiceId);
+            // Recheck after the authoritative row lock, including retries,
+            // before returning sensitive data or mutating financial state.
+            $this->authorizedScope($actor, $context, self::MANAGE_PERMISSION);
+            $this->findVisible($scope, $invoiceId);
             if ($invoice->status === 'cancelled') {
                 return $invoice->refresh();
             }
@@ -431,12 +501,31 @@ final class PurchaseInvoiceHandoffManager
         ResolvedTenantContext $context,
         string $permission,
     ): EnterpriseDataScope {
+        // Direct service callers must not borrow a different persisted user's
+        // permissions by changing an Eloquent primary key without saving it.
+        $persistedActorId = $actor->getRawOriginal($actor->getKeyName());
+        abort_unless(
+            $actor->exists
+                && $persistedActorId !== null
+                && (string) $actor->getKey() === (string) $persistedActorId,
+            403,
+        );
+
         $this->assertProcurementEnabled();
         abort_if($context->enterpriseScope === null, 409, 'Enterprise data scope is required.');
 
+        // Do not trust a long-lived caller's stale permission-override flag.
+        // Rehydrate only the originally loaded, persisted active identity:
+        // direct service calls must observe committed role/permission DENYs.
+        $currentActor = User::query()
+            ->whereKey($persistedActorId)
+            ->where('is_active', true)
+            ->first();
+        abort_unless($currentActor instanceof User, 403);
+
         $scope = $context->enterpriseScope;
         $this->authorizer->authorize(
-            $actor,
+            $currentActor,
             $context,
             $permission,
             'company',
@@ -444,6 +533,21 @@ final class PurchaseInvoiceHandoffManager
         );
 
         return $scope;
+    }
+
+    private function assertProcurementEnabledForWrite(): void
+    {
+        // Match ModuleLifecycleManager's lock before invoice/receipt locks.
+        // A successful permission preflight cannot outlive module shutdown.
+        $module = DB::table('enterprise_modules')
+            ->where('code', 'procurement')
+            ->lockForUpdate()
+            ->first();
+        abort_unless(
+            $module !== null && $module->state === ModuleState::ENABLED->value,
+            404,
+            'Procurement module is disabled.',
+        );
     }
 
     private function assertProcurementEnabled(): void
@@ -461,7 +565,18 @@ final class PurchaseInvoiceHandoffManager
         return EnterprisePurchaseInvoice::query()
             ->where('organization_id', $scope->organizationId)
             ->where('company_id', $scope->companyId)
-            ->where('store_id', $scope->storeId);
+            ->where('store_id', $scope->storeId)
+            ->whereHas('supplier', function (Builder $supplier) use ($scope): void {
+                $supplier->where('organization_id', $scope->organizationId)
+                    ->where('company_id', $scope->companyId)
+                    ->where(function (Builder $query) use ($scope): void {
+                        $query->where('scope_type', 'company')
+                            ->orWhere(function (Builder $store) use ($scope): void {
+                                $store->where('scope_type', 'store')
+                                    ->where('store_id', $scope->storeId);
+                            });
+                    });
+            });
     }
 
     /** @return Builder<EnterpriseGoodsReceipt> */
@@ -470,7 +585,18 @@ final class PurchaseInvoiceHandoffManager
         return EnterpriseGoodsReceipt::query()
             ->where('organization_id', $scope->organizationId)
             ->where('company_id', $scope->companyId)
-            ->where('store_id', $scope->storeId);
+            ->where('store_id', $scope->storeId)
+            ->whereHas('supplier', function (Builder $supplier) use ($scope): void {
+                $supplier->where('organization_id', $scope->organizationId)
+                    ->where('company_id', $scope->companyId)
+                    ->where(function (Builder $query) use ($scope): void {
+                        $query->where('scope_type', 'company')
+                            ->orWhere(function (Builder $store) use ($scope): void {
+                                $store->where('scope_type', 'store')
+                                    ->where('store_id', $scope->storeId);
+                            });
+                    });
+            });
     }
 
     private function findVisible(

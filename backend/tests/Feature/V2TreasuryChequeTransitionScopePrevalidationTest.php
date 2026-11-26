@@ -22,6 +22,7 @@ use Database\Seeders\CoreReferenceSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
+use Tests\Support\SyntheticErpWorkflowEvidence;
 use Tests\TestCase;
 
 final class V2TreasuryChequeTransitionScopePrevalidationTest extends TestCase
@@ -31,6 +32,8 @@ final class V2TreasuryChequeTransitionScopePrevalidationTest extends TestCase
     protected function setUp(): void
     {
         parent::setUp();
+        // Test-only signed workflow fixture; production certification remains fail-closed.
+        SyntheticErpWorkflowEvidence::install();
 
         Carbon::setTestNow('2026-10-16 12:00:00');
         config()->set('security.mfa.enforce_privileged', false);
