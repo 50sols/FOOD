@@ -642,6 +642,12 @@ final class RestaurantGuestService
         return $serviceAt->format('Y-m-d H:i:s');
     }
 
+    /** Read-only canonical table preflight; service writes still recheck inside transactions. */
+    public function assertActiveTableInBranch(SmartOrderingBranch $branch, string $tablePublicId): void
+    {
+        $this->optionalTable($branch, $tablePublicId);
+    }
+
     private function optionalTable(SmartOrderingBranch $branch, mixed $publicId): ?object
     {
         if (! is_string($publicId) || trim($publicId) === '') {
@@ -719,6 +725,18 @@ final class RestaurantGuestService
                 'table_public_id' => [__('smart_ordering.guest_service.errors.table_occupied')],
             ]);
         }
+    }
+
+    /** Confirm route record belongs to the authorized branch before body validation. */
+    public function assertReservationInBranch(SmartOrderingBranch $branch, string $publicId): void
+    {
+        $this->reservation($branch, $publicId);
+    }
+
+    /** Confirm route waitlist entry belongs to the authorized branch before body validation. */
+    public function assertWaitlistInBranch(SmartOrderingBranch $branch, string $publicId): void
+    {
+        $this->waitlist($branch, $publicId);
     }
 
     private function reservation(SmartOrderingBranch $branch, string $publicId, bool $lock = false): object

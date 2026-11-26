@@ -18,6 +18,12 @@ final class DriverTenantScope
      */
     public function eligibleRetailDriver(User $user, bool $allowLegacyUnscoped = false): ?Driver
     {
+        // Revocation of the login identity must immediately invalidate any
+        // historical active Driver profile, including legacy unscoped recovery.
+        if (! $user->is_active) {
+            return null;
+        }
+
         return Driver::query()
             ->leftJoin('stores', 'stores.id', '=', 'drivers.store_id')
             ->leftJoin('store_types', 'store_types.id', '=', 'stores.store_type_id')

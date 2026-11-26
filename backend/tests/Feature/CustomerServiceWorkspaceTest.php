@@ -9,7 +9,9 @@ use App\Models\User;
 use App\Services\CustomerServiceCaseManager;
 use Database\Seeders\CoreReferenceSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 use Tests\TestCase;
 
@@ -174,6 +176,107 @@ class CustomerServiceWorkspaceTest extends TestCase
         $this->actingAs($actor)
             ->get(route('admin.erp.customer-service.cases.show', ['case' => 999999]))
             ->assertNotFound();
+    }
+
+    public function test_case_note_post_checks_store_scope_before_body_validation_in_arabic_and_english(): void
+    {
+        $storeA = $this->store('B2C', 'CS-NOTE-PRE-A');
+        $storeB = $this->store('B2C', 'CS-NOTE-PRE-B');
+        $actorA = $this->storeUser($storeA, ['customers.view', 'customers.manage']);
+        $actorB = $this->storeUser($storeB, ['customers.view', 'customers.manage']);
+        $customerA = $this->customer($storeA, 'b2c', 'Own Note Customer');
+        $customerB = $this->customer($storeB, 'b2c', 'Foreign Note Customer');
+
+        $service = app(CustomerServiceCaseManager::class);
+        $caseA = $service->createCase($actorA, [
+            'store_id' => $storeA,
+            'platform_customer_id' => $customerA->id,
+            'type' => 'complaint',
+            'priority' => 'normal',
+            'queue' => 'general',
+            'subject' => 'Own note case',
+        ]);
+        $caseB = $service->createCase($actorB, [
+            'store_id' => $storeB,
+            'platform_customer_id' => $customerB->id,
+            'type' => 'complaint',
+            'priority' => 'normal',
+            'queue' => 'general',
+            'subject' => 'Foreign note case',
+        ]);
+
+        $beforeNotes = DB::table('customer_service_case_notes')->count();
+        $beforeAudits = DB::table('audit_logs')->count();
+        Storage::fake('local');
+
+        foreach (['ar', 'en'] as $locale) {
+            $actorA->forceFill(['locale' => $locale])->save();
+
+            foreach ([$caseB->id, $caseB->id + 1000000] as $unavailableId) {
+                $this->actingAs($actorA->fresh())
+                    ->postJson(route('admin.erp.customer-service.cases.notes.store', ['case' => $unavailableId]), [
+                        'body' => ['invalid-nested-value'],
+                    ])
+                    ->assertNotFound();
+
+                $this->actingAs($actorA->fresh())
+                    ->postJson(route('admin.erp.customer-service.cases.notes.store', ['case' => $unavailableId]))
+                    ->assertNotFound();
+
+                // A real multipart upload must be rejected before any file is persisted.
+                $this->actingAs($actorA->fresh())
+                    ->post(route('admin.erp.customer-service.cases.notes.store', ['case' => $unavailableId]), [
+                        'attachment' => UploadedFile::fake()->createWithContent('foreign-evidence.txt', 'do-not-store'),
+                    ], ['Accept' => 'application/json'])
+                    ->assertNotFound();
+            }
+
+            $this->actingAs($actorA->fresh())
+                ->postJson(route('admin.erp.customer-service.cases.notes.store', ['case' => $caseA->id]), [
+                    'body' => ['invalid-nested-value'],
+                ])
+                ->assertUnprocessable()
+                ->assertJsonValidationErrors('body');
+        }
+
+        $unprivileged = User::factory()->create(['is_active' => true]);
+        $this->actingAs($unprivileged)
+            ->postJson(route('admin.erp.customer-service.cases.notes.store', ['case' => $caseA->id]), [
+                'body' => ['invalid-nested-value'],
+            ])
+            ->assertForbidden();
+
+        $this->assertSame([], Storage::disk('local')->allFiles('customer-service/cases'));
+        $this->assertSame($beforeNotes, DB::table('customer_service_case_notes')->count());
+        $this->assertSame($beforeAudits, DB::table('audit_logs')->count());
+
+        $this->actingAs($actorA->fresh())
+            ->post(route('admin.erp.customer-service.cases.notes.store', ['case' => $caseA->id]), [
+                'body' => 'Authorized scoped case note',
+            ])
+            ->assertRedirect(route('admin.erp.customer-service.cases.show', ['case' => $caseA->id]));
+
+        $this->assertDatabaseHas('customer_service_case_notes', [
+            'case_id' => $caseA->id,
+            'body' => 'Authorized scoped case note',
+        ]);
+        $this->assertDatabaseMissing('customer_service_case_notes', ['case_id' => $caseB->id]);
+        $this->assertSame($beforeNotes + 1, DB::table('customer_service_case_notes')->count());
+        $this->assertSame($beforeAudits + 1, DB::table('audit_logs')->count());
+
+        // The early scope check must not block a legitimate attachment upload.
+        $this->actingAs($actorA->fresh())
+            ->post(route('admin.erp.customer-service.cases.notes.store', ['case' => $caseA->id]), [
+                'attachment' => UploadedFile::fake()->createWithContent('own-evidence.txt', 'authorized-file'),
+            ])->assertRedirect(route('admin.erp.customer-service.cases.show', ['case' => $caseA->id]));
+
+        $this->assertSame($beforeNotes + 2, DB::table('customer_service_case_notes')->count());
+        $this->assertSame($beforeAudits + 2, DB::table('audit_logs')->count());
+        $this->assertCount(1, Storage::disk('local')->allFiles('customer-service/cases'));
+        $this->assertDatabaseHas('customer_service_case_notes', [
+            'case_id' => $caseA->id,
+            'original_name' => 'own-evidence.txt',
+        ]);
     }
 
     public function test_chatbot_case_authority_is_promoted_to_customer_service_cases(): void

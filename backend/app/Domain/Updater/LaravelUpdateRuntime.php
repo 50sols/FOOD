@@ -46,23 +46,24 @@ final class LaravelUpdateRuntime implements UpdateRuntime
             $this->assertSafeReleaseTarget($relativePath);
         }
 
-        if ($manifest->containsMigrations) {
-            $driver = DB::connection()->getDriverName();
+        // UpdateManager always creates a verified DB snapshot, even when
+        // the ZIP declares no migrations. Fail preflight before maintenance
+        // if the selected host cannot provide the required backup tooling.
+        $driver = DB::connection()->getDriverName();
 
-            if ($driver === 'sqlite') {
-                $database = (string) config('database.connections.sqlite.database');
-                if ($database === ':memory:' || ! is_file($database) || ! is_readable($database)) {
-                    throw new RuntimeException('SQLite database cannot be backed up safely.');
-                }
-            } elseif ($driver === 'mysql') {
-                $this->runProcess([(string) config('foodex.mysql_dump_binary', 'mysqldump'), '--version']);
-                $this->runProcess([(string) config('foodex.mysql_client_binary', 'mysql'), '--version']);
-            } elseif ($driver === 'pgsql') {
-                $this->runProcess([(string) config('foodex.pg_dump_binary', 'pg_dump'), '--version']);
-                $this->runProcess([(string) config('foodex.pg_restore_binary', 'pg_restore'), '--version']);
-            } else {
-                throw new RuntimeException('Database backup is not supported for this database driver.');
+        if ($driver === 'sqlite') {
+            $database = (string) config('database.connections.sqlite.database');
+            if ($database === ':memory:' || ! is_file($database) || ! is_readable($database)) {
+                throw new RuntimeException('SQLite database cannot be backed up safely.');
             }
+        } elseif ($driver === 'mysql') {
+            $this->runProcess([(string) config('foodex.mysql_dump_binary', 'mysqldump'), '--version']);
+            $this->runProcess([(string) config('foodex.mysql_client_binary', 'mysql'), '--version']);
+        } elseif ($driver === 'pgsql') {
+            $this->runProcess([(string) config('foodex.pg_dump_binary', 'pg_dump'), '--version']);
+            $this->runProcess([(string) config('foodex.pg_restore_binary', 'pg_restore'), '--version']);
+        } else {
+            throw new RuntimeException('Database backup is not supported for this database driver.');
         }
     }
 
@@ -84,6 +85,14 @@ final class LaravelUpdateRuntime implements UpdateRuntime
             $target = $this->releaseRoot().'/'.$relativePath;
 
             if (is_file($target)) {
+                // Existing release targets are untrusted filesystem entries:
+                // a hardlink can alias a private inode outside the release
+                // root without appearing as a symlink. Never copy those bytes
+                // into a backup that may later authorize restoration.
+                if (! $this->isSingleLinkBackupFile($target)) {
+                    throw new RuntimeException('Existing release file is hardlinked or unsafe to back up.');
+                }
+
                 $backupPath = $filesDirectory.'/'.$relativePath;
                 $this->ensureDirectory(dirname($backupPath));
 
@@ -392,7 +401,7 @@ final class LaravelUpdateRuntime implements UpdateRuntime
         }
 
         $manifestPath = $candidate.'/files.json';
-        if (is_link($backupReference) || is_link($manifestPath) || ! is_file($manifestPath)) {
+        if (is_link($backupReference) || ! $this->isSingleLinkBackupFile($manifestPath)) {
             throw new RuntimeException('File rollback manifest is missing or unsafe.');
         }
 
@@ -479,7 +488,7 @@ final class LaravelUpdateRuntime implements UpdateRuntime
 
             // Empty original files are valid; require readability, not a
             // nonzero size. Do not follow links in the private backup tree.
-            if (! is_file($source) || ! is_readable($source)) {
+            if (! $this->isSingleLinkBackupFile($source) || ! is_readable($source)) {
                 throw new RuntimeException('File rollback backup is incomplete or unsafe.');
             }
 
@@ -678,7 +687,7 @@ final class LaravelUpdateRuntime implements UpdateRuntime
         }
 
         $metadataPath = $candidate.'/database.json';
-        if (is_link($metadataPath) || ! is_file($metadataPath) || ! is_readable($metadataPath)) {
+        if (! $this->isSingleLinkBackupFile($metadataPath) || ! is_readable($metadataPath)) {
             throw new RuntimeException('Database backup metadata is invalid or unsafe.');
         }
 
@@ -710,8 +719,7 @@ final class LaravelUpdateRuntime implements UpdateRuntime
 
         $expected = $candidate.'/'.$names[$driver];
         if (str_replace('\\', '/', $snapshot) !== $expected
-            || is_link($expected)
-            || ! is_file($expected)
+            || ! $this->isSingleLinkBackupFile($expected)
             || ! is_readable($expected)
             || filesize($expected) === 0
             || realpath($expected) !== rtrim(str_replace('\\', '/', $canonicalCandidate), '/').'/'.$names[$driver]) {
@@ -872,6 +880,27 @@ final class LaravelUpdateRuntime implements UpdateRuntime
 
     private function openArchive(string $packagePath): ZipArchive
     {
+        // Verify Package runs separately from Apply. The upload may have
+        // been replaced by an alias in between, and direct runtime callers
+        // must obey the same filesystem provenance boundary as validation.
+        for ($candidate = $packagePath; ; $candidate = dirname($candidate)) {
+            clearstatcache(true, $candidate);
+            if (is_link($candidate)) {
+                throw new RuntimeException('Update package path cannot be a symbolic link.');
+            }
+
+            if (dirname($candidate) === $candidate) {
+                break;
+            }
+        }
+
+        $packageStat = @lstat($packagePath);
+        if ($packageStat === false
+            || ($packageStat['mode'] & 0170000) !== 0100000
+            || $packageStat['nlink'] !== 1) {
+            throw new RuntimeException('Update package file is hardlinked or unsafe.');
+        }
+
         $archive = new ZipArchive;
         if ($archive->open($packagePath) !== true) {
             throw new RuntimeException('Update package is not a valid ZIP archive.');
@@ -966,6 +995,25 @@ final class LaravelUpdateRuntime implements UpdateRuntime
                 throw new RuntimeException('Update target traverses a symbolic link.');
             }
         }
+    }
+
+    /**
+     * A backed-up release member must own its inode. A hardlink inside the
+     * recovery directory may otherwise alias bytes outside the trusted
+     * backup root while passing realpath, is_file and symlink checks.
+     */
+    private function isSingleLinkBackupFile(string $path): bool
+    {
+        clearstatcache(true, $path);
+        if (is_link($path)) {
+            return false;
+        }
+
+        $metadata = @lstat($path);
+
+        return $metadata !== false
+            && ($metadata['mode'] & 0170000) === 0100000
+            && $metadata['nlink'] === 1;
     }
 
     private function releaseRoot(): string

@@ -21,6 +21,112 @@ class V2RestaurantDigitalOrdersStoreScopeTest extends TestCase
         $this->seed(CoreReferenceSeeder::class);
     }
 
+    public function test_operations_page_selector_rejects_invalid_values_after_store_scope_ar_en(): void
+    {
+        $owned = $this->store('V2-P329-PAGE-OWNED');
+        $foreign = $this->store('V2-P329-PAGE-FOREIGN');
+        $this->enableRestaurantSaasForTestStore($owned);
+        $this->enableRestaurantSaasForTestStore($foreign);
+        $actor = $this->retailOperator([$owned]);
+        $url = route('admin.smart-ordering.operations.index');
+        $beforeOrders = DB::table('orders')->count();
+        $beforeAudit = DB::table('audit_logs')->count();
+        $originalLocale = app()->getLocale();
+
+        try {
+            foreach (['ar' => 'rtl', 'en' => 'ltr'] as $locale => $direction) {
+                $actor->forceFill(['locale' => $locale])->saveQuietly();
+                app()->setLocale($locale);
+
+                foreach (['page=invalid', 'page=0', 'page=-1', 'page=1.5',
+                    'page=99999999999999999999999999', 'page%5B%5D=1'] as $bad) {
+                    $this->actingAs($actor->fresh())
+                        ->getJson($url.'?tab=orders&store_id='.$owned.'&'.$bad)
+                        ->assertUnprocessable();
+                }
+                $this->actingAs($actor->fresh())
+                    ->getJson($url.'?tab=orders&store_id='.$foreign.'&page=invalid')
+                    ->assertNotFound();
+
+                foreach (['', '&page=1', '&page=2'] as $valid) {
+                    $response = $this->actingAs($actor->fresh())
+                        ->get($url.'?tab=orders&store_id='.$owned.$valid)
+                        ->assertOk()
+                        ->assertSee('dir="'.$direction.'"', false);
+                    $this->assertSame($valid === '&page=2' ? 2 : 1, $response->viewData('orders')->currentPage());
+                }
+            }
+        } finally {
+            app()->setLocale($originalLocale);
+        }
+
+        $roleless = User::factory()->create(['is_active' => true, 'locale' => 'en']);
+        $this->actingAs($roleless)
+            ->getJson($url.'?tab=orders&store_id='.$owned.'&page=invalid')
+            ->assertForbidden();
+        $this->assertSame($beforeOrders, DB::table('orders')->count());
+        $this->assertSame($beforeAudit, DB::table('audit_logs')->count());
+    }
+
+    public function test_operations_selected_store_is_authorized_before_unrelated_filters_ar_en(): void
+    {
+        $owned = $this->store('V2-P329-PREFLIGHT-OWNED');
+        $foreign = $this->store('V2-P329-PREFLIGHT-FOREIGN');
+        $this->enableRestaurantSaasForTestStore($owned);
+        $this->enableRestaurantSaasForTestStore($foreign);
+        $user = $this->retailOperator([$owned]);
+        $url = route('admin.smart-ordering.operations.index');
+        $beforeOrders = DB::table('orders')->count();
+        $beforeAudit = DB::table('audit_logs')->count();
+        $originalLocale = app()->getLocale();
+
+        try {
+            foreach (['ar' => 'rtl', 'en' => 'ltr'] as $locale => $direction) {
+                $user->forceFill(['locale' => $locale])->saveQuietly();
+                app()->setLocale($locale);
+
+                foreach ([
+                    '?tab=orders&store_id='.$foreign.'&status=invalid',
+                    '?tab=orders&store_id='.$foreign.'&fulfillment_mode=invalid',
+                    '?tab=orders&store_id='.$foreign.'&from=invalid',
+                    '?tab=invalid&store_id='.$foreign,
+                    '?tab=orders&store_id=999999999&status=invalid',
+                ] as $foreignQuery) {
+                    $this->actingAs($user->fresh())->getJson($url.$foreignQuery)
+                        ->assertNotFound();
+                }
+
+                foreach ([
+                    '?tab=orders&store_id='.$owned.'&status=invalid',
+                    '?tab=orders&store_id=invalid&status=invalid',
+                    '?tab=orders&store_id%5B%5D='.$owned.'&status=invalid',
+                    '?tab=orders&store_id=0&status=invalid',
+                ] as $badInput) {
+                    $this->actingAs($user->fresh())->getJson($url.$badInput)
+                        ->assertUnprocessable();
+                }
+
+                $this->actingAs($user->fresh())
+                    ->get($url.'?tab=orders&store_id='.$owned)
+                    ->assertOk()->assertSee('dir="'.$direction.'"', false);
+            }
+        } finally {
+            app()->setLocale($originalLocale);
+        }
+
+        $roleless = User::query()->create([
+            'name' => 'V2 P329 Preflight Roleless',
+            'email' => 'v2-p329-preflight-roleless@example.test',
+            'password' => 'password',
+            'locale' => 'en',
+            'is_active' => true,
+        ]);
+        $this->actingAs($roleless)->getJson($url.'?tab=orders&store_id='.$foreign.'&status=invalid')
+            ->assertForbidden();
+        $this->assertSame($beforeOrders, DB::table('orders')->count());
+        $this->assertSame($beforeAudit, DB::table('audit_logs')->count());
+    }
+
     public function test_p329_authorized_digital_orders_filter_is_store_scoped_in_both_locales(): void
     {
         $first = $this->store('V2-P329-FIRST');

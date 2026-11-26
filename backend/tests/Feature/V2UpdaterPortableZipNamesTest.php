@@ -7,6 +7,7 @@ use App\Domain\Updater\UpdatePackageManifest;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\File;
 use RuntimeException;
+use Tests\Support\UpdateArchivePreflightFixture;
 use Tests\TestCase;
 use ZipArchive;
 
@@ -180,7 +181,9 @@ final class V2UpdaterPortableZipNamesTest extends TestCase
             $this->releaseName.'/Nested/bravo.php' => 'bravo',
         ]);
         $runtime = app(LaravelUpdateRuntime::class);
-        $runtime->preflight($this->manifest($package), $package);
+        UpdateArchivePreflightFixture::withBackupableSqlite(
+            fn () => $runtime->preflight($this->manifest($package), $package),
+        );
         $backup = $runtime->backupFiles($package);
         $this->assertFileExists($backup.'/files.json');
         $runtime->extractRelease($package);
@@ -199,7 +202,9 @@ final class V2UpdaterPortableZipNamesTest extends TestCase
             'backend/.env.example' => 'template',
             'backend/.env.production.example' => 'template',
         ]);
-        $runtime->preflight($this->manifest($example), $example);
+        UpdateArchivePreflightFixture::withBackupableSqlite(
+            fn () => $runtime->preflight($this->manifest($example), $example),
+        );
     }
 
     /**

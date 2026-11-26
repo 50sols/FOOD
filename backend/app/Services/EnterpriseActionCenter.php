@@ -192,6 +192,7 @@ final class EnterpriseActionCenter
 
         $globalRoles = $actor->roles()
             ->where('roles.is_active', true)
+            ->whereNull('roles.archived_at')
             ->where('roles.scope', 'global')
             ->with('permissions:id,code')
             ->get();
@@ -239,7 +240,7 @@ final class EnterpriseActionCenter
             }
 
             $role = $assignment->role;
-            if (! $role->is_active || $role->scope !== 'store') {
+            if (! $role->is_active || $role->archived_at !== null || $role->scope !== 'store') {
                 continue;
             }
 

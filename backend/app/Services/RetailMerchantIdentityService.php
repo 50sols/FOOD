@@ -75,6 +75,7 @@ final class RetailMerchantIdentityService
             ->where('user_store_roles.user_id', $user->getKey())
             ->where('roles.code', 'B2C_STORE_ADMIN')
             ->where('roles.is_active', true)
+            ->whereNull('roles.archived_at')
             ->where('roles.scope', 'store')
             ->where('stores.is_active', true)
             ->where('store_types.code', 'B2C')

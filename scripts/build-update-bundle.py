@@ -5,7 +5,9 @@ import argparse
 import hashlib
 import json
 import os
-from pathlib import Path, PurePosixPath
+from pathlib import Path
+import re
+import stat
 import subprocess
 import sys
 import zipfile
@@ -112,19 +114,57 @@ def is_runtime_path(path: str) -> bool:
 
 
 def safe_path(path: str) -> str:
-    value = path.replace("\\", "/").strip()
-    pure = PurePosixPath(value)
-
-    if not value or value.startswith("/") or ".." in pure.parts:
+    # Match the strict portable ZIP-member rules enforced by the PHP signer,
+    # verifier and extractor. Never silently canonicalize a dangerous filename.
+    if (
+        not path
+        or path != path.strip()
+        or path.startswith("/")
+        or "\\" in path
+        or any(ord(char) < 0x20 or ord(char) > 0x7E for char in path)
+    ):
         raise RuntimeError(f"Unsafe update path: {path}")
 
-    if any(part in PROTECTED_PARTS for part in pure.parts):
-        raise RuntimeError(f"Protected runtime path is not allowed: {path}")
+    parts = path.split("/")
+    if any(part in {"", ".", ".."} for part in parts):
+        raise RuntimeError(f"Unsafe update path: {path}")
 
-    if pure.name == ".env" or ".env" in pure.parts:
-        raise RuntimeError(f"Environment files are not allowed in updates: {path}")
+    for part in parts:
+        if (
+            part.rstrip(" .") != part
+            or any(char in '<>:"|?*' for char in part)
+            or re.fullmatch(r"(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\..*)?", part, re.IGNORECASE)
+        ):
+            raise RuntimeError(f"Nonportable update path: {path}")
 
-    return value
+        lowered = part.lower()
+        if lowered in PROTECTED_PARTS:
+            raise RuntimeError(f"Protected runtime path is not allowed: {path}")
+
+        # Unlike the old exact '.env' check, this also excludes .env.local,
+        # .ENV.production and other live secrets. Only explicit example
+        # templates accepted by UpdatePackageValidator are distributable.
+        if (lowered == ".env" or lowered.startswith(".env.")) and not re.fullmatch(
+            r"\.env(?:\.[A-Za-z0-9_-]+)*\.example", part
+        ):
+            raise RuntimeError(f"Environment files are not allowed in updates: {path}")
+
+    # Static mirrors and Laravel's public tree must not receive executable or
+    # server-configuration aliases from a compromised generated asset folder.
+    # The existing canonical Laravel front controller and root .htaccess are
+    # the only public executable/configuration exceptions.
+    public_mirror = path.startswith(PUBLIC_ROOT_MIRROR_PREFIXES)
+    laravel_public = path.startswith("backend/public/")
+    bootstrap = path in {"backend/public/index.php", "backend/public/.htaccess"}
+    if public_mirror or (laravel_public and not bootstrap):
+        for part in parts:
+            if (
+                re.search(r"\.(?:php[0-9]*|phtml|phar|cgi|pl|py|sh|asp|aspx|jsp)(?:\.|$)", part, re.IGNORECASE)
+                or re.fullmatch(r"(?:\.htaccess|\.user\.ini|web\.config)(?:\..*)?", part, re.IGNORECASE)
+            ):
+                raise RuntimeError(f"Executable public update path is not allowed: {path}")
+
+    return path
 
 
 def complete_runtime_files(repo_root: Path) -> list[str]:
@@ -254,15 +294,57 @@ def sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def trusted_source_file(repo_root: Path, source_relative: str) -> Path:
+    # Path.is_file() follows symlinks. A linked asset can otherwise leak files
+    # OUTSIDE the reviewed Git worktree into an otherwise correctly signed ZIP.
+    # Reject linked parents too, including Windows junctions escaping the root.
+    relative = safe_path(source_relative)
+    if repo_root.is_symlink():
+        raise RuntimeError("Release build root must not be a symbolic link.")
+
+    source = repo_root
+    for part in relative.split("/"):
+        source = source / part
+        if source.is_symlink():
+            raise RuntimeError(f"Release input must not contain symbolic links: {relative}")
+
+    if not source.is_file():
+        raise RuntimeError(f"Selected update file is missing: {relative}")
+
+    # A hard link is not a symlink: resolve() still places it inside this
+    # worktree even when another pathname exposes the SAME external inode.
+    # The signer must not package a foreign, multiply-linked runtime source.
+    metadata = source.lstat()
+    if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
+        raise RuntimeError(f"Release input must be a single-link regular file: {relative}")
+
+    try:
+        source.resolve(strict=True).relative_to(repo_root.resolve(strict=True))
+    except (ValueError, OSError):
+        raise RuntimeError(f"Release input escaped the reviewed source tree: {relative}") from None
+    return source
+
+
 def build_zip(repo_root: Path, entries: list[tuple[str, str]], output: Path) -> None:
+    # Preflight every source BEFORE opening/truncating the output artifact.
+    # A refused symlink or .env variant must never create a partial release ZIP.
+    verified: list[tuple[str, Path]] = []
+    folded_names: set[str] = set()
+    for archive_name, source_relative in entries:
+        canonical = safe_path(archive_name)
+        if canonical != source_relative and (
+            not canonical.startswith(PUBLIC_ROOT_MIRROR_PREFIXES)
+            or source_relative != "backend/public/" + canonical
+        ):
+            raise RuntimeError(f"Unexpected update member source mapping: {canonical}")
+        if canonical.lower() in folded_names:
+            raise RuntimeError(f"Ambiguous update member alias: {canonical}")
+        folded_names.add(canonical.lower())
+        verified.append((canonical, trusted_source_file(repo_root, source_relative)))
+
     output.parent.mkdir(parents=True, exist_ok=True)
-
     with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as archive:
-        for archive_name, source_relative in entries:
-            source = repo_root / source_relative
-            if not source.is_file():
-                raise RuntimeError(f"Selected update file is missing: {source_relative}")
-
+        for archive_name, source in verified:
             info = zipfile.ZipInfo(archive_name, date_time=FIXED_ZIP_TIME)
             info.compress_type = zipfile.ZIP_DEFLATED
             info.external_attr = (0o100644 & 0xFFFF) << 16
@@ -270,7 +352,7 @@ def build_zip(repo_root: Path, entries: list[tuple[str, str]], output: Path) -> 
 
     with zipfile.ZipFile(output, "r") as archive:
         names = archive.namelist()
-        expected_names = [archive_name for archive_name, _ in entries]
+        expected_names = [archive_name for archive_name, _ in verified]
         if names != expected_names:
             raise RuntimeError("Update ZIP file list does not match the deterministic selection.")
         for name in names:

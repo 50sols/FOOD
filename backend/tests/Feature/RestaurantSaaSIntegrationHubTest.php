@@ -4,6 +4,8 @@ namespace Tests\Feature;
 
 use App\Domain\RestaurantSaaS\RestaurantIntegrationService;
 use App\Domain\SmartOrdering\Models\SmartOrderingSite;
+use App\Domain\SmartOrdering\SmartOrderingSiteService;
+use App\Models\Role;
 use App\Models\User;
 use Database\Seeders\CoreReferenceSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -272,6 +274,135 @@ class RestaurantSaaSIntegrationHubTest extends TestCase
         }
     }
 
+    public function test_admin_webhook_status_checks_site_scope_before_payload_validation_in_ar_and_en(): void
+    {
+        [$adminA, $siteA] = $this->integrationAdminSite('V2-WEBHOOK-SCOPE-A');
+        [$adminB, $siteB] = $this->integrationAdminSite('V2-WEBHOOK-SCOPE-B');
+        $service = app(RestaurantIntegrationService::class);
+        $own = $service->createWebhook($adminA, $siteA, 'https://example.test/hook/owned', ['order.created']);
+        $foreign = $service->createWebhook($adminB, $siteB, 'https://example.test/hook/foreign', ['order.created']);
+
+        $url = fn (string $publicId): string => route('admin.smart-ordering.integrations.webhooks.status', [
+            'site' => $siteA->getKey(),
+            'webhook' => $publicId,
+        ]);
+        $ownUrl = $url($own['public_id']);
+        $foreignUrl = $url($foreign['public_id']);
+        $missingUrl = $url((string) Str::uuid());
+        $before = DB::table('restaurant_saas_webhook_subscriptions')
+            ->orderBy('id')->get(['id', 'site_id', 'public_id', 'is_active'])->toArray();
+        $auditBefore = DB::table('audit_logs')->count();
+        $previousLocale = app()->getLocale();
+
+        try {
+            foreach (['ar', 'en'] as $locale) {
+                app()->setLocale($locale);
+                $adminA->forceFill(['locale' => $locale])->saveQuietly();
+
+                foreach ([$foreignUrl, $missingUrl] as $unavailableUrl) {
+                    $this->actingAs($adminA->fresh())
+                        ->patchJson($unavailableUrl, ['active' => ['invalid']])
+                        ->assertNotFound();
+                    $this->actingAs($adminA->fresh())
+                        ->patchJson($unavailableUrl, [])
+                        ->assertNotFound();
+                    $this->actingAs($adminA->fresh())
+                        ->patchJson($unavailableUrl, ['active' => false])
+                        ->assertNotFound();
+                }
+
+                $this->actingAs($adminA->fresh())
+                    ->patchJson($ownUrl, ['active' => ['invalid']])
+                    ->assertUnprocessable()->assertJsonValidationErrors('active');
+            }
+        } finally {
+            app()->setLocale($previousLocale);
+        }
+
+        $this->assertEquals($before, DB::table('restaurant_saas_webhook_subscriptions')
+            ->orderBy('id')->get(['id', 'site_id', 'public_id', 'is_active'])->toArray());
+        $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+
+        $this->actingAs($adminA->fresh())
+            ->patch($ownUrl, ['active' => false])
+            ->assertRedirect();
+        $this->assertDatabaseHas('restaurant_saas_webhook_subscriptions', [
+            'public_id' => $own['public_id'],
+            'site_id' => $siteA->getKey(),
+            'is_active' => false,
+        ]);
+        $this->assertDatabaseHas('restaurant_saas_webhook_subscriptions', [
+            'public_id' => $foreign['public_id'],
+            'site_id' => $siteB->getKey(),
+            'is_active' => true,
+        ]);
+        $this->assertSame($auditBefore + 1, DB::table('audit_logs')->count());
+    }
+
+    public function test_admin_connector_status_checks_site_scope_before_payload_validation_in_both_locales(): void
+    {
+        [$adminA, $siteA] = $this->integrationAdminSite('V2-INT-PATCH-A');
+        [$adminB, $siteB] = $this->integrationAdminSite('V2-INT-PATCH-B');
+        $service = app(RestaurantIntegrationService::class);
+        $ownId = $service->install($adminA, $siteA, null, 'generic', 'v2_status_a', 'Own Connector', ['orders.ingest']);
+        $foreignId = $service->install($adminB, $siteB, null, 'generic', 'v2_status_b', 'Foreign Connector', ['orders.ingest']);
+
+        $route = fn (string $connector): string => route('admin.smart-ordering.integrations.status', [
+            'site' => $siteA->getKey(),
+            'integration' => $connector,
+        ]);
+        $ownUrl = $route($ownId);
+        $foreignUrl = $route($foreignId);
+        $missingUrl = $route((string) Str::uuid());
+        $invalid = ['status' => ['unexpected' => 'nested']];
+        $beforeIntegrations = DB::table('restaurant_saas_integrations')
+            ->orderBy('id')->get(['id', 'site_id', 'public_id', 'status'])->toArray();
+        $beforeAudits = DB::table('audit_logs')->count();
+        $initialLocale = app()->getLocale();
+
+        try {
+            foreach (['ar', 'en'] as $locale) {
+                $adminA->forceFill(['locale' => $locale])->saveQuietly();
+                app()->setLocale($locale);
+
+                // Both foreign and missing connectors must stay 404 regardless of payload validity.
+                $this->actingAs($adminA->fresh())->patchJson($foreignUrl, $invalid)->assertNotFound();
+                $this->actingAs($adminA->fresh())->patchJson($foreignUrl, [])->assertNotFound();
+                $this->actingAs($adminA->fresh())->patchJson($missingUrl, $invalid)->assertNotFound();
+                $this->actingAs($adminA->fresh())->patchJson($missingUrl, [])->assertNotFound();
+                // Valid mutation payloads must also be rejected for unavailable targets.
+                $this->actingAs($adminA->fresh())->patchJson($foreignUrl, ['status' => 'enabled'])->assertNotFound();
+                $this->actingAs($adminA->fresh())->patchJson($missingUrl, ['status' => 'enabled'])->assertNotFound();
+            }
+        } finally {
+            app()->setLocale($initialLocale);
+        }
+
+        // The unrelated restaurant's operator cannot use site A at all.
+        $this->actingAs($adminB)->patchJson($ownUrl, $invalid)->assertNotFound();
+        $this->assertEquals($beforeIntegrations, DB::table('restaurant_saas_integrations')
+            ->orderBy('id')->get(['id', 'site_id', 'public_id', 'status'])->toArray());
+        $this->assertSame($beforeAudits, DB::table('audit_logs')->count());
+
+        $this->actingAs($adminA->fresh())->patchJson($ownUrl, $invalid)
+            ->assertUnprocessable()->assertJsonValidationErrors('status');
+        $this->assertSame($beforeAudits, DB::table('audit_logs')->count());
+
+        $this->actingAs($adminA->fresh())->patch($ownUrl, ['status' => 'enabled'])
+            ->assertRedirect();
+        $this->assertDatabaseHas('restaurant_saas_integrations', [
+            'site_id' => $siteA->getKey(),
+            'public_id' => $ownId,
+            'status' => 'enabled',
+        ]);
+        $this->assertDatabaseHas('restaurant_saas_integrations', [
+            'site_id' => $siteB->getKey(),
+            'public_id' => $foreignId,
+            'status' => 'disabled',
+        ]);
+        $this->assertSame($beforeAudits + 1, DB::table('audit_logs')->count());
+    }
+
     public function test_observability_actions_reject_records_owned_by_another_site(): void
     {
         $actor = User::query()->create([
@@ -388,5 +519,36 @@ class RestaurantSaaSIntegrationHubTest extends TestCase
             $this->assertArrayNotHasKey('payload_ciphertext', $item);
             $this->assertArrayNotHasKey('secret_ciphertext', $item);
         }
+    }
+
+    /** @return array{0:User,1:SmartOrderingSite} */
+    private function integrationAdminSite(string $code): array
+    {
+        $storeId = (int) DB::table('stores')->insertGetId([
+            'store_type_id' => DB::table('store_types')->where('code', 'B2C')->value('id'),
+            'code' => $code,
+            'name' => 'Integration '.$code,
+            'is_active' => true,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        $admin = User::query()->create([
+            'name' => $code.' Admin',
+            'email' => strtolower($code).'-'.Str::lower(Str::random(6)).'@example.test',
+            'password' => 'password',
+            'locale' => 'en',
+            'is_active' => true,
+        ]);
+        DB::table('user_store_roles')->insert([
+            'user_id' => $admin->getKey(),
+            'store_id' => $storeId,
+            'role_id' => Role::query()->where('code', 'B2C_STORE_ADMIN')->firstOrFail()->id,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        $this->enableRestaurantSaasForTestStore($storeId);
+        $site = app(SmartOrderingSiteService::class)->ensureForStore($storeId, $admin);
+
+        return [$admin, $site];
     }
 }

@@ -68,6 +68,7 @@ final class AiPrincipalContextResolver
     {
         $codes = $user->roles()
             ->where('roles.is_active', true)
+            ->whereNull('roles.archived_at')
             ->where('roles.scope', 'global')
             ->pluck('roles.code');
 
@@ -79,6 +80,7 @@ final class AiPrincipalContextResolver
                     ->where('user_store_roles.user_id', $user->getKey())
                     ->whereIn('user_store_roles.store_id', $storeIds)
                     ->where('roles.is_active', true)
+                    ->whereNull('roles.archived_at')
                     ->where('roles.scope', 'store')
                     ->pluck('roles.code'),
             );

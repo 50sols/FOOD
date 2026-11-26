@@ -1,0 +1,12 @@
+# V2 P031 / #4316 — Restaurant admission on Operations new-order-feed
+
+## Security boundary
+The authenticated `admin.operations.orders.new-order-feed` GET returns dashboard order notifications, including order reference, store name, customer name/phone, amount and a deep link. Previously, after verifying notification ownership, source=`customer_app`, authoritative `orders.view` scope and matching persisted order ID/channel/store, it did not enforce the Restaurant-profile B2C_STORE_ADMIN denial already implemented on canonical Retail Orders (#4301), generic Operations Orders (#4305), popup (#4310) and global search (#4303). An older published notification could disclose order/customer PII to a Restaurant actor excluded from the Retail Operations workspace.
+
+## Implementation
+Keep notification's authenticated user, source, channel, order and store checks unchanged. Before fetching and serializing the order, skip a B2C Restaurant-profile store for a non-SUPER_ADMIN with effective B2C_STORE_ADMIN at that store. Skip, rather than a new HTTP error, because the feed may contain mixed authorized Retail entries; preserve the existing ascending cursor advancement for skipped notifications. No mutation or API/Flutter changes and no alteration of notification delivery. Super Admin and valid Retail access remain unchanged.
+
+## Tests and acceptance
+New `V2RestaurantOperationsNewOrderFeedTest.php` seeds actual Restaurant, Retail and foreign stores, orders, authenticated users and published dashboard notifications from customer_app. AR/EN checks Restaurant-only no data but cursor advances, mixed Restaurant+Retail actor sees only authorized Retail item, retail-only sees own item not foreign, Super Admin sees both valid store entries, and read-only Orders/Notifications/Payments counts. Existing notification/order authorization tests should remain green.
+
+REVIEW_RISK: HIGH, sensitive customer PII and channel/store profile admission. Mandatory exact-final-HEAD Repository Policy, FOODEX V2 Isolation, FOODEX Required CI (all Laravel shards and MySQL/Redis), file-level technical review, actual GitHub protection and verified SHA merge before close. Source complete only for atomic #4316; parent #2782 and master #2503 remain OPEN. MOBILE IMPACT — Customer NO_DIRECT_IMPACT; Driver NO_DIRECT_IMPACT; Van NO_DIRECT_IMPACT; Dashboard-only GET. No main, releases, production or mobile modification.

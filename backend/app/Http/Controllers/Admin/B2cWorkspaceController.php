@@ -125,6 +125,17 @@ class B2cWorkspaceController extends Controller
         $businessProfile = $this->businessProfiles->resolve($storeId) ?? StoreBusinessProfile::RETAIL_STORE;
         abort_unless($this->moduleAllowedForProfile($module, $businessProfile), 404);
         $this->authorizeModule($user, $module, $storeId);
+
+        // Rows and assignments are independently paginated GET-only lists.
+        // Validate navigation after the canonical store/profile/module gates,
+        // before the module queries, rather than coercing bad values to page 1.
+        if ($module !== 'dashboard') {
+            $request->validate([
+                'rows_page' => ['nullable', 'integer', 'min:1'],
+                'assignments_page' => ['nullable', 'integer', 'min:1'],
+            ]);
+        }
+
         // Dashboard tabs are GET-only presentation context, never a route/store selector.
         // Reject array/object query shapes before Blade can cast them into a warning/500.
         if ($module === 'dashboard') {

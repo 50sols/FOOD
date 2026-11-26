@@ -9,6 +9,10 @@ concurrency:
 
 permissions:
   contents: read
+  checks: read
+  issues: read
+  pull-requests: read
+  actions: read
 
 jobs:
   changes:
@@ -29,6 +33,7 @@ jobs:
       mobile_ui: ${{ steps.filter.outputs.mobile_ui }}
       enterprise_performance: ${{ steps.filter.outputs.enterprise_performance }}
       backend_dashboard_only: ${{ steps.filter.outputs.backend_dashboard_only }}
+      v2_fast_backend: ${{ steps.deployment.outputs.v2_fast_backend }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -55,6 +60,16 @@ jobs:
             --report artifacts/ci-plan.json \
             --print-files
 
+      - id: deployment
+        name: Select risk-aware V2 backend validation
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/v2-deployment-risk.py \
+            --plan artifacts/ci-plan.json \
+            --base-ref "${{ github.base_ref }}" \
+            --github-output "$GITHUB_OUTPUT"
+
   repository-policy:
     name: Repository Policy
     runs-on: ubuntu-latest
@@ -67,6 +82,23 @@ jobs:
       - name: Validate repository foundation
         run: ./scripts/validate-repo.sh
 
+      - name: Verify V2 worker continuity and original PR resumption
+        run: |
+          node --check .github/scripts/v2-lease-watchdog.js
+          node --check .github/scripts/v2-worker-resume.js
+          node --test .github/scripts/v2-lease-watchdog.test.js .github/scripts/v2-lease-watchdog.reconciliation.test.js .github/scripts/v2-worker-resume.test.js
+
+      - name: Test V2 CI freeze and readiness contracts
+        run: node --test .github/scripts/v2-pr-ci-freeze.test.js .github/scripts/v2-pr-merge-readiness.test.js
+
+      - name: Enforce V2 PR final CI freeze
+        if: ${{ github.base_ref == 'Foodex_V2' }}
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const { guardGithub } = require('./.github/scripts/v2-pr-ci-freeze.js');
+            await guardGithub({ github, context, core });
+
       - name: Validate One-Push Green contracts
         shell: bash
         run: |
@@ -74,6 +106,7 @@ jobs:
           python3 scripts/ci-failure-registry.py --validate
           python3 scripts/flutter-test-hermeticity.py
           python3 -m unittest discover -s scripts/tests -p 'test_ci_plan.py'
+          python3 -m unittest discover -s scripts/tests -p 'test_v2_deployment_risk.py'
           python3 -m unittest discover -s scripts/tests -p 'test_ci_failure_registry.py'
           python3 -m unittest discover -s scripts/tests -p 'test_foodex_branch_policy.py'
           python3 -m unittest discover -s scripts/tests -p 'test_flutter_test_hermeticity.py'
@@ -258,8 +291,14 @@ jobs:
   backend-validation:
     name: Backend validation
     needs: changes
-    if: ${{ needs.changes.outputs.backend == 'true' || startsWith(github.head_ref, 'test/1359-') }}
+    if: ${{ needs.changes.outputs.v2_fast_backend != 'true' && (needs.changes.outputs.backend == 'true' || startsWith(github.head_ref, 'test/1359-')) }}
     uses: ./.github/workflows/backend-ci.yml
+
+  v2-backend-fast-validation:
+    name: V2 scoped backend validation
+    needs: changes
+    if: ${{ needs.changes.outputs.backend == 'true' && needs.changes.outputs.v2_fast_backend == 'true' }}
+    uses: ./.github/workflows/v2-backend-fast-ci.yml
 
   customer-validation:
     name: Customer validation
@@ -355,6 +394,7 @@ jobs:
       - changes
       - repository-policy
       - backend-validation
+      - v2-backend-fast-validation
       - customer-validation
       - driver-validation
       - van-validation
@@ -372,6 +412,8 @@ jobs:
           POLICY_RESULT: ${{ needs.repository-policy.result }}
           BACKEND_CHANGED: ${{ needs.changes.outputs.backend }}
           BACKEND_RESULT: ${{ needs.backend-validation.result }}
+          V2_FAST_BACKEND: ${{ needs.changes.outputs.v2_fast_backend }}
+          V2_FAST_BACKEND_RESULT: ${{ needs.v2-backend-fast-validation.result }}
           BACKEND_DASHBOARD_ONLY: ${{ needs.changes.outputs.backend_dashboard_only }}
           CUSTOMER_CHANGED: ${{ needs.changes.outputs.customer }}
           CUSTOMER_RESULT: ${{ needs.customer-validation.result }}
@@ -426,7 +468,19 @@ jobs:
             PREVIEW_RUNTIME_DISTRIBUTION_CHANGED=false
           fi
 
-          require_applicable_success "$BACKEND_CHANGED" "Backend validation" "$BACKEND_RESULT"
+          if [[ "$V2_FAST_BACKEND" == "true" ]]; then
+            require_success "V2 scoped backend validation" "$V2_FAST_BACKEND_RESULT"
+            if [[ "$BACKEND_RESULT" != "skipped" ]]; then
+              echo "::error::Full deployment backend CI unexpectedly ran in scoped V2 lane: $BACKEND_RESULT"
+              exit 1
+            fi
+          else
+            require_applicable_success "$BACKEND_CHANGED" "Backend validation" "$BACKEND_RESULT"
+            if [[ "$V2_FAST_BACKEND_RESULT" != "skipped" ]]; then
+              echo "::error::V2 scoped backend CI unexpectedly ran in full validation lane: $V2_FAST_BACKEND_RESULT"
+              exit 1
+            fi
+          fi
           require_applicable_success "$CUSTOMER_CHANGED" "Customer validation" "$CUSTOMER_RESULT"
           require_applicable_success "$DRIVER_CHANGED" "Driver validation" "$DRIVER_RESULT"
           require_applicable_success "$VAN_CHANGED" "Van validation" "$VAN_RESULT"
@@ -437,3 +491,31 @@ jobs:
           require_applicable_success "$ENTERPRISE_PERFORMANCE_CHANGED" "Enterprise performance certification" "$ENTERPRISE_PERFORMANCE_RESULT"
 
           echo "All required validations for changed areas passed."
+
+  v2-merge-readiness:
+    name: V2 merge readiness monitor
+    if: ${{ always() && github.base_ref == 'Foodex_V2' }}
+    needs: [required-ci-gate]
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    permissions:
+      contents: read
+      checks: read
+      pull-requests: read
+      issues: read
+    steps:
+      - name: Checkout read-only PR code
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Test action state machine
+        run: node --test .github/scripts/v2-pr-ci-freeze.test.js .github/scripts/v2-pr-merge-readiness.test.js
+
+      - name: Summarize exact-head merge readiness without mutating PR
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const { report } = require('./.github/scripts/v2-pr-merge-readiness.js');
+            await report({ github, context, core });
+

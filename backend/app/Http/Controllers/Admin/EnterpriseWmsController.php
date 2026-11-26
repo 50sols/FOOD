@@ -435,6 +435,7 @@ final class EnterpriseWmsController extends Controller
     public function transitionLot(Request $request, int $lot): RedirectResponse
     {
         $actor = $this->actor($request);
+        $this->lots->assertCanTransitionStatus($actor, $lot);
         $data = $request->validate([
             'store_id' => ['required', 'integer', 'min:1'],
             'warehouse_id' => ['required', 'integer', 'min:1'],

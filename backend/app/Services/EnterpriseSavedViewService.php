@@ -49,6 +49,20 @@ final class EnterpriseSavedViewService
             ->get();
     }
 
+    /**
+     * Fail closed on the requested surface and effective tenant before validating
+     * unrelated Saved View fields. The write path rechecks the same authority.
+     */
+    public function assertCanAccessScope(
+        User $actor,
+        string $surfaceKey,
+        string $scopeType,
+        ?int $scopeId,
+    ): void {
+        $this->surfaceKey($surfaceKey);
+        $this->authorizeScope($actor, $scopeType, $scopeId);
+    }
+
     public function stateToken(
         string $surfaceKey,
         string $scopeType,
@@ -231,6 +245,7 @@ final class EnterpriseSavedViewService
             ->join('roles as saved_view_roles', 'saved_view_roles.id', '=', 'saved_view_usr.role_id')
             ->where('saved_view_usr.user_id', $actor->getKey())
             ->where('saved_view_roles.is_active', true)
+            ->whereNull('saved_view_roles.archived_at')
             ->where('saved_view_roles.scope', 'store')
             ->exists();
 
@@ -240,6 +255,7 @@ final class EnterpriseSavedViewService
 
         $globalRoles = $actor->roles()
             ->where('roles.is_active', true)
+            ->whereNull('roles.archived_at')
             ->where('roles.scope', 'global')
             ->pluck('roles.code')
             ->all();
