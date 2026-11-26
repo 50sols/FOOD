@@ -509,6 +509,40 @@ class BuildUpdateBundleSourceSafetyTest(unittest.TestCase):
                         (output_dir / ".FOODEX-Update.publish.lock").exists()
                     )
 
+    def test_update_release_group_rejects_coherent_corrupt_nonmirror_payload(self) -> None:
+        # Manifest, SHA256 sidecar and filename list all match the modified
+        # archive. Only its internal stored entry bytes are corrupt: the
+        # central-directory CRC still represents the original payload.
+        with tempfile.TemporaryDirectory() as directory:
+            output_dir = Path(directory)
+            staging, contents = self._staged_release_fixture(output_dir)
+            binary = io.BytesIO()
+            original_payload = b"reviewed-artisan-runtime"
+            with zipfile.ZipFile(binary, "w", compression=zipfile.ZIP_STORED) as archive:
+                archive.writestr("backend/artisan", original_payload)
+            archive_bytes = bytearray(binary.getvalue())
+            payload_offset = archive_bytes.index(original_payload)
+            archive_bytes[payload_offset] ^= 1
+            corrupted_zip = bytes(archive_bytes)
+            digest = hashlib.sha256(corrupted_zip).hexdigest()
+
+            manifest = json.loads(contents["FOODEX-Update.json"])
+            manifest["sha256"] = digest
+            contents["FOODEX-Update.json"] = (json.dumps(manifest) + "\n").encode("utf-8")
+            contents["FOODEX-Update.sha256.txt"] = (
+                f"{digest}  FOODEX-Update.zip\n"
+            ).encode("utf-8")
+            contents["FOODEX-Update.zip"] = corrupted_zip
+            for name, body in contents.items():
+                (staging / name).write_bytes(body)
+
+            with self.assertRaisesRegex(RuntimeError, "consistency check failed"):
+                builder.publish_release_bundle(staging, output_dir)
+            for name, body in contents.items():
+                self.assertFalse(os.path.lexists(output_dir / name), name)
+                self.assertEqual((staging / name).read_bytes(), body)
+            self.assertFalse((output_dir / ".FOODEX-Update.publish.lock").exists())
+
     def test_update_release_group_requires_byte_identical_public_mirrors(self) -> None:
         # A substituted ZIP can carry matching sidecars and a valid SHA-256,
         # yet omit the canonical Laravel asset or alter the root alias.

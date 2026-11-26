@@ -842,6 +842,24 @@ def assert_staged_release_consistency(staging_dir: Path) -> str:
                 ):
                     raise RuntimeError(f"Unsafe Update release ZIP member type: {canonical}")
 
+            # A coherent ZIP+SHA256 sidecar does not prove that every
+            # compressed member can be decoded. Read ALL members to EOF so
+            # zipfile checks DEFLATE/CRC integrity before any publication.
+            # Stream in fixed-size chunks to avoid buffering release assets.
+            for member in members:
+                extracted_size = 0
+                with archive.open(member) as source_stream:
+                    for chunk in iter(lambda: source_stream.read(1024 * 1024), b""):
+                        extracted_size += len(chunk)
+                        if extracted_size > member.file_size:
+                            raise RuntimeError(
+                                f"Update release ZIP member size overflow: {member.filename}"
+                            )
+                if extracted_size != member.file_size:
+                    raise RuntimeError(
+                        f"Update release ZIP member truncated: {member.filename}"
+                    )
+
             # Shared-host root assets MUST be exact mirrors of their canonical
             # backend/public files. Coherently substituted ZIP+sidecars may
             # otherwise publish independent root-only content, even with a
