@@ -541,7 +541,7 @@ final class ProcurementCompletionManager
             'contract_id' => ['nullable', 'integer', 'min:1'],
         ])->validate();
 
-        return DB::transaction(function () use ($actor, $scope, $purchaseRequestId, $data): object {
+        return DB::transaction(function () use ($actor, $context, $scope, $purchaseRequestId, $data): object {
             // The module-enabled preflight may become stale before the draft
             // RFQ/lines/audit are written. Share lifecycle's row lock before
             // locking the scoped purchase request and creating an RFQ.
@@ -554,6 +554,12 @@ final class ProcurementCompletionManager
                 404,
                 'Procurement module is disabled.',
             );
+
+            // The unlocked preflight grant must not survive a persisted
+            // permission DENY or offboarding while this request is pending.
+            // Reauthorize the original principal after the module lock, before
+            // even returning an idempotent existing RFQ.
+            $this->scope($actor, $context, 'procurement.purchase_requests.manage');
 
             $request = DB::table('enterprise_purchase_requests')
                 ->where('organization_id', $scope->organizationId)
@@ -662,7 +668,7 @@ final class ProcurementCompletionManager
             throw ValidationException::withMessages(['supplier_ids' => ['Select at least one supplier.']]);
         }
 
-        return DB::transaction(function () use ($actor, $scope, $rfqId, $supplierIds): array {
+        return DB::transaction(function () use ($actor, $context, $scope, $rfqId, $supplierIds): array {
             // Scope authorization is a preflight, not a durable grant. Serialize
             // the final RFQ publication with ModuleLifecycleManager shutdown
             // before taking RFQ and supplier locks or issuing bearer tokens.
@@ -675,6 +681,11 @@ final class ProcurementCompletionManager
                 404,
                 'Procurement module is disabled.',
             );
+
+            // Publishing creates bearer invitations. Revocation or offboarding
+            // after preflight must never leave the original actor authorized to
+            // issue tokens, write audit or receive an idempotent success.
+            $this->scope($actor, $context, 'procurement.purchase_requests.manage');
 
             $rfq = $this->visibleRfq($scope, $rfqId, true);
             if ($rfq->status === 'published') {
@@ -759,7 +770,7 @@ final class ProcurementCompletionManager
     ): void {
         $scope = $this->scope($actor, $context, 'procurement.purchase_requests.manage');
 
-        DB::transaction(function () use ($actor, $scope, $rfqId): void {
+        DB::transaction(function () use ($actor, $context, $scope, $rfqId): void {
             // Cancellation and invitation revocation must be serialized with
             // operator module suspension, just like publish/award and public
             // supplier GET/POST. Preflight permission is not a durable grant.
@@ -772,6 +783,10 @@ final class ProcurementCompletionManager
                 404,
                 'Procurement module is disabled.',
             );
+
+            // Revoked managers may not cancel a published RFQ or invalidate
+            // supplier invitations after their original preflight grant.
+            $this->scope($actor, $context, 'procurement.purchase_requests.manage');
 
             $rfq = $this->visibleRfq($scope, $rfqId, true);
             if ($rfq->status === 'cancelled') {
@@ -828,6 +843,18 @@ final class ProcurementCompletionManager
                 $module !== null && $module->state === ModuleState::ENABLED->value,
                 404,
                 'Procurement module is disabled.',
+            );
+
+            // Both permissions are mandatory at the final write boundary.
+            // Re-read the persisted principal under the module lock so a
+            // revoked checker cannot create or replay an awarded purchase order.
+            $this->scope($actor, $context, 'procurement.purchase_requests.approve');
+            $this->authorizer->authorize(
+                $this->persistedActor($actor),
+                $context,
+                'procurement.purchase_orders.manage',
+                'company',
+                $scope->companyId,
             );
 
             $rfq = $this->visibleRfq($scope, $rfqId, true);

@@ -626,6 +626,132 @@ final class EnterpriseProcurementCompletionTest extends TestCase
         }
     }
 
+
+    public function test_rfq_create_publish_cancel_recheck_persisted_manage_deny_after_module_lock_in_ar_and_en(): void
+    {
+        $this->enableProcurement();
+        $completion = app(ProcurementCompletionManager::class);
+        $requests = app(PurchaseRequestManager::class);
+        $directory = app(SupplierDirectory::class);
+        $permissionId = Permission::query()
+            ->where('code', 'procurement.purchase_requests.manage')->firstOrFail()->id;
+        $armed = false;
+        $injected = false;
+        $subject = null;
+        $baselineTransactionLevel = DB::transactionLevel();
+
+        // Deterministic same-connection interleaving at the module lock:
+        // a preflight permission must not authorize a later write. This does
+        // not claim a separate-session MySQL locking certification.
+        DB::listen(static function ($query) use (
+            &$armed, &$injected, &$subject, $permissionId, $baselineTransactionLevel
+        ): void {
+            $sql = strtolower(ltrim((string) $query->sql));
+            if (! $armed || $injected || $subject === null
+                || DB::transactionLevel() <= $baselineTransactionLevel
+                || ! str_starts_with($sql, 'select')
+                || ! str_contains($sql, 'enterprise_modules')) {
+                return;
+            }
+
+            $armed = false;
+            $injected = true;
+            DB::table('user_permission_overrides')->insert([
+                'user_id' => $subject->id,
+                'permission_id' => $permissionId,
+                'scope_key' => 'global',
+                'store_id' => null,
+                'effect' => 'deny',
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+            DB::table('users')->where('id', $subject->id)
+                ->update(['has_permission_overrides' => true]);
+        });
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            [$actor, , $context] = $this->scopedUser(
+                $this->allPermissions(), 'P135-RFQ-WRITE-'.strtoupper($locale),
+            );
+            $supplier = $directory->create($actor, $context, [
+                'scope_type' => 'store',
+                'code' => 'P135-RFQ-SUP-'.strtoupper($locale),
+                'name_en' => 'RFQ late permission supplier',
+            ]);
+            $request = $requests->create($actor, $context, [
+                'currency_code' => 'KWD',
+                'reason' => 'RFQ late permission check',
+                'lines' => [[
+                    'item_code' => 'P135-RFQ-AUTH',
+                    'description' => 'Authorization regression',
+                    'quantity' => 1,
+                    'unit' => 'each',
+                    'estimated_unit_cost' => 1.000,
+                ]],
+            ]);
+            $requests->submit($actor, $context, $request->id);
+
+            $assertLateDeny = function (callable $mutation) use (
+                $actor, $permissionId, &$armed, &$injected, &$subject
+            ): void {
+                $beforeAudit = DB::table('audit_logs')->count();
+                $armed = true;
+                $injected = false;
+                $subject = $actor;
+                try {
+                    $mutation();
+                    $this->fail('Revocation inside module-locked RFQ write must deny access.');
+                } catch (HttpException $exception) {
+                    $this->assertSame(403, $exception->getStatusCode());
+                } finally {
+                    $armed = false;
+                    $subject = null;
+                }
+                $this->assertTrue($injected);
+                $this->assertSame($beforeAudit, DB::table('audit_logs')->count());
+                $this->assertFalse((bool) $actor->fresh()->has_permission_overrides);
+                $this->assertSame(0, DB::table('user_permission_overrides')
+                    ->where('user_id', $actor->id)
+                    ->where('permission_id', $permissionId)->count());
+            };
+
+            $beforeRfqs = DB::table('enterprise_procurement_rfqs')->count();
+            $assertLateDeny(static function () use ($completion, $actor, $context, $request): void {
+                $completion->createRfq($actor, $context, $request->id, ['title' => 'Denied draft']);
+            });
+            $this->assertSame($beforeRfqs, DB::table('enterprise_procurement_rfqs')->count());
+
+            $rfq = $completion->createRfq($actor, $context, $request->id, [
+                'title' => 'Authorized draft',
+                'response_due_at' => now()->addDays(7)->format('Y-m-d H:i:s'),
+            ]);
+            $assertLateDeny(static function () use ($completion, $actor, $context, $rfq, $supplier): void {
+                $completion->publishRfq($actor, $context, $rfq->id, [$supplier->id]);
+            });
+            $this->assertSame('draft', DB::table('enterprise_procurement_rfqs')
+                ->where('id', $rfq->id)->value('status'));
+            $this->assertSame(0, DB::table('enterprise_procurement_rfq_invitations')
+                ->where('rfq_id', $rfq->id)->count());
+
+            $tokens = $completion->publishRfq($actor, $context, $rfq->id, [$supplier->id]);
+            $this->assertCount(1, $tokens);
+            $assertLateDeny(static function () use ($completion, $actor, $context, $rfq): void {
+                $completion->cancelRfq($actor, $context, $rfq->id);
+            });
+            $this->assertSame('published', DB::table('enterprise_procurement_rfqs')
+                ->where('id', $rfq->id)->value('status'));
+            $this->assertSame('invited', DB::table('enterprise_procurement_rfq_invitations')
+                ->where('rfq_id', $rfq->id)->value('status'));
+
+            $completion->cancelRfq($actor, $context, $rfq->id);
+            $this->assertSame('cancelled', DB::table('enterprise_procurement_rfqs')
+                ->where('id', $rfq->id)->value('status'));
+            $this->assertSame('revoked', DB::table('enterprise_procurement_rfq_invitations')
+                ->where('rfq_id', $rfq->id)->value('status'));
+        }
+    }
+
     public function test_rfq_portal_quote_award_and_savings_preserve_canonical_procurement_chain(): void
     {
         Storage::fake('local');
@@ -720,6 +846,57 @@ final class EnterpriseProcurementCompletionTest extends TestCase
             'id' => $rfq->id,
             'status' => 'published',
         ]);
+        $this->assertDatabaseMissing('enterprise_purchase_orders', [
+            'procurement_rfq_id' => $rfq->id,
+        ]);
+
+        // A valid checker may lose either required grant after the unlocked
+        // preflight. No award, purchase order or audit may escape that denial.
+        $awardManageId = Permission::query()
+            ->where('code', 'procurement.purchase_orders.manage')->firstOrFail()->id;
+        $awardArmed = false;
+        $awardInjected = false;
+        $awardBaseLevel = DB::transactionLevel();
+        DB::listen(static function ($query) use (
+            &$awardArmed, &$awardInjected, $awardBaseLevel, $checker, $awardManageId
+        ): void {
+            $sql = strtolower(ltrim((string) $query->sql));
+            if (! $awardArmed || $awardInjected
+                || DB::transactionLevel() <= $awardBaseLevel
+                || ! str_starts_with($sql, 'select')
+                || ! str_contains($sql, 'enterprise_modules')) {
+                return;
+            }
+
+            $awardArmed = false;
+            $awardInjected = true;
+            DB::table('user_permission_overrides')->insert([
+                'user_id' => $checker->id,
+                'permission_id' => $awardManageId,
+                'scope_key' => 'global',
+                'store_id' => null,
+                'effect' => 'deny',
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+            DB::table('users')->where('id', $checker->id)
+                ->update(['has_permission_overrides' => true]);
+        });
+        $awardAuditBefore = DB::table('audit_logs')->count();
+        $awardArmed = true;
+        try {
+            $completion->awardRfq($checker, $checkerContext, $rfq->id, $quote->id);
+            $this->fail('Award must not accept an expired persisted PO manage permission.');
+        } catch (HttpException $exception) {
+            $this->assertSame(403, $exception->getStatusCode());
+        } finally {
+            $awardArmed = false;
+        }
+        $this->assertTrue($awardInjected);
+        $this->assertFalse((bool) $checker->fresh()->has_permission_overrides);
+        $this->assertSame($awardAuditBefore, DB::table('audit_logs')->count());
+        $this->assertSame('published', DB::table('enterprise_procurement_rfqs')
+            ->where('id', $rfq->id)->value('status'));
         $this->assertDatabaseMissing('enterprise_purchase_orders', [
             'procurement_rfq_id' => $rfq->id,
         ]);
