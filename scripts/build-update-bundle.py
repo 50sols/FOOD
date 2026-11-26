@@ -824,8 +824,18 @@ def assert_staged_release_consistency(staging_dir: Path) -> str:
             raise RuntimeError("Update release manifest metadata does not match output names.")
         if digest_path.read_text(encoding="utf-8") != f"{expected_hash}  {archive_path.name}\n":
             raise RuntimeError("Update release checksum sidecar does not match manifest.")
-        filenames = files_path.read_text(encoding="utf-8").splitlines()
-        if not filenames or len(set(filenames)) != len(filenames):
+        # A signed group's inventory must have one canonical byte encoding.
+        # splitlines() silently accepts CRLF/CR and other line terminators;
+        # the dashboard/installer may interpret those bytes differently.
+        raw_file_list = files_path.read_bytes()
+        if not raw_file_list.endswith(b"\n") or b"\r" in raw_file_list:
+            raise RuntimeError("Update release file list must use canonical LF-terminated UTF-8.")
+        try:
+            file_list_text = raw_file_list.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise RuntimeError("Update release file list must use canonical LF-terminated UTF-8.") from exc
+        filenames = file_list_text[:-1].split("\n")
+        if not filenames or any(not name for name in filenames) or len(set(filenames)) != len(filenames):
             raise RuntimeError("Update release file list is empty or contains duplicates.")
 
         # A coherent ZIP, file list and SHA-256 can still be paired with a

@@ -464,6 +464,32 @@ class BuildUpdateBundleSourceSafetyTest(unittest.TestCase):
                         self.assertFalse(os.path.lexists(output_dir / name), name)
                     self.assertFalse((output_dir / ".FOODEX-Update.publish.lock").exists())
 
+
+    def test_update_release_group_rejects_noncanonical_file_list_encoding(self) -> None:
+        # All other staged sidecars and the ZIP remain valid. The inventory
+        # must not be normalized silently by Python's universal newlines.
+        variants = {
+            "crlf": b"backend/artisan\r\n",
+            "cr_only": b"backend/artisan\r",
+            "no_final_lf": b"backend/artisan",
+            "extra_blank_line": b"backend/artisan\n\n",
+            "invalid_utf8": b"backend/artisan\xff\n",
+        }
+        for variant, file_list in variants.items():
+            with self.subTest(variant=variant):
+                with tempfile.TemporaryDirectory() as directory:
+                    output_dir = Path(directory)
+                    staging, original = self._staged_release_fixture(output_dir)
+                    (staging / "FOODEX-Update.files.txt").write_bytes(file_list)
+                    with self.assertRaisesRegex(RuntimeError, "file list"):
+                        builder.publish_release_bundle(staging, output_dir)
+                    for name in original:
+                        self.assertFalse(os.path.lexists(output_dir / name), name)
+                    self.assertEqual(
+                        (staging / "FOODEX-Update.files.txt").read_bytes(), file_list
+                    )
+                    self.assertFalse((output_dir / ".FOODEX-Update.publish.lock").exists())
+
     def test_update_release_group_refuses_cross_artifact_drift_before_publish(self) -> None:
         alterations = {
             "manifest_hash": lambda p: p.__setitem__(
