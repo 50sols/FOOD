@@ -13,10 +13,18 @@ final class OperationalTenantScope
     public function allowedStoreIds(User $user, string $permission, ?string $channel = null): array
     {
         $channel = $channel === null ? null : strtoupper($channel);
+        $roleChannel = $channel ?? 'B2C';
 
-        // Reject in-memory disabled actors immediately; every store-candidate query
-        // independently checks persisted users.is_active without an extra round trip.
-        if (! $user->is_active) {
+        // A dirty or unsaved User primary key cannot authorize another actor.
+        // Reject local deactivation and retain the original persisted identity.
+        // The following store-role/override queries JOIN users.is_active and
+        // the global/Super Admin store query CROSS JOINs that same live guard.
+        // Do NOT add a standalone User lookup for each scope evaluation:
+        // bounded warehouse and reorder reads rely on constant query counts.
+        $originalId = $user->exists ? $user->getRawOriginal($user->getKeyName()) : null;
+        if ($originalId === null
+            || (string) $user->getKey() !== (string) $originalId
+            || ! $user->is_active) {
             return [];
         }
 
@@ -25,8 +33,8 @@ final class OperationalTenantScope
         }
 
         $ids = DB::table('user_store_roles')
-            ->join('users', 'users.id', '=', 'user_store_roles.user_id')
             ->join('roles', 'roles.id', '=', 'user_store_roles.role_id')
+            ->join('users', 'users.id', '=', 'user_store_roles.user_id')
             ->join('permission_role', 'permission_role.role_id', '=', 'roles.id')
             ->join('permissions', 'permissions.id', '=', 'permission_role.permission_id')
             ->join('stores', 'stores.id', '=', 'user_store_roles.store_id')
@@ -38,7 +46,7 @@ final class OperationalTenantScope
             ->where('roles.scope', 'store')
             ->where('permissions.code', $permission)
             ->where('stores.is_active', true)
-            ->where('store_types.code', 'B2C')
+            ->where('store_types.code', $roleChannel)
             ->when($channel !== null, fn ($query) => $query->where('store_types.code', $channel))
             ->pluck('stores.id')
             ->map(static fn ($id): int => (int) $id);
@@ -52,13 +60,13 @@ final class OperationalTenantScope
             && ($channel === null || $channel === 'B2C')
             && $user->permissionFitsStoreChannel($permission, 'b2c')) {
             $storeAllows = DB::table('user_permission_overrides as overrides')
-                ->join('users', 'users.id', '=', 'overrides.user_id')
                 ->join('permissions as allowed_permissions', 'allowed_permissions.id', '=', 'overrides.permission_id')
                 ->join('user_store_roles as assigned', function ($join): void {
                     $join->on('assigned.user_id', '=', 'overrides.user_id')
                         ->on('assigned.store_id', '=', 'overrides.store_id');
                 })
                 ->join('roles as assigned_roles', 'assigned_roles.id', '=', 'assigned.role_id')
+                ->join('users', 'users.id', '=', 'overrides.user_id')
                 ->join('stores', 'stores.id', '=', 'assigned.store_id')
                 ->join('store_types', 'store_types.id', '=', 'stores.store_type_id')
                 ->where('overrides.user_id', $user->getKey())
@@ -182,11 +190,11 @@ final class OperationalTenantScope
     private function storeIdsForChannels(array $channels, User $user): array
     {
         return DB::table('stores')
-            ->crossJoin('users')
             ->join('store_types', 'store_types.id', '=', 'stores.store_type_id')
+            ->crossJoin('users')
+            ->where('stores.is_active', true)
             ->where('users.id', $user->getKey())
             ->where('users.is_active', true)
-            ->where('stores.is_active', true)
             ->whereIn('store_types.code', $channels)
             ->pluck('stores.id')
             ->map(static fn ($id): int => (int) $id)
